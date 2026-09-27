@@ -45,6 +45,15 @@ Running the command again toggles the terminal (single-instance: the second laun
 
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](#known-risks).
 
+### Running locally without a shortcut
+
+No COSMIC shortcut configured yet? You can still open and dismiss the overlay from a local run:
+
+- `cargo run` (or `just run`) opens it.
+- `Ctrl+Shift+Q` hides it.
+- Clicking another window hides it too (`hide_on_focus_loss` defaults to `true`).
+- Running the command a second time still toggles.
+
 ## Configuration
 
 DropTerm uses `cosmic-config` and reloads its config live - no restart needed. The file lives at:
@@ -59,6 +68,8 @@ Each setting is its own RON file inside that directory (`height_percent`, `edge`
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
 ```
 
+`hide_on_focus_loss` defaults to `true` (click away to hide); write `false` to keep the overlay open when it loses focus.
+
 ## Features (v1)
 
 - Layer-shell window anchored to the top (or bottom) edge, full width, above other windows
@@ -68,6 +79,7 @@ echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_perc
 - COSMIC theme integration: light/dark and the two built-in COSMIC color schemes
 - Copy/paste (`Ctrl+Shift+C`/`V`), primary-selection paste (middle-click, `Shift+Insert`), scrollback, mouse reporting, `Ctrl`-click to open URLs
 - Zoom (`Ctrl+`/`Ctrl-`/`Ctrl+0`), select-all and clear-scrollback shortcuts
+- In-app dismiss: `Ctrl+Shift+Q` hides the overlay; clicking away hides it too
 
 ## Known risks
 
@@ -91,6 +103,10 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Editing `height_percent` in the config live-resizes the surface on the next show
 - [ ] Switching the system between light and dark updates the terminal colors
 - [ ] On a multi-monitor setup, the surface appears on the output under the cursor
+- [ ] `Ctrl+Shift+Q` hides the surface, and the session survives a re-toggle
+- [ ] Clicking another window hides the surface (fresh config, `hide_on_focus_loss` default `true`)
+- [ ] With `hide_on_focus_loss: false` written in config, clicking away does *not* hide
+- [ ] Escape still reaches the shell (e.g. works in vim) and still cancels an active selection
 
 ## Non-goals
 
