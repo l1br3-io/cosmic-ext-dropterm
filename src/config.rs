@@ -84,6 +84,8 @@ pub struct DropTermConfig {
     /// Number of scrollback lines kept per terminal.
     pub scrollback_lines: u32,
     /// Hide the terminal automatically when it loses keyboard focus.
+    /// Defaults to `true` so a fresh run behaves like Yakuake/Guake
+    /// (click away to hide).
     pub hide_on_focus_loss: bool,
 }
 
@@ -103,7 +105,7 @@ impl Default for DropTermConfig {
             color_scheme_light: COSMIC_THEME_LIGHT.to_string(),
             opacity: 100,
             scrollback_lines: 10_000,
-            hide_on_focus_loss: false,
+            hide_on_focus_loss: true,
         }
     }
 }
@@ -144,7 +146,7 @@ mod tests {
         assert!(config.output.is_none());
         assert!(config.shell.is_none());
         assert_eq!(config.opacity, 100);
-        assert!(!config.hide_on_focus_loss);
+        assert!(config.hide_on_focus_loss);
     }
 
     #[test]

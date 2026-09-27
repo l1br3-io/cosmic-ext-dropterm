@@ -104,6 +104,11 @@ pub struct DropTerm {
     terminal_id: widget::Id,
     term_event_tx: Option<mpsc::UnboundedSender<TermEvent>>,
     surface: SurfaceState,
+    /// Whether the surface has received keyboard focus at least once since it
+    /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
+    /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
+    /// make the surface open-then-instantly-close.
+    surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
 }
@@ -204,6 +209,7 @@ impl DropTerm {
         self.ensure_terminal();
         let id = window::Id::unique();
         self.surface = SurfaceState::Measuring(id);
+        self.surface_focused = false;
         get_layer_surface(surface::measuring(id))
     }
 
@@ -363,6 +369,7 @@ impl Application for DropTerm {
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
             surface: SurfaceState::Hidden,
+            surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
         };
@@ -498,6 +505,7 @@ impl Application for DropTerm {
             }
             Message::LayerFocused(id) => {
                 if self.surface == SurfaceState::Shown(id) {
+                    self.surface_focused = true;
                     if let Some(terminal) = &self.terminal {
                         terminal.lock().unwrap().set_focused(true);
                     }
@@ -512,6 +520,7 @@ impl Application for DropTerm {
                 }
             }
             Message::WindowFocused => {
+                self.surface_focused = true;
                 if let Some(terminal) = &self.terminal {
                     terminal.lock().unwrap().set_focused(true);
                 }
@@ -520,7 +529,8 @@ impl Application for DropTerm {
                 if let Some(terminal) = &self.terminal {
                     terminal.lock().unwrap().set_focused(false);
                 }
-                if self.config.hide_on_focus_loss {
+                if self.config.hide_on_focus_loss && self.surface_focused {
+                    self.surface_focused = false;
                     return self.hide();
                 }
             }
