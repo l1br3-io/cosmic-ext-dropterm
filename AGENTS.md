@@ -43,3 +43,20 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 - Run `cargo clippy` and `cargo fmt --check` before a change counts as done; `cargo test` is the verification gate.
 - This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see README's manual test checklist); unit tests cover what can be tested headless.
+
+## Spec & task artifacts (local working docs)
+
+- `SPEC.md` is the master index: the capability map (module ids, dependency
+  direction, build order) and per-module status. Per-module specs live at
+  `SPEC-<module-id>.md`; per-module task chunks at `tasks/<module-id>.md`.
+  Global aggregates: `tasks/plan.md` and `tasks/todo.md`.
+- All of the above are local working artifacts, gitignored via `SPEC*.md`
+  and `/tasks`. Never commit them.
+- Module ids come from the capability map in `SPEC.md`, are chosen once, and
+  are never renamed mid-initiative.
+- Before implementing: read `SPEC.md` for orientation, then load the
+  module's `SPEC-<id>.md` and `tasks/<id>.md` chunk. Never implement a
+  module whose spec is not approved or whose chunk is not written.
+- `/build` consumes the chunk files; see `.opencode/commands/build.md`.
+- PRs must copy the module's success criteria into the PR body, since
+  reviewers cannot see the local spec files.

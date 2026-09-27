@@ -19,7 +19,6 @@ High-level feature list.
 - [ ] Tabs (new/close/rename/reorder)
 - [ ] Save sessions across shutdown
 - [x] Hide on focus loss
-- [ ] Monitor selection (cursor, focused, or fixed output)
 - [ ] Width percentage and horizontal alignment
 - [ ] Drag-to-resize with remembered height
 - [ ] Slide animation
@@ -31,6 +30,9 @@ High-level feature list.
 - [ ] CLI actions (`--new-tab`, `--cmd`, `--cwd`)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
+- [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
+      libcosmic rev exposes no focused/fixed output targeting (`IcedOutput` is
+      `All | Active | Output(WlOutput)`, no output events or by-name handles)
 
 ## Non-goals
 

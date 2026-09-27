@@ -13,6 +13,6 @@ Read the existing spec (SPEC.md or equivalent) and the relevant codebase section
 5. Add checkpoints between phases
 6. Present the plan for human review
 
-Save the plan to tasks/plan.md and task list to tasks/todo.md.
+Save the plan to tasks/plan.md, the task list to tasks/todo.md, and per-module task chunks to tasks/<module-id>.md (one per module in the capability map). Each chunk opens with links to its SPEC-<module-id>.md and the files it touches, followed by its tasks with acceptance, verify, and files. Chunk file = the unit /build consumes; plan/todo are aggregates of the chunks.
 
 If tasks/plan.md or tasks/todo.md already exists with unchecked tasks for different work, stop and ask before writing — never silently overwrite an incomplete plan.
