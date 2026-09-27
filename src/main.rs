@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod keybinds;
 mod surface;
+mod tab_bar;
 mod tabs;
 mod terminal;
 

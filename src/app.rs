@@ -20,9 +20,10 @@ use cosmic::widget;
 use cosmic::{Application, Element};
 use tokio::sync::mpsc;
 
-use crate::config::{CONFIG_VERSION, DropTermConfig};
+use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
 use crate::keybinds::{self, default_key_binds};
 use crate::surface;
+use crate::tab_bar::TabBar;
 use crate::tabs::{self, Tab, TabId};
 use crate::terminal::{self, Action, Terminal, TerminalBox, TerminalOptions, theme_source};
 
@@ -88,6 +89,11 @@ pub enum Message {
     WindowFocused,
     WindowUnfocused,
     MiddleClick,
+    /// A tab bar button was left-clicked (tabs spec, T5).
+    TabSelected(TabId),
+    /// A tab bar button was closed via its `×` or a middle-click (tabs
+    /// spec, T5).
+    TabClosed(TabId),
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -678,6 +684,19 @@ impl Application for DropTerm {
                 return clipboard::read_primary()
                     .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
             }
+            Message::TabSelected(id) => {
+                // The bar reports the stable tab id; resolve it against
+                // the current list so a list change between redraw and
+                // click cannot act on the wrong tab.
+                if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                    self.set_active_tab(index);
+                }
+            }
+            Message::TabClosed(id) => {
+                if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                    self.close_tab_at(index);
+                }
+            }
             Message::OpenHyperlink(url) => {
                 if let Err(err) = open::that_detached(&url) {
                     log::warn!("failed to open {url:?}: {err}");
@@ -706,7 +725,7 @@ impl Application for DropTerm {
         }
 
         let opacity = f32::from(self.config.opacity) / 100.0;
-        TerminalBox::new(&tab.terminal, &self.key_binds)
+        let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
             .opacity(opacity)
             .show_headerbar(false)
@@ -714,7 +733,22 @@ impl Application for DropTerm {
             .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
             .on_window_focused(|| Message::WindowFocused)
             .on_window_unfocused(|| Message::WindowUnfocused)
-            .into()
+            .into();
+
+        // The bar appears only with more than one tab and sits on the
+        // surface edge opposite the screen edge (tabs spec): below the
+        // terminal when top-anchored, above it when bottom-anchored.
+        if self.tabs.len() > 1 {
+            let bar = TabBar::new(&self.tabs, self.active_tab)
+                .on_select(Message::TabSelected)
+                .on_close(Message::TabClosed);
+            match self.config.edge {
+                Edge::Top => widget::column![terminal, bar].into(),
+                Edge::Bottom => widget::column![bar, terminal].into(),
+            }
+        } else {
+            terminal
+        }
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
