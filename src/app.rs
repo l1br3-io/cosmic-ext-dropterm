@@ -7,6 +7,7 @@ use alacritty_terminal::term::{self as aterm, Config as TermConfig};
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
@@ -83,6 +84,11 @@ pub enum Message {
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
+    /// The granted size of the shown surface changed (compositor
+    /// configure after a `set_size`, or the initial configure): the new
+    /// height in logical pixels, used to pin the terminal's height so the
+    /// tab bar keeps its strip.
+    WindowResized(f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
     KeyPressed(Modifiers, Key, cosmic::iced::keyboard::key::Physical),
@@ -147,6 +153,10 @@ pub struct DropTerm {
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
     surface: SurfaceState,
+    /// Granted height of the shown surface, from `WindowResized` events.
+    /// The basis for pinning the terminal widget's height so the tab bar
+    /// gets its strip inside the fixed-size surface.
+    window_height: Option<f32>,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
     /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
@@ -578,6 +588,7 @@ impl Application for DropTerm {
             rename: None,
             rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
+            window_height: None,
             surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
@@ -613,6 +624,9 @@ impl Application for DropTerm {
             )) => Some(Message::LayerUnfocused(layer_id)),
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
+            }
+            Event::Window(cosmic::iced::window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size.height))
             }
             Event::Keyboard(KeyEvent::KeyPressed {
                 key,
@@ -706,9 +720,8 @@ impl Application for DropTerm {
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
             Message::SurfaceOpened(id, size) => {
                 if self.surface == SurfaceState::Measuring(id) {
-                    let height_px = ((size.height * f32::from(self.config.height_percent)) / 100.0)
-                        .round()
-                        .max(1.0) as u32;
+                    let height_px =
+                        surface::surface_height(size.height, self.config.height_percent);
                     self.surface = SurfaceState::Shown(id);
                     return Task::batch([
                         set_anchor(id, surface::edge_anchor(self.config.edge)),
@@ -722,6 +735,9 @@ impl Application for DropTerm {
                         widget::text_input::focus(self.terminal_id.clone()),
                     ]);
                 }
+            }
+            Message::WindowResized(height) => {
+                self.window_height = Some(height);
             }
             Message::LayerFocused(id) => {
                 if self.surface == SurfaceState::Shown(id) {
@@ -836,8 +852,16 @@ impl Application for DropTerm {
         }
 
         let opacity = f32::from(self.config.opacity) / 100.0;
+        // Pin the terminal's height to the granted window minus the bar's
+        // strip: a Fill terminal would claim the bar's space and push it
+        // below the surface (see `surface::terminal_view_height`).
+        let terminal_height = self
+            .window_height
+            .map(|h| Length::Fixed(surface::terminal_view_height(h, self.tabs.len())))
+            .unwrap_or(Length::Fill);
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
+            .height(terminal_height)
             .opacity(opacity)
             .show_headerbar(false)
             .on_middle_click(|| Message::MiddleClick)
@@ -872,9 +896,20 @@ impl Application for DropTerm {
                         .on_unfocus(Message::RenameCancelled),
                 );
             }
+            // Fill dimensions keep iced's flex from deferring the bar
+            // past the terminal's allocation: a Shrink cross-axis makes
+            // the fixed-height, fill-width bar a fourth-pass child, so
+            // the Fill terminal would take the whole surface and push
+            // the bar below its bottom edge.
             match self.config.edge {
-                Edge::Top => widget::column![terminal, bar].into(),
-                Edge::Bottom => widget::column![bar, terminal].into(),
+                Edge::Top => widget::column![terminal, bar]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+                Edge::Bottom => widget::column![bar, terminal]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
             }
         } else {
             terminal

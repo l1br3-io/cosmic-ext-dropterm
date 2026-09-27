@@ -75,3 +75,57 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
         ..SctkLayerSurfaceSettings::default()
     }
 }
+
+/// Fixed pixel height to request for the shown surface: `height_percent`
+/// of the output, bar or no bar. The surface height never changes while
+/// shown — when the tab bar appears, the terminal widget is pinned to
+/// the window height minus the bar (see `terminal_view_height`), so the
+/// bar takes its strip out of the terminal's rows, Yakuake-style, rather
+/// than out of the screen.
+pub fn surface_height(output_height: f32, height_percent: u8) -> u32 {
+    (output_height * f32::from(height_percent) / 100.0)
+        .round()
+        .max(1.0) as u32
+}
+
+/// Height to pin the terminal widget to inside a granted surface of
+/// `window_height` pixels: the whole window with a single tab, minus the
+/// bar's strip once the bar is visible. Pinned as a `Fixed` length (see
+/// `TerminalBox::height`) so the surrounding flex can't hand the terminal
+/// the bar's space and push the bar off the surface.
+pub fn terminal_view_height(window_height: f32, tab_count: usize) -> f32 {
+    let bar = if tab_count > 1 {
+        crate::tab_bar::BAR_HEIGHT
+    } else {
+        0.0
+    };
+    (window_height - bar).max(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_height_is_the_configured_share_of_the_output() {
+        assert_eq!(surface_height(1440.0, 40), 576);
+        assert_eq!(surface_height(1440.0, 100), 1440);
+    }
+
+    #[test]
+    fn surface_height_never_rounds_below_one_pixel() {
+        assert_eq!(surface_height(1440.0, 0), 1);
+    }
+
+    #[test]
+    fn terminal_view_height_yields_the_bar_its_strip() {
+        assert_eq!(terminal_view_height(563.0, 1), 563.0);
+        assert_eq!(terminal_view_height(563.0, 2), 563.0 - 32.0);
+        assert_eq!(terminal_view_height(595.0, 7), 563.0);
+    }
+
+    #[test]
+    fn terminal_view_height_never_pinches_below_one_pixel() {
+        assert_eq!(terminal_view_height(20.0, 2), 1.0);
+    }
+}

@@ -151,6 +151,11 @@ pub struct TerminalBox<'a, Message> {
     key_binds: &'a HashMap<KeyBind, Action>,
     sharp_corners: bool,
     disabled: bool,
+    /// Main-axis height strategy. Defaults to `Fill`; the drop-down pins
+    /// a `Fixed` height so the tab bar below the terminal keeps its own
+    /// space inside the fixed-size layer surface regardless of how the
+    /// surrounding flex distributes leftovers.
+    height: Length,
 }
 
 impl<'a, Message> TerminalBox<'a, Message>
@@ -176,6 +181,7 @@ where
             on_window_unfocused: None,
             sharp_corners: false,
             disabled: false,
+            height: Length::Fill,
         }
     }
 
@@ -226,6 +232,12 @@ where
 
     pub fn sharp_corners(mut self, sharp_corners: bool) -> Self {
         self.sharp_corners = sharp_corners;
+        self
+    }
+
+    /// Pins the widget's height strategy. See the field docs.
+    pub fn height(mut self, height: Length) -> Self {
+        self.height = height;
         self
     }
 
@@ -319,7 +331,7 @@ where
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
+        Size::new(Length::Fill, self.height)
     }
 
     fn layout(
@@ -328,7 +340,7 @@ where
         _renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.width(Length::Fill).height(Length::Fill);
+        let limits = limits.width(Length::Fill).height(self.height);
 
         let mut terminal = self.terminal.lock().unwrap();
 
@@ -352,7 +364,7 @@ where
             let height = layout_lines as f32 * buffer.metrics().line_height;
             let size = Size::new(limits.max().width, height);
 
-            layout::Node::new(limits.resolve(Length::Fill, Length::Fill, size))
+            layout::Node::new(limits.resolve(Length::Fill, self.height, size))
         })
     }
 
