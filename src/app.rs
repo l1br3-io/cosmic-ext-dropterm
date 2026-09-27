@@ -249,10 +249,16 @@ impl DropTerm {
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
+        // Hiding must work even before a terminal exists (the first-run dead
+        // end this fixes: `cargo run` opens a surface with no way to close it).
+        if action == Action::Hide {
+            return self.hide();
+        }
         let Some(terminal) = &self.terminal else {
             return Task::none();
         };
         match action {
+            Action::Hide => unreachable!("handled above"),
             Action::Copy => {
                 let selected = terminal.lock().unwrap().term.lock().selection_to_string();
                 if let Some(text) = selected {

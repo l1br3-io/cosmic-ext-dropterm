@@ -50,6 +50,7 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     map.insert(bind(&[Modifier::Ctrl], "+"), Action::ZoomIn);
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
+    map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
     map
 }
 
@@ -106,6 +107,29 @@ mod tests {
         let binds = default_key_binds();
         assert_eq!(
             matched_action(&binds, Modifiers::CTRL, &Key::Character("c".into()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_q_hides() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("q".into()),
+                None,
+            ),
+            Some(Action::Hide)
+        );
+    }
+
+    #[test]
+    fn bare_escape_is_not_bound() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::empty(), &Key::Named(Named::Escape), None,),
             None
         );
     }

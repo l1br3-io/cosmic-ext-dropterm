@@ -67,6 +67,7 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    Hide,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);
