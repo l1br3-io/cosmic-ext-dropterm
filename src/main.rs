@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod keybinds;
 mod surface;
+mod tabs;
 mod terminal;
 
 use clap::Parser;

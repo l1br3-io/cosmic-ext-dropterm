@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
@@ -24,7 +23,8 @@ use tokio::sync::mpsc;
 use crate::config::{CONFIG_VERSION, DropTermConfig};
 use crate::keybinds::{self, default_key_binds};
 use crate::surface;
-use crate::terminal::{self, Action, TabId, Terminal, TerminalBox, TerminalOptions, theme_source};
+use crate::tabs::{self, Tab, TabId};
+use crate::terminal::{self, Action, Terminal, TerminalBox, TerminalOptions, theme_source};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -101,7 +101,12 @@ pub struct DropTerm {
     #[allow(dead_code)]
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
-    terminal: Option<Mutex<Terminal>>,
+    /// The overlay's terminals in tab order. Never empty while a surface
+    /// is shown: closing the last tab respawns a fresh one (see the tabs
+    /// spec).
+    tabs: Vec<Tab>,
+    /// Index into `tabs` of the focused tab.
+    active_tab: usize,
     terminal_id: widget::Id,
     term_event_tx: Option<mpsc::UnboundedSender<(TabId, TermEvent)>>,
     /// Source of monotonically increasing tab ids, never reused within a
@@ -118,6 +123,11 @@ pub struct DropTerm {
 }
 
 impl DropTerm {
+    /// The active tab, when any tab exists.
+    fn active(&self) -> Option<&Tab> {
+        self.tabs.get(self.active_tab)
+    }
+
     fn terminal_options(&self) -> TerminalOptions {
         TerminalOptions {
             font_size: self.config.font_size,
@@ -141,6 +151,16 @@ impl DropTerm {
         })
     }
 
+    /// Applies the current config and theme to every tab's terminal.
+    fn apply_config_to_tabs(&mut self) {
+        self.refresh_window_bg_color();
+        let options = self.terminal_options();
+        let colors = self.active_colors();
+        for tab in &self.tabs {
+            tab.terminal.lock().unwrap().set_config(&options, colors);
+        }
+    }
+
     /// Mirrors cosmic-term's own `update_config`: the effective window
     /// background color is a process-global (`terminal::WINDOW_BG_COLOR`)
     /// used as a fallback wherever a color scheme leaves "background"
@@ -157,16 +177,7 @@ impl DropTerm {
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
-    fn apply_config_to_terminal(&mut self) {
-        self.refresh_window_bg_color();
-        let options = self.terminal_options();
-        let colors = self.active_colors();
-        if let Some(terminal) = &self.terminal {
-            terminal.lock().unwrap().set_config(&options, colors);
-        }
-    }
-
-    fn spawn_terminal(&mut self) -> Option<Mutex<Terminal>> {
+    fn spawn_tab(&mut self) -> Option<Tab> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
@@ -196,7 +207,7 @@ impl DropTerm {
             &self.terminal_options(),
             self.active_colors(),
         ) {
-            Ok(terminal) => Some(Mutex::new(terminal)),
+            Ok(terminal) => Some(Tab::new(tab_id, terminal)),
             Err(err) => {
                 log::error!("failed to spawn shell: {err}");
                 None
@@ -204,9 +215,12 @@ impl DropTerm {
         }
     }
 
-    fn ensure_terminal(&mut self) {
-        if self.terminal.is_none() {
-            self.terminal = self.spawn_terminal();
+    /// Guarantees at least one tab exists, spawning a fresh one if needed.
+    fn ensure_tabs(&mut self) {
+        if self.tabs.is_empty()
+            && let Some(tab) = self.spawn_tab()
+        {
+            self.active_tab = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
         }
     }
 
@@ -214,7 +228,7 @@ impl DropTerm {
         if !matches!(self.surface, SurfaceState::Hidden) {
             return Task::none();
         }
-        self.ensure_terminal();
+        self.ensure_tabs();
         let id = window::Id::unique();
         self.surface = SurfaceState::Measuring(id);
         self.surface_focused = false;
@@ -227,8 +241,8 @@ impl DropTerm {
             SurfaceState::Hidden => Task::none(),
         };
         self.surface = SurfaceState::Hidden;
-        if let Some(terminal) = &self.terminal {
-            terminal.lock().unwrap().set_focused(false);
+        if let Some(tab) = self.active() {
+            tab.terminal.lock().unwrap().set_focused(false);
         }
         task
     }
@@ -238,8 +252,8 @@ impl DropTerm {
     /// focus latch so a stray unfocus before any focus (possible with
     /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface.
     fn focus_lost(&mut self) -> Task<Message> {
-        if let Some(terminal) = &self.terminal {
-            terminal.lock().unwrap().set_focused(false);
+        if let Some(tab) = self.active() {
+            tab.terminal.lock().unwrap().set_focused(false);
         }
         if self.config.hide_on_focus_loss && self.surface_focused {
             self.surface_focused = false;
@@ -283,19 +297,31 @@ impl DropTerm {
         if action == Action::Hide {
             return self.hide();
         }
-        let Some(terminal) = &self.terminal else {
+        let Some(tab) = self.active() else {
             return Task::none();
         };
         match action {
             Action::Hide => unreachable!("handled above"),
             Action::Copy => {
-                let selected = terminal.lock().unwrap().term.lock().selection_to_string();
+                let selected = tab
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .term
+                    .lock()
+                    .selection_to_string();
                 if let Some(text) = selected {
                     return clipboard::write(text);
                 }
             }
             Action::CopyPrimary => {
-                let selected = terminal.lock().unwrap().term.lock().selection_to_string();
+                let selected = tab
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .term
+                    .lock()
+                    .selection_to_string();
                 if let Some(text) = selected {
                     return clipboard::write_primary(text);
                 }
@@ -309,10 +335,10 @@ impl DropTerm {
                     .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
             }
             Action::SelectAll => {
-                terminal.lock().unwrap().select_all();
+                tab.terminal.lock().unwrap().select_all();
             }
             Action::ClearScrollback => {
-                terminal
+                tab.terminal
                     .lock()
                     .unwrap()
                     .term
@@ -321,7 +347,7 @@ impl DropTerm {
                     .clear_history();
             }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
-                let mut terminal = terminal.lock().unwrap();
+                let mut terminal = tab.terminal.lock().unwrap();
                 let adj = match action {
                     Action::ZoomIn => terminal.zoom_adj().saturating_add(1),
                     Action::ZoomOut => terminal.zoom_adj().saturating_sub(1),
@@ -388,7 +414,8 @@ impl Application for DropTerm {
             core,
             config_handler,
             config,
-            terminal: None,
+            tabs: Vec::new(),
+            active_tab: 0,
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
             next_tab_id: 0,
@@ -492,7 +519,7 @@ impl Application for DropTerm {
         _keys: &[&'static str],
         _new_theme: &cosmic::cosmic_theme::Theme,
     ) -> Task<Self::Message> {
-        self.apply_config_to_terminal();
+        self.apply_config_to_tabs();
         Task::none()
     }
 
@@ -501,7 +528,7 @@ impl Application for DropTerm {
         _keys: &[&'static str],
         _new_theme: &cosmic::cosmic_theme::ThemeMode,
     ) -> Task<Self::Message> {
-        self.apply_config_to_terminal();
+        self.apply_config_to_tabs();
         Task::none()
     }
 
@@ -510,12 +537,12 @@ impl Application for DropTerm {
             Message::ToggleAction(action) => return self.debounced_toggle(action),
             Message::ConfigChanged(config) => {
                 self.config = config;
-                self.apply_config_to_terminal();
+                self.apply_config_to_tabs();
             }
             Message::TermEventTx(tx) => {
                 if self.term_event_tx.is_none() {
                     self.term_event_tx = Some(tx);
-                    self.ensure_terminal();
+                    self.ensure_tabs();
                 }
             }
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
@@ -541,8 +568,8 @@ impl Application for DropTerm {
             Message::LayerFocused(id) => {
                 if self.surface == SurfaceState::Shown(id) {
                     self.surface_focused = true;
-                    if let Some(terminal) = &self.terminal {
-                        terminal.lock().unwrap().set_focused(true);
+                    if let Some(tab) = self.active() {
+                        tab.terminal.lock().unwrap().set_focused(true);
                     }
                     return widget::text_input::focus(self.terminal_id.clone());
                 }
@@ -561,8 +588,8 @@ impl Application for DropTerm {
             }
             Message::WindowFocused => {
                 self.surface_focused = true;
-                if let Some(terminal) = &self.terminal {
-                    terminal.lock().unwrap().set_focused(true);
+                if let Some(tab) = self.active() {
+                    tab.terminal.lock().unwrap().set_focused(true);
                 }
             }
             Message::WindowUnfocused => return self.focus_lost(),
@@ -576,8 +603,8 @@ impl Application for DropTerm {
                 }
             }
             Message::ClipboardPasted(text) | Message::ClipboardPastedPrimary(text) => {
-                if let (Some(text), Some(terminal)) = (text, &self.terminal) {
-                    terminal.lock().unwrap().paste(text);
+                if let (Some(text), Some(tab)) = (text, self.active()) {
+                    tab.terminal.lock().unwrap().paste(text);
                 }
             }
         }
@@ -589,7 +616,7 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
-        let Some(terminal) = &self.terminal else {
+        let Some(tab) = self.active() else {
             return widget::text("").into();
         };
         if !matches!(&self.surface, SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) if *shown == id)
@@ -598,7 +625,7 @@ impl Application for DropTerm {
         }
 
         let opacity = f32::from(self.config.opacity) / 100.0;
-        TerminalBox::new(terminal, &self.key_binds)
+        TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
             .opacity(opacity)
             .show_headerbar(false)
@@ -625,10 +652,12 @@ impl Application for DropTerm {
 }
 
 impl DropTerm {
-    fn handle_term_event(&mut self, _tab_id: TabId, event: TermEvent) -> Task<Message> {
-        // Single tab for now: every tag refers to the only terminal, so
-        // behavior matches v1. The tab-list lookup keyed by this id lands
-        // with the tabs module.
+    fn handle_term_event(&mut self, tab_id: TabId, event: TermEvent) -> Task<Message> {
+        let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            // Events for a tab that is already gone (e.g. a trailing
+            // Wakeup after its shell exited) have no target.
+            return Task::none();
+        };
         match event {
             TermEvent::Bell | TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
@@ -650,38 +679,41 @@ impl DropTerm {
                 aterm::ClipboardType::Selection => return clipboard::write_primary(data),
             },
             TermEvent::ColorRequest(index, format) => {
-                if let Some(terminal) = &self.terminal {
-                    let terminal = terminal.lock().unwrap();
-                    let rgb = terminal.effective_color(index);
-                    terminal.input_no_scroll(format(rgb).into_bytes());
-                }
+                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
+                let rgb = terminal.effective_color(index);
+                terminal.input_no_scroll(format(rgb).into_bytes());
             }
             TermEvent::PtyWrite(text) => {
-                if let Some(terminal) = &self.terminal {
-                    terminal.lock().unwrap().input_no_scroll(text.into_bytes());
-                }
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .input_no_scroll(text.into_bytes());
             }
             TermEvent::TextAreaSizeRequest(format) => {
-                if let Some(terminal) = &self.terminal {
-                    let terminal = terminal.lock().unwrap();
-                    let text = format(terminal.size().into());
-                    terminal.input_no_scroll(text.into_bytes());
-                }
+                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
+                let text = format(terminal.size().into());
+                terminal.input_no_scroll(text.into_bytes());
             }
             TermEvent::Title(_) | TermEvent::ResetTitle => {
-                // No window decorations to set a title on (see the README's
-                // known-risks section on layer-shell surfaces).
+                // Wired to the tab model's titles with the tab lifecycle
+                // task; nothing to do today (no window decorations either,
+                // see the README's known-risks section).
             }
             TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
-                if let Some(terminal) = &self.terminal {
-                    terminal.lock().unwrap().needs_update = true;
-                }
+                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
             }
             TermEvent::Exit => {
                 // Respawn immediately rather than waiting for the next
                 // Show, so a shell exited while visible doesn't leave a
-                // dead terminal on screen.
-                self.terminal = self.spawn_terminal();
+                // dead terminal on screen. This is v1's single-terminal
+                // respawn translated to the tab list: the exited tab is
+                // replaced by a fresh spawn in place. The
+                // close-last-respawns decision helpers land with the tab
+                // lifecycle task.
+                if let Some(fresh) = self.spawn_tab() {
+                    self.tabs[tab_index] = fresh;
+                }
             }
         }
         Task::none()

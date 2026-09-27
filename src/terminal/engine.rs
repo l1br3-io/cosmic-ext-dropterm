@@ -52,6 +52,7 @@ use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
+use crate::tabs::TabId;
 use crate::terminal::mouse_reporter::MouseReporter;
 
 /// Runtime font and rendering options for a [`Terminal`].
@@ -150,11 +151,6 @@ impl From<Size> for WindowSize {
         }
     }
 }
-
-/// Unique identifier for a tab, monotonically increasing and never reused
-/// while the app runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TabId(pub u32);
 
 /// Forwards alacritty terminal events into the app's global event channel,
 /// stamping each one with the id of the tab that produced it.
