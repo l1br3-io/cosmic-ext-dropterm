@@ -3,6 +3,26 @@
 Tracks the feature list from the project requirements against what this
 repository actually implements.
 
+## Now - priority
+
+DropTerm has no way to dismiss the overlay from inside it. Hiding only works
+by launching the binary a second time (toggle) or via a bound COSMIC custom
+shortcut, and `hide_on_focus_loss` defaults to `false`. Neither is set up on a
+fresh run, so `cargo run` opens a surface with no affordance to close it. Fix
+this before anything else.
+
+Specced in [SPEC-dismiss.md](SPEC-dismiss.md). Key decisions: dismiss key is
+`Ctrl+Shift+Q` only - bare `Escape` keeps falling through to the shell so TUI
+apps (vim/less) keep working; `hide_on_focus_loss` flips to `true` by default.
+
+- [ ] In-app dismiss: add an `Action::Hide`, bind `Ctrl+Shift+Q`, and hide
+      even when no terminal is running
+- [ ] Flip `hide_on_focus_loss` to default `true` so out-of-the-box behavior
+      matches Yakuake/Guake (click away to hide); guard with a focus latch so
+      the surface can't open-then-instantly-close
+- [ ] Document the run-locally-without-a-shortcut flow in the README so the
+      overlay can always be dismissed
+
 ## v1 - MVP
 
 - [x] Toggle via second launch of the binary
