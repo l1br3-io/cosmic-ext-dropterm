@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The fixed set of app-level keyboard shortcuts.
+//!
+//! Unlike cosmic-term, these are not user-customizable in v1 (there is no
+//! shortcuts settings page yet - see the ROADMAP's "Later" section). The
+//! `TerminalBox` widget only uses this map to decide which key presses to
+//! swallow instead of sending to the shell; the actual behavior for a
+//! matched [`Action`] is applied in `App::update`.
+
+use std::collections::HashMap;
+
+use cosmic::iced::keyboard::key::{Named, Physical};
+use cosmic::iced::keyboard::{Key, Modifiers};
+use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
+
+use crate::terminal::Action;
+
+fn bind(modifiers: &[Modifier], key: &str) -> KeyBind {
+    KeyBind {
+        modifiers: modifiers.to_vec(),
+        key: Key::Character(key.into()),
+    }
+}
+
+fn bind_named(modifiers: &[Modifier], key: Named) -> KeyBind {
+    KeyBind {
+        modifiers: modifiers.to_vec(),
+        key: Key::Named(key),
+    }
+}
+
+pub fn default_key_binds() -> HashMap<KeyBind, Action> {
+    let mut map = HashMap::new();
+    map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "c"), Action::Copy);
+    map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "v"), Action::Paste);
+    map.insert(
+        bind_named(&[Modifier::Shift], Named::Insert),
+        Action::PastePrimary,
+    );
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "a"),
+        Action::SelectAll,
+    );
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "k"),
+        Action::ClearScrollback,
+    );
+    map.insert(bind(&[Modifier::Ctrl], "="), Action::ZoomIn);
+    map.insert(bind(&[Modifier::Ctrl], "+"), Action::ZoomIn);
+    map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
+    map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
+    map
+}
+
+/// Whether the given key press matches a bound [`Action`], returning it if so.
+///
+/// `physical_key` should be forwarded from the same key-press event as
+/// `key`: it lets a bind still match on non-Latin keyboard layouts, the
+/// same fallback `TerminalBox` itself uses to decide which presses to
+/// swallow instead of sending to the shell (see `KeyBind::matches`).
+/// Passing `None` here while the widget passes `Some` would let it swallow
+/// a key press that this function then fails to match, silently eating
+/// the keystroke.
+pub fn matched_action(
+    key_binds: &HashMap<KeyBind, Action>,
+    modifiers: Modifiers,
+    key: &Key,
+    physical_key: Option<&Physical>,
+) -> Option<Action> {
+    key_binds
+        .iter()
+        .find(|(bind, _)| bind.matches(modifiers, key, physical_key))
+        .map(|(_, action)| *action)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_and_paste_are_bound() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("c".into()),
+                None,
+            ),
+            Some(Action::Copy)
+        );
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("v".into()),
+                None,
+            ),
+            Some(Action::Paste)
+        );
+    }
+
+    #[test]
+    fn unbound_key_does_not_match() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("c".into()), None),
+            None
+        );
+    }
+}

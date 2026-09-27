@@ -1,0 +1,43 @@
+[package]
+name = "cosmic-ext-dropterm"
+version = "0.1.0"
+authors = ["l1br3-io"]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.93"
+description = "A native, Yakuake/Guake-style drop-down terminal for the COSMIC desktop"
+repository = "https://github.com/l1br3-io/cosmic-ext-dropterm"
+
+[[bin]]
+name = "cosmic-ext-dropterm"
+path = "src/main.rs"
+
+[dependencies]
+alacritty_terminal = "0.25.1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+indexmap = "2"
+log = "0.4"
+open = "5.3.2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+
+[dependencies.cosmic-text]
+version = "0.19"
+features = ["monospace_fallback", "shape-run-cache"]
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+rev = "08a09e3dfa1f729d52585fcedd6e731130235363"
+default-features = false
+features = ["wayland", "wgpu", "tokio", "dbus-config", "single-instance"]
+
+[profile.release]
+lto = true
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+lto = false
+strip = false
+debug = true
