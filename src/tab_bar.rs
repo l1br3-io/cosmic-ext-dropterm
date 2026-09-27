@@ -17,6 +17,14 @@
 //! the bar only positions it, classifies the double-click, and reports
 //! presses outside the input so the app can end the session.
 //!
+//! Drag reorder (tabs spec, T7): a left press on a tab body that moves
+//! past a small threshold drags the tab horizontally. iced has no
+//! first-class drag API, so the bar tracks press/move/release itself —
+//! the state machine of iced's own text editor (pinned rev `08a09e3`,
+//! `widget/text_editor.rs`). [`drop_index`] and [`indicator_x`] decide
+//! from plain geometry where a drag would land; the release reports the
+//! drop, which the app applies via [`crate::tabs::reorder_tabs`].
+//!
 //! Colors mirror the `TabBar` preset of libcosmic's own
 //! `theme/style/segmented_button.rs` (pinned rev `08a09e3`): the active
 //! tab is `neutral_5` at 0.2 alpha with the accent text color and
@@ -87,6 +95,18 @@ const METRICS: BarMetrics = BarMetrics {
 
 /// Title text size in logical pixels.
 const TITLE_FONT_SIZE: f32 = 14.0;
+
+/// How far the cursor must travel horizontally from the press before a
+/// held press on a tab body counts as a drag (T7) rather than a click.
+/// Matches the movement threshold of iced's own click classification
+/// (pinned rev `08a09e3`, `mouse/click.rs`: `distance < 6.0`).
+const DRAG_THRESHOLD: f32 = 6.0;
+
+/// Width of the drop indicator line, in logical pixels.
+const DROP_INDICATOR_WIDTH: f32 = 2.0;
+
+/// Vertical inset of the drop indicator from the bar's top and bottom.
+const DROP_INDICATOR_INSET: f32 = 4.0;
 
 /// The rendered geometry of one tab button.
 struct ButtonGeometry {
@@ -175,6 +195,54 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
     })
 }
 
+/// Where a horizontal drag of the tab at `dragged` would drop if released
+/// at bar-local `x`: the number of *other* buttons whose center the cursor
+/// has passed. A tab must be dragged past a neighbor's center to move by
+/// it, so the result is always a valid index of the reordered list.
+fn drop_index(buttons: &[ButtonGeometry], dragged: usize, x: f32) -> usize {
+    buttons
+        .iter()
+        .enumerate()
+        .filter(|(index, button)| *index != dragged && button.bounds.center_x() < x)
+        .count()
+}
+
+/// Bar-local x of the drop indicator for a drag of `dragged` landing at
+/// slot `drop`: the left edge (minus half the gap) of the button that will
+/// follow the drop slot once the dragged button leaves the row, or half a
+/// gap past the row's right edge when the drag appends at the end.
+fn indicator_x(buttons: &[ButtonGeometry], dragged: usize, drop: usize, gap: f32) -> f32 {
+    // The row as it will look while the dragged button is gone: the
+    // button at `drop` in that row follows the slot the drop creates.
+    let following = buttons
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != dragged)
+        .nth(drop);
+    match following {
+        Some((_, button)) => button.bounds.x - gap / 2.0,
+        None => buttons
+            .last()
+            .map(|button| button.bounds.x + button.bounds.width + gap / 2.0)
+            .unwrap_or(0.0),
+    }
+}
+
+/// An in-progress tab drag (tabs spec, T7): the tab whose button the
+/// press landed on, where that press started, and — once the press moved
+/// past [`DRAG_THRESHOLD`] — the last bar-local x the cursor was seen at.
+/// The state machine follows iced's own text editor (pinned rev
+/// `08a09e3`): record on press, drag on move, finish on release.
+struct Drag {
+    tab: TabId,
+    /// Bar-local press position.
+    origin: Point,
+    /// Whether the press has crossed the drag threshold yet.
+    started: bool,
+    /// Last bar-local cursor x, driving the drop indicator.
+    x: f32,
+}
+
 /// Per-widget state: the title paragraphs, cached across frames and
 /// rebuilt whenever a tab's title changes (measured once, then reused by
 /// layout, hit-testing and drawing), plus the last tab-body click for
@@ -183,6 +251,7 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
     click: Option<click::Click>,
+    drag: Option<Drag>,
 }
 
 /// The tab bar: one button per tab — title plus a close `×` — rendered by
@@ -197,6 +266,9 @@ pub struct TabBar<'a, Message> {
     active: usize,
     on_select: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
     on_close: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
+    /// Reports a completed drag (T7): the dragged tab's id and the index
+    /// it was dropped at in the current list.
+    on_move: Option<Box<dyn Fn(TabId, usize) -> Message + 'a>>,
     on_rename: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
     /// Reports a press outside the rename input while a rename is active
     /// (T6): iced inputs keep keyboard focus on outside presses, so the
@@ -219,6 +291,7 @@ where
             active,
             on_select: None,
             on_close: None,
+            on_move: None,
             on_rename: None,
             on_rename_end: None,
             rename: None,
@@ -235,6 +308,13 @@ where
     /// or a middle-click anywhere on the tab.
     pub fn on_close(mut self, on_close: impl Fn(TabId) -> Message + 'a) -> Self {
         self.on_close = Some(Box::new(on_close));
+        self
+    }
+
+    /// Sets the message published when a tab drag completes (T7): the
+    /// dragged tab is dropped at the given index of the current list.
+    pub fn on_move(mut self, on_move: impl Fn(TabId, usize) -> Message + 'a) -> Self {
+        self.on_move = Some(Box::new(on_move));
         self
     }
 
@@ -370,6 +450,10 @@ where
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
+        // An active drag grabs the cursor wherever it roams (T7).
+        if state.drag.as_ref().is_some_and(|drag| drag.started) {
+            return mouse::Interaction::Grabbing;
+        }
         let hit = cursor_position
             .position_in(layout.bounds())
             .and_then(|point| hit_test(&self.button_geometry(state, layout.bounds()), point));
@@ -393,10 +477,51 @@ where
     ) {
         // Left-click: tab body selects, close button closes. Middle-click
         // closes whichever part of the button it lands on (Yakuake-style).
-        // A double-click on a tab body starts an inline rename (T6), and
-        // any press outside the rename input ends one.
+        // A double-click on a tab body starts an inline rename (T6), any
+        // press outside the rename input ends one, and a left press on a
+        // tab body that moves beyond a small threshold drags it (T7).
         let button = match event {
             Event::Mouse(MouseEvent::ButtonPressed(button)) => *button,
+            Event::Mouse(MouseEvent::CursorMoved { position }) => {
+                // Drag progress (T7): once the press crossed the
+                // threshold, follow the cursor's bar-local x. The release
+                // may land outside the bar — iced's column routes events
+                // to every child, whatever the cursor is over — so this
+                // is the position the drop is decided from.
+                let origin = layout.bounds().position();
+                let local = Point::new(position.x - origin.x, position.y - origin.y);
+                let Some(drag) = tree.state.downcast_mut::<State>().drag.as_mut() else {
+                    return;
+                };
+                if !drag.started && (local.x - drag.origin.x).abs() < DRAG_THRESHOLD {
+                    return;
+                }
+                drag.started = true;
+                drag.x = local.x;
+                return;
+            }
+            Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
+                // Drag finish (T7): a plain click already selected on
+                // press, so only a drag that crossed the threshold
+                // reports a move, dropped wherever the indicator last was.
+                let state = tree.state.downcast_mut::<State>();
+                let Some(drag) = state.drag.take() else {
+                    return;
+                };
+                if !drag.started {
+                    return;
+                }
+                let Some(index) = self.tabs.iter().position(|tab| tab.id == drag.tab) else {
+                    return;
+                };
+                let buttons = self.button_geometry(state, layout.bounds());
+                let to = drop_index(&buttons, index, drag.x);
+                if let Some(message) = self.on_move.as_ref().map(|on_move| on_move(drag.tab, to)) {
+                    shell.publish(message);
+                    shell.capture_event();
+                }
+                return;
+            }
             _ => return,
         };
 
@@ -450,6 +575,19 @@ where
                 shell.capture_event();
                 return;
             }
+        }
+
+        // A single left press on a tab body arms a potential drag (T7):
+        // the press selects now, and crossing [`DRAG_THRESHOLD`] while
+        // held turns it into a reorder — the native tab bar split between
+        // click and drag.
+        if !on_close {
+            state.drag = Some(Drag {
+                tab: tab.id,
+                origin: point,
+                started: false,
+                x: point.x,
+            });
         }
 
         let handler = if on_close {
@@ -595,6 +733,38 @@ where
                 close.position(),
                 text_color,
                 close,
+            );
+        }
+
+        // Drop indicator (T7): a vertical accent line in the slot the
+        // drag currently lands in, between the buttons that would
+        // surround the dragged tab once it leaves the row.
+        if let Some(drag) = state.drag.as_ref().filter(|drag| drag.started)
+            && let Some(index) = self.tabs.iter().position(|tab| tab.id == drag.tab)
+        {
+            let drop = drop_index(&buttons, index, drag.x);
+            let x = origin.x + indicator_x(&buttons, index, drop, METRICS.button_gap);
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(
+                        Point::new(
+                            x - DROP_INDICATOR_WIDTH / 2.0,
+                            origin.y + DROP_INDICATOR_INSET,
+                        ),
+                        Size::new(
+                            DROP_INDICATOR_WIDTH,
+                            METRICS.bar_height - DROP_INDICATOR_INSET * 2.0,
+                        ),
+                    ),
+                    border: Border {
+                        radius: (DROP_INDICATOR_WIDTH / 2.0).into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color::from(cosmic_theme.accent_color()),
             );
         }
     }
@@ -847,5 +1017,71 @@ mod tests {
     #[test]
     fn hit_test_on_an_empty_bar_misses() {
         assert_eq!(hit_test(&[], Point::new(5.0, 5.0)), None);
+    }
+
+    #[test]
+    fn drop_index_left_of_the_row_drops_first() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        assert_eq!(drop_index(&buttons, 0, -10.0), 0);
+    }
+
+    #[test]
+    fn drop_index_holding_a_neighbors_left_half_keeps_the_slot() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // x = 100 sits inside button 1, left of its center (149): the
+        // cursor has not passed any other button's center yet.
+        assert_eq!(drop_index(&buttons, 0, 100.0), 0);
+    }
+
+    #[test]
+    fn drop_index_counts_only_the_neighbors_passed() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // Past button 1's center (149) but not button 2's (253).
+        assert_eq!(drop_index(&buttons, 0, 180.0), 1);
+        // Past every other button's center.
+        assert_eq!(drop_index(&buttons, 0, 260.0), 2);
+    }
+
+    #[test]
+    fn drop_index_skips_the_dragged_button_itself() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // Dragging the middle tab from within its own span: only button 0
+        // was passed, so the drop slot still holds its own position.
+        assert_eq!(drop_index(&buttons, 1, 180.0), 1);
+        // Past button 2's center, the middle tab drops last.
+        assert_eq!(drop_index(&buttons, 1, 260.0), 2);
+    }
+
+    #[test]
+    fn drop_index_beyond_the_row_drops_last() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        assert_eq!(drop_index(&buttons, 0, 10_000.0), 2);
+    }
+
+    #[test]
+    fn indicator_x_sits_before_the_button_following_the_drop_slot() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // Dropping tab 0 at slot 1: the row minus tab 0 is [b1, b2], and
+        // the slot's follower is b2, so the indicator precedes b2.
+        assert_eq!(indicator_x(&buttons, 0, 1, M.button_gap), 208.0 - 2.0);
+    }
+
+    #[test]
+    fn indicator_x_dropping_first_precedes_the_row() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        assert_eq!(indicator_x(&buttons, 1, 0, M.button_gap), 0.0 - 2.0);
+    }
+
+    #[test]
+    fn indicator_x_appending_at_the_end_follows_the_row() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // Dropping tab 0 last: with tab 0 gone the row ends at b2's right
+        // edge (298), so the indicator lands half a gap past it.
+        assert_eq!(indicator_x(&buttons, 0, 2, M.button_gap), 298.0 + 2.0);
+    }
+
+    #[test]
+    fn indicator_x_on_an_empty_row_is_the_origin() {
+        assert_eq!(indicator_x(&[], 0, 0, M.button_gap), 0.0);
     }
 }

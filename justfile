@@ -33,9 +33,6 @@ desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
 icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 
-# Default recipe: build in release mode
-default: build-release
-
 # `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`
 check: fmt-check clippy test
 

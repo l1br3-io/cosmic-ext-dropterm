@@ -117,16 +117,33 @@ pub fn cycle_prev<T>(tabs: &[T], active: usize) -> usize {
 
 /// Moves the tab at `from` to `to` and returns the new index of the moved
 /// tab. Indices are bounds-checked by the caller.
-// Consumed by the drag-reorder task (T7); tests keep it exercised until
-// then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by the drag-reorder task (T7)")
-)]
 pub fn move_tab<T>(tabs: &mut Vec<T>, from: usize, to: usize) -> usize {
     let tab = tabs.remove(from);
     tabs.insert(to, tab);
     to
+}
+
+/// Applies a completed tab drag (tabs spec, T7): moves the tab at `from`
+/// to `to` and returns the index the previously active tab landed at, so
+/// the same tab stays active whichever tab was dragged. The resulting
+/// order is the one `session-persistence` will save (see the tabs spec's
+/// interface note). Out-of-range indices leave the list untouched.
+pub fn reorder_tabs<T>(tabs: &mut Vec<T>, active: usize, from: usize, to: usize) -> usize {
+    if tabs.is_empty() || from >= tabs.len() || to >= tabs.len() {
+        return active.min(tabs.len().saturating_sub(1));
+    }
+    move_tab(tabs, from, to);
+    // The active tab itself was dragged, or a tab moved from one side of
+    // it to the other, shifting it by one; otherwise it keeps its index.
+    if active == from {
+        to
+    } else if from < active && active <= to {
+        active - 1
+    } else if to <= active && active < from {
+        active + 1
+    } else {
+        active
+    }
 }
 
 /// The default title for a newly created tab: `Terminal N`, numbered from
@@ -280,6 +297,56 @@ mod tests {
         let new_index = move_tab(&mut list, 2, 0);
         assert_eq!(list, vec![30, 10, 20]);
         assert_eq!(new_index, 0);
+    }
+
+    #[test]
+    fn reorder_tabs_moves_the_dragged_tab_and_keeps_it_active() {
+        let mut list = vec![10, 20, 30];
+        let active = reorder_tabs(&mut list, 0, 0, 2);
+        assert_eq!(list, vec![20, 30, 10]);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn reorder_tabs_keeps_a_later_active_tab_its_index() {
+        // Dragging tab 0 between tabs 1 and 2 does not disturb tab 30.
+        let mut list = vec![10, 20, 30];
+        let active = reorder_tabs(&mut list, 2, 0, 1);
+        assert_eq!(list, vec![20, 10, 30]);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn reorder_tabs_shifts_active_when_a_later_tab_lands_before_it() {
+        // Dragging tab 2 to the front pushes the active tab 10 to index 1.
+        let mut list = vec![10, 20, 30];
+        let active = reorder_tabs(&mut list, 0, 2, 0);
+        assert_eq!(list, vec![30, 10, 20]);
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn reorder_tabs_shifts_active_when_an_earlier_tab_lands_after_it() {
+        // Dragging tab 0 to the end pulls the active tab 20 up to index 0.
+        let mut list = vec![10, 20, 30];
+        let active = reorder_tabs(&mut list, 1, 0, 2);
+        assert_eq!(list, vec![20, 30, 10]);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn reorder_tabs_to_the_same_index_is_a_no_op() {
+        let mut list = vec![10, 20, 30];
+        let active = reorder_tabs(&mut list, 1, 1, 1);
+        assert_eq!(list, vec![10, 20, 30]);
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn reorder_tabs_ignores_out_of_range_indices() {
+        let mut list = vec![10, 20];
+        assert_eq!(reorder_tabs(&mut list, 0, 5, 0), 0);
+        assert_eq!(list, vec![10, 20]);
     }
 
     #[test]

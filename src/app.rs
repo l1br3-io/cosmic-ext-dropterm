@@ -105,6 +105,9 @@ pub enum Message {
     /// The rename input was dismissed with Escape or Tab (T6): cancel,
     /// keeping the previous title.
     RenameCancelled,
+    /// A tab was dragged to a new position in the bar (tabs spec, T7):
+    /// the dragged tab's id and the index it was dropped at.
+    TabMoved(TabId, usize),
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -795,6 +798,16 @@ impl Application for DropTerm {
                 self.rename = None;
                 return widget::text_input::focus(self.terminal_id.clone());
             }
+            Message::TabMoved(id, to) => {
+                // The bar reports the drop as (stable id, target index),
+                // resolved against the current list so a list change
+                // between redraw and release cannot move the wrong tab.
+                // Reordering never changes which tab is active, so no
+                // focus handoff is needed.
+                if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
+                    self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+                }
+            }
             Message::OpenHyperlink(url) => {
                 if let Err(err) = open::that_detached(&url) {
                     log::warn!("failed to open {url:?}: {err}");
@@ -840,6 +853,7 @@ impl Application for DropTerm {
             let mut bar = TabBar::new(&self.tabs, self.active_tab)
                 .on_select(Message::TabSelected)
                 .on_close(Message::TabClosed)
+                .on_move(Message::TabMoved)
                 .on_rename(Message::RenameStarted)
                 .on_rename_end(|| Message::RenameCommitted);
             if let Some(edit) = &self.rename
