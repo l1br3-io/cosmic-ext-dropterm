@@ -94,9 +94,28 @@ pub enum Message {
     /// A tab bar button was closed via its `×` or a middle-click (tabs
     /// spec, T5).
     TabClosed(TabId),
+    /// A tab body was double-clicked: start an inline rename (tabs spec,
+    /// T6).
+    RenameStarted(TabId),
+    /// The rename input's draft changed (T6).
+    RenameDraftChanged(String),
+    /// The rename should commit now (T6): Enter was pressed, a press
+    /// landed outside the input, or the surface lost focus.
+    RenameCommitted,
+    /// The rename input was dismissed with Escape or Tab (T6): cancel,
+    /// keeping the previous title.
+    RenameCancelled,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
+}
+
+/// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
+/// and the current draft. The input itself is an overlay the tab bar
+/// hosts over the renamed tab's button.
+struct RenameEdit {
+    tab: TabId,
+    draft: String,
 }
 
 pub struct DropTerm {
@@ -118,6 +137,12 @@ pub struct DropTerm {
     /// Source of monotonically increasing tab ids, never reused within a
     /// run (see the tabs spec).
     next_tab_id: u32,
+    /// The active inline rename, if any (tabs spec, T6): which tab is
+    /// being renamed and the current draft, mirrored into the input the
+    /// tab bar overlays on the renamed button.
+    rename: Option<RenameEdit>,
+    /// Widget id of the rename input, so focus tasks can target it.
+    rename_input_id: widget::Id,
     surface: SurfaceState,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
@@ -242,6 +267,9 @@ impl DropTerm {
     }
 
     fn hide(&mut self) -> Task<Message> {
+        // Hiding the surface is a focus loss for the rename input (T6):
+        // commit before the surface goes away.
+        let commit = self.commit_pending_rename();
         let task = match self.surface {
             SurfaceState::Measuring(id) | SurfaceState::Shown(id) => destroy_layer_surface(id),
             SurfaceState::Hidden => Task::none(),
@@ -250,7 +278,7 @@ impl DropTerm {
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
-        task
+        Task::batch([commit, task])
     }
 
     /// Handles the surface losing keyboard focus: marks the terminal unfocused
@@ -258,14 +286,17 @@ impl DropTerm {
     /// focus latch so a stray unfocus before any focus (possible with
     /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface.
     fn focus_lost(&mut self) -> Task<Message> {
+        // Losing keyboard focus commits a rename (T6): the input's own
+        // unfocus signal only covers Escape and Tab, which cancel.
+        let commit = self.commit_pending_rename();
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
         if self.config.hide_on_focus_loss && self.surface_focused {
             self.surface_focused = false;
-            return self.hide();
+            return Task::batch([commit, self.hide()]);
         }
-        Task::none()
+        commit
     }
 
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
@@ -395,7 +426,7 @@ impl DropTerm {
                     self.set_active_tab(at);
                 }
             }
-            Action::CloseTab => self.close_tab_at(self.active_tab),
+            Action::CloseTab => return self.close_tab_at(self.active_tab),
             Action::NextTab => {
                 self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
             }
@@ -413,7 +444,7 @@ impl DropTerm {
     /// empty (see the tabs spec). Shared by the close-tab keybind and
     /// by shell exits; `set_focused` reports only real focus changes,
     /// so refocusing a tab that already had focus is a no-op.
-    fn close_tab_at(&mut self, index: usize) {
+    fn close_tab_at(&mut self, index: usize) -> Task<Message> {
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
             if decision.respawn {
@@ -421,6 +452,41 @@ impl DropTerm {
             }
             self.focus_active_tab();
         }
+        // A close can orphan the rename input (T6): its tab may be gone,
+        // or the bar may have vanished with a single tab left. End the
+        // session so the terminal regains keyboard focus.
+        self.prune_rename_session()
+    }
+
+    /// Commits the active inline rename, if any (T6): the draft becomes
+    /// the tab's user rename, the session ends, and focus returns to the
+    /// terminal. Every committing focus-loss path funnels here — Enter,
+    /// a press outside the input, the surface hiding or losing keyboard
+    /// focus — while Escape and Tab cancel instead
+    /// ([`Message::RenameCancelled`]).
+    fn commit_pending_rename(&mut self) -> Task<Message> {
+        if let Some(edit) = self.rename.take() {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == edit.tab) {
+                tabs::commit_rename(&mut tab.title, &mut tab.title_override, &edit.draft);
+            }
+            return widget::text_input::focus(self.terminal_id.clone());
+        }
+        Task::none()
+    }
+
+    /// Ends the active rename when its input can no longer be shown: the
+    /// renamed tab is gone, or the bar is hidden now that a single tab
+    /// remains (T6). Returns the task refocusing the terminal, if a
+    /// session ended.
+    fn prune_rename_session(&mut self) -> Task<Message> {
+        if let Some(edit) = &self.rename {
+            let shown = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.id == edit.tab);
+            if !shown {
+                self.rename = None;
+                return widget::text_input::focus(self.terminal_id.clone());
+            }
+        }
+        Task::none()
     }
 
     /// Switches the active tab to `index`, reporting the focus change to
@@ -506,6 +572,8 @@ impl Application for DropTerm {
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
             next_tab_id: 0,
+            rename: None,
+            rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
             surface_focused: false,
             key_binds: default_key_binds(),
@@ -667,6 +735,14 @@ impl Application for DropTerm {
                 }
             }
             Message::KeyPressed(modifiers, key, physical_key) => {
+                // While an inline rename is active (T6) the rename input
+                // owns the keyboard: without this guard a bound combo
+                // like Ctrl+Shift+V would act on the terminal in
+                // addition to the input. The input handles Enter and
+                // Escape itself; the binds resume once the rename ends.
+                if self.rename.is_some() {
+                    return Task::none();
+                }
                 if let Some(action) =
                     keybinds::matched_action(&self.key_binds, modifiers, &key, Some(&physical_key))
                 {
@@ -694,8 +770,30 @@ impl Application for DropTerm {
             }
             Message::TabClosed(id) => {
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
-                    self.close_tab_at(index);
+                    return self.close_tab_at(index);
                 }
+            }
+            Message::RenameStarted(id) => {
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
+                    let draft = tab.title.clone();
+                    self.rename = Some(RenameEdit { tab: id, draft });
+                    // Focus the input with its value selected,
+                    // Yakuake-style.
+                    return Task::batch([
+                        widget::text_input::focus(self.rename_input_id.clone()),
+                        widget::text_input::select_all(self.rename_input_id.clone()),
+                    ]);
+                }
+            }
+            Message::RenameDraftChanged(value) => {
+                if let Some(edit) = &mut self.rename {
+                    edit.draft = value;
+                }
+            }
+            Message::RenameCommitted => return self.commit_pending_rename(),
+            Message::RenameCancelled => {
+                self.rename = None;
+                return widget::text_input::focus(self.terminal_id.clone());
             }
             Message::OpenHyperlink(url) => {
                 if let Err(err) = open::that_detached(&url) {
@@ -739,9 +837,27 @@ impl Application for DropTerm {
         // surface edge opposite the screen edge (tabs spec): below the
         // terminal when top-anchored, above it when bottom-anchored.
         if self.tabs.len() > 1 {
-            let bar = TabBar::new(&self.tabs, self.active_tab)
+            let mut bar = TabBar::new(&self.tabs, self.active_tab)
                 .on_select(Message::TabSelected)
-                .on_close(Message::TabClosed);
+                .on_close(Message::TabClosed)
+                .on_rename(Message::RenameStarted)
+                .on_rename_end(|| Message::RenameCommitted);
+            if let Some(edit) = &self.rename
+                && self.tabs.iter().any(|tab| tab.id == edit.tab)
+            {
+                // The inline rename input (T6), overlaid by the bar on
+                // the renamed tab's button. Its value mirrors the app's
+                // draft so it survives every re-render.
+                bar = bar.renaming(
+                    edit.tab,
+                    widget::text_input("", edit.draft.clone())
+                        .id(self.rename_input_id.clone())
+                        .size(14.0)
+                        .on_input(Message::RenameDraftChanged)
+                        .on_submit(|_| Message::RenameCommitted)
+                        .on_unfocus(Message::RenameCancelled),
+                );
+            }
             match self.config.edge {
                 Edge::Top => widget::column![terminal, bar].into(),
                 Edge::Bottom => widget::column![bar, terminal].into(),
@@ -832,7 +948,7 @@ impl DropTerm {
                 // A tab whose shell exits is closed; when it was the
                 // last, a fresh tab spawns in its place so the overlay
                 // is never left without a terminal (see the tabs spec).
-                self.close_tab_at(tab_index);
+                return self.close_tab_at(tab_index);
             }
         }
         Task::none()

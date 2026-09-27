@@ -9,6 +9,14 @@
 //! middle-click lands on is unit-testable headless; rendering itself needs
 //! real COSMIC hardware and is covered by the README manual checklist.
 //!
+//! Inline rename (tabs spec, T6): a double-clicked tab body swaps its
+//! button for a real text input, hosted as an overlay exactly over that
+//! button — the delegation pattern of libcosmic's own popover widget
+//! (pinned rev `08a09e3`, `widget/popover.rs`). The input is built by the
+//! app (which knows its messages) and passed in via [`TabBar::renaming`];
+//! the bar only positions it, classifies the double-click, and reports
+//! presses outside the input so the app can end the session.
+//!
 //! Colors mirror the `TabBar` preset of libcosmic's own
 //! `theme/style/segmented_button.rs` (pinned rev `08a09e3`): the active
 //! tab is `neutral_5` at 0.2 alpha with the accent text color and
@@ -18,6 +26,8 @@
 use std::collections::HashMap;
 
 use cosmic::iced::core::alignment;
+use cosmic::iced::core::mouse::click;
+use cosmic::iced::core::overlay;
 use cosmic::iced::core::text::{Ellipsize, LineHeight, Shaping, Wrapping, paragraph};
 use cosmic::iced::core::{
     Border, Shell, Text,
@@ -25,7 +35,7 @@ use cosmic::iced::core::{
     layout::{self, Layout},
     renderer::{self, Quad, Renderer as _},
     text::Renderer as _,
-    widget::{Tree, Widget, tree},
+    widget::{Operation, Tree, Widget, tree},
 };
 use cosmic::iced::{
     Color, Length, Pixels, Point, Rectangle, Size, Vector,
@@ -167,10 +177,12 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
 
 /// Per-widget state: the title paragraphs, cached across frames and
 /// rebuilt whenever a tab's title changes (measured once, then reused by
-/// layout, hit-testing and drawing).
+/// layout, hit-testing and drawing), plus the last tab-body click for
+/// double-click detection (T6).
 #[derive(Default)]
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
+    click: Option<click::Click>,
 }
 
 /// The tab bar: one button per tab — title plus a close `×` — rendered by
@@ -185,6 +197,15 @@ pub struct TabBar<'a, Message> {
     active: usize,
     on_select: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
     on_close: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
+    on_rename: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
+    /// Reports a press outside the rename input while a rename is active
+    /// (T6): iced inputs keep keyboard focus on outside presses, so the
+    /// bar reports the click-away itself. The app maps it to a commit.
+    on_rename_end: Option<Box<dyn Fn() -> Message + 'a>>,
+    /// The active inline rename (T6): which tab is being renamed and the
+    /// text input overlaying its button. Built by the app, positioned by
+    /// the bar.
+    rename: Option<(TabId, Element<'a, Message>)>,
 }
 
 impl<'a, Message> TabBar<'a, Message>
@@ -198,6 +219,9 @@ where
             active,
             on_select: None,
             on_close: None,
+            on_rename: None,
+            on_rename_end: None,
+            rename: None,
         }
     }
 
@@ -211,6 +235,28 @@ where
     /// or a middle-click anywhere on the tab.
     pub fn on_close(mut self, on_close: impl Fn(TabId) -> Message + 'a) -> Self {
         self.on_close = Some(Box::new(on_close));
+        self
+    }
+
+    /// Sets the message published when a tab body is double-clicked: the
+    /// start of an inline rename (T6).
+    pub fn on_rename(mut self, on_rename: impl Fn(TabId) -> Message + 'a) -> Self {
+        self.on_rename = Some(Box::new(on_rename));
+        self
+    }
+
+    /// Sets the message published when a press lands outside the rename
+    /// input while a rename is active (T6). The press still reaches
+    /// whatever it landed on.
+    pub fn on_rename_end(mut self, on_rename_end: impl Fn() -> Message + 'a) -> Self {
+        self.on_rename_end = Some(Box::new(on_rename_end));
+        self
+    }
+
+    /// Hosts `input` as an overlay over the renamed tab's button (T6),
+    /// swapping the title for a text input in place.
+    pub fn renaming(mut self, tab: TabId, input: impl Into<Element<'a, Message>>) -> Self {
+        self.rename = Some((tab, input.into()));
         self
     }
 
@@ -270,6 +316,27 @@ where
         tree::State::new(State::default())
     }
 
+    fn children(&self) -> Vec<Tree> {
+        // The rename input's tree, when a rename is active (T6).
+        self.rename
+            .as_ref()
+            .map(|(_, input)| Tree::new(input.as_widget()))
+            .into_iter()
+            .collect()
+    }
+
+    fn diff(&mut self, tree: &mut Tree) {
+        // Reconcile the input's tree with the current session state. The
+        // default implementation clears all children, which would discard
+        // the input's cursor and focus state on every re-render (T6).
+        if let Some((_, input)) = &mut self.rename {
+            let input: &mut dyn Widget<Message, Theme, Renderer> = input.as_widget_mut();
+            tree.diff_children(&mut [input]);
+        } else {
+            tree.children.clear();
+        }
+    }
+
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fixed(METRICS.bar_height))
     }
@@ -326,17 +393,43 @@ where
     ) {
         // Left-click: tab body selects, close button closes. Middle-click
         // closes whichever part of the button it lands on (Yakuake-style).
+        // A double-click on a tab body starts an inline rename (T6), and
+        // any press outside the rename input ends one.
         let button = match event {
-            Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => Button::Left,
-            Event::Mouse(MouseEvent::ButtonPressed(Button::Middle)) => Button::Middle,
+            Event::Mouse(MouseEvent::ButtonPressed(button)) => *button,
             _ => return,
         };
 
-        let state = tree.state.downcast_ref::<State>();
-        let Some((index, target)) = cursor_position
-            .position_in(layout.bounds())
-            .and_then(|point| hit_test(&self.button_geometry(state, layout.bounds()), point))
-        else {
+        let state = tree.state.downcast_mut::<State>();
+        let bounds = layout.bounds();
+        let point = cursor_position.position_in(bounds);
+        let buttons = self.button_geometry(state, bounds);
+
+        // A press outside the rename input ends the rename (T6): iced
+        // inputs keep keyboard focus on outside presses, so the bar
+        // reports the click-away itself and the press then lands on
+        // whatever it hit — another tab, a close button, or the terminal
+        // below the bar.
+        if let Some((rename_tab, _)) = &self.rename {
+            let over_input = point.is_some_and(|point| {
+                self.tabs
+                    .iter()
+                    .position(|tab| tab.id == *rename_tab)
+                    .and_then(|index| buttons.get(index))
+                    .is_some_and(|button| button.bounds.contains(point))
+            });
+            if !over_input && let Some(end) = self.on_rename_end.as_ref().map(|end| end()) {
+                shell.publish(end);
+            }
+        }
+
+        if !matches!(button, Button::Left | Button::Middle) {
+            return;
+        }
+        let Some(point) = point else {
+            return;
+        };
+        let Some((index, target)) = hit_test(&buttons, point) else {
             return;
         };
         let Some(tab) = self.tabs.get(index) else {
@@ -344,6 +437,21 @@ where
         };
 
         let on_close = target == HitTarget::Close || button == Button::Middle;
+        if !on_close {
+            // Classify this press against the previous tab-body press
+            // using iced's own double-click thresholds (within 300 ms
+            // and 6 px of the last click; see `mouse::click`).
+            let click = click::Click::new(point, Button::Left, state.click.take());
+            let is_double = click.kind() == click::Kind::Double;
+            state.click = Some(click);
+            if is_double && let Some(rename) = self.on_rename.as_ref().map(|rename| rename(tab.id))
+            {
+                shell.publish(rename);
+                shell.capture_event();
+                return;
+            }
+        }
+
         let handler = if on_close {
             self.on_close.as_ref().map(|close| close(tab.id))
         } else {
@@ -353,6 +461,39 @@ where
             shell.publish(message);
             shell.capture_event();
         }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        // While a rename is active (T6), host its input as an overlay
+        // exactly over the renamed tab's button — the spec's "title swaps
+        // for an inline text input".
+        let rename_tab = self.rename.as_ref().map(|(tab, _)| *tab)?;
+        let index = self.tabs.iter().position(|tab| tab.id == rename_tab)?;
+        let state = tree.state.downcast_ref::<State>();
+        let button = self
+            .button_geometry(state, layout.bounds())
+            .get(index)?
+            .bounds;
+        let origin = layout.bounds().position();
+        let mut position = button.position() + Vector::new(origin.x, origin.y) + translation;
+        // Rounded like libcosmic's popover, to keep rendering crisp.
+        position.x = position.x.round();
+        position.y = position.y.round();
+
+        let input = &mut self.rename.as_mut()?.1;
+        Some(overlay::Element::new(Box::new(RenameOverlay {
+            tree: tree.children.first_mut()?,
+            input,
+            position,
+            size: button.size(),
+        })))
     }
 
     fn draw(
@@ -456,6 +597,100 @@ where
                 close,
             );
         }
+    }
+}
+
+/// Hosts the inline-rename input over its tab button (T6), delegating
+/// every [`overlay::Overlay`] method to the widget inside — the same
+/// hosting pattern as libcosmic's popover at the pinned rev
+/// (`widget/popover.rs`). Delegating [`overlay::Overlay::operate`] is
+/// what lets `text_input::focus` and `select_all` reach the input through
+/// the overlay.
+struct RenameOverlay<'a, 'b, Message> {
+    tree: &'a mut Tree,
+    input: &'a mut Element<'b, Message>,
+    /// Surface-space position of the renamed button.
+    position: Point,
+    size: Size,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for RenameOverlay<'_, '_, Message>
+where
+    Message: Clone,
+{
+    fn layout(&mut self, renderer: &Renderer, _bounds: Size) -> layout::Node {
+        // The input fills its tab button's rectangle.
+        let limits = layout::Limits::new(Size::ZERO, self.size)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        self.input
+            .as_widget_mut()
+            .layout(self.tree, renderer, &limits)
+            .move_to(self.position)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let viewport = layout.bounds();
+        self.input.as_widget_mut().update(
+            self.tree,
+            event,
+            layout,
+            cursor_position,
+            renderer,
+            clipboard,
+            shell,
+            &viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let viewport = layout.bounds();
+        self.input.as_widget().mouse_interaction(
+            self.tree,
+            layout,
+            cursor_position,
+            &viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+    ) {
+        let viewport = layout.bounds();
+        self.input.as_widget().draw(
+            self.tree,
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor_position,
+            &viewport,
+        )
+    }
+
+    fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        self.input
+            .as_widget_mut()
+            .operate(self.tree, layout, renderer, operation)
     }
 }
 

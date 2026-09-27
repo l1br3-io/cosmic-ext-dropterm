@@ -145,6 +145,20 @@ pub fn apply_shell_title(title: &mut String, title_override: Option<&str>, repor
     }
 }
 
+/// Applies a committed inline rename (tabs spec, T6): a non-empty new
+/// title becomes the tab's user rename — displayed immediately and safe
+/// from later shell title changes — while committing an empty title is
+/// the explicit "clear" that removes the rename, letting shell titles
+/// land again (see [`apply_shell_title`]).
+pub fn commit_rename(title: &mut String, title_override: &mut Option<String>, new_title: &str) {
+    if new_title.is_empty() {
+        *title_override = None;
+    } else {
+        *title_override = Some(new_title.to_owned());
+        *title = new_title.to_owned();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +307,40 @@ mod tests {
         let mut title = String::from("vim — src/main.rs");
         apply_shell_title(&mut title, None, &next_default_title(TabId(1)));
         assert_eq!(title, "Terminal 2");
+    }
+
+    #[test]
+    fn committed_rename_sets_override_and_displayed_title() {
+        let mut title = String::from("vim — src/main.rs");
+        let mut title_override = None;
+        commit_rename(&mut title, &mut title_override, "work");
+        assert_eq!(title, "work");
+        assert_eq!(title_override.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn committed_rename_survives_shell_title_changes() {
+        let mut title = String::from("Terminal 1");
+        let mut title_override = None;
+        commit_rename(&mut title, &mut title_override, "work");
+        apply_shell_title(&mut title, title_override.as_deref(), "vim — src/main.rs");
+        assert_eq!(title, "work");
+    }
+
+    #[test]
+    fn committing_an_empty_rename_clears_the_override() {
+        let mut title = String::from("work");
+        let mut title_override = Some(String::from("work"));
+        commit_rename(&mut title, &mut title_override, "");
+        assert_eq!(title_override, None);
+    }
+
+    #[test]
+    fn clearing_a_rename_resumes_shell_titles() {
+        let mut title = String::from("work");
+        let mut title_override = Some(String::from("work"));
+        commit_rename(&mut title, &mut title_override, "");
+        apply_shell_title(&mut title, title_override.as_deref(), "vim — src/main.rs");
+        assert_eq!(title, "vim — src/main.rs");
     }
 }
