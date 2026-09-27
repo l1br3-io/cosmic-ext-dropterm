@@ -11,10 +11,6 @@ shortcut, and `hide_on_focus_loss` defaults to `false`. Neither is set up on a
 fresh run, so `cargo run` opens a surface with no affordance to close it. Fix
 this before anything else.
 
-Specced in [SPEC-dismiss.md](SPEC-dismiss.md). Key decisions: dismiss key is
-`Ctrl+Shift+Q` only - bare `Escape` keeps falling through to the shell so TUI
-apps (vim/less) keep working; `hide_on_focus_loss` flips to `true` by default.
-
 - [x] In-app dismiss: add an `Action::Hide`, bind `Ctrl+Shift+Q`, and hide
       even when no terminal is running
 - [x] Flip `hide_on_focus_loss` to default `true` so out-of-the-box behavior
