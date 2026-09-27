@@ -83,6 +83,7 @@ pub enum Message {
     TermEvent(TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
     LayerFocused(window::Id),
+    LayerUnfocused(window::Id),
     KeyPressed(Modifiers, Key, cosmic::iced::keyboard::key::Physical),
     WindowFocused,
     WindowUnfocused,
@@ -223,6 +224,21 @@ impl DropTerm {
             terminal.lock().unwrap().set_focused(false);
         }
         task
+    }
+
+    /// Handles the surface losing keyboard focus: marks the terminal unfocused
+    /// and, when configured, hides the overlay. The hide is guarded by the
+    /// focus latch so a stray unfocus before any focus (possible with
+    /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface.
+    fn focus_lost(&mut self) -> Task<Message> {
+        if let Some(terminal) = &self.terminal {
+            terminal.lock().unwrap().set_focused(false);
+        }
+        if self.config.hide_on_focus_loss && self.surface_focused {
+            self.surface_focused = false;
+            return self.hide();
+        }
+        Task::none()
     }
 
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
@@ -395,6 +411,13 @@ impl Application for DropTerm {
                     layer_id,
                 ),
             )) => Some(Message::LayerFocused(layer_id)),
+            Event::PlatformSpecific(PlatformSpecific::Wayland(
+                cosmic::iced::runtime::core::event::wayland::Event::Layer(
+                    LayerEvent::Unfocused,
+                    _,
+                    layer_id,
+                ),
+            )) => Some(Message::LayerUnfocused(layer_id)),
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
             }
@@ -512,6 +535,11 @@ impl Application for DropTerm {
                     return widget::text_input::focus(self.terminal_id.clone());
                 }
             }
+            Message::LayerUnfocused(id) => {
+                if self.surface == SurfaceState::Shown(id) {
+                    return self.focus_lost();
+                }
+            }
             Message::KeyPressed(modifiers, key, physical_key) => {
                 if let Some(action) =
                     keybinds::matched_action(&self.key_binds, modifiers, &key, Some(&physical_key))
@@ -525,15 +553,7 @@ impl Application for DropTerm {
                     terminal.lock().unwrap().set_focused(true);
                 }
             }
-            Message::WindowUnfocused => {
-                if let Some(terminal) = &self.terminal {
-                    terminal.lock().unwrap().set_focused(false);
-                }
-                if self.config.hide_on_focus_loss && self.surface_focused {
-                    self.surface_focused = false;
-                    return self.hide();
-                }
-            }
+            Message::WindowUnfocused => return self.focus_lost(),
             Message::MiddleClick => {
                 return clipboard::read_primary()
                     .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
