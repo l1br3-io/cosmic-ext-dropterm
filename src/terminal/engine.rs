@@ -4,9 +4,10 @@
 // Adapted from cosmic-term (https://github.com/pop-os/cosmic-term)
 // src/terminal.rs at commit 9129277.
 //
-// Changes from upstream: this is a single-terminal, single-tab drop-down
-// (no tabs/panes/profiles/context-menu/password-manager), so
-// `TerminalPaneGrid`, the pane/tab-keyed `EventProxy`, `MenuState`,
+// Changes from upstream: this is a drop-down terminal without
+// panes/profiles/context-menu/password-manager, so
+// `TerminalPaneGrid`, cosmic-term's pane/tab-keyed `EventProxy` (replaced
+// by the `TabId`-tagging `TaggedEventProxy`), `MenuState`,
 // `ProfileId` and `tab_title_override` have been removed, and the
 // coupling to cosmic-term's own `Config`/`ColorSchemeKind`/profile-keyed
 // theme map has been replaced with a small local `TerminalOptions`
@@ -150,13 +151,23 @@ impl From<Size> for WindowSize {
     }
 }
 
-#[derive(Clone)]
-pub struct EventProxy(mpsc::UnboundedSender<Event>);
+/// Unique identifier for a tab, monotonically increasing and never reused
+/// while the app runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(pub u32);
 
-impl EventListener for EventProxy {
+/// Forwards alacritty terminal events into the app's global event channel,
+/// stamping each one with the id of the tab that produced it.
+#[derive(Clone)]
+pub struct TaggedEventProxy {
+    tab_id: TabId,
+    tx: mpsc::UnboundedSender<(TabId, Event)>,
+}
+
+impl EventListener for TaggedEventProxy {
     fn send_event(&self, event: Event) {
         //TODO: handle error
-        let _ = self.0.send(event);
+        let _ = self.tx.send((self.tab_id, event));
     }
 }
 
@@ -235,7 +246,7 @@ impl Metadata {
 pub struct Terminal {
     pub metadata_set: IndexSet<Metadata>,
     pub needs_update: bool,
-    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    pub term: Arc<FairMutex<Term<TaggedEventProxy>>>,
     pub url_regex_search: RegexSearch,
     pub regex_matches: Vec<alacritty_terminal::term::search::Match>,
     pub active_regex_match: Option<alacritty_terminal::term::search::Match>,
@@ -259,7 +270,8 @@ pub struct Terminal {
 impl Terminal {
     //TODO: error handling
     pub fn new(
-        event_tx: mpsc::UnboundedSender<Event>,
+        tab_id: TabId,
+        event_tx: mpsc::UnboundedSender<(TabId, Event)>,
         term_config: Config,
         pty_options: Options,
         options: &TerminalOptions,
@@ -309,7 +321,10 @@ impl Terminal {
             cell_width,
             cell_height,
         };
-        let event_proxy = EventProxy(event_tx);
+        let event_proxy = TaggedEventProxy {
+            tab_id,
+            tx: event_tx,
+        };
         let term = Arc::new(FairMutex::new(Term::new(
             term_config,
             &size,
@@ -1261,5 +1276,25 @@ impl Drop for Terminal {
         if let Err(err) = self.notifier.0.send(Msg::Shutdown) {
             log::warn!("Failed to send shutdown message on dropped terminal: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tagged_event_proxy_stamps_events_with_tab_id() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let proxy = TaggedEventProxy {
+            tab_id: TabId(7),
+            tx,
+        };
+
+        proxy.send_event(Event::Wakeup);
+
+        let (tab_id, event) = rx.try_recv().expect("tagged event should arrive");
+        assert_eq!(tab_id, TabId(7));
+        assert!(matches!(event, Event::Wakeup));
     }
 }

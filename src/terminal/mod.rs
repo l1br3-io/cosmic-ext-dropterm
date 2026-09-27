@@ -12,5 +12,5 @@ pub mod mouse_reporter;
 pub mod theme_source;
 mod widget;
 
-pub use engine::{Terminal, TerminalOptions, WINDOW_BG_COLOR};
+pub use engine::{TabId, Terminal, TerminalOptions, WINDOW_BG_COLOR};
 pub use widget::{Action, TerminalBox};

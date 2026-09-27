@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::config::{CONFIG_VERSION, DropTermConfig};
 use crate::keybinds::{self, default_key_binds};
 use crate::surface;
-use crate::terminal::{self, Action, Terminal, TerminalBox, TerminalOptions, theme_source};
+use crate::terminal::{self, Action, TabId, Terminal, TerminalBox, TerminalOptions, theme_source};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -79,8 +79,8 @@ enum SurfaceState {
 pub enum Message {
     ToggleAction(ToggleAction),
     ConfigChanged(DropTermConfig),
-    TermEventTx(mpsc::UnboundedSender<TermEvent>),
-    TermEvent(TermEvent),
+    TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
+    TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
@@ -103,7 +103,10 @@ pub struct DropTerm {
     config: DropTermConfig,
     terminal: Option<Mutex<Terminal>>,
     terminal_id: widget::Id,
-    term_event_tx: Option<mpsc::UnboundedSender<TermEvent>>,
+    term_event_tx: Option<mpsc::UnboundedSender<(TabId, TermEvent)>>,
+    /// Source of monotonically increasing tab ids, never reused within a
+    /// run (see the tabs spec).
+    next_tab_id: u32,
     surface: SurfaceState,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
@@ -182,7 +185,11 @@ impl DropTerm {
             ..PtyOptions::default()
         };
 
+        let tab_id = TabId(self.next_tab_id);
+        self.next_tab_id += 1;
+
         match Terminal::new(
+            tab_id,
             tx,
             term_config,
             pty_options,
@@ -384,6 +391,7 @@ impl Application for DropTerm {
             terminal: None,
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
+            next_tab_id: 0,
             surface: SurfaceState::Hidden,
             surface_focused: false,
             key_binds: default_key_binds(),
@@ -448,8 +456,12 @@ impl Application for DropTerm {
                         if output.send(Message::TermEventTx(tx)).await.is_err() {
                             return;
                         }
-                        while let Some(event) = rx.recv().await {
-                            if output.send(Message::TermEvent(event)).await.is_err() {
+                        while let Some((tab_id, event)) = rx.recv().await {
+                            if output
+                                .send(Message::TermEvent(tab_id, event))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -506,7 +518,7 @@ impl Application for DropTerm {
                     self.ensure_terminal();
                 }
             }
-            Message::TermEvent(event) => return self.handle_term_event(event),
+            Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
             Message::SurfaceOpened(id, size) => {
                 if self.surface == SurfaceState::Measuring(id) {
                     let height_px = ((size.height * f32::from(self.config.height_percent)) / 100.0)
@@ -613,7 +625,10 @@ impl Application for DropTerm {
 }
 
 impl DropTerm {
-    fn handle_term_event(&mut self, event: TermEvent) -> Task<Message> {
+    fn handle_term_event(&mut self, _tab_id: TabId, event: TermEvent) -> Task<Message> {
+        // Single tab for now: every tag refers to the only terminal, so
+        // behavior matches v1. The tab-list lookup keyed by this id lands
+        // with the tabs module.
         match event {
             TermEvent::Bell | TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
