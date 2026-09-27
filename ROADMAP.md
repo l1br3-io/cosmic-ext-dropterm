@@ -15,12 +15,12 @@ Specced in [SPEC-dismiss.md](SPEC-dismiss.md). Key decisions: dismiss key is
 `Ctrl+Shift+Q` only - bare `Escape` keeps falling through to the shell so TUI
 apps (vim/less) keep working; `hide_on_focus_loss` flips to `true` by default.
 
-- [ ] In-app dismiss: add an `Action::Hide`, bind `Ctrl+Shift+Q`, and hide
+- [x] In-app dismiss: add an `Action::Hide`, bind `Ctrl+Shift+Q`, and hide
       even when no terminal is running
-- [ ] Flip `hide_on_focus_loss` to default `true` so out-of-the-box behavior
+- [x] Flip `hide_on_focus_loss` to default `true` so out-of-the-box behavior
       matches Yakuake/Guake (click away to hide); guard with a focus latch so
       the surface can't open-then-instantly-close
-- [ ] Document the run-locally-without-a-shortcut flow in the README so the
+- [x] Document the run-locally-without-a-shortcut flow in the README so the
       overlay can always be dismissed
 
 ## v1 - MVP
