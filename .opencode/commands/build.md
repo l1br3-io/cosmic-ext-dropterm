@@ -2,7 +2,7 @@
 description: Implement tasks incrementally from module chunks — build, test, verify, commit. "auto" runs a whole module, "auto all" the whole initiative.
 ---
 
-Load the `incremental-implementation` skill alongside `test-driven-development` with the `skill` tool.
+Load the `incremental-implementation` skill alongside `test-driven-development` with the `skill` tool, then discover the task's tech stack and load every additional skill the `Intent → skill mapping` in AGENTS.md calls for (see below).
 
 ## Artifact layout (see AGENTS.md "Spec & task artifacts")
 
@@ -21,16 +21,31 @@ Load the `incremental-implementation` skill alongside `test-driven-development` 
 
 `$ARGUMENTS` selects the mode: `auto` alone = next pending module, `auto <module-id>` = that module, `auto all` = everything; anything else (or empty) is the single-task mode. Autonomous modes are not faster *per task* — same test-driven loop — they only remove human stepping *between* tasks.
 
+## Tech-stack discovery → skill mapping
+
+Before writing any code, work out what the task actually involves, then let the `Intent → skill mapping` in AGENTS.md decide which skills to load on top of `incremental-implementation` + `test-driven-development`.
+
+1. **Detect the stack.** Read `Cargo.toml` and the files the chunk lists to pin down what the task touches — plain Rust logic, libcosmic / COSMIC APIs, Wayland layer-shell, config parsing, or the PTY/terminal engine.
+2. **Map the intent.** Consult the `Intent → skill mapping` in AGENTS.md and load every skill the task's intent matches. For this repo that means:
+   - Rust code / review → `rust-best-practices` (load for every Rust task)
+   - New module boundary or public interface → `api-and-interface-design`
+   - Untrusted input, auth, secrets, config → `security-and-hardening`
+   - Performance-sensitive path or suspected regression → `performance-optimization`
+3. **Verify unfamiliar APIs.** When the task calls a libcosmic / COSMIC API you'd otherwise write from memory, ground it in official docs (`source-driven-development`) rather than trusting training data.
+
+The mapping — not this file — is the authority on which skill governs an intent. If the task matches an entry listed there, load it.
+
 ## Default: one task
 
 1. Pick the next pending task: read `SPEC.md` status, then the module's `tasks/<id>.md` chunk.
 2. Load the chunk's context: its `SPEC-<id>.md`, the files it lists, existing patterns.
-3. Write a failing test for the expected behavior (RED).
-4. Implement the minimum code to pass the test (GREEN).
-5. Run the full test suite to check for regressions.
-6. Run the build to verify compilation.
-7. Commit with a descriptive message.
-8. Mark the task complete in the chunk, in `tasks/todo.md`, and in `SPEC.md`'s status table; stop.
+3. Discover the task's tech stack and consult the `Intent → skill mapping` in AGENTS.md, loading every skill the task's intent matches (see "Tech-stack discovery → skill mapping").
+4. Write a failing test for the expected behavior (RED).
+5. Implement the minimum code to pass the test (GREEN).
+6. Run the full test suite to check for regressions.
+7. Run the build to verify compilation.
+8. Commit with a descriptive message.
+9. Mark the task complete in the chunk, in `tasks/todo.md`, and in `SPEC.md`'s status table; stop.
 
 ## Autonomous: one module (`/build auto`)
 
@@ -40,7 +55,7 @@ Use this once a module's spec is approved and its chunk written, to collapse pla
 2. **Enforce build order.** If the module has pending dependencies, stop and name them.
 3. **Establish a clean baseline.** Run `git status --porcelain`. If there are uncommitted changes outside the expected working artifacts (`SPEC*.md`, `tasks/`), stop and ask the user to commit, stash, or confirm. Autonomous per-task commits must not absorb unrelated local work.
 4. **Single checkpoint.** Present the module's chunk (its task list) and wait for an unambiguous affirmative (e.g. "approve", "go", "yes"). Hedged responses are **not** approval. This is the only human gate for the module — after approval, run autonomously.
-5. **Execute every task in the chunk** in listed order, running the full default loop (RED → GREEN → regression → build → commit → mark complete). Stage only the files that task touched plus its status updates — never `git add -A` blindly — one commit per task so any point is a clean rollback.
+5. **Execute every task in the chunk** in listed order, running the full default loop (discover stack → map skills → RED → GREEN → regression → build → commit → mark complete). Stage only the files that task touched plus its status updates — never `git add -A` blindly — one commit per task so any point is a clean rollback.
 6. **Stop and ask the user** (do not push through) when:
    - a test can't be made to pass or the build breaks without an obvious fix → follow `debugging-and-error-recovery`
    - the spec is ambiguous, or a task needs a decision the spec doesn't cover

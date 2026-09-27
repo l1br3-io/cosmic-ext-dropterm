@@ -1,3 +1,8 @@
+# Recipes are silent on success and announce only on failure. `set quiet`
+# stops just from echoing each recipe line; a failing recipe still prints
+# just's `error: Recipe ... failed` line plus the underlying tool's stderr.
+set quiet
+
 name := 'cosmic-ext-dropterm'
 appid := 'io.github.l1br3_io.CosmicExtDropterm'
 
@@ -60,12 +65,11 @@ run *args:
 dev-install: build-debug
     install -d {{dev-bin-dir}}
     ln -sfn {{justfile_directory() / debug-bin}} {{dev-bin}}
-    @echo "COSMIC shortcut Command: {{name}}"
 
 # Kill the running instance and restart on the newly built binary.
 dev-reload: build-debug
     -pkill -f '{{dev-kill-pattern}}'
-    @sleep 0.3
+    sleep 0.3
     {{debug-bin}}
 
 # Build, install the launcher, and restart on the latest code in one step.
