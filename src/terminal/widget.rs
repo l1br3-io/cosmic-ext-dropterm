@@ -53,9 +53,12 @@ use super::engine::{Metadata, Terminal, TerminalScroll};
 /// This widget never inspects the variants itself: it only checks whether
 /// a pressed key matches a key in `key_binds`, so that it can leave the
 /// key to the app (rather than sending it to the shell) without needing
-/// to know what the app will do with it. dropterm has no tabs, panes or
-/// profiles, so this is a small, app-specific enum rather than
-/// cosmic-term's full `Action` (which also covers those).
+/// to know what the app will do with it. The tab actions
+/// ([`Action::NewTab`], [`Action::CloseTab`], [`Action::NextTab`],
+/// [`Action::PrevTab`]) are swallowed the same way; the app applies them
+/// to its tab list, which this widget knows nothing about. That keeps
+/// this a small, app-specific enum rather than cosmic-term's full
+/// `Action` (which also covers panes and profiles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Copy,
@@ -68,6 +71,10 @@ pub enum Action {
     ZoomOut,
     ZoomReset,
     Hide,
+    NewTab,
+    CloseTab,
+    NextTab,
+    PrevTab,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);

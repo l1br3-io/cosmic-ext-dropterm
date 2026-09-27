@@ -297,11 +297,24 @@ impl DropTerm {
         if action == Action::Hide {
             return self.hide();
         }
+        // The tab actions reshape the tab list itself — including keeping
+        // it non-empty — so they run before the active-tab borrow below
+        // and never reach the per-terminal actions.
+        if matches!(
+            action,
+            Action::NewTab | Action::CloseTab | Action::NextTab | Action::PrevTab
+        ) {
+            return self.perform_tab_action(action);
+        }
         let Some(tab) = self.active() else {
             return Task::none();
         };
         match action {
-            Action::Hide => unreachable!("handled above"),
+            Action::Hide
+            | Action::NewTab
+            | Action::CloseTab
+            | Action::NextTab
+            | Action::PrevTab => unreachable!("handled above"),
             Action::Copy => {
                 let selected = tab
                     .terminal
@@ -358,6 +371,69 @@ impl DropTerm {
             }
         }
         Task::none()
+    }
+
+    /// Applies a tab-list keybind action: open, close, or cycle tabs.
+    ///
+    /// These reshape `tabs` — upholding the never-empty invariant by
+    /// respawning after the last tab closes — rather than targeting the
+    /// active terminal, so they live apart from the per-terminal actions
+    /// in [`Self::perform_action`].
+    fn perform_tab_action(&mut self, action: Action) -> Task<Message> {
+        match action {
+            Action::NewTab => {
+                if let Some(tab) = self.spawn_tab() {
+                    // Yakuake-style placement: directly after the active
+                    // tab, which the new tab immediately becomes.
+                    let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
+                    self.set_active_tab(at);
+                }
+            }
+            Action::CloseTab => {
+                if let Some((_, new_active)) =
+                    tabs::close_tab(&mut self.tabs, self.active_tab, self.active_tab)
+                {
+                    self.active_tab = new_active;
+                    // The overlay is never left without a terminal (see
+                    // the tabs spec): closing the last tab spawns a fresh
+                    // one right away.
+                    self.ensure_tabs();
+                    self.focus_active_tab();
+                }
+            }
+            Action::NextTab => {
+                self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
+            }
+            Action::PrevTab => {
+                self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
+            }
+            _ => unreachable!("not a tab action: {action:?}"),
+        }
+        Task::none()
+    }
+
+    /// Switches the active tab to `index`, reporting the focus change to
+    /// both shells (FOCUS_OUT to the outgoing one, FOCUS_IN to the
+    /// incoming one), the same way a window focus change does.
+    fn set_active_tab(&mut self, index: usize) {
+        // Cycling with a single tab is a no-op; refocusing it anyway would
+        // send the shell a spurious FOCUS_OUT/FOCUS_IN pair.
+        if index == self.active_tab {
+            return;
+        }
+        if let Some(old) = self.active() {
+            old.terminal.lock().unwrap().set_focused(false);
+        }
+        self.active_tab = index;
+        self.focus_active_tab();
+    }
+
+    /// Marks the active tab's terminal focused. Used after the tab list
+    /// changed shape, where the tab that lost focus is already gone.
+    fn focus_active_tab(&mut self) {
+        if let Some(tab) = self.active() {
+            tab.terminal.lock().unwrap().set_focused(true);
+        }
     }
 }
 

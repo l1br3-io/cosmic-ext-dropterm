@@ -51,6 +51,22 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "t"),
+        Action::NewTab,
+    );
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "w"),
+        Action::CloseTab,
+    );
+    map.insert(
+        bind_named(&[Modifier::Ctrl], Named::PageUp),
+        Action::PrevTab,
+    );
+    map.insert(
+        bind_named(&[Modifier::Ctrl], Named::PageDown),
+        Action::NextTab,
+    );
     map
 }
 
@@ -130,6 +146,72 @@ mod tests {
         let binds = default_key_binds();
         assert_eq!(
             matched_action(&binds, Modifiers::empty(), &Key::Named(Named::Escape), None,),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_t_opens_a_new_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("t".into()),
+                None,
+            ),
+            Some(Action::NewTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_w_closes_the_active_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("w".into()),
+                None,
+            ),
+            Some(Action::CloseTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_page_up_cycles_to_the_previous_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Named(Named::PageUp), None,),
+            Some(Action::PrevTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_page_down_cycles_to_the_next_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Named(Named::PageDown), None,),
+            Some(Action::NextTab)
+        );
+    }
+
+    #[test]
+    fn bare_page_keys_stay_free_for_the_terminal() {
+        // Pagers and shell readers use PageUp/PageDown themselves, so
+        // only the Ctrl-combined forms may be swallowed.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::empty(), &Key::Named(Named::PageUp), None),
+            None
+        );
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Named(Named::PageDown),
+                None
+            ),
             None
         );
     }

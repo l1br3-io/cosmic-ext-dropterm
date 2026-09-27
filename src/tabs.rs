@@ -63,12 +63,6 @@ pub fn insert_after_active<T>(tabs: &mut Vec<T>, active: usize, tab: T) -> usize
 /// closed. Returns `None` when `index` is out of bounds. Keeping the
 /// list non-empty is the caller's job (the app respawns a fresh tab; see
 /// the tabs spec).
-// Consumed by the tab keybinds and lifecycle tasks (T3/T4); tests keep
-// it exercised until then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by the tab keybinds task (T3)")
-)]
 pub fn close_tab<T>(tabs: &mut Vec<T>, index: usize, active: usize) -> Option<(T, usize)> {
     if index >= tabs.len() {
         return None;
@@ -86,12 +80,6 @@ pub fn close_tab<T>(tabs: &mut Vec<T>, index: usize, active: usize) -> Option<(T
 
 /// Returns the index of the tab after `active`, wrapping from the last
 /// tab back to the first. An empty list yields `0`.
-// Consumed by the tab keybinds task (T3); tests keep it exercised until
-// then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by the tab keybinds task (T3)")
-)]
 pub fn cycle_next<T>(tabs: &[T], active: usize) -> usize {
     if tabs.is_empty() {
         return 0;
@@ -101,12 +89,6 @@ pub fn cycle_next<T>(tabs: &[T], active: usize) -> usize {
 
 /// Returns the index of the tab before `active`, wrapping from the first
 /// tab back to the last. An empty list yields `0`.
-// Consumed by the tab keybinds task (T3); tests keep it exercised until
-// then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired up by the tab keybinds task (T3)")
-)]
 pub fn cycle_prev<T>(tabs: &[T], active: usize) -> usize {
     if tabs.is_empty() {
         return 0;
