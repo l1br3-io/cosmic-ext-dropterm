@@ -20,16 +20,16 @@ pub struct TabId(pub u32);
 /// One terminal inside the overlay surface.
 ///
 /// `title` is the last title the shell reported (the default comes from
-/// [`next_default_title`]); `title_override` is a user rename, which shell
-/// title changes do not clobber (see the tabs spec).
+/// [`next_default_title`]); `title_override` is a user rename, which
+/// shell title changes never clobber (see [`apply_shell_title`]).
 pub struct Tab {
     pub id: TabId,
-    /// The tab's current title; surfaced by the tab bar task (T5).
-    #[expect(dead_code, reason = "read by the tab bar widget (T5)")]
+    /// The tab's current title: the last one its shell reported,
+    /// falling back to the default from [`next_default_title`].
+    /// Surfaced by the tab bar widget (T5).
     pub title: String,
-    /// A user rename, which shell title changes do not clobber; committed
-    /// by the inline-rename task (T6).
-    #[expect(dead_code, reason = "read by the tab bar widget (T5/T6)")]
+    /// A user rename, which shell title changes never clobber;
+    /// committed by the inline-rename task (T6).
     pub title_override: Option<String>,
     pub terminal: Mutex<Terminal>,
 }
@@ -57,25 +57,40 @@ pub fn insert_after_active<T>(tabs: &mut Vec<T>, active: usize, tab: T) -> usize
     at
 }
 
-/// Removes the tab at `index` and returns it together with the index to
-/// activate afterward: the closed tab's successor, its predecessor when
-/// the final tab closed, and `active` shifted down when a tab before it
-/// closed. Returns `None` when `index` is out of bounds. Keeping the
-/// list non-empty is the caller's job (the app respawns a fresh tab; see
-/// the tabs spec).
-pub fn close_tab<T>(tabs: &mut Vec<T>, index: usize, active: usize) -> Option<(T, usize)> {
+/// What should happen after a tab close, as decided by [`close_tab`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseDecision {
+    /// The index to activate next: the closed tab's successor, its
+    /// predecessor when the final tab closed, or `active` shifted down
+    /// when a tab before it closed.
+    pub next_active: usize,
+    /// Whether the close took the last tab: the app must immediately
+    /// respawn a fresh one, since the overlay is never left empty (see
+    /// the tabs spec).
+    pub respawn: bool,
+}
+
+/// Removes the tab at `index` — its terminal's PTY closes with it —
+/// and decides what follows for the tab list: the index to activate
+/// next (see [`CloseDecision::next_active`]) and whether the never-
+/// empty rule now demands a fresh spawn. Returns `None` when `index`
+/// is out of bounds.
+pub fn close_tab<T>(tabs: &mut Vec<T>, index: usize, active: usize) -> Option<CloseDecision> {
     if index >= tabs.len() {
         return None;
     }
-    let removed = tabs.remove(index);
-    let new_active = if index < active {
+    tabs.remove(index);
+    let next_active = if index < active {
         active - 1
     } else if index > active {
         active
     } else {
         active.min(tabs.len().saturating_sub(1))
     };
-    Some((removed, new_active))
+    Some(CloseDecision {
+        next_active,
+        respawn: tabs.is_empty(),
+    })
 }
 
 /// Returns the index of the tab after `active`, wrapping from the last
@@ -120,6 +135,16 @@ pub fn next_default_title(id: TabId) -> String {
     format!("Terminal {}", id.0 + 1)
 }
 
+/// Applies a shell-reported title to a tab's stored title: the report
+/// lands only while no user rename (`title_override`) is set — a rename
+/// is never clobbered by shell title changes (see the tabs spec). A
+/// title reset reports the tab's default (see [`next_default_title`]).
+pub fn apply_shell_title(title: &mut String, title_override: Option<&str>, reported: &str) {
+    if title_override.is_none() {
+        *title = reported.to_owned();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,43 +176,46 @@ mod tests {
     #[test]
     fn close_tab_active_middle_focuses_successor() {
         let mut list = vec![10, 20, 30];
-        let (removed, new_active) = close_tab(&mut list, 1, 1).expect("tab should close");
-        assert_eq!(removed, 20);
+        let decision = close_tab(&mut list, 1, 1).expect("tab should close");
         assert_eq!(list, vec![10, 30]);
-        assert_eq!(new_active, 1);
+        assert_eq!(decision.next_active, 1);
+        assert!(!decision.respawn);
     }
 
     #[test]
     fn close_tab_active_last_focuses_predecessor() {
         let mut list = vec![10, 20, 30];
-        let (_, new_active) = close_tab(&mut list, 2, 2).expect("tab should close");
+        let decision = close_tab(&mut list, 2, 2).expect("tab should close");
         assert_eq!(list, vec![10, 20]);
-        assert_eq!(new_active, 1);
+        assert_eq!(decision.next_active, 1);
+        assert!(!decision.respawn);
     }
 
     #[test]
     fn close_tab_before_active_shifts_active_down() {
         let mut list = vec![10, 20, 30];
-        let (_, new_active) = close_tab(&mut list, 0, 2).expect("tab should close");
+        let decision = close_tab(&mut list, 0, 2).expect("tab should close");
         assert_eq!(list, vec![20, 30]);
-        assert_eq!(new_active, 1);
+        assert_eq!(decision.next_active, 1);
+        assert!(!decision.respawn);
     }
 
     #[test]
     fn close_tab_after_active_keeps_active() {
         let mut list = vec![10, 20, 30];
-        let (_, new_active) = close_tab(&mut list, 2, 0).expect("tab should close");
+        let decision = close_tab(&mut list, 2, 0).expect("tab should close");
         assert_eq!(list, vec![10, 20]);
-        assert_eq!(new_active, 0);
+        assert_eq!(decision.next_active, 0);
+        assert!(!decision.respawn);
     }
 
     #[test]
-    fn close_tab_only_tab_yields_empty_list() {
+    fn close_tab_last_tab_decides_to_respawn() {
         let mut list = vec![10];
-        let (removed, new_active) = close_tab(&mut list, 0, 0).expect("tab should close");
-        assert_eq!(removed, 10);
+        let decision = close_tab(&mut list, 0, 0).expect("tab should close");
         assert!(list.is_empty());
-        assert_eq!(new_active, 0);
+        assert_eq!(decision.next_active, 0);
+        assert!(decision.respawn);
     }
 
     #[test]
@@ -244,5 +272,26 @@ mod tests {
     fn next_default_title_numbers_from_tab_id() {
         assert_eq!(next_default_title(TabId(0)), "Terminal 1");
         assert_eq!(next_default_title(TabId(4)), "Terminal 5");
+    }
+
+    #[test]
+    fn shell_title_lands_when_no_rename_is_set() {
+        let mut title = next_default_title(TabId(0));
+        apply_shell_title(&mut title, None, "vim — src/main.rs");
+        assert_eq!(title, "vim — src/main.rs");
+    }
+
+    #[test]
+    fn shell_title_never_clobbers_a_rename() {
+        let mut title = String::from("Terminal 1");
+        apply_shell_title(&mut title, Some("work"), "vim — src/main.rs");
+        assert_eq!(title, "Terminal 1");
+    }
+
+    #[test]
+    fn title_reset_restores_default_when_no_rename_is_set() {
+        let mut title = String::from("vim — src/main.rs");
+        apply_shell_title(&mut title, None, &next_default_title(TabId(1)));
+        assert_eq!(title, "Terminal 2");
     }
 }

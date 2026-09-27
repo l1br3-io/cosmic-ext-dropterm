@@ -389,18 +389,7 @@ impl DropTerm {
                     self.set_active_tab(at);
                 }
             }
-            Action::CloseTab => {
-                if let Some((_, new_active)) =
-                    tabs::close_tab(&mut self.tabs, self.active_tab, self.active_tab)
-                {
-                    self.active_tab = new_active;
-                    // The overlay is never left without a terminal (see
-                    // the tabs spec): closing the last tab spawns a fresh
-                    // one right away.
-                    self.ensure_tabs();
-                    self.focus_active_tab();
-                }
-            }
+            Action::CloseTab => self.close_tab_at(self.active_tab),
             Action::NextTab => {
                 self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
             }
@@ -410,6 +399,22 @@ impl DropTerm {
             _ => unreachable!("not a tab action: {action:?}"),
         }
         Task::none()
+    }
+
+    /// Closes the tab at `index` and activates its successor (or, when
+    /// it closed last, its predecessor). A close that took the final
+    /// tab immediately spawns a fresh one — the overlay is never left
+    /// empty (see the tabs spec). Shared by the close-tab keybind and
+    /// by shell exits; `set_focused` reports only real focus changes,
+    /// so refocusing a tab that already had focus is a no-op.
+    fn close_tab_at(&mut self, index: usize) {
+        if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
+            self.active_tab = decision.next_active;
+            if decision.respawn {
+                self.ensure_tabs();
+            }
+            self.focus_active_tab();
+        }
     }
 
     /// Switches the active tab to `index`, reporting the focus change to
@@ -771,25 +776,29 @@ impl DropTerm {
                 let text = format(terminal.size().into());
                 terminal.input_no_scroll(text.into_bytes());
             }
-            TermEvent::Title(_) | TermEvent::ResetTitle => {
-                // Wired to the tab model's titles with the tab lifecycle
-                // task; nothing to do today (no window decorations either,
-                // see the README's known-risks section).
+            TermEvent::Title(title) => {
+                let tab = &mut self.tabs[tab_index];
+                tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
+            }
+            TermEvent::ResetTitle => {
+                // A shell reset (RIS) restores the default title, unless
+                // the user renamed the tab.
+                let tab = &mut self.tabs[tab_index];
+                let default_title = tabs::next_default_title(tab.id);
+                tabs::apply_shell_title(
+                    &mut tab.title,
+                    tab.title_override.as_deref(),
+                    &default_title,
+                );
             }
             TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
             }
             TermEvent::Exit => {
-                // Respawn immediately rather than waiting for the next
-                // Show, so a shell exited while visible doesn't leave a
-                // dead terminal on screen. This is v1's single-terminal
-                // respawn translated to the tab list: the exited tab is
-                // replaced by a fresh spawn in place. The
-                // close-last-respawns decision helpers land with the tab
-                // lifecycle task.
-                if let Some(fresh) = self.spawn_tab() {
-                    self.tabs[tab_index] = fresh;
-                }
+                // A tab whose shell exits is closed; when it was the
+                // last, a fresh tab spawns in its place so the overlay
+                // is never left without a terminal (see the tabs spec).
+                self.close_tab_at(tab_index);
             }
         }
         Task::none()
