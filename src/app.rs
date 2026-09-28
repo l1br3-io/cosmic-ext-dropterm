@@ -116,9 +116,11 @@ pub enum Message {
     /// A tab was dragged to a new position in the bar (tabs spec, T7):
     /// the dragged tab's id and the index it was dropped at.
     TabMoved(TabId, usize),
-    /// The grab bar was dragged (geometry spec, G3): the pointer's y
-    /// travel since the last move, in surface pixels (positive is
-    /// downward).
+    /// The grab bar was dragged (geometry spec, G3): the pointer's
+    /// surface-local y (window-absolute, not a delta and not bar-local)
+    /// while a press is held. Targets recompute absolutely from it, so
+    /// the moving window frame of a bottom-anchored surface cannot
+    /// compound drift into the drag.
     GrabBarDragged(f32),
     /// A grab bar drag ended (geometry spec, G3): the surface keeps the
     /// height it settled at; persisting it is G4.
@@ -139,16 +141,6 @@ pub enum Message {
 struct RenameEdit {
     tab: TabId,
     draft: String,
-}
-
-/// An in-progress grab-bar height drag (geometry spec, G3): the height
-/// percent the surface had when the drag began, and the pointer's
-/// accumulated y travel since. Anchoring at the press — rather than
-/// growing the last applied percent per move — keeps slow, sub-percent
-/// drags alive (see `geometry::drag_height_percent`).
-struct DragResize {
-    anchored_percent: u8,
-    total_dy: f32,
 }
 
 pub struct DropTerm {
@@ -174,8 +166,9 @@ pub struct DropTerm {
     /// being renamed and the current draft, mirrored into the input the
     /// tab bar overlays on the renamed button.
     rename: Option<RenameEdit>,
-    /// An in-progress grab-bar height drag, if any (geometry spec, G3).
-    drag: Option<DragResize>,
+    /// An in-progress grab-bar height drag, if any (geometry spec, G3):
+    /// absolute references every move retargets from.
+    drag: Option<geometry::DragAnchor>,
     /// Debounced drag-release config-write state (geometry spec, G4):
     /// which release's persist is still pending.
     write_back: geometry::WriteBack,
@@ -352,16 +345,14 @@ impl DropTerm {
         commit
     }
 
-    /// The geometry a live grab-bar drag currently implies (geometry
-    /// spec, G3): the current config's geometry with the height replaced
-    /// by the drag's target — width and alignment always follow the
-    /// config (a drag can never snap a narrow surface to fill), only
-    /// the height follows the pointer. Takes the drag's scalars so the
-    /// caller can finish mutating the drag state before calling.
-    fn drag_geometry(&self, anchored_percent: u8, total_dy: f32, output: (u32, u32)) -> Geometry {
+    /// The geometry a settled grab-bar drag leaves behind (geometry
+    /// spec, G3): the current config's geometry with the height
+    /// quantized once from the pixels the drag actually applied — the
+    /// settled surface then matches the percent G4 persists, at most
+    /// half a percent off the dragged pixels (accepted tolerance).
+    fn settled_geometry(&self, drag: geometry::DragAnchor, output: (u32, u32)) -> Geometry {
         let mut geom = Geometry::from_config(&self.config);
-        geom.height_percent =
-            geometry::drag_height_percent(self.config.edge, output.1, anchored_percent, total_dy);
+        geom.height_percent = geometry::percent_from_px(output.1, drag.applied_px);
         geom
     }
 
@@ -916,40 +907,52 @@ impl Application for DropTerm {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
                 }
             }
-            Message::GrabBarDragged(dy) => {
-                // Live drag (geometry spec, G3): anchor at the first
-                // delta — the percent the surface had when the drag
-                // began — then send every move through the single
-                // geometry path. Config is never touched while dragging
-                // (a "never" boundary of the module); persistence is G4.
+            Message::GrabBarDragged(pointer_y) => {
+                // Live drag (geometry spec, G3): arm on the first move
+                // — anchored at the height the surface has right now —
+                // then retarget absolutely per move in pixels: one
+                // pixel of pointer travel is one pixel of surface, and
+                // the target recomputes from the height actually
+                // applied, so the moving window frame of a
+                // bottom-anchored surface cannot eat travel. Width and
+                // alignment always come from the config (a drag can
+                // never snap a narrow surface to fill). Config is never
+                // touched while dragging (a "never" boundary of the
+                // module); persistence is G4's release path.
                 if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size) {
-                    let (anchored_percent, total_dy) = {
-                        let drag = self.drag.get_or_insert_with(|| DragResize {
-                            anchored_percent: Geometry::from_config(&self.config).height_percent,
-                            total_dy: 0.0,
-                        });
-                        drag.total_dy += dy;
-                        (drag.anchored_percent, drag.total_dy)
-                    };
-                    let geom = self.drag_geometry(anchored_percent, total_dy, output);
-                    return geometry::apply_geometry(*id, &geom, output);
+                    let anchored_px = geometry::surface_height(
+                        output.1 as f32,
+                        Geometry::from_config(&self.config).height_percent,
+                    );
+                    let drag = self.drag.get_or_insert(geometry::DragAnchor {
+                        anchored_px,
+                        applied_px: anchored_px,
+                        press_y: pointer_y,
+                    });
+                    let target =
+                        geometry::drag_target_px(self.config.edge, output.1, *drag, pointer_y);
+                    drag.applied_px = target;
+                    let geom = Geometry::from_config(&self.config);
+                    return geometry::apply_drag_geometry(*id, &geom, output, target);
                 }
             }
             Message::GrabBarReleased => {
-                // The surface keeps the height it settled at (G3), and
-                // the settle is persisted (G4): the in-memory config
-                // updates immediately — so a hide/show inside the
-                // debounce window reopens at the new height — and one
-                // write follows after the window, canceled by any newer
-                // drag that settles first. Re-applying also flushes a
-                // config edit that arrived mid-drag and was deferred
-                // (see `ConfigChanged`): width and alignment come from
-                // the current config, the height from the drag — the
-                // hand outranks the file.
+                // The settle: the dragged pixels quantize to a whole
+                // percent once — the surface may snap by at most half a
+                // percent, the accepted tolerance, and then matches the
+                // percent G4 persists. The in-memory config updates
+                // immediately — so a hide/show inside the debounce
+                // window reopens at the new height — and one write
+                // follows after the window, canceled by any newer drag
+                // that settles first. Re-applying also flushes a config
+                // edit that arrived mid-drag and was deferred (see
+                // `ConfigChanged`): width and alignment come from the
+                // current config, the height from the drag — the hand
+                // outranks the file.
                 if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
                     (self.drag.take(), &self.surface, self.output_size)
                 {
-                    let geom = self.drag_geometry(drag.anchored_percent, drag.total_dy, output);
+                    let geom = self.settled_geometry(drag, output);
                     // Write-only-if-changed: a drag that settles back
                     // on the config's current percent persists nothing.
                     if geom.height_percent != self.config.height_percent {

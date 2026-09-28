@@ -126,19 +126,48 @@ pub fn requested_size(geom: &Geometry, output: (u32, u32)) -> (Option<u32>, u32)
     (width, surface_height(output.1 as f32, geom.height_percent))
 }
 
-/// The single path every geometry change goes through: one
-/// `set_anchor` + `set_size` + `set_margin` triple, always sending all
+/// Send the `set_anchor` + `set_size` + `set_margin` triple, always all
 /// three — zero margins included — so no transition can leave stale
-/// anchors, margins, or sizes behind (e.g. width 60 -> 100 must
-/// re-send zero margins, or the "full-width" surface stays shrunk).
-pub fn apply_geometry<M: 'static>(id: window::Id, geom: &Geometry, output: (u32, u32)) -> Task<M> {
+/// anchors, margins, or sizes behind (e.g. width 60 -> 100 must re-send
+/// zero margins, or the "full-width" surface stays shrunk). Every
+/// geometry transition funnels through here.
+fn surface_tasks<M: 'static>(
+    id: window::Id,
+    geom: &Geometry,
+    output: (u32, u32),
+    height: u32,
+) -> Task<M> {
     let (anchor, margins) = anchor_margins(geom, output);
-    let (width, height) = requested_size(geom, output);
+    let (width, _) = requested_size(geom, output);
     Task::batch([
         set_anchor(id, anchor),
         set_size(id, width, Some(height)),
         set_margin(id, margins.top, margins.right, margins.bottom, margins.left),
     ])
+}
+
+/// The single path every settled geometry change goes through: anchors,
+/// margins, and width composed from `geom`; height from its
+/// (percent-quantized) config field.
+pub fn apply_geometry<M: 'static>(id: window::Id, geom: &Geometry, output: (u32, u32)) -> Task<M> {
+    let (_, height) = requested_size(geom, output);
+    surface_tasks::<M>(id, geom, output, height)
+}
+
+/// [`apply_geometry`], but with the height pinned to live drag pixels:
+/// while a grab-bar drag is in progress the height follows the pointer
+/// one rounding step per move (see [`drag_target_px`]) instead of
+/// percent-quantized jumps. Anchors, margins, and width still compose
+/// from `geom`, through the same triple as every other transition; the
+/// release path re-applies through [`apply_geometry`], so the settled
+/// surface matches the percent that gets persisted.
+pub fn apply_drag_geometry<M: 'static>(
+    id: window::Id,
+    geom: &Geometry,
+    output: (u32, u32),
+    height_px: u32,
+) -> Task<M> {
+    surface_tasks::<M>(id, geom, output, height_px)
 }
 
 /// Whether two geometries differ in any field that shapes the surface.
@@ -151,38 +180,62 @@ pub fn geometry_changed(old: &Geometry, new: &Geometry) -> bool {
     old != new
 }
 
-/// The height percent a grab-bar drag produces (geometry spec, G3):
-/// `anchored_percent` grown by `total_dy` logical pixels of pointer
-/// travel, clamped to the 10–100 % band.
+/// The fixed references of an in-progress grab-bar drag (geometry
+/// spec, G3): everything a live drag target recomputes from, per move,
+/// in pixels.
 ///
-/// `total_dy` is the *accumulated* travel since the press, in surface
-/// space (y grows downward); the `Edge::Bottom` sign flip makes pulling
-/// away from the screen edge always grow the terminal, whichever edge
-/// the surface hangs from. Recomputing every move from the same anchor
-/// — rather than growing the last applied percent — keeps slow drags
-/// alive: one percent of a 1080 px output is ~11 px, so per-move
-/// quantization would eat any gentler drag piece by piece.
+/// Targets are recomputed absolutely — never by accumulating deltas —
+/// because both culprits of the original steppy drag were delta
+/// artifacts: percent quantization turned sub-percent travel into
+/// dead zones and ~1 %-of-output jumps, and the window frame of a
+/// bottom-anchored surface *moves* as it grows upward, so surface-local
+/// deltas mixed pointer travel with the frame shift. Absolute targets
+/// self-correct: every move lands on the exact height the pointer
+/// implies, whichever edge, whatever the frame did last event.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DragAnchor {
+    /// The surface height (px) when the drag armed.
+    pub anchored_px: u32,
+    /// The height (px) this drag last applied — the live base for
+    /// `Edge::Bottom` targets, which rebase against the height
+    /// actually applied because that is what positions the window
+    /// frame.
+    pub applied_px: u32,
+    /// The pointer's surface-local y when the drag armed. Window y, not
+    /// bar-local y: `CursorMoved` positions are window-absolute.
+    pub press_y: f32,
+}
+
+/// The pixel height a drag currently implies (geometry spec, G3):
+/// `pointer_y` is the pointer's *window-absolute* y this move.
 ///
-/// The band clamp subsumes the `max(1px)` rule — the floor percent of
-/// any output is at least one pixel — but the pixel target is still
-/// floored at 1 px so a degenerate (zero-height) output can't produce
-/// a zero or NaN request.
-pub fn drag_height_percent(
-    edge: Edge,
-    output_height: u32,
-    anchored_percent: u8,
-    total_dy: f32,
-) -> u8 {
-    let grow = match edge {
-        // Free edge at the bottom: dragging down grows.
-        Edge::Top => total_dy,
-        // Free edge at the top: dragging up grows.
-        Edge::Bottom => -total_dy,
+/// `Edge::Top` targets `anchored_px + (pointer_y − press_y)` — the
+/// window frame of a top-anchored surface is fixed, so travel since the
+/// arm is exact. `Edge::Bottom` targets `applied_px + (press_y −
+/// pointer_y)` — rebased on the height actually applied, so the moving
+/// frame of an upward-growing surface cannot compound drift. Both
+/// pull away from the screen edge to grow, clamp to the 10–100 % band
+/// in pixels, and never target below one pixel.
+pub fn drag_target_px(edge: Edge, output_height: u32, drag: DragAnchor, pointer_y: f32) -> u32 {
+    let (base, grow) = match edge {
+        // Free edge at the bottom: dragging down grows; frame fixed.
+        Edge::Top => (drag.anchored_px as f32, pointer_y - drag.press_y),
+        // Free edge at the top: dragging up grows; frame moves with
+        // each apply, so the base is the live applied height.
+        Edge::Bottom => (drag.applied_px as f32, drag.press_y - pointer_y),
     };
-    let anchored_px = surface_height(output_height as f32, anchored_percent) as f32;
-    let target_px = (anchored_px + grow).max(1.0);
-    let percent = target_px / output_height.max(1) as f32 * 100.0;
-    percent
+    let min_px = surface_height(output_height as f32, MIN_HEIGHT_PERCENT) as f32;
+    let max_px = surface_height(output_height as f32, MAX_HEIGHT_PERCENT) as f32;
+    (base + grow).round().clamp(min_px, max_px).max(1.0) as u32
+}
+
+/// The whole-percent config value a dragged pixel height settles at
+/// (geometry spec, G3/G4): percent quantization happens once, at
+/// release — the settled surface may snap by up to half a percent from
+/// the dragged pixels, the accepted tolerance — rounded to nearest and
+/// clamped to the band.
+pub fn percent_from_px(output_height: u32, height_px: u32) -> u8 {
+    (height_px as f32 / output_height.max(1) as f32 * 100.0)
         .round()
         .clamp(f32::from(MIN_HEIGHT_PERCENT), f32::from(MAX_HEIGHT_PERCENT)) as u8
 }
@@ -473,61 +526,121 @@ mod tests {
     }
 
     #[test]
-    fn drag_away_from_the_screen_edge_grows_whichever_edge() {
-        // Anchored at 40 % of a 1000 px output (400 px): 100 px of
-        // pointer travel away from the screen edge is +10 % — dragging
-        // down on `Top`, up on `Bottom` (the sign flip).
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 100.0), 50);
-        assert_eq!(drag_height_percent(Edge::Bottom, 1000, 40, -100.0), 50);
+    fn live_drag_tracks_the_pointer_pixel_by_pixel_instead_of_percent_jumps() {
+        // 1080p output anchored at 40 % (432 px): one pixel of pointer
+        // travel must move the surface one pixel. The percent-quantized
+        // path held 432 px for the first ~5 px of travel, then jumped
+        // ~11 px at once — the steppiness the hardware pass flagged.
+        // Percent quantization now happens once, at settle.
+        let drag = DragAnchor {
+            anchored_px: 432,
+            applied_px: 432,
+            press_y: 432.0,
+        };
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 433.0), 433);
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 434.0), 434);
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 435.0), 435);
+        assert_eq!(percent_from_px(1080, 435), 40);
     }
 
     #[test]
-    fn drag_toward_the_screen_edge_shrinks_whichever_edge() {
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, -150.0), 25);
-        assert_eq!(drag_height_percent(Edge::Bottom, 1000, 40, 150.0), 25);
+    fn the_arming_move_targets_the_height_the_drag_started_at() {
+        // Arming must not jump the surface: the target at the pointer's
+        // arming y is the height the surface already has, whichever
+        // edge — and wherever inside the bar the grab happened. (The
+        // old delta tracker seeded itself with bar-local y while moves
+        // carry window y, making the first delta of every drag garbage.)
+        let top = DragAnchor {
+            anchored_px: 432,
+            applied_px: 432,
+            press_y: 432.0,
+        };
+        assert_eq!(drag_target_px(Edge::Top, 1080, top, 432.0), 432);
+        let bottom = DragAnchor {
+            anchored_px: 400,
+            applied_px: 400,
+            press_y: 5.0,
+        };
+        assert_eq!(drag_target_px(Edge::Bottom, 1000, bottom, 5.0), 400);
     }
 
     #[test]
-    fn drag_is_clamped_to_the_height_band() {
-        // However violent the drag, the result stays inside 10-100 %.
-        assert_eq!(
-            drag_height_percent(Edge::Top, 1000, 95, 100_000.0),
-            MAX_HEIGHT_PERCENT
-        );
-        assert_eq!(
-            drag_height_percent(Edge::Bottom, 1000, 12, 100_000.0),
-            MIN_HEIGHT_PERCENT
-        );
+    fn top_edge_targets_track_absolute_pointer_travel() {
+        // The window frame of a top-anchored surface is fixed, so the
+        // target is anchored height plus absolute travel since the
+        // arming y: +100 px of travel is +100 px of height, −150 px is
+        // −150 px.
+        let drag = DragAnchor {
+            anchored_px: 432,
+            applied_px: 432,
+            press_y: 432.0,
+        };
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 532.0), 532);
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 282.0), 282);
     }
 
     #[test]
-    fn drag_never_yields_a_zero_height_surface() {
+    fn bottom_edge_tracks_repeated_window_ys_through_frame_shifts() {
+        // A bottom-anchored surface grows upward, so its window origin
+        // moves up under the pointer with every applied resize: 5 px
+        // drags report window ys [5, 0, 0, 0] once the frame follows
+        // each apply. Delta accumulation stalled on the repeats — half
+        // -speed tracking, the bar escaping the pointer. Retargeting
+        // from the height actually applied tracks every pixel.
+        let mut drag = DragAnchor {
+            anchored_px: 400,
+            applied_px: 400,
+            press_y: 5.0,
+        };
+        let mut targets = Vec::new();
+        for y in [5.0, 0.0, 0.0, 0.0] {
+            let target = drag_target_px(Edge::Bottom, 1000, drag, y);
+            drag.applied_px = target;
+            targets.push(target);
+        }
+        assert_eq!(targets, vec![400, 405, 410, 415]);
+    }
+
+    #[test]
+    fn drag_targets_clamp_to_the_band_in_pixels() {
+        // However violent the drag, the pixel target stays inside the
+        // 10–100 % band of the output.
+        let drag = DragAnchor {
+            anchored_px: 432,
+            applied_px: 432,
+            press_y: 0.0,
+        };
+        assert_eq!(drag_target_px(Edge::Top, 1080, drag, 100_000.0), 1080);
+        assert_eq!(drag_target_px(Edge::Bottom, 1080, drag, 100_000.0), 108);
+    }
+
+    #[test]
+    fn drag_targets_never_yield_a_zero_height_surface() {
         // On a tiny output the band floor is a couple of pixels; a
-        // toward-edge drag must still request a positive height (the
-        // `max(1px)` rule, criterion 4).
-        let percent = drag_height_percent(Edge::Top, 20, 10, -1_000.0);
-        assert_eq!(percent, MIN_HEIGHT_PERCENT);
-        assert!(surface_height(20.0, percent) >= 1);
+        // toward-edge drag must still target a positive height (the
+        // `max(1px)` rule).
+        let drag = DragAnchor {
+            anchored_px: 2,
+            applied_px: 2,
+            press_y: 0.0,
+        };
+        let target = drag_target_px(Edge::Top, 20, drag, -1_000.0);
+        assert_eq!(target, 2);
+        assert!(target >= 1);
     }
 
     #[test]
-    fn drag_rounds_to_the_nearest_percent() {
-        // 400 px + 5 px of 1000 is 40.5 % -> 41 (half away from zero);
-        // +4 px is 40.4 % -> 40.
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 5.0), 41);
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 4.0), 40);
+    fn settled_percent_rounds_once_from_pixels() {
+        // 405 px of 1000 is 40.5 % -> 41 (half away from zero); 404 px
+        // is 40.4 % -> 40.
+        assert_eq!(percent_from_px(1000, 405), 41);
+        assert_eq!(percent_from_px(1000, 404), 40);
     }
 
     #[test]
-    fn drag_targets_recompute_from_the_anchor_so_quantization_cannot_compound() {
-        // The caller passes *accumulated* travel from the press, so a
-        // slow drag of many sub-percent moves still adds up: 4 px alone
-        // rounds away, but the same 4 px carried into the next 100 px
-        // of travel lands at 50.4 %, not the 50 % a per-move recompute
-        // from the last applied percent would settle on.
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 4.0), 40);
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 104.0), 50);
-        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 105.0), 51);
+    fn settled_percent_clamps_to_the_band() {
+        assert_eq!(percent_from_px(1000, 5_000), MAX_HEIGHT_PERCENT);
+        assert_eq!(percent_from_px(1000, 0), MIN_HEIGHT_PERCENT);
     }
 
     #[test]

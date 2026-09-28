@@ -9,12 +9,13 @@
 //! press/move/release itself — the same state machine as the tab bar's
 //! drag reorder (tabs spec, T7), itself the one of iced's own text
 //! editor (pinned rev `08a09e3`, `widget/text_editor.rs`). It reports
-//! raw surface-local y *deltas* and stays otherwise dumb: everything
-//! that turns a delta into a height — the `Edge::Bottom` sign flip,
-//! the 10–100 % band, the `max(1px)` rule — lives in
-//! [`crate::geometry::drag_height_percent`] as pure functions,
-//! unit-tested headless. Rendering and drag feel need real COSMIC
-//! hardware and are covered by the README manual checklist.
+//! the pointer's raw surface-local y (window-absolute, the same space
+//! `CursorMoved` carries) and stays otherwise dumb: everything that
+//! turns a pointer position into a height — the `Edge::Bottom`
+//! rebasing, the 10–100 % band, the `max(1px)` rule — lives in
+//! [`crate::geometry::drag_target_px`] as pure functions, unit-tested
+//! headless. Rendering and drag feel need real COSMIC hardware and are
+//! covered by the README manual checklist.
 //!
 //! While a press is held, moves are tracked wherever the cursor roams
 //! — the bar itself resizes under the pointer as the surface follows,
@@ -58,23 +59,23 @@ const GRIP_HEIGHT: f32 = 2.0;
 /// Longest the grip line gets, so it stays a handle on wide outputs.
 const GRIP_MAX_WIDTH: f32 = 96.0;
 
-/// Per-widget state: whether a left press is held on the bar and the
-/// last cursor y seen (window space), to diff per move. y differences
-/// are bar-position-independent — resizing the surface under the
-/// pointer moves the bar's origin, not the pointer — so window-space
-/// deltas are exactly the pointer's travel.
+/// Per-widget state: whether a left press is held on the bar, and the
+/// last pointer y published (window space) so identical positions skip
+/// republishing. Nothing is seeded at press — the press position is
+/// available bar-local (`position_in`) while moves carry window-absolute
+/// y, and mixing the two spaces was the original first-delta garbage —
+/// the app arms its absolute anchor from the first move instead.
 #[derive(Default)]
 struct State {
     dragging: bool,
-    last_y: f32,
+    last_y: Option<f32>,
 }
 
 /// The grab bar: drag it to resize the terminal's height live.
 ///
-/// `on_drag` reports each move's y delta while a press is held
-/// (positive is downward, surface space); `on_release` reports the
-/// press ending. Both are required — a bar that can't report is dead
-/// weight.
+/// `on_drag` reports the pointer's window-absolute y on every changed
+/// move while a press is held; `on_release` reports the press ending.
+/// Both are required — a bar that can't report is dead weight.
 pub struct GrabBar<'a, Message> {
     on_drag: Box<dyn Fn(f32) -> Message + 'a>,
     on_release: Box<dyn Fn() -> Message + 'a>,
@@ -84,8 +85,8 @@ impl<'a, Message> GrabBar<'a, Message>
 where
     Message: Clone,
 {
-    /// Creates a bar reporting move deltas through `on_drag` and the
-    /// drag's end through `on_release`.
+    /// Creates a bar reporting the pointer's window y through `on_drag`
+    /// and the drag's end through `on_release`.
     pub fn new(
         on_drag: impl Fn(f32) -> Message + 'a,
         on_release: impl Fn() -> Message + 'a,
@@ -166,26 +167,25 @@ where
                 // Arm on a press inside the bar. There is nothing to
                 // click here, so — unlike the tab bar — no drag
                 // threshold is needed: any held travel is a resize.
-                let Some(point) = cursor.position_in(layout.bounds()) else {
+                if cursor.position_in(layout.bounds()).is_none() {
                     return;
-                };
+                }
                 let state = tree.state.downcast_mut::<State>();
                 state.dragging = true;
-                state.last_y = point.y;
                 shell.capture_event();
             }
             Event::Mouse(MouseEvent::CursorMoved { position }) => {
-                // Drag progress: report the move's delta. Tracked
-                // wherever the cursor roams — the bar may lag the
+                // Drag progress: report the pointer's window-absolute
+                // y — the app retargets absolutely from it. Tracked
+                // wherever the cursor roams; the bar may lag the
                 // pointer while the surface catches up.
                 let state = tree.state.downcast_mut::<State>();
                 if !state.dragging {
                     return;
                 }
-                let dy = position.y - state.last_y;
-                state.last_y = position.y;
-                if dy != 0.0 {
-                    shell.publish((self.on_drag)(dy));
+                if state.last_y != Some(position.y) {
+                    state.last_y = Some(position.y);
+                    shell.publish((self.on_drag)(position.y));
                 }
                 shell.capture_event();
             }
