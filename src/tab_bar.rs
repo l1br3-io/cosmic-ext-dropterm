@@ -21,9 +21,15 @@
 //! past a small threshold drags the tab horizontally. iced has no
 //! first-class drag API, so the bar tracks press/move/release itself —
 //! the state machine of iced's own text editor (pinned rev `08a09e3`,
-//! `widget/text_editor.rs`). [`drop_index`] and [`indicator_x`] decide
-//! from plain geometry where a drag would land; the release reports the
-//! drop, which the app applies via [`crate::tabs::reorder_tabs`].
+//! `widget/text_editor.rs`). While the drag lasts, the pressed button
+//! follows the cursor (clamped to the row, lifted and drawn on top) and
+//! every other button eases to the slot the drop would leave it in —
+//! the feedback model of libcosmic's `reorderable_flex_row` (same rev,
+//! `widget/reorderable_flex_row/widget.rs`), driven by the same
+//! redraw-request loop. [`displaced_row`], [`followed_x`] and
+//! [`drop_index`] decide all of it from plain geometry, so the drop is
+//! unit-testable headless; the release reports the drop, which the app
+//! applies via [`crate::tabs::reorder_tabs`].
 //!
 //! Colors mirror the `TabBar` preset of libcosmic's own
 //! `theme/style/segmented_button.rs` (pinned rev `08a09e3`): the active
@@ -32,13 +38,14 @@
 //! component's `on` text color.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use cosmic::iced::core::alignment;
 use cosmic::iced::core::mouse::click;
 use cosmic::iced::core::overlay;
 use cosmic::iced::core::text::{Ellipsize, LineHeight, Shaping, Wrapping, paragraph};
 use cosmic::iced::core::{
-    Border, Shell, Text,
+    Border, Shadow, Shell, Text,
     clipboard::Clipboard,
     layout::{self, Layout},
     renderer::{self, Quad, Renderer as _},
@@ -49,6 +56,7 @@ use cosmic::iced::{
     Color, Length, Pixels, Point, Rectangle, Size, Vector,
     event::Event,
     mouse::{self, Button, Event as MouseEvent},
+    window,
 };
 use cosmic::theme::Theme;
 use cosmic::{Element, Renderer, cosmic_theme::palette::WithAlpha};
@@ -190,6 +198,18 @@ const TITLE_FONT_SIZE: f32 = 14.0;
 /// (pinned rev `08a09e3`, `mouse/click.rs`: `distance < 6.0`).
 const DRAG_THRESHOLD: f32 = 6.0;
 
+/// How long a displaced button takes to slide to its new slot (T7),
+/// cubic-eased. Matches libcosmic's reorderable row at the pinned rev.
+const DRAG_ANIMATION: Duration = Duration::from_millis(180);
+
+/// How far the dragged button lifts out of the row while it follows
+/// the cursor (T7), in logical pixels.
+const DRAG_LIFT: f32 = 2.0;
+
+/// How close a slot's animated position must be to a new target before
+/// retargeting treats them as the same spot (T7).
+const POSITION_EPSILON: f32 = 0.5;
+
 /// Width of the drop indicator line, in logical pixels.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
 
@@ -295,51 +315,169 @@ fn drop_index(buttons: &[ButtonGeometry], dragged: usize, x: f32) -> usize {
         .count()
 }
 
-/// Bar-local x of the drop indicator for a drag of `dragged` landing at
-/// slot `drop`: the left edge (minus half the gap) of the button that will
-/// follow the drop slot once the dragged button leaves the row, or half a
-/// gap past the row's right edge when the drag appends at the end.
-fn indicator_x(buttons: &[ButtonGeometry], dragged: usize, drop: usize, gap: f32) -> f32 {
-    // The row as it will look while the dragged button is gone: the
-    // button at `drop` in that row follows the slot the drop creates.
-    let following = buttons
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != dragged)
-        .nth(drop);
-    match following {
-        Some((_, button)) => button.bounds.x - gap / 2.0,
-        None => buttons
-            .last()
-            .map(|button| button.bounds.x + button.bounds.width + gap / 2.0)
-            .unwrap_or(0.0),
+/// The row as it looks while `dragged` is out of it and lands at
+/// `drop`: the left-edge x every *other* button eases to — the slot it
+/// occupies in the reordered row (`None` for the dragged one, which
+/// follows the cursor instead) — plus the x the drop indicator marks,
+/// half a gap ahead of the dragged tab's slot in that row.
+fn displaced_row(widths: &[f32], dragged: usize, drop: usize, gap: f32) -> (Vec<Option<f32>>, f32) {
+    // The reordered row: the dragged button lifted out, then inserted
+    // back at the drop slot.
+    let mut order: Vec<usize> = (0..widths.len()).filter(|&i| i != dragged).collect();
+    order.insert(drop.min(order.len()), dragged);
+
+    let mut targets = vec![None; widths.len()];
+    let mut indicator = 0.0;
+    let mut x = 0.0;
+    for &index in &order {
+        if index == dragged {
+            indicator = x - gap / 2.0;
+        } else {
+            targets[index] = Some(x);
+        }
+        x += widths[index] + gap;
     }
+    (targets, indicator)
+}
+
+/// Left-edge x of the dragged button while it follows the cursor (T7),
+/// clamped to the row so it can never leave the bar.
+fn followed_x(row_width: f32, button_width: f32, cursor_x: f32, grab_x: f32) -> f32 {
+    (cursor_x - grab_x).clamp(0.0, (row_width - button_width).max(0.0))
+}
+
+/// The drop slot for a drag of `dragged` whose cursor sits at bar-local
+/// `cursor_x` holding the button `grab_x` from its left edge: the
+/// *followed button's* center decides, not the cursor's — the button is
+/// the thing on screen, so the release lands exactly where the row said
+/// it would.
+fn drop_from_followed(
+    buttons: &[ButtonGeometry],
+    dragged: usize,
+    cursor_x: f32,
+    grab_x: f32,
+) -> usize {
+    let Some(button) = buttons.get(dragged) else {
+        return dragged;
+    };
+    let row_width = buttons
+        .last()
+        .map(|last| last.bounds.x + last.bounds.width)
+        .unwrap_or(0.0);
+    let followed = followed_x(row_width, button.bounds.width, cursor_x, grab_x);
+    drop_index(buttons, dragged, followed + button.bounds.width / 2.0)
 }
 
 /// An in-progress tab drag (tabs spec, T7): the tab whose button the
-/// press landed on, where that press started, and — once the press moved
-/// past [`DRAG_THRESHOLD`] — the last bar-local x the cursor was seen at.
-/// The state machine follows iced's own text editor (pinned rev
-/// `08a09e3`): record on press, drag on move, finish on release.
+/// press landed on, where that press started, how far into the button
+/// the grab sits (so the button can follow the cursor at the point it
+/// was caught), and — once the press moved past [`DRAG_THRESHOLD`] —
+/// the last bar-local x the cursor was seen at. The state machine
+/// follows iced's own text editor (pinned rev `08a09e3`): record on
+/// press, drag on move, finish on release.
 struct Drag {
     tab: TabId,
     /// Bar-local press position.
     origin: Point,
     /// Whether the press has crossed the drag threshold yet.
     started: bool,
-    /// Last bar-local cursor x, driving the drop indicator.
+    /// Last bar-local cursor x, driving the followed button.
     x: f32,
+    /// Cursor x minus the followed button's left edge at press: the
+    /// offset the button keeps while it follows the cursor.
+    grab_x: f32,
+}
+
+/// One button's horizontal slide toward the slot a drag opens or closes
+/// for it (T7), cubic-eased over [`DRAG_ANIMATION`] — the same spring
+/// as libcosmic's reorderable row (pinned rev,
+/// `reorderable_flex_row/widget.rs`).
+struct SlotAnimation {
+    from: f32,
+    to: f32,
+    started_at: Option<Instant>,
+}
+
+impl SlotAnimation {
+    fn new(x: f32) -> Self {
+        Self {
+            from: x,
+            to: x,
+            started_at: None,
+        }
+    }
+
+    /// The eased x to paint this frame.
+    fn current(&self) -> f32 {
+        let Some(started_at) = self.started_at else {
+            return self.to;
+        };
+        let progress =
+            (started_at.elapsed().as_secs_f32() / DRAG_ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    fn is_animating(&self) -> bool {
+        self.started_at
+            .is_some_and(|started_at| started_at.elapsed() < DRAG_ANIMATION)
+    }
+
+    /// Snaps a finished slide onto its target.
+    fn settle(&mut self) {
+        if !self.is_animating() {
+            self.from = self.to;
+            self.started_at = None;
+        }
+    }
+
+    /// Starts (or restarts, from wherever it currently paints) a slide
+    /// toward `target`; a settled slot already there just snaps.
+    fn retarget(&mut self, target: f32) {
+        if (self.to - target).abs() < POSITION_EPSILON {
+            if !self.is_animating() {
+                self.from = target;
+                self.to = target;
+                self.started_at = None;
+            }
+            return;
+        }
+        self.from = self.current();
+        self.to = target;
+        self.started_at = Some(Instant::now());
+    }
 }
 
 /// Per-widget state: the title paragraphs, cached across frames and
 /// rebuilt whenever a tab's title changes (measured once, then reused by
-/// layout, hit-testing and drawing), plus the last tab-body click for
-/// double-click detection (T6).
+/// layout, hit-testing and drawing), the last tab-body click for
+/// double-click detection (T6), and one slot slide per tab button (T7)
+/// for drag displacement and the settle after a release.
 #[derive(Default)]
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
     click: Option<click::Click>,
     drag: Option<Drag>,
+    slots: HashMap<TabId, SlotAnimation>,
+}
+
+impl State {
+    /// Snaps every finished slide onto its target.
+    fn settle_finished_slots(&mut self) {
+        for slot in self.slots.values_mut() {
+            slot.settle();
+        }
+    }
+
+    fn any_slot_animating(&self) -> bool {
+        self.slots.values().any(|slot| slot.is_animating())
+    }
+
+    /// Drops the slides of tabs that no longer exist.
+    fn prune_slots(&mut self, tabs: &[Tab]) {
+        self.slots
+            .retain(|id, _| tabs.iter().any(|tab| tab.id == *id));
+    }
 }
 
 /// The tab bar: one button per tab — title plus a close `×` — rendered by
@@ -470,6 +608,188 @@ where
             .collect();
         layout_buttons(bounds.width, &widths, &METRICS)
     }
+
+    /// Retargets every non-dragged button's slot animation to the slot
+    /// the in-progress drag leaves it (T7): its position in the
+    /// reordered row. Called on every cursor move once the drag has
+    /// crossed the threshold, so neighbors ease aside live.
+    fn retarget_displaced(&self, tree: &mut Tree, bounds: Rectangle) {
+        let Some((drag_id, cursor_x, grab_x)) = tree
+            .state
+            .downcast_ref::<State>()
+            .drag
+            .as_ref()
+            .filter(|drag| drag.started)
+            .map(|drag| (drag.tab, drag.x, drag.grab_x))
+        else {
+            return;
+        };
+        let state = tree.state.downcast_mut::<State>();
+        let Some(dragged) = self.tabs.iter().position(|tab| tab.id == drag_id) else {
+            return;
+        };
+        let buttons = self.button_geometry(state, bounds);
+        if buttons.get(dragged).is_none() {
+            return;
+        }
+        let widths: Vec<f32> = buttons.iter().map(|b| b.bounds.width).collect();
+        let drop = drop_from_followed(&buttons, dragged, cursor_x, grab_x);
+        let (targets, _) = displaced_row(&widths, dragged, drop, METRICS.button_gap);
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let Some(target) = targets[index] else {
+                continue;
+            };
+            let home = buttons[index].bounds.x;
+            state
+                .slots
+                .entry(tab.id)
+                .or_insert_with(|| SlotAnimation::new(home))
+                .retarget(target);
+        }
+    }
+}
+
+/// Everything [`TabBar::paint_button`] needs for one frame besides the
+/// button itself.
+struct PaintContext<'a> {
+    state: &'a State,
+    cosmic_theme: &'a cosmic::cosmic_theme::Theme,
+    /// Foreground for titles and close marks, derived from the pane
+    /// background (see `pane_colors`).
+    pane_fg: Color,
+    /// Bar-global cursor position, if it is over the bar.
+    hover_point: Option<Point>,
+}
+
+impl<'a, Message> TabBar<'a, Message>
+where
+    Message: Clone,
+{
+    /// Paints one tab button at bar-global `bounds`: pill background,
+    /// title, and close mark. `elevated` renders the dragged button
+    /// (T7) — a stronger pill with a drop shadow, drawn by the caller
+    /// after the rest of the row so it rides on top of its neighbors.
+    fn paint_button(
+        &self,
+        renderer: &mut Renderer,
+        ctx: &PaintContext<'_>,
+        tab: &Tab,
+        bounds: Rectangle,
+        is_active: bool,
+        elevated: bool,
+    ) {
+        let PaintContext {
+            state,
+            cosmic_theme,
+            pane_fg,
+            hover_point,
+        } = ctx;
+
+        let is_hovered = hover_point.is_some_and(|point| bounds.contains(point));
+
+        // Backgrounds and text colors mirror the native `TabBar`
+        // preset of libcosmic's segmented-button theme (pinned rev
+        // `08a09e3`): the active tab is neutral_5 at 0.2 alpha with
+        // the accent text color, hovered tabs get the subtler 0.1,
+        // inactive tabs stay flat. The dragged button carries the
+        // strongest pill and a shadow, reading as lifted.
+        let background: Option<Color> = if elevated {
+            Some(cosmic_theme.palette.neutral_5.with_alpha(0.3).into())
+        } else if is_active {
+            Some(cosmic_theme.palette.neutral_5.with_alpha(0.2).into())
+        } else if is_hovered {
+            Some(cosmic_theme.palette.neutral_5.with_alpha(0.1).into())
+        } else {
+            None
+        };
+        if let Some(background) = background {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Border {
+                        radius: cosmic_theme.radius_s().into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    shadow: if elevated {
+                        Shadow {
+                            color: Color {
+                                a: 0.35,
+                                ..Color::BLACK
+                            },
+                            blur_radius: 10.0,
+                            offset: Vector::new(0.0, 4.0),
+                        }
+                    } else {
+                        Shadow::default()
+                    },
+                    snap: true,
+                },
+                background,
+            );
+        }
+
+        let text_color: Color = if is_active {
+            cosmic_theme.accent_text_color().into()
+        } else {
+            // Luminance-derived against the pane background, so the
+            // label stays readable whatever theme/scheme combo is
+            // active (see `pane_colors`).
+            *pane_fg
+        };
+
+        // Title, clipped to the region between the button's left
+        // padding and its close target (long titles cut at the edge).
+        if let Some(paragraph) = state.paragraphs.get(&tab.id) {
+            let text_x = bounds.x + METRICS.button_padding_x;
+            let text_width = (bounds.width
+                - METRICS.button_padding_x * 2.0
+                - METRICS.close_size
+                - METRICS.text_gap)
+                .max(0.0);
+            let text_y = bounds.y + (bounds.height - paragraph.min_height()) / 2.0;
+            renderer.fill_paragraph(
+                paragraph.raw(),
+                Point::new(text_x, text_y),
+                text_color,
+                Rectangle::new(
+                    Point::new(text_x, bounds.y),
+                    Size::new(text_width, bounds.height),
+                ),
+            );
+        }
+
+        // Close button: a font-free `×` — squares marched along the
+        // two diagonals of the target — with a hover disc so the
+        // target reads as clickable at a glance. Rendering the mark
+        // directly (rather than a text glyph) keeps it centered and
+        // legible regardless of font metrics or fallback fonts.
+        let close = Rectangle::new(
+            Point::new(
+                bounds.x + bounds.width - METRICS.button_padding_x - METRICS.close_size,
+                bounds.y + (bounds.height - METRICS.close_size) / 2.0,
+            ),
+            Size::new(METRICS.close_size, METRICS.close_size),
+        );
+        let close_hovered = hover_point.is_some_and(|point| close.contains(point));
+        if close_hovered {
+            let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
+            renderer.fill_quad(
+                Quad {
+                    bounds: close,
+                    border: Border {
+                        radius: (close.height / 2.0).into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                hover_bg,
+            );
+        }
+        draw_close_mark(renderer, close, *pane_fg);
+    }
 }
 
 impl<'a, Message> Widget<Message, Theme, Renderer> for TabBar<'a, Message>
@@ -568,30 +888,79 @@ where
         // A double-click on a tab body starts an inline rename (T6), any
         // press outside the rename input ends one, and a left press on a
         // tab body that moves beyond a small threshold drags it (T7).
+        //
+        // Frame tick first (T7): settle finished slot slides and keep
+        // frames coming while a drag is live or a slide still moves —
+        // the redraw loop libcosmic's reorderable row runs. With no
+        // drag in flight the slides retarget to the row's static
+        // layout, which is what animates everything home after the
+        // app applies a completed reorder.
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+            let dragging = tree
+                .state
+                .downcast_ref::<State>()
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.started);
+            {
+                let state = tree.state.downcast_mut::<State>();
+                state.settle_finished_slots();
+                if !dragging {
+                    state.prune_slots(self.tabs);
+                    let buttons = self.button_geometry(state, layout.bounds());
+                    for (index, tab) in self.tabs.iter().enumerate() {
+                        let Some(button) = buttons.get(index) else {
+                            continue;
+                        };
+                        state
+                            .slots
+                            .entry(tab.id)
+                            .or_insert_with(|| SlotAnimation::new(button.bounds.x))
+                            .retarget(button.bounds.x);
+                    }
+                }
+            }
+            let animating = tree.state.downcast_ref::<State>().any_slot_animating();
+            if dragging || animating {
+                shell.request_redraw();
+            }
+            return;
+        }
+
         let button = match event {
             Event::Mouse(MouseEvent::ButtonPressed(button)) => *button,
             Event::Mouse(MouseEvent::CursorMoved { position }) => {
                 // Drag progress (T7): once the press crossed the
-                // threshold, follow the cursor's bar-local x. The release
-                // may land outside the bar — iced's column routes events
-                // to every child, whatever the cursor is over — so this
-                // is the position the drop is decided from.
+                // threshold, the pressed button follows the cursor's
+                // bar-local x (clamped to the row) and its neighbors
+                // retarget to the slots the drop would leave them in.
+                // The release may land outside the bar — iced's column
+                // routes events to every child, whatever the cursor is
+                // over — so this is the position the drop is decided
+                // from.
                 let origin = layout.bounds().position();
                 let local = Point::new(position.x - origin.x, position.y - origin.y);
-                let Some(drag) = tree.state.downcast_mut::<State>().drag.as_mut() else {
-                    return;
-                };
-                if !drag.started && (local.x - drag.origin.x).abs() < DRAG_THRESHOLD {
-                    return;
+                {
+                    let Some(drag) = tree.state.downcast_mut::<State>().drag.as_mut() else {
+                        return;
+                    };
+                    if !drag.started && (local.x - drag.origin.x).abs() < DRAG_THRESHOLD {
+                        return;
+                    }
+                    drag.started = true;
+                    drag.x = local.x;
                 }
-                drag.started = true;
-                drag.x = local.x;
+                shell.capture_event();
+                shell.request_redraw();
+                self.retarget_displaced(tree, layout.bounds());
                 return;
             }
             Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
                 // Drag finish (T7): a plain click already selected on
                 // press, so only a drag that crossed the threshold
-                // reports a move, dropped wherever the indicator last was.
+                // reports a move. The drop is decided by the followed
+                // button's center — the same rule the row painted — so
+                // the tab lands exactly where it looked like it would.
                 let state = tree.state.downcast_mut::<State>();
                 let Some(drag) = state.drag.take() else {
                     return;
@@ -603,11 +972,12 @@ where
                     return;
                 };
                 let buttons = self.button_geometry(state, layout.bounds());
-                let to = drop_index(&buttons, index, drag.x);
+                let to = drop_from_followed(&buttons, index, drag.x, drag.grab_x);
                 if let Some(message) = self.on_move.as_ref().map(|on_move| on_move(drag.tab, to)) {
                     shell.publish(message);
                     shell.capture_event();
                 }
+                shell.request_redraw();
                 return;
             }
             _ => return,
@@ -668,13 +1038,18 @@ where
         // A single left press on a tab body arms a potential drag (T7):
         // the press selects now, and crossing [`DRAG_THRESHOLD`] while
         // held turns it into a reorder — the native tab bar split between
-        // click and drag.
+        // click and drag. The grab offset is kept so the button can
+        // follow the cursor at the point it was caught.
         if !on_close {
+            let Some(pressed) = buttons.get(index) else {
+                return;
+            };
             state.drag = Some(Drag {
                 tab: tab.id,
                 origin: point,
                 started: false,
                 x: point.x,
+                grab_x: point.x - pressed.bounds.x,
             });
         }
 
@@ -757,104 +1132,72 @@ where
             pane_bg,
         );
 
+        // The drag's view of the row (T7): where the dragged button
+        // follows the cursor, where every other button's slot is
+        // headed, and where the drop indicator marks the landing.
+        let drag_view = state
+            .drag
+            .as_ref()
+            .filter(|drag| drag.started)
+            .and_then(|drag| {
+                let index = self.tabs.iter().position(|tab| tab.id == drag.tab)?;
+                let button = buttons.get(index)?;
+                let row_width = buttons
+                    .last()
+                    .map(|last| last.bounds.x + last.bounds.width)
+                    .unwrap_or(0.0);
+                let followed = followed_x(row_width, button.bounds.width, drag.x, drag.grab_x);
+                let drop = drop_from_followed(&buttons, index, drag.x, drag.grab_x);
+                let widths: Vec<f32> = buttons.iter().map(|b| b.bounds.width).collect();
+                let (_, indicator) = displaced_row(&widths, index, drop, METRICS.button_gap);
+                Some((index, followed, indicator))
+            });
+
+        // Slot animations only paint while they mean something: during
+        // a drag, or while a slide settles. Otherwise a stale slide
+        // (e.g. after a title change re-widens the row) could paint a
+        // button where the layout no longer puts it.
+        let animate = drag_view.is_some() || state.any_slot_animating();
+
+        let ctx = PaintContext {
+            state,
+            cosmic_theme,
+            pane_fg,
+            hover_point,
+        };
         for (index, (tab, button)) in self.tabs.iter().zip(&buttons).enumerate() {
-            let is_active = index == self.active;
-            let is_hovered = hover_point.is_some_and(|point| button.bounds.contains(point));
-
-            let bounds = button.bounds + Vector::new(origin.x, origin.y);
-
-            // Backgrounds and text colors mirror the native `TabBar`
-            // preset of libcosmic's segmented-button theme (pinned rev
-            // `08a09e3`): the active tab is neutral_5 at 0.2 alpha with
-            // the accent text color, hovered tabs get the subtler 0.1,
-            // inactive tabs stay flat.
-            let background: Option<Color> = if is_active {
-                Some(cosmic_theme.palette.neutral_5.with_alpha(0.2).into())
-            } else if is_hovered {
-                Some(cosmic_theme.palette.neutral_5.with_alpha(0.1).into())
-            } else {
-                None
-            };
-            if let Some(background) = background {
-                renderer.fill_quad(
-                    Quad {
-                        bounds,
-                        border: Border {
-                            radius: cosmic_theme.radius_s().into(),
-                            width: 0.0,
-                            color: Color::TRANSPARENT,
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    background,
-                );
+            if drag_view.is_some_and(|(dragged, ..)| dragged == index) {
+                continue; // the dragged button paints last, on top
             }
+            let slot_x = state
+                .slots
+                .get(&tab.id)
+                .map_or(button.bounds.x, |slot| slot.current());
+            let x = if animate { slot_x } else { button.bounds.x };
+            let bounds = Rectangle::new(
+                Point::new(origin.x + x, origin.y),
+                Size::new(button.bounds.width, METRICS.bar_height),
+            );
+            self.paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
+        }
 
-            let text_color: Color = if is_active {
-                cosmic_theme.accent_text_color().into()
-            } else {
-                // Luminance-derived against the pane background, so the
-                // label stays readable whatever theme/scheme combo is
-                // active (see `pane_colors`).
-                pane_fg
-            };
-
-            // Title, clipped to the region between the button's left
-            // padding and its close target (long titles cut at the edge).
-            if let Some(paragraph) = state.paragraphs.get(&tab.id) {
-                let text_x = bounds.x + METRICS.button_padding_x;
-                let text_width = (bounds.width
-                    - METRICS.button_padding_x * 2.0
-                    - METRICS.close_size
-                    - METRICS.text_gap)
-                    .max(0.0);
-                let text_y = bounds.y + (bounds.height - paragraph.min_height()) / 2.0;
-                renderer.fill_paragraph(
-                    paragraph.raw(),
-                    Point::new(text_x, text_y),
-                    text_color,
-                    Rectangle::new(
-                        Point::new(text_x, bounds.y),
-                        Size::new(text_width, bounds.height),
-                    ),
-                );
-            }
-
-            // Close button: a font-free `×` — squares marched along the
-            // two diagonals of the target — with a hover disc so the
-            // target reads as clickable at a glance. Rendering the mark
-            // directly (rather than a text glyph) keeps it centered and
-            // legible regardless of font metrics or fallback fonts.
-            let close = button.close + Vector::new(origin.x, origin.y);
-            let close_hovered = hover_point.is_some_and(|point| close.contains(point));
-            if close_hovered {
-                let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
-                renderer.fill_quad(
-                    Quad {
-                        bounds: close,
-                        border: Border {
-                            radius: (close.height / 2.0).into(),
-                            width: 0.0,
-                            color: Color::TRANSPARENT,
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    hover_bg,
-                );
-            }
-            draw_close_mark(renderer, close, pane_fg);
+        // The dragged button (T7): follows the cursor, lifted clear of
+        // the row and painted after its neighbors so it rides on top.
+        if let Some((index, followed, _)) = drag_view
+            && let (Some(tab), Some(button)) = (self.tabs.get(index), buttons.get(index))
+        {
+            let bounds = Rectangle::new(
+                Point::new(origin.x + followed, origin.y - DRAG_LIFT),
+                Size::new(button.bounds.width, METRICS.bar_height),
+            );
+            self.paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
         }
 
         // Drop indicator (T7): a vertical accent line in the slot the
         // drag currently lands in, between the buttons that would
-        // surround the dragged tab once it leaves the row.
-        if let Some(drag) = state.drag.as_ref().filter(|drag| drag.started)
-            && let Some(index) = self.tabs.iter().position(|tab| tab.id == drag.tab)
-        {
-            let drop = drop_index(&buttons, index, drag.x);
-            let x = origin.x + indicator_x(&buttons, index, drop, METRICS.button_gap);
+        // surround the dragged tab in the displaced row.
+        if let Some((_, _, indicator)) = drag_view {
+            let x = origin.x + indicator;
             renderer.fill_quad(
                 Quad {
                     bounds: Rectangle::new(
@@ -1210,29 +1553,102 @@ mod tests {
     }
 
     #[test]
-    fn indicator_x_sits_before_the_button_following_the_drop_slot() {
-        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
-        // Dropping tab 0 at slot 1: the row minus tab 0 is [b1, b2], and
-        // the slot's follower is b2, so the indicator precedes b2.
-        assert_eq!(indicator_x(&buttons, 0, 1, M.button_gap), 208.0 - 2.0);
+    fn displaced_row_holds_every_button_home_when_the_drop_slot_is_its_own() {
+        // Dragging the middle tab without passing a neighbor: the row
+        // it leaves behind is the row itself.
+        let widths = [90.0, 110.0, 90.0];
+        let (targets, indicator) = displaced_row(&widths, 1, 1, 4.0);
+        assert_eq!(targets, vec![Some(0.0), None, Some(208.0)]);
+        // The dragged tab's own slot starts at 94; the indicator sits
+        // in the gap before its left edge.
+        assert_eq!(indicator, 94.0 - 2.0);
     }
 
     #[test]
-    fn indicator_x_dropping_first_precedes_the_row() {
-        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
-        assert_eq!(indicator_x(&buttons, 1, 0, M.button_gap), 0.0 - 2.0);
+    fn displaced_row_shifts_followers_left_when_the_drag_moves_right() {
+        let widths = [90.0, 110.0, 90.0];
+        // Dragging tab 0 past tab 1: tab 1 takes the row's head, and
+        // tab 2 — already past the swap — keeps its slot.
+        let (targets, _) = displaced_row(&widths, 0, 1, 4.0);
+        assert_eq!(targets, vec![None, Some(0.0), Some(208.0)]);
     }
 
     #[test]
-    fn indicator_x_appending_at_the_end_follows_the_row() {
-        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
-        // Dropping tab 0 last: with tab 0 gone the row ends at b2's right
-        // edge (298), so the indicator lands half a gap past it.
-        assert_eq!(indicator_x(&buttons, 0, 2, M.button_gap), 298.0 + 2.0);
+    fn displaced_row_appends_the_dragged_tab_at_the_rows_new_end() {
+        let widths = [90.0, 110.0, 90.0];
+        // Dragging tab 0 last: the displaced row ends at 204, so the
+        // indicator lands half a gap past it.
+        let (targets, indicator) = displaced_row(&widths, 0, 2, 4.0);
+        assert_eq!(targets, vec![None, Some(0.0), Some(114.0)]);
+        assert_eq!(indicator, 114.0 + 90.0 + 2.0);
     }
 
     #[test]
-    fn indicator_x_on_an_empty_row_is_the_origin() {
-        assert_eq!(indicator_x(&[], 0, 0, M.button_gap), 0.0);
+    fn displaced_row_precedes_the_row_when_dropping_first() {
+        let widths = [90.0, 110.0, 90.0];
+        let (_, indicator) = displaced_row(&widths, 1, 0, 4.0);
+        assert_eq!(indicator, 0.0 - 2.0);
+    }
+
+    #[test]
+    fn followed_x_tracks_the_cursor_at_the_grab_offset() {
+        assert_eq!(followed_x(1000.0, 100.0, 300.0, 30.0), 270.0);
+    }
+
+    #[test]
+    fn followed_x_clamps_to_the_row() {
+        // Neither edge of the followed button may leave the row.
+        assert_eq!(followed_x(300.0, 100.0, 10_000.0, 30.0), 200.0);
+        assert_eq!(followed_x(300.0, 100.0, -50.0, 30.0), 0.0);
+    }
+
+    #[test]
+    fn drop_from_followed_decides_by_the_button_not_the_cursor() {
+        let buttons = geometry(&[40.0, 60.0, 40.0], 1000.0);
+        // Button 0 spans 0..90, button 1's center is at 149. Grabbed
+        // 80 into button 0, the cursor at 155 has crossed button 1's
+        // center — but the followed button's center (120) has not, so
+        // the slot holds.
+        assert_eq!(drop_from_followed(&buttons, 0, 155.0, 80.0), 0);
+        assert_eq!(drop_index(&buttons, 0, 155.0), 1);
+        // Deeper in, the button's own center passes 149 and the drop
+        // advances.
+        assert_eq!(drop_from_followed(&buttons, 0, 240.0, 80.0), 1);
+    }
+
+    #[test]
+    fn slot_slides_settle_on_their_target_and_stay_put() {
+        let mut slot = SlotAnimation::new(50.0);
+        slot.retarget(120.0);
+        assert!(slot.is_animating());
+        // Let the slide run out; it settles exactly on its target.
+        let deadline = Instant::now() + DRAG_ANIMATION + Duration::from_millis(50);
+        while slot.is_animating() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            slot.settle();
+        }
+        assert!(!slot.is_animating());
+        assert_eq!(slot.current(), 120.0);
+        // Retargeting a settled slot to the same spot restarts nothing.
+        slot.retarget(120.0);
+        assert!(!slot.is_animating());
+        assert_eq!(slot.current(), 120.0);
+    }
+
+    #[test]
+    fn slot_retarget_mid_slide_starts_from_where_it_paints() {
+        let mut slot = SlotAnimation::new(0.0);
+        slot.retarget(100.0);
+        assert!(slot.is_animating());
+        // Mid-slide, retarget back toward the start: the new slide
+        // begins from wherever the first one currently paints, not from
+        // either endpoint.
+        slot.retarget(0.0);
+        assert!(slot.is_animating());
+        let current = slot.current();
+        assert!(
+            current > 0.0 && current < 100.0,
+            "retarget should start mid-slide, got {current}"
+        );
     }
 }
