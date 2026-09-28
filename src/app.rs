@@ -11,8 +11,8 @@ use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, get_layer_surface, set_anchor, set_exclusive_zone,
-    set_keyboard_interactivity, set_layer, set_size,
+    destroy_layer_surface, get_layer_surface, set_exclusive_zone, set_keyboard_interactivity,
+    set_layer,
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
@@ -22,6 +22,7 @@ use cosmic::{Application, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
+use crate::geometry::{self, Geometry};
 use crate::keybinds::{self, default_key_binds};
 use crate::surface;
 use crate::tab_bar::TabBar;
@@ -153,6 +154,10 @@ pub struct DropTerm {
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
     surface: SurfaceState,
+    /// The output size measured by the last `SurfaceOpened`, kept so
+    /// later reshapes (config edits, drag) can recompute pixels without
+    /// a new measuring pass (see `geometry.rs`).
+    output_size: Option<(u32, u32)>,
     /// Granted height of the shown surface, from `WindowResized` events.
     /// The basis for pinning the terminal widget's height so the tab bar
     /// gets its strip inside the fixed-size surface.
@@ -588,6 +593,7 @@ impl Application for DropTerm {
             rename: None,
             rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
+            output_size: None,
             window_height: None,
             surface_focused: false,
             key_binds: default_key_binds(),
@@ -720,12 +726,16 @@ impl Application for DropTerm {
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
             Message::SurfaceOpened(id, size) => {
                 if self.surface == SurfaceState::Measuring(id) {
-                    let height_px =
-                        surface::surface_height(size.height, self.config.height_percent);
+                    // The measuring pass stretched across the output, so
+                    // its first `Opened` size *is* the output size. Keep
+                    // it: every later reshape recomputes pixels from it
+                    // without a new measuring pass.
+                    let output = (size.width.round() as u32, size.height.round() as u32);
+                    self.output_size = Some(output);
+                    let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
                     return Task::batch([
-                        set_anchor(id, surface::edge_anchor(self.config.edge)),
-                        set_size(id, None, Some(height_px)),
+                        geometry::apply_geometry(id, &geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
                         set_keyboard_interactivity(
                             id,

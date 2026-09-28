@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod geometry;
 mod keybinds;
 mod surface;
 mod tab_bar;

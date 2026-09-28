@@ -9,6 +9,10 @@ pub const DEFAULT_HEIGHT_PERCENT: u8 = 40;
 pub const MIN_HEIGHT_PERCENT: u8 = 10;
 pub const MAX_HEIGHT_PERCENT: u8 = 100;
 
+pub const DEFAULT_WIDTH_PERCENT: u8 = 100;
+pub const MIN_WIDTH_PERCENT: u8 = 30;
+pub const MAX_WIDTH_PERCENT: u8 = 100;
+
 pub const COSMIC_THEME_DARK: &str = "COSMIC Dark";
 pub const COSMIC_THEME_LIGHT: &str = "COSMIC Light";
 
@@ -27,6 +31,18 @@ impl std::fmt::Display for Edge {
             Self::Bottom => write!(f, "bottom"),
         }
     }
+}
+
+/// Horizontal placement of the surface within the output (geometry spec).
+///
+/// Moot while `width_percent` is 100 (the surface fills the output);
+/// meaningful the moment the width is lowered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
 }
 
 /// Which wlr-layer-shell layer the surface is created on.
@@ -57,6 +73,11 @@ pub enum KeyboardMode {
 pub struct DropTermConfig {
     /// Height of the surface as a percentage of the output height.
     pub height_percent: u8,
+    /// Width of the surface as a percentage of the output width,
+    /// 30-100. 100 (the default) keeps the v1 full-width surface.
+    pub width_percent: u8,
+    /// Horizontal placement within the output (moot at full width).
+    pub h_align: HAlign,
     /// Screen edge the surface is anchored to.
     pub edge: Edge,
     /// Layer-shell layer the surface is created on.
@@ -93,6 +114,8 @@ impl Default for DropTermConfig {
     fn default() -> Self {
         Self {
             height_percent: DEFAULT_HEIGHT_PERCENT,
+            width_percent: DEFAULT_WIDTH_PERCENT,
+            h_align: HAlign::default(),
             edge: Edge::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
@@ -117,6 +140,9 @@ impl DropTermConfig {
         self.height_percent = self
             .height_percent
             .clamp(MIN_HEIGHT_PERCENT, MAX_HEIGHT_PERCENT);
+        self.width_percent = self
+            .width_percent
+            .clamp(MIN_WIDTH_PERCENT, MAX_WIDTH_PERCENT);
         self.opacity = self.opacity.min(100);
         self
     }
@@ -140,6 +166,8 @@ mod tests {
     fn defaults_are_sane() {
         let config = DropTermConfig::default();
         assert_eq!(config.height_percent, DEFAULT_HEIGHT_PERCENT);
+        assert_eq!(config.width_percent, DEFAULT_WIDTH_PERCENT);
+        assert_eq!(config.h_align, HAlign::Center);
         assert_eq!(config.edge, Edge::Top);
         assert_eq!(config.layer, Layer::Overlay);
         assert_eq!(config.keyboard_mode, KeyboardMode::Exclusive);
@@ -171,6 +199,30 @@ mod tests {
         };
         config = config.clamped();
         assert_eq!(config.height_percent, 60);
+    }
+
+    #[test]
+    fn width_percent_is_clamped_into_range() {
+        let mut config = DropTermConfig {
+            width_percent: 0,
+            ..DropTermConfig::default()
+        };
+        config = config.clamped();
+        assert_eq!(config.width_percent, MIN_WIDTH_PERCENT);
+
+        let mut config = DropTermConfig {
+            width_percent: 255,
+            ..DropTermConfig::default()
+        };
+        config = config.clamped();
+        assert_eq!(config.width_percent, MAX_WIDTH_PERCENT);
+
+        let mut config = DropTermConfig {
+            width_percent: 60,
+            ..DropTermConfig::default()
+        };
+        config = config.clamped();
+        assert_eq!(config.width_percent, 60);
     }
 
     #[test]
