@@ -9,6 +9,8 @@
 //! (show, config reshape, drag) funnels through [`apply_geometry`], so
 //! no path can leave a stale anchor, margin, or size behind.
 
+use std::time::Duration;
+
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
     Anchor, set_anchor, set_margin, set_size,
 };
@@ -183,6 +185,75 @@ pub fn drag_height_percent(
     percent
         .round()
         .clamp(f32::from(MIN_HEIGHT_PERCENT), f32::from(MAX_HEIGHT_PERCENT)) as u8
+}
+
+/// How long after a grab-bar drag settles before its height percent is
+/// persisted to config (geometry spec, G4): long enough that rapid
+/// re-drags coalesce into one write, short enough that a hide/show
+/// right after a drag soon reopens at the persisted height.
+pub const WRITE_BACK_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// A drag-release config persist that has been scheduled but not yet
+/// written (geometry spec, G4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingWrite {
+    /// Which drag release owns this write. Every new release bumps the
+    /// generation, orphaning the `WriteDue` messages of older ones.
+    pub generation: u32,
+    /// The settled height percent, captured at release so whatever
+    /// happens inside the debounce window — including a hide/show —
+    /// cannot change what lands in the file.
+    pub height_percent: u8,
+}
+
+/// State of the debounced drag-release config write (geometry spec,
+/// G4): pure bookkeeping over generations. The wait itself is a
+/// `tokio::time::sleep` the app tasks in, so this machine needs no
+/// clock and stays headless-testable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteBack {
+    /// Source of monotonically increasing write generations, never
+    /// reused within a run.
+    next_generation: u32,
+    pending: Option<PendingWrite>,
+}
+
+impl WriteBack {
+    /// Schedules the delayed persist of a drag release, returning the
+    /// pending write its `WriteDue` message must carry. Scheduling
+    /// again — a newer drag settling inside the window — supersedes the
+    /// earlier write, whose `WriteDue` turns stale.
+    pub fn schedule(&mut self, height_percent: u8) -> PendingWrite {
+        let pending = PendingWrite {
+            generation: self.next_generation,
+            height_percent,
+        };
+        self.next_generation += 1;
+        self.pending = Some(pending);
+        pending
+    }
+
+    /// Takes the pending write when `generation` still owns it. `None`
+    /// for a stale generation — a newer drag rescheduled — or one
+    /// already written.
+    pub fn due(&mut self, generation: u32) -> Option<PendingWrite> {
+        match self.pending {
+            Some(pending) if pending.generation == generation => self.pending.take(),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a [`ConfigChanged`] echo is our own geometry write coming
+/// back (geometry spec, G4): all four geometry fields equal to the last
+/// write's. Compares config fields, never pixels — percent↔px
+/// quantization makes pixel comparison flaky. A match is absorbed
+/// (applied silently, no rewrite, no reshape, record cleared); anything
+/// else is an external edit and reshapes live via G2.
+///
+/// [`ConfigChanged`]: crate::app::Message::ConfigChanged
+pub fn is_own_write(written: &Geometry, echo: &Geometry) -> bool {
+    written == echo
 }
 
 #[cfg(test)]
@@ -457,5 +528,84 @@ mod tests {
         assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 4.0), 40);
         assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 104.0), 50);
         assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 105.0), 51);
+    }
+
+    #[test]
+    fn release_schedules_one_write_due_at_its_generation() {
+        // Release -> window -> write: the settled percent is captured
+        // when the drag is released — so a hide/show inside the window
+        // cannot change what lands — and exactly the `WriteDue`
+        // carrying the scheduled generation consumes it.
+        let mut write_back = WriteBack::default();
+        let pending = write_back.schedule(42);
+        assert_eq!(pending.height_percent, 42);
+        assert_eq!(write_back.due(pending.generation), Some(pending));
+        assert_eq!(write_back.due(pending.generation), None);
+    }
+
+    #[test]
+    fn newer_release_cancels_the_stale_write() {
+        // A second drag settling inside the window reschedules: the
+        // first generation's `WriteDue` goes stale and must not write
+        // the first drag's percent (rapid re-drags coalesce into the
+        // newest settle).
+        let mut write_back = WriteBack::default();
+        let stale = write_back.schedule(42);
+        let current = write_back.schedule(50);
+        assert_ne!(stale.generation, current.generation);
+        assert_eq!(write_back.due(stale.generation), None);
+        assert_eq!(
+            write_back
+                .due(current.generation)
+                .map(|pending| pending.height_percent),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn own_write_echo_matches_the_written_geometry() {
+        let written = Geometry {
+            edge: Edge::Top,
+            height_percent: 42,
+            width_percent: 80,
+            h_align: HAlign::Center,
+        };
+        assert!(is_own_write(&written, &written));
+    }
+
+    #[test]
+    fn external_edit_does_not_match_the_own_write_record() {
+        // Any of the four geometry fields differing means the
+        // `ConfigChanged` is someone else's write (a human editing the
+        // file): absorb nothing and let G2 reshape live.
+        let written = Geometry {
+            edge: Edge::Top,
+            height_percent: 42,
+            width_percent: 80,
+            h_align: HAlign::Center,
+        };
+        for edited in [
+            Geometry {
+                edge: Edge::Bottom,
+                ..written
+            },
+            Geometry {
+                height_percent: 43,
+                ..written
+            },
+            Geometry {
+                width_percent: 81,
+                ..written
+            },
+            Geometry {
+                h_align: HAlign::Left,
+                ..written
+            },
+        ] {
+            assert!(
+                !is_own_write(&written, &edited),
+                "{edited:?} must not match {written:?}"
+            );
+        }
     }
 }

@@ -6,7 +6,7 @@ use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 use cosmic::app::{Core, Task};
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::cosmic_config::{self, ConfigSet as _, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
@@ -123,6 +123,11 @@ pub enum Message {
     /// A grab bar drag ended (geometry spec, G3): the surface keeps the
     /// height it settled at; persisting it is G4.
     GrabBarReleased,
+    /// The debounce window for a drag-release height write elapsed
+    /// (geometry spec, G4): the generation that scheduled it, checked
+    /// against the current pending write so a newer drag's schedule
+    /// cancels this stale one.
+    WriteDue(u32),
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -148,10 +153,10 @@ struct DragResize {
 
 pub struct DropTerm {
     core: Core,
-    /// Kept for a future settings page (see the ROADMAP's v2 "Settings
-    /// page UI" item); v1 only reads config, live-reloaded through
-    /// `subscription()`, and never writes it back.
-    #[allow(dead_code)]
+    /// Config backend, consumed by the drag-resize write-back (geometry
+    /// spec, G4): `set("height_percent", …)` persists a settled drag.
+    /// `None` when the config failed to open at init — writes are
+    /// skipped, everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
     /// The overlay's terminals in tab order. Never empty while a surface
@@ -171,6 +176,13 @@ pub struct DropTerm {
     rename: Option<RenameEdit>,
     /// An in-progress grab-bar height drag, if any (geometry spec, G3).
     drag: Option<DragResize>,
+    /// Debounced drag-release config-write state (geometry spec, G4):
+    /// which release's persist is still pending.
+    write_back: geometry::WriteBack,
+    /// The geometry of our last config write, kept to recognize and
+    /// absorb its `ConfigChanged` echo (geometry spec, G4). Cleared on
+    /// absorption.
+    last_written: Option<Geometry>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
     surface: SurfaceState,
@@ -628,6 +640,8 @@ impl Application for DropTerm {
             next_tab_id: 0,
             rename: None,
             drag: None,
+            write_back: geometry::WriteBack::default(),
+            last_written: None,
             rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
             output_size: None,
@@ -755,6 +769,19 @@ impl Application for DropTerm {
                 let new_geom = Geometry::from_config(&config);
                 self.config = config;
                 self.apply_config_to_tabs();
+                // Our own write's echo (geometry spec, G4): geometry
+                // matching the last write is absorbed — the in-memory
+                // config already agrees (updated at release), so no
+                // rewrite and no reshape; only the record is cleared.
+                // A stale record that never matches is harmless: an
+                // echo matching all four fields needs no reshape
+                // anyway.
+                if let Some(written) = self.last_written
+                    && geometry::is_own_write(&written, &new_geom)
+                {
+                    self.last_written = None;
+                    return Task::none();
+                }
                 // Geometry edits reshape a shown surface in place
                 // (geometry spec, G2) — no destroy/recreate; a hidden
                 // surface just opens with the new geometry. Non-geometry
@@ -909,8 +936,12 @@ impl Application for DropTerm {
                 }
             }
             Message::GrabBarReleased => {
-                // The surface keeps the height it settled at; nothing
-                // is persisted (that is G4). Re-applying also flushes a
+                // The surface keeps the height it settled at (G3), and
+                // the settle is persisted (G4): the in-memory config
+                // updates immediately — so a hide/show inside the
+                // debounce window reopens at the new height — and one
+                // write follows after the window, canceled by any newer
+                // drag that settles first. Re-applying also flushes a
                 // config edit that arrived mid-drag and was deferred
                 // (see `ConfigChanged`): width and alignment come from
                 // the current config, the height from the drag — the
@@ -919,7 +950,49 @@ impl Application for DropTerm {
                     (self.drag.take(), &self.surface, self.output_size)
                 {
                     let geom = self.drag_geometry(drag.anchored_percent, drag.total_dy, output);
+                    // Write-only-if-changed: a drag that settles back
+                    // on the config's current percent persists nothing.
+                    if geom.height_percent != self.config.height_percent {
+                        self.config.height_percent = geom.height_percent;
+                        let generation = self.write_back.schedule(geom.height_percent).generation;
+                        return Task::batch([
+                            geometry::apply_geometry(*id, &geom, output),
+                            Task::perform(
+                                tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
+                                move |_| cosmic::Action::App(Message::WriteDue(generation)),
+                            ),
+                        ]);
+                    }
                     return geometry::apply_geometry(*id, &geom, output);
+                }
+            }
+            Message::WriteDue(generation) => {
+                // The debounce window elapsed: persist the settled
+                // height once — unless a newer drag rescheduled (the
+                // stale generation finds nothing pending). Without a
+                // config backend (it failed to open at init) the write
+                // is logged and skipped: the drag itself still resized
+                // live. The written geometry is recorded so the
+                // resulting `ConfigChanged` echo is absorbed instead of
+                // reshaping (see `ConfigChanged`).
+                if let Some(pending) = self.write_back.due(generation) {
+                    match &self.config_handler {
+                        Some(handler) => {
+                            match handler.set("height_percent", pending.height_percent) {
+                                Ok(()) => {
+                                    let mut written = Geometry::from_config(&self.config);
+                                    written.height_percent = pending.height_percent;
+                                    self.last_written = Some(written);
+                                }
+                                Err(err) => {
+                                    log::warn!("failed to persist height_percent: {err}");
+                                }
+                            }
+                        }
+                        None => {
+                            log::warn!("no config handler; skipping height_percent write");
+                        }
+                    }
                 }
             }
             Message::OpenHyperlink(url) => {
