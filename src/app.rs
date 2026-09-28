@@ -714,8 +714,20 @@ impl Application for DropTerm {
         match message {
             Message::ToggleAction(action) => return self.debounced_toggle(action),
             Message::ConfigChanged(config) => {
+                let old_geom = Geometry::from_config(&self.config);
+                let new_geom = Geometry::from_config(&config);
                 self.config = config;
                 self.apply_config_to_tabs();
+                // Geometry edits reshape a shown surface in place
+                // (geometry spec, G2) — no destroy/recreate; a hidden
+                // surface just opens with the new geometry. Non-geometry
+                // edits leave the surface alone.
+                if geometry::geometry_changed(&old_geom, &new_geom)
+                    && let (SurfaceState::Shown(id), Some(output)) =
+                        (&self.surface, self.output_size)
+                {
+                    return geometry::apply_geometry(*id, &new_geom, output);
+                }
             }
             Message::TermEventTx(tx) => {
                 if self.term_event_tx.is_none() {

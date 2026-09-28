@@ -139,6 +139,16 @@ pub fn apply_geometry<M: 'static>(id: window::Id, geom: &Geometry, output: (u32,
     ])
 }
 
+/// Whether two geometries differ in any field that shapes the surface.
+///
+/// The gate for in-place reshapes on config edits (geometry spec, G2):
+/// non-geometry config changes (font, colors, …) compare equal, so they
+/// never touch the surface; a hidden surface just applies the new
+/// geometry on its next show.
+pub fn geometry_changed(old: &Geometry, new: &Geometry) -> bool {
+    old != new
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +292,63 @@ mod tests {
             h_align: HAlign::Left,
         };
         assert_eq!(requested_size(&geom, OUTPUT), (Some(1152), 432));
+    }
+
+    #[test]
+    fn geometry_changed_is_false_for_identical_geometry() {
+        let geom = Geometry::from_config(&DropTermConfig::default());
+        assert!(!geometry_changed(&geom, &geom));
+    }
+
+    #[test]
+    fn geometry_changed_fires_for_each_geometry_field() {
+        let base = Geometry {
+            edge: Edge::Top,
+            height_percent: 40,
+            width_percent: 60,
+            h_align: HAlign::Left,
+        };
+        let mutations = [
+            Geometry {
+                edge: Edge::Bottom,
+                ..base
+            },
+            Geometry {
+                height_percent: 41,
+                ..base
+            },
+            Geometry {
+                width_percent: 61,
+                ..base
+            },
+            Geometry {
+                h_align: HAlign::Right,
+                ..base
+            },
+        ];
+        for mutated in mutations {
+            assert!(
+                geometry_changed(&base, &mutated),
+                "expected a change for {mutated:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_changed_ignores_non_geometry_config_fields() {
+        // Font, opacity, scrollback, … edits must not reshape the
+        // surface (geometry spec, G2): only the four geometry fields
+        // count.
+        let old = Geometry::from_config(&DropTermConfig::default());
+        let edited = DropTermConfig {
+            font_name: "Fira Code".to_string(),
+            font_size: 20,
+            opacity: 50,
+            scrollback_lines: 1_000,
+            ..DropTermConfig::default()
+        };
+        let new = Geometry::from_config(&edited);
+        assert!(!geometry_changed(&old, &new));
     }
 
     #[test]
