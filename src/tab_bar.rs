@@ -107,6 +107,39 @@ fn readable_foreground(background: Color) -> Color {
     }
 }
 
+/// Draws a `×` inside `close` as squares marched along both diagonals.
+///
+/// The mark spans the middle of the target with a small inset, so it
+/// clears the hover disc's edge; `thickness` and arm length scale with
+/// the target size.
+fn draw_close_mark(renderer: &mut Renderer, close: Rectangle, color: Color) {
+    let thickness = (close.width / 9.0).max(2.0);
+    let half = close.width / 2.0 - close.width / 4.5;
+    let (cx, cy) = (close.x + close.width / 2.0, close.y + close.height / 2.0);
+    let steps = half as usize;
+    for step in 0..=steps.max(1) {
+        let t = -half + 2.0 * half * (step as f32 / steps.max(1) as f32);
+        for dx in [t, -t] {
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(
+                        Point::new(cx + dx - thickness / 2.0, cy + t - thickness / 2.0),
+                        Size::new(thickness, thickness),
+                    ),
+                    border: Border {
+                        radius: 0.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: false,
+                    ..Default::default()
+                },
+                color,
+            );
+        }
+    }
+}
+
 /// Named through the iced core because libcosmic keeps its own `Plain`
 /// alias private (pinned rev `08a09e3`).
 type TitleParagraph = paragraph::Plain<<Renderer as cosmic::iced::core::text::Renderer>::Paragraph>;
@@ -788,25 +821,30 @@ where
                 );
             }
 
-            // Close button: a `×` glyph centered in its target rect.
+            // Close button: a font-free `×` — squares marched along the
+            // two diagonals of the target — with a hover disc so the
+            // target reads as clickable at a glance. Rendering the mark
+            // directly (rather than a text glyph) keeps it centered and
+            // legible regardless of font metrics or fallback fonts.
             let close = button.close + Vector::new(origin.x, origin.y);
-            renderer.fill_text(
-                Text {
-                    content: "×".to_owned(),
-                    bounds: Size::new(close.width, close.height),
-                    size: Pixels(TITLE_FONT_SIZE),
-                    line_height: LineHeight::default(),
-                    font: renderer.default_font(),
-                    align_x: cosmic::iced::core::text::Alignment::Center,
-                    align_y: alignment::Vertical::Center,
-                    shaping: Shaping::Basic,
-                    wrapping: Wrapping::default(),
-                    ellipsize: Ellipsize::None,
-                },
-                close.position(),
-                text_color,
-                close,
-            );
+            let close_hovered = hover_point.is_some_and(|point| close.contains(point));
+            if close_hovered {
+                let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
+                renderer.fill_quad(
+                    Quad {
+                        bounds: close,
+                        border: Border {
+                            radius: (close.height / 2.0).into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    hover_bg,
+                );
+            }
+            draw_close_mark(renderer, close, pane_fg);
         }
 
         // Drop indicator (T7): a vertical accent line in the slot the

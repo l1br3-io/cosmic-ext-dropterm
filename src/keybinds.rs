@@ -67,6 +67,14 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind_named(&[Modifier::Ctrl], Named::PageDown),
         Action::NextTab,
     );
+    // Browser-style cycling (Firefox): Ctrl+Tab / Ctrl+Shift+Tab walk
+    // forward and backward through the tab list, alongside the
+    // Ctrl+PageUp/PageDown binds above.
+    map.insert(bind_named(&[Modifier::Ctrl], Named::Tab), Action::NextTab);
+    map.insert(
+        bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::Tab),
+        Action::PrevTab,
+    );
     map
 }
 
@@ -212,6 +220,43 @@ mod tests {
                 &Key::Named(Named::PageDown),
                 None
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_to_the_next_tab_browser_style() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Named(Named::Tab), None),
+            Some(Action::NextTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_tab_cycles_to_the_previous_tab_browser_style() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Named(Named::Tab),
+                None
+            ),
+            Some(Action::PrevTab)
+        );
+    }
+
+    #[test]
+    fn bare_tab_stays_free_for_the_terminal() {
+        // Tab completion must keep reaching the shell.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::empty(), &Key::Named(Named::Tab), None),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::SHIFT, &Key::Named(Named::Tab), None),
             None
         );
     }
