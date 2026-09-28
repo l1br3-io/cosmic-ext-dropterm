@@ -53,10 +53,60 @@ use cosmic::iced::{
 use cosmic::theme::Theme;
 use cosmic::{Element, Renderer, cosmic_theme::palette::WithAlpha};
 
+use crate::terminal::WINDOW_BG_COLOR;
+
 use crate::tabs::{Tab, TabId};
 
 /// A cached title paragraph, one per tab, keyed by [`TabId`].
 ///
+/// The bar's background and a text color readable on it.
+///
+/// The strip is painted with the terminal pane's effective background
+/// ([`WINDOW_BG_COLOR`]) instead of relying on the window clear color:
+/// the two can disagree when the COSMIC system theme and the terminal
+/// color scheme diverge, which left the bar as an unreadable foreign
+/// strip that users read as window chrome rather than tabs. Text picks
+/// near-black or near-white by the background's luminance so labels and
+/// close glyphs stay readable in either scheme.
+fn pane_colors() -> (Color, Color) {
+    let packed = WINDOW_BG_COLOR.load(std::sync::atomic::Ordering::SeqCst);
+    let background = Color::from_rgba8(
+        ((packed >> 16) & 0xFF) as u8,
+        ((packed >> 8) & 0xFF) as u8,
+        (packed & 0xFF) as u8,
+        1.0,
+    );
+    // Slightly darken the pane color for the strip so the bar reads as
+    // its own band instead of blending into the terminal area.
+    let strip = Color {
+        r: background.r * 0.92,
+        g: background.g * 0.92,
+        b: background.b * 0.92,
+        a: 1.0,
+    };
+    (strip, readable_foreground(background))
+}
+
+/// Near-black or near-white text for `background`, by relative
+/// luminance (WCAG definition).
+fn readable_foreground(background: Color) -> Color {
+    fn channel(c: f32) -> f32 {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let luminance = 0.2126 * channel(background.r)
+        + 0.7152 * channel(background.g)
+        + 0.0722 * channel(background.b);
+    if luminance > 0.5 {
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0)
+    } else {
+        Color::from_rgba8(0xF5, 0xF5, 0xFF, 1.0)
+    }
+}
+
 /// Named through the iced core because libcosmic keeps its own `Plain`
 /// alias private (pinned rev `08a09e3`).
 type TitleParagraph = paragraph::Plain<<Renderer as cosmic::iced::core::text::Renderer>::Paragraph>;
@@ -655,6 +705,25 @@ where
         let buttons = self.button_geometry(state, layout.bounds());
         let hover_point = cursor_position.position_in(layout.bounds());
 
+        // The strip's own opaque background: matching the terminal pane
+        // makes the bar part of the terminal surface instead of a strip
+        // of window clear color (which follows the system theme and can
+        // disagree with the terminal scheme).
+        let (pane_bg, pane_fg) = pane_colors();
+        renderer.fill_quad(
+            Quad {
+                bounds: layout.bounds(),
+                border: Border {
+                    radius: 0.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            pane_bg,
+        );
+
         for (index, (tab, button)) in self.tabs.iter().zip(&buttons).enumerate() {
             let is_active = index == self.active;
             let is_hovered = hover_point.is_some_and(|point| button.bounds.contains(point));
@@ -692,11 +761,10 @@ where
             let text_color: Color = if is_active {
                 cosmic_theme.accent_text_color().into()
             } else {
-                cosmic_theme
-                    .background(theme.transparent)
-                    .component
-                    .on
-                    .into()
+                // Luminance-derived against the pane background, so the
+                // label stays readable whatever theme/scheme combo is
+                // active (see `pane_colors`).
+                pane_fg
             };
 
             // Title, clipped to the region between the button's left
@@ -881,6 +949,46 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_foreground_is_dark_on_light_panes() {
+        // The light COSMIC scheme's lavender background.
+        let fg = readable_foreground(Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0));
+        assert!(
+            (fg.r + fg.g + fg.b) / 3.0 < 0.2,
+            "expected near-black, got {fg:?}"
+        );
+    }
+
+    #[test]
+    fn readable_foreground_is_light_on_dark_panes() {
+        // A dark scheme background.
+        let fg = readable_foreground(Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0));
+        assert!(
+            (fg.r + fg.g + fg.b) / 3.0 > 0.8,
+            "expected near-white, got {fg:?}"
+        );
+    }
+
+    #[test]
+    fn pane_colors_derives_text_from_the_stored_pane_background() {
+        // Drive the process-global with a known light pane (the COSMIC
+        // light scheme's lavender) so the assertions are deterministic.
+        let saved = WINDOW_BG_COLOR.swap(0xAACCD0DE, std::sync::atomic::Ordering::SeqCst);
+        let (strip, fg) = pane_colors();
+        WINDOW_BG_COLOR.store(saved, std::sync::atomic::Ordering::SeqCst);
+
+        let pane = Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0);
+        let mean = |c: Color| (c.r + c.g + c.b) / 3.0;
+        assert!(
+            mean(strip) < mean(pane),
+            "strip {strip:?} should be darker than pane {pane:?}"
+        );
+        assert!(
+            mean(fg) < 0.2,
+            "expected near-black text on a light pane, got {fg:?}"
+        );
+    }
 
     /// Tests run against a small, easy-to-reason-about metrics set.
     const M: BarMetrics = BarMetrics {
