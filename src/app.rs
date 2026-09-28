@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
 use crate::geometry::{self, Geometry};
+use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
 use crate::surface;
 use crate::tab_bar::TabBar;
@@ -115,6 +116,13 @@ pub enum Message {
     /// A tab was dragged to a new position in the bar (tabs spec, T7):
     /// the dragged tab's id and the index it was dropped at.
     TabMoved(TabId, usize),
+    /// The grab bar was dragged (geometry spec, G3): the pointer's y
+    /// travel since the last move, in surface pixels (positive is
+    /// downward).
+    GrabBarDragged(f32),
+    /// A grab bar drag ended (geometry spec, G3): the surface keeps the
+    /// height it settled at; persisting it is G4.
+    GrabBarReleased,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -126,6 +134,16 @@ pub enum Message {
 struct RenameEdit {
     tab: TabId,
     draft: String,
+}
+
+/// An in-progress grab-bar height drag (geometry spec, G3): the height
+/// percent the surface had when the drag began, and the pointer's
+/// accumulated y travel since. Anchoring at the press — rather than
+/// growing the last applied percent per move — keeps slow, sub-percent
+/// drags alive (see `geometry::drag_height_percent`).
+struct DragResize {
+    anchored_percent: u8,
+    total_dy: f32,
 }
 
 pub struct DropTerm {
@@ -151,6 +169,8 @@ pub struct DropTerm {
     /// being renamed and the current draft, mirrored into the input the
     /// tab bar overlays on the renamed button.
     rename: Option<RenameEdit>,
+    /// An in-progress grab-bar height drag, if any (geometry spec, G3).
+    drag: Option<DragResize>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
     surface: SurfaceState,
@@ -293,6 +313,9 @@ impl DropTerm {
             SurfaceState::Hidden => Task::none(),
         };
         self.surface = SurfaceState::Hidden;
+        // The surface is gone: any live grab-bar drag is moot (geometry
+        // spec, G3).
+        self.drag = None;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
@@ -315,6 +338,19 @@ impl DropTerm {
             return Task::batch([commit, self.hide()]);
         }
         commit
+    }
+
+    /// The geometry a live grab-bar drag currently implies (geometry
+    /// spec, G3): the current config's geometry with the height replaced
+    /// by the drag's target — width and alignment always follow the
+    /// config (a drag can never snap a narrow surface to fill), only
+    /// the height follows the pointer. Takes the drag's scalars so the
+    /// caller can finish mutating the drag state before calling.
+    fn drag_geometry(&self, anchored_percent: u8, total_dy: f32, output: (u32, u32)) -> Geometry {
+        let mut geom = Geometry::from_config(&self.config);
+        geom.height_percent =
+            geometry::drag_height_percent(self.config.edge, output.1, anchored_percent, total_dy);
+        geom
     }
 
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
@@ -591,6 +627,7 @@ impl Application for DropTerm {
             term_event_tx: None,
             next_tab_id: 0,
             rename: None,
+            drag: None,
             rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
             output_size: None,
@@ -721,8 +758,14 @@ impl Application for DropTerm {
                 // Geometry edits reshape a shown surface in place
                 // (geometry spec, G2) — no destroy/recreate; a hidden
                 // surface just opens with the new geometry. Non-geometry
-                // edits leave the surface alone.
+                // edits leave the surface alone. A geometry edit that
+                // arrives mid-drag (G3+) is deferred until release, so
+                // config reshapes and drag deltas never interleave
+                // `set_size` calls on one surface; the release's apply
+                // picks the config's other fields up (see
+                // `GrabBarReleased`).
                 if geometry::geometry_changed(&old_geom, &new_geom)
+                    && self.drag.is_none()
                     && let (SurfaceState::Shown(id), Some(output)) =
                         (&self.surface, self.output_size)
                 {
@@ -846,6 +889,39 @@ impl Application for DropTerm {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
                 }
             }
+            Message::GrabBarDragged(dy) => {
+                // Live drag (geometry spec, G3): anchor at the first
+                // delta — the percent the surface had when the drag
+                // began — then send every move through the single
+                // geometry path. Config is never touched while dragging
+                // (a "never" boundary of the module); persistence is G4.
+                if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size) {
+                    let (anchored_percent, total_dy) = {
+                        let drag = self.drag.get_or_insert_with(|| DragResize {
+                            anchored_percent: Geometry::from_config(&self.config).height_percent,
+                            total_dy: 0.0,
+                        });
+                        drag.total_dy += dy;
+                        (drag.anchored_percent, drag.total_dy)
+                    };
+                    let geom = self.drag_geometry(anchored_percent, total_dy, output);
+                    return geometry::apply_geometry(*id, &geom, output);
+                }
+            }
+            Message::GrabBarReleased => {
+                // The surface keeps the height it settled at; nothing
+                // is persisted (that is G4). Re-applying also flushes a
+                // config edit that arrived mid-drag and was deferred
+                // (see `ConfigChanged`): width and alignment come from
+                // the current config, the height from the drag — the
+                // hand outranks the file.
+                if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
+                    (self.drag.take(), &self.surface, self.output_size)
+                {
+                    let geom = self.drag_geometry(drag.anchored_percent, drag.total_dy, output);
+                    return geometry::apply_geometry(*id, &geom, output);
+                }
+            }
             Message::OpenHyperlink(url) => {
                 if let Err(err) = open::that_detached(&url) {
                     log::warn!("failed to open {url:?}: {err}");
@@ -892,9 +968,21 @@ impl Application for DropTerm {
             .on_window_unfocused(|| Message::WindowUnfocused)
             .into();
 
-        // The bar appears only with more than one tab and sits on the
-        // surface edge opposite the screen edge (tabs spec): below the
-        // terminal when top-anchored, above it when bottom-anchored.
+        // Stacking from the screen edge (geometry spec, criterion 9):
+        // content, tab bar (only with more than one tab, tabs spec),
+        // grab bar on the free edge. The bars take their strips out of
+        // the terminal's pinned height (see
+        // `surface::terminal_view_height`), so neither pushes the other
+        // off the surface. Fill dimensions keep iced's flex from
+        // deferring the bars past the terminal's allocation: a Shrink
+        // cross-axis makes a fixed-height, fill-width bar a fourth-pass
+        // child, so the Fill terminal would take the whole surface and
+        // push the bars below its bottom edge.
+        let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
+
+        // The tab bar appears only with more than one tab and sits on
+        // the surface edge opposite the screen edge (tabs spec):
+        // between the terminal and the grab bar.
         if self.tabs.len() > 1 {
             let mut bar = TabBar::new(&self.tabs, self.active_tab)
                 .on_select(Message::TabSelected)
@@ -918,23 +1006,27 @@ impl Application for DropTerm {
                         .on_unfocus(Message::RenameCancelled),
                 );
             }
-            // Fill dimensions keep iced's flex from deferring the bar
-            // past the terminal's allocation: a Shrink cross-axis makes
-            // the fixed-height, fill-width bar a fourth-pass child, so
-            // the Fill terminal would take the whole surface and push
-            // the bar below its bottom edge.
             match self.config.edge {
-                Edge::Top => widget::column![terminal, bar]
+                Edge::Top => widget::column![terminal, bar, grab_bar]
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into(),
-                Edge::Bottom => widget::column![bar, terminal]
+                Edge::Bottom => widget::column![grab_bar, bar, terminal]
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into(),
             }
         } else {
-            terminal
+            match self.config.edge {
+                Edge::Top => widget::column![terminal, grab_bar]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+                Edge::Bottom => widget::column![grab_bar, terminal]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+            }
         }
     }
 

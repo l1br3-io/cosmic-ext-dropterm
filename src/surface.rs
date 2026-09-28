@@ -70,17 +70,18 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
 }
 
 /// Height to pin the terminal widget to inside a granted surface of
-/// `window_height` pixels: the whole window with a single tab, minus the
-/// bar's strip once the bar is visible. Pinned as a `Fixed` length (see
-/// `TerminalBox::height`) so the surrounding flex can't hand the terminal
-/// the bar's space and push the bar off the surface.
+/// `window_height` pixels: the whole window minus the grab bar's strip
+/// (always shown, geometry spec G3), minus the tab bar's strip once the
+/// bar is visible. Pinned as a `Fixed` length (see `TerminalBox::height`)
+/// so the surrounding flex can't hand the terminal the bars' space and
+/// push them off the surface.
 pub fn terminal_view_height(window_height: f32, tab_count: usize) -> f32 {
     let bar = if tab_count > 1 {
         crate::tab_bar::BAR_HEIGHT
     } else {
         0.0
     };
-    (window_height - bar).max(1.0)
+    (window_height - bar - crate::grab_bar::GRAB_BAR_HEIGHT).max(1.0)
 }
 
 #[cfg(test)]
@@ -88,10 +89,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_view_height_yields_the_bar_its_strip() {
-        assert_eq!(terminal_view_height(563.0, 1), 563.0);
-        assert_eq!(terminal_view_height(563.0, 2), 563.0 - 32.0);
-        assert_eq!(terminal_view_height(595.0, 7), 563.0);
+    fn terminal_view_height_yields_the_bars_their_strip() {
+        // The grab bar always shows (G3); the tab bar only past one
+        // tab. Both take their strip out of the terminal's rows,
+        // Yakuake-style, never out of the screen.
+        assert_eq!(
+            terminal_view_height(563.0, 1),
+            563.0 - crate::grab_bar::GRAB_BAR_HEIGHT
+        );
+        assert_eq!(
+            terminal_view_height(563.0, 2),
+            563.0 - 32.0 - crate::grab_bar::GRAB_BAR_HEIGHT
+        );
+        assert_eq!(
+            terminal_view_height(563.0 + 32.0 + crate::grab_bar::GRAB_BAR_HEIGHT, 7),
+            563.0
+        );
     }
 
     #[test]

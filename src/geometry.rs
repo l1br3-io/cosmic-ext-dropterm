@@ -149,6 +149,42 @@ pub fn geometry_changed(old: &Geometry, new: &Geometry) -> bool {
     old != new
 }
 
+/// The height percent a grab-bar drag produces (geometry spec, G3):
+/// `anchored_percent` grown by `total_dy` logical pixels of pointer
+/// travel, clamped to the 10–100 % band.
+///
+/// `total_dy` is the *accumulated* travel since the press, in surface
+/// space (y grows downward); the `Edge::Bottom` sign flip makes pulling
+/// away from the screen edge always grow the terminal, whichever edge
+/// the surface hangs from. Recomputing every move from the same anchor
+/// — rather than growing the last applied percent — keeps slow drags
+/// alive: one percent of a 1080 px output is ~11 px, so per-move
+/// quantization would eat any gentler drag piece by piece.
+///
+/// The band clamp subsumes the `max(1px)` rule — the floor percent of
+/// any output is at least one pixel — but the pixel target is still
+/// floored at 1 px so a degenerate (zero-height) output can't produce
+/// a zero or NaN request.
+pub fn drag_height_percent(
+    edge: Edge,
+    output_height: u32,
+    anchored_percent: u8,
+    total_dy: f32,
+) -> u8 {
+    let grow = match edge {
+        // Free edge at the bottom: dragging down grows.
+        Edge::Top => total_dy,
+        // Free edge at the top: dragging up grows.
+        Edge::Bottom => -total_dy,
+    };
+    let anchored_px = surface_height(output_height as f32, anchored_percent) as f32;
+    let target_px = (anchored_px + grow).max(1.0);
+    let percent = target_px / output_height.max(1) as f32 * 100.0;
+    percent
+        .round()
+        .clamp(f32::from(MIN_HEIGHT_PERCENT), f32::from(MAX_HEIGHT_PERCENT)) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +399,63 @@ mod tests {
         assert_eq!(geom.width_percent, crate::config::MIN_WIDTH_PERCENT);
         assert_eq!(geom.edge, Edge::Top);
         assert_eq!(geom.h_align, HAlign::Center);
+    }
+
+    #[test]
+    fn drag_away_from_the_screen_edge_grows_whichever_edge() {
+        // Anchored at 40 % of a 1000 px output (400 px): 100 px of
+        // pointer travel away from the screen edge is +10 % — dragging
+        // down on `Top`, up on `Bottom` (the sign flip).
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 100.0), 50);
+        assert_eq!(drag_height_percent(Edge::Bottom, 1000, 40, -100.0), 50);
+    }
+
+    #[test]
+    fn drag_toward_the_screen_edge_shrinks_whichever_edge() {
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, -150.0), 25);
+        assert_eq!(drag_height_percent(Edge::Bottom, 1000, 40, 150.0), 25);
+    }
+
+    #[test]
+    fn drag_is_clamped_to_the_height_band() {
+        // However violent the drag, the result stays inside 10-100 %.
+        assert_eq!(
+            drag_height_percent(Edge::Top, 1000, 95, 100_000.0),
+            MAX_HEIGHT_PERCENT
+        );
+        assert_eq!(
+            drag_height_percent(Edge::Bottom, 1000, 12, 100_000.0),
+            MIN_HEIGHT_PERCENT
+        );
+    }
+
+    #[test]
+    fn drag_never_yields_a_zero_height_surface() {
+        // On a tiny output the band floor is a couple of pixels; a
+        // toward-edge drag must still request a positive height (the
+        // `max(1px)` rule, criterion 4).
+        let percent = drag_height_percent(Edge::Top, 20, 10, -1_000.0);
+        assert_eq!(percent, MIN_HEIGHT_PERCENT);
+        assert!(surface_height(20.0, percent) >= 1);
+    }
+
+    #[test]
+    fn drag_rounds_to_the_nearest_percent() {
+        // 400 px + 5 px of 1000 is 40.5 % -> 41 (half away from zero);
+        // +4 px is 40.4 % -> 40.
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 5.0), 41);
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 4.0), 40);
+    }
+
+    #[test]
+    fn drag_targets_recompute_from_the_anchor_so_quantization_cannot_compound() {
+        // The caller passes *accumulated* travel from the press, so a
+        // slow drag of many sub-percent moves still adds up: 4 px alone
+        // rounds away, but the same 4 px carried into the next 100 px
+        // of travel lands at 50.4 %, not the 50 % a per-move recompute
+        // from the last applied percent would settle on.
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 4.0), 40);
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 104.0), 50);
+        assert_eq!(drag_height_percent(Edge::Top, 1000, 40, 105.0), 51);
     }
 }

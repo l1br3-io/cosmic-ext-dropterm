@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod geometry;
+mod grab_bar;
 mod keybinds;
 mod surface;
 mod tab_bar;
