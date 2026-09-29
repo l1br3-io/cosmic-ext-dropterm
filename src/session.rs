@@ -8,12 +8,6 @@
 //! save (temp + fsync + rename). The app layer wires these into the tab
 //! model; everything here is unit-testable headless.
 
-// S2 wired the restore half (stash, plan, outcome) into the app; the
-// save half (`capture`, `save_atomic`) stays test-only until S3 wires
-// every save trigger in. TODO(session-persistence): remove this allow
-// once S3 lands.
-#![allow(dead_code)]
-
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -183,6 +177,75 @@ pub fn restore_outcome(planned_active: usize, spawned: usize) -> RestoreOutcome 
             active: planned_active.min(spawned - 1),
         }
     }
+}
+
+/// How long after a change settles before the session file is
+/// rewritten (session-persistence spec, S3): long enough that rapid
+/// tab churn (open/close/reorder bursts, a `cd` loop) coalesces into
+/// one write, short enough that a quit right after a change reopens
+/// the change.
+pub const SESSION_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// State of the debounced session save (session-persistence spec,
+/// S3): pure bookkeeping over generations — the G4 `WriteBack` shape
+/// adapted to dirty-flag semantics. The wait itself is a
+/// `tokio::time::sleep` the app tasks in, so this machine needs no
+/// clock and stays headless-testable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSave {
+    /// Source of monotonically increasing window generations, never
+    /// reused within a run.
+    next_generation: u32,
+    /// The generation whose debounce window is armed, if any. At most
+    /// one window is ever armed — marks inside it coalesce — so no
+    /// sleeps stack and no window is starved.
+    armed: Option<u32>,
+    /// Whether a change is still unwritten; taken by the armed
+    /// window's `due`, which writes everything changed up to that
+    /// moment (capture happens at write time, not schedule time).
+    dirty: bool,
+}
+
+impl SessionSave {
+    /// Marks the session dirty and arms a debounce window if none is
+    /// armed, returning the generation its `SessionSaveDue` message
+    /// must carry. `None` when a window is already armed: the pending
+    /// write covers this change too (trailing semantics), so the
+    /// caller must not spawn another sleep.
+    pub fn mark(&mut self) -> Option<u32> {
+        self.dirty = true;
+        if self.armed.is_none() {
+            let generation = self.next_generation;
+            self.next_generation += 1;
+            self.armed = Some(generation);
+            return Some(generation);
+        }
+        None
+    }
+
+    /// Disarms the window when `generation` still owns it and returns
+    /// whether a write is owed. `false` for a stale generation — the
+    /// fire of an older window, or a duplicate delivery after the
+    /// write — which must not write or disarm.
+    pub fn due(&mut self, generation: u32) -> bool {
+        if self.armed == Some(generation) {
+            self.armed = None;
+            std::mem::take(&mut self.dirty)
+        } else {
+            false
+        }
+    }
+}
+
+/// Whether a terminal's working directory moved since it was last
+/// seen (session-persistence spec, S3): the change gate on title
+/// events — shells report titles far more often than cwds change, so
+/// only a moved cwd turns a title event into a save trigger (Guake's
+/// change-gated cadence). `None` on either side is just another
+/// value: a failed readlink reads as a change, and two failures in a
+/// row read as quiet.
+pub fn cwd_changed(last: Option<&Path>, current: Option<&Path>) -> bool {
+    last != current
 }
 
 /// Loads the session file. A missing file is a silent `None` (first
@@ -714,5 +777,63 @@ mod tests {
     #[test]
     fn restore_outcome_falls_back_when_no_tab_spawned() {
         assert_eq!(restore_outcome(0, 0), RestoreOutcome::Fallback);
+    }
+
+    #[test]
+    fn session_save_arms_one_window_and_owes_the_write_when_due() {
+        let mut save = SessionSave::default();
+        let generation = save.mark().expect("the first mark arms a window");
+        assert!(save.due(generation), "the armed window owes one write");
+    }
+
+    #[test]
+    fn session_save_marks_inside_an_armed_window_coalesce_into_one_write() {
+        let mut save = SessionSave::default();
+        let generation = save.mark().expect("the first mark arms a window");
+        assert_eq!(save.mark(), None, "no second timer while one is armed");
+        assert!(
+            save.due(generation),
+            "one write covers every coalesced mark"
+        );
+    }
+
+    #[test]
+    fn session_save_re_arms_after_a_write() {
+        let mut save = SessionSave::default();
+        let first = save.mark().expect("the first mark arms a window");
+        assert!(save.due(first), "the write happened");
+        let second = save.mark().expect("a mark after a write re-arms");
+        assert_ne!(first, second, "the new window is a new generation");
+        assert!(save.due(second), "the re-armed window owes its write");
+    }
+
+    #[test]
+    fn session_save_treats_a_stale_generation_as_a_no_op() {
+        let mut save = SessionSave::default();
+        let armed = save.mark().expect("the first mark arms a window");
+        assert!(
+            !save.due(armed.wrapping_add(1)),
+            "a stale generation owes nothing"
+        );
+        assert!(save.due(armed), "the still-armed window writes");
+    }
+
+    #[test]
+    fn cwd_changed_is_quiet_while_the_directory_holds() {
+        assert!(!cwd_changed(
+            Some(Path::new("/tmp")),
+            Some(Path::new("/tmp"))
+        ));
+        assert!(!cwd_changed(None, None));
+    }
+
+    #[test]
+    fn cwd_changed_marks_on_any_difference() {
+        assert!(cwd_changed(
+            Some(Path::new("/tmp")),
+            Some(Path::new("/home"))
+        ));
+        assert!(cwd_changed(None, Some(Path::new("/tmp"))));
+        assert!(cwd_changed(Some(Path::new("/tmp")), None));
     }
 }

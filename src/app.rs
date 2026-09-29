@@ -143,6 +143,12 @@ pub enum Message {
     /// against the current pending write so a newer drag's schedule
     /// cancels this stale one.
     WriteDue(u32),
+    /// The session-save debounce window elapsed
+    /// (session-persistence spec, S3): the generation that armed it,
+    /// checked against the armed window so a stale fire — superseded
+    /// by a newer window, or a duplicate delivery after the write —
+    /// writes nothing.
+    SessionSaveDue(u32),
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -198,6 +204,15 @@ pub struct DropTerm {
     /// restore plan loaded from the state file in `init`, consumed by
     /// the spawn funnel's first productive run.
     restore: session::RestoreStash,
+    /// Debounced session-save state (session-persistence spec, S3):
+    /// which change window is armed and whether a write is owed (see
+    /// `session::SessionSave`).
+    session_save: session::SessionSave,
+    /// Each live tab's working directory as last seen, seeded at
+    /// spawn/restore with the spawn cwd (session-persistence spec,
+    /// S3): title events compare against this cache so only a real
+    /// cwd change — not title churn — marks the session dirty.
+    tab_cwds: HashMap<TabId, Option<PathBuf>>,
     /// The active inline rename, if any (tabs spec, T6): which tab is
     /// being renamed and the current draft, mirrored into the input the
     /// tab bar overlays on the renamed button.
@@ -339,7 +354,17 @@ impl DropTerm {
             &self.terminal_options(),
             self.active_colors(),
         ) {
-            Ok(terminal) => Some(Tab::new(tab_id, shell, terminal)),
+            Ok(terminal) => {
+                let tab = Tab::new(tab_id, shell, terminal);
+                // Seed the cwd cache with the spawn cwd
+                // (session-persistence spec, S3): a restored tab seeds
+                // its re-validated saved cwd — so the fresh shell's
+                // first title report reads as unchanged — and a
+                // default spawn seeds `None`.
+                self.tab_cwds
+                    .insert(tab.id, spec.and_then(|spec| spec.cwd.clone()));
+                Some(tab)
+            }
             Err(err) => {
                 log::error!("failed to spawn shell: {err}");
                 None
@@ -635,15 +660,20 @@ impl DropTerm {
                     // Yakuake-style placement: directly after the active
                     // tab, which the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
-                    self.set_active_tab(at);
+                    let switch = self.set_active_tab(at);
+                    // The open itself is a save trigger too
+                    // (session-persistence spec, S3); when the switch
+                    // already armed a window this second mark coalesces
+                    // into it.
+                    return Task::batch([switch, self.mark_session_dirty()]);
                 }
             }
             Action::CloseTab => return self.close_tab_at(self.active_tab),
             Action::NextTab => {
-                self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
+                return self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
             }
             Action::PrevTab => {
-                self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
+                return self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
             }
             _ => unreachable!("not a tab action: {action:?}"),
         }
@@ -657,16 +687,27 @@ impl DropTerm {
     /// by shell exits; `set_focused` reports only real focus changes,
     /// so refocusing a tab that already had focus is a no-op.
     fn close_tab_at(&mut self, index: usize) -> Task<Message> {
+        let closed = self.tabs.get(index).map(|tab| tab.id);
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
             if decision.respawn {
                 self.ensure_tabs();
             }
             self.focus_active_tab();
+            if let Some(id) = closed {
+                self.tab_cwds.remove(&id);
+            }
+            // Every close funnels through here — keybind, tab-bar `×`,
+            // middle-click, and a shell exit (`TermEvent::Exit`) — so
+            // this is the close trigger's single save-marking site
+            // (session-persistence spec, S3).
+            let mark = self.mark_session_dirty();
+            // A close can orphan the rename input (T6): its tab may be
+            // gone, or the bar may have vanished with a single tab
+            // left. End the session so the terminal regains keyboard
+            // focus.
+            return Task::batch([mark, self.prune_rename_session()]);
         }
-        // A close can orphan the rename input (T6): its tab may be gone,
-        // or the bar may have vanished with a single tab left. End the
-        // session so the terminal regains keyboard focus.
         self.prune_rename_session()
     }
 
@@ -681,7 +722,12 @@ impl DropTerm {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == edit.tab) {
                 tabs::commit_rename(&mut tab.title, &mut tab.title_override, &edit.draft);
             }
-            return widget::text_input::focus(self.terminal_id.clone());
+            // A rename commit is a save trigger — but only when a
+            // rename session actually existed (session-persistence
+            // spec, S3); every committing path funnels through here,
+            // so this is its single marking site.
+            let mark = self.mark_session_dirty();
+            return Task::batch([mark, widget::text_input::focus(self.terminal_id.clone())]);
         }
         Task::none()
     }
@@ -703,18 +749,22 @@ impl DropTerm {
 
     /// Switches the active tab to `index`, reporting the focus change to
     /// both shells (FOCUS_OUT to the outgoing one, FOCUS_IN to the
-    /// incoming one), the same way a window focus change does.
-    fn set_active_tab(&mut self, index: usize) {
+    /// incoming one), the same way a window focus change does. A real
+    /// switch marks the session dirty — the focused index is saved
+    /// state (session-persistence spec, S3); the index-unchanged early
+    /// return never marks.
+    fn set_active_tab(&mut self, index: usize) -> Task<Message> {
         // Cycling with a single tab is a no-op; refocusing it anyway would
         // send the shell a spurious FOCUS_OUT/FOCUS_IN pair.
         if index == self.active_tab {
-            return;
+            return Task::none();
         }
         if let Some(old) = self.active() {
             old.terminal.lock().unwrap().set_focused(false);
         }
         self.active_tab = index;
         self.focus_active_tab();
+        self.mark_session_dirty()
     }
 
     /// Marks the active tab's terminal focused. Used after the tab list
@@ -723,6 +773,73 @@ impl DropTerm {
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(true);
         }
+    }
+
+    /// Marks the session dirty and arms the debounce window
+    /// (session-persistence spec, S3): at most one `tokio::sleep` is
+    /// ever in flight — a mark while a window is armed coalesces into
+    /// that window's write — and only a mark after a write re-arms.
+    /// Returns the window's timer task when this call armed it, the
+    /// `WindowPinDue`/`WriteDue` pattern.
+    fn mark_session_dirty(&mut self) -> Task<Message> {
+        match self.session_save.mark() {
+            Some(generation) => Task::perform(
+                tokio::time::sleep(session::SESSION_WRITE_INTERVAL),
+                move |_| cosmic::Action::App(Message::SessionSaveDue(generation)),
+            ),
+            None => Task::none(),
+        }
+    }
+
+    /// Captures the live tab list and writes the session file
+    /// atomically (session-persistence spec, S3). The cwd readlinks
+    /// happen here — at write time, not schedule time — so saved cwds
+    /// are as fresh as the debounce allows; `capture` then
+    /// staleness-filters each one. A failed write logs and leaves the
+    /// old file in place: the next dirty window retries.
+    fn write_session(&mut self) {
+        let cwds: Vec<Option<PathBuf>> = self
+            .tabs
+            .iter()
+            .map(|tab| tab.terminal.lock().unwrap().working_directory())
+            .collect();
+        let snapshots: Vec<session::TabSnapshot<'_>> = self
+            .tabs
+            .iter()
+            .zip(&cwds)
+            .map(|(tab, cwd)| session::TabSnapshot {
+                title: &tab.title,
+                title_override: tab.title_override.as_deref(),
+                shell: &tab.shell,
+                cwd: cwd.as_deref(),
+            })
+            .collect();
+        let state = session::capture(&snapshots, self.active_tab);
+        if let Err(err) = session::save_atomic(&session::state_file_path(), &state) {
+            log::warn!("failed to write session file: {err}");
+        }
+    }
+
+    /// The cwd-change gate on a shell title event
+    /// (session-persistence spec, S3): one readlink, compared against
+    /// the tab's cached cwd. A moved cwd marks the session dirty and
+    /// updates the cache; a title churn with the cwd holding — a vim
+    /// statusline — stays quiet (Guake's change-gated cadence).
+    fn check_tab_cwd(&mut self, tab_index: usize) -> Task<Message> {
+        let tab_id = self.tabs[tab_index].id;
+        let cwd = self.tabs[tab_index]
+            .terminal
+            .lock()
+            .unwrap()
+            .working_directory();
+        if session::cwd_changed(
+            self.tab_cwds.get(&tab_id).and_then(Option::as_deref),
+            cwd.as_deref(),
+        ) {
+            self.tab_cwds.insert(tab_id, cwd);
+            return self.mark_session_dirty();
+        }
+        Task::none()
     }
 }
 
@@ -796,6 +913,8 @@ impl Application for DropTerm {
             term_event_tx: None,
             next_tab_id: 0,
             restore,
+            session_save: session::SessionSave::default(),
+            tab_cwds: HashMap::new(),
             rename: None,
             drag: None,
             write_back: geometry::WriteBack::default(),
@@ -1063,7 +1182,7 @@ impl Application for DropTerm {
                 // the current list so a list change between redraw and
                 // click cannot act on the wrong tab.
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
-                    self.set_active_tab(index);
+                    return self.set_active_tab(index);
                 }
             }
             Message::TabClosed(id) => {
@@ -1101,6 +1220,10 @@ impl Application for DropTerm {
                 // focus handoff is needed.
                 if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+                    // The saved tab order is tab-bar order, so a
+                    // reorder is a save trigger
+                    // (session-persistence spec, S3).
+                    return self.mark_session_dirty();
                 }
             }
             Message::GrabBarDragged(pointer_y) => {
@@ -1238,6 +1361,18 @@ impl Application for DropTerm {
                             log::warn!("no config handler; skipping height_percent write");
                         }
                     }
+                }
+            }
+            Message::SessionSaveDue(generation) => {
+                // The debounce window elapsed: capture the live tabs
+                // now and write atomically — cwds are read at write
+                // time, so a window always persists what is true at
+                // its close, not what was true when it was armed
+                // (session-persistence spec, S3). A stale generation —
+                // superseded, or a duplicate delivery after the write —
+                // writes nothing.
+                if self.session_save.due(generation) {
+                    self.write_session();
                 }
             }
             Message::OpenHyperlink(url) => {
@@ -1410,6 +1545,10 @@ impl DropTerm {
             TermEvent::Title(title) => {
                 let tab = &mut self.tabs[tab_index];
                 tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
+                // Title events double as the cwd-change sample point
+                // (session-persistence spec, S3); the title itself is
+                // not a trigger — churn alone writes nothing.
+                return self.check_tab_cwd(tab_index);
             }
             TermEvent::ResetTitle => {
                 // A shell reset (RIS) restores the default title, unless
@@ -1421,6 +1560,7 @@ impl DropTerm {
                     tab.title_override.as_deref(),
                     &default_title,
                 );
+                return self.check_tab_cwd(tab_index);
             }
             TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
