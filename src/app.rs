@@ -125,6 +125,17 @@ pub enum Message {
     /// A grab bar drag ended (geometry spec, G3): the surface keeps the
     /// height it settled at; persisting it is G4.
     GrabBarReleased,
+    /// The trailing apply of a throttled live drag fired (geometry
+    /// spec, G3): a target dropped inside the apply interval still
+    /// lands — the pointer pausing mid-drag must not leave the
+    /// surface behind. A stale fire (drag ended, surface hidden) is a
+    /// no-op: the apply path re-checks the cadence gate.
+    DragApplyDue,
+    /// The trailing adopt of a debounced terminal-pin height fired
+    /// (geometry spec, G3): heights the adoption debounce skipped —
+    /// the double-reported granted stream's echoes — land once the
+    /// stream settles. A stale fire is a no-op.
+    WindowPinDue,
     /// The debounce window for a drag-release height write elapsed
     /// (geometry spec, G4): the generation that scheduled it, checked
     /// against the current pending write so a newer drag's schedule
@@ -141,6 +152,25 @@ pub enum Message {
 struct RenameEdit {
     tab: TabId,
     draft: String,
+}
+
+/// An in-progress grab-bar drag's runtime state (geometry spec, G3):
+/// the pure anchor every target recomputes from (`geometry`), the
+/// latest reported pointer y, and the last live apply (when, which
+/// target) for the change-gated apply cadence — see
+/// `geometry::drag_apply_due`. Applies are bounded because each one
+/// costs the runtime two window resizes plus terminal and pty resizes
+/// (its `set_size` handling double-reports each apply), so per-move
+/// applies at pointer rate saturate the single runtime thread — the
+/// drag froze input on hardware.
+struct Drag {
+    anchor: geometry::DragAnchor,
+    /// The pointer's window y as of the last `GrabBarDragged`, so the
+    /// trailing apply and the release settle at where the pointer
+    /// actually is, not where the last apply landed.
+    pointer_y: f32,
+    /// The last live apply, for the cadence gate.
+    applied: Option<(std::time::Instant, u32)>,
 }
 
 pub struct DropTerm {
@@ -167,8 +197,9 @@ pub struct DropTerm {
     /// tab bar overlays on the renamed button.
     rename: Option<RenameEdit>,
     /// An in-progress grab-bar height drag, if any (geometry spec, G3):
-    /// absolute references every move retargets from.
-    drag: Option<geometry::DragAnchor>,
+    /// the absolute anchor every target recomputes from, plus the
+    /// runtime state of the apply cadence (see `Drag`).
+    drag: Option<Drag>,
     /// Debounced drag-release config-write state (geometry spec, G4):
     /// which release's persist is still pending.
     write_back: geometry::WriteBack,
@@ -187,6 +218,12 @@ pub struct DropTerm {
     /// The basis for pinning the terminal widget's height so the tab bar
     /// gets its strip inside the fixed-size surface.
     window_height: Option<f32>,
+    /// The last pin adoption (when, which height), for the adoption
+    /// debounce (geometry spec, G3 — see `geometry::window_pin_due`).
+    pin_applied: Option<(std::time::Instant, f32)>,
+    /// A height the debounce skipped, landing via the trailing adopt
+    /// (`WindowPinDue`) once the granted stream settles.
+    pending_height: Option<f32>,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
     /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
@@ -319,8 +356,11 @@ impl DropTerm {
         };
         self.surface = SurfaceState::Hidden;
         // The surface is gone: any live grab-bar drag is moot (geometry
-        // spec, G3).
+        // spec, G3), and the terminal pin's debounce state starts over
+        // so the next show's first granted size adopts immediately.
         self.drag = None;
+        self.pending_height = None;
+        self.pin_applied = None;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
@@ -347,13 +387,76 @@ impl DropTerm {
 
     /// The geometry a settled grab-bar drag leaves behind (geometry
     /// spec, G3): the current config's geometry with the height
-    /// quantized once from the pixels the drag actually applied — the
-    /// settled surface then matches the percent G4 persists, at most
-    /// half a percent off the dragged pixels (accepted tolerance).
-    fn settled_geometry(&self, drag: geometry::DragAnchor, output: (u32, u32)) -> Geometry {
+    /// quantized once from where the pointer released — the *latest*
+    /// target, not the last one the cadence gate landed, so throttling
+    /// never decides the final height. The settled surface then matches
+    /// the percent G4 persists, at most half a percent off the dragged
+    /// pixels (accepted tolerance).
+    fn settled_geometry(&self, drag: &Drag, output: (u32, u32)) -> Geometry {
+        let final_target =
+            geometry::drag_target_px(self.config.edge, output.1, drag.anchor, drag.pointer_y);
         let mut geom = Geometry::from_config(&self.config);
-        geom.height_percent = geometry::percent_from_px(output.1, drag.applied_px);
+        geom.height_percent = geometry::percent_from_px(output.1, final_target);
         geom
+    }
+
+    /// Apply a live drag target now (geometry spec, G3): the cadence
+    /// gate has passed. Records the apply, offers the height to the
+    /// terminal pin — adoptions are debounced (see
+    /// `offer_window_height`), because the runtime double-reports
+    /// every `set_size` (once stale, once real) and each adoption
+    /// costs a terminal reflow plus a pty resize that made the drag
+    /// sluggish on hardware — and sends the single-path triple with
+    /// the pixel height.
+    fn apply_drag_target(
+        &mut self,
+        id: window::Id,
+        output: (u32, u32),
+        target: u32,
+    ) -> Task<Message> {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.applied = Some((std::time::Instant::now(), target));
+            drag.anchor.applied_px = target;
+        }
+        let pin_task = self.offer_window_height(target as f32);
+        let geom = Geometry::from_config(&self.config);
+        let apply = geometry::apply_drag_geometry(id, &geom, output, target);
+        match pin_task {
+            Some(t) => Task::batch([apply, t]),
+            None => apply,
+        }
+    }
+
+    /// Offer a height to the terminal pin (geometry spec, G3): adopt
+    /// immediately when the debounce allows (first size, re-report of
+    /// the adopted height, or interval elapsed), else remember it and
+    /// return the trailing-adopt timer that lands it once the granted
+    /// stream settles. Every granted-size follower funnels through
+    /// here — `WindowResized` echoes outside drags and the drag's own
+    /// applies — so the double-reported stream can never reflow the
+    /// terminal at the apply rate.
+    fn offer_window_height(&mut self, height: f32) -> Option<Task<Message>> {
+        let now = std::time::Instant::now();
+        if geometry::window_pin_due(self.pin_applied, now, height) {
+            self.window_height = Some(height);
+            // Re-adopting the height the pin already has must not
+            // refresh the adoption clock (see `window_pin_due`): the
+            // echo stream would otherwise starve changed heights.
+            self.pin_applied = Some(match self.pin_applied {
+                Some((at, adopted)) if adopted == height => (at, height),
+                _ => (now, height),
+            });
+            self.pending_height = None;
+            return None;
+        }
+        if self.pending_height != Some(height) {
+            self.pending_height = Some(height);
+            return Some(Task::perform(
+                tokio::time::sleep(geometry::WINDOW_PIN_INTERVAL),
+                |_| cosmic::Action::App(Message::WindowPinDue),
+            ));
+        }
+        None
     }
 
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
@@ -637,6 +740,8 @@ impl Application for DropTerm {
             surface: SurfaceState::Hidden,
             output_size: None,
             window_height: None,
+            pin_applied: None,
+            pending_height: None,
             surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
@@ -820,7 +925,34 @@ impl Application for DropTerm {
                 }
             }
             Message::WindowResized(height) => {
-                self.window_height = Some(height);
+                // While a drag is armed, the granted size only echoes
+                // the applies the drag itself made — each one
+                // double-reported, once with the previous height (the
+                // runtime synthesizes a configure per set_size whose
+                // height slot is stale), so following the echoes would
+                // bounce the pin stale/new on every move: the applies
+                // offer their targets directly instead. Outside a
+                // drag, every granted height is offered through the
+                // adoption debounce — each size arrives twice and the
+                // applies arrive at cadence rate, and reflowing the
+                // terminal on every echo made the drag sluggish on
+                // hardware.
+                if self.drag.is_none()
+                    && let Some(task) = self.offer_window_height(height)
+                {
+                    return task;
+                }
+            }
+            Message::WindowPinDue => {
+                // Trailing adopt: a height the debounce skipped lands
+                // once the granted stream settles. The timer waited
+                // out the interval, so the gate passes; a stale fire
+                // with nothing pending does nothing.
+                if let Some(height) = self.pending_height
+                    && let Some(task) = self.offer_window_height(height)
+                {
+                    return task;
+                }
             }
             Message::LayerFocused(id) => {
                 if self.surface == SurfaceState::Shown(id) {
@@ -916,31 +1048,77 @@ impl Application for DropTerm {
                 // applied, so the moving window frame of a
                 // bottom-anchored surface cannot eat travel. Width and
                 // alignment always come from the config (a drag can
-                // never snap a narrow surface to fill). Config is never
-                // touched while dragging (a "never" boundary of the
-                // module); persistence is G4's release path.
+                // never snap a narrow surface to fill). Applies pass a
+                // deadbanded, interval-gated cadence
+                // (geometry::drag_apply_due) — every apply reaches the
+                // app twice (the runtime double-reports each set_size)
+                // and reflows the terminal, so a fast drag cannot be
+                // allowed to storm the pipeline; skipped targets land
+                // via a trailing apply, and the release settle is
+                // exact and immediate. Config is never touched while
+                // dragging (a "never" boundary of the module);
+                // persistence is G4's release path.
                 if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size) {
                     let anchored_px = geometry::surface_height(
                         output.1 as f32,
                         Geometry::from_config(&self.config).height_percent,
                     );
-                    let drag = self.drag.get_or_insert(geometry::DragAnchor {
-                        anchored_px,
-                        applied_px: anchored_px,
-                        press_y: pointer_y,
+                    let drag = self.drag.get_or_insert(Drag {
+                        anchor: geometry::DragAnchor {
+                            anchored_px,
+                            applied_px: anchored_px,
+                            press_y: pointer_y,
+                        },
+                        pointer_y,
+                        applied: None,
                     });
-                    let target =
-                        geometry::drag_target_px(self.config.edge, output.1, *drag, pointer_y);
-                    drag.applied_px = target;
-                    let geom = Geometry::from_config(&self.config);
-                    return geometry::apply_drag_geometry(*id, &geom, output, target);
+                    drag.pointer_y = pointer_y;
+                    let target = geometry::drag_target_px(
+                        self.config.edge,
+                        output.1,
+                        drag.anchor,
+                        pointer_y,
+                    );
+                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
+                        return self.apply_drag_target(*id, output, target);
+                    }
+                    // Throttled: land the latest target even if the
+                    // pointer pauses inside the interval. A stale fire
+                    // is a no-op — the apply path re-checks the gate.
+                    return Task::perform(
+                        tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
+                        |_| cosmic::Action::App(Message::DragApplyDue),
+                    );
+                }
+            }
+            Message::DragApplyDue => {
+                // Trailing apply of a throttled live drag (geometry
+                // spec, G3): recompute from the latest reported
+                // pointer position and apply if the gate allows; a
+                // fire after the drag ended (or with nothing changed)
+                // does nothing.
+                if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size)
+                    && let Some(drag) = self.drag.as_ref()
+                {
+                    let target = geometry::drag_target_px(
+                        self.config.edge,
+                        output.1,
+                        drag.anchor,
+                        drag.pointer_y,
+                    );
+                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
+                        return self.apply_drag_target(*id, output, target);
+                    }
                 }
             }
             Message::GrabBarReleased => {
                 // The settle: the dragged pixels quantize to a whole
                 // percent once — the surface may snap by at most half a
                 // percent, the accepted tolerance, and then matches the
-                // percent G4 persists. The in-memory config updates
+                // percent G4 persists. The settle targets where the
+                // pointer released (the latest move), not the last
+                // target the cadence landed: throttling must never
+                // decide the final height. The in-memory config updates
                 // immediately — so a hide/show inside the debounce
                 // window reopens at the new height — and one write
                 // follows after the window, canceled by any newer drag
@@ -952,7 +1130,7 @@ impl Application for DropTerm {
                 if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
                     (self.drag.take(), &self.surface, self.output_size)
                 {
-                    let geom = self.settled_geometry(drag, output);
+                    let geom = self.settled_geometry(&drag, output);
                     // Write-only-if-changed: a drag that settles back
                     // on the config's current percent persists nothing.
                     if geom.height_percent != self.config.height_percent {

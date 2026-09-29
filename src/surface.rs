@@ -63,7 +63,13 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
         output: IcedOutput::Active,
         namespace: format!("{NAMESPACE}-measure"),
         size: Some((None, None)),
-        exclusive_zone: 0,
+        // DontCare (-1), not the default neutral zone (0): a neutral
+        // surface arranges inside the zone that *exclusive* layers (the
+        // COSMIC panel) carve out, so the measured output height came
+        // back panel-short — every percent settle referenced the wrong
+        // height. DontCare ignores the zone and stretches the full
+        // output, matching the shown surface (also DontCare).
+        exclusive_zone: -1,
         size_limits: uncapped_size_limits(),
         ..SctkLayerSurfaceSettings::default()
     }

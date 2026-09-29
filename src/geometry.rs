@@ -9,7 +9,7 @@
 //! (show, config reshape, drag) funnels through [`apply_geometry`], so
 //! no path can leave a stale anchor, margin, or size behind.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
     Anchor, set_anchor, set_margin, set_size,
@@ -238,6 +238,81 @@ pub fn percent_from_px(output_height: u32, height_px: u32) -> u8 {
     (height_px as f32 / output_height.max(1) as f32 * 100.0)
         .round()
         .clamp(f32::from(MIN_HEIGHT_PERCENT), f32::from(MAX_HEIGHT_PERCENT)) as u8
+}
+
+/// Minimum spacing between live drag applies (geometry spec, G3):
+/// the compositor grants each `set_size` exactly and promptly (hardware
+/// measured: ~10–40 ms, no easing), but the runtime double-reports
+/// every apply — it synthesizes a second configure per `set_size`
+/// carrying the *previous* height (see the G3 hardware notes) — so each
+/// apply becomes two window resizes, terminal reflows, and pty resizes
+/// in the app. Per-move applies at pointer rate saturate the single
+/// runtime thread — the drag froze input and the surface flickered
+/// stale/new on hardware — so applies are change-gated and spaced at
+/// least this far apart. The release settle is immediate regardless.
+/// Tunable: raise if a drag still starves input, lower (toward one
+/// frame) if drags feel steppy on calm hardware.
+pub const DRAG_APPLY_INTERVAL: Duration = Duration::from_millis(80);
+
+/// Minimum pixel distance between live drag applies (geometry spec,
+/// G3): each apply costs the double-reported resize pipeline above,
+/// so a drag may only retarget once the surface has been given room
+/// to actually move — the surface trails the hand by at most this
+/// much mid-drag (about one percent of a typical output) while the
+/// applied height is the true live target, and the release settle is
+/// exact regardless. Slow drags (under one deadband per interval)
+/// skip redundant applies entirely instead of re-reporting sizes the
+/// surface already has.
+pub const DRAG_APPLY_DEADBAND: u32 = 16;
+
+/// Whether a live drag target should be applied now (geometry spec,
+/// G3): `last` is the previous apply (when, which target). The first
+/// move of a drag always applies — no grab latency — and later
+/// applies need the target far enough beyond the last applied one
+/// ([`DRAG_APPLY_DEADBAND`], keeping the double-reported resize
+/// pipeline off the runtime thread for sub-deadband drift) *and* an
+/// elapsed [`DRAG_APPLY_INTERVAL`], bounding the resize/reflow storm.
+/// Skipped targets land via the trailing apply or the release settle,
+/// so throttling never loses the final height.
+pub fn drag_apply_due(last: Option<(Instant, u32)>, now: Instant, target: u32) -> bool {
+    match last {
+        None => true,
+        Some((at, applied)) => {
+            target.abs_diff(applied) >= DRAG_APPLY_DEADBAND
+                && now.duration_since(at) >= DRAG_APPLY_INTERVAL
+        }
+    }
+}
+
+/// How often the terminal's pinned height may follow a *changing*
+/// granted size (geometry spec, G3): every `set_size` reaches the app
+/// twice — once as the stale synthetic configure, once as the real
+/// granted size (see the G3 hardware notes) — and a drag applies every
+/// [`DRAG_APPLY_INTERVAL`], so the granted stream outpaces what the
+/// terminal can absorb: each adoption costs a terminal reflow plus a
+/// pty resize whose SIGWINCH makes the shell redraw — the storm behind
+/// seconds of post-drag sluggishness. The pin adopts a changed height
+/// at most this often (a trailing adopt lands the final size once the
+/// stream settles), so a drag reflows the terminal a handful of times
+/// instead of on every echo. Identical heights always pass: a
+/// re-report of the size the pin already has is free.
+pub const WINDOW_PIN_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Whether the terminal pin should adopt a granted height now
+/// (geometry spec, G3): `last` is the previous adoption (when, which
+/// height). The first size adopts immediately — there is nothing to
+/// debounce before the terminal exists — and later changed heights
+/// wait out [`WINDOW_PIN_INTERVAL`], with the caller landing skipped
+/// heights via a trailing adopt.
+pub fn window_pin_due(last: Option<(Instant, f32)>, now: Instant, height: f32) -> bool {
+    match last {
+        None => true,
+        // Re-reports of the adopted height always pass — adopting them
+        // is free — and the caller must not refresh the adoption
+        // clock on them, or an echo stream would starve changed
+        // heights of their interval forever.
+        Some((at, adopted)) => height == adopted || now.duration_since(at) >= WINDOW_PIN_INTERVAL,
+    }
 }
 
 /// How long after a grab-bar drag settles before its height percent is
@@ -641,6 +716,82 @@ mod tests {
     fn settled_percent_clamps_to_the_band() {
         assert_eq!(percent_from_px(1000, 5_000), MAX_HEIGHT_PERCENT);
         assert_eq!(percent_from_px(1000, 0), MIN_HEIGHT_PERCENT);
+    }
+
+    #[test]
+    fn the_first_move_of_a_drag_applies_immediately() {
+        // No apply yet in this drag: the arming move must land with no
+        // interval wait, or every grab would feel dead.
+        let now = Instant::now();
+        assert!(drag_apply_due(None, now, 500));
+    }
+
+    #[test]
+    fn unchanged_targets_skip_the_apply() {
+        // A re-report of the position the surface already has (sub-pixel
+        // move, or a synthetic echo) must not re-send the size triple.
+        let at = Instant::now();
+        let now = at + DRAG_APPLY_INTERVAL + Duration::from_millis(1);
+        assert!(!drag_apply_due(Some((at, 500)), now, 500));
+    }
+
+    #[test]
+    fn small_target_changes_wait_for_the_deadband() {
+        // Sub-deadband changes are held back even when the interval has
+        // fully elapsed: each apply costs the double-reported resize
+        // pipeline, so sub-deadband drift skips redundant applies and
+        // the surface simply sits at most a deadband behind the hand.
+        let at = Instant::now();
+        let now = at + DRAG_APPLY_INTERVAL + Duration::from_millis(1);
+        assert!(!drag_apply_due(Some((at, 500)), now, 510));
+    }
+
+    #[test]
+    fn deadband_sized_changes_still_wait_for_the_interval() {
+        let at = Instant::now();
+        let now = at + Duration::from_millis(10);
+        assert!(!drag_apply_due(Some((at, 500)), now, 530));
+    }
+
+    #[test]
+    fn deadband_sized_changes_apply_once_the_interval_elapses() {
+        let at = Instant::now();
+        let now = at + DRAG_APPLY_INTERVAL;
+        assert!(drag_apply_due(Some((at, 500)), now, 530));
+    }
+
+    #[test]
+    fn the_first_granted_size_adopts_immediately() {
+        // Before any adoption there is nothing to debounce: the
+        // terminal pin must exist for the first layout.
+        let now = Instant::now();
+        assert!(window_pin_due(None, now, 500.0));
+    }
+
+    #[test]
+    fn re_reported_heights_adopt_for_free() {
+        // The runtime double-reports every size change and the
+        // compositor re-reports eased steps: re-offering the height
+        // the pin already has must never wait out the interval.
+        let at = Instant::now();
+        let now = at + Duration::from_millis(1);
+        assert!(window_pin_due(Some((at, 500.0)), now, 500.0));
+    }
+
+    #[test]
+    fn changed_heights_within_the_interval_wait() {
+        // The eased-convergence storm bound: intermediate granted
+        // sizes adopt at most once per interval.
+        let at = Instant::now();
+        let now = at + Duration::from_millis(20);
+        assert!(!window_pin_due(Some((at, 500.0)), now, 505.0));
+    }
+
+    #[test]
+    fn changed_heights_adopt_once_the_interval_elapses() {
+        let at = Instant::now();
+        let now = at + WINDOW_PIN_INTERVAL;
+        assert!(window_pin_due(Some((at, 500.0)), now, 505.0));
     }
 
     #[test]
