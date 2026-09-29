@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
@@ -25,6 +26,7 @@ use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
+use crate::session;
 use crate::surface;
 use crate::tab_bar::TabBar;
 use crate::tabs::{self, Tab, TabId};
@@ -192,6 +194,10 @@ pub struct DropTerm {
     /// Source of monotonically increasing tab ids, never reused within a
     /// run (see the tabs spec).
     next_tab_id: u32,
+    /// The startup session stash (session-persistence spec, S2): the
+    /// restore plan loaded from the state file in `init`, consumed by
+    /// the spawn funnel's first productive run.
+    restore: session::RestoreStash,
     /// The active inline rename, if any (tabs spec, T6): which tab is
     /// being renamed and the current draft, mirrored into the input the
     /// tab bar overlays on the renamed button.
@@ -288,21 +294,36 @@ impl DropTerm {
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
-    fn spawn_tab(&mut self) -> Option<Tab> {
+    /// Spawns one terminal tab from `spec` — a session restore's
+    /// resolved spawn parameters, with its recorded shell and
+    /// re-validated cwd — or, with `None`, from the config's resolved
+    /// shell with the pty's default working directory
+    /// (session-persistence spec, S2).
+    fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
         };
 
+        // The shell is recorded per tab at spawn: a restore replays
+        // the shell each saved tab ran, never the current config's,
+        // so a mid-run config change never rewrites a live tab's
+        // shell.
+        let shell = match spec {
+            Some(spec) => spec.shell.clone(),
+            None => self.config.resolved_shell(),
+        };
         let term_config = TermConfig {
             scrolling_history: self.config.scrollback_lines as usize,
             ..TermConfig::default()
         };
         let pty_options = PtyOptions {
-            shell: Some(PtyShell::new(
-                self.config.resolved_shell(),
-                self.config.args.clone(),
-            )),
+            shell: Some(PtyShell::new(shell.clone(), self.config.args.clone())),
+            // Alacritty chdirs before exec and silently keeps this
+            // process's cwd on failure, so only the plan's
+            // re-validated directory ever reaches here (dead cwd →
+            // `$HOME` → unset — see `plan_restore`).
+            working_directory: spec.and_then(|spec| spec.cwd.clone()),
             drain_on_exit: true,
             ..PtyOptions::default()
         };
@@ -318,7 +339,7 @@ impl DropTerm {
             &self.terminal_options(),
             self.active_colors(),
         ) {
-            Ok(terminal) => Some(Tab::new(tab_id, terminal)),
+            Ok(terminal) => Some(Tab::new(tab_id, shell, terminal)),
             Err(err) => {
                 log::error!("failed to spawn shell: {err}");
                 None
@@ -326,11 +347,42 @@ impl DropTerm {
         }
     }
 
-    /// Guarantees at least one tab exists, spawning a fresh one if needed.
+    /// Guarantees at least one tab exists — restoring the saved
+    /// session on the funnel's first productive run, spawning a fresh
+    /// default tab every other time (session-persistence spec, S2).
+    /// Every path that needs a tab (the terminal channel arriving,
+    /// showing the surface, the last tab's respawn) lands here, so
+    /// the session wins exactly once and nothing is
+    /// spawned-then-deleted; runs before the channel exists defer,
+    /// leaving the stash armed.
     fn ensure_tabs(&mut self) {
-        if self.tabs.is_empty()
-            && let Some(tab) = self.spawn_tab()
-        {
+        if !self.tabs.is_empty() {
+            return;
+        }
+        if let Some(plan) = self.restore.take_for_run(self.term_event_tx.is_some()) {
+            let mut spawned = 0usize;
+            for spec in &plan.tabs {
+                if let Some(mut tab) = self.spawn_tab(Some(spec)) {
+                    // Saved chrome reapplied onto the fresh tab: plain
+                    // append keeps the saved order, and the override
+                    // keeps the fresh shell's first title report at
+                    // bay (the standing tabs rule).
+                    tab.title = spec.title.clone();
+                    tab.title_override = spec.title_override.clone();
+                    self.tabs.push(tab);
+                    spawned += 1;
+                }
+            }
+            if let session::RestoreOutcome::Restored { active } =
+                session::restore_outcome(plan.active, spawned)
+            {
+                self.active_tab = active;
+                return;
+            }
+            // Every spawn failed: fall through to today's
+            // single-default-tab path.
+        }
+        if let Some(tab) = self.spawn_tab(None) {
             self.active_tab = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
         }
     }
@@ -579,7 +631,7 @@ impl DropTerm {
     fn perform_tab_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::NewTab => {
-                if let Some(tab) = self.spawn_tab() {
+                if let Some(tab) = self.spawn_tab(None) {
                     // Yakuake-style placement: directly after the active
                     // tab, which the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
@@ -723,6 +775,17 @@ impl Application for DropTerm {
                 }
             };
 
+        // The session file is one small synchronous read
+        // (session-persistence spec, S2): stashed here — before any
+        // message can spawn a tab — so restore structurally precedes
+        // the first `ensure_tabs`, whichever startup message reaches
+        // the funnel first. A missing or invalid file stashes
+        // nothing (and was already quarantined with a warning inside
+        // `load`), keeping first-run startup silent.
+        let state = session::load(&session::state_file_path());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let restore = session::RestoreStash::new(state, home.as_deref());
+
         let mut app = Self {
             core,
             config_handler,
@@ -732,6 +795,7 @@ impl Application for DropTerm {
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
             next_tab_id: 0,
+            restore,
             rename: None,
             drag: None,
             write_back: geometry::WriteBack::default(),

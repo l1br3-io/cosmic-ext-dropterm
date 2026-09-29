@@ -31,17 +31,24 @@ pub struct Tab {
     /// A user rename, which shell title changes never clobber;
     /// committed by the inline-rename task (T6).
     pub title_override: Option<String>,
+    /// The shell this tab runs, recorded when it was spawned — the
+    /// field the tabs spec reserved for `session-persistence`: a
+    /// mid-run config shell change never rewrites a live tab's shell,
+    /// so what gets saved is what each tab actually runs.
+    pub shell: String,
     pub terminal: Mutex<Terminal>,
 }
 
 impl Tab {
-    /// Creates a tab whose title is the default `Terminal N`, numbered
-    /// from `id` so numbers never repeat within a run.
-    pub fn new(id: TabId, terminal: Terminal) -> Self {
+    /// Creates a tab titled with the default `Terminal N` (numbered
+    /// from `id` so numbers never repeat within a run), recording
+    /// `shell` as the shell it was spawned with.
+    pub fn new(id: TabId, shell: String, terminal: Terminal) -> Self {
         Self {
             id,
             title: next_default_title(id),
             title_override: None,
+            shell,
             terminal: Mutex::new(terminal),
         }
     }
@@ -409,5 +416,36 @@ mod tests {
         commit_rename(&mut title, &mut title_override, "");
         apply_shell_title(&mut title, title_override.as_deref(), "vim — src/main.rs");
         assert_eq!(title, "vim — src/main.rs");
+    }
+
+    #[test]
+    fn tab_records_its_spawn_shell() {
+        // The heaviest test in the module — the only one constructing
+        // a real Terminal, hence a real /bin/sh PTY — because the
+        // point under test is exactly what `Tab::new` captures off a
+        // live spawn: the shell it was spawned with, recorded so a
+        // later save (session-persistence) replays the right one.
+        use alacritty_terminal::term::{self as aterm, Config as TermConfig};
+        use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
+        use tokio::sync::mpsc;
+
+        use crate::terminal::TerminalOptions;
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let terminal = Terminal::new(
+            TabId(0),
+            tx,
+            TermConfig::default(),
+            PtyOptions {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..PtyOptions::default()
+            },
+            &TerminalOptions::default(),
+            aterm::color::Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+        let tab = Tab::new(TabId(3), "/bin/bash".to_owned(), terminal);
+        assert_eq!(tab.shell, "/bin/bash");
     }
 }

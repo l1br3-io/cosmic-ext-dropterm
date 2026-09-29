@@ -8,10 +8,10 @@
 //! save (temp + fsync + rename). The app layer wires these into the tab
 //! model; everything here is unit-testable headless.
 
-// S1 ships the pure file layer ahead of its wiring: S2 (restore) and
-// S3 (save-on-change) consume this module from the app side, so until
-// then only the unit tests reference it. TODO(session-persistence):
-// remove this once S3 has wired every entry point in.
+// S2 wired the restore half (stash, plan, outcome) into the app; the
+// save half (`capture`, `save_atomic`) stays test-only until S3 wires
+// every save trigger in. TODO(session-persistence): remove this allow
+// once S3 lands.
 #![allow(dead_code)]
 
 use std::fs::{self, File};
@@ -126,6 +126,63 @@ pub fn plan_restore(state: &SessionState, home: Option<&Path>) -> Option<Restore
         tabs,
         active: state.active.unwrap_or(0).min(state.tabs.len() - 1),
     })
+}
+
+/// The startup session stash (session-persistence spec, S2): the
+/// restore plan for the state `init()` loaded from the session file,
+/// handed to the spawn funnel's first productive run. Pure
+/// bookkeeping — the app performs the real spawns — so the
+/// consumption decision stays unit-testable headless.
+#[derive(Debug, Clone, Default)]
+pub struct RestoreStash {
+    plan: Option<RestorePlan>,
+}
+
+impl RestoreStash {
+    /// Stashes the restore plan for a loaded state: an absent,
+    /// invalid, or tab-less session stashes nothing, leaving startup
+    /// on the fresh single-tab path.
+    pub fn new(state: Option<SessionState>, home: Option<&Path>) -> Self {
+        Self {
+            plan: state.as_ref().and_then(|state| plan_restore(state, home)),
+        }
+    }
+
+    /// Takes the plan for one spawn-funnel run: the first run that
+    /// can spawn (its terminal event channel exists) consumes the
+    /// plan, exactly once; every later run — and every run before the
+    /// channel arrives — gets `None` and spawns plain default tabs.
+    /// A cannot-spawn run leaves the stash armed, so whichever
+    /// startup message reaches the funnel first, the session wins
+    /// exactly once and nothing is spawned-then-deleted.
+    pub fn take_for_run(&mut self, can_spawn: bool) -> Option<RestorePlan> {
+        if can_spawn { self.plan.take() } else { None }
+    }
+}
+
+/// What a funnel run that consumed a plan does once its spawns
+/// settled (session-persistence spec, S2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// Keep the spawned tabs and focus the saved tab, clamped onto
+    /// the survivors when some spawns failed.
+    Restored { active: usize },
+    /// Every spawn failed: fall back to today's single-default-tab
+    /// startup.
+    Fallback,
+}
+
+/// Decides a consumed plan's outcome from how many of its tabs
+/// actually spawned: zero survivors fall back, otherwise the saved
+/// active index clamps onto the spawned count.
+pub fn restore_outcome(planned_active: usize, spawned: usize) -> RestoreOutcome {
+    if spawned == 0 {
+        RestoreOutcome::Fallback
+    } else {
+        RestoreOutcome::Restored {
+            active: planned_active.min(spawned - 1),
+        }
+    }
 }
 
 /// Loads the session file. A missing file is a silent `None` (first
@@ -571,5 +628,91 @@ mod tests {
         let path = dir.join("nested/deeper/session.ron");
         save_atomic(&path, &one_tab_state(SESSION_VERSION)).expect("save");
         assert!(path.is_file());
+    }
+
+    /// A one-tab session with no filesystem dependencies (no cwd to
+    /// validate), so the stash tests stay purely in-memory.
+    fn restorable_state() -> SessionState {
+        SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "vim".to_owned(),
+                title_override: None,
+                shell: "/bin/sh".to_owned(),
+                cwd: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn restore_stash_hands_its_plan_to_the_first_run_that_can_spawn() {
+        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        assert_eq!(
+            stash.take_for_run(true),
+            Some(RestorePlan {
+                tabs: vec![SpawnSpec {
+                    title: "vim".to_owned(),
+                    title_override: None,
+                    shell: "/bin/sh".to_owned(),
+                    cwd: None,
+                }],
+                active: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn restore_stash_hands_nothing_to_later_runs() {
+        // The plan is consumed exactly once: every later funnel run
+        // spawns plain default tabs.
+        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        assert!(stash.take_for_run(true).is_some());
+        assert_eq!(stash.take_for_run(true), None);
+    }
+
+    #[test]
+    fn restore_stash_stays_armed_through_runs_that_cannot_spawn() {
+        // The first funnel run can arrive before the terminal event
+        // channel exists (show() outracing TermEventTx): it must not
+        // eat the session, or the startup race would be lost again.
+        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        assert_eq!(stash.take_for_run(false), None);
+        assert!(stash.take_for_run(true).is_some());
+    }
+
+    #[test]
+    fn restore_stash_starts_empty_without_a_restorable_session() {
+        // A missing file, and a parsed-but-tab-less session, both
+        // stash nothing: startup stays on the fresh single-tab path.
+        let mut missing = RestoreStash::new(None, None);
+        assert_eq!(missing.take_for_run(true), None);
+
+        let empty = SessionState {
+            version: SESSION_VERSION,
+            active: None,
+            tabs: vec![],
+        };
+        let mut empty_stash = RestoreStash::new(Some(empty), None);
+        assert_eq!(empty_stash.take_for_run(true), None);
+    }
+
+    #[test]
+    fn restore_outcome_clamps_the_saved_active_onto_the_survivors() {
+        // Some spawns failed: the saved focus index must not point
+        // past the tabs that exist. A full spawn keeps it as planned.
+        assert_eq!(
+            restore_outcome(3, 2),
+            RestoreOutcome::Restored { active: 1 }
+        );
+        assert_eq!(
+            restore_outcome(1, 3),
+            RestoreOutcome::Restored { active: 1 }
+        );
+    }
+
+    #[test]
+    fn restore_outcome_falls_back_when_no_tab_spawned() {
+        assert_eq!(restore_outcome(0, 0), RestoreOutcome::Fallback);
     }
 }
