@@ -19,6 +19,7 @@ env_logger = "0.11"
 indexmap = "2"
 log = "0.4"
 open = "5.3.2"
+ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "time"] }
 
