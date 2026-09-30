@@ -1422,11 +1422,13 @@ impl Application for DropTerm {
                 }
             }
             Message::SpikeTick => {
-                // A1 spike clock (temporary): the eased offset decays
-                // with wall time in `view_window`, so the tick's only
-                // job is parking the clock at rest once the duration
-                // has fully elapsed — which also drops the tick
-                // subscription until the next show.
+                // A1 spike clock (temporary): the eased offset is
+                // evaluated at draw time inside `SlideBox`, so the
+                // tick's only job is parking the clock at rest once
+                // the duration has fully elapsed — which also drops
+                // the tick subscription until the next show. Between
+                // completion and this parking tick the draw already
+                // clamps to exactly `0.0`, so there is no pop.
                 if let Some(shown_at) = self.spike_shown_at
                     && shown_at.elapsed().as_millis() as u64 >= slide::SLIDE_DURATION_MS
                 {
@@ -1542,22 +1544,26 @@ impl Application for DropTerm {
 
         // A1 spike (slide-animation spec, temporary): for ~130 ms after
         // the surface is shown, the content column eases in from the
-        // anchored edge — a time-decaying offset (quadratic ease-out,
-        // the spec's show curve) proving the mechanism as motion:
-        // translate, clip, and input at rest. At rest the offset is
-        // 0.0 and the column renders byte-identically to the unwrapped
-        // one. A3 replaces this whole block with the real state
-        // machine's live offset.
-        let spike_offset = self.spike_shown_at.map_or(0.0, |shown_at| {
-            let elapsed = shown_at.elapsed().as_millis() as u64;
-            if elapsed >= slide::SLIDE_DURATION_MS {
-                return 0.0;
-            }
-            let progress = elapsed as f32 / slide::SLIDE_DURATION_MS as f32;
-            let remaining = 1.0 - progress;
-            self.spike_distance() * remaining * remaining
-        });
-        SlideBox::new(column, slide::translation_y(self.config.edge, spike_offset)).into()
+        // anchored edge (quadratic ease-out, the spec's show curve)
+        // proving the mechanism as motion: translate, clip, and input
+        // at rest. The pose is NOT computed here: the view runs in the
+        // runtime's AboutToWait pass but the frame presents on the
+        // compositor's frame callback, so a view-baked offset is up to
+        // one frame stale at presentation — random per-frame error that
+        // read as judder on hardware (round 4). Instead the true start
+        // instant and the signed distance are handed to `SlideBox`,
+        // which evaluates the easing inside `draw` against the frame's
+        // own clock. A3 must keep this draw-time evaluation when it
+        // replaces the spike. No animation in flight → offset 0 → the
+        // column renders byte-identically to the unwrapped one.
+        let mut slide_box = SlideBox::new(column, 0.0);
+        if let Some(started) = self.spike_shown_at {
+            slide_box = slide_box.spike_from(
+                started,
+                slide::translation_y(self.config.edge, self.spike_distance()),
+            );
+        }
+        slide_box.into()
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
