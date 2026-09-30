@@ -27,7 +27,7 @@ use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
 use crate::session;
-use crate::slide::SlideBox;
+use crate::slide::{self, SlideBox};
 use crate::surface;
 use crate::tab_bar::TabBar;
 use crate::tabs::{self, Tab, TabId};
@@ -41,10 +41,12 @@ pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// A1 spike hardcode (slide-animation spec): the content column renders
-/// through `SlideBox` at a fixed offset so the clip+translate mechanism
-/// can be proven on hardware before any state machine exists. A3
-/// replaces this with the live animation offset.
-const SPIKE_OFFSET_Y: f32 = 200.0;
+/// through `SlideBox` at a fixed edge-space offset — 200 px toward the
+/// anchored screen edge, the direction a real slide travels
+/// (`slide::translation_y`) — so the clip+translate mechanism can be
+/// proven on hardware before any state machine exists. A3 replaces
+/// this with the live animation offset.
+const SPIKE_OFFSET_PX: f32 = 200.0;
 
 /// What the running instance should do on startup, mirrored by a second
 /// launch's D-Bus activation (see `main.rs`).
@@ -1491,12 +1493,16 @@ impl Application for DropTerm {
 
         // A1 spike (slide-animation spec): the content column —
         // terminal, tab bar when >1 tab, grab bar — renders through the
-        // slide wrapper at a hardcoded offset, proving on hardware that
-        // TerminalBox (text, glyphs, selection) draws correctly
-        // translated and clipped at the surface bounds before any state
-        // machine exists. A3 replaces the constant with the live slide
-        // offset.
-        SlideBox::new(column, SPIKE_OFFSET_Y).into()
+        // slide wrapper at a hardcoded offset toward the anchored edge,
+        // proving on hardware that TerminalBox (text, glyphs, selection)
+        // draws correctly translated and clipped at the surface bounds
+        // before any state machine exists. A3 replaces the constant with
+        // the live slide offset.
+        SlideBox::new(
+            column,
+            slide::translation_y(self.config.edge, SPIKE_OFFSET_PX),
+        )
+        .into()
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {

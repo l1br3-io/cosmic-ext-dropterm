@@ -16,6 +16,7 @@
 //! offset/easing/reversal math joins it here as plain functions over
 //! plain data — the same separation as `geometry.rs`.
 
+use crate::config::Edge;
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::clipboard::Clipboard;
 use cosmic::iced::core::layout::{self, Layout};
@@ -27,6 +28,20 @@ use cosmic::iced::mouse::{self, Cursor};
 use cosmic::iced::{Length, Rectangle, Size, Vector};
 use cosmic::theme::Theme;
 use cosmic::{Element, Renderer};
+
+/// Window-space Y translation for a content slide at `offset_px` from
+/// its resting position, on a surface anchored at `edge`
+/// (slide-animation spec): the slide always moves content toward the
+/// anchored screen edge — `Edge::Top` translates upward (negative),
+/// `Edge::Bottom` downward (positive) — so a show slides in from the
+/// anchored edge and a hide slides back out to it. Horizontal
+/// placement is never animated. `0.0` is the resting position.
+pub fn translation_y(edge: Edge, offset_px: f32) -> f32 {
+    match edge {
+        Edge::Top => -offset_px,
+        Edge::Bottom => offset_px,
+    }
+}
 
 /// The slide wrapper: draws its child translated by `offset_y` pixels
 /// — positive is down in window space — clipped to the child's own
@@ -206,5 +221,30 @@ where
 {
     fn from(slide_box: SlideBox<'a, Message>) -> Self {
         Self::new(slide_box)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_edge_translates_upward_toward_the_anchored_edge() {
+        // A slide on a top-anchored surface moves content up — toward
+        // the anchored screen edge — never down into the screen.
+        assert_eq!(translation_y(Edge::Top, 200.0), -200.0);
+    }
+
+    #[test]
+    fn bottom_edge_translates_downward_toward_the_anchored_edge() {
+        assert_eq!(translation_y(Edge::Bottom, 200.0), 200.0);
+    }
+
+    #[test]
+    fn resting_offset_translates_nowhere() {
+        // Offset 0 is the resting position: byte-identical to the
+        // unwrapped column.
+        assert_eq!(translation_y(Edge::Top, 0.0), 0.0);
+        assert_eq!(translation_y(Edge::Bottom, 0.0), 0.0);
     }
 }
