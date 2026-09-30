@@ -150,12 +150,13 @@ pub enum Message {
     /// by a newer window, or a duplicate delivery after the write —
     /// writes nothing.
     SessionSaveDue(u32),
-    /// A1 spike clock tick (slide-animation spec, temporary — A3
-    /// replaces this with the real slide state machine's tick):
-    /// recompute the eased content offset; the first tick past the
-    /// duration parks the offset at rest and drops the clock (and
-    /// with it the subscription).
-    SpikeTick,
+    /// Slide clock tick (slide-animation spec, A3): redraw-only
+    /// while a slide is live — the eased offset is evaluated at draw
+    /// time inside `SlideBox`, so the tick exists to keep redraw
+    /// requests pending (see `SLIDE_TICK`). The first tick past the
+    /// duration parks the slide at rest and drops it (and with it the
+    /// subscription).
+    SlideTick,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -259,12 +260,12 @@ pub struct DropTerm {
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
-    /// A1 spike animation clock (slide-animation spec, temporary):
-    /// when the surface was last shown, driving a throwaway
-    /// time-decaying content offset so the slide mechanism can be
-    /// judged as motion on hardware. The A3 task replaces this with
-    /// the real `slide::Active` state machine.
-    spike_shown_at: Option<std::time::Instant>,
+    /// The live slide (slide-animation spec, A3): the eased content
+    /// offset while the shown surface slides in from the anchored
+    /// edge. `None` at rest — renders byte-identically to the
+    /// unwrapped column — and cleared on hide or completion (the
+    /// `SlideTick` parking path).
+    slide: Option<slide::Playing>,
 }
 
 impl DropTerm {
@@ -440,9 +441,10 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input (T6):
         // commit before the surface goes away.
         let commit = self.commit_pending_rename();
-        // A spike animation never outlives its surface (temporary A1
-        // clock; A3's state machine owns this transition properly).
-        self.spike_shown_at = None;
+        // A slide-in never outlives its surface (slide-animation A3):
+        // hide still destroys immediately — the animated hide and its
+        // completion-gated destroy are A4.
+        self.slide = None;
         let task = match self.surface {
             SurfaceState::Measuring(id) | SurfaceState::Shown(id) => destroy_layer_surface(id),
             SurfaceState::Hidden => Task::none(),
@@ -791,22 +793,6 @@ impl DropTerm {
         }
     }
 
-    /// The A1 spike's slide distance (slide-animation spec, temporary):
-    /// the full surface height — exactly what the A3 plan pins for the
-    /// real animation, deterministic and known at open time. Falls
-    /// back to rest (0) when no output has been measured, which cannot
-    /// happen while a spike animation is live.
-    fn spike_distance(&self) -> f32 {
-        self.output_size
-            .map(|(_, h)| {
-                geometry::surface_height(
-                    h as f32,
-                    Geometry::from_config(&self.config).height_percent,
-                ) as f32
-            })
-            .unwrap_or(0.0)
-    }
-
     /// Marks the session dirty and arms the debounce window
     /// (session-persistence spec, S3): at most one `tokio::sleep` is
     /// ever in flight — a mark while a window is armed coalesces into
@@ -872,6 +858,53 @@ impl DropTerm {
             return self.mark_session_dirty();
         }
         Task::none()
+    }
+}
+
+/// Whether a `ConfigChanged` may reshape a shown surface in place
+/// (geometry spec, G2 + G3; slide-animation spec, A3): pure so the
+/// guard is headless-testable (constructing `DropTerm` needs a live
+/// `Core`). The geometry must actually have changed; a drag armed
+/// mid-edit defers the reshape to the release settle (G3, so config
+/// reshapes and drag deltas never interleave `set_size` calls); a
+/// slide animating defers it to the next show — geometry stays frozen
+/// while animating, the module's boundary. The in-memory config still
+/// updates on every path (the caller does that first); only the live
+/// reshape is gated.
+fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
+    geometry_changed && !drag_armed && !slide_animating
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geometry_edit_mid_slide_skips_the_in_place_reshape() {
+        // A3's frozen-geometry boundary: an edit arriving while the
+        // content slides must not fire `set_size` on the animating
+        // surface — the edit lands on the next show instead.
+        assert!(!config_edit_reshapes(true, false, true));
+    }
+
+    #[test]
+    fn geometry_edit_at_rest_reshapes_in_place() {
+        assert!(config_edit_reshapes(true, false, false));
+    }
+
+    #[test]
+    fn geometry_edit_mid_drag_still_defers_to_release() {
+        assert!(!config_edit_reshapes(true, true, false));
+    }
+
+    #[test]
+    fn non_geometry_edit_never_reshapes() {
+        assert!(!config_edit_reshapes(false, false, false));
+    }
+
+    #[test]
+    fn drag_and_slide_together_still_skip_the_reshape() {
+        assert!(!config_edit_reshapes(true, true, true));
     }
 }
 
@@ -960,7 +993,7 @@ impl Application for DropTerm {
             surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
-            spike_shown_at: None,
+            slide: None,
         };
         app.refresh_window_bg_color();
 
@@ -1052,13 +1085,13 @@ impl Application for DropTerm {
             }),
         );
 
-        // A1 spike clock (slide-animation spec, temporary): a
-        // redraw-only tick while the spike animation is live. The
-        // stream is dropped the moment the clock clears — idle time
-        // costs no ticks. A3 replaces this with the real slide state
-        // machine's subscription.
-        if self.spike_shown_at.is_some() {
-            subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SpikeTick));
+        // Slide clock (slide-animation spec, A3): redraw-only ticks
+        // while a slide is live — 1 ms saturation so every compositor
+        // frame window contains a pending redraw request (see
+        // `SLIDE_TICK`). The stream is dropped the moment the slide
+        // parks — idle time costs no ticks.
+        if self.slide.is_some() {
+            subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SlideTick));
         }
 
         Subscription::batch(subs)
@@ -1111,11 +1144,18 @@ impl Application for DropTerm {
                 // config reshapes and drag deltas never interleave
                 // `set_size` calls on one surface; the release's apply
                 // picks the config's other fields up (see
-                // `GrabBarReleased`).
-                if geometry::geometry_changed(&old_geom, &new_geom)
-                    && self.drag.is_none()
-                    && let (SurfaceState::Shown(id), Some(output)) =
-                        (&self.surface, self.output_size)
+                // `GrabBarReleased`). A geometry edit arriving mid-slide
+                // (slide-animation A3) skips the in-place reshape too —
+                // geometry stays frozen while animating; the in-memory
+                // config above already updated, so the next show opens
+                // with the edit applied (a 130 ms exposure window,
+                // cheaper than a deferred-reshape queue).
+                if config_edit_reshapes(
+                    geometry::geometry_changed(&old_geom, &new_geom),
+                    self.drag.is_some(),
+                    self.slide.is_some(),
+                ) && let (SurfaceState::Shown(id), Some(output)) =
+                    (&self.surface, self.output_size)
                 {
                     return geometry::apply_geometry(*id, &new_geom, output);
                 }
@@ -1137,10 +1177,23 @@ impl Application for DropTerm {
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
-                    // The A1 spike animation starts with the shown
-                    // surface (temporary; A3's state machine starts
-                    // here for real).
-                    self.spike_shown_at = Some(std::time::Instant::now());
+                    // The slide-in starts here, with the shown surface
+                    // (slide-animation spec, A3): the full surface
+                    // height is both the from-offset and the distance
+                    // — deterministic and known at open time, unlike
+                    // the granted window height, which arrives later
+                    // through the double-reported `WindowResized`
+                    // stream (the plan's pinned distance source).
+                    let distance_px =
+                        geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
+                    self.slide = Some(slide::Playing {
+                        started: std::time::Instant::now(),
+                        active: slide::Active {
+                            direction: slide::Direction::In,
+                            from_offset_px: distance_px,
+                            distance_px,
+                        },
+                    });
                     return Task::batch([
                         geometry::apply_geometry(id, &geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
@@ -1421,18 +1474,22 @@ impl Application for DropTerm {
                     self.write_session();
                 }
             }
-            Message::SpikeTick => {
-                // A1 spike clock (temporary): the eased offset is
-                // evaluated at draw time inside `SlideBox`, so the
-                // tick's only job is parking the clock at rest once
-                // the duration has fully elapsed — which also drops
-                // the tick subscription until the next show. Between
-                // completion and this parking tick the draw already
-                // clamps to exactly `0.0`, so there is no pop.
-                if let Some(shown_at) = self.spike_shown_at
-                    && shown_at.elapsed().as_millis() as u64 >= slide::SLIDE_DURATION_MS
+            Message::SlideTick => {
+                // Redraw-only clock (slide-animation spec, A3): the
+                // eased offset is evaluated at draw time inside
+                // `SlideBox`, so the tick's only job is parking the
+                // slide once the duration has fully elapsed — which
+                // also drops the tick subscription until the next
+                // show. Between completion and this parking tick the
+                // draw already clamps to exactly the endpoint, so
+                // there is no pop.
+                if let Some(playing) = self.slide
+                    && slide::finished(
+                        &playing.active,
+                        playing.started.elapsed().as_millis() as u64,
+                    )
                 {
-                    self.spike_shown_at = None;
+                    self.slide = None;
                 }
             }
             Message::OpenHyperlink(url) => {
@@ -1542,26 +1599,22 @@ impl Application for DropTerm {
             }
         };
 
-        // A1 spike (slide-animation spec, temporary): for ~130 ms after
-        // the surface is shown, the content column eases in from the
-        // anchored edge (quadratic ease-out, the spec's show curve)
-        // proving the mechanism as motion: translate, clip, and input
-        // at rest. The pose is NOT computed here: the view runs in the
+        // The slide (slide-animation spec, A3): for ~130 ms after the
+        // surface is shown, the content column eases in from the
+        // anchored edge (quadratic ease-out, the spec's show curve).
+        // The pose is NOT computed here: the view runs in the
         // runtime's AboutToWait pass but the frame presents on the
         // compositor's frame callback, so a view-baked offset is up to
-        // one frame stale at presentation — random per-frame error that
-        // read as judder on hardware (round 4). Instead the true start
-        // instant and the signed distance are handed to `SlideBox`,
-        // which evaluates the easing inside `draw` against the frame's
-        // own clock. A3 must keep this draw-time evaluation when it
-        // replaces the spike. No animation in flight → offset 0 → the
-        // column renders byte-identically to the unwrapped one.
+        // one frame stale at presentation — random per-frame error
+        // that read as judder on hardware (the round-4 finding).
+        // Instead the live slide state and its true start instant are
+        // handed to `SlideBox`, which evaluates the easing inside
+        // `draw` against the frame's own clock. No animation in
+        // flight → offset 0 → the column renders byte-identically to
+        // the unwrapped one.
         let mut slide_box = SlideBox::new(column, 0.0);
-        if let Some(started) = self.spike_shown_at {
-            slide_box = slide_box.spike_from(
-                started,
-                slide::translation_y(self.config.edge, self.spike_distance()),
-            );
+        if let Some(playing) = self.slide {
+            slide_box = slide_box.playing(self.config.edge, playing);
         }
         slide_box.into()
     }

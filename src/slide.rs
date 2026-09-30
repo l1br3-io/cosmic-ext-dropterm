@@ -68,49 +68,25 @@ pub const SLIDE_DURATION_MS: u64 = 130;
 /// runtime on `set_size` storms, not redraws).
 pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
-/// The A1 spike's eased offset (slide-animation spec, temporary — the
-/// A2 state machine generalizes this): quadratic ease-out from
-/// `from_offset_px` to rest (`0.0`) over [`SLIDE_DURATION_MS`],
-/// clamped so a completed slide rests at exactly `0.0` — the final
-/// frame is identical to the resting one, no sub-pixel residue. Pure
-/// over injected milliseconds: `draw` feeds wall elapsed, tests feed
-/// fakes. Delegates to [`offset`] — the spike is a show from the full
-/// distance, the same math A3 runs for real.
-pub fn spike_offset(from_offset_px: f32, elapsed_ms: u64) -> f32 {
-    offset(
-        &Active {
-            direction: Direction::In,
-            from_offset_px,
-            distance_px: from_offset_px,
-        },
-        elapsed_ms,
-    )
-}
-
 /// Which way a slide is moving (slide-animation spec): `In` shows the
 /// content (offset decays to rest), `Out` hides it (offset grows to
-/// the distance).
+/// the distance). `Out` slides are constructed only by tests until
+/// A4's animated-hide path lands; the variant itself is live (it
+/// reaches `SlideBox` by value through `Playing`), so no dead-code
+/// exemption is needed — only its construction is pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Showing: ease-out from `from_offset_px` to rest.
     In,
     /// Hiding: ease-in from `from_offset_px` to `distance_px`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by A4's hide path; the spike only shows"
-        )
-    )]
     Out,
 }
 
 /// A slide in progress (slide-animation spec, A2): plain data, no
 /// clocks — elapsed time is injected at the call site. Offsets are
-/// edge-space by convention: `0.0` is the resting position, growing
-/// toward `distance_px` as the content hides; the math is
-/// sign-agnostic, so the A1 spike reuses it with signed window-space
-/// offsets until A3 moves the sign boundary to `translation_y`.
+/// edge-space: `0.0` is the resting position, growing toward
+/// `distance_px` as the content hides; the window-space sign is
+/// applied only at the draw site, by [`translation_y`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Active {
     pub direction: Direction,
@@ -154,13 +130,6 @@ pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
 /// offset at completion is already exact, and "the first tick past
 /// the duration parks the slide" is a clock decision, not a pose
 /// one. Monotone in `elapsed_ms`: a slide completes exactly once.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by A3's SlideTick completion; the spike parks inline"
-    )
-)]
 pub fn finished(_active: &Active, elapsed_ms: u64) -> bool {
     elapsed_ms >= SLIDE_DURATION_MS
 }
@@ -191,25 +160,24 @@ pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
     }
 }
 
-/// Draw-time easing state for the A1 spike (temporary — A3's state
-/// machine generalizes this): the animation's *true* start instant —
-/// carried through view rebuilds, never re-captured — and the signed
-/// window-space offset the content eases from. The pair exists so
+/// A live slide (slide-animation spec, A3): the animation state
+/// ([`Active`]) paired with its *true* start instant — carried
+/// through view rebuilds, never re-captured. The pair exists so
 /// [`SlideBox::draw`] can evaluate the pose against the frame's own
 /// clock: the runtime builds the view in its `AboutToWait` pass but
 /// presents the frame on the compositor's frame callback (pinned rev
-/// `08a09e3`, `iced/winit/src/lib.rs` `AboutToWait` → `request_redraw`
-/// → `RedrawRequested`), so an offset baked at view time is up to a
-/// full frame stale at presentation — random per-frame error that
-/// reads as judder (round 4 finding). Evaluating in `draw` makes every
-/// presented frame carry the pose for its presentation instant.
-pub struct Spike {
-    /// When the animation started (the spike clock, `spike_shown_at`).
+/// `08a09e3`, `iced/winit/src/lib.rs` `AboutToWait` →
+/// `request_redraw` → `RedrawRequested`), so an offset baked at view
+/// time is up to a full frame stale at presentation — random
+/// per-frame error that reads as judder (the round-4 spike finding).
+/// Evaluating in `draw` makes every presented frame carry the pose
+/// for its presentation instant.
+#[derive(Debug, Clone, Copy)]
+pub struct Playing {
+    /// When the slide started (the app's slide clock).
     pub started: std::time::Instant,
-    /// The signed window-space offset at the animation's start:
-    /// `translation_y(edge, distance_px)` — the full slide distance,
-    /// so the content eases in from fully off-rest toward `0.0`.
-    pub from_offset_y: f32,
+    /// What slides, from where, toward which endpoint.
+    pub active: Active,
 }
 
 /// The slide wrapper: draws its child translated by `offset_y` pixels
@@ -227,10 +195,10 @@ pub struct Spike {
 pub struct SlideBox<'a, Message> {
     child: Element<'a, Message>,
     offset_y: f32,
-    /// The A1 spike animation (temporary): when set, `draw` evaluates
-    /// the eased offset itself (see [`Spike`]); `offset_y` is ignored
-    /// until the animation completes.
-    spike: Option<Spike>,
+    /// A live slide (slide-animation spec, A3): when set, `draw`
+    /// evaluates the eased offset itself (see [`Playing`]) translated
+    /// per `edge`; `offset_y` is ignored until the slide completes.
+    playing: Option<(Edge, Playing)>,
 }
 
 impl<'a, Message> SlideBox<'a, Message> {
@@ -242,19 +210,18 @@ impl<'a, Message> SlideBox<'a, Message> {
         Self {
             child: child.into(),
             offset_y,
-            spike: None,
+            playing: None,
         }
     }
 
-    /// A1 spike (slide-animation spec, temporary): ease from
-    /// `from_offset_y` to rest, evaluated at draw time. `started` is
-    /// the animation's true start — the same instant across every view
-    /// rebuild — so `draw` can compute the frame-accurate pose.
-    pub fn spike_from(mut self, started: std::time::Instant, from_offset_y: f32) -> Self {
-        self.spike = Some(Spike {
-            started,
-            from_offset_y,
-        });
+    /// Animate the child per `playing`'s easing (slide-animation
+    /// spec, A3): the eased edge-space offset is computed inside
+    /// `draw` against the frame's own clock and signed toward `edge`
+    /// by [`translation_y`] — never baked here in the view (the
+    /// round-4 lesson; see [`Playing`]). `started` is the slide's
+    /// true start — the same instant across every view rebuild.
+    pub fn playing(mut self, edge: Edge, playing: Playing) -> Self {
+        self.playing = Some((edge, playing));
         self
     }
 }
@@ -376,20 +343,26 @@ where
         // The only behavior the wrapper adds: clip to the surface
         // bounds, translate, and let the child paint. The offset is
         // evaluated HERE — at frame presentation, on the frame's own
-        // clock — when a spike animation is live: the view that built
-        // this widget ran in the runtime's AboutToWait pass, up to a
-        // full frame before this draw executes on the compositor's
-        // frame callback, so a view-baked offset judders (round 4
-        // finding; see `Spike`). The child's viewport follows the
-        // translation — the child paints `offset_y` lower in window
-        // space, so a window-space visible region maps to child-local
-        // space shifted up by the same amount; the scrollable passes
-        // its child the same shifted viewport, and TerminalBox sizes
-        // its visible region from it.
-        let offset_y = self.spike.as_ref().map_or(self.offset_y, |spike| {
-            spike_offset(
-                spike.from_offset_y,
-                spike.started.elapsed().as_millis() as u64,
+        // clock — when a slide is live: the view that built this
+        // widget ran in the runtime's AboutToWait pass, up to a full
+        // frame before this draw executes on the compositor's frame
+        // callback, so a view-baked offset judders (the round-4
+        // finding; see `Playing`). The eased edge-space offset is
+        // signed toward the anchored edge only here, at the last
+        // possible moment (`translation_y` is the sign boundary).
+        // The child's viewport follows the translation — the child
+        // paints `offset_y` lower in window space, so a window-space
+        // visible region maps to child-local space shifted up by the
+        // same amount; the scrollable passes its child the same
+        // shifted viewport, and TerminalBox sizes its visible region
+        // from it.
+        let offset_y = self.playing.map_or(self.offset_y, |(edge, playing)| {
+            translation_y(
+                edge,
+                offset(
+                    &playing.active,
+                    playing.started.elapsed().as_millis() as u64,
+                ),
             )
         });
         let bounds = layout.bounds();
@@ -425,59 +398,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn spike_offset_starts_at_the_from_offset() {
-        // At the animation's first frame the content sits exactly at
-        // the from-offset — no teleport before the easing begins.
-        assert_eq!(spike_offset(835.0, 0), 835.0);
-        assert_eq!(spike_offset(-835.0, 0), -835.0);
-    }
-
-    #[test]
-    fn spike_offset_rests_exactly_at_completion() {
-        // The completed slide is exactly rest — no sub-pixel residue
-        // that would make the final frame differ from the resting one.
-        assert_eq!(spike_offset(835.0, SLIDE_DURATION_MS), 0.0);
-        assert_eq!(spike_offset(-835.0, SLIDE_DURATION_MS), 0.0);
-        // Late evaluation (a draw after the parking tick dropped the
-        // clock) clamps to rest, never overshoots.
-        assert_eq!(spike_offset(835.0, SLIDE_DURATION_MS * 10), 0.0);
-    }
-
-    #[test]
-    fn spike_offset_decays_monotonically_toward_rest() {
-        // Sampled over fake timestamps spanning the whole slide (and a
-        // step finer than the tick so the curve, not the cadence, is
-        // under test): the offset only ever moves toward 0.0, from
-        // either sign — the show curve is quadratic ease-out.
-        let mut last = 835.0;
-        for ms in (0..=SLIDE_DURATION_MS).step_by(8) {
-            let offset = spike_offset(835.0, ms);
-            assert!(offset <= last, "offset grew at {ms} ms: {offset} > {last}");
-            assert!(offset >= 0.0, "offset flipped sign at {ms} ms: {offset}");
-            last = offset;
-        }
-        let mut last = -835.0;
-        for ms in (0..=SLIDE_DURATION_MS).step_by(8) {
-            let offset = spike_offset(-835.0, ms);
-            assert!(
-                offset >= last,
-                "offset grew in magnitude at {ms} ms: {offset} < {last}"
-            );
-            assert!(offset <= 0.0, "offset flipped sign at {ms} ms: {offset}");
-            last = offset;
-        }
-    }
-
-    #[test]
-    fn spike_offset_midpoint_quarters_the_distance() {
-        // Quadratic ease-out at half the duration: remaining = 1/2,
-        // offset = from * (1/2)^2 = from/4.
-        let midpoint = SLIDE_DURATION_MS / 2;
-        assert_eq!(spike_offset(800.0, midpoint), 200.0);
-        assert_eq!(spike_offset(-800.0, midpoint), -200.0);
-    }
 
     // --- Direction::In (show): quadratic ease-out from -> rest ---
 
