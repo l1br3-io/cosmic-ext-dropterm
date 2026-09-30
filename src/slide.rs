@@ -16,6 +16,8 @@
 //! offset/easing/reversal math joins it here as plain functions over
 //! plain data — the same separation as `geometry.rs`.
 
+use std::time::Duration;
+
 use crate::config::Edge;
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::clipboard::Clipboard;
@@ -42,6 +44,18 @@ pub fn translation_y(edge: Edge, offset_px: f32) -> f32 {
         Edge::Bottom => offset_px,
     }
 }
+
+/// Duration of one slide, in milliseconds (slide-animation spec,
+/// locked 2026-09-30): mid-range of the 120–150 ms band, ease-out on
+/// show / ease-in on hide. A compile-time constant — no config surface
+/// until `settings-ui`.
+pub const SLIDE_DURATION_MS: u64 = 130;
+
+/// Tick cadence of the animation clock (slide-animation spec plan
+/// decision): ~60 Hz, about 8 frames per 130 ms slide — redraw-only
+/// ticks, no layer-shell traffic. Safe by the G3 evidence (the drag
+/// incident saturated the runtime on `set_size` storms, not redraws).
+pub const SLIDE_TICK: Duration = Duration::from_millis(16);
 
 /// The slide wrapper: draws its child translated by `offset_y` pixels
 /// — positive is down in window space — clipped to the child's own

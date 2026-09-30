@@ -40,14 +40,6 @@ pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 /// press (see the README's known-risks section).
 const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// A1 spike hardcode (slide-animation spec): the content column renders
-/// through `SlideBox` at a fixed edge-space offset — 200 px toward the
-/// anchored screen edge, the direction a real slide travels
-/// (`slide::translation_y`) — so the clip+translate mechanism can be
-/// proven on hardware before any state machine exists. A3 replaces
-/// this with the live animation offset.
-const SPIKE_OFFSET_PX: f32 = 200.0;
-
 /// What the running instance should do on startup, mirrored by a second
 /// launch's D-Bus activation (see `main.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::Subcommand)]
@@ -158,6 +150,12 @@ pub enum Message {
     /// by a newer window, or a duplicate delivery after the write —
     /// writes nothing.
     SessionSaveDue(u32),
+    /// A1 spike clock tick (slide-animation spec, temporary — A3
+    /// replaces this with the real slide state machine's tick):
+    /// recompute the eased content offset; the first tick past the
+    /// duration parks the offset at rest and drops the clock (and
+    /// with it the subscription).
+    SpikeTick,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
@@ -261,6 +259,12 @@ pub struct DropTerm {
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
+    /// A1 spike animation clock (slide-animation spec, temporary):
+    /// when the surface was last shown, driving a throwaway
+    /// time-decaying content offset so the slide mechanism can be
+    /// judged as motion on hardware. The A3 task replaces this with
+    /// the real `slide::Active` state machine.
+    spike_shown_at: Option<std::time::Instant>,
 }
 
 impl DropTerm {
@@ -436,6 +440,9 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input (T6):
         // commit before the surface goes away.
         let commit = self.commit_pending_rename();
+        // A spike animation never outlives its surface (temporary A1
+        // clock; A3's state machine owns this transition properly).
+        self.spike_shown_at = None;
         let task = match self.surface {
             SurfaceState::Measuring(id) | SurfaceState::Shown(id) => destroy_layer_surface(id),
             SurfaceState::Hidden => Task::none(),
@@ -784,6 +791,22 @@ impl DropTerm {
         }
     }
 
+    /// The A1 spike's slide distance (slide-animation spec, temporary):
+    /// the full surface height — exactly what the A3 plan pins for the
+    /// real animation, deterministic and known at open time. Falls
+    /// back to rest (0) when no output has been measured, which cannot
+    /// happen while a spike animation is live.
+    fn spike_distance(&self) -> f32 {
+        self.output_size
+            .map(|(_, h)| {
+                geometry::surface_height(
+                    h as f32,
+                    Geometry::from_config(&self.config).height_percent,
+                ) as f32
+            })
+            .unwrap_or(0.0)
+    }
+
     /// Marks the session dirty and arms the debounce window
     /// (session-persistence spec, S3): at most one `tokio::sleep` is
     /// ever in flight — a mark while a window is armed coalesces into
@@ -937,6 +960,7 @@ impl Application for DropTerm {
             surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
+            spike_shown_at: None,
         };
         app.refresh_window_bg_color();
 
@@ -1028,6 +1052,15 @@ impl Application for DropTerm {
             }),
         );
 
+        // A1 spike clock (slide-animation spec, temporary): a
+        // redraw-only tick while the spike animation is live. The
+        // stream is dropped the moment the clock clears — idle time
+        // costs no ticks. A3 replaces this with the real slide state
+        // machine's subscription.
+        if self.spike_shown_at.is_some() {
+            subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SpikeTick));
+        }
+
         Subscription::batch(subs)
     }
 
@@ -1104,6 +1137,10 @@ impl Application for DropTerm {
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
+                    // The A1 spike animation starts with the shown
+                    // surface (temporary; A3's state machine starts
+                    // here for real).
+                    self.spike_shown_at = Some(std::time::Instant::now());
                     return Task::batch([
                         geometry::apply_geometry(id, &geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
@@ -1384,6 +1421,18 @@ impl Application for DropTerm {
                     self.write_session();
                 }
             }
+            Message::SpikeTick => {
+                // A1 spike clock (temporary): the eased offset decays
+                // with wall time in `view_window`, so the tick's only
+                // job is parking the clock at rest once the duration
+                // has fully elapsed — which also drops the tick
+                // subscription until the next show.
+                if let Some(shown_at) = self.spike_shown_at
+                    && shown_at.elapsed().as_millis() as u64 >= slide::SLIDE_DURATION_MS
+                {
+                    self.spike_shown_at = None;
+                }
+            }
             Message::OpenHyperlink(url) => {
                 if let Err(err) = open::that_detached(&url) {
                     log::warn!("failed to open {url:?}: {err}");
@@ -1491,18 +1540,24 @@ impl Application for DropTerm {
             }
         };
 
-        // A1 spike (slide-animation spec): the content column —
-        // terminal, tab bar when >1 tab, grab bar — renders through the
-        // slide wrapper at a hardcoded offset toward the anchored edge,
-        // proving on hardware that TerminalBox (text, glyphs, selection)
-        // draws correctly translated and clipped at the surface bounds
-        // before any state machine exists. A3 replaces the constant with
-        // the live slide offset.
-        SlideBox::new(
-            column,
-            slide::translation_y(self.config.edge, SPIKE_OFFSET_PX),
-        )
-        .into()
+        // A1 spike (slide-animation spec, temporary): for ~130 ms after
+        // the surface is shown, the content column eases in from the
+        // anchored edge — a time-decaying offset (quadratic ease-out,
+        // the spec's show curve) proving the mechanism as motion:
+        // translate, clip, and input at rest. At rest the offset is
+        // 0.0 and the column renders byte-identically to the unwrapped
+        // one. A3 replaces this whole block with the real state
+        // machine's live offset.
+        let spike_offset = self.spike_shown_at.map_or(0.0, |shown_at| {
+            let elapsed = shown_at.elapsed().as_millis() as u64;
+            if elapsed >= slide::SLIDE_DURATION_MS {
+                return 0.0;
+            }
+            let progress = elapsed as f32 / slide::SLIDE_DURATION_MS as f32;
+            let remaining = 1.0 - progress;
+            self.spike_distance() * remaining * remaining
+        });
+        SlideBox::new(column, slide::translation_y(self.config.edge, spike_offset)).into()
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
