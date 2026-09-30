@@ -452,8 +452,8 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input (T6):
         // commit before the content slides out.
         let commit = self.commit_pending_rename();
-        let task = match hide_step(&self.surface) {
-            HideStep::DestroyNow(id) => {
+        let task = match toggle_step(ToggleAction::Hide, &self.surface) {
+            ToggleStep::DestroyNow(id) => {
                 // A measuring surface has no reshaped content to
                 // animate (criterion 8): destroy immediately, exactly
                 // as before animated hides existed.
@@ -461,7 +461,7 @@ impl DropTerm {
                 self.surface = SurfaceState::Hidden;
                 destroy_layer_surface(id)
             }
-            HideStep::SlideOut(id) => {
+            ToggleStep::SlideOut(id) => {
                 // A shown surface slides out and dies on completion
                 // (criterion 2). The out-slide starts from wherever
                 // the content stands — the live eased offset of an
@@ -500,9 +500,10 @@ impl DropTerm {
                 // time it arrives.
                 set_keyboard_interactivity(id, KeyboardInteractivity::None)
             }
-            // Already hiding or hidden: idempotent — no restart, no
-            // double destroy.
-            HideStep::Leave => Task::none(),
+            // `Hide` never decides to show (pinned by the matrix
+            // tests), and a hiding or hidden surface leaves with
+            // nothing: no restart, no double destroy.
+            ToggleStep::Measure | ToggleStep::ReverseShow(_) | ToggleStep::Leave => Task::none(),
         };
         // The surface is leaving on every destructive path, and the
         // cleanup is idempotent for `Leave`: any live grab-bar drag is
@@ -518,6 +519,50 @@ impl DropTerm {
             tab.terminal.lock().unwrap().set_focused(false);
         }
         Task::batch([commit, task])
+    }
+
+    /// Reverses a hiding slide back to shown (slide-animation spec,
+    /// A5, criterion 6): the live surface is reused — no new
+    /// measuring pass, `output_size` is retained (the `geometry`
+    /// module's guarantee) — the slide re-targets `In` from the
+    /// current offset (`slide::reverse`: no teleport, a fresh fixed
+    /// 130 ms), keyboard interactivity is re-grabbed per config, the
+    /// terminal reports back the focus it lost at hide start, and
+    /// `surface_focused` resets to `false` pending the
+    /// `LayerFocused` the re-grab synthesizes. PTYs never noticed
+    /// the hide (criterion 2) and keep running throughout.
+    fn reverse_show(&mut self, id: window::Id) -> Task<Message> {
+        self.surface = SurfaceState::Shown(id);
+        self.surface_focused = false;
+        // `Hiding` always carries a live `Out` slide — the parking
+        // tick destroys the surface and leaves `Hidden` in the same
+        // handler — so there is always something to re-target; a
+        // slide-less degenerate would simply show at rest. An `Out`
+        // slide that already ran past its duration reverses from the
+        // endpoint (the full distance), i.e. a fresh full slide-in.
+        if let Some(playing) = self.slide {
+            self.slide = Some(slide::Playing {
+                started: std::time::Instant::now(),
+                active: slide::reverse(
+                    &playing.active,
+                    playing.started.elapsed().as_millis() as u64,
+                ),
+            });
+        }
+        // The mirror of hide's focus bookkeeping (criterion 5 in
+        // reverse): report the terminal focused again — `set_focused`
+        // only reports real changes, so the `LayerFocused` this
+        // re-grab synthesizes can repeat it harmlessly.
+        if let Some(tab) = self.active() {
+            tab.terminal.lock().unwrap().set_focused(true);
+        }
+        Task::batch([
+            set_keyboard_interactivity(
+                id,
+                surface::keyboard_interactivity(self.config.keyboard_mode),
+            ),
+            widget::text_input::focus(self.terminal_id.clone()),
+        ])
     }
 
     /// The slide distance for the currently shown surface
@@ -638,23 +683,17 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
-        let showing = !matches!(self.surface, SurfaceState::Hidden);
-        match action {
-            ToggleAction::Toggle => {
-                if showing {
-                    self.hide()
-                } else {
-                    self.show()
-                }
-            }
-            ToggleAction::Show => {
-                if showing {
-                    Task::none()
-                } else {
-                    self.show()
-                }
-            }
-            ToggleAction::Hide => self.hide(),
+        // The toggle funnel (slide-animation spec, A5): every matrix
+        // cell executes here — most importantly, a mid-hide toggle or
+        // `Show` reverses on the live surface instead of being
+        // dropped. The debounce above already collapses true spam
+        // (~6–7 effective toggles per second at 150 ms, each a full
+        // reversal); the state machine itself never drops or queues.
+        match toggle_step(action, &self.surface) {
+            ToggleStep::Measure => self.show(),
+            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => self.hide(),
+            ToggleStep::ReverseShow(id) => self.reverse_show(id),
+            ToggleStep::Leave => Task::none(),
         }
     }
 
@@ -950,34 +989,77 @@ fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animatin
     geometry_changed && !drag_armed && !slide_animating
 }
 
-/// What a hide request must do to the surface (slide-animation spec,
-/// A4): pure so the decision is headless-testable (constructing
-/// `DropTerm` needs a live `Core`). Every hide caller funnels through
-/// here — toggle hotkey, `Ctrl+Shift+Q`, focus loss, D-Bus — so the
-/// surface is destroyed exactly once per hide, never twice.
+/// What a toggle-intent request must do with the surface
+/// (slide-animation spec, A5): pure so the decision is
+/// headless-testable (constructing `DropTerm` needs a live `Core`).
+/// Every toggle caller funnels through here — the toggle hotkey and
+/// D-Bus activation (`debounced_toggle`), plus `Ctrl+Shift+Q` and
+/// focus loss through `hide`'s `Hide` column — so the full
+/// state × intent matrix lives in one place and reversibility
+/// (criterion 6) is just another cell. Slide activity needs no
+/// separate input: it is implied by the state — an `Out` slide only
+/// exists while `Hiding`, an `In` slide only rides a `Shown`
+/// surface — and the executors read the live slide for offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HideStep {
-    /// Destroy now: a measuring surface has no reshaped content to
-    /// animate (criterion 8), so it keeps the immediate destroy the
-    /// app had before animated hides existed.
+enum ToggleStep {
+    /// Run the measuring show pass (a hidden surface only): measure
+    /// → reshape → shown, then slide in (A3).
+    Measure,
+    /// Destroy immediately: a measuring surface has no reshaped
+    /// content to animate (criterion 8), so it keeps the immediate
+    /// destroy the app had before animated hides existed.
     DestroyNow(window::Id),
     /// Slide out from the current offset and destroy on the slide's
     /// completion tick (criterion 2). Keyboard interactivity releases
     /// at slide-out start (criterion 5).
     SlideOut(window::Id),
-    /// Nothing: already hiding — a second request must not restart the
-    /// out-slide or queue a second destroy (`WindowUnfocused` reaches
-    /// `focus_lost` unguarded, and the keyboard release synthesizes
-    /// its own `Unfocused`) — or already hidden.
+    /// Reverse a hiding slide back to shown on the same live surface
+    /// (criterion 6): no new measuring pass — `output_size` is
+    /// retained — the slide re-targets `In` from the current offset,
+    /// keyboard interactivity is re-grabbed per config, and
+    /// `surface_focused` resets pending the next `LayerFocused`.
+    ReverseShow(window::Id),
+    /// Nothing: the intent is already satisfied — a hide while
+    /// hiding or hidden (no restart, no double destroy), a show
+    /// while measuring or shown.
     Leave,
 }
 
-fn hide_step(surface: &SurfaceState) -> HideStep {
-    match surface {
-        SurfaceState::Measuring(id) => HideStep::DestroyNow(*id),
-        SurfaceState::Shown(id) => HideStep::SlideOut(*id),
-        SurfaceState::Hiding(_) | SurfaceState::Hidden => HideStep::Leave,
+fn toggle_step(action: ToggleAction, surface: &SurfaceState) -> ToggleStep {
+    match (action, surface) {
+        // Show intents: only a hidden surface starts the measuring
+        // pass; a hiding one reverses (criterion 6); a measuring or
+        // shown one is already on its way.
+        (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hidden) => ToggleStep::Measure,
+        (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hiding(id)) => {
+            ToggleStep::ReverseShow(*id)
+        }
+        (ToggleAction::Show, SurfaceState::Measuring(_) | SurfaceState::Shown(_)) => {
+            ToggleStep::Leave
+        }
+        // Hide intents — and a toggle on any visible surface: a
+        // measuring surface dies now (criterion 8), a shown one
+        // slides out (criterion 2; mid-slide-in the executor starts
+        // from the live eased offset), a hiding or hidden one stays
+        // put (A4 idempotence — no restart, no double destroy).
+        (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Measuring(id)) => {
+            ToggleStep::DestroyNow(*id)
+        }
+        (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Shown(id)) => {
+            ToggleStep::SlideOut(*id)
+        }
+        (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
     }
+}
+
+/// Whether a `LayerUnfocused` event for `id` should reach
+/// [`DropTerm::focus_lost`] (slide-animation spec, A5 guards audit):
+/// only a shown surface reacts to losing keyboard focus — one
+/// arriving while `Hiding` (the synthesized unfocus of the hide's
+/// own keyboard release, or a racing focus loss) is a no-op, so it
+/// can never restart or double-drive the out-slide.
+fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
+    matches!(surface, SurfaceState::Shown(shown) if *shown == id)
 }
 
 #[cfg(test)]
@@ -1012,39 +1094,144 @@ mod tests {
         assert!(!config_edit_reshapes(true, true, true));
     }
 
+    // --- A5: the toggle decision matrix (slide-animation spec) ---
+    //
+    // `toggle_step` decides over intent × surface state; slide
+    // activity needs no separate input because it is implied by the
+    // state — an `Out` slide only exists while `Hiding`, an `In`
+    // slide only rides a `Shown` surface — and the executors read
+    // the live slide for their offsets (A4's `hide`, A5's
+    // `reverse_show` via `slide::reverse`).
+
     #[test]
-    fn measuring_hide_skips_the_animation_and_destroys_immediately() {
-        // Criterion 8: a hide while still measuring has no reshaped
-        // content to animate — the surface dies now, not in 130 ms,
-        // exactly as before the animated hide existed.
-        let id = window::Id::unique();
+    fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
         assert_eq!(
-            hide_step(&SurfaceState::Measuring(id)),
-            HideStep::DestroyNow(id)
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hidden),
+            ToggleStep::Measure
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hidden),
+            ToggleStep::Measure
         );
     }
 
     #[test]
-    fn shown_hide_slides_out_instead_of_destroying() {
-        // Criterion 2: the content slides back to the anchored edge
-        // and only then is the layer surface destroyed.
+    fn toggle_or_hide_from_measuring_destroys_immediately() {
+        // Criterion 8: a measuring surface has no reshaped content
+        // to animate — the surface dies now, not in 130 ms, exactly
+        // as before animated hides existed.
         let id = window::Id::unique();
-        assert_eq!(hide_step(&SurfaceState::Shown(id)), HideStep::SlideOut(id));
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(id)),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id)),
+            ToggleStep::DestroyNow(id)
+        );
     }
 
     #[test]
-    fn hide_while_already_hiding_destroys_nothing() {
-        // Idempotence (A4): `WindowUnfocused` reaches `focus_lost`
-        // unguarded, and releasing keyboard interactivity synthesizes
-        // its own `Unfocused` — a second hide request must neither
-        // restart the out-slide nor queue a second destroy.
+    fn toggle_or_hide_from_shown_slides_out() {
+        // Criterion 2: slide out, destroy on completion. Mid-slide-in
+        // the same cell applies — the executor starts the out-slide
+        // from the live eased offset (A4's `hide`), so nothing
+        // teleports.
         let id = window::Id::unique();
-        assert_eq!(hide_step(&SurfaceState::Hiding(id)), HideStep::Leave);
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id)),
+            ToggleStep::SlideOut(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id)),
+            ToggleStep::SlideOut(id)
+        );
     }
 
     #[test]
-    fn hide_while_hidden_destroys_nothing() {
-        assert_eq!(hide_step(&SurfaceState::Hidden), HideStep::Leave);
+    fn toggle_or_show_mid_hiding_reverses_on_the_same_surface() {
+        // Criterion 6: a mid-hide toggle reverses instead of being
+        // dropped — and on the SAME window::Id: the live surface is
+        // reused (no new measuring pass) and `reverse_show` re-grabs
+        // keyboard interactivity on it per config.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id)),
+            ToggleStep::ReverseShow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id)),
+            ToggleStep::ReverseShow(id)
+        );
+    }
+
+    #[test]
+    fn show_while_measuring_or_shown_is_already_satisfied() {
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Measuring(id)),
+            ToggleStep::Leave
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Shown(id)),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn hide_while_hiding_neither_restarts_nor_double_destroys() {
+        // A4 idempotence carried into the matrix: `WindowUnfocused`
+        // reaches `focus_lost` unguarded, and the keyboard release
+        // synthesizes its own `Unfocused` — a second hide request
+        // must neither restart the out-slide nor queue a second
+        // destroy task.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hiding(id)),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn hide_while_hidden_destroys_nothing_in_the_matrix() {
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn a_hide_intent_never_decides_to_show() {
+        // Pins `hide()`'s unreachable arms as intended behavior: the
+        // hide column of the matrix only ever destroys, slides out,
+        // or leaves.
+        let id = window::Id::unique();
+        for surface in [
+            SurfaceState::Hidden,
+            SurfaceState::Measuring(id),
+            SurfaceState::Shown(id),
+            SurfaceState::Hiding(id),
+        ] {
+            assert!(matches!(
+                toggle_step(ToggleAction::Hide, &surface),
+                ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) | ToggleStep::Leave
+            ));
+        }
+    }
+
+    #[test]
+    fn layer_unfocused_while_hiding_is_rejected_by_the_shown_guard() {
+        // The A5 guards audit: only a shown surface reacts to losing
+        // keyboard focus — during `Hiding` (the synthesized unfocus
+        // of the hide's own keyboard release) the event must be a
+        // no-op.
+        let id = window::Id::unique();
+        assert!(layer_unfocused_acts_on(&SurfaceState::Shown(id), id));
+        assert!(!layer_unfocused_acts_on(&SurfaceState::Hiding(id), id));
+        assert!(!layer_unfocused_acts_on(
+            &SurfaceState::Shown(window::Id::unique()),
+            id
+        ));
     }
 }
 
@@ -1289,7 +1476,10 @@ impl Application for DropTerm {
                 // geometry stays frozen while animating; the in-memory
                 // config above already updated, so the next show opens
                 // with the edit applied (a 130 ms exposure window,
-                // cheaper than a deferred-reshape queue).
+                // cheaper than a deferred-reshape queue). A5 audit:
+                // `config_edit_reshapes` keys on the slide's
+                // existence, not its direction, so this holds
+                // mid-slide-out and mid-reversal alike.
                 if config_edit_reshapes(
                     geometry::geometry_changed(&old_geom, &new_geom),
                     self.drag.is_some(),
@@ -1386,7 +1576,7 @@ impl Application for DropTerm {
                 }
             }
             Message::LayerUnfocused(id) => {
-                if self.surface == SurfaceState::Shown(id) {
+                if layer_unfocused_acts_on(&self.surface, id) {
                     return self.focus_lost();
                 }
             }
@@ -1466,6 +1656,13 @@ impl Application for DropTerm {
                 }
             }
             Message::GrabBarDragged(pointer_y) => {
+                // A5 guards audit: the drag handlers
+                // (`GrabBarDragged`, `DragApplyDue`,
+                // `GrabBarReleased`) all match `Shown` exclusively,
+                // so a `Hiding` surface ignores every drag message by
+                // construction — no drag can interleave with an
+                // out-slide or its reversal.
+                //
                 // Live drag (geometry spec, G3): arm on the first move
                 // — anchored at the height the surface has right now —
                 // then retarget absolutely per move in pixels: one

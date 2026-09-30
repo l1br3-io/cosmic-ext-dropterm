@@ -140,13 +140,6 @@ pub fn finished(_active: &Active, elapsed_ms: u64) -> bool {
 /// remaining distance (plan decision, approved 2026-09-30). No
 /// teleport: the reversed slide's frame-0 offset equals the old
 /// slide's offset at the reversal instant.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by A5's mid-animation reversal; the spike never reverses"
-    )
-)]
 pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
     Active {
         direction: match active.direction {
