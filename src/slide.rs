@@ -52,17 +52,21 @@ pub fn translation_y(edge: Edge, offset_px: f32) -> f32 {
 pub const SLIDE_DURATION_MS: u64 = 130;
 
 /// Tick cadence of the animation clock (slide-animation spec plan
-/// decision): the ticks exist only to provoke redraw requests — the
-/// eased offset itself is evaluated in [`SlideBox::draw`] at frame
-/// presentation time, so tick timing never distorts the pose (round 4
-/// finding: an offset computed at view time is up to one frame stale
-/// when presented, which reads as judder). 8 ms guarantees at least
-/// one redraw request lands inside every compositor frame interval up
-/// to 120 Hz; winit coalesces outstanding requests, so burst ticks
-/// cost nothing. Still redraw-only — no layer-shell traffic. Safe by
-/// the G3 evidence (the drag incident saturated the runtime on
-/// `set_size` storms, not redraws).
-pub const SLIDE_TICK: Duration = Duration::from_millis(8);
+/// decision, amended round 5): the ticks exist only to provoke redraw
+/// requests — the eased offset itself is evaluated in
+/// [`SlideBox::draw`] at frame presentation time, so tick timing never
+/// distorts the pose. The cadence must guarantee that EVERY compositor
+/// frame window contains at least one pending redraw request: a frame
+/// callback that finds none draws nothing (the surface re-presents its
+/// previous buffer — a held frame, then a jump: the residual jitter of
+/// rounds 3–4), so the tick period must be shorter than the frame
+/// period at any refresh rate the output may run. 1 ms covers panels
+/// up to 1000 Hz and absorbs runtime scheduling noise; it is
+/// redraw-only and a state no-op (~130 messages per 130 ms slide,
+/// batched by the runtime's AboutToWait pass — no layer-shell
+/// traffic). Safe by the G3 evidence (the drag incident saturated the
+/// runtime on `set_size` storms, not redraws).
+pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
 /// The A1 spike's eased offset (slide-animation spec, temporary — the
 /// A2 state machine generalizes this): quadratic ease-out from
