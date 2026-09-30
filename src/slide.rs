@@ -74,11 +74,121 @@ pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 /// clamped so a completed slide rests at exactly `0.0` — the final
 /// frame is identical to the resting one, no sub-pixel residue. Pure
 /// over injected milliseconds: `draw` feeds wall elapsed, tests feed
-/// fakes.
+/// fakes. Delegates to [`offset`] — the spike is a show from the full
+/// distance, the same math A3 runs for real.
 pub fn spike_offset(from_offset_px: f32, elapsed_ms: u64) -> f32 {
+    offset(
+        &Active {
+            direction: Direction::In,
+            from_offset_px,
+            distance_px: from_offset_px,
+        },
+        elapsed_ms,
+    )
+}
+
+/// Which way a slide is moving (slide-animation spec): `In` shows the
+/// content (offset decays to rest), `Out` hides it (offset grows to
+/// the distance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Showing: ease-out from `from_offset_px` to rest.
+    In,
+    /// Hiding: ease-in from `from_offset_px` to `distance_px`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructed by A4's hide path; the spike only shows"
+        )
+    )]
+    Out,
+}
+
+/// A slide in progress (slide-animation spec, A2): plain data, no
+/// clocks — elapsed time is injected at the call site. Offsets are
+/// edge-space by convention: `0.0` is the resting position, growing
+/// toward `distance_px` as the content hides; the math is
+/// sign-agnostic, so the A1 spike reuses it with signed window-space
+/// offsets until A3 moves the sign boundary to `translation_y`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Active {
+    pub direction: Direction,
+    /// Where this slide started, captured at start or reversal.
+    pub from_offset_px: f32,
+    /// The fully-hidden offset — the slide distance,
+    /// `geometry::surface_height(output.h, height_percent)`, fixed at
+    /// `SurfaceOpened` time (the plan's pinned distance source).
+    pub distance_px: f32,
+}
+
+/// The content's edge-space offset `elapsed_ms` into `active`
+/// (slide-animation spec, A2): eased from `from_offset_px` toward the
+/// direction's endpoint over exactly [`SLIDE_DURATION_MS`] —
+/// quadratic ease-out for [`Direction::In`] (fast in, settling at
+/// rest), quadratic ease-in for [`Direction::Out`] (leaving gently,
+/// accelerating off-screen). At or past completion the endpoint is
+/// returned *directly*, not recomputed — `from + (distance - from)`
+/// is not float-exact, and the completed pose must be byte-identical
+/// to the resting (In) or fully-hidden (Out) one. Pure over injected
+/// milliseconds: A3's `SlideBox::draw` feeds the wall clock at frame
+/// presentation; tests feed fakes.
+pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
     let progress = (elapsed_ms as f32 / SLIDE_DURATION_MS as f32).clamp(0.0, 1.0);
-    let remaining = 1.0 - progress;
-    from_offset_px * remaining * remaining
+    if progress >= 1.0 {
+        return match active.direction {
+            Direction::In => 0.0,
+            Direction::Out => active.distance_px,
+        };
+    }
+    match active.direction {
+        Direction::In => active.from_offset_px * (1.0 - progress).powi(2),
+        Direction::Out => {
+            active.from_offset_px + (active.distance_px - active.from_offset_px) * progress.powi(2)
+        }
+    }
+}
+
+/// Whether `active` has run its full [`SLIDE_DURATION_MS`]
+/// (slide-animation spec, A2): time-based on purpose — the endpoint
+/// offset at completion is already exact, and "the first tick past
+/// the duration parks the slide" is a clock decision, not a pose
+/// one. Monotone in `elapsed_ms`: a slide completes exactly once.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by A3's SlideTick completion; the spike parks inline"
+    )
+)]
+pub fn finished(_active: &Active, elapsed_ms: u64) -> bool {
+    elapsed_ms >= SLIDE_DURATION_MS
+}
+
+/// Re-target `active` from wherever it stands at `elapsed_ms`
+/// (slide-animation spec, A2 + the plan's reversal decision): capture
+/// the current offset as the new `from_offset_px`, flip the
+/// direction, keep the distance, and run a fresh fixed
+/// [`SLIDE_DURATION_MS`] — the re-target is NOT proportional to the
+/// remaining distance (plan decision, approved 2026-09-30). No
+/// teleport: the reversed slide's frame-0 offset equals the old
+/// slide's offset at the reversal instant.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by A5's mid-animation reversal; the spike never reverses"
+    )
+)]
+pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
+    Active {
+        direction: match active.direction {
+            Direction::In => Direction::Out,
+            Direction::Out => Direction::In,
+        },
+        from_offset_px: offset(active, elapsed_ms),
+        distance_px: active.distance_px,
+    }
 }
 
 /// Draw-time easing state for the A1 spike (temporary — A3's state
@@ -367,6 +477,227 @@ mod tests {
         let midpoint = SLIDE_DURATION_MS / 2;
         assert_eq!(spike_offset(800.0, midpoint), 200.0);
         assert_eq!(spike_offset(-800.0, midpoint), -200.0);
+    }
+
+    // --- Direction::In (show): quadratic ease-out from -> rest ---
+
+    #[test]
+    fn show_starts_at_the_from_offset_exactly() {
+        let active = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        assert_eq!(offset(&active, 0), 835.0);
+    }
+
+    #[test]
+    fn show_rests_exactly_at_completion() {
+        let active = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        assert_eq!(offset(&active, SLIDE_DURATION_MS), 0.0);
+        // A draw after the parking tick clamps to rest, never
+        // overshoots.
+        assert_eq!(offset(&active, SLIDE_DURATION_MS * 10), 0.0);
+    }
+
+    #[test]
+    fn show_decays_monotonically_from_full_and_mid_offsets() {
+        // Full slide and a reversed-in mid-offset: both only ever
+        // move toward 0.0, sampled finer than the tick so the curve,
+        // not the cadence, is under test.
+        for from in [835.0, 412.5] {
+            let active = Active {
+                direction: Direction::In,
+                from_offset_px: from,
+                distance_px: 835.0,
+            };
+            let mut last = from;
+            for ms in (0..=SLIDE_DURATION_MS).step_by(8) {
+                let now = offset(&active, ms);
+                assert!(
+                    now <= last,
+                    "offset grew at {ms} ms from {from}: {now} > {last}"
+                );
+                assert!(
+                    now >= 0.0,
+                    "offset flipped sign at {ms} ms from {from}: {now}"
+                );
+                last = now;
+            }
+        }
+    }
+
+    #[test]
+    fn show_midpoint_quarters_the_offset() {
+        // Quadratic ease-out at half the duration: (1 - 1/2)^2 = 1/4.
+        let active = Active {
+            direction: Direction::In,
+            from_offset_px: 800.0,
+            distance_px: 800.0,
+        };
+        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 200.0);
+    }
+
+    // --- Direction::Out (hide): quadratic ease-in from -> distance ---
+
+    #[test]
+    fn hide_starts_at_the_from_offset_exactly() {
+        let active = Active {
+            direction: Direction::Out,
+            from_offset_px: 0.0,
+            distance_px: 835.0,
+        };
+        assert_eq!(offset(&active, 0), 0.0);
+    }
+
+    #[test]
+    fn hide_reaches_the_distance_exactly_at_completion() {
+        // No sub-pixel residue: from + (distance - from) * 1.0 is not
+        // float-exact in general, so completion must return the
+        // endpoint directly.
+        let active = Active {
+            direction: Direction::Out,
+            from_offset_px: 0.1,
+            distance_px: 835.7,
+        };
+        assert_eq!(offset(&active, SLIDE_DURATION_MS), 835.7);
+        assert_eq!(offset(&active, SLIDE_DURATION_MS * 10), 835.7);
+    }
+
+    #[test]
+    fn hide_grows_monotonically_toward_the_distance() {
+        for from in [0.0, 412.5] {
+            let active = Active {
+                direction: Direction::Out,
+                from_offset_px: from,
+                distance_px: 835.0,
+            };
+            let mut last = from;
+            for ms in (0..=SLIDE_DURATION_MS).step_by(8) {
+                let now = offset(&active, ms);
+                assert!(
+                    now >= last,
+                    "offset fell at {ms} ms from {from}: {now} < {last}"
+                );
+                assert!(
+                    now <= 835.0,
+                    "offset overshot the distance at {ms} ms: {now}"
+                );
+                last = now;
+            }
+        }
+    }
+
+    #[test]
+    fn hide_midpoint_covers_a_quarter_of_the_gap() {
+        // Quadratic ease-in at half the duration: (1/2)^2 = 1/4 of
+        // the from->distance gap.
+        let active = Active {
+            direction: Direction::Out,
+            from_offset_px: 0.0,
+            distance_px: 800.0,
+        };
+        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 200.0);
+    }
+
+    // --- finished ---
+
+    #[test]
+    fn finished_flips_exactly_once_at_the_duration() {
+        let active = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        assert!(!finished(&active, 0));
+        assert!(!finished(&active, SLIDE_DURATION_MS - 1));
+        assert!(finished(&active, SLIDE_DURATION_MS));
+        assert!(finished(&active, SLIDE_DURATION_MS * 10));
+        // Monotone in elapsed: once finished, always finished.
+        for ms in 0..=SLIDE_DURATION_MS {
+            assert_eq!(
+                finished(&active, ms),
+                ms >= SLIDE_DURATION_MS,
+                "finished not monotone at {ms} ms"
+            );
+        }
+    }
+
+    // --- reverse ---
+
+    #[test]
+    fn reverse_starts_exactly_where_the_old_slide_stood() {
+        // No teleport: the reversed slide's frame-0 offset equals the
+        // old slide's offset at the reversal instant (exact float
+        // equality — the same value is stored and returned).
+        let showing = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&showing, 40);
+        assert_eq!(offset(&reversed, 0), offset(&showing, 40));
+
+        let hiding = Active {
+            direction: Direction::Out,
+            from_offset_px: 0.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&hiding, 72);
+        assert_eq!(offset(&reversed, 0), offset(&hiding, 72));
+    }
+
+    #[test]
+    fn reverse_flips_direction_and_preserves_distance() {
+        let showing = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&showing, 40);
+        assert_eq!(reversed.direction, Direction::Out);
+        assert_eq!(reversed.distance_px, 835.0);
+
+        let hiding = Active {
+            direction: Direction::Out,
+            from_offset_px: 0.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&hiding, 40);
+        assert_eq!(reversed.direction, Direction::In);
+        assert_eq!(reversed.distance_px, 835.0);
+    }
+
+    #[test]
+    fn reversed_slide_completes_exactly_once_on_its_own_clock() {
+        // The re-target is a fresh fixed 130 ms — measured from the
+        // reversal, not the original start.
+        let showing = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&showing, 40);
+        assert!(!finished(&reversed, SLIDE_DURATION_MS - 1));
+        assert!(finished(&reversed, SLIDE_DURATION_MS));
+    }
+
+    #[test]
+    fn reverse_at_rest_targets_the_full_distance() {
+        // Reversing a completed show (at rest, offset 0) hides from
+        // rest — the standard A4/A5 entry point.
+        let showing = Active {
+            direction: Direction::In,
+            from_offset_px: 835.0,
+            distance_px: 835.0,
+        };
+        let reversed = reverse(&showing, SLIDE_DURATION_MS);
+        assert_eq!(offset(&reversed, 0), 0.0);
+        assert_eq!(reversed.direction, Direction::Out);
     }
 
     #[test]
