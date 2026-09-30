@@ -1062,6 +1062,25 @@ fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(surface, SurfaceState::Shown(shown) if *shown == id)
 }
 
+/// Whether the grab-bar drag handlers may act (slide-animation spec,
+/// A6 frozen-geometry audit): pure so the guard is headless-testable,
+/// the [`config_edit_reshapes`]/[`layer_unfocused_acts_on`] seam
+/// style. A drag must only ever run on a shown surface at rest: the
+/// `Hiding` arm excludes out-slides and their reversals by state, and
+/// the slide arm excludes slide-ins — which ride a `Shown` surface,
+/// so the surface state alone cannot gate them (the audit's catch:
+/// a press inside the 130 ms window must not arm a drag, or the
+/// first cadence-eligible move would fire `set_size` on the
+/// animating surface). Gating the *arming* here covers the trailing
+/// `DragApplyDue` and the `GrabBarReleased` settle by construction:
+/// both only act on an armed drag, no drag can arm while a slide
+/// animates, and `hide()` clears any live drag before any slide can
+/// start. A throttled press is simply inert — the surface rests in
+/// at most 130 ms and the next press drags normally.
+fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
+    matches!(surface, SurfaceState::Shown(_)) && !slide_animating
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1092,6 +1111,43 @@ mod tests {
     #[test]
     fn drag_and_slide_together_still_skip_the_reshape() {
         assert!(!config_edit_reshapes(true, true, true));
+    }
+
+    // --- A6: the grab-bar guard (slide-animation spec, criterion 4) ---
+    //
+    // `GrabBarDragged` was the one geometry-call site reachable while
+    // a slide animates: a slide-in rides a `Shown` surface, so
+    // matching `Shown` alone does not exclude it — a press inside the
+    // 130 ms window must neither arm a drag nor send `set_size` on
+    // the animating surface. With arming gated, `DragApplyDue` and
+    // `GrabBarReleased` are covered by construction: they only act on
+    // an armed drag, and `hide()` clears any live drag before a
+    // slide can start.
+
+    #[test]
+    fn grab_bar_drag_at_rest_acts() {
+        let id = window::Id::unique();
+        assert!(grab_bar_acts_on(&SurfaceState::Shown(id), false));
+    }
+
+    #[test]
+    fn grab_bar_drag_mid_slide_in_does_not_act() {
+        // The frozen-geometry audit's catch: a slide-in runs in
+        // `Shown`, so the surface state alone cannot gate the drag —
+        // the guard needs the slide's existence too.
+        let id = window::Id::unique();
+        assert!(!grab_bar_acts_on(&SurfaceState::Shown(id), true));
+    }
+
+    #[test]
+    fn grab_bar_drag_ignores_every_non_shown_state() {
+        // A5's by-construction exclusion, now pinned: a `Hiding`
+        // surface rejects drag messages (no interleave with an
+        // out-slide or its reversal); Measuring/Hidden never arm one.
+        let id = window::Id::unique();
+        assert!(!grab_bar_acts_on(&SurfaceState::Hiding(id), false));
+        assert!(!grab_bar_acts_on(&SurfaceState::Measuring(id), false));
+        assert!(!grab_bar_acts_on(&SurfaceState::Hidden, false));
     }
 
     // --- A5: the toggle decision matrix (slide-animation spec) ---
@@ -1656,12 +1712,19 @@ impl Application for DropTerm {
                 }
             }
             Message::GrabBarDragged(pointer_y) => {
-                // A5 guards audit: the drag handlers
-                // (`GrabBarDragged`, `DragApplyDue`,
+                // Guards audit (A5, corrected by A6): the drag
+                // handlers (`GrabBarDragged`, `DragApplyDue`,
                 // `GrabBarReleased`) all match `Shown` exclusively,
                 // so a `Hiding` surface ignores every drag message by
                 // construction — no drag can interleave with an
-                // out-slide or its reversal.
+                // out-slide or its reversal. A slide-in, though,
+                // rides a `Shown` surface, so `Shown` alone cannot
+                // gate it: `grab_bar_acts_on` additionally requires
+                // the slide to be idle (the A6 frozen-geometry
+                // audit's catch — a press inside the 130 ms window
+                // neither arms a drag nor resizes the animating
+                // surface; the pointer-to-content mapping is offset
+                // mid-slide anyway).
                 //
                 // Live drag (geometry spec, G3): arm on the first move
                 // — anchored at the height the surface has right now —
@@ -1681,7 +1744,10 @@ impl Application for DropTerm {
                 // exact and immediate. Config is never touched while
                 // dragging (a "never" boundary of the module);
                 // persistence is G4's release path.
-                if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size) {
+                if grab_bar_acts_on(&self.surface, self.slide.is_some())
+                    && let (SurfaceState::Shown(id), Some(output)) =
+                        (&self.surface, self.output_size)
+                {
                     let anchored_px = geometry::surface_height(
                         output.1 as f32,
                         Geometry::from_config(&self.config).height_percent,
