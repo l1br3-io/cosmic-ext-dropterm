@@ -12,8 +12,8 @@ use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, get_layer_surface, set_exclusive_zone, set_keyboard_interactivity,
-    set_layer,
+    KeyboardInteractivity, destroy_layer_surface, get_layer_surface, set_exclusive_zone,
+    set_keyboard_interactivity, set_layer,
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
@@ -80,6 +80,15 @@ enum SurfaceState {
     /// `Window::Opened` event so we learn that output's real size.
     Measuring(window::Id),
     Shown(window::Id),
+    /// A shown surface sliding out toward its anchored edge
+    /// (slide-animation spec, A4): the content still renders —
+    /// translated by the live `Out` slide — and the layer surface is
+    /// destroyed only when that slide completes (criterion 2).
+    /// Keyboard interactivity was already released at slide-out start
+    /// (criterion 5), so focus events find no `Shown` surface to act
+    /// on; the drag handlers and live reshape ignore this state by
+    /// construction (they match `Shown` exclusively).
+    Hiding(window::Id),
 }
 
 #[derive(Debug, Clone)]
@@ -150,12 +159,13 @@ pub enum Message {
     /// by a newer window, or a duplicate delivery after the write —
     /// writes nothing.
     SessionSaveDue(u32),
-    /// Slide clock tick (slide-animation spec, A3): redraw-only
+    /// Slide clock tick (slide-animation spec, A3 + A4): redraw-only
     /// while a slide is live — the eased offset is evaluated at draw
     /// time inside `SlideBox`, so the tick exists to keep redraw
     /// requests pending (see `SLIDE_TICK`). The first tick past the
-    /// duration parks the slide at rest and drops it (and with it the
-    /// subscription).
+    /// duration parks the slide at its endpoint — rest for an `In`
+    /// slide, the anchored edge (then destroy) for an `Out` one —
+    /// and drops it (and with it the subscription).
     SlideTick,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
@@ -260,11 +270,12 @@ pub struct DropTerm {
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
-    /// The live slide (slide-animation spec, A3): the eased content
-    /// offset while the shown surface slides in from the anchored
-    /// edge. `None` at rest — renders byte-identically to the
-    /// unwrapped column — and cleared on hide or completion (the
-    /// `SlideTick` parking path).
+    /// The live slide (slide-animation spec, A3 + A4): the eased
+    /// content offset while the surface animates — in from the
+    /// anchored edge after a show, out toward it before a hide's
+    /// destroy. `None` at rest — renders byte-identically to the
+    /// unwrapped column — and cleared when the parking tick completes
+    /// the slide (`SlideTick`).
     slide: Option<slide::Playing>,
 }
 
@@ -439,20 +450,67 @@ impl DropTerm {
 
     fn hide(&mut self) -> Task<Message> {
         // Hiding the surface is a focus loss for the rename input (T6):
-        // commit before the surface goes away.
+        // commit before the content slides out.
         let commit = self.commit_pending_rename();
-        // A slide-in never outlives its surface (slide-animation A3):
-        // hide still destroys immediately — the animated hide and its
-        // completion-gated destroy are A4.
-        self.slide = None;
-        let task = match self.surface {
-            SurfaceState::Measuring(id) | SurfaceState::Shown(id) => destroy_layer_surface(id),
-            SurfaceState::Hidden => Task::none(),
+        let task = match hide_step(&self.surface) {
+            HideStep::DestroyNow(id) => {
+                // A measuring surface has no reshaped content to
+                // animate (criterion 8): destroy immediately, exactly
+                // as before animated hides existed.
+                self.slide = None;
+                self.surface = SurfaceState::Hidden;
+                destroy_layer_surface(id)
+            }
+            HideStep::SlideOut(id) => {
+                // A shown surface slides out and dies on completion
+                // (criterion 2). The out-slide starts from wherever
+                // the content stands — the live eased offset of an
+                // in-flight slide-in, or rest — so nothing teleports.
+                // Its distance is the plan's pinned source (the same
+                // deterministic formula the show used), kept from the
+                // in-flight slide when one exists: a config edit that
+                // arrived mid-slide updates the config but not the
+                // frozen geometry, so the in-flight distance is the
+                // one the visible surface still has.
+                let (from_offset_px, distance_px) = match self.slide {
+                    Some(playing) => (
+                        slide::offset(
+                            &playing.active,
+                            playing.started.elapsed().as_millis() as u64,
+                        ),
+                        playing.active.distance_px,
+                    ),
+                    None => (0.0, self.slide_distance_px()),
+                };
+                self.surface = SurfaceState::Hiding(id);
+                self.slide = Some(slide::Playing {
+                    started: std::time::Instant::now(),
+                    active: slide::Active {
+                        direction: slide::Direction::Out,
+                        from_offset_px,
+                        distance_px,
+                    },
+                });
+                // Keyboard interactivity releases at slide-out START
+                // (criterion 5), not at destroy: the previously
+                // focused window regains focus while the slide plays.
+                // The compositor answers with an `Unfocused` layer
+                // event, which the `Shown(id)` guard in its handler
+                // already rejects — the surface is `Hiding` by the
+                // time it arrives.
+                set_keyboard_interactivity(id, KeyboardInteractivity::None)
+            }
+            // Already hiding or hidden: idempotent — no restart, no
+            // double destroy.
+            HideStep::Leave => Task::none(),
         };
-        self.surface = SurfaceState::Hidden;
-        // The surface is gone: any live grab-bar drag is moot (geometry
-        // spec, G3), and the terminal pin's debounce state starts over
-        // so the next show's first granted size adopts immediately.
+        // The surface is leaving on every destructive path, and the
+        // cleanup is idempotent for `Leave`: any live grab-bar drag is
+        // moot (geometry spec, G3), the terminal pin's debounce state
+        // starts over so the next show's first granted size adopts
+        // immediately, and the active terminal reports the focus loss
+        // now — its PTY keeps running regardless (criterion 2: PTYs
+        // live in tabs, not the window).
         self.drag = None;
         self.pending_height = None;
         self.pin_applied = None;
@@ -460,6 +518,23 @@ impl DropTerm {
             tab.terminal.lock().unwrap().set_focused(false);
         }
         Task::batch([commit, task])
+    }
+
+    /// The slide distance for the currently shown surface
+    /// (slide-animation spec, the plan's pinned distance source): the
+    /// same deterministic `geometry::surface_height` formula
+    /// `SurfaceOpened` used — deliberately not the granted window
+    /// height, which double-reports through `WindowResized`. A shown
+    /// surface always has a measured output beside it; the `0.0`
+    /// fallback covers a state that cannot occur and still hides (a
+    /// degenerate at-rest out-slide that parks, then destroys).
+    fn slide_distance_px(&self) -> f32 {
+        self.output_size.map_or(0.0, |output| {
+            geometry::surface_height(
+                output.1 as f32,
+                Geometry::from_config(&self.config).height_percent,
+            ) as f32
+        })
     }
 
     /// Handles the surface losing keyboard focus: marks the terminal unfocused
@@ -875,6 +950,36 @@ fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animatin
     geometry_changed && !drag_armed && !slide_animating
 }
 
+/// What a hide request must do to the surface (slide-animation spec,
+/// A4): pure so the decision is headless-testable (constructing
+/// `DropTerm` needs a live `Core`). Every hide caller funnels through
+/// here — toggle hotkey, `Ctrl+Shift+Q`, focus loss, D-Bus — so the
+/// surface is destroyed exactly once per hide, never twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HideStep {
+    /// Destroy now: a measuring surface has no reshaped content to
+    /// animate (criterion 8), so it keeps the immediate destroy the
+    /// app had before animated hides existed.
+    DestroyNow(window::Id),
+    /// Slide out from the current offset and destroy on the slide's
+    /// completion tick (criterion 2). Keyboard interactivity releases
+    /// at slide-out start (criterion 5).
+    SlideOut(window::Id),
+    /// Nothing: already hiding — a second request must not restart the
+    /// out-slide or queue a second destroy (`WindowUnfocused` reaches
+    /// `focus_lost` unguarded, and the keyboard release synthesizes
+    /// its own `Unfocused`) — or already hidden.
+    Leave,
+}
+
+fn hide_step(surface: &SurfaceState) -> HideStep {
+    match surface {
+        SurfaceState::Measuring(id) => HideStep::DestroyNow(*id),
+        SurfaceState::Shown(id) => HideStep::SlideOut(*id),
+        SurfaceState::Hiding(_) | SurfaceState::Hidden => HideStep::Leave,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,6 +1010,41 @@ mod tests {
     #[test]
     fn drag_and_slide_together_still_skip_the_reshape() {
         assert!(!config_edit_reshapes(true, true, true));
+    }
+
+    #[test]
+    fn measuring_hide_skips_the_animation_and_destroys_immediately() {
+        // Criterion 8: a hide while still measuring has no reshaped
+        // content to animate — the surface dies now, not in 130 ms,
+        // exactly as before the animated hide existed.
+        let id = window::Id::unique();
+        assert_eq!(
+            hide_step(&SurfaceState::Measuring(id)),
+            HideStep::DestroyNow(id)
+        );
+    }
+
+    #[test]
+    fn shown_hide_slides_out_instead_of_destroying() {
+        // Criterion 2: the content slides back to the anchored edge
+        // and only then is the layer surface destroyed.
+        let id = window::Id::unique();
+        assert_eq!(hide_step(&SurfaceState::Shown(id)), HideStep::SlideOut(id));
+    }
+
+    #[test]
+    fn hide_while_already_hiding_destroys_nothing() {
+        // Idempotence (A4): `WindowUnfocused` reaches `focus_lost`
+        // unguarded, and releasing keyboard interactivity synthesizes
+        // its own `Unfocused` — a second hide request must neither
+        // restart the out-slide nor queue a second destroy.
+        let id = window::Id::unique();
+        assert_eq!(hide_step(&SurfaceState::Hiding(id)), HideStep::Leave);
+    }
+
+    #[test]
+    fn hide_while_hidden_destroys_nothing() {
+        assert_eq!(hide_step(&SurfaceState::Hidden), HideStep::Leave);
     }
 }
 
@@ -1480,7 +1620,7 @@ impl Application for DropTerm {
                 // `SlideBox`, so the tick's only job is parking the
                 // slide once the duration has fully elapsed — which
                 // also drops the tick subscription until the next
-                // show. Between completion and this parking tick the
+                // slide. Between completion and this parking tick the
                 // draw already clamps to exactly the endpoint, so
                 // there is no pop.
                 if let Some(playing) = self.slide
@@ -1490,6 +1630,20 @@ impl Application for DropTerm {
                     )
                 {
                     self.slide = None;
+                    // The animated hide's destroy point (slide-animation
+                    // spec, A4): an `Out` slide's completion is the only
+                    // path that destroys a hiding surface — the app's
+                    // single `destroy_layer_surface` seam for shown
+                    // surfaces, now reached through the state machine's
+                    // completion event. Teardown note (criterion 8):
+                    // app teardown has no graceful path — process exit
+                    // destroys the surface compositor-side, inherently
+                    // immediate; any future quit action must bypass the
+                    // slide and destroy straight away, like this does.
+                    if let SurfaceState::Hiding(id) = self.surface {
+                        self.surface = SurfaceState::Hidden;
+                        return destroy_layer_surface(id);
+                    }
                 }
             }
             Message::OpenHyperlink(url) => {
@@ -1514,8 +1668,13 @@ impl Application for DropTerm {
         let Some(tab) = self.active() else {
             return widget::text("").into();
         };
-        if !matches!(&self.surface, SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) if *shown == id)
-        {
+        if !matches!(
+            &self.surface,
+            SurfaceState::Measuring(shown)
+                | SurfaceState::Shown(shown)
+                | SurfaceState::Hiding(shown)
+                if *shown == id
+        ) {
             return widget::text("").into();
         }
 
@@ -1599,10 +1758,10 @@ impl Application for DropTerm {
             }
         };
 
-        // The slide (slide-animation spec, A3): for ~130 ms after the
-        // surface is shown, the content column eases in from the
-        // anchored edge (quadratic ease-out, the spec's show curve).
-        // The pose is NOT computed here: the view runs in the
+        // The slide (slide-animation spec, A3 + A4): while the surface
+        // animates — ease-in from the anchored edge after a show,
+        // ease-out back to it before a hide's destroy — the content
+        // column's pose is NOT computed here: the view runs in the
         // runtime's AboutToWait pass but the frame presents on the
         // compositor's frame callback, so a view-baked offset is up to
         // one frame stale at presentation — random per-frame error

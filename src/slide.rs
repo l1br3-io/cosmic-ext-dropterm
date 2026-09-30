@@ -70,10 +70,8 @@ pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
 /// Which way a slide is moving (slide-animation spec): `In` shows the
 /// content (offset decays to rest), `Out` hides it (offset grows to
-/// the distance). `Out` slides are constructed only by tests until
-/// A4's animated-hide path lands; the variant itself is live (it
-/// reaches `SlideBox` by value through `Playing`), so no dead-code
-/// exemption is needed — only its construction is pending.
+/// the distance). `Out` slides are constructed by the animated-hide
+/// path (A4's `hide()`) and by tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Showing: ease-out from `from_offset_px` to rest.
