@@ -103,13 +103,21 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `edge`, `layer`, `keyboard_mode`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`). There is no settings UI yet (see the ROADMAP); edit the files directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`). There is no settings UI yet (see the ROADMAP); edit the files directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
 ```
 
 `hide_on_focus_loss` defaults to `true` (click away to hide); write `false` to keep the overlay open when it loses focus.
+
+`respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show:
+
+```sh
+echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_panel
+```
+
+With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
 
 ## Features (v1)
 
@@ -148,6 +156,12 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Clicking another window hides the surface (fresh config, `hide_on_focus_loss` default `true`)
 - [ ] With `hide_on_focus_loss: false` written in config, clicking away does *not* hide
 - [ ] Escape still reaches the shell (e.g. works in vim) and still cancels an active selection
+- [ ] With `respect_panel: true` and a top panel, the panel stays fully visible and clickable while the drop-down is open, and the terminal sits flush below it
+- [ ] With `respect_panel: true`, `edge: bottom`, and a bottom dock, the drop-down sits above the dock
+- [ ] With `respect_panel: true`, the drop-down still appears above a fullscreen window
+- [ ] With a config directory that has no `respect_panel` key (or `false` written), the drop-down still covers the panel
+- [ ] Toggling `respect_panel` in the config while the drop-down is shown applies on the next show
+- [ ] With an autohide panel and `respect_panel: true`, the drop-down lands below the panel's handle strip
 
 ## Non-goals
 
