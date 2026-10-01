@@ -75,6 +75,7 @@ pub enum Action {
     CloseTab,
     NextTab,
     PrevTab,
+    Settings,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);

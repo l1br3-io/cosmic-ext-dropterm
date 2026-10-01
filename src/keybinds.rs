@@ -51,6 +51,12 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
+    // The settings window (settings-ui spec, U1): Ctrl+Shift+, — the
+    // comma needs no escaping in a `Key::Character` bind.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], ","),
+        Action::Settings,
+    );
     map.insert(
         bind(&[Modifier::Ctrl, Modifier::Shift], "t"),
         Action::NewTab,
@@ -154,6 +160,41 @@ mod tests {
         let binds = default_key_binds();
         assert_eq!(
             matched_action(&binds, Modifiers::empty(), &Key::Named(Named::Escape), None,),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_comma_opens_settings() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character(",".into()),
+                None,
+            ),
+            Some(Action::Settings)
+        );
+    }
+
+    #[test]
+    fn bare_and_ctrl_comma_stay_free_for_the_terminal() {
+        // A bare comma must keep reaching the shell (it is ordinary
+        // punctuation), and Ctrl+, is not the settings bind either —
+        // only the full Ctrl+Shift+, combo is swallowed.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Character(",".into()),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character(",".into()), None),
             None
         );
     }

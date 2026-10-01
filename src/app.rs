@@ -19,7 +19,7 @@ use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
 use cosmic::widget;
-use cosmic::{Application, Element};
+use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
@@ -98,11 +98,14 @@ pub enum Message {
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
-    /// The granted size of the shown surface changed (compositor
+    /// The granted size of the surface with `id` changed (compositor
     /// configure after a `set_size`, or the initial configure): the new
     /// height in logical pixels, used to pin the terminal's height so the
-    /// tab bar keeps its strip.
-    WindowResized(f32),
+    /// tab bar keeps its strip. The id gates the stream to the tracked
+    /// layer surface (`resize_acts_on`): a second app window (the
+    /// settings window, settings-ui spec U1) resizes too, and its
+    /// heights must never feed the pin.
+    WindowResized(window::Id, f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
     KeyPressed(Modifiers, Key, cosmic::iced::keyboard::key::Physical),
@@ -170,6 +173,15 @@ pub enum Message {
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
+    /// The settings window with `id` should close (settings-ui spec,
+    /// U1): its ✕ was pressed (`CloseRequested`, matched in the
+    /// subscription — the window never closes itself,
+    /// `exit_on_close_request: false`) or it closed without a handled
+    /// request and `on_close_requested` sends this as the defensive
+    /// cleanup so a dead id can never be `gain_focus`ed by a later
+    /// press. Both clearing the tracked id and `window::close` are
+    /// idempotent, so a duplicate delivery is inert.
+    SettingsCloseRequested(window::Id),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -277,6 +289,11 @@ pub struct DropTerm {
     /// unwrapped column — and cleared when the parking tick completes
     /// the slide (`SlideTick`).
     slide: Option<slide::Playing>,
+    /// The settings window, when one is open (settings-ui spec, U1):
+    /// `Some(id)` routes a repeat Ctrl+Shift+, to `gain_focus`
+    /// instead of opening a second window. Cleared when the window
+    /// closes — never left holding a dead id.
+    settings_window: Option<window::Id>,
 }
 
 impl DropTerm {
@@ -697,11 +714,49 @@ impl DropTerm {
         }
     }
 
+    /// Opens the settings window, or focuses the existing one
+    /// (settings-ui spec, U1): one window per process, tracked by id
+    /// — every repeat press routes to `window::gain_focus`, never a
+    /// second window.
+    fn open_settings(&mut self) -> Task<Message> {
+        if let Some(id) = self.settings_window {
+            return window::gain_focus(id);
+        }
+        // The window never closes itself: `exit_on_close_request:
+        // false` turns the ✕ into a `CloseRequested` event the app
+        // handles (`SettingsCloseRequested`) — closing is the app's
+        // decision, never the runtime's, in a layer-shell-only app
+        // that must keep running underneath (settings-ui spec,
+        // criterion 8).
+        let (id, open) = window::open(window::Settings {
+            exit_on_close_request: false,
+            size: cosmic::iced::Size::new(700.0, 760.0),
+            resizable: true,
+            ..window::Settings::default()
+        });
+        self.settings_window = Some(id);
+        // The open task must be returned for the window to appear —
+        // it carries the runtime's window-open command. Its
+        // completion value (the id, already tracked synchronously
+        // above) is discarded; the multi-window example maps it the
+        // same way, to a first-focus message this window has no
+        // control to focus yet (U4 builds the real view).
+        Task::batch([
+            open.then(|_| Task::none()),
+            self.set_window_title("DropTerm Settings".to_string(), id),
+        ])
+    }
+
     fn perform_action(&mut self, action: Action) -> Task<Message> {
         // Hiding must work even before a terminal exists (the first-run dead
         // end this fixes: `cargo run` opens a surface with no way to close it).
         if action == Action::Hide {
             return self.hide();
+        }
+        // The settings window opens from the keybind alone — no active
+        // tab required, and it never targets the active terminal.
+        if action == Action::Settings {
+            return self.open_settings();
         }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
@@ -717,6 +772,7 @@ impl DropTerm {
         };
         match action {
             Action::Hide
+            | Action::Settings
             | Action::NewTab
             | Action::CloseTab
             | Action::NextTab
@@ -1081,6 +1137,22 @@ fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
     matches!(surface, SurfaceState::Shown(_)) && !slide_animating
 }
 
+/// Whether a `WindowResized` event for `id` may feed the
+/// terminal-height pin (settings-ui spec, U1): only the tracked layer
+/// surface's granted sizes count — the settings window is resizable
+/// too, and its heights must never pin the terminal's. For
+/// layer-surface events this is byte-identical with the single-window
+/// behavior (every state that tracks the surface accepted them; the
+/// settings window is the only new source), the
+/// [`layer_unfocused_acts_on`] seam style.
+fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
+    matches!(
+        surface,
+        SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) | SurfaceState::Hiding(shown)
+            if *shown == id
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1289,6 +1361,34 @@ mod tests {
             id
         ));
     }
+
+    #[test]
+    fn resize_from_the_tracked_surface_feeds_the_pin() {
+        // The granted-size stream that pins the terminal height
+        // belongs to the layer surface alone (settings-ui spec, U1):
+        // every state tracking that surface accepts its resizes,
+        // matching the pre-settings-window behavior for the only
+        // window that existed then.
+        let id = window::Id::unique();
+        assert!(resize_acts_on(&SurfaceState::Measuring(id), id));
+        assert!(resize_acts_on(&SurfaceState::Shown(id), id));
+        assert!(resize_acts_on(&SurfaceState::Hiding(id), id));
+    }
+
+    #[test]
+    fn resize_from_a_foreign_window_never_feeds_the_pin() {
+        // The settings window is resizable too, and its heights must
+        // never pin the terminal's; a hidden surface tracks no window
+        // at all.
+        let surface_id = window::Id::unique();
+        let settings_id = window::Id::unique();
+        assert!(!resize_acts_on(
+            &SurfaceState::Shown(surface_id),
+            settings_id
+        ));
+        assert!(!resize_acts_on(&SurfaceState::Hidden, settings_id));
+        assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1377,6 +1477,7 @@ impl Application for DropTerm {
             key_binds: default_key_binds(),
             last_toggle: None,
             slide: None,
+            settings_window: None,
         };
         app.refresh_window_bg_color();
 
@@ -1410,8 +1511,17 @@ impl Application for DropTerm {
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
             }
+            // The settings window's ✕ (settings-ui spec, U1): it never
+            // closes itself (`exit_on_close_request: false`), so the
+            // request lands here for the app to act on — the same
+            // listen seam the multi-window example uses. A foreign id
+            // (the layer surface never requests a close) matches
+            // nothing in the handler and is inert.
+            Event::Window(cosmic::iced::window::Event::CloseRequested) => {
+                Some(Message::SettingsCloseRequested(id))
+            }
             Event::Window(cosmic::iced::window::Event::Resized(size)) => {
-                Some(Message::WindowResized(size.height))
+                Some(Message::WindowResized(id, size.height))
             }
             Event::Keyboard(KeyEvent::KeyPressed {
                 key,
@@ -1592,7 +1702,12 @@ impl Application for DropTerm {
                     ]);
                 }
             }
-            Message::WindowResized(height) => {
+            Message::WindowResized(id, height) => {
+                // Only the tracked layer surface's granted stream feeds
+                // the pin (`resize_acts_on`): the settings window
+                // resizes too (settings-ui spec, U1) and its heights
+                // must never pin the terminal's.
+                //
                 // While a drag is armed, the granted size only echoes
                 // the applies the drag itself made — each one
                 // double-reported, once with the previous height (the
@@ -1605,7 +1720,8 @@ impl Application for DropTerm {
                 // applies arrive at cadence rate, and reflowing the
                 // terminal on every echo made the drag sluggish on
                 // hardware.
-                if self.drag.is_none()
+                if resize_acts_on(&self.surface, id)
+                    && self.drag.is_none()
                     && let Some(task) = self.offer_window_height(height)
                 {
                     return task;
@@ -1919,6 +2035,21 @@ impl Application for DropTerm {
                     tab.terminal.lock().unwrap().paste(text);
                 }
             }
+            Message::SettingsCloseRequested(id) => {
+                // The settings window's single close funnel (settings-ui
+                // spec, U1): the ✕ arrives as `CloseRequested` (the
+                // window never closes itself), so the app clears its
+                // tracking and issues the close. The window's `Closed`
+                // event then reaches `on_close_requested`, which only
+                // sends this message again when the id somehow survived
+                // — a no-op here, since `take` already matched nothing
+                // and `window::close` on a dead id is inert. The app
+                // itself keeps running: this is not the main window and
+                // `exit_on_close(false)` stands (criterion 8).
+                if self.settings_window.take() == Some(id) {
+                    return window::close(id);
+                }
+            }
         }
         Task::none()
     }
@@ -1928,6 +2059,15 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
+        // The settings window (settings-ui spec, U1): a placeholder
+        // for the spike — the sectioned instant-apply view is U4.
+        if self.settings_window == Some(id) {
+            return widget::column![widget::text("DropTerm Settings")]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(16)
+                .into();
+        }
         let Some(tab) = self.active() else {
             return widget::text("").into();
         };
@@ -2039,6 +2179,20 @@ impl Application for DropTerm {
             slide_box = slide_box.playing(self.config.edge, playing);
         }
         slide_box.into()
+    }
+
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        // Fires on a window's `Closed` event (cosmic routes it through
+        // its internal `SurfaceClosed` action), i.e. after the fact:
+        // the settings window's ✕ is already handled by the
+        // `CloseRequested` subscription arm, which clears the id and
+        // issues the close. This override is the defensive net for a
+        // settings window that closed without a handled request —
+        // returning the default `None` there would silently leave the
+        // dead id in app state for a later press to `gain_focus` into
+        // nothing. Layer surfaces keep the default: their `Done`
+        // closes are the hide path's own business.
+        (self.settings_window == Some(id)).then(|| Message::SettingsCloseRequested(id))
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
