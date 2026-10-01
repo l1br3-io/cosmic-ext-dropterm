@@ -469,7 +469,15 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input (T6):
         // commit before the content slides out.
         let commit = self.commit_pending_rename();
-        let task = match toggle_step(ToggleAction::Hide, &self.surface) {
+        // The slide toggle rides in with the decision (settings-ui
+        // U2): a disabled slide turns this hide into an immediate
+        // destroy inside `toggle_step` — the executor arms below
+        // then simply never runs.
+        let task = match toggle_step(
+            ToggleAction::Hide,
+            &self.surface,
+            self.config.slide_animation_enabled,
+        ) {
             ToggleStep::DestroyNow(id) => {
                 // A measuring surface has no reshaped content to
                 // animate (criterion 8): destroy immediately, exactly
@@ -706,7 +714,10 @@ impl DropTerm {
         // dropped. The debounce above already collapses true spam
         // (~6–7 effective toggles per second at 150 ms, each a full
         // reversal); the state machine itself never drops or queues.
-        match toggle_step(action, &self.surface) {
+        // The slide toggle (settings-ui U2) rides in with the
+        // decision: with it off, a shown surface destroys now instead
+        // of sliding out — day-one equality holds with it on.
+        match toggle_step(action, &self.surface, self.config.slide_animation_enabled) {
             ToggleStep::Measure => self.show(),
             ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => self.hide(),
             ToggleStep::ReverseShow(id) => self.reverse_show(id),
@@ -970,7 +981,14 @@ impl DropTerm {
     /// Returns the window's timer task when this call armed it, the
     /// `WindowPinDue`/`WriteDue` pattern.
     fn mark_session_dirty(&mut self) -> Task<Message> {
-        match self.session_save.mark() {
+        // The session toggle gates every save trigger (settings-ui
+        // U2): a disabled trigger no-ops — no dirty mark, no debounce
+        // window, no timer task — so a mid-run disable stops further
+        // saves immediately.
+        match self
+            .session_save
+            .mark_gated(self.config.session_persistence_enabled)
+        {
             Some(generation) => Task::perform(
                 tokio::time::sleep(session::SESSION_WRITE_INTERVAL),
                 move |_| cosmic::Action::App(Message::SessionSaveDue(generation)),
@@ -1046,16 +1064,25 @@ fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animatin
 }
 
 /// What a toggle-intent request must do with the surface
-/// (slide-animation spec, A5): pure so the decision is
-/// headless-testable (constructing `DropTerm` needs a live `Core`).
-/// Every toggle caller funnels through here — the toggle hotkey and
-/// D-Bus activation (`debounced_toggle`), plus `Ctrl+Shift+Q` and
-/// focus loss through `hide`'s `Hide` column — so the full
-/// state × intent matrix lives in one place and reversibility
-/// (criterion 6) is just another cell. Slide activity needs no
-/// separate input: it is implied by the state — an `Out` slide only
-/// exists while `Hiding`, an `In` slide only rides a `Shown`
-/// surface — and the executors read the live slide for offsets.
+/// (slide-animation spec, A5; settings-ui spec, U2): pure so the
+/// decision is headless-testable (constructing `DropTerm` needs a
+/// live `Core`). Every toggle caller funnels through here — the
+/// toggle hotkey and D-Bus activation (`debounced_toggle`), plus
+/// `Ctrl+Shift+Q` and focus loss through `hide`'s `Hide` column —
+/// so the full state × intent matrix lives in one place and
+/// reversibility (criterion 6) is just another cell. Slide activity
+/// needs no separate input: it is implied by the state — an `Out`
+/// slide only exists while `Hiding`, an `In` slide only rides a
+/// `Shown` surface — and the executors read the live slide for
+/// offsets.
+///
+/// `slide_animation_enabled` (settings-ui U2) gates transition
+/// *entry* only: it swaps the `Shown`-hide cell between sliding out
+/// and destroying now — the destroy *style*, never the direction.
+/// The helper takes no mid-flight input by construction, so a
+/// running slide is never aborted by its own toggle: the `Hiding`
+/// cells (destroy-on-completion, reversal) key on state alone and
+/// ignore the flag entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToggleStep {
     /// Run the measuring show pass (a hidden surface only): measure
@@ -1081,11 +1108,13 @@ enum ToggleStep {
     Leave,
 }
 
-fn toggle_step(action: ToggleAction, surface: &SurfaceState) -> ToggleStep {
+fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool) -> ToggleStep {
     match (action, surface) {
         // Show intents: only a hidden surface starts the measuring
         // pass; a hiding one reverses (criterion 6); a measuring or
-        // shown one is already on its way.
+        // shown one is already on its way. None of these cells key on
+        // the slide toggle — a hiding surface always reverses on the
+        // live slide, whatever the flag says now (never aborted).
         (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hidden) => ToggleStep::Measure,
         (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hiding(id)) => {
             ToggleStep::ReverseShow(*id)
@@ -1094,15 +1123,21 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState) -> ToggleStep {
             ToggleStep::Leave
         }
         // Hide intents — and a toggle on any visible surface: a
-        // measuring surface dies now (criterion 8), a shown one
-        // slides out (criterion 2; mid-slide-in the executor starts
-        // from the live eased offset), a hiding or hidden one stays
-        // put (A4 idempotence — no restart, no double destroy).
+        // measuring surface dies now (criterion 8), a hiding or hidden
+        // one stays put (A4 idempotence — no restart, no double
+        // destroy). A shown one slides out (criterion 2; mid-slide-in
+        // the executor starts from the live eased offset) — or, with
+        // the slide toggle off (settings-ui U2), destroys now: instant
+        // hide, the pre-slide-animation behavior (spec criterion 7).
         (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Measuring(id)) => {
             ToggleStep::DestroyNow(*id)
         }
         (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Shown(id)) => {
-            ToggleStep::SlideOut(*id)
+            if slide_enabled {
+                ToggleStep::SlideOut(*id)
+            } else {
+                ToggleStep::DestroyNow(*id)
+            }
         }
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
     }
@@ -1234,11 +1269,11 @@ mod tests {
     #[test]
     fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
         assert_eq!(
-            toggle_step(ToggleAction::Toggle, &SurfaceState::Hidden),
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hidden, true),
             ToggleStep::Measure
         );
         assert_eq!(
-            toggle_step(ToggleAction::Show, &SurfaceState::Hidden),
+            toggle_step(ToggleAction::Show, &SurfaceState::Hidden, true),
             ToggleStep::Measure
         );
     }
@@ -1250,11 +1285,11 @@ mod tests {
         // as before animated hides existed.
         let id = window::Id::unique();
         assert_eq!(
-            toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(id)),
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(id), true),
             ToggleStep::DestroyNow(id)
         );
         assert_eq!(
-            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id)),
+            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id), true),
             ToggleStep::DestroyNow(id)
         );
     }
@@ -1267,11 +1302,11 @@ mod tests {
         // teleports.
         let id = window::Id::unique();
         assert_eq!(
-            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id)),
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id), true),
             ToggleStep::SlideOut(id)
         );
         assert_eq!(
-            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id)),
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), true),
             ToggleStep::SlideOut(id)
         );
     }
@@ -1284,11 +1319,11 @@ mod tests {
         // keyboard interactivity on it per config.
         let id = window::Id::unique();
         assert_eq!(
-            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id)),
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id), true),
             ToggleStep::ReverseShow(id)
         );
         assert_eq!(
-            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id)),
+            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id), true),
             ToggleStep::ReverseShow(id)
         );
     }
@@ -1297,11 +1332,11 @@ mod tests {
     fn show_while_measuring_or_shown_is_already_satisfied() {
         let id = window::Id::unique();
         assert_eq!(
-            toggle_step(ToggleAction::Show, &SurfaceState::Measuring(id)),
+            toggle_step(ToggleAction::Show, &SurfaceState::Measuring(id), true),
             ToggleStep::Leave
         );
         assert_eq!(
-            toggle_step(ToggleAction::Show, &SurfaceState::Shown(id)),
+            toggle_step(ToggleAction::Show, &SurfaceState::Shown(id), true),
             ToggleStep::Leave
         );
     }
@@ -1315,7 +1350,7 @@ mod tests {
         // destroy task.
         let id = window::Id::unique();
         assert_eq!(
-            toggle_step(ToggleAction::Hide, &SurfaceState::Hiding(id)),
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hiding(id), true),
             ToggleStep::Leave
         );
     }
@@ -1323,7 +1358,7 @@ mod tests {
     #[test]
     fn hide_while_hidden_destroys_nothing_in_the_matrix() {
         assert_eq!(
-            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden),
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, true),
             ToggleStep::Leave
         );
     }
@@ -1332,19 +1367,81 @@ mod tests {
     fn a_hide_intent_never_decides_to_show() {
         // Pins `hide()`'s unreachable arms as intended behavior: the
         // hide column of the matrix only ever destroys, slides out,
-        // or leaves.
+        // or leaves — under either slide-toggle value (settings-ui
+        // U2: the flag swaps the destroy *style*, never the
+        // direction).
         let id = window::Id::unique();
-        for surface in [
-            SurfaceState::Hidden,
-            SurfaceState::Measuring(id),
-            SurfaceState::Shown(id),
-            SurfaceState::Hiding(id),
-        ] {
-            assert!(matches!(
-                toggle_step(ToggleAction::Hide, &surface),
-                ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) | ToggleStep::Leave
-            ));
+        for slide_enabled in [true, false] {
+            for surface in [
+                SurfaceState::Hidden,
+                SurfaceState::Measuring(id),
+                SurfaceState::Shown(id),
+                SurfaceState::Hiding(id),
+            ] {
+                assert!(matches!(
+                    toggle_step(ToggleAction::Hide, &surface, slide_enabled),
+                    ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) | ToggleStep::Leave
+                ));
+            }
         }
+    }
+
+    // --- settings-ui U2: the slide toggle in the toggle matrix ---
+
+    #[test]
+    fn shown_hide_with_slides_disabled_destroys_immediately() {
+        // The one cell the slide toggle owns: a hide from `Shown`
+        // with the key off destroys now — instant hide with
+        // immediate destroy, the pre-slide-animation behavior (spec
+        // criterion 7). Applies to a plain hide and a toggle alike.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+    }
+
+    #[test]
+    fn hiding_reversal_ignores_the_slide_toggle() {
+        // The never-aborted reading (spec criterion 4): a running
+        // out-slide belongs to the enabled machine that started it —
+        // a show intent mid-hide still reverses on the live surface
+        // with the key off. The toggle gates transition ENTRY only;
+        // `toggle_step` takes no mid-flight input by construction.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id), false),
+            ToggleStep::ReverseShow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id), false),
+            ToggleStep::ReverseShow(id)
+        );
+    }
+
+    #[test]
+    fn measuring_and_hidden_cells_ignore_the_slide_toggle() {
+        // Only the Shown-hide cell keys on the flag: a measuring
+        // surface always died immediately (criterion 8, no content
+        // to animate), hidden always measures, and a disabled hide
+        // while hidden still leaves.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hidden, false),
+            ToggleStep::Measure
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, false),
+            ToggleStep::Leave
+        );
     }
 
     #[test]
@@ -1446,10 +1543,16 @@ impl Application for DropTerm {
         // the first `ensure_tabs`, whichever startup message reaches
         // the funnel first. A missing or invalid file stashes
         // nothing (and was already quarantined with a warning inside
-        // `load`), keeping first-run startup silent.
-        let state = session::load(&session::state_file_path());
+        // `load`), keeping first-run startup silent. The session
+        // toggle gates the whole entry (settings-ui U2): disabled, the
+        // file is not even read — nothing restores, and the file on
+        // disk waits untouched for a future launch with the key on.
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let restore = session::RestoreStash::new(state, home.as_deref());
+        let restore = session::restore_entry(
+            &session::state_file_path(),
+            home.as_deref(),
+            config.session_persistence_enabled,
+        );
 
         let mut app = Self {
             core,
@@ -1679,17 +1782,19 @@ impl Application for DropTerm {
                     // — deterministic and known at open time, unlike
                     // the granted window height, which arrives later
                     // through the double-reported `WindowResized`
-                    // stream (the plan's pinned distance source).
+                    // stream (the plan's pinned distance source). The
+                    // slide toggle gates this entry (settings-ui U2):
+                    // disabled, the surface opens at rest — the
+                    // pre-slide-animation behavior, byte-equal render.
                     let distance_px =
                         geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
-                    self.slide = Some(slide::Playing {
-                        started: std::time::Instant::now(),
-                        active: slide::Active {
-                            direction: slide::Direction::In,
-                            from_offset_px: distance_px,
-                            distance_px,
-                        },
-                    });
+                    self.slide =
+                        slide::show_slide(self.config.slide_animation_enabled, distance_px).map(
+                            |active| slide::Playing {
+                                started: std::time::Instant::now(),
+                                active,
+                            },
+                        );
                     return Task::batch([
                         geometry::apply_geometry(id, &geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
@@ -1988,8 +2093,15 @@ impl Application for DropTerm {
                 // its close, not what was true when it was armed
                 // (session-persistence spec, S3). A stale generation —
                 // superseded, or a duplicate delivery after the write —
-                // writes nothing.
-                if self.session_save.due(generation) {
+                // writes nothing. The session toggle gates the write
+                // itself (settings-ui U2): a window armed before a
+                // mid-run disable fires into a no-write, but the
+                // machine still clears, so no zombie window ever
+                // blocks the next armed one.
+                if self
+                    .session_save
+                    .due_writes(generation, self.config.session_persistence_enabled)
+                {
                     self.write_session();
                 }
             }

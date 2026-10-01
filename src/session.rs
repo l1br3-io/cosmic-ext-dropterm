@@ -235,6 +235,24 @@ impl SessionSave {
             false
         }
     }
+
+    /// The toggle-gated save trigger (settings-ui spec, U2): a
+    /// disabled trigger is a total no-op — nothing marks dirty, no
+    /// debounce window arms, no timer task spawns — so a mid-run
+    /// disable stops further saves immediately. Enabled, this is
+    /// exactly [`SessionSave::mark`] (day-one equality).
+    pub fn mark_gated(&mut self, enabled: bool) -> Option<u32> {
+        if enabled { self.mark() } else { None }
+    }
+
+    /// The toggle-gated write decision (settings-ui spec, U2): the
+    /// machine state always clears exactly as [`SessionSave::due`]
+    /// would — a stale window must never block a later one — but a
+    /// disabled run stops the pending write itself, so the file last
+    /// written before the flip stays put.
+    pub fn due_writes(&mut self, generation: u32, enabled: bool) -> bool {
+        self.due(generation) && enabled
+    }
 }
 
 /// Whether a terminal's working directory moved since it was last
@@ -246,6 +264,20 @@ impl SessionSave {
 /// row read as quiet.
 pub fn cwd_changed(last: Option<&Path>, current: Option<&Path>) -> bool {
     last != current
+}
+
+/// The gated restore entry the app's `init` calls (settings-ui spec,
+/// U2): honoring lives in the owner, so the toggle is decided here,
+/// before the file is ever touched. Disabled, the read is skipped
+/// entirely — not merely the restore — because `load` quarantines
+/// invalid files, and a disabled run must leave even a corrupt state
+/// file exactly where it waits (no `.bak`, no fresh start) for a
+/// future launch with the key back on.
+pub fn restore_entry(path: &Path, home: Option<&Path>, enabled: bool) -> RestoreStash {
+    if !enabled {
+        return RestoreStash::default();
+    }
+    RestoreStash::new(load(path), home)
 }
 
 /// Loads the session file. A missing file is a silent `None` (first
@@ -835,5 +867,82 @@ mod tests {
         ));
         assert!(cwd_changed(None, Some(Path::new("/tmp"))));
         assert!(cwd_changed(Some(Path::new("/tmp")), None));
+    }
+
+    // --- settings-ui U2: the symmetric toggle gate ---
+
+    #[test]
+    fn restore_entry_enabled_stashes_a_valid_sessions_plan() {
+        let dir = TempDir::new("restore-entry-on");
+        let path = session_file(&dir);
+        write_session(
+            &path,
+            &ron::to_string(&restorable_state()).expect("serialize"),
+        );
+        let mut stash = restore_entry(&path, None, true);
+        assert!(stash.take_for_run(true).is_some());
+    }
+
+    #[test]
+    fn restore_entry_disabled_skips_even_loading_the_file() {
+        // The file policy's hidden edge: `load` quarantines invalid
+        // files, so gating only the restore would still let a
+        // disabled run rename the waiting file away. Skipping the
+        // read keeps disabling totally inert: the corrupt file stays
+        // put, no backup appears, nothing restores — it all waits
+        // for a future re-enable.
+        let dir = TempDir::new("restore-entry-off");
+        let path = session_file(&dir);
+        write_session(&path, "corrupt((");
+        let mut stash = restore_entry(&path, None, false);
+        assert_eq!(stash.take_for_run(true), None, "disabled restores nothing");
+        assert!(path.exists(), "the state file is left untouched");
+        assert!(!backup_of(&path).exists(), "no quarantine while disabled");
+    }
+
+    #[test]
+    fn disabled_save_triggers_arm_no_window() {
+        // The save-trigger half of the symmetric gate: a disabled
+        // trigger no-ops — and leaves no zombie window behind, so
+        // the next enabled trigger arms fresh.
+        let mut save = SessionSave::default();
+        assert_eq!(save.mark_gated(false), None, "a disabled trigger no-ops");
+        assert!(save.mark_gated(true).is_some(), "no zombie window armed");
+    }
+
+    #[test]
+    fn enabled_save_triggers_match_the_plain_mark() {
+        // Day-one equality: enabled, the gated funnel is the machine
+        // the existing tests pin.
+        let mut gated = SessionSave::default();
+        let mut plain = SessionSave::default();
+        assert_eq!(gated.mark_gated(true), plain.mark());
+    }
+
+    #[test]
+    fn a_window_armed_before_the_flip_is_stopped_at_its_write() {
+        // Mid-run disable stops further saves immediately: the
+        // machine state still clears (a stale window must never
+        // block a later one), but the pending write itself is
+        // stopped.
+        let mut save = SessionSave::default();
+        let generation = save.mark_gated(true).expect("armed while enabled");
+        assert!(
+            !save.due_writes(generation, false),
+            "the flip stops the pending write"
+        );
+        assert!(
+            save.mark_gated(true).is_some(),
+            "the machine is clear for a new window"
+        );
+    }
+
+    #[test]
+    fn due_writes_enabled_matches_the_plain_due() {
+        let mut gated = SessionSave::default();
+        let mut plain = SessionSave::default();
+        let g = gated.mark_gated(true).expect("armed");
+        let p = plain.mark().expect("armed");
+        assert_eq!(gated.due_writes(g, true), plain.due(p));
     }
 }

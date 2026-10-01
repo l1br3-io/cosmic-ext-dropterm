@@ -108,6 +108,17 @@ pub struct DropTermConfig {
     /// Defaults to `true` so a fresh run behaves like Yakuake/Guake
     /// (click away to hide).
     pub hide_on_focus_loss: bool,
+    /// Save the session on change and restore it on launch
+    /// (settings-ui spec, U2). Defaults to `true` — the always-on
+    /// behavior before the key existed. `false` is symmetric: saves
+    /// stop and launch restore is skipped, while the state file
+    /// itself is left untouched to wait for a re-enable.
+    pub session_persistence_enabled: bool,
+    /// Animate show/hide with the 130 ms slide (settings-ui spec,
+    /// U2). Defaults to `true`. `false` restores the instant
+    /// show/hide with immediate destroy the app had before slides
+    /// existed; a running animation is never aborted by the toggle.
+    pub slide_animation_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -129,6 +140,8 @@ impl Default for DropTermConfig {
             opacity: 100,
             scrollback_lines: 10_000,
             hide_on_focus_loss: true,
+            session_persistence_enabled: true,
+            slide_animation_enabled: true,
         }
     }
 }
@@ -175,6 +188,25 @@ mod tests {
         assert!(config.shell.is_none());
         assert_eq!(config.opacity, 100);
         assert!(config.hide_on_focus_loss);
+    }
+
+    #[test]
+    fn session_and_slide_toggles_default_on() {
+        // settings-ui U2: both keys ship `true` — day-one equality
+        // with the always-on behavior these features had before the
+        // keys existed.
+        let config = DropTermConfig::default();
+        assert!(config.session_persistence_enabled);
+        assert!(config.slide_animation_enabled);
+    }
+
+    #[test]
+    fn config_version_stays_at_one() {
+        // settings-ui U2: the two booleans merge into pre-existing
+        // files through the CosmicConfigEntry default-entry fallback
+        // (the G1 precedent) — no version bump, no per-field serde
+        // attributes.
+        assert_eq!(CONFIG_VERSION, 1);
     }
 
     #[test]

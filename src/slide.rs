@@ -151,6 +151,26 @@ pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
     }
 }
 
+/// The slide-in a freshly shown surface starts (slide-animation spec,
+/// A3; settings-ui spec, U2): the full surface height is both the
+/// from-offset and the distance — the deterministic source pinned at
+/// `SurfaceOpened` time. `None` when `slide_animation_enabled` is
+/// off: the surface opens at rest, byte-identically to the unwrapped
+/// column (the pre-slide-animation behavior, spec criterion 7).
+///
+/// The toggle is honored at transition *entry* only — this function
+/// deliberately takes no mid-flight state, so a running slide can
+/// never be aborted by its own toggle: it belongs to the enabled
+/// machine that started it and always runs to completion (or
+/// reverses through [`reverse`], which equally ignores the flag).
+pub fn show_slide(enabled: bool, distance_px: f32) -> Option<Active> {
+    enabled.then_some(Active {
+        direction: Direction::In,
+        from_offset_px: distance_px,
+        distance_px,
+    })
+}
+
 /// A live slide (slide-animation spec, A3): the animation state
 /// ([`Active`]) paired with its *true* start instant — carried
 /// through view rebuilds, never re-captured. The pair exists so
@@ -629,5 +649,32 @@ mod tests {
         // unwrapped column.
         assert_eq!(translation_y(Edge::Top, 0.0), 0.0);
         assert_eq!(translation_y(Edge::Bottom, 0.0), 0.0);
+    }
+
+    // --- settings-ui U2: the slide toggle at transition entry ---
+
+    #[test]
+    fn show_slide_starts_the_full_height_slide_in_when_enabled() {
+        // Day-one equality: enabled, the show path starts exactly the
+        // slide `SurfaceOpened` always started — the full surface
+        // height as both the from-offset and the distance (the
+        // plan's pinned source).
+        assert_eq!(
+            show_slide(true, 835.0),
+            Some(Active {
+                direction: Direction::In,
+                from_offset_px: 835.0,
+                distance_px: 835.0,
+            })
+        );
+    }
+
+    #[test]
+    fn show_slide_starts_nothing_when_disabled() {
+        // The toggle is honored at transition entry: a disabled show
+        // opens at rest — no slide, the column renders
+        // byte-identically to the unwrapped one (the
+        // pre-slide-animation behavior, spec criterion 7).
+        assert_eq!(show_slide(false, 835.0), None);
     }
 }
