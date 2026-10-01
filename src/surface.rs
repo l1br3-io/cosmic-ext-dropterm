@@ -42,6 +42,13 @@ pub fn keyboard_interactivity(mode: KeyboardMode) -> KeyboardInteractivity {
     }
 }
 
+/// Exclusive-zone request for the shown surface: `-1` ignores other
+/// surfaces' reserved space (covers the panel); `0` asks the compositor
+/// to place the surface inside the usable area, below panels and docks.
+pub fn exclusive_zone(respect_panel: bool) -> i32 {
+    if respect_panel { 0 } else { -1 }
+}
+
 pub fn edge_anchor(edge: Edge) -> Anchor {
     let edge = match edge {
         Edge::Top => Anchor::TOP,
@@ -127,5 +134,15 @@ mod tests {
     #[test]
     fn terminal_view_height_never_pinches_below_one_pixel() {
         assert_eq!(terminal_view_height(20.0, 2), 1.0);
+    }
+
+    #[test]
+    fn exclusive_zone_covers_reserved_space_by_default() {
+        assert_eq!(exclusive_zone(false), -1);
+    }
+
+    #[test]
+    fn exclusive_zone_respects_reserved_space_when_enabled() {
+        assert_eq!(exclusive_zone(true), 0);
     }
 }

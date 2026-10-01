@@ -63,6 +63,10 @@ pub struct DropTermConfig {
     pub layer: Layer,
     /// Keyboard interactivity mode requested for the surface.
     pub keyboard_mode: KeyboardMode,
+    /// Place the drop-down below panels and docks instead of covering them,
+    /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
+    /// Applies on the next show. Default: cover, Yakuake-style.
+    pub respect_panel: bool,
     /// Name of the Wayland output to show on. `None` follows the
     /// compositor's notion of the "active" output (usually the one under
     /// the cursor).
@@ -96,6 +100,7 @@ impl Default for DropTermConfig {
             edge: Edge::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
+            respect_panel: false,
             output: None,
             shell: None,
             args: Vec::new(),
@@ -147,6 +152,7 @@ mod tests {
         assert!(config.shell.is_none());
         assert_eq!(config.opacity, 100);
         assert!(config.hide_on_focus_loss);
+        assert!(!config.respect_panel);
     }
 
     #[test]
