@@ -183,6 +183,12 @@ pub enum Message {
     /// press. Both clearing the tracked id and `window::close` are
     /// idempotent, so a duplicate delivery is inert.
     SettingsCloseRequested(window::Id),
+    /// An event from the settings window's controls (settings-ui
+    /// spec, U4). Inputs only — the update side resolves each through
+    /// the pure planners and commits through the shared write seam as
+    /// a `Bare` write, whose `ConfigChanged` echo is the only apply
+    /// path.
+    Settings(settings::SettingsEvent),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -295,6 +301,10 @@ pub struct DropTerm {
     /// instead of opening a second window. Cleared when the window
     /// closes — never left holding a dead id.
     settings_window: Option<window::Id>,
+    /// The settings window's in-flight drafts (settings-ui spec,
+    /// U4): display-only text and slider state, cleared on window
+    /// close so a reopened window renders purely from config.
+    settings_buffer: settings::SettingsBuffer,
 }
 
 impl DropTerm {
@@ -797,8 +807,8 @@ impl DropTerm {
         // it carries the runtime's window-open command. Its
         // completion value (the id, already tracked synchronously
         // above) is discarded; the multi-window example maps it the
-        // same way, to a first-focus message this window has no
-        // control to focus yet (U4 builds the real view).
+        // same way (a first-focus message this window leaves to the
+        // compositor — nothing here needs a focus task).
         Task::batch([
             open.then(|_| Task::none()),
             self.set_window_title("DropTerm Settings".to_string(), id),
@@ -1628,6 +1638,7 @@ impl Application for DropTerm {
             last_toggle: None,
             slide: None,
             settings_window: None,
+            settings_buffer: settings::SettingsBuffer::default(),
         };
         app.refresh_window_bg_color();
 
@@ -2193,9 +2204,59 @@ impl Application for DropTerm {
                 // — a no-op here, since `take` already matched nothing
                 // and `window::close` on a dead id is inert. The app
                 // itself keeps running: this is not the main window and
-                // `exit_on_close(false)` stands (criterion 8).
+                // `exit_on_close(false)` stands (criterion 8). U4: the
+                // draft buffer clears here too, so a reopened window
+                // starts purely from config (criterion 8, no stale
+                // state).
+                self.settings_buffer.clear();
                 if self.settings_window.take() == Some(id) {
                     return window::close(id);
+                }
+            }
+            Message::Settings(event) => {
+                // The settings window's commit funnel (settings-ui
+                // spec, U4): every event resolves through a pure
+                // planner and lands as one `Bare` write on the shared
+                // seam — the window never applies anything itself, the
+                // `ConfigChanged` echo drives every apply (criterion
+                // 3). Display-only events (drafts, slider moves) touch
+                // just the buffer; commits that fail to parse are
+                // no-ops that leave the draft for the user to fix.
+                match event {
+                    settings::SettingsEvent::Draft(field, text) => {
+                        self.settings_buffer.set_text(field, text);
+                    }
+                    settings::SettingsEvent::Submitted(field, text) => {
+                        if let Some(write) = settings::submit_write(field, &text) {
+                            // A parsed submit clears its draft so the
+                            // input falls back to the echoed config
+                            // value; a rejected one keeps the draft.
+                            self.settings_buffer.clear_text(field);
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::SliderMoved(key, value) => {
+                        self.settings_buffer.set_slider(key, value);
+                    }
+                    settings::SettingsEvent::SliderReleased(key) => {
+                        // `on_release` carries no value (the pinned
+                        // rev's API), so the release commits the
+                        // buffered position the readout showed.
+                        let value = self.settings_buffer.slider_value(key, &self.config);
+                        if let Some(write) = settings::slider_release_write(key, value) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::Picked(key, index) => {
+                        if let Some(write) = settings::dropdown_write(key, index) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::Toggled(key, checked) => {
+                        if let Some(write) = settings::toggle_write(key, checked) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
                 }
             }
         }
@@ -2207,14 +2268,12 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
-        // The settings window (settings-ui spec, U1): a placeholder
-        // for the spike — the sectioned instant-apply view is U4.
+        // The settings window (settings-ui spec, U4): the sectioned
+        // instant-apply view — rendered from config with buffered
+        // drafts winning while they exist, events mapped into the
+        // app's `Message::Settings` funnel.
         if self.settings_window == Some(id) {
-            return widget::column![widget::text("DropTerm Settings")]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(16)
-                .into();
+            return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
         }
         let Some(tab) = self.active() else {
             return widget::text("").into();
