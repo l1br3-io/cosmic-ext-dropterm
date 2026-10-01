@@ -370,6 +370,23 @@ impl WriteBack {
             _ => None,
         }
     }
+
+    /// Whether a drag write-back is still scheduled (settings-ui spec,
+    /// U3): the bare-write race rule consults this before canceling.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Cancels the pending write, if any (settings-ui spec, U3): a
+    /// bare settings write of the height key supersedes a pending
+    /// drag write-back — newest intent wins — so the stale `WriteDue`
+    /// finds nothing pending and the drag's percent never lands after
+    /// the bare write's. A drag release after the cancel simply
+    /// schedules a fresh generation and lands last. Returns the
+    /// canceled write, if one was pending.
+    pub fn cancel_pending(&mut self) -> Option<PendingWrite> {
+        self.pending.take()
+    }
 }
 
 /// Whether a [`ConfigChanged`] echo is our own geometry write coming
@@ -824,6 +841,50 @@ mod tests {
                 .map(|pending| pending.height_percent),
             Some(50)
         );
+    }
+
+    #[test]
+    fn bare_write_cancel_takes_the_pending_and_ages_out_its_due() {
+        // settings-ui U3, the newest-intent race rule: a bare settings
+        // write of the height key supersedes a pending drag write-back,
+        // so the canceled generation's `WriteDue` must find nothing and
+        // the drag's percent must never land after the bare write's.
+        let mut write_back = WriteBack::default();
+        let pending = write_back.schedule(42);
+        assert!(write_back.has_pending());
+        assert_eq!(write_back.cancel_pending(), Some(pending));
+        assert!(!write_back.has_pending());
+        assert_eq!(write_back.due(pending.generation), None);
+    }
+
+    #[test]
+    fn drag_release_after_a_cancel_schedules_and_lands_last() {
+        // The other half of the race rule: newest intent is the newest
+        // *writer*. After a bare write canceled a settle, a fresh drag
+        // release schedules a new generation whose `WriteDue` lands —
+        // the grab bar stays usable the whole time the settings window
+        // is open, so both paths genuinely interleave.
+        let mut write_back = WriteBack::default();
+        let canceled = write_back.schedule(42);
+        write_back.cancel_pending();
+        let landed = write_back.schedule(50);
+        assert_ne!(landed.generation, canceled.generation);
+        assert_eq!(
+            write_back
+                .due(landed.generation)
+                .map(|pending| pending.height_percent),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn cancel_with_nothing_pending_is_inert() {
+        // Cancelling with no pending write must not disturb the
+        // machine: the next schedule works exactly as before.
+        let mut write_back = WriteBack::default();
+        assert_eq!(write_back.cancel_pending(), None);
+        let pending = write_back.schedule(60);
+        assert_eq!(write_back.due(pending.generation), Some(pending));
     }
 
     #[test]

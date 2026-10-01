@@ -7,7 +7,7 @@ use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 use cosmic::app::{Core, Task};
-use cosmic::cosmic_config::{self, ConfigSet as _, CosmicConfigEntry};
+use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
@@ -27,6 +27,7 @@ use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
 use crate::session;
+use crate::settings;
 use crate::slide::{self, SlideBox};
 use crate::surface;
 use crate::tab_bar::TabBar;
@@ -697,6 +698,52 @@ impl DropTerm {
             ));
         }
         None
+    }
+
+    /// The one path every config write goes through (settings-ui
+    /// spec, U3): the drag release persists here as `PreApplied` —
+    /// the set plus the `last_written` record whose echo
+    /// `ConfigChanged` absorbs, byte-identical with G4 — and every
+    /// settings control (from U4) persists here as `Bare`, recording
+    /// nothing so its echo flows into the live-apply path. The
+    /// newest-intent race rule rides the seam: a bare write of the
+    /// drag's key first cancels any pending debounced write-back, so
+    /// the stale `WriteDue` finds nothing and the bare write's value
+    /// is what lands — while a drag release after it simply schedules
+    /// fresh and lands last. Values clamp before persisting (spec
+    /// criterion 9); a missing config backend (it failed to open at
+    /// init) logs and skips — the drag itself still resized live.
+    fn write_config(&mut self, kind: settings::WriteKind, write: settings::PlannedWrite) {
+        if kind == settings::WriteKind::Bare
+            && settings::bare_write_cancels_pending_drag(write.key(), self.write_back.has_pending())
+        {
+            self.write_back.cancel_pending();
+        }
+        let write = write.clamped();
+        let key = write.key();
+        let Some(handler) = self.config_handler.as_ref() else {
+            log::warn!("no config handler; skipping {} write", key.key_name());
+            return;
+        };
+        match write.persist(handler) {
+            Ok(()) => {
+                // Only a pre-applied write absorbs its echo — geometry
+                // was already applied at release, so the echo must not
+                // reshape. The pre-applied writer is exactly the
+                // height-only drag release (G3 scope). A bare write
+                // records nothing: its echo *is* the apply.
+                if let (
+                    settings::WriteKind::PreApplied,
+                    settings::PlannedWrite::HeightPercent(height),
+                ) = (kind, &write)
+                {
+                    let mut written = Geometry::from_config(&self.config);
+                    written.height_percent = *height;
+                    self.last_written = Some(written);
+                }
+            }
+            Err(err) => log::warn!("failed to persist {}: {err}", key.key_name()),
+        }
     }
 
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
@@ -2059,31 +2106,20 @@ impl Application for DropTerm {
             }
             Message::WriteDue(generation) => {
                 // The debounce window elapsed: persist the settled
-                // height once — unless a newer drag rescheduled (the
-                // stale generation finds nothing pending). Without a
-                // config backend (it failed to open at init) the write
-                // is logged and skipped: the drag itself still resized
-                // live. The written geometry is recorded so the
-                // resulting `ConfigChanged` echo is absorbed instead of
-                // reshaping (see `ConfigChanged`).
+                // height once through the shared write seam
+                // (settings-ui spec, U3) — unless a newer drag
+                // rescheduled or a bare settings write canceled (the
+                // stale generation finds nothing pending).
+                // `PreApplied` because the release already applied the
+                // geometry: the seam records the written geometry so
+                // the resulting `ConfigChanged` echo is absorbed
+                // instead of reshaping (see `ConfigChanged`) — G4's
+                // behavior, byte-identical.
                 if let Some(pending) = self.write_back.due(generation) {
-                    match &self.config_handler {
-                        Some(handler) => {
-                            match handler.set("height_percent", pending.height_percent) {
-                                Ok(()) => {
-                                    let mut written = Geometry::from_config(&self.config);
-                                    written.height_percent = pending.height_percent;
-                                    self.last_written = Some(written);
-                                }
-                                Err(err) => {
-                                    log::warn!("failed to persist height_percent: {err}");
-                                }
-                            }
-                        }
-                        None => {
-                            log::warn!("no config handler; skipping height_percent write");
-                        }
-                    }
+                    self.write_config(
+                        settings::WriteKind::PreApplied,
+                        settings::PlannedWrite::HeightPercent(pending.height_percent),
+                    );
                 }
             }
             Message::SessionSaveDue(generation) => {
