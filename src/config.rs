@@ -68,6 +68,21 @@ pub enum KeyboardMode {
     OnDemand,
 }
 
+/// Whether the app follows the system light/dark mode or pins one
+/// (theme-preference spec).
+///
+/// `System` — the default — is byte-identical to the app before the
+/// key existed: the OS setting drives scheme selection, the window
+/// background, and chrome. `Dark`/`Light` pin the app to the user's
+/// own system palette for that mode, independent of the OS setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 pub struct DropTermConfig {
@@ -123,6 +138,10 @@ pub struct DropTermConfig {
     /// show/hide with immediate destroy the app had before slides
     /// existed; a running animation is never aborted by the toggle.
     pub slide_animation_enabled: bool,
+    /// Whether the app follows the system light/dark mode or pins one
+    /// (theme-preference spec). Defaults to `System`: no override is
+    /// ever issued and system flips keep driving the app.
+    pub theme_preference: ThemePreference,
 }
 
 impl Default for DropTermConfig {
@@ -147,6 +166,7 @@ impl Default for DropTermConfig {
             hide_on_focus_loss: true,
             session_persistence_enabled: true,
             slide_animation_enabled: true,
+            theme_preference: ThemePreference::default(),
         }
     }
 }
@@ -365,6 +385,106 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert!(loaded.respect_panel);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn theme_preference_defaults_to_system() {
+        // theme-preference criterion 2: the default is Follow system —
+        // a fresh config never issues a theme override, so default
+        // behavior stays byte-identical to the pre-module binary.
+        assert_eq!(
+            DropTermConfig::default().theme_preference,
+            ThemePreference::System
+        );
+    }
+
+    #[test]
+    fn theme_preference_serde_round_trips_all_variants() {
+        // The enum must survive the serde path cosmic-config uses for
+        // key values; every variant, not just the default.
+        for variant in [
+            ThemePreference::System,
+            ThemePreference::Dark,
+            ThemePreference::Light,
+        ] {
+            let serialized = ron::to_string(&variant).expect("serialize ThemePreference");
+            let deserialized: ThemePreference =
+                ron::from_str(&serialized).expect("deserialize ThemePreference");
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn missing_theme_preference_key_loads_as_system() {
+        // A config directory written before `theme_preference`
+        // existed loads as `System` (criterion 1) through the same
+        // default-entry leniency the `respect_panel` pair pins — the
+        // key list is additive, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-theme-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`theme_preference` version by deleting the
+        // one key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("theme_preference"),
+        )
+        .expect("remove theme_preference key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert_eq!(loaded.theme_preference, ThemePreference::System);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn theme_preference_key_on_disk_is_honored() {
+        // Control for `missing_theme_preference_key_loads_as_system`:
+        // the same read path honors a key that does exist, so the
+        // leniency result above cannot be a vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-theme-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            theme_preference: ThemePreference::Dark,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded.theme_preference, ThemePreference::Dark);
 
         let _ = std::fs::remove_dir_all(&root);
     }

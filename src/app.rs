@@ -24,7 +24,7 @@ use cosmic::widget;
 use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
-use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
+use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, ThemePreference};
 use crate::context_menu;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
@@ -99,6 +99,13 @@ enum SurfaceState {
 pub enum Message {
     ToggleAction(ToggleAction),
     ConfigChanged(DropTermConfig),
+    /// The `set_theme` task from a theme-preference change landed
+    /// (theme-preference spec, criterion 6): re-run the color apply
+    /// so the `WINDOW_BG_COLOR` derivation — which reads the
+    /// process-global theme — sees the new mode. Cell colors were
+    /// already same-pass correct through the `effective_is_dark`
+    /// seam when the change arrived.
+    ReapplyColors,
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
@@ -350,7 +357,11 @@ impl DropTerm {
     }
 
     fn active_colors(&self) -> aterm::color::Colors {
-        let is_dark = cosmic::theme::is_dark();
+        // The config preference is the source of truth (theme-preference
+        // spec, criterion 5): the seam, not a direct global read, decides
+        // the mode, so a pick applies colors in this same pass — before
+        // the async `set_theme` task lands and moves the global.
+        let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
         let scheme_name = if is_dark {
             &self.config.color_scheme_dark
         } else {
@@ -1378,6 +1389,74 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
+/// Whether the app resolves colors for dark mode right now
+/// (theme-preference spec, criterion 5). The config preference is the
+/// source of truth; the global theme (what widgets read) follows via
+/// the `set_theme` task, so the seams must not wait for it. Call
+/// sites inject the current system value — the [`window_bg_color`]
+/// shape — keeping the decision pure and headless-testable.
+fn effective_is_dark(preference: ThemePreference, system_is_dark: bool) -> bool {
+    match preference {
+        ThemePreference::System => system_is_dark,
+        ThemePreference::Dark => true,
+        ThemePreference::Light => false,
+    }
+}
+
+/// What a theme-preference transition asks the runtime to do
+/// (theme-preference spec, criterion 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeOverrideKind {
+    /// Pin the app to the user's dark system palette.
+    PinDark,
+    /// Pin the app to the user's light system palette.
+    PinLight,
+    /// Clear the pin and follow the system mode again.
+    FollowSystem,
+}
+
+/// The one pure transition matrix shared by `init` and
+/// `ConfigChanged`: `None` when the preference did not change —
+/// steady state issues no task, so a default `System` config never
+/// calls `set_theme` (criterion 2) and unrelated config echoes never
+/// storm one.
+fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOverrideKind> {
+    match (old, new) {
+        (ThemePreference::System, ThemePreference::System)
+        | (ThemePreference::Dark, ThemePreference::Dark)
+        | (ThemePreference::Light, ThemePreference::Light) => None,
+        (_, ThemePreference::Dark) => Some(ThemeOverrideKind::PinDark),
+        (_, ThemePreference::Light) => Some(ThemeOverrideKind::PinLight),
+        (ThemePreference::Dark | ThemePreference::Light, ThemePreference::System) => {
+            Some(ThemeOverrideKind::FollowSystem)
+        }
+    }
+}
+
+/// The impure shell over [`theme_override`]: builds the override
+/// theme from the user's own system palettes — never libcosmic's
+/// built-in constants — marks it through `ThemeType::prefer_dark`
+/// (which only writes through on `System`, the only theme type these
+/// constructors produce), and hands it to the runtime's global (the
+/// cosmic-edit pattern). Everything decidable is decided in the pure
+/// fns above; the chained [`Message::ReapplyColors`] re-runs the
+/// color apply once the global has landed, so the window-background
+/// derivation — the one consumer that must read the global — sees
+/// the new mode.
+fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
+    let (mut theme, prefer_dark) = match kind {
+        ThemeOverrideKind::PinDark => (cosmic::theme::system_dark(), Some(true)),
+        ThemeOverrideKind::PinLight => (cosmic::theme::system_light(), Some(false)),
+        // Restore: re-read the system mode from cosmic-config fresh
+        // and clear the marker, so system flips resume driving the
+        // app (criterion 7).
+        ThemeOverrideKind::FollowSystem => (cosmic::theme::system_preference(), None),
+    };
+    theme.theme_type.prefer_dark(prefer_dark);
+    let set_theme: Task<Message> = cosmic::command::set_theme(theme);
+    set_theme.then(|_| Task::done(cosmic::Action::App(Message::ReapplyColors)))
+}
+
 /// Settings for the clipboard-anchor window (the copy-out fix).
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
@@ -1786,6 +1865,79 @@ mod tests {
         // so the binding outlives every hide/show cycle.
         assert!(!clipboard_anchor_settings().exit_on_close_request);
     }
+
+    // --- theme-preference P1: the pure decision seams ---
+
+    #[test]
+    fn effective_is_dark_pins_dark_and_light() {
+        // A pin wins regardless of the system mode — that is the
+        // whole point of the feature.
+        assert!(effective_is_dark(ThemePreference::Dark, false));
+        assert!(effective_is_dark(ThemePreference::Dark, true));
+        assert!(!effective_is_dark(ThemePreference::Light, false));
+        assert!(!effective_is_dark(ThemePreference::Light, true));
+    }
+
+    #[test]
+    fn effective_is_dark_system_follows_the_injected_mode() {
+        // The system value is a parameter, not a global read (the
+        // `window_bg_color` shape): the seam stays pure, and tests
+        // never depend on the process-wide THEME state.
+        assert!(effective_is_dark(ThemePreference::System, true));
+        assert!(!effective_is_dark(ThemePreference::System, false));
+    }
+
+    #[test]
+    fn theme_override_is_none_when_preference_is_unchanged() {
+        // Steady state issues nothing (criterion 2): a default
+        // `System` config never calls `set_theme`, and unrelated
+        // config echoes — including our own theme echo — never storm
+        // the task.
+        assert_eq!(
+            theme_override(ThemePreference::System, ThemePreference::System),
+            None
+        );
+        assert_eq!(
+            theme_override(ThemePreference::Dark, ThemePreference::Dark),
+            None
+        );
+        assert_eq!(
+            theme_override(ThemePreference::Light, ThemePreference::Light),
+            None
+        );
+    }
+
+    #[test]
+    fn theme_override_pins_on_any_transition_to_dark_or_light() {
+        assert_eq!(
+            theme_override(ThemePreference::System, ThemePreference::Dark),
+            Some(ThemeOverrideKind::PinDark)
+        );
+        assert_eq!(
+            theme_override(ThemePreference::Light, ThemePreference::Dark),
+            Some(ThemeOverrideKind::PinDark)
+        );
+        assert_eq!(
+            theme_override(ThemePreference::System, ThemePreference::Light),
+            Some(ThemeOverrideKind::PinLight)
+        );
+        assert_eq!(
+            theme_override(ThemePreference::Dark, ThemePreference::Light),
+            Some(ThemeOverrideKind::PinLight)
+        );
+    }
+
+    #[test]
+    fn theme_override_restores_follow_system_from_a_pin() {
+        assert_eq!(
+            theme_override(ThemePreference::Dark, ThemePreference::System),
+            Some(ThemeOverrideKind::FollowSystem)
+        );
+        assert_eq!(
+            theme_override(ThemePreference::Light, ThemePreference::System),
+            Some(ThemeOverrideKind::FollowSystem)
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1905,9 +2057,24 @@ impl Application for DropTerm {
         // in the batch: the runtime binds its clipboard to the first window
         // created, and the anchor must win that race before any layer
         // surface exists — afterwards the binding never moves again.
+        // A preference pinned on disk applies at startup
+        // (theme-preference P1): the runtime's pre-init state is
+        // "following the system", so the transition input is
+        // `(System, loaded)` — one matrix serves startup and
+        // `ConfigChanged`. `System → System` is `None`, so default
+        // configs never call `set_theme` (criterion 2). This is a
+        // `no_main_window` app: nothing is visible to flash — the
+        // surface opens only on the first toggle, after the task
+        // lands. Startup colors above already resolved through the
+        // config-driven seam, so they are correct even before it
+        // does.
+        let theme_task = theme_override(ThemePreference::System, app.config.theme_preference)
+            .map(theme_override_task)
+            .unwrap_or_else(Task::none);
         let task = Task::batch([
             open_anchor.then(|_| Task::none()),
             app.debounced_toggle(flags.action),
+            theme_task,
         ]);
         (app, task)
     }
@@ -2037,8 +2204,22 @@ impl Application for DropTerm {
             Message::ConfigChanged(config) => {
                 let old_geom = Geometry::from_config(&self.config);
                 let new_geom = Geometry::from_config(&config);
+                let old_preference = self.config.theme_preference;
                 self.config = config;
                 self.apply_config_to_tabs();
+                // A changed theme preference overrides (or restores)
+                // the process theme (theme-preference P1). Sits after
+                // `apply_config_to_tabs` — cells are already correct
+                // in this pass through the `effective_is_dark` seam —
+                // and before the geometry exits below: a preference
+                // echo can never be a geometry own-write
+                // (`last_written` records geometry writes only), so
+                // the two returns cannot collide. The task chains a
+                // `ReapplyColors` for the one global-reading
+                // consumer, the window-background derivation.
+                if let Some(kind) = theme_override(old_preference, self.config.theme_preference) {
+                    return theme_override_task(kind);
+                }
                 // Our own write's echo (geometry spec, G4): geometry
                 // matching the last write is absorbed — the in-memory
                 // config already agrees (updated at release), so no
@@ -2078,6 +2259,14 @@ impl Application for DropTerm {
                 {
                     return geometry::apply_geometry(*id, &new_geom, output);
                 }
+            }
+            Message::ReapplyColors => {
+                // The theme override landed (theme-preference P1):
+                // re-run the idempotent color apply so
+                // `refresh_window_bg_color` derives the fallback
+                // background from the new global mode; cells were
+                // already correct through the seam.
+                self.apply_config_to_tabs();
             }
             Message::TermEventTx(tx) => {
                 if self.term_event_tx.is_none() {
