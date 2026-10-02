@@ -214,7 +214,7 @@ Controls constrain input to the same ranges as the config (`height_percent` 10-1
 - Hidden from Alt-Tab and the dock
 - Exclusive keyboard focus when shown; focus returns to the previous window when hidden
 - Shell session persists while hidden (the PTY is never torn down - only the surface is)
-- COSMIC theme integration: light/dark and the two built-in COSMIC color schemes
+- COSMIC theme integration: light/dark and the built-in color schemes
 - Copy/paste (`Ctrl+Shift+C`/`V`), primary-selection paste (middle-click, `Shift+Insert`), scrollback, mouse reporting, `Ctrl`-click to open URLs
 - Zoom (`Ctrl+`/`Ctrl-`/`Ctrl+0`), select-all and clear-scrollback shortcuts
 - In-app dismiss: `Ctrl+Shift+Q` hides the overlay; clicking away hides it too

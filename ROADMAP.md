@@ -20,18 +20,23 @@ High-level feature list.
 - [x] Save sessions across shutdown
 - [x] Hide on focus loss
 - [x] Drag-to-resize with remembered height
+- [x] Width percentage and horizontal alignment
 - [x] Slide animation
 - [x] Settings page UI
-- [ ] Built-in color scheme picker
+- [x] Built-in color scheme picker
+
+
+## V3 
+
+- [ ] Panel applet to toggle and show status
 
 ## Later
 
-- [ ] Panel applet to toggle and show status
-- [ ] CLI actions (`--new-tab`, `--cmd`, `--cwd`)
+
+- [ ] CLI actions (`--new-tab`, `--cmd`, `and rest of industry cli options, args`)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] User-defined color scheme files (import custom palettes)
-- [ ] Width percentage and horizontal alignment
 - [ ] Clean up unnecessary comments
 - [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
       libcosmic rev exposes no focused/fixed output targeting (`IcedOutput` is
