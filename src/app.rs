@@ -297,7 +297,7 @@ pub struct DropTerm {
     /// the slide (`SlideTick`).
     slide: Option<slide::Playing>,
     /// The settings window, when one is open (settings-ui spec, U1):
-    /// `Some(id)` routes a repeat Ctrl+Shift+, to `gain_focus`
+    /// `Some(id)` routes a repeat Ctrl+Shift+I to `gain_focus`
     /// instead of opening a second window. Cleared when the window
     /// closes — never left holding a dead id.
     settings_window: Option<window::Id>,

@@ -51,10 +51,12 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
-    // The settings window (settings-ui spec, U1): Ctrl+Shift+, — the
-    // comma needs no escaping in a `Key::Character` bind.
+    // The settings window (settings-ui spec, U1; moved from
+    // Ctrl+Shift+, to Ctrl+Shift+I 2026-10-02, owner preference).
+    // Bare Ctrl+I must stay unbound: in a terminal it is the TAB byte
+    // (0x09), so swallowing it would break tab completion.
     map.insert(
-        bind(&[Modifier::Ctrl, Modifier::Shift], ","),
+        bind(&[Modifier::Ctrl, Modifier::Shift], "i"),
         Action::Settings,
     );
     map.insert(
@@ -165,13 +167,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_shift_comma_opens_settings() {
+    fn ctrl_shift_i_opens_settings() {
         let binds = default_key_binds();
         assert_eq!(
             matched_action(
                 &binds,
                 Modifiers::CTRL | Modifiers::SHIFT,
-                &Key::Character(",".into()),
+                &Key::Character("i".into()),
                 None,
             ),
             Some(Action::Settings)
@@ -179,22 +181,23 @@ mod tests {
     }
 
     #[test]
-    fn bare_and_ctrl_comma_stay_free_for_the_terminal() {
-        // A bare comma must keep reaching the shell (it is ordinary
-        // punctuation), and Ctrl+, is not the settings bind either —
-        // only the full Ctrl+Shift+, combo is swallowed.
+    fn bare_and_ctrl_i_stay_free_for_the_terminal() {
+        // Ctrl+I is the TAB byte (0x09) in a terminal — swallowing it
+        // would break tab completion — and a bare `i` is ordinary
+        // typing: only the full Ctrl+Shift+I combo is the settings
+        // bind.
         let binds = default_key_binds();
         assert_eq!(
             matched_action(
                 &binds,
                 Modifiers::empty(),
-                &Key::Character(",".into()),
+                &Key::Character("i".into()),
                 None
             ),
             None
         );
         assert_eq!(
-            matched_action(&binds, Modifiers::CTRL, &Key::Character(",".into()), None),
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("i".into()), None),
             None
         );
     }
