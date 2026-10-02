@@ -103,7 +103,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -158,9 +158,19 @@ Failure behavior:
 
 Showing and hiding slide the whole content column - terminal, tab bar when one is shown, grab bar - in from, and back out toward, the anchored screen edge over about 130 ms: an ease-out curve on the way in, ease-in on the way out, pure translation with no fade. Toggle it with `slide_animation_enabled` (default `true`, Behavior card in the [settings window](#settings-window)) - `false` restores instant show/hide; either way the animation is deliberately cheap: the surface's geometry never changes during the animation, only the content's painted offset does, so the compositor sees no resize traffic. A toggle arriving mid-animation reverses the slide from wherever the content stands - nothing teleports, nothing is dropped or queued - and PTYs keep running throughout: keyboard focus returns to the previously focused window the moment a hide *starts*, and the surface is destroyed only after the slide-out completes. A hide that catches the surface still measuring (a toggle within the show's measuring window) skips the animation and destroys immediately.
 
+## Application theme
+
+Which theme mode is active - and with it which of the two color schemes wears, the window background derivation, and all chrome - comes from the "Application theme" dropdown in the Appearance card of the [settings window](#settings-window), so you don't need COSMIC Appearance to flip the terminal's mode:
+
+- `Follow system` (the default): DropTerm tracks the system light/dark mode. Flipping COSMIC Appearance switches the terminal's scheme, background, chrome, and the settings window itself, exactly as before - a config that never touches this key behaves byte-identically to a build without the dropdown.
+- `Dark` / `Light`: the app pins that mode independently of the system. Everything resolves from the pin - scheme selection, window background, tab/grab-bar chrome, and the settings window - built on your own system palettes (accent included), and the pin survives system theme flips: COSMIC Appearance can flip back and forth while the terminal keeps wearing the pinned mode. One upstream edge: while pinned, palette edits made while the system sits in the opposite mode are dropped until the next re-pin or theme change.
+- Switching back to `Follow system` re-derives the current system mode on the spot, and system flips resume driving the app.
+
+Picks apply live (config key `theme_preference`: `System`, `Dark`, or `Light` - a missing key loads as `System`). While the settings window is open the terminal is hidden, but the settings window itself restyles with a theme pick, so the change is visible immediately.
+
 ## Color schemes
 
-The terminal wears a built-in color scheme picked per system theme mode: the Appearance card of the [settings window](#settings-window) has two dropdowns - "Dark color scheme" (worn while the system theme is dark) and "Light color scheme" (while it is light). Flipping the system theme switches between the two picks; a config edit or a theme flip re-applies live.
+The terminal wears a built-in color scheme picked per theme mode: the Appearance card of the [settings window](#settings-window) has two dropdowns - "Dark color scheme" (worn while the app resolves dark mode) and "Light color scheme" (while it resolves light). The active mode comes from the [Application theme](#application-theme) dropdown - `Follow system` tracks COSMIC Appearance, `Dark`/`Light` pin one - and a mode change from either side switches between the two picks; a config edit or a mode change re-applies live.
 
 Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `Dracula`, `Solarized Dark`, `Solarized Light`, `Gruvbox Dark`, `Gruvbox Light`, `Tokyo Night Storm`, `Tokyo Night Day`, `Nord`, `Catppuccin Mocha`, and `Catppuccin Latte` - values transcribed from their canonical upstream palettes, with the source and license recorded per scheme in `src/terminal/theme_source.rs`.
 
@@ -173,7 +183,7 @@ Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `
 
 Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus to open the settings window - a separate normal window in the same process. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
 
-The window shows five cards - Appearance (font, size, opacity, and the two color scheme dropdowns), Geometry, Behavior, Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
+The window shows five cards - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior, Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
 
 While the window is open the terminal is hidden: a normal window can never stack above a layer surface on COSMIC, so opening settings hides the drop-down through its normal hide path (animated when slides are enabled) - the same resolution as Guake's default hide-on-focus-loss for its prefs. The rules:
 
@@ -186,7 +196,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | Field | Applies |
 |---|---|
 | `height_percent`, `width_percent`, `h_align`, `edge` | live - reshapes a shown surface in place (deferred mid-drag and mid-slide); visible at the next show while the window is open |
-| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light` | live, on every tab; visible at the next show while the window is open |
+| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab; visible at the next show while the window is open - the settings window itself restyles with a theme pick |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted) |
@@ -282,10 +292,16 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Color schemes: the Appearance card's two dropdowns list all twelve schemes - COSMIC pair first, the rest alphabetically; picking one applies live on every tab (visible at the next show while the settings window is open), and the pick persists as the scheme's display name
 - [ ] Scheme fidelity: pick every scheme in the dark-mode dropdown (light-mode one mirrors) and compare against its canonical palette - e.g. Dracula bg `#282a36` / fg `#f8f8f2`, Nord bg `#2e3440`: cells, cursor, and background render the scheme's look
 - [ ] Chrome coherence: with several tabs open, the tab bar and grab bar sit on the same background as the cells - the scheme's own for Dracula & co., the system theme's for the COSMIC pair
-- [ ] Per-mode pairing: system dark wears the dark pick, system light the light pick; flipping the system theme switches schemes live
+- [ ] Per-mode pairing: system dark wears the dark pick, system light the light pick; flipping the system theme switches schemes live (with `Application theme` on `Follow system`)
 - [ ] `opacity` still multiplies over a scheme-owned background (e.g. 50 over Dracula)
 - [ ] Bogus-name fallback: hand-write a name that isn't in the registry into `color_scheme_dark`, relaunch - the terminal renders the COSMIC dark scheme silently (no error), the dropdown shows no selection, and picking a scheme recovers
 - [ ] Scheme keys never touched: colors, cursor, background, and chrome byte-identical to the previous build (COSMIC pair, system-derived background)
+- [ ] Application theme: the Appearance card's dropdown lists exactly Follow system / Dark / Light after the scheme rows, and the selection mirrors the config value (default config → Follow system)
+- [ ] Pin independence: pin Dark while the system is Light, and Light while it is Dark - scheme, cells, chrome, and the settings window all wear the pinned mode
+- [ ] System mode flips both ways under a pin leave the terminal unchanged (still the pinned mode)
+- [ ] Accent-color edit while pinned with the matching system mode applies to the terminal
+- [ ] Restore: switching back to Follow system picks the current system mode on the spot, and system flips resume driving the terminal
+- [ ] Untouched-default config behaves byte-identically to the previous build - no pin is ever issued, system flips drive everything as before
 
 ## Non-goals
 
