@@ -43,6 +43,13 @@ pub fn keyboard_interactivity(mode: KeyboardMode) -> KeyboardInteractivity {
     }
 }
 
+/// Exclusive-zone request for the shown surface: `-1` ignores other
+/// surfaces' reserved space (covers the panel); `0` asks the compositor
+/// to place the surface inside the usable area, below panels and docks.
+pub fn exclusive_zone(respect_panel: bool) -> i32 {
+    if respect_panel { 0 } else { -1 }
+}
+
 /// No `max_width`/`max_height` cap: the library default caps a layer
 /// surface at 1920x1080, which would clip a full-width drop-down on a
 /// larger or ultrawide output.
@@ -116,5 +123,15 @@ mod tests {
     #[test]
     fn terminal_view_height_never_pinches_below_one_pixel() {
         assert_eq!(terminal_view_height(20.0, 2), 1.0);
+    }
+
+    #[test]
+    fn exclusive_zone_covers_reserved_space_by_default() {
+        assert_eq!(exclusive_zone(false), -1);
+    }
+
+    #[test]
+    fn exclusive_zone_respects_reserved_space_when_enabled() {
+        assert_eq!(exclusive_zone(true), 0);
     }
 }

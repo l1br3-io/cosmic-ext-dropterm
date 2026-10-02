@@ -1928,7 +1928,7 @@ impl Application for DropTerm {
                             id,
                             surface::keyboard_interactivity(self.config.keyboard_mode),
                         ),
-                        set_exclusive_zone(id, -1),
+                        set_exclusive_zone(id, surface::exclusive_zone(self.config.respect_panel)),
                         widget::text_input::focus(self.terminal_id.clone()),
                     ]);
                 }

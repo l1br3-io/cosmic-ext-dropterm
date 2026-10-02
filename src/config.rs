@@ -84,6 +84,10 @@ pub struct DropTermConfig {
     pub layer: Layer,
     /// Keyboard interactivity mode requested for the surface.
     pub keyboard_mode: KeyboardMode,
+    /// Place the drop-down below panels and docks instead of covering them,
+    /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
+    /// Applies on the next show. Default: cover, Yakuake-style.
+    pub respect_panel: bool,
     /// Name of the Wayland output to show on. `None` follows the
     /// compositor's notion of the "active" output (usually the one under
     /// the cursor).
@@ -130,6 +134,7 @@ impl Default for DropTermConfig {
             edge: Edge::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
+            respect_panel: false,
             output: None,
             shell: None,
             args: Vec::new(),
@@ -188,6 +193,7 @@ mod tests {
         assert!(config.shell.is_none());
         assert_eq!(config.opacity, 100);
         assert!(config.hide_on_focus_loss);
+        assert!(!config.respect_panel);
     }
 
     #[test]
@@ -287,5 +293,79 @@ mod tests {
         }
         let no_env = DropTermConfig::default();
         assert_eq!(no_env.resolved_shell(), "/bin/sh");
+    }
+
+    #[test]
+    fn missing_respect_panel_key_loads_as_false() {
+        // A config directory written before `respect_panel` existed: every
+        // legacy key on disk, no `respect_panel` file. cosmic-config reads
+        // each key independently and leaves missing keys at their default
+        // (`Error::is_err` treats NotFound/NoConfigDirectory as lenient).
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`respect_panel` version by deleting the one key
+        // it never wrote. On-disk layout is <root>/cosmic/<name>/v<version>
+        // (cosmic-config rev 08a09e3, `Config::with_custom_path`).
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("respect_panel"),
+        )
+        .expect("remove respect_panel key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert!(!loaded.respect_panel);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn respect_panel_key_on_disk_is_honored() {
+        // Control for `missing_respect_panel_key_loads_as_false`: the same
+        // read path honors a key that does exist, so the leniency result
+        // above cannot be a vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            respect_panel: true,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert!(loaded.respect_panel);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
