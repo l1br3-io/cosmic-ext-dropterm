@@ -124,8 +124,13 @@ pub struct DropTermConfig {
     /// Number of scrollback lines kept per terminal.
     pub scrollback_lines: u32,
     /// Hide the terminal automatically when it loses keyboard focus.
-    /// Defaults to `true` so a fresh run behaves like Yakuake/Guake
-    /// (click away to hide).
+    /// Defaults to `true` — a deliberate choice for a hotkey-driven
+    /// drop-down: focus is the whole interaction model, so losing it
+    /// retracts the overlay. Note this is the *minority* default among
+    /// peers (Yakuake `KeepOpen=true`, Guake `window-losefocus=false`,
+    /// Ghostty `quick-terminal-autohide=false` on Linux — see
+    /// docs/research/terminal-de-integration.md); set `false` to keep
+    /// the overlay open when it loses focus.
     pub hide_on_focus_loss: bool,
     /// Save the session on change and restore it on launch
     /// (settings-ui spec, U2). Defaults to `true` — the always-on

@@ -27,7 +27,7 @@ High-level feature list.
 ## Later
 
 - [ ] Panel applet to toggle and show status
-- [ ] CLI actions (`--new-tab`, `--cmd`, `--cwd`)
+- [x] CLI actions (`new-tab [--cwd] [--cmd]`, over the single-instance D-Bus seam; `--is-visible` deferred - it needs a queryable D-Bus property, not fire-and-forget activation)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] User-defined color scheme files (import custom palettes)

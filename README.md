@@ -41,7 +41,15 @@ Command: cosmic-ext-dropterm
 Key: F12
 ```
 
-Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle.
+Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle, or script new tabs with `cosmic-ext-dropterm new-tab [--cwd DIR] [--cmd COMMAND]`:
+
+```sh
+cosmic-ext-dropterm new-tab                 # a shell in the active tab's cwd
+cosmic-ext-dropterm new-tab --cwd ~/src     # a shell in an explicit directory
+cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
+```
+
+A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead.
 
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](#known-risks).
 
@@ -116,7 +124,7 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 - `width_percent` (default `100`, range 30-100): surface width as a percentage of the output width. `100` reproduces the original full-width surface exactly.
 - `h_align` (`Left`, `Center`, or `Right`; default `Center`): horizontal placement of the surface within the output. `Left` and `Right` sit flush against that edge; `Center` splits the leftover space into equal left and right margins. Only meaningful below `width_percent` 100.
 
-`hide_on_focus_loss` defaults to `true` (click away to hide); write `false` to keep the overlay open when it loses focus.
+`hide_on_focus_loss` defaults to `true` - a deliberate choice for a hotkey-driven drop-down (focus is the whole interaction model), and notably the *opposite* of Yakuake, Guake, and Ghostty's Linux quick terminal, which all default to keeping the window open on focus loss. Write `false` to keep the overlay open when it loses focus.
 
 `respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show - toggle it in the Advanced card of the [settings window](#settings-window) or write it directly:
 
@@ -220,6 +228,7 @@ Controls constrain input to the same ranges as the config (`height_percent` 10-1
 - Tabs: open/close/rename inline/reorder by drag or `Ctrl+Shift+PageUp`/`PageDown`, cycle with `Ctrl+PageUp`/`PageDown` or `Ctrl+Tab`, jump with `Ctrl+Shift+1..8` (`Ctrl+Shift+9` always takes the last tab) - cosmic-term's binds
 - Tab attention markers: a tab that rang the bell wears `🔔` and one that produced output while inactive wears `•`, until you activate it (kitty's `bell_on_tab` + iTerm2-style activity dots)
 - In-app dismiss: `Ctrl+Shift+Q` hides the overlay; clicking away hides it too
+- Remote control from the CLI: `new-tab [--cwd DIR] [--cmd COMMAND]` opens a tab in the running instance over the single-instance D-Bus seam (Guake-style scripting without Guake's full surface)
 
 ## Known risks
 
@@ -245,6 +254,10 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Tab moves: `Ctrl+Shift+PageUp`/`PageDown` shift the active tab one slot, clamping at the list edges (no wrap); the moved tab stays active and focused, and `session.ron` records the new order
 - [ ] Attention markers: with two tabs, `printf '\a'` in the inactive tab marks it `🔔`; `echo hi` in a third (inactive) tab marks it `•`; activating a marked tab clears its marker; the active tab never gains one; a `while true; printf '\a'; done` bell storm in an inactive tab leaves one steady `🔔` (a state, not a counter); markers follow their tabs through drag-reorder and survive the closing of neighbors
 - [ ] Bell notifications: hide the terminal, `printf '\a'` inside it - exactly one desktop notification appears, naming the tab; a bell storm while hidden still yields exactly one; two different tabs belling while hidden yield two; showing and re-hiding re-arms the latch (a new bell notifies again); with the terminal visible a bell posts no notification (marker only); `bell_notification_enabled: false` silences them and the Behavior toggle round-trips to the config file
+- [ ] Remote new-tab: with the app running, `cosmic-ext-dropterm new-tab` opens a tab in the running instance, places it after the active tab, activates it, and shows the overlay; with the app not running, the first launch starts with that tab (alongside any restored session tabs)
+- [ ] `new-tab --cwd /tmp` opens the shell in `/tmp`; `new-tab --cwd /nonexistent` logs a `warn` and opens in the fallback directory; with the active tab cd'd somewhere, plain `new-tab` inherits that cwd
+- [ ] `new-tab --cmd htop` runs htop instead of the shell (no config shell arguments inherited), and closing htop closes the tab; the `--cmd` tab is absent from `session.ron` after the next debounced save, while plain `new-tab` tabs are saved like any other
+- [ ] `toggle`/`show`/`hide` still round-trip through a second launch exactly as before (including via D-Bus activation)
 - [ ] Editing `height_percent` in the config reshapes a shown surface immediately, in place - and a hidden surface opens at the new height on its next show
 - [ ] `width_percent` below 100 (e.g. 60) sizes the surface to that fraction of the output width; the default 100 is indistinguishable from the full-width surface
 - [ ] `h_align = Left` / `Right` sits flush against that edge, `Center` centers the surface with equal left/right margins - on both `edge` values

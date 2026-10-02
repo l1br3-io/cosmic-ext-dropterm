@@ -47,12 +47,26 @@ const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(15
 
 /// What the running instance should do on startup, mirrored by a second
 /// launch's D-Bus activation (see `main.rs`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, clap::Subcommand)]
 pub enum ToggleAction {
     #[default]
     Toggle,
     Show,
     Hide,
+    /// Open a new tab — remotely (a second launch) or at first startup —
+    /// optionally in an explicit working directory and/or running an
+    /// explicit command line (remote-newtab spec). Implies showing the
+    /// overlay.
+    NewTab {
+        /// Working directory for the new tab; defaults to the active
+        /// tab's cwd.
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        /// Command line to run instead of the shell — whitespace-split,
+        /// no quoting support.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        cmd: Option<String>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -61,21 +75,19 @@ impl std::fmt::Display for ToggleAction {
             Self::Toggle => write!(f, "toggle"),
             Self::Show => write!(f, "show"),
             Self::Hide => write!(f, "hide"),
+            Self::NewTab { .. } => write!(f, "new-tab"),
         }
     }
 }
 
-impl std::str::FromStr for ToggleAction {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "toggle" => Ok(Self::Toggle),
-            "show" => Ok(Self::Show),
-            "hide" => Ok(Self::Hide),
-            other => Err(format!("unknown action {other:?}")),
-        }
-    }
+/// What a new tab runs (remote-newtab spec): the user's shell —
+/// config-resolved or per-tab recorded — paired with the config's shell
+/// arguments, or an explicit whitespace-split command line whose exit
+/// closes the tab and whose tabs are session-transient.
+#[derive(Debug, Clone)]
+enum SpawnCommand {
+    Shell(String),
+    CommandLine(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +283,12 @@ pub struct DropTerm {
     /// restore plan loaded from the state file in `init`, consumed by
     /// the spawn funnel's first productive run.
     restore: session::RestoreStash,
+    /// A remote `new-tab` request that arrived before the terminal
+    /// event channel existed (first-launch startup, remote-newtab
+    /// spec): stashed here, applied the moment the channel
+    /// bootstraps and the session restore has landed, so the
+    /// requested tab never races — or is lost to — the restore.
+    pending_remote_tab: Option<ToggleAction>,
     /// Debounced session-save state (session-persistence spec, S3):
     /// which change window is armed and whether a write is owed (see
     /// `session::SessionSave`).
@@ -417,19 +435,39 @@ impl DropTerm {
             Some(spec) => (spec.shell.clone(), spec.cwd.clone()),
             None => (self.config.resolved_shell(), None),
         };
-        self.spawn_shell(shell, cwd)
+        self.spawn_shell(SpawnCommand::Shell(shell), cwd)
     }
 
-    /// Spawns one terminal tab running `shell` in `cwd` — the common
+    /// Spawns one terminal tab running `command` in `cwd` — the common
     /// path behind session restore ([`Self::spawn_tab`]), the new-tab
     /// keybind (which inherits the active tab's cwd), and the CLI's
     /// `new-tab` action. `cwd: None` means the pty's default directory.
     /// The shell is recorded per tab at spawn, so a mid-run config
     /// change never rewrites a live tab's shell.
-    fn spawn_shell(&mut self, shell: String, cwd: Option<std::path::PathBuf>) -> Option<Tab> {
+    fn spawn_shell(&mut self, command: SpawnCommand, cwd: Option<PathBuf>) -> Option<Tab> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
+        };
+
+        // A shell path pairs with the config's shell arguments; an
+        // explicit command line carries its own trailing arguments and
+        // never inherits them (remote-newtab spec) — `--cmd htop`
+        // must not run `htop --login`. A command tab is also
+        // session-ephemeral (never saved, never replayed).
+        let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
+        let (shell, args) = match command {
+            SpawnCommand::Shell(shell) => (shell, self.config.args.clone()),
+            SpawnCommand::CommandLine(line) => {
+                match tabs::command_line_parts(&line) {
+                    Some((program, trailing)) => (program, trailing),
+                    // Unreachable in practice — the CLI rejects an
+                    // empty --cmd — but a degraded empty line still
+                    // spawns the default shell rather than a dying
+                    // exec of "".
+                    None => (self.config.resolved_shell(), self.config.args.clone()),
+                }
+            }
         };
 
         let term_config = TermConfig {
@@ -437,7 +475,7 @@ impl DropTerm {
             ..TermConfig::default()
         };
         let pty_options = PtyOptions {
-            shell: Some(PtyShell::new(shell.clone(), self.config.args.clone())),
+            shell: Some(PtyShell::new(shell.clone(), args)),
             // Alacritty chdirs before exec and silently keeps this
             // process's cwd on failure, so only a re-validated
             // directory ever reaches here (dead cwd → `$HOME` → unset
@@ -460,7 +498,8 @@ impl DropTerm {
             self.active_colors(),
         ) {
             Ok(terminal) => {
-                let tab = Tab::new(tab_id, shell, terminal);
+                let mut tab = Tab::new(tab_id, shell, terminal);
+                tab.ephemeral = ephemeral;
                 // Seed the cwd cache with the spawn cwd
                 // (session-persistence spec, S3): a restored tab seeds
                 // its re-validated saved cwd — so the fresh shell's
@@ -849,6 +888,16 @@ impl DropTerm {
             Task::none()
         };
 
+        // A remote new-tab is not a toggle step (remote-newtab spec):
+        // the tab opens — now or once the channel bootstraps — and
+        // the overlay shows, whatever state it was in. Everything
+        // above (debounce, settings close-first) applies to it like
+        // any other action.
+        if let ToggleAction::NewTab { .. } = action {
+            let open = self.open_remote_tab(action);
+            return Task::batch([close, open, self.show()]);
+        }
+
         // The toggle funnel (slide-animation spec, A5): every matrix
         // cell executes here — most importantly, a mid-hide toggle or
         // `Show` reverses on the live surface instead of being
@@ -866,6 +915,56 @@ impl DropTerm {
             ToggleStep::ReverseShow(id) => Task::batch([close, self.reverse_show(id)]),
             ToggleStep::Leave => close,
         }
+    }
+
+    /// Opens the tab a remote `new-tab` asked for. At first launch the
+    /// terminal event channel may not exist yet — the spawn funnel
+    /// defers, the request stashes, and the channel's arrival applies
+    /// it right after the session restore (remote-newtab spec).
+    fn open_remote_tab(&mut self, action: ToggleAction) -> Task<Message> {
+        let ToggleAction::NewTab { .. } = action else {
+            return Task::none();
+        };
+        if self.term_event_tx.is_none() {
+            self.pending_remote_tab = Some(action);
+            return Task::none();
+        }
+        self.spawn_remote_tab(action)
+    }
+
+    /// Spawns the requested remote tab: an explicit live `--cwd` wins,
+    /// then the active tab's cwd, then the pty default; a `--cmd` runs
+    /// as the tab's program instead of the shell. The tab lands after
+    /// the active one, becomes active, and — being a layout change —
+    /// marks the session dirty.
+    fn spawn_remote_tab(&mut self, action: ToggleAction) -> Task<Message> {
+        let ToggleAction::NewTab { cwd, cmd } = action else {
+            return Task::none();
+        };
+        self.ensure_tabs();
+        // A nonexistent --cwd degrades to the inherited/default cwd
+        // with a warning, never an error surface (remote-newtab spec).
+        let explicit = cwd.filter(|dir| {
+            let live = dir.is_dir();
+            if !live {
+                log::warn!("ignoring --cwd {}: not a directory", dir.display());
+            }
+            live
+        });
+        let inherited = self
+            .active()
+            .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
+        let command = match cmd {
+            Some(line) => SpawnCommand::CommandLine(line),
+            None => SpawnCommand::Shell(self.config.resolved_shell()),
+        };
+        if let Some(tab) = self.spawn_shell(command, tabs::resolve_new_tab_cwd(explicit, inherited))
+        {
+            let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
+            let switch = self.set_active_tab(at);
+            return Task::batch([switch, self.mark_session_dirty()]);
+        }
+        Task::none()
     }
 
     /// Opens the settings window, or focuses the existing one
@@ -1058,9 +1157,10 @@ impl DropTerm {
                     .active()
                     .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
                 let shell = self.config.resolved_shell();
-                if let Some(tab) =
-                    self.spawn_shell(shell, tabs::resolve_new_tab_cwd(None, inherited))
-                {
+                if let Some(tab) = self.spawn_shell(
+                    SpawnCommand::Shell(shell),
+                    tabs::resolve_new_tab_cwd(None, inherited),
+                ) {
                     // Yakuake-style placement: directly after the active
                     // tab, which the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
@@ -1264,6 +1364,7 @@ impl DropTerm {
                 title_override: tab.title_override.as_deref(),
                 shell: &tab.shell,
                 cwd: cwd.as_deref(),
+                ephemeral: tab.ephemeral,
             })
             .collect();
         let state = session::capture(&snapshots, self.active_tab);
@@ -1386,6 +1487,10 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
             }
         }
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
+        // Structurally unreachable: `debounced_toggle` opens a remote
+        // new-tab outside the toggle funnel, so no NewTab ever gets
+        // here. Loud rather than silently wrong.
+        (ToggleAction::NewTab { .. }, _) => unreachable!("new-tab opens outside the funnel"),
     }
 }
 
@@ -2031,6 +2136,29 @@ impl cosmic::app::CosmicFlags for Flags {
     fn action(&self) -> Option<&ToggleAction> {
         Some(&self.action)
     }
+
+    /// The arguments forwarded alongside the action name (remote-newtab
+    /// spec): a `new-tab` request carries its `--cwd`/`--cmd` so the
+    /// running instance can reconstruct the exact action — everything
+    /// else forwards no args, exactly as before.
+    fn args(&self) -> Vec<&str> {
+        let ToggleAction::NewTab { cwd, cmd } = &self.action else {
+            return Vec::new();
+        };
+        let mut forwarded = Vec::new();
+        if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
+            forwarded.push("--cwd");
+            forwarded.push(dir);
+        }
+        // A non-UTF-8 path cannot cross this borrowed-str seam: the
+        // forwarded action then simply carries no --cwd, and the
+        // receiving instance opens the tab in the inherited directory.
+        if let Some(cmd) = cmd {
+            forwarded.push("--cmd");
+            forwarded.push(cmd);
+        }
+        forwarded
+    }
 }
 
 impl Application for DropTerm {
@@ -2106,6 +2234,7 @@ impl Application for DropTerm {
             term_event_tx: None,
             next_tab_id: 0,
             restore,
+            pending_remote_tab: None,
             session_save: session::SessionSave::default(),
             tab_cwds: HashMap::new(),
             rename: None,
@@ -2351,6 +2480,12 @@ impl Application for DropTerm {
                 if self.term_event_tx.is_none() {
                     self.term_event_tx = Some(tx);
                     self.ensure_tabs();
+                    // A first-launch remote new-tab stashed while the
+                    // channel was missing applies now, after the
+                    // session restore has landed (remote-newtab spec).
+                    if let Some(request) = self.pending_remote_tab.take() {
+                        return self.spawn_remote_tab(request);
+                    }
                 }
             }
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
@@ -2976,9 +3111,15 @@ impl Application for DropTerm {
             Details::Activate => Task::done(cosmic::Action::App(Message::ToggleAction(
                 ToggleAction::Toggle,
             ))),
-            Details::ActivateAction { action, .. } => {
-                let action = action.parse().unwrap_or_default();
-                Task::done(cosmic::Action::App(Message::ToggleAction(action)))
+            Details::ActivateAction { action, args } => {
+                // The forwarded name plus its args re-parse through the
+                // clap definitions (remote-newtab spec: single source of
+                // truth for the surface). A malformed forward degrades
+                // to a plain toggle, never an error surface.
+                let mut words = vec![action];
+                words.extend(args);
+                let parsed = crate::parse_forwarded_action(&words).unwrap_or_default();
+                Task::done(cosmic::Action::App(Message::ToggleAction(parsed)))
             }
             Details::Open { .. } => Task::none(),
         }

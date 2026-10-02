@@ -88,6 +88,11 @@ pub struct Tab {
     /// accrue only while the tab is inactive and clear when it becomes
     /// active; the session schema deliberately ignores this field.
     pub attention: Attention,
+    /// Whether this tab is excluded from session saves (remote-newtab
+    /// spec): a `--cmd` tab runs an explicit program, and the session
+    /// model restores "a fresh shell in a familiar place" — never a
+    /// resumed program — so command tabs are transient by design.
+    pub ephemeral: bool,
     /// Whether this tab already posted a bell notification during the
     /// current hide period (bell-notify spec): armed when a
     /// notification is posted, cleared for every tab when the surface
@@ -108,6 +113,7 @@ impl Tab {
             title_override: None,
             shell,
             attention: Attention::None,
+            ephemeral: false,
             bell_notified: false,
             terminal: Mutex::new(terminal),
         }
@@ -214,6 +220,16 @@ pub fn activate_index_target(len: usize, requested: usize) -> Option<usize> {
 /// when there are none.
 pub fn activate_last_target(len: usize) -> Option<usize> {
     len.checked_sub(1)
+}
+
+/// Splits an explicit command line (the CLI's `--cmd`, remote-newtab
+/// spec) into its program and trailing arguments: whitespace-split
+/// exactly like the `args` config — quoting is not supported. `None`
+/// when the line holds no program at all.
+pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = line.split_whitespace();
+    let program = parts.next()?.to_string();
+    Some((program, parts.map(str::to_string).collect()))
 }
 
 /// Which way a move-bind shifts the active tab.
@@ -473,6 +489,31 @@ mod tests {
         assert_eq!(Attention::None.marker(), None);
         assert_eq!(Attention::Activity.marker(), Some("• "));
         assert_eq!(Attention::Bell.marker(), Some("\u{1f514} "));
+    }
+
+    #[test]
+    fn a_command_line_splits_into_program_and_args() {
+        assert_eq!(
+            command_line_parts("htop -u root"),
+            Some((
+                "htop".to_string(),
+                vec!["-u".to_string(), "root".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_bare_command_line_has_no_trailing_args() {
+        assert_eq!(
+            command_line_parts("htop"),
+            Some(("htop".to_string(), Vec::new()))
+        );
+    }
+
+    #[test]
+    fn an_empty_command_line_is_rejected() {
+        assert_eq!(command_line_parts(""), None);
+        assert_eq!(command_line_parts("   "), None);
     }
 
     #[test]
