@@ -621,13 +621,12 @@ impl DropTerm {
     /// Handles the surface losing keyboard focus: marks the terminal unfocused
     /// and, when configured, hides the overlay. The hide is guarded by the
     /// focus latch so a stray unfocus before any focus (possible with
-    /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface, and
-    /// by the settings-window suppression gate (settings-ui spec, U5) — while
-    /// that window is open the focus bookkeeping still runs (focus genuinely
-    /// was lost: a pending rename commits, the terminal cursor dims) but the
-    /// surface stays visible. The latch is cleared only when the hide fires,
-    /// so a suppressed loss leaves it armed and the next genuine loss after
-    /// the settings window closes hides normally.
+    /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface. The
+    /// latch is cleared only when the hide fires; a loss that doesn't hide
+    /// (the config off) leaves it armed. No settings-window case exists
+    /// here (settings-ui spec, U5b): while that window is open the surface
+    /// is hidden by construction, so focus-loss events cannot arrive for a
+    /// shown surface in that state.
     fn focus_lost(&mut self) -> Task<Message> {
         // Losing keyboard focus commits a rename (T6): the input's own
         // unfocus signal only covers Escape and Tab, which cancel.
@@ -635,11 +634,7 @@ impl DropTerm {
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
-        if focus_loss_hides(
-            self.config.hide_on_focus_loss,
-            self.settings_window.is_some(),
-        ) && self.surface_focused
-        {
+        if focus_loss_hides(self.config.hide_on_focus_loss) && self.surface_focused {
             self.surface_focused = false;
             return Task::batch([commit, self.hide()]);
         }
@@ -775,6 +770,21 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
+        // While the settings window is open the terminal is hidden by
+        // construction (settings-ui spec, U5b): a toggle arriving now
+        // (second launch, D-Bus activation, the startup flag) closes
+        // the window first — a re-shown terminal must never slide
+        // over the settings window, which can never stack above the
+        // layer surface. Uniform across actions: `Hide`'s funnel
+        // result is nothing anyway (the surface is already hidden),
+        // but the close still runs so no toggle ever leaves the
+        // window stranded open behind a hidden terminal.
+        let close = if self.settings_window.is_some() {
+            self.close_settings()
+        } else {
+            Task::none()
+        };
+
         // The toggle funnel (slide-animation spec, A5): every matrix
         // cell executes here — most importantly, a mid-hide toggle or
         // `Show` reverses on the live surface instead of being
@@ -785,10 +795,12 @@ impl DropTerm {
         // decision: with it off, a shown surface destroys now instead
         // of sliding out — day-one equality holds with it on.
         match toggle_step(action, &self.surface, self.config.slide_animation_enabled) {
-            ToggleStep::Measure => self.show(),
-            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => self.hide(),
-            ToggleStep::ReverseShow(id) => self.reverse_show(id),
-            ToggleStep::Leave => Task::none(),
+            ToggleStep::Measure => Task::batch([close, self.show()]),
+            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => {
+                Task::batch([close, self.hide()])
+            }
+            ToggleStep::ReverseShow(id) => Task::batch([close, self.reverse_show(id)]),
+            ToggleStep::Leave => close,
         }
     }
 
@@ -813,6 +825,16 @@ impl DropTerm {
             ..window::Settings::default()
         });
         self.settings_window = Some(id);
+        // The terminal and the settings window are never shown at
+        // once (settings-ui spec, U5b): the settings window is a
+        // normal window and can never stack above the terminal's
+        // layer surface, so opening it hides the drop-down first —
+        // the normal hide path, slide-out when enabled. Unconditional,
+        // independent of `hide_on_focus_loss` (which keeps governing
+        // ordinary losses). Every surface state is safe: a shown
+        // surface slides out, a measuring one destroys now, and a
+        // hidden/hiding one is a no-op (`hide()` guards).
+        let hide = self.hide();
         // The open task must be returned for the window to appear —
         // it carries the runtime's window-open command. Its
         // completion value (the id, already tracked synchronously
@@ -822,7 +844,28 @@ impl DropTerm {
         Task::batch([
             open.then(|_| Task::none()),
             self.set_window_title("DropTerm Settings".to_string(), id),
+            hide,
         ])
+    }
+
+    /// The settings window's single close funnel (settings-ui spec,
+    /// U1 + U5b): clears the draft buffer (so a reopened window
+    /// starts purely from config), drops the tracked id (never left
+    /// holding a dead one), and issues the close. Idempotent — both
+    /// the take and `window::close` on a dead id are inert — so the
+    /// ✕ arm, the defensive `on_close_requested` net, and the
+    /// toggle-while-open rule can all funnel here with a duplicate
+    /// delivery doing nothing. The terminal is NOT re-shown:
+    /// closing the window leaves it hidden until the next toggle
+    /// (spec criterion 6, no auto-restore — symmetric with ordinary
+    /// focus-loss hiding, where closing the other window doesn't
+    /// reopen the drop-down either).
+    fn close_settings(&mut self) -> Task<Message> {
+        self.settings_buffer.clear();
+        match self.settings_window.take() {
+            Some(id) => window::close(id),
+            None => Task::none(),
+        }
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -1220,18 +1263,21 @@ fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(surface, SurfaceState::Shown(shown) if *shown == id)
 }
 
-/// Whether losing keyboard focus should hide the surface (settings-ui
-/// spec, U5): `hide_on_focus_loss` fires only while the settings
-/// window is closed — while it is open the drop-down stays visible so
-/// live-apply effects stay watchable (spec criterion 6). The gate keys
-/// on the window being open, not on any config value, and only the
-/// automatic focus-loss path consults it: explicit hides (the toggle
-/// keybind, `Action::Hide`) call `hide()` directly and ignore the gate
-/// entirely. Both unfocused routes — the layer surface's
-/// `LayerUnfocused` and the settings-era `WindowUnfocused` callback —
-/// funnel into [`DropTerm::focus_lost`], so one gate covers both.
-fn focus_loss_hides(hide_on_focus_loss: bool, settings_open: bool) -> bool {
-    hide_on_focus_loss && !settings_open
+/// Whether losing keyboard focus should hide the surface: plain
+/// `hide_on_focus_loss`, the pre-U5 shape restored by the U5b
+/// reversal. No settings-window input is needed: while that window
+/// is open no shown surface exists by construction — opening it
+/// hides the terminal (`DropTerm::open_settings`), and a toggle
+/// arriving while it is open closes it first
+/// (`DropTerm::debounced_toggle`) — so the gate never runs in the
+/// settings-open state. Only the automatic focus-loss path consults
+/// it: explicit hides (the toggle keybind, `Action::Hide`) call
+/// `hide()` directly and ignore the gate entirely. Both unfocused
+/// routes — the layer surface's `LayerUnfocused` and the
+/// `WindowUnfocused` callback — funnel into
+/// [`DropTerm::focus_lost`], so one gate covers both.
+fn focus_loss_hides(hide_on_focus_loss: bool) -> bool {
+    hide_on_focus_loss
 }
 
 /// Whether the grab-bar drag handlers may act (slide-animation spec,
@@ -1541,42 +1587,32 @@ mod tests {
     }
 
     #[test]
-    fn focus_loss_hides_when_configured_and_the_settings_window_is_closed() {
-        // The un-suppressed baseline (settings-ui spec, U5): with
-        // `hide_on_focus_loss` on and no settings window open,
-        // losing keyboard focus hides — today's behavior, unchanged.
-        assert!(focus_loss_hides(true, false));
-    }
-
-    #[test]
-    fn focus_loss_hiding_is_suppressed_while_the_settings_window_is_open() {
-        // The U5 gate: while the settings window is open the
-        // drop-down stays visible even with `hide_on_focus_loss` on,
-        // so live-apply effects stay watchable (spec criterion 6).
-        // The gate keys on the window being open, not on any config
-        // value.
-        assert!(!focus_loss_hides(true, true));
+    fn focus_loss_hides_when_configured() {
+        // The ordinary path (settings-ui spec, U5b): with
+        // `hide_on_focus_loss` on, losing keyboard focus hides —
+        // unchanged behavior. No settings-window input is needed:
+        // while that window is open no shown surface exists (opening
+        // it hides the terminal; a toggle while it is open closes it
+        // first), so the gate never runs in the settings-open state.
+        assert!(focus_loss_hides(true));
     }
 
     #[test]
     fn focus_loss_never_hides_when_focus_loss_hiding_is_off() {
-        // `hide_on_focus_loss` off means no focus-loss hide in any
-        // window state — the settings gate only ever narrows the
-        // hide, never widens it.
-        assert!(!focus_loss_hides(false, false));
-        assert!(!focus_loss_hides(false, true));
+        // `hide_on_focus_loss` off means no focus-loss hide, period —
+        // the gate only ever narrows the hide, never widens it.
+        assert!(!focus_loss_hides(false));
     }
 
     #[test]
-    fn explicit_hides_bypass_the_suppression_gate() {
+    fn explicit_hides_never_consult_the_focus_loss_gate() {
         // The gate covers the automatic focus-loss path only:
         // explicit hide intents (the toggle keybind's `toggle_step`,
-        // `Action::Hide`) take no settings-window input and never
-        // pass through `focus_loss_hides`, so they still hide while
-        // the settings window is open. Asserted at the seams: the
-        // most suppressive gate inputs yield no hide, yet the
-        // explicit hide step still steps its hide.
-        assert!(!focus_loss_hides(true, true));
+        // `Action::Hide`) take no gate input and never pass through
+        // `focus_loss_hides`. Asserted at the seams: the gate's most
+        // restrictive input yields no hide, yet the explicit hide
+        // step still steps its hide.
+        assert!(!focus_loss_hides(false));
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), true),
@@ -2262,23 +2298,22 @@ impl Application for DropTerm {
                     tab.terminal.lock().unwrap().paste(text);
                 }
             }
+            // The settings window's ✕ (settings-ui spec, U1): it
+            // arrives as `CloseRequested` (the window never closes
+            // itself) and funnels through `close_settings`, which
+            // clears the draft buffer, drops the tracking, and
+            // issues the close. A request whose id is not the
+            // tracked one (the defensive `on_close_requested` net
+            // after a handled close) finds nothing and no-ops — both
+            // the take and `window::close` on a dead id are inert, so
+            // duplicate delivery is harmless. The app itself keeps
+            // running: this is not the main window and
+            // `exit_on_close(false)` stands (criterion 8). U5b: the
+            // terminal stays hidden — the next toggle shows it with
+            // every edit applied.
             Message::SettingsCloseRequested(id) => {
-                // The settings window's single close funnel (settings-ui
-                // spec, U1): the ✕ arrives as `CloseRequested` (the
-                // window never closes itself), so the app clears its
-                // tracking and issues the close. The window's `Closed`
-                // event then reaches `on_close_requested`, which only
-                // sends this message again when the id somehow survived
-                // — a no-op here, since `take` already matched nothing
-                // and `window::close` on a dead id is inert. The app
-                // itself keeps running: this is not the main window and
-                // `exit_on_close(false)` stands (criterion 8). U4: the
-                // draft buffer clears here too, so a reopened window
-                // starts purely from config (criterion 8, no stale
-                // state).
-                self.settings_buffer.clear();
-                if self.settings_window.take() == Some(id) {
-                    return window::close(id);
+                if self.settings_window.is_some_and(|open| open == id) {
+                    return self.close_settings();
                 }
             }
             Message::Settings(event) => {
