@@ -18,12 +18,6 @@
 //! still reaches the child process, because the open signal is
 //! published only from the widget's default-mode branch.
 
-// Nothing here is called outside tests until the app wiring
-// (context-menu module, Task 3) consumes `trees` in the view — the
-// same API-parity allowance as `terminal_box` in `terminal/widget.rs`.
-// Remove when Task 3 lands.
-#![allow(dead_code)]
-
 use cosmic::widget::menu::{self, action::MenuAction};
 
 use crate::app;
@@ -121,6 +115,17 @@ pub fn trees() -> Vec<menu::Tree<app::Message>> {
     menu::items(&keybinds::default_key_binds(), items)
 }
 
+/// The trees the view hands `widget::context_menu` for the current
+/// open state: `None` while closed — the wrapper is then a plain
+/// pass-through of the terminal, the pixel-identical closed view
+/// (spec criterion 6) — and the full [`ROWS`] trees while open, which
+/// arms the wrapper's right-release trigger. Holding the open-state
+/// decision here keeps the view wiring free of menu logic (spec
+/// success criterion 2).
+pub fn open_trees(menu_open: bool) -> Option<Vec<menu::Tree<app::Message>>> {
+    menu_open.then(trees)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +217,19 @@ mod tests {
     #[test]
     fn trees_yields_one_tree_per_row() {
         assert_eq!(trees().len(), ROWS.len());
+    }
+
+    #[test]
+    fn open_trees_is_none_while_the_menu_is_closed() {
+        // Spec criterion 6: a closed menu supplies no trees, so
+        // `widget::context_menu` renders and passes events through as
+        // a plain wrapper — the pixel-identical closed view.
+        assert!(open_trees(false).is_none());
+    }
+
+    #[test]
+    fn open_trees_carries_every_row_while_the_menu_is_open() {
+        let trees = open_trees(true).expect("the open menu supplies its trees");
+        assert_eq!(trees.len(), ROWS.len());
     }
 }

@@ -18,11 +18,13 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
+use cosmic::surface::Action as SurfaceAction;
 use cosmic::widget;
 use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
+use crate::context_menu;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
@@ -194,6 +196,20 @@ pub enum Message {
     /// same entry point the keybind map uses, so menu and keybind
     /// behavior cannot fork.
     Action(Action),
+    /// The terminal's context menu should open or close
+    /// (context-menu module). Published by the `TerminalBox` press
+    /// seam: `true` on a right-press with the menu closed, `false` on
+    /// any default-mode press while open (toggle-close). The
+    /// wrapper's `on_close` also sends `false` — it fires on every
+    /// close path (Escape, click-away, item pick, compositor
+    /// dismiss), so duplicate `false`s are the norm and harmless:
+    /// the arm is a plain state set.
+    ContextMenu(bool),
+    /// A surface action from a widget (context-menu module): the
+    /// context-menu popup's create/destroy requests, forwarded to
+    /// libcosmic verbatim — popups are created and destroyed by the
+    /// runtime, never by the app (the cosmic-term one-liner).
+    Surface(SurfaceAction<Message>),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -310,6 +326,13 @@ pub struct DropTerm {
     /// U4): display-only text and slider state, cleared on window
     /// close so a reopened window renders purely from config.
     settings_buffer: settings::SettingsBuffer,
+    /// Whether the terminal's context menu is open (context-menu
+    /// module): the `TerminalBox` press seam's latch, read by the
+    /// view through `context_menu::open_trees` and fed back to the
+    /// box so any press while open toggle-closes it. Cleared by
+    /// `hide()` — the popup dies with the surface and `on_close`
+    /// never fires there.
+    context_menu_open: bool,
 }
 
 impl DropTerm {
@@ -556,6 +579,11 @@ impl DropTerm {
         self.drag = None;
         self.pending_height = None;
         self.pin_applied = None;
+        // The context menu's popup dies with the surface and its
+        // `on_close` never fires (context-menu module) — clear the
+        // latch here, or the next show's first right-click would be
+        // consumed as a toggle-close of a menu that is not there.
+        self.context_menu_open = false;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
@@ -1748,6 +1776,7 @@ impl Application for DropTerm {
             slide: None,
             settings_window: None,
             settings_buffer: settings::SettingsBuffer::default(),
+            context_menu_open: false,
         };
         app.refresh_window_bg_color();
 
@@ -2044,6 +2073,19 @@ impl Application for DropTerm {
                 // picks reuse the keybind entry point above, so an
                 // item behaves exactly like its keybind.
                 return self.perform_action(action);
+            }
+            Message::ContextMenu(open) => {
+                // The open-state latch (context-menu module): the
+                // press seam arms it, every close path clears it, and
+                // the view reads it through
+                // `context_menu::open_trees`.
+                self.context_menu_open = open;
+            }
+            Message::Surface(action) => {
+                // Popup plumbing (context-menu module): the wrapper's
+                // popup create/destroy requests, handed to libcosmic
+                // untouched — the runtime owns popup surfaces.
+                return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::WindowFocused => {
                 self.surface_focused = true;
@@ -2419,7 +2461,27 @@ impl Application for DropTerm {
             .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
             .on_window_focused(|| Message::WindowFocused)
             .on_window_unfocused(|| Message::WindowUnfocused)
+            .context_menu_open(self.context_menu_open)
+            .on_context_menu(Message::ContextMenu)
             .into();
+
+        // The context menu (context-menu module): wraps ONLY the
+        // terminal element — the wrapper triggers anywhere over its
+        // bounds, so the tab bar and grab bar must stay outside it
+        // (spec criterion 7). Trees are supplied only while open
+        // (`context_menu::open_trees`): closed, the wrapper is a
+        // plain pass-through — the pixel-identical view (criterion
+        // 6). The popup plumbing is the cosmic-term pattern
+        // (`main.rs:3444-3452`): `on_surface_action` is mandatory —
+        // `create_popup` is a no-op without it — and `window_id` must
+        // be this layer surface's id (the `view_window` parameter),
+        // never the main window's.
+        let terminal: Element<'_, Message> =
+            widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
+                .on_close(Message::ContextMenu(false))
+                .on_surface_action(Message::Surface)
+                .window_id(id)
+                .into();
 
         // Stacking from the screen edge (geometry spec, criterion 9):
         // content, tab bar (only with more than one tab, tabs spec),
