@@ -412,19 +412,25 @@ impl DropTerm {
     /// shell with the pty's default working directory
     /// (session-persistence spec, S2).
     fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
+        let (shell, cwd) = match spec {
+            Some(spec) => (spec.shell.clone(), spec.cwd.clone()),
+            None => (self.config.resolved_shell(), None),
+        };
+        self.spawn_shell(shell, cwd)
+    }
+
+    /// Spawns one terminal tab running `shell` in `cwd` — the common
+    /// path behind session restore ([`Self::spawn_tab`]), the new-tab
+    /// keybind (which inherits the active tab's cwd), and the CLI's
+    /// `new-tab` action. `cwd: None` means the pty's default directory.
+    /// The shell is recorded per tab at spawn, so a mid-run config
+    /// change never rewrites a live tab's shell.
+    fn spawn_shell(&mut self, shell: String, cwd: Option<std::path::PathBuf>) -> Option<Tab> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
         };
 
-        // The shell is recorded per tab at spawn: a restore replays
-        // the shell each saved tab ran, never the current config's,
-        // so a mid-run config change never rewrites a live tab's
-        // shell.
-        let shell = match spec {
-            Some(spec) => spec.shell.clone(),
-            None => self.config.resolved_shell(),
-        };
         let term_config = TermConfig {
             scrolling_history: self.config.scrollback_lines as usize,
             ..TermConfig::default()
@@ -432,10 +438,11 @@ impl DropTerm {
         let pty_options = PtyOptions {
             shell: Some(PtyShell::new(shell.clone(), self.config.args.clone())),
             // Alacritty chdirs before exec and silently keeps this
-            // process's cwd on failure, so only the plan's
-            // re-validated directory ever reaches here (dead cwd →
-            // `$HOME` → unset — see `plan_restore`).
-            working_directory: spec.and_then(|spec| spec.cwd.clone()),
+            // process's cwd on failure, so only a re-validated
+            // directory ever reaches here (dead cwd → `$HOME` → unset
+            // — see `plan_restore`; a new tab passes either an
+            // inherited- or explicitly-requested live cwd).
+            working_directory: cwd.clone(),
             drain_on_exit: true,
             ..PtyOptions::default()
         };
@@ -457,9 +464,10 @@ impl DropTerm {
                 // (session-persistence spec, S3): a restored tab seeds
                 // its re-validated saved cwd — so the fresh shell's
                 // first title report reads as unchanged — and a
-                // default spawn seeds `None`.
-                self.tab_cwds
-                    .insert(tab.id, spec.and_then(|spec| spec.cwd.clone()));
+                // default spawn seeds `None`; an inherited cwd seeds
+                // the directory the tab opened in, for the same
+                // reason.
+                self.tab_cwds.insert(tab.id, cwd);
                 Some(tab)
             }
             Err(err) => {
@@ -1022,7 +1030,19 @@ impl DropTerm {
     fn perform_tab_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::NewTab => {
-                if let Some(tab) = self.spawn_tab(None) {
+                // A new tab inherits the active tab's cwd (cwd-inherit
+                // spec): the same `/proc/<pid>/cwd` readlink the
+                // session save samples, so `Ctrl+Shift+T` after a `cd`
+                // lands in the same directory. A failed read — no
+                // active tab, non-Linux, an unreadable `/proc` entry —
+                // degrades to the pty's default directory.
+                let inherited = self
+                    .active()
+                    .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
+                let shell = self.config.resolved_shell();
+                if let Some(tab) =
+                    self.spawn_shell(shell, tabs::resolve_new_tab_cwd(None, inherited))
+                {
                     // Yakuake-style placement: directly after the active
                     // tab, which the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);

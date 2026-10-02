@@ -8,6 +8,7 @@
 //! headless, without a live [`Terminal`] PTY. The app instantiates them
 //! with [`Tab`].
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::terminal::Terminal;
@@ -128,6 +129,17 @@ pub fn move_tab<T>(tabs: &mut Vec<T>, from: usize, to: usize) -> usize {
     let tab = tabs.remove(from);
     tabs.insert(to, tab);
     to
+}
+
+/// Resolves the working directory a new tab spawns in: an explicit request
+/// (the CLI's `--cwd`) wins, otherwise the active tab's cwd is inherited
+/// (Guake `open-tab-cwd`, cosmic-term `tab_new_inherit_working_directory`),
+/// otherwise `None` — the pty's default directory.
+pub fn resolve_new_tab_cwd(
+    explicit: Option<PathBuf>,
+    inherited: Option<PathBuf>,
+) -> Option<PathBuf> {
+    explicit.or(inherited)
 }
 
 /// Applies a completed tab drag (tabs spec, T7): moves the tab at `from`
@@ -281,6 +293,30 @@ mod tests {
     #[test]
     fn cycle_prev_wraps_around_to_last() {
         assert_eq!(cycle_prev(&[10, 20, 30], 0), 2);
+    }
+
+    #[test]
+    fn new_tab_cwd_falls_back_to_the_active_tabs_cwd() {
+        let inherited = PathBuf::from("/home/jpt/src");
+        assert_eq!(
+            resolve_new_tab_cwd(None, Some(inherited.clone())),
+            Some(inherited)
+        );
+    }
+
+    #[test]
+    fn new_tab_cwd_without_inheritance_spawns_in_the_pty_default() {
+        assert_eq!(resolve_new_tab_cwd(None, None), None);
+    }
+
+    #[test]
+    fn new_tab_cwd_an_explicit_request_wins_over_inheritance() {
+        let explicit = PathBuf::from("/tmp");
+        let inherited = PathBuf::from("/home/jpt/src");
+        assert_eq!(
+            resolve_new_tab_cwd(Some(explicit.clone()), Some(inherited)),
+            Some(explicit)
+        );
     }
 
     #[test]
