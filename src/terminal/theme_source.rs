@@ -7,7 +7,10 @@
 // The palettes are unmodified; cosmic-term's serde/RON-file,
 // per-profile, and import/export machinery stays dropped — v1 compiles
 // its schemes in and resolves them by name (see
-// docs/research/terminal-theming.md).
+// docs/research/terminal-theming.md). The ten third-party palettes
+// (color-schemes C2) are transcribed from alacritty-theme TOMLs and
+// canonical extras, each with its source and license recorded on the
+// const below; the COSMIC pair keeps its hand-tuned tables.
 
 use alacritty_terminal::{
     term::color::Colors,
@@ -70,6 +73,21 @@ struct ColorSchemeAnsi {
     magenta: Slot,
     cyan: Slot,
     white: Slot,
+}
+
+impl ColorSchemeAnsi {
+    /// Every slot unset — the dim table base for palettes (the ten
+    /// third-party ones) whose dims derive at conversion.
+    const EMPTY: Self = Self {
+        black: None,
+        red: None,
+        green: None,
+        yellow: None,
+        blue: None,
+        magenta: None,
+        cyan: None,
+        white: None,
+    };
 }
 
 /// A complete color scheme: the industry-consensus field set
@@ -259,18 +277,437 @@ pub fn cosmic_light() -> Colors {
     Colors::from(&COSMIC_LIGHT)
 }
 
-/// Look up one of the two built-in COSMIC color schemes by name.
-///
-/// v1 ships only these two; custom on-disk color-scheme files are not yet
-/// supported (see the project ROADMAP's "Later" section).
+// --- third-party palettes (color-schemes C2) ---
+//
+// Transcription rule (plan decision): each palette carries exactly
+// what its theme file publishes as fg, bg, the 16 ANSI colors, and
+// brights. Dims, cursor, and dim/bright foregrounds derive uniformly
+// at conversion (spec criterion 7) — no per-scheme tables here.
+
+/// Catppuccin Latte — `themes/catppuccin_latte.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0), contributed by the Catppuccin team; design MIT
+/// (catppuccin.com). Cross-checked against the canonical palette:
+/// base `#eff1f5`, text `#4c4f69`, red `#d20f39`, teal `#179299` all
+/// match. The TOML also sets cursor/dim fields; per the uniform
+/// derivation rule we transcribe fg/bg/16/brights only.
+const CATPPUCCIN_LATTE: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x4C4F69)),
+    background: Some(rgb(0xEFF1F5)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x5C5F77)),
+        red: Some(rgb(0xD20F39)),
+        green: Some(rgb(0x40A02B)),
+        yellow: Some(rgb(0xDF8E1D)),
+        blue: Some(rgb(0x1E66F5)),
+        magenta: Some(rgb(0xEA76CB)),
+        cyan: Some(rgb(0x179299)),
+        white: Some(rgb(0xACB0BE)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x6C6F85)),
+        red: Some(rgb(0xD20F39)),
+        green: Some(rgb(0x40A02B)),
+        yellow: Some(rgb(0xDF8E1D)),
+        blue: Some(rgb(0x1E66F5)),
+        magenta: Some(rgb(0xEA76CB)),
+        cyan: Some(rgb(0x179299)),
+        white: Some(rgb(0xBCC0CC)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Catppuccin Mocha — `themes/catppuccin_mocha.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0), contributed by the Catppuccin team; design MIT
+/// (catppuccin.com). Cross-checked against the canonical palette:
+/// base `#1e1e2e`, text `#cdd6f4`, blue `#89b4fa`, pink `#f5c2e7` all
+/// match. The TOML also sets cursor/dim fields; per the uniform
+/// derivation rule we transcribe fg/bg/16/brights only.
+const CATPPUCCIN_MOCHA: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xCDD6F4)),
+    background: Some(rgb(0x1E1E2E)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x45475A)),
+        red: Some(rgb(0xF38BA8)),
+        green: Some(rgb(0xA6E3A1)),
+        yellow: Some(rgb(0xF9E2AF)),
+        blue: Some(rgb(0x89B4FA)),
+        magenta: Some(rgb(0xF5C2E7)),
+        cyan: Some(rgb(0x94E2D5)),
+        white: Some(rgb(0xBAC2DE)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x585B70)),
+        red: Some(rgb(0xF38BA8)),
+        green: Some(rgb(0xA6E3A1)),
+        yellow: Some(rgb(0xF9E2AF)),
+        blue: Some(rgb(0x89B4FA)),
+        magenta: Some(rgb(0xF5C2E7)),
+        cyan: Some(rgb(0x94E2D5)),
+        white: Some(rgb(0xA6ADC8)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Dracula — `themes/dracula.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (draculatheme.com). Cross-checked
+/// against the canonical palette: bg `#282a36`, fg `#f8f8f2`, purple
+/// `#bd93f9`, pink `#ff79c6` all match — cosmic-term's own Dracula
+/// copy (`#1e1f29` bg) diverges and loses to canonical (research doc
+/// §Licensing).
+const DRACULA: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xF8F8F2)),
+    background: Some(rgb(0x282A36)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x000000)),
+        red: Some(rgb(0xFF5555)),
+        green: Some(rgb(0x50FA7B)),
+        yellow: Some(rgb(0xF1FA8C)),
+        blue: Some(rgb(0xBD93F9)),
+        magenta: Some(rgb(0xFF79C6)),
+        cyan: Some(rgb(0x8BE9FD)),
+        white: Some(rgb(0xBBBBBB)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x555555)),
+        red: Some(rgb(0xFF5555)),
+        green: Some(rgb(0x50FA7B)),
+        yellow: Some(rgb(0xF1FA8C)),
+        blue: Some(rgb(0xCAA9FA)),
+        magenta: Some(rgb(0xFF79C6)),
+        cyan: Some(rgb(0x8BE9FD)),
+        white: Some(rgb(0xFFFFFF)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Gruvbox Dark — `themes/gruvbox_dark.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (morhetz/gruvbox). Cross-checked
+/// against the canonical medium-contrast palette: bg `#282828`, fg
+/// `#ebdbb2`, red `#cc241d`/bright `#fb4934` all match (the TOML's
+/// hard/soft contrast variants stay untranscribed).
+const GRUVBOX_DARK: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xEBDBB2)),
+    background: Some(rgb(0x282828)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x282828)),
+        red: Some(rgb(0xCC241D)),
+        green: Some(rgb(0x98971A)),
+        yellow: Some(rgb(0xD79921)),
+        blue: Some(rgb(0x458588)),
+        magenta: Some(rgb(0xB16286)),
+        cyan: Some(rgb(0x689D6A)),
+        white: Some(rgb(0xA89984)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x928374)),
+        red: Some(rgb(0xFB4934)),
+        green: Some(rgb(0xB8BB26)),
+        yellow: Some(rgb(0xFABD2F)),
+        blue: Some(rgb(0x83A598)),
+        magenta: Some(rgb(0xD3869B)),
+        cyan: Some(rgb(0x8EC07C)),
+        white: Some(rgb(0xEBDBB2)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Gruvbox Light — `themes/gruvbox_light.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (morhetz/gruvbox). Cross-checked
+/// against the canonical medium-contrast palette: bg `#fbf1c7`, fg
+/// `#3c3836`, bright yellow `#b57614` all match.
+const GRUVBOX_LIGHT: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x3C3836)),
+    background: Some(rgb(0xFBF1C7)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0xFBF1C7)),
+        red: Some(rgb(0xCC241D)),
+        green: Some(rgb(0x98971A)),
+        yellow: Some(rgb(0xD79921)),
+        blue: Some(rgb(0x458588)),
+        magenta: Some(rgb(0xB16286)),
+        cyan: Some(rgb(0x689D6A)),
+        white: Some(rgb(0x7C6F64)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x928374)),
+        red: Some(rgb(0x9D0006)),
+        green: Some(rgb(0x79740E)),
+        yellow: Some(rgb(0xB57614)),
+        blue: Some(rgb(0x076678)),
+        magenta: Some(rgb(0x8F3F71)),
+        cyan: Some(rgb(0x427B58)),
+        white: Some(rgb(0x3C3836)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Nord — `themes/nord.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (nordtheme). Cross-checked against
+/// the canonical Nord palette: every value is a canonical color — bg
+/// nord0 `#2e3440`, fg nord4 `#d8dee9`, cyan nord8 `#88c0d0`, blue
+/// nord9 `#81a1c1` all match.
+const NORD: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xD8DEE9)),
+    background: Some(rgb(0x2E3440)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x3B4252)),
+        red: Some(rgb(0xBF616A)),
+        green: Some(rgb(0xA3BE8C)),
+        yellow: Some(rgb(0xEBCB8B)),
+        blue: Some(rgb(0x81A1C1)),
+        magenta: Some(rgb(0xB48EAD)),
+        cyan: Some(rgb(0x88C0D0)),
+        white: Some(rgb(0xE5E9F0)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x4C566A)),
+        red: Some(rgb(0xBF616A)),
+        green: Some(rgb(0xA3BE8C)),
+        yellow: Some(rgb(0xEBCB8B)),
+        blue: Some(rgb(0x81A1C1)),
+        magenta: Some(rgb(0xB48EAD)),
+        cyan: Some(rgb(0x8FBCBB)),
+        white: Some(rgb(0xECEFF4)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Solarized Dark — `themes/solarized_dark.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (Ethan Schoonover, solarized).
+/// Cross-checked against the canonical palette: bg base03 `#002b36`,
+/// fg base0 `#839496`, cyan `#2aa198`, orange `#cb4b16` all match.
+const SOLARIZED_DARK: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x839496)),
+    background: Some(rgb(0x002B36)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x073642)),
+        red: Some(rgb(0xDC322F)),
+        green: Some(rgb(0x859900)),
+        yellow: Some(rgb(0xB58900)),
+        blue: Some(rgb(0x268BD2)),
+        magenta: Some(rgb(0xD33682)),
+        cyan: Some(rgb(0x2AA198)),
+        white: Some(rgb(0xEEE8D5)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x002B36)),
+        red: Some(rgb(0xCB4B16)),
+        green: Some(rgb(0x586E75)),
+        yellow: Some(rgb(0x657B83)),
+        blue: Some(rgb(0x839496)),
+        magenta: Some(rgb(0x6C71C4)),
+        cyan: Some(rgb(0x93A1A1)),
+        white: Some(rgb(0xFDF6E3)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Solarized Light — `themes/solarized_light.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0); design MIT (Ethan Schoonover, solarized).
+/// Cross-checked against the canonical palette: bg base3 `#fdf6e3`,
+/// fg base01 `#586e75` all match; the 16 ANSI values are shared with
+/// Solarized Dark (base02–base1 and the accents are mode-invariant).
+const SOLARIZED_LIGHT: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x586E75)),
+    background: Some(rgb(0xFDF6E3)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x073642)),
+        red: Some(rgb(0xDC322F)),
+        green: Some(rgb(0x859900)),
+        yellow: Some(rgb(0xB58900)),
+        blue: Some(rgb(0x268BD2)),
+        magenta: Some(rgb(0xD33682)),
+        cyan: Some(rgb(0x2AA198)),
+        white: Some(rgb(0xEEE8D5)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x002B36)),
+        red: Some(rgb(0xCB4B16)),
+        green: Some(rgb(0x586E75)),
+        yellow: Some(rgb(0x657B83)),
+        blue: Some(rgb(0x839496)),
+        magenta: Some(rgb(0x6C71C4)),
+        cyan: Some(rgb(0x93A1A1)),
+        white: Some(rgb(0xFDF6E3)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Tokyo Night Day — alacritty extra shipped by the theme's own
+/// upstream, [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim)
+/// `extras/alacritty/tokyonight_day.toml` (Apache-2.0); alacritty-theme
+/// has no Day file. Cross-checked against the canonical palette: bg
+/// `#e1e2e7`, fg `#3760bf`, cyan `#007197` all match.
+const TOKYO_NIGHT_DAY: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x3760BF)),
+    background: Some(rgb(0xE1E2E7)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0xB4B5B9)),
+        red: Some(rgb(0xF52A65)),
+        green: Some(rgb(0x587539)),
+        yellow: Some(rgb(0x8C6C3E)),
+        blue: Some(rgb(0x2E7DE9)),
+        magenta: Some(rgb(0x9854F1)),
+        cyan: Some(rgb(0x007197)),
+        white: Some(rgb(0x6172B0)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0xA1A6C5)),
+        red: Some(rgb(0xFF4774)),
+        green: Some(rgb(0x5C8524)),
+        yellow: Some(rgb(0xA27629)),
+        blue: Some(rgb(0x358AFF)),
+        magenta: Some(rgb(0xA463FF)),
+        cyan: Some(rgb(0x007EA8)),
+        white: Some(rgb(0x3760BF)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// Tokyo Night Storm — `themes/tokyo_night_storm.toml` in
+/// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
+/// (repo Apache-2.0), from zatchheems' port; design Apache-2.0
+/// (folke/tokyonight.nvim). Cross-checked against the canonical storm
+/// palette: bg `#24283b`, fg `#a9b1d6`, blue `#7aa2f7`, red `#f7768e`
+/// all match (the port's cyan `#449dab` is its teal choice).
+const TOKYO_NIGHT_STORM: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xA9B1D6)),
+    background: Some(rgb(0x24283B)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x32344A)),
+        red: Some(rgb(0xF7768E)),
+        green: Some(rgb(0x9ECE6A)),
+        yellow: Some(rgb(0xE0AF68)),
+        blue: Some(rgb(0x7AA2F7)),
+        magenta: Some(rgb(0xAD8EE6)),
+        cyan: Some(rgb(0x449DAB)),
+        white: Some(rgb(0x9699A8)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x444B6A)),
+        red: Some(rgb(0xFF7A93)),
+        green: Some(rgb(0xB9F27C)),
+        yellow: Some(rgb(0xFF9E64)),
+        blue: Some(rgb(0x7DA6FF)),
+        magenta: Some(rgb(0xBB9AF7)),
+        cyan: Some(rgb(0x0DB9D7)),
+        white: Some(rgb(0xACB0D0)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+// --- registry (color-schemes C2) ---
+
+/// One registry entry: a scheme's display name — identity, persisted
+/// under `color_scheme_dark`/`_light`, and shown in the dropdowns —
+/// and its palette.
+struct SchemeEntry {
+    name: &'static str,
+    scheme: ColorScheme,
+}
+
+/// The built-in scheme registry: the single definition site the
+/// `by_name` lookup, the settings dropdowns, and the tests all read,
+/// so names, options, and lookup cannot drift (spec criterion 6).
+/// COSMIC Dark/Light first (the defaults), the rest alphabetical.
+const SCHEMES: [SchemeEntry; 12] = [
+    SchemeEntry {
+        name: COSMIC_THEME_DARK,
+        scheme: COSMIC_DARK,
+    },
+    SchemeEntry {
+        name: COSMIC_THEME_LIGHT,
+        scheme: COSMIC_LIGHT,
+    },
+    SchemeEntry {
+        name: "Catppuccin Latte",
+        scheme: CATPPUCCIN_LATTE,
+    },
+    SchemeEntry {
+        name: "Catppuccin Mocha",
+        scheme: CATPPUCCIN_MOCHA,
+    },
+    SchemeEntry {
+        name: "Dracula",
+        scheme: DRACULA,
+    },
+    SchemeEntry {
+        name: "Gruvbox Dark",
+        scheme: GRUVBOX_DARK,
+    },
+    SchemeEntry {
+        name: "Gruvbox Light",
+        scheme: GRUVBOX_LIGHT,
+    },
+    SchemeEntry {
+        name: "Nord",
+        scheme: NORD,
+    },
+    SchemeEntry {
+        name: "Solarized Dark",
+        scheme: SOLARIZED_DARK,
+    },
+    SchemeEntry {
+        name: "Solarized Light",
+        scheme: SOLARIZED_LIGHT,
+    },
+    SchemeEntry {
+        name: "Tokyo Night Day",
+        scheme: TOKYO_NIGHT_DAY,
+    },
+    SchemeEntry {
+        name: "Tokyo Night Storm",
+        scheme: TOKYO_NIGHT_STORM,
+    },
+];
+
+/// Look up a built-in color scheme by name (its display name is the
+/// on-disk config value). Unknown names return `None` — the caller
+/// (`active_colors()`) falls back to the COSMIC pair for the active
+/// mode; no error surface (spec criterion 4).
 pub fn by_name(name: &str) -> Option<Colors> {
-    if name == COSMIC_THEME_DARK {
-        Some(cosmic_dark())
-    } else if name == COSMIC_THEME_LIGHT {
-        Some(cosmic_light())
-    } else {
-        None
-    }
+    SCHEMES
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| Colors::from(&entry.scheme))
 }
 
 #[cfg(test)]
@@ -306,7 +743,7 @@ mod tests {
                 cyan: Some(rgb(0xA4FFFF)),
                 white: Some(rgb(0xFFFFFF)),
             },
-            dim: ColorSchemeAnsi::default(),
+            dim: ColorSchemeAnsi::EMPTY,
         }
     }
 
@@ -460,8 +897,184 @@ mod tests {
         assert!(by_name(COSMIC_THEME_DARK).is_some());
         assert!(by_name(COSMIC_THEME_LIGHT).is_some());
         // Unknown names are `active_colors()`'s fallback signal, not an
-        // error (spec criterion 4).
-        assert!(by_name("Dracula").is_none());
+        // error (spec criterion 4). "Catppuccin Frappe" is a real
+        // upstream variant the registry does not ship.
+        assert!(by_name("Catppuccin Frappe").is_none());
         assert!(by_name("").is_none());
+    }
+
+    // --- registry (color-schemes C2) ---
+    //
+    // The registry is the single definition site for the scheme names:
+    // `by_name`, the (C4) dropdown options, and these pins all read the
+    // same table, so UI, file format, and lookup cannot drift (spec
+    // criterion 6).
+
+    #[test]
+    fn registry_pins_the_shipped_scheme_order() {
+        // COSMIC pair first (the defaults), the rest alphabetical.
+        let names: Vec<&str> = SCHEMES.iter().map(|entry| entry.name).collect();
+        assert_eq!(
+            names,
+            [
+                "COSMIC Dark",
+                "COSMIC Light",
+                "Catppuccin Latte",
+                "Catppuccin Mocha",
+                "Dracula",
+                "Gruvbox Dark",
+                "Gruvbox Light",
+                "Nord",
+                "Solarized Dark",
+                "Solarized Light",
+                "Tokyo Night Day",
+                "Tokyo Night Storm",
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_names_are_unique() {
+        let mut names: Vec<&str> = SCHEMES.iter().map(|entry| entry.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), SCHEMES.len());
+    }
+
+    #[test]
+    fn by_name_serves_every_registry_entry() {
+        for entry in SCHEMES.iter() {
+            assert!(
+                by_name(entry.name).is_some(),
+                "registry name {:?} does not resolve",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn third_party_schemes_resolve_with_no_holes_in_the_named_slots() {
+        let normal_and_bright = [
+            NamedColor::Black,
+            NamedColor::Red,
+            NamedColor::Green,
+            NamedColor::Yellow,
+            NamedColor::Blue,
+            NamedColor::Magenta,
+            NamedColor::Cyan,
+            NamedColor::White,
+            NamedColor::BrightBlack,
+            NamedColor::BrightRed,
+            NamedColor::BrightGreen,
+            NamedColor::BrightYellow,
+            NamedColor::BrightBlue,
+            NamedColor::BrightMagenta,
+            NamedColor::BrightCyan,
+            NamedColor::BrightWhite,
+        ];
+        let dims = [
+            NamedColor::DimBlack,
+            NamedColor::DimRed,
+            NamedColor::DimGreen,
+            NamedColor::DimYellow,
+            NamedColor::DimBlue,
+            NamedColor::DimMagenta,
+            NamedColor::DimCyan,
+            NamedColor::DimWhite,
+        ];
+        // The COSMIC pair deliberately leaves Background to the system
+        // theme; every other scheme must come through complete.
+        for entry in SCHEMES.iter().skip(2) {
+            let colors = by_name(entry.name).expect("pinned by the test above");
+            for slot in normal_and_bright {
+                assert!(colors[slot].is_some(), "{}: {slot:?} unset", entry.name);
+            }
+            for slot in dims {
+                assert!(colors[slot].is_some(), "{}: {slot:?} unset", entry.name);
+            }
+            assert!(colors[NamedColor::Foreground].is_some());
+            assert!(colors[NamedColor::Background].is_some());
+            assert!(colors[NamedColor::Cursor].is_some());
+        }
+    }
+
+    #[test]
+    fn dracula_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Dracula").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x282A36)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xF8F8F2)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0xBD93F9)));
+    }
+
+    #[test]
+    fn solarized_dark_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Solarized Dark").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x002B36)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x839496)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x2AA198)));
+    }
+
+    #[test]
+    fn solarized_light_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Solarized Light").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFDF6E3)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x586E75)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x859900)));
+    }
+
+    #[test]
+    fn gruvbox_dark_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Gruvbox Dark").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x282828)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xEBDBB2)));
+        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFB4934)));
+    }
+
+    #[test]
+    fn gruvbox_light_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Gruvbox Light").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFBF1C7)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x3C3836)));
+        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xB57614)));
+    }
+
+    #[test]
+    fn tokyo_night_storm_spot_checks_match_the_theme_toml() {
+        let colors = by_name("Tokyo Night Storm").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x24283B)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xA9B1D6)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x7AA2F7)));
+    }
+
+    #[test]
+    fn tokyo_night_day_spot_checks_match_the_canonical_extra() {
+        let colors = by_name("Tokyo Night Day").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xE1E2E7)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x3760BF)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x007197)));
+    }
+
+    #[test]
+    fn nord_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Nord").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E3440)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xD8DEE9)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x88C0D0)));
+    }
+
+    #[test]
+    fn catppuccin_mocha_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Catppuccin Mocha").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x1E1E2E)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xCDD6F4)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x89B4FA)));
+    }
+
+    #[test]
+    fn catppuccin_latte_spot_checks_match_the_alacritty_theme_toml() {
+        let colors = by_name("Catppuccin Latte").expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xEFF1F5)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x4C4F69)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xD20F39)));
     }
 }
