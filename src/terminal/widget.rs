@@ -1,4 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
+// Copyright 2023 System76 <info@system76.com>
+//
+// Adapted from cosmic-term (https://github.com/pop-os/cosmic-term)
+// src/terminal_box.rs at commit 9129277.
+//
+// Changes from upstream: adapted for DropTerm's single-terminal
+// drop-down — no panes, profiles, or cosmic-term `Config` coupling
+// (see `terminal/mod.rs` and `engine.rs` for the full picture) — plus
+// a configurable height strategy (`height`, pinning the terminal
+// inside the fixed-size layer surface) and the context-menu publish
+// seam added by the context-menu module: `context_menu_open` /
+// `on_context_menu`, driven by `context_menu_press` from the
+// default-mode branch only, so mouse-reporting applications keep
+// every press.
 
 use alacritty_terminal::{
     grid::Dimensions,
@@ -142,6 +156,14 @@ pub struct TerminalBox<'a, Message> {
     show_headerbar: bool,
     pane_border_radius: Option<Radius>,
     click_timing: Duration,
+    /// Whether the context menu is currently open (context-menu
+    /// module). While `true`, any default-mode press publishes `false`
+    /// on `on_context_menu` — toggle-close.
+    context_menu_open: bool,
+    /// The context-menu open/close signal (context-menu module):
+    /// `true` = open requested, `false` = close. `None` until the app
+    /// wiring sets it; with it unset, presses publish nothing.
+    on_context_menu: Option<Box<dyn Fn(bool) -> Message + 'a>>,
     on_mouse_enter: Option<Box<dyn Fn() -> Message + 'a>>,
     opacity: Option<f32>,
     mouse_inside_boundary: Option<bool>,
@@ -172,6 +194,8 @@ where
             show_headerbar: true,
             pane_border_radius: None,
             click_timing: Duration::from_millis(500),
+            context_menu_open: false,
+            on_context_menu: None,
             on_mouse_enter: None,
             opacity: None,
             mouse_inside_boundary: None,
@@ -213,6 +237,22 @@ where
 
     pub fn click_timing(mut self, click_timing: Duration) -> Self {
         self.click_timing = click_timing;
+        self
+    }
+
+    /// Sets whether the context menu is currently open (context-menu
+    /// module): while open, any default-mode press toggle-closes it.
+    pub fn context_menu_open(mut self, context_menu_open: bool) -> Self {
+        self.context_menu_open = context_menu_open;
+        self
+    }
+
+    /// Sets the context-menu open/close signal (context-menu module):
+    /// `true` = open requested, `false` = close. Published only from
+    /// the default-mode branch of the press handler, so
+    /// mouse-reporting applications (vim, htop) keep every press.
+    pub fn on_context_menu(mut self, on_context_menu: impl Fn(bool) -> Message + 'a) -> Self {
+        self.on_context_menu = Some(Box::new(on_context_menu));
         self
     }
 
@@ -1376,6 +1416,19 @@ where
                                 shell.publish(on_middle_click());
                             }
                         }
+                        // Context-menu publish seam (context-menu
+                        // module) — cosmic-term's pattern without the
+                        // hyperlink lookup: while the menu is open,
+                        // any press closes it; otherwise a right press
+                        // opens it. Published only here, inside the
+                        // default-mode branch — mouse-reporting presses
+                        // were already forwarded to the child above
+                        // (spec criterion 4).
+                        if let Some(on_context_menu) = &self.on_context_menu
+                            && let Some(open) = context_menu_press(self.context_menu_open, *button)
+                        {
+                            shell.publish(on_context_menu(open));
+                        }
                         shell.capture_event();
                     }
                 }
@@ -2026,9 +2079,54 @@ fn ss3(code: &str, modifiers: u8) -> Option<Vec<u8>> {
     }
 }
 
+/// What a press in default mode publishes on the context-menu seam
+/// (context-menu module): `Some(false)` — close — for any press while
+/// the menu is open (toggle-close), `Some(true)` — open — for a right
+/// press while it is closed, `None` for everything else. Called only
+/// from the default-mode branch of the `ButtonPressed` handler, so it
+/// is structurally unreachable while mouse reporting is on: those
+/// presses were already forwarded to the child above.
+fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
+    if menu_open {
+        Some(false)
+    } else if button == Button::Right {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EdgeScrollDirection, accumulate_wheel_lines, edge_scroll_adjustment};
+    use super::{
+        EdgeScrollDirection, accumulate_wheel_lines, context_menu_press, edge_scroll_adjustment,
+    };
+    use cosmic::iced::mouse::Button;
+
+    #[test]
+    fn context_menu_press_while_open_closes_on_any_button() {
+        // Toggle-close: once the menu is open, any press — including
+        // left and middle, which did their own handling above the seam
+        // — closes it, matching cosmic-term's open-state match arm.
+        assert_eq!(context_menu_press(true, Button::Left), Some(false));
+        assert_eq!(context_menu_press(true, Button::Middle), Some(false));
+        assert_eq!(context_menu_press(true, Button::Right), Some(false));
+    }
+
+    #[test]
+    fn context_menu_press_while_closed_opens_on_right() {
+        assert_eq!(context_menu_press(false, Button::Right), Some(true));
+    }
+
+    #[test]
+    fn context_menu_press_while_closed_ignores_other_buttons() {
+        // Left, middle (and back/forward) keep their existing
+        // meanings; only right-click opens the menu.
+        assert_eq!(context_menu_press(false, Button::Left), None);
+        assert_eq!(context_menu_press(false, Button::Middle), None);
+        assert_eq!(context_menu_press(false, Button::Back), None);
+        assert_eq!(context_menu_press(false, Button::Forward), None);
+    }
 
     #[test]
     fn wheel_lines_single_fractional_event_keeps_remainder() {
