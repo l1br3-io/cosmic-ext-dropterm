@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
+use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
@@ -337,10 +338,13 @@ impl DropTerm {
     }
 
     /// Applies the current config and theme to every tab's terminal.
+    /// Colors resolve once, before the window-background refresh, so
+    /// the global and the tabs can never disagree on which scheme is
+    /// active.
     fn apply_config_to_tabs(&mut self) {
-        self.refresh_window_bg_color();
         let options = self.terminal_options();
         let colors = self.active_colors();
+        self.refresh_window_bg_color(&colors);
         for tab in &self.tabs {
             tab.terminal.lock().unwrap().set_config(&options, colors);
         }
@@ -349,16 +353,17 @@ impl DropTerm {
     /// Mirrors cosmic-term's own `update_config`: the effective window
     /// background color is a process-global (`terminal::WINDOW_BG_COLOR`)
     /// used as a fallback wherever a color scheme leaves "background"
-    /// unset, so it must be refreshed whenever the active COSMIC theme
-    /// changes.
-    fn refresh_window_bg_color(&self) {
+    /// unset, so it must be refreshed whenever the active scheme or
+    /// COSMIC theme changes.
+    fn refresh_window_bg_color(&self, colors: &aterm::color::Colors) {
         let theme = cosmic::theme::active();
         let color = cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base);
         let bytes = color.into_rgba8();
-        let data = u32::from(bytes[2])
+        let system_bg = u32::from(bytes[2])
             | (u32::from(bytes[1]) << 8)
             | (u32::from(bytes[0]) << 16)
             | 0xFF00_0000;
+        let data = window_bg_color(colors, system_bg);
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -1323,6 +1328,23 @@ fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     )
 }
 
+/// The window-background source decision (color-schemes spec,
+/// criterion 3): a scheme that resolves a background owns the window
+/// background — the tab-bar/grab-bar chrome and the unset-bg cell
+/// fallback all read `WINDOW_BG_COLOR`, so they follow by
+/// construction. A scheme without one (the COSMIC pair, and any
+/// unknown name that fell back to it) defers to the system-theme
+/// derivation, passed in already packed so this stays a pure,
+/// headless-testable decision in the [`grab_bar_acts_on`] seam style.
+fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
+    match colors[NamedColor::Background] {
+        Some(rgb) => {
+            0xFF00_0000 | (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
+        }
+        None => system_bg,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1655,6 +1677,31 @@ mod tests {
         assert!(!resize_acts_on(&SurfaceState::Hidden, settings_id));
         assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
     }
+
+    // --- color-schemes C3: the window-background source decision
+    // (spec criterion 3) ---
+
+    #[test]
+    fn scheme_background_wins_over_the_system_derivation() {
+        // Dracula owns its background (#282a36, alacritty-theme
+        // Dracula.toml): the resolved slot must land in
+        // WINDOW_BG_COLOR's packed layout (0xAARRGGBB, opaque), not
+        // the system theme's — chrome and the unset-bg cell fallback
+        // then follow by construction.
+        let dracula = theme_source::by_name("Dracula").unwrap();
+        assert_eq!(window_bg_color(&dracula, 0xFF1E_1E2E), 0xFF28_2A36);
+    }
+
+    #[test]
+    fn unset_background_passes_the_system_derivation_through() {
+        // The COSMIC pair owns no background (the system theme
+        // supplies it), so the decision is a byte-identical
+        // passthrough — the default-config chrome behavior is
+        // unchanged, and a bogus scheme name keeps it too (the
+        // `active_colors` fallback resolves to this same pair).
+        let cosmic_dark = theme_source::by_name("COSMIC Dark").unwrap();
+        assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1752,7 +1799,8 @@ impl Application for DropTerm {
             settings_window: None,
             settings_buffer: settings::SettingsBuffer::default(),
         };
-        app.refresh_window_bg_color();
+        let colors = app.active_colors();
+        app.refresh_window_bg_color(&colors);
 
         // A second launch never reaches this: `run_single_instance` forwards
         // its action over D-Bus to the already-running instance instead
