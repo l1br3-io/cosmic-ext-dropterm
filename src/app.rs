@@ -1348,6 +1348,30 @@ fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     )
 }
 
+/// Settings for the clipboard-anchor window (the copy-out fix).
+///
+/// libcosmic binds its single runtime [`Clipboard`] to the first
+/// window created, and when that surface is destroyed the binding is
+/// dropped — taking the smithay-clipboard connection, and with it
+/// any selection this app copied, down with it. DropTerm's only
+/// surface is the layer shell, which every hide destroys, so
+/// copying out could never survive the focus switch to the paste
+/// target. This window — invisible, never closed, created before
+/// any layer surface — owns the binding for the whole process
+/// lifetime instead: unmapped, so it appears nowhere and paints
+/// nothing, and exempt from close requests, so nothing the user or
+/// the runtime does can drop the connection mid-session.
+fn clipboard_anchor_settings() -> window::Settings {
+    window::Settings {
+        visible: false,
+        exit_on_close_request: false,
+        resizable: false,
+        decorations: false,
+        size: cosmic::iced::Size::new(1.0, 1.0),
+        ..window::Settings::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1680,6 +1704,33 @@ mod tests {
         assert!(!resize_acts_on(&SurfaceState::Hidden, settings_id));
         assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
     }
+
+    // --- the clipboard anchor (copy-out fix) ---
+    //
+    // libcosmic binds its single runtime Clipboard to the first
+    // window created and drops that binding — and with it the
+    // smithay-clipboard connection holding any copied selection —
+    // when the owning surface is destroyed. DropTerm's only surface
+    // is the layer shell, which every hide destroys, so a copy could
+    // never survive the focus switch to wherever it would be pasted.
+    // An invisible, never-closed normal window created first owns
+    // the binding forever; these pin the two invariants that keep it
+    // both invisible and immortal.
+
+    #[test]
+    fn clipboard_anchor_window_is_invisible() {
+        // Unmapped: absent from the dock and Alt-Tab, and it never
+        // paints — it exists only to hold the clipboard binding.
+        assert!(!clipboard_anchor_settings().visible);
+    }
+
+    #[test]
+    fn clipboard_anchor_window_cannot_be_closed() {
+        // No close request is ever honored (and `exit_on_close(false)`
+        // in main means the runtime cannot exit through it either),
+        // so the binding outlives every hide/show cycle.
+        assert!(!clipboard_anchor_settings().exit_on_close_request);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1748,6 +1799,17 @@ impl Application for DropTerm {
             config.session_persistence_enabled,
         );
 
+        // The clipboard anchor (the copy-out fix) opens here, before
+        // `debounced_toggle` can request the first layer surface: the
+        // runtime binds its clipboard to the first window created, so
+        // the anchor — not the terminal's layer surface — must win
+        // that binding, or every hide would destroy the connection
+        // owning whatever the user copied. Its id is deliberately
+        // not kept: nothing references the window again (view events
+        // for it fall through the foreign-window guards), and it is
+        // never closed.
+        let (_anchor_window, open_anchor) = window::open(clipboard_anchor_settings());
+
         let mut app = Self {
             core,
             config_handler,
@@ -1783,8 +1845,14 @@ impl Application for DropTerm {
         // A second launch never reaches this: `run_single_instance` forwards
         // its action over D-Bus to the already-running instance instead
         // (see `Application::dbus_activation` below), so the first launch's
-        // own action has to be applied here.
-        let task = app.debounced_toggle(flags.action);
+        // own action has to be applied here. The anchor window opens first
+        // in the batch: the runtime binds its clipboard to the first window
+        // created, and the anchor must win that race before any layer
+        // surface exists — afterwards the binding never moves again.
+        let task = Task::batch([
+            open_anchor.then(|_| Task::none()),
+            app.debounced_toggle(flags.action),
+        ]);
         (app, task)
     }
 
