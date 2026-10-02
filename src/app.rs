@@ -949,7 +949,14 @@ impl DropTerm {
         // and never reach the per-terminal actions.
         if matches!(
             action,
-            Action::NewTab | Action::CloseTab | Action::NextTab | Action::PrevTab
+            Action::NewTab
+                | Action::CloseTab
+                | Action::NextTab
+                | Action::PrevTab
+                | Action::ActivateTab(_)
+                | Action::ActivateLastTab
+                | Action::MoveTabLeft
+                | Action::MoveTabRight
         ) {
             return self.perform_tab_action(action);
         }
@@ -962,7 +969,11 @@ impl DropTerm {
             | Action::NewTab
             | Action::CloseTab
             | Action::NextTab
-            | Action::PrevTab => unreachable!("handled above"),
+            | Action::PrevTab
+            | Action::ActivateTab(_)
+            | Action::ActivateLastTab
+            | Action::MoveTabLeft
+            | Action::MoveTabRight => unreachable!("handled above"),
             Action::Copy => {
                 let selected = tab
                     .terminal
@@ -1060,6 +1071,35 @@ impl DropTerm {
             }
             Action::PrevTab => {
                 return self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
+            }
+            Action::ActivateTab(requested) => {
+                // Strict numbered activation: out of range never wraps
+                // (tab-binds spec); set_active_tab no-ops when the tab
+                // is already active.
+                if let Some(index) = tabs::activate_index_target(self.tabs.len(), requested) {
+                    return self.set_active_tab(index);
+                }
+            }
+            Action::ActivateLastTab => {
+                // Ctrl+Shift+9 takes the last tab however many exist
+                // (cosmic-term TabActivate8 semantics).
+                if let Some(index) = tabs::activate_last_target(self.tabs.len()) {
+                    return self.set_active_tab(index);
+                }
+            }
+            Action::MoveTabLeft | Action::MoveTabRight => {
+                // One slot toward the direction, clamping at the edge;
+                // the moved tab stays active, so no focus handoff.
+                // Like every layout change, the move marks the session
+                // dirty (session-persistence spec, S3).
+                let direction = match action {
+                    Action::MoveTabLeft => tabs::MoveDirection::Left,
+                    _ => tabs::MoveDirection::Right,
+                };
+                if let Some(to) = tabs::move_target(self.active_tab, self.tabs.len(), direction) {
+                    self.active_tab = tabs::move_tab(&mut self.tabs, self.active_tab, to);
+                    return self.mark_session_dirty();
+                }
             }
             _ => unreachable!("not a tab action: {action:?}"),
         }

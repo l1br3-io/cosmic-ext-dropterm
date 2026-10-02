@@ -142,6 +142,41 @@ pub fn resolve_new_tab_cwd(
     explicit.or(inherited)
 }
 
+/// Resolves a strict numbered activation (`Ctrl+Shift+1..8`) to the index
+/// to activate: the requested index when it exists, `None` — no-op —
+/// otherwise (cosmic-term `TabActivate0..7` semantics; out of range never
+/// wraps).
+pub fn activate_index_target(len: usize, requested: usize) -> Option<usize> {
+    (requested < len).then_some(requested)
+}
+
+/// Resolves the `Ctrl+Shift+9` activation to the last tab's index
+/// (cosmic-term `TabActivate8`): the final tab however many exist, `None`
+/// when there are none.
+pub fn activate_last_target(len: usize) -> Option<usize> {
+    len.checked_sub(1)
+}
+
+/// Which way a move-bind shifts the active tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveDirection {
+    Left,
+    Right,
+}
+
+/// Resolves a move bind to the index the active tab should land at:
+/// one slot toward the direction, `None` — no-op — when already at that
+/// edge (moves clamp, they never wrap).
+pub fn move_target(active: usize, len: usize, direction: MoveDirection) -> Option<usize> {
+    match direction {
+        MoveDirection::Left => active.checked_sub(1),
+        MoveDirection::Right => {
+            let to = active + 1;
+            (to < len).then_some(to)
+        }
+    }
+}
+
 /// Applies a completed tab drag (tabs spec, T7): moves the tab at `from`
 /// to `to` and returns the index the previously active tab landed at, so
 /// the same tab stays active whichever tab was dragged. The resulting
@@ -317,6 +352,39 @@ mod tests {
             resolve_new_tab_cwd(Some(explicit.clone()), Some(inherited)),
             Some(explicit)
         );
+    }
+
+    #[test]
+    fn numbered_activation_targets_the_requested_index() {
+        assert_eq!(activate_index_target(3, 0), Some(0));
+        assert_eq!(activate_index_target(3, 2), Some(2));
+    }
+
+    #[test]
+    fn numbered_activation_out_of_range_is_a_no_op() {
+        assert_eq!(activate_index_target(3, 3), None);
+        assert_eq!(activate_index_target(0, 0), None);
+    }
+
+    #[test]
+    fn last_tab_activation_targets_the_final_index() {
+        assert_eq!(activate_last_target(3), Some(2));
+        assert_eq!(activate_last_target(1), Some(0));
+    }
+
+    #[test]
+    fn last_tab_activation_with_no_tabs_is_a_no_op() {
+        assert_eq!(activate_last_target(0), None);
+    }
+
+    #[test]
+    fn move_target_clamps_at_the_list_edges() {
+        // Moving left from index 0 or right from the last index stays
+        // put — move binds clamp, they do not wrap.
+        assert_eq!(move_target(0, 3, MoveDirection::Left), None);
+        assert_eq!(move_target(2, 3, MoveDirection::Right), None);
+        assert_eq!(move_target(1, 3, MoveDirection::Left), Some(0));
+        assert_eq!(move_target(1, 3, MoveDirection::Right), Some(2));
     }
 
     #[test]
