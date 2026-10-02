@@ -51,6 +51,15 @@ cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
 
 A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead.
 
+Scripts can also *ask* instead of act: `cosmic-ext-dropterm --is-visible` prints `true`/`false` and exits with a matching code (0 visible, 1 hidden or not running), without ever summoning the terminal. It cannot be combined with the action subcommands:
+
+```sh
+cosmic-ext-dropterm --is-visible && echo "the terminal is up"
+if cosmic-ext-dropterm --is-visible; then ...; fi   # exit code branch
+```
+
+The running instance serves the answer over D-Bus (a read-only `Visible` property on the bus name it already owns), so the query is cheap and works from any process.
+
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](#known-risks).
 
 ### Development launcher

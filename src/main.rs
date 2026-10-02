@@ -26,8 +26,22 @@ use app::{DropTerm, Flags, ToggleAction};
 /// one; see the project README for how to bind this to a key in COSMIC
 /// Settings.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "cosmic-ext-dropterm", version, about)]
+// `--is-visible` is a query; pairing it with an action subcommand is
+// a contradiction, rejected at parse. (`conflicts_with` on the field
+// can't express this: a subcommand is not an arg id.)
+#[command(
+    name = "cosmic-ext-dropterm",
+    version,
+    about,
+    args_conflicts_with_subcommands = true
+)]
 struct Args {
+    /// Print whether the running terminal's surface is visible
+    /// (true/false) and exit with a matching code (0 visible, 1
+    /// hidden or not running). Never summons the terminal.
+    #[arg(long)]
+    is_visible: bool,
+
     #[command(subcommand)]
     action: Option<ToggleAction>,
 }
@@ -44,6 +58,56 @@ pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<ToggleAction> {
     Args::try_parse_from(argv).ok()?.action
 }
 
+/// The bus half of `--is-visible`: `Some(visible)` when a running
+/// instance answered, `None` when the name is unowned (no note owed)
+/// or owned without the V1 interface (stale binary mid-upgrade — a
+/// stderr note, per the spec's decision table). Query-only: nothing
+/// here activates or spawns the app, so the flag can never summon the
+/// terminal.
+fn query_visibility() -> Option<bool> {
+    // zbus needs a runtime with io and time; a current-thread runtime
+    // is enough for one synchronous-looking query. Its feature set
+    // arrives through zbus's own tokio dependency, not our `sync` +
+    // `time` declaration.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(async {
+        let conn = zbus::connection::Builder::session()
+            .ok()?
+            .build()
+            .await
+            .ok()?;
+        let owned = zbus::fdo::DBusProxy::new(&conn)
+            .await
+            .ok()?
+            .name_has_owner(dbus_state::BUS_NAME.try_into().ok()?)
+            .await
+            .ok()?;
+        if !owned {
+            return None;
+        }
+        let read = async {
+            dbus_state::V1InterfaceProxy::new(&conn)
+                .await?
+                .visible()
+                .await
+        };
+        match read.await {
+            Ok(visible) => Some(visible),
+            Err(_) => {
+                eprintln!(
+                    "cosmic-ext-dropterm: bus name owned but the V1 state \
+                     interface is missing (stale binary?); treating as not \
+                     visible"
+                );
+                None
+            }
+        }
+    })
+}
+
 fn main() -> cosmic::iced::Result {
     env_logger::init();
 
@@ -58,6 +122,14 @@ fn main() -> cosmic::iced::Result {
     }
 
     let args = Args::parse();
+    // The query path exits before `run_single_instance` so a second
+    // launch asking a question never forwards an action to the
+    // running instance.
+    if args.is_visible {
+        let (visible, code) = dbus_state::is_visible_decision(query_visibility());
+        println!("{visible}");
+        std::process::exit(i32::from(code));
+    }
     let flags = Flags {
         action: args.action.unwrap_or_default(),
     };
@@ -119,6 +191,20 @@ mod tests {
         // the CLI edge instead.
         let result = Args::try_parse_from(["dropterm", "new-tab", "--cmd", ""]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_visible_flag_parses_alone() {
+        let args = Args::try_parse_from(["dropterm", "--is-visible"]).expect("parses alone");
+        assert!(args.is_visible);
+        assert_eq!(args.action, None);
+    }
+
+    #[test]
+    fn is_visible_flag_conflicts_with_subcommands() {
+        assert!(Args::try_parse_from(["dropterm", "--is-visible", "show"]).is_err());
+        assert!(Args::try_parse_from(["dropterm", "show", "--is-visible"]).is_err());
+        assert!(Args::try_parse_from(["dropterm", "--is-visible", "new-tab"]).is_err());
     }
 
     #[test]

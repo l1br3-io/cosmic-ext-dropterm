@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// The P2 app wiring uses the state/derive/changed/interface half; the
-// client half (V1Interface proxy, BUS_NAME, INTERFACE) stays test-only
-// until the P3 `--is-visible` query lands. Allow rather than expect:
-// `expect` goes unfulfilled in the cfg(test) compilation, where the
-// tests do use these. Drop this when P3 arrives.
+// The client half (V1Interface proxy, BUS_NAME, INTERFACE) is used by
+// the P3 `--is-visible` query in main.rs; INTERFACE remains the
+// tested pin tying the macro literals to the served names (asserted
+// in-module), so it stays test-only from the bin target's point of
+// view. Allow rather than expect: `expect` goes unfulfilled in the
+// cfg(test) compilation, where the tests do use these.
 #![allow(dead_code)]
 
 //! Queryable DropTerm state over D-Bus (dbus-state spec).
@@ -81,6 +82,18 @@ pub(crate) fn changed(old: State, new: State) -> Changed {
     Changed {
         visible: old.visible != new.visible,
         tab_count: old.tab_count != new.tab_count,
+    }
+}
+
+/// The decision table `--is-visible` runs, pure so it is testable
+/// without a bus: `Some(visible)` when a running instance answered,
+/// `None` when the name is unowned or owned without a V1 interface
+/// (only the query layer's stderr note distinguishes those two).
+/// Returns the stdout line to print and the exit code to exit with.
+pub(crate) fn is_visible_decision(running: Option<bool>) -> (bool, u16) {
+    match running {
+        Some(true) => (true, 0),
+        Some(false) | None => (false, 1),
     }
 }
 
@@ -221,6 +234,24 @@ mod tests {
         );
         assert!(both.visible);
         assert!(both.tab_count);
+    }
+
+    #[test]
+    fn is_visible_decision_prints_true_and_exits_zero_when_shown() {
+        assert_eq!(is_visible_decision(Some(true)), (true, 0));
+    }
+
+    #[test]
+    fn is_visible_decision_prints_false_and_exits_one_when_hidden() {
+        assert_eq!(is_visible_decision(Some(false)), (false, 1));
+    }
+
+    #[test]
+    fn is_visible_decision_exits_one_when_not_running_or_stale() {
+        // Both the unowned-name and owned-but-no-V1 cases resolve to
+        // `None` here; only the query layer's stderr note tells them
+        // apart.
+        assert_eq!(is_visible_decision(None), (false, 1));
     }
 
     #[test]
