@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
@@ -11,18 +12,23 @@ use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, get_layer_surface, set_anchor, set_exclusive_zone,
-    set_keyboard_interactivity, set_layer, set_size,
+    KeyboardInteractivity, destroy_layer_surface, get_layer_surface, set_exclusive_zone,
+    set_keyboard_interactivity, set_layer,
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
 use cosmic::widget;
-use cosmic::{Application, Element};
+use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
+use crate::geometry::{self, Geometry};
+use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
+use crate::session;
+use crate::settings;
+use crate::slide::{self, SlideBox};
 use crate::surface;
 use crate::tab_bar::TabBar;
 use crate::tabs::{self, Tab, TabId};
@@ -75,6 +81,15 @@ enum SurfaceState {
     /// `Window::Opened` event so we learn that output's real size.
     Measuring(window::Id),
     Shown(window::Id),
+    /// A shown surface sliding out toward its anchored edge
+    /// (slide-animation spec, A4): the content still renders —
+    /// translated by the live `Out` slide — and the layer surface is
+    /// destroyed only when that slide completes (criterion 2).
+    /// Keyboard interactivity was already released at slide-out start
+    /// (criterion 5), so focus events find no `Shown` surface to act
+    /// on; the drag handlers and live reshape ignore this state by
+    /// construction (they match `Shown` exclusively).
+    Hiding(window::Id),
 }
 
 #[derive(Debug, Clone)]
@@ -84,11 +99,14 @@ pub enum Message {
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
-    /// The granted size of the shown surface changed (compositor
+    /// The granted size of the surface with `id` changed (compositor
     /// configure after a `set_size`, or the initial configure): the new
     /// height in logical pixels, used to pin the terminal's height so the
-    /// tab bar keeps its strip.
-    WindowResized(f32),
+    /// tab bar keeps its strip. The id gates the stream to the tracked
+    /// layer surface (`resize_acts_on`): a second app window (the
+    /// settings window, settings-ui spec U1) resizes too, and its
+    /// heights must never feed the pin.
+    WindowResized(window::Id, f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
     KeyPressed(Modifiers, Key, cosmic::iced::keyboard::key::Physical),
@@ -114,9 +132,63 @@ pub enum Message {
     /// A tab was dragged to a new position in the bar (tabs spec, T7):
     /// the dragged tab's id and the index it was dropped at.
     TabMoved(TabId, usize),
+    /// The grab bar was dragged (geometry spec, G3): the pointer's
+    /// surface-local y (window-absolute, not a delta and not bar-local)
+    /// while a press is held. Targets recompute absolutely from it, so
+    /// the moving window frame of a bottom-anchored surface cannot
+    /// compound drift into the drag.
+    GrabBarDragged(f32),
+    /// A grab bar drag ended (geometry spec, G3): the surface keeps the
+    /// height it settled at; persisting it is G4.
+    GrabBarReleased,
+    /// The trailing apply of a throttled live drag fired (geometry
+    /// spec, G3): a target dropped inside the apply interval still
+    /// lands — the pointer pausing mid-drag must not leave the
+    /// surface behind. A stale fire (drag ended, surface hidden) is a
+    /// no-op: the apply path re-checks the cadence gate.
+    DragApplyDue,
+    /// The trailing adopt of a debounced terminal-pin height fired
+    /// (geometry spec, G3): heights the adoption debounce skipped —
+    /// the double-reported granted stream's echoes — land once the
+    /// stream settles. A stale fire is a no-op.
+    WindowPinDue,
+    /// The debounce window for a drag-release height write elapsed
+    /// (geometry spec, G4): the generation that scheduled it, checked
+    /// against the current pending write so a newer drag's schedule
+    /// cancels this stale one.
+    WriteDue(u32),
+    /// The session-save debounce window elapsed
+    /// (session-persistence spec, S3): the generation that armed it,
+    /// checked against the armed window so a stale fire — superseded
+    /// by a newer window, or a duplicate delivery after the write —
+    /// writes nothing.
+    SessionSaveDue(u32),
+    /// Slide clock tick (slide-animation spec, A3 + A4): redraw-only
+    /// while a slide is live — the eased offset is evaluated at draw
+    /// time inside `SlideBox`, so the tick exists to keep redraw
+    /// requests pending (see `SLIDE_TICK`). The first tick past the
+    /// duration parks the slide at its endpoint — rest for an `In`
+    /// slide, the anchored edge (then destroy) for an `Out` one —
+    /// and drops it (and with it the subscription).
+    SlideTick,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
+    /// The settings window with `id` should close (settings-ui spec,
+    /// U1): its ✕ was pressed (`CloseRequested`, matched in the
+    /// subscription — the window never closes itself,
+    /// `exit_on_close_request: false`) or it closed without a handled
+    /// request and `on_close_requested` sends this as the defensive
+    /// cleanup so a dead id can never be `gain_focus`ed by a later
+    /// press. Both clearing the tracked id and `window::close` are
+    /// idempotent, so a duplicate delivery is inert.
+    SettingsCloseRequested(window::Id),
+    /// An event from the settings window's controls (settings-ui
+    /// spec, U4). Inputs only — the update side resolves each through
+    /// the pure planners and commits through the shared write seam as
+    /// a `Bare` write, whose `ConfigChanged` echo is the only apply
+    /// path.
+    Settings(settings::SettingsEvent),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -127,12 +199,31 @@ struct RenameEdit {
     draft: String,
 }
 
+/// An in-progress grab-bar drag's runtime state (geometry spec, G3):
+/// the pure anchor every target recomputes from (`geometry`), the
+/// latest reported pointer y, and the last live apply (when, which
+/// target) for the change-gated apply cadence — see
+/// `geometry::drag_apply_due`. Applies are bounded because each one
+/// costs the runtime two window resizes plus terminal and pty resizes
+/// (its `set_size` handling double-reports each apply), so per-move
+/// applies at pointer rate saturate the single runtime thread — the
+/// drag froze input on hardware.
+struct Drag {
+    anchor: geometry::DragAnchor,
+    /// The pointer's window y as of the last `GrabBarDragged`, so the
+    /// trailing apply and the release settle at where the pointer
+    /// actually is, not where the last apply landed.
+    pointer_y: f32,
+    /// The last live apply, for the cadence gate.
+    applied: Option<(std::time::Instant, u32)>,
+}
+
 pub struct DropTerm {
     core: Core,
-    /// Kept for a future settings page (see the ROADMAP's v2 "Settings
-    /// page UI" item); v1 only reads config, live-reloaded through
-    /// `subscription()`, and never writes it back.
-    #[allow(dead_code)]
+    /// Config backend, consumed by the drag-resize write-back (geometry
+    /// spec, G4): `set("height_percent", …)` persists a settled drag.
+    /// `None` when the config failed to open at init — writes are
+    /// skipped, everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
     /// The overlay's terminals in tab order. Never empty while a surface
@@ -146,17 +237,51 @@ pub struct DropTerm {
     /// Source of monotonically increasing tab ids, never reused within a
     /// run (see the tabs spec).
     next_tab_id: u32,
+    /// The startup session stash (session-persistence spec, S2): the
+    /// restore plan loaded from the state file in `init`, consumed by
+    /// the spawn funnel's first productive run.
+    restore: session::RestoreStash,
+    /// Debounced session-save state (session-persistence spec, S3):
+    /// which change window is armed and whether a write is owed (see
+    /// `session::SessionSave`).
+    session_save: session::SessionSave,
+    /// Each live tab's working directory as last seen, seeded at
+    /// spawn/restore with the spawn cwd (session-persistence spec,
+    /// S3): title events compare against this cache so only a real
+    /// cwd change — not title churn — marks the session dirty.
+    tab_cwds: HashMap<TabId, Option<PathBuf>>,
     /// The active inline rename, if any (tabs spec, T6): which tab is
     /// being renamed and the current draft, mirrored into the input the
     /// tab bar overlays on the renamed button.
     rename: Option<RenameEdit>,
+    /// An in-progress grab-bar height drag, if any (geometry spec, G3):
+    /// the absolute anchor every target recomputes from, plus the
+    /// runtime state of the apply cadence (see `Drag`).
+    drag: Option<Drag>,
+    /// Debounced drag-release config-write state (geometry spec, G4):
+    /// which release's persist is still pending.
+    write_back: geometry::WriteBack,
+    /// The geometry of our last config write, kept to recognize and
+    /// absorb its `ConfigChanged` echo (geometry spec, G4). Cleared on
+    /// absorption.
+    last_written: Option<Geometry>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
     surface: SurfaceState,
+    /// The output size measured by the last `SurfaceOpened`, kept so
+    /// later reshapes (config edits, drag) can recompute pixels without
+    /// a new measuring pass (see `geometry.rs`).
+    output_size: Option<(u32, u32)>,
     /// Granted height of the shown surface, from `WindowResized` events.
     /// The basis for pinning the terminal widget's height so the tab bar
     /// gets its strip inside the fixed-size surface.
     window_height: Option<f32>,
+    /// The last pin adoption (when, which height), for the adoption
+    /// debounce (geometry spec, G3 — see `geometry::window_pin_due`).
+    pin_applied: Option<(std::time::Instant, f32)>,
+    /// A height the debounce skipped, landing via the trailing adopt
+    /// (`WindowPinDue`) once the granted stream settles.
+    pending_height: Option<f32>,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
     /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
@@ -164,6 +289,22 @@ pub struct DropTerm {
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
+    /// The live slide (slide-animation spec, A3 + A4): the eased
+    /// content offset while the surface animates — in from the
+    /// anchored edge after a show, out toward it before a hide's
+    /// destroy. `None` at rest — renders byte-identically to the
+    /// unwrapped column — and cleared when the parking tick completes
+    /// the slide (`SlideTick`).
+    slide: Option<slide::Playing>,
+    /// The settings window, when one is open (settings-ui spec, U1):
+    /// `Some(id)` routes a repeat Ctrl+Shift+, to `gain_focus`
+    /// instead of opening a second window. Cleared when the window
+    /// closes — never left holding a dead id.
+    settings_window: Option<window::Id>,
+    /// The settings window's in-flight drafts (settings-ui spec,
+    /// U4): display-only text and slider state, cleared on window
+    /// close so a reopened window renders purely from config.
+    settings_buffer: settings::SettingsBuffer,
 }
 
 impl DropTerm {
@@ -221,21 +362,36 @@ impl DropTerm {
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
-    fn spawn_tab(&mut self) -> Option<Tab> {
+    /// Spawns one terminal tab from `spec` — a session restore's
+    /// resolved spawn parameters, with its recorded shell and
+    /// re-validated cwd — or, with `None`, from the config's resolved
+    /// shell with the pty's default working directory
+    /// (session-persistence spec, S2).
+    fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
         };
 
+        // The shell is recorded per tab at spawn: a restore replays
+        // the shell each saved tab ran, never the current config's,
+        // so a mid-run config change never rewrites a live tab's
+        // shell.
+        let shell = match spec {
+            Some(spec) => spec.shell.clone(),
+            None => self.config.resolved_shell(),
+        };
         let term_config = TermConfig {
             scrolling_history: self.config.scrollback_lines as usize,
             ..TermConfig::default()
         };
         let pty_options = PtyOptions {
-            shell: Some(PtyShell::new(
-                self.config.resolved_shell(),
-                self.config.args.clone(),
-            )),
+            shell: Some(PtyShell::new(shell.clone(), self.config.args.clone())),
+            // Alacritty chdirs before exec and silently keeps this
+            // process's cwd on failure, so only the plan's
+            // re-validated directory ever reaches here (dead cwd →
+            // `$HOME` → unset — see `plan_restore`).
+            working_directory: spec.and_then(|spec| spec.cwd.clone()),
             drain_on_exit: true,
             ..PtyOptions::default()
         };
@@ -251,7 +407,17 @@ impl DropTerm {
             &self.terminal_options(),
             self.active_colors(),
         ) {
-            Ok(terminal) => Some(Tab::new(tab_id, terminal)),
+            Ok(terminal) => {
+                let tab = Tab::new(tab_id, shell, terminal);
+                // Seed the cwd cache with the spawn cwd
+                // (session-persistence spec, S3): a restored tab seeds
+                // its re-validated saved cwd — so the fresh shell's
+                // first title report reads as unchanged — and a
+                // default spawn seeds `None`.
+                self.tab_cwds
+                    .insert(tab.id, spec.and_then(|spec| spec.cwd.clone()));
+                Some(tab)
+            }
             Err(err) => {
                 log::error!("failed to spawn shell: {err}");
                 None
@@ -259,11 +425,42 @@ impl DropTerm {
         }
     }
 
-    /// Guarantees at least one tab exists, spawning a fresh one if needed.
+    /// Guarantees at least one tab exists — restoring the saved
+    /// session on the funnel's first productive run, spawning a fresh
+    /// default tab every other time (session-persistence spec, S2).
+    /// Every path that needs a tab (the terminal channel arriving,
+    /// showing the surface, the last tab's respawn) lands here, so
+    /// the session wins exactly once and nothing is
+    /// spawned-then-deleted; runs before the channel exists defer,
+    /// leaving the stash armed.
     fn ensure_tabs(&mut self) {
-        if self.tabs.is_empty()
-            && let Some(tab) = self.spawn_tab()
-        {
+        if !self.tabs.is_empty() {
+            return;
+        }
+        if let Some(plan) = self.restore.take_for_run(self.term_event_tx.is_some()) {
+            let mut spawned = 0usize;
+            for spec in &plan.tabs {
+                if let Some(mut tab) = self.spawn_tab(Some(spec)) {
+                    // Saved chrome reapplied onto the fresh tab: plain
+                    // append keeps the saved order, and the override
+                    // keeps the fresh shell's first title report at
+                    // bay (the standing tabs rule).
+                    tab.title = spec.title.clone();
+                    tab.title_override = spec.title_override.clone();
+                    self.tabs.push(tab);
+                    spawned += 1;
+                }
+            }
+            if let session::RestoreOutcome::Restored { active } =
+                session::restore_outcome(plan.active, spawned)
+            {
+                self.active_tab = active;
+                return;
+            }
+            // Every spawn failed: fall through to today's
+            // single-default-tab path.
+        }
+        if let Some(tab) = self.spawn_tab(None) {
             self.active_tab = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
         }
     }
@@ -281,17 +478,144 @@ impl DropTerm {
 
     fn hide(&mut self) -> Task<Message> {
         // Hiding the surface is a focus loss for the rename input (T6):
-        // commit before the surface goes away.
+        // commit before the content slides out.
         let commit = self.commit_pending_rename();
-        let task = match self.surface {
-            SurfaceState::Measuring(id) | SurfaceState::Shown(id) => destroy_layer_surface(id),
-            SurfaceState::Hidden => Task::none(),
+        // The slide toggle rides in with the decision (settings-ui
+        // U2): a disabled slide turns this hide into an immediate
+        // destroy inside `toggle_step` — the executor arms below
+        // then simply never runs.
+        let task = match toggle_step(
+            ToggleAction::Hide,
+            &self.surface,
+            self.config.slide_animation_enabled,
+        ) {
+            ToggleStep::DestroyNow(id) => {
+                // A measuring surface has no reshaped content to
+                // animate (criterion 8): destroy immediately, exactly
+                // as before animated hides existed.
+                self.slide = None;
+                self.surface = SurfaceState::Hidden;
+                destroy_layer_surface(id)
+            }
+            ToggleStep::SlideOut(id) => {
+                // A shown surface slides out and dies on completion
+                // (criterion 2). The out-slide starts from wherever
+                // the content stands — the live eased offset of an
+                // in-flight slide-in, or rest — so nothing teleports.
+                // Its distance is the plan's pinned source (the same
+                // deterministic formula the show used), kept from the
+                // in-flight slide when one exists: a config edit that
+                // arrived mid-slide updates the config but not the
+                // frozen geometry, so the in-flight distance is the
+                // one the visible surface still has.
+                let (from_offset_px, distance_px) = match self.slide {
+                    Some(playing) => (
+                        slide::offset(
+                            &playing.active,
+                            playing.started.elapsed().as_millis() as u64,
+                        ),
+                        playing.active.distance_px,
+                    ),
+                    None => (0.0, self.slide_distance_px()),
+                };
+                self.surface = SurfaceState::Hiding(id);
+                self.slide = Some(slide::Playing {
+                    started: std::time::Instant::now(),
+                    active: slide::Active {
+                        direction: slide::Direction::Out,
+                        from_offset_px,
+                        distance_px,
+                    },
+                });
+                // Keyboard interactivity releases at slide-out START
+                // (criterion 5), not at destroy: the previously
+                // focused window regains focus while the slide plays.
+                // The compositor answers with an `Unfocused` layer
+                // event, which the `Shown(id)` guard in its handler
+                // already rejects — the surface is `Hiding` by the
+                // time it arrives.
+                set_keyboard_interactivity(id, KeyboardInteractivity::None)
+            }
+            // `Hide` never decides to show (pinned by the matrix
+            // tests), and a hiding or hidden surface leaves with
+            // nothing: no restart, no double destroy.
+            ToggleStep::Measure | ToggleStep::ReverseShow(_) | ToggleStep::Leave => Task::none(),
         };
-        self.surface = SurfaceState::Hidden;
+        // The surface is leaving on every destructive path, and the
+        // cleanup is idempotent for `Leave`: any live grab-bar drag is
+        // moot (geometry spec, G3), the terminal pin's debounce state
+        // starts over so the next show's first granted size adopts
+        // immediately, and the active terminal reports the focus loss
+        // now — its PTY keeps running regardless (criterion 2: PTYs
+        // live in tabs, not the window).
+        self.drag = None;
+        self.pending_height = None;
+        self.pin_applied = None;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
         Task::batch([commit, task])
+    }
+
+    /// Reverses a hiding slide back to shown (slide-animation spec,
+    /// A5, criterion 6): the live surface is reused — no new
+    /// measuring pass, `output_size` is retained (the `geometry`
+    /// module's guarantee) — the slide re-targets `In` from the
+    /// current offset (`slide::reverse`: no teleport, a fresh fixed
+    /// 130 ms), keyboard interactivity is re-grabbed per config, the
+    /// terminal reports back the focus it lost at hide start, and
+    /// `surface_focused` resets to `false` pending the
+    /// `LayerFocused` the re-grab synthesizes. PTYs never noticed
+    /// the hide (criterion 2) and keep running throughout.
+    fn reverse_show(&mut self, id: window::Id) -> Task<Message> {
+        self.surface = SurfaceState::Shown(id);
+        self.surface_focused = false;
+        // `Hiding` always carries a live `Out` slide — the parking
+        // tick destroys the surface and leaves `Hidden` in the same
+        // handler — so there is always something to re-target; a
+        // slide-less degenerate would simply show at rest. An `Out`
+        // slide that already ran past its duration reverses from the
+        // endpoint (the full distance), i.e. a fresh full slide-in.
+        if let Some(playing) = self.slide {
+            self.slide = Some(slide::Playing {
+                started: std::time::Instant::now(),
+                active: slide::reverse(
+                    &playing.active,
+                    playing.started.elapsed().as_millis() as u64,
+                ),
+            });
+        }
+        // The mirror of hide's focus bookkeeping (criterion 5 in
+        // reverse): report the terminal focused again — `set_focused`
+        // only reports real changes, so the `LayerFocused` this
+        // re-grab synthesizes can repeat it harmlessly.
+        if let Some(tab) = self.active() {
+            tab.terminal.lock().unwrap().set_focused(true);
+        }
+        Task::batch([
+            set_keyboard_interactivity(
+                id,
+                surface::keyboard_interactivity(self.config.keyboard_mode),
+            ),
+            widget::text_input::focus(self.terminal_id.clone()),
+        ])
+    }
+
+    /// The slide distance for the currently shown surface
+    /// (slide-animation spec, the plan's pinned distance source): the
+    /// same deterministic `geometry::surface_height` formula
+    /// `SurfaceOpened` used — deliberately not the granted window
+    /// height, which double-reports through `WindowResized`. A shown
+    /// surface always has a measured output beside it; the `0.0`
+    /// fallback covers a state that cannot occur and still hides (a
+    /// degenerate at-rest out-slide that parks, then destroys).
+    fn slide_distance_px(&self) -> f32 {
+        self.output_size.map_or(0.0, |output| {
+            geometry::surface_height(
+                output.1 as f32,
+                Geometry::from_config(&self.config).height_percent,
+            ) as f32
+        })
     }
 
     /// Handles the surface losing keyboard focus: marks the terminal unfocused
@@ -312,6 +636,126 @@ impl DropTerm {
         commit
     }
 
+    /// The geometry a settled grab-bar drag leaves behind (geometry
+    /// spec, G3): the current config's geometry with the height
+    /// quantized once from where the pointer released — the *latest*
+    /// target, not the last one the cadence gate landed, so throttling
+    /// never decides the final height. The settled surface then matches
+    /// the percent G4 persists, at most half a percent off the dragged
+    /// pixels (accepted tolerance).
+    fn settled_geometry(&self, drag: &Drag, output: (u32, u32)) -> Geometry {
+        let final_target =
+            geometry::drag_target_px(self.config.edge, output.1, drag.anchor, drag.pointer_y);
+        let mut geom = Geometry::from_config(&self.config);
+        geom.height_percent = geometry::percent_from_px(output.1, final_target);
+        geom
+    }
+
+    /// Apply a live drag target now (geometry spec, G3): the cadence
+    /// gate has passed. Records the apply, offers the height to the
+    /// terminal pin — adoptions are debounced (see
+    /// `offer_window_height`), because the runtime double-reports
+    /// every `set_size` (once stale, once real) and each adoption
+    /// costs a terminal reflow plus a pty resize that made the drag
+    /// sluggish on hardware — and sends the single-path triple with
+    /// the pixel height.
+    fn apply_drag_target(
+        &mut self,
+        id: window::Id,
+        output: (u32, u32),
+        target: u32,
+    ) -> Task<Message> {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.applied = Some((std::time::Instant::now(), target));
+            drag.anchor.applied_px = target;
+        }
+        let pin_task = self.offer_window_height(target as f32);
+        let geom = Geometry::from_config(&self.config);
+        let apply = geometry::apply_drag_geometry(id, &geom, output, target);
+        match pin_task {
+            Some(t) => Task::batch([apply, t]),
+            None => apply,
+        }
+    }
+
+    /// Offer a height to the terminal pin (geometry spec, G3): adopt
+    /// immediately when the debounce allows (first size, re-report of
+    /// the adopted height, or interval elapsed), else remember it and
+    /// return the trailing-adopt timer that lands it once the granted
+    /// stream settles. Every granted-size follower funnels through
+    /// here — `WindowResized` echoes outside drags and the drag's own
+    /// applies — so the double-reported stream can never reflow the
+    /// terminal at the apply rate.
+    fn offer_window_height(&mut self, height: f32) -> Option<Task<Message>> {
+        let now = std::time::Instant::now();
+        if geometry::window_pin_due(self.pin_applied, now, height) {
+            self.window_height = Some(height);
+            // Re-adopting the height the pin already has must not
+            // refresh the adoption clock (see `window_pin_due`): the
+            // echo stream would otherwise starve changed heights.
+            self.pin_applied = Some(match self.pin_applied {
+                Some((at, adopted)) if adopted == height => (at, height),
+                _ => (now, height),
+            });
+            self.pending_height = None;
+            return None;
+        }
+        if self.pending_height != Some(height) {
+            self.pending_height = Some(height);
+            return Some(Task::perform(
+                tokio::time::sleep(geometry::WINDOW_PIN_INTERVAL),
+                |_| cosmic::Action::App(Message::WindowPinDue),
+            ));
+        }
+        None
+    }
+
+    /// The one path every config write goes through (settings-ui
+    /// spec, U3): the drag release persists here as `PreApplied` —
+    /// the set plus the `last_written` record whose echo
+    /// `ConfigChanged` absorbs, byte-identical with G4 — and every
+    /// settings control (from U4) persists here as `Bare`, recording
+    /// nothing so its echo flows into the live-apply path. The
+    /// newest-intent race rule rides the seam: a bare write of the
+    /// drag's key first cancels any pending debounced write-back, so
+    /// the stale `WriteDue` finds nothing and the bare write's value
+    /// is what lands — while a drag release after it simply schedules
+    /// fresh and lands last. Values clamp before persisting (spec
+    /// criterion 9); a missing config backend (it failed to open at
+    /// init) logs and skips — the drag itself still resized live.
+    fn write_config(&mut self, kind: settings::WriteKind, write: settings::PlannedWrite) {
+        if kind == settings::WriteKind::Bare
+            && settings::bare_write_cancels_pending_drag(write.key(), self.write_back.has_pending())
+        {
+            self.write_back.cancel_pending();
+        }
+        let write = write.clamped();
+        let key = write.key();
+        let Some(handler) = self.config_handler.as_ref() else {
+            log::warn!("no config handler; skipping {} write", key.key_name());
+            return;
+        };
+        match write.persist(handler) {
+            Ok(()) => {
+                // Only a pre-applied write absorbs its echo — geometry
+                // was already applied at release, so the echo must not
+                // reshape. The pre-applied writer is exactly the
+                // height-only drag release (G3 scope). A bare write
+                // records nothing: its echo *is* the apply.
+                if let (
+                    settings::WriteKind::PreApplied,
+                    settings::PlannedWrite::HeightPercent(height),
+                ) = (kind, &write)
+                {
+                    let mut written = Geometry::from_config(&self.config);
+                    written.height_percent = *height;
+                    self.last_written = Some(written);
+                }
+            }
+            Err(err) => log::warn!("failed to persist {}: {err}", key.key_name()),
+        }
+    }
+
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
         let now = std::time::Instant::now();
         if let Some(last) = self.last_toggle
@@ -321,24 +765,54 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
-        let showing = !matches!(self.surface, SurfaceState::Hidden);
-        match action {
-            ToggleAction::Toggle => {
-                if showing {
-                    self.hide()
-                } else {
-                    self.show()
-                }
-            }
-            ToggleAction::Show => {
-                if showing {
-                    Task::none()
-                } else {
-                    self.show()
-                }
-            }
-            ToggleAction::Hide => self.hide(),
+        // The toggle funnel (slide-animation spec, A5): every matrix
+        // cell executes here — most importantly, a mid-hide toggle or
+        // `Show` reverses on the live surface instead of being
+        // dropped. The debounce above already collapses true spam
+        // (~6–7 effective toggles per second at 150 ms, each a full
+        // reversal); the state machine itself never drops or queues.
+        // The slide toggle (settings-ui U2) rides in with the
+        // decision: with it off, a shown surface destroys now instead
+        // of sliding out — day-one equality holds with it on.
+        match toggle_step(action, &self.surface, self.config.slide_animation_enabled) {
+            ToggleStep::Measure => self.show(),
+            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => self.hide(),
+            ToggleStep::ReverseShow(id) => self.reverse_show(id),
+            ToggleStep::Leave => Task::none(),
         }
+    }
+
+    /// Opens the settings window, or focuses the existing one
+    /// (settings-ui spec, U1): one window per process, tracked by id
+    /// — every repeat press routes to `window::gain_focus`, never a
+    /// second window.
+    fn open_settings(&mut self) -> Task<Message> {
+        if let Some(id) = self.settings_window {
+            return window::gain_focus(id);
+        }
+        // The window never closes itself: `exit_on_close_request:
+        // false` turns the ✕ into a `CloseRequested` event the app
+        // handles (`SettingsCloseRequested`) — closing is the app's
+        // decision, never the runtime's, in a layer-shell-only app
+        // that must keep running underneath (settings-ui spec,
+        // criterion 8).
+        let (id, open) = window::open(window::Settings {
+            exit_on_close_request: false,
+            size: cosmic::iced::Size::new(700.0, 760.0),
+            resizable: true,
+            ..window::Settings::default()
+        });
+        self.settings_window = Some(id);
+        // The open task must be returned for the window to appear —
+        // it carries the runtime's window-open command. Its
+        // completion value (the id, already tracked synchronously
+        // above) is discarded; the multi-window example maps it the
+        // same way (a first-focus message this window leaves to the
+        // compositor — nothing here needs a focus task).
+        Task::batch([
+            open.then(|_| Task::none()),
+            self.set_window_title("DropTerm Settings".to_string(), id),
+        ])
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -346,6 +820,11 @@ impl DropTerm {
         // end this fixes: `cargo run` opens a surface with no way to close it).
         if action == Action::Hide {
             return self.hide();
+        }
+        // The settings window opens from the keybind alone — no active
+        // tab required, and it never targets the active terminal.
+        if action == Action::Settings {
+            return self.open_settings();
         }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
@@ -361,6 +840,7 @@ impl DropTerm {
         };
         match action {
             Action::Hide
+            | Action::Settings
             | Action::NewTab
             | Action::CloseTab
             | Action::NextTab
@@ -432,19 +912,24 @@ impl DropTerm {
     fn perform_tab_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::NewTab => {
-                if let Some(tab) = self.spawn_tab() {
+                if let Some(tab) = self.spawn_tab(None) {
                     // Yakuake-style placement: directly after the active
                     // tab, which the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
-                    self.set_active_tab(at);
+                    let switch = self.set_active_tab(at);
+                    // The open itself is a save trigger too
+                    // (session-persistence spec, S3); when the switch
+                    // already armed a window this second mark coalesces
+                    // into it.
+                    return Task::batch([switch, self.mark_session_dirty()]);
                 }
             }
             Action::CloseTab => return self.close_tab_at(self.active_tab),
             Action::NextTab => {
-                self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
+                return self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
             }
             Action::PrevTab => {
-                self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
+                return self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
             }
             _ => unreachable!("not a tab action: {action:?}"),
         }
@@ -458,16 +943,27 @@ impl DropTerm {
     /// by shell exits; `set_focused` reports only real focus changes,
     /// so refocusing a tab that already had focus is a no-op.
     fn close_tab_at(&mut self, index: usize) -> Task<Message> {
+        let closed = self.tabs.get(index).map(|tab| tab.id);
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
             if decision.respawn {
                 self.ensure_tabs();
             }
             self.focus_active_tab();
+            if let Some(id) = closed {
+                self.tab_cwds.remove(&id);
+            }
+            // Every close funnels through here — keybind, tab-bar `×`,
+            // middle-click, and a shell exit (`TermEvent::Exit`) — so
+            // this is the close trigger's single save-marking site
+            // (session-persistence spec, S3).
+            let mark = self.mark_session_dirty();
+            // A close can orphan the rename input (T6): its tab may be
+            // gone, or the bar may have vanished with a single tab
+            // left. End the session so the terminal regains keyboard
+            // focus.
+            return Task::batch([mark, self.prune_rename_session()]);
         }
-        // A close can orphan the rename input (T6): its tab may be gone,
-        // or the bar may have vanished with a single tab left. End the
-        // session so the terminal regains keyboard focus.
         self.prune_rename_session()
     }
 
@@ -482,7 +978,12 @@ impl DropTerm {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == edit.tab) {
                 tabs::commit_rename(&mut tab.title, &mut tab.title_override, &edit.draft);
             }
-            return widget::text_input::focus(self.terminal_id.clone());
+            // A rename commit is a save trigger — but only when a
+            // rename session actually existed (session-persistence
+            // spec, S3); every committing path funnels through here,
+            // so this is its single marking site.
+            let mark = self.mark_session_dirty();
+            return Task::batch([mark, widget::text_input::focus(self.terminal_id.clone())]);
         }
         Task::none()
     }
@@ -504,18 +1005,22 @@ impl DropTerm {
 
     /// Switches the active tab to `index`, reporting the focus change to
     /// both shells (FOCUS_OUT to the outgoing one, FOCUS_IN to the
-    /// incoming one), the same way a window focus change does.
-    fn set_active_tab(&mut self, index: usize) {
+    /// incoming one), the same way a window focus change does. A real
+    /// switch marks the session dirty — the focused index is saved
+    /// state (session-persistence spec, S3); the index-unchanged early
+    /// return never marks.
+    fn set_active_tab(&mut self, index: usize) -> Task<Message> {
         // Cycling with a single tab is a no-op; refocusing it anyway would
         // send the shell a spurious FOCUS_OUT/FOCUS_IN pair.
         if index == self.active_tab {
-            return;
+            return Task::none();
         }
         if let Some(old) = self.active() {
             old.terminal.lock().unwrap().set_focused(false);
         }
         self.active_tab = index;
         self.focus_active_tab();
+        self.mark_session_dirty()
     }
 
     /// Marks the active tab's terminal focused. Used after the tab list
@@ -524,6 +1029,519 @@ impl DropTerm {
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(true);
         }
+    }
+
+    /// Marks the session dirty and arms the debounce window
+    /// (session-persistence spec, S3): at most one `tokio::sleep` is
+    /// ever in flight — a mark while a window is armed coalesces into
+    /// that window's write — and only a mark after a write re-arms.
+    /// Returns the window's timer task when this call armed it, the
+    /// `WindowPinDue`/`WriteDue` pattern.
+    fn mark_session_dirty(&mut self) -> Task<Message> {
+        // The session toggle gates every save trigger (settings-ui
+        // U2): a disabled trigger no-ops — no dirty mark, no debounce
+        // window, no timer task — so a mid-run disable stops further
+        // saves immediately.
+        match self
+            .session_save
+            .mark_gated(self.config.session_persistence_enabled)
+        {
+            Some(generation) => Task::perform(
+                tokio::time::sleep(session::SESSION_WRITE_INTERVAL),
+                move |_| cosmic::Action::App(Message::SessionSaveDue(generation)),
+            ),
+            None => Task::none(),
+        }
+    }
+
+    /// Captures the live tab list and writes the session file
+    /// atomically (session-persistence spec, S3). The cwd readlinks
+    /// happen here — at write time, not schedule time — so saved cwds
+    /// are as fresh as the debounce allows; `capture` then
+    /// staleness-filters each one. A failed write logs and leaves the
+    /// old file in place: the next dirty window retries.
+    fn write_session(&mut self) {
+        let cwds: Vec<Option<PathBuf>> = self
+            .tabs
+            .iter()
+            .map(|tab| tab.terminal.lock().unwrap().working_directory())
+            .collect();
+        let snapshots: Vec<session::TabSnapshot<'_>> = self
+            .tabs
+            .iter()
+            .zip(&cwds)
+            .map(|(tab, cwd)| session::TabSnapshot {
+                title: &tab.title,
+                title_override: tab.title_override.as_deref(),
+                shell: &tab.shell,
+                cwd: cwd.as_deref(),
+            })
+            .collect();
+        let state = session::capture(&snapshots, self.active_tab);
+        if let Err(err) = session::save_atomic(&session::state_file_path(), &state) {
+            log::warn!("failed to write session file: {err}");
+        }
+    }
+
+    /// The cwd-change gate on a shell title event
+    /// (session-persistence spec, S3): one readlink, compared against
+    /// the tab's cached cwd. A moved cwd marks the session dirty and
+    /// updates the cache; a title churn with the cwd holding — a vim
+    /// statusline — stays quiet (Guake's change-gated cadence).
+    fn check_tab_cwd(&mut self, tab_index: usize) -> Task<Message> {
+        let tab_id = self.tabs[tab_index].id;
+        let cwd = self.tabs[tab_index]
+            .terminal
+            .lock()
+            .unwrap()
+            .working_directory();
+        if session::cwd_changed(
+            self.tab_cwds.get(&tab_id).and_then(Option::as_deref),
+            cwd.as_deref(),
+        ) {
+            self.tab_cwds.insert(tab_id, cwd);
+            return self.mark_session_dirty();
+        }
+        Task::none()
+    }
+}
+
+/// Whether a `ConfigChanged` may reshape a shown surface in place
+/// (geometry spec, G2 + G3; slide-animation spec, A3): pure so the
+/// guard is headless-testable (constructing `DropTerm` needs a live
+/// `Core`). The geometry must actually have changed; a drag armed
+/// mid-edit defers the reshape to the release settle (G3, so config
+/// reshapes and drag deltas never interleave `set_size` calls); a
+/// slide animating defers it to the next show — geometry stays frozen
+/// while animating, the module's boundary. The in-memory config still
+/// updates on every path (the caller does that first); only the live
+/// reshape is gated.
+fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
+    geometry_changed && !drag_armed && !slide_animating
+}
+
+/// What a toggle-intent request must do with the surface
+/// (slide-animation spec, A5; settings-ui spec, U2): pure so the
+/// decision is headless-testable (constructing `DropTerm` needs a
+/// live `Core`). Every toggle caller funnels through here — the
+/// toggle hotkey and D-Bus activation (`debounced_toggle`), plus
+/// `Ctrl+Shift+Q` and focus loss through `hide`'s `Hide` column —
+/// so the full state × intent matrix lives in one place and
+/// reversibility (criterion 6) is just another cell. Slide activity
+/// needs no separate input: it is implied by the state — an `Out`
+/// slide only exists while `Hiding`, an `In` slide only rides a
+/// `Shown` surface — and the executors read the live slide for
+/// offsets.
+///
+/// `slide_animation_enabled` (settings-ui U2) gates transition
+/// *entry* only: it swaps the `Shown`-hide cell between sliding out
+/// and destroying now — the destroy *style*, never the direction.
+/// The helper takes no mid-flight input by construction, so a
+/// running slide is never aborted by its own toggle: the `Hiding`
+/// cells (destroy-on-completion, reversal) key on state alone and
+/// ignore the flag entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToggleStep {
+    /// Run the measuring show pass (a hidden surface only): measure
+    /// → reshape → shown, then slide in (A3).
+    Measure,
+    /// Destroy immediately: a measuring surface has no reshaped
+    /// content to animate (criterion 8), so it keeps the immediate
+    /// destroy the app had before animated hides existed.
+    DestroyNow(window::Id),
+    /// Slide out from the current offset and destroy on the slide's
+    /// completion tick (criterion 2). Keyboard interactivity releases
+    /// at slide-out start (criterion 5).
+    SlideOut(window::Id),
+    /// Reverse a hiding slide back to shown on the same live surface
+    /// (criterion 6): no new measuring pass — `output_size` is
+    /// retained — the slide re-targets `In` from the current offset,
+    /// keyboard interactivity is re-grabbed per config, and
+    /// `surface_focused` resets pending the next `LayerFocused`.
+    ReverseShow(window::Id),
+    /// Nothing: the intent is already satisfied — a hide while
+    /// hiding or hidden (no restart, no double destroy), a show
+    /// while measuring or shown.
+    Leave,
+}
+
+fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool) -> ToggleStep {
+    match (action, surface) {
+        // Show intents: only a hidden surface starts the measuring
+        // pass; a hiding one reverses (criterion 6); a measuring or
+        // shown one is already on its way. None of these cells key on
+        // the slide toggle — a hiding surface always reverses on the
+        // live slide, whatever the flag says now (never aborted).
+        (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hidden) => ToggleStep::Measure,
+        (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hiding(id)) => {
+            ToggleStep::ReverseShow(*id)
+        }
+        (ToggleAction::Show, SurfaceState::Measuring(_) | SurfaceState::Shown(_)) => {
+            ToggleStep::Leave
+        }
+        // Hide intents — and a toggle on any visible surface: a
+        // measuring surface dies now (criterion 8), a hiding or hidden
+        // one stays put (A4 idempotence — no restart, no double
+        // destroy). A shown one slides out (criterion 2; mid-slide-in
+        // the executor starts from the live eased offset) — or, with
+        // the slide toggle off (settings-ui U2), destroys now: instant
+        // hide, the pre-slide-animation behavior (spec criterion 7).
+        (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Measuring(id)) => {
+            ToggleStep::DestroyNow(*id)
+        }
+        (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Shown(id)) => {
+            if slide_enabled {
+                ToggleStep::SlideOut(*id)
+            } else {
+                ToggleStep::DestroyNow(*id)
+            }
+        }
+        (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
+    }
+}
+
+/// Whether a `LayerUnfocused` event for `id` should reach
+/// [`DropTerm::focus_lost`] (slide-animation spec, A5 guards audit):
+/// only a shown surface reacts to losing keyboard focus — one
+/// arriving while `Hiding` (the synthesized unfocus of the hide's
+/// own keyboard release, or a racing focus loss) is a no-op, so it
+/// can never restart or double-drive the out-slide.
+fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
+    matches!(surface, SurfaceState::Shown(shown) if *shown == id)
+}
+
+/// Whether the grab-bar drag handlers may act (slide-animation spec,
+/// A6 frozen-geometry audit): pure so the guard is headless-testable,
+/// the [`config_edit_reshapes`]/[`layer_unfocused_acts_on`] seam
+/// style. A drag must only ever run on a shown surface at rest: the
+/// `Hiding` arm excludes out-slides and their reversals by state, and
+/// the slide arm excludes slide-ins — which ride a `Shown` surface,
+/// so the surface state alone cannot gate them (the audit's catch:
+/// a press inside the 130 ms window must not arm a drag, or the
+/// first cadence-eligible move would fire `set_size` on the
+/// animating surface). Gating the *arming* here covers the trailing
+/// `DragApplyDue` and the `GrabBarReleased` settle by construction:
+/// both only act on an armed drag, no drag can arm while a slide
+/// animates, and `hide()` clears any live drag before any slide can
+/// start. A throttled press is simply inert — the surface rests in
+/// at most 130 ms and the next press drags normally.
+fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
+    matches!(surface, SurfaceState::Shown(_)) && !slide_animating
+}
+
+/// Whether a `WindowResized` event for `id` may feed the
+/// terminal-height pin (settings-ui spec, U1): only the tracked layer
+/// surface's granted sizes count — the settings window is resizable
+/// too, and its heights must never pin the terminal's. For
+/// layer-surface events this is byte-identical with the single-window
+/// behavior (every state that tracks the surface accepted them; the
+/// settings window is the only new source), the
+/// [`layer_unfocused_acts_on`] seam style.
+fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
+    matches!(
+        surface,
+        SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) | SurfaceState::Hiding(shown)
+            if *shown == id
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geometry_edit_mid_slide_skips_the_in_place_reshape() {
+        // A3's frozen-geometry boundary: an edit arriving while the
+        // content slides must not fire `set_size` on the animating
+        // surface — the edit lands on the next show instead.
+        assert!(!config_edit_reshapes(true, false, true));
+    }
+
+    #[test]
+    fn geometry_edit_at_rest_reshapes_in_place() {
+        assert!(config_edit_reshapes(true, false, false));
+    }
+
+    #[test]
+    fn geometry_edit_mid_drag_still_defers_to_release() {
+        assert!(!config_edit_reshapes(true, true, false));
+    }
+
+    #[test]
+    fn non_geometry_edit_never_reshapes() {
+        assert!(!config_edit_reshapes(false, false, false));
+    }
+
+    #[test]
+    fn drag_and_slide_together_still_skip_the_reshape() {
+        assert!(!config_edit_reshapes(true, true, true));
+    }
+
+    // --- A6: the grab-bar guard (slide-animation spec, criterion 4) ---
+    //
+    // `GrabBarDragged` was the one geometry-call site reachable while
+    // a slide animates: a slide-in rides a `Shown` surface, so
+    // matching `Shown` alone does not exclude it — a press inside the
+    // 130 ms window must neither arm a drag nor send `set_size` on
+    // the animating surface. With arming gated, `DragApplyDue` and
+    // `GrabBarReleased` are covered by construction: they only act on
+    // an armed drag, and `hide()` clears any live drag before a
+    // slide can start.
+
+    #[test]
+    fn grab_bar_drag_at_rest_acts() {
+        let id = window::Id::unique();
+        assert!(grab_bar_acts_on(&SurfaceState::Shown(id), false));
+    }
+
+    #[test]
+    fn grab_bar_drag_mid_slide_in_does_not_act() {
+        // The frozen-geometry audit's catch: a slide-in runs in
+        // `Shown`, so the surface state alone cannot gate the drag —
+        // the guard needs the slide's existence too.
+        let id = window::Id::unique();
+        assert!(!grab_bar_acts_on(&SurfaceState::Shown(id), true));
+    }
+
+    #[test]
+    fn grab_bar_drag_ignores_every_non_shown_state() {
+        // A5's by-construction exclusion, now pinned: a `Hiding`
+        // surface rejects drag messages (no interleave with an
+        // out-slide or its reversal); Measuring/Hidden never arm one.
+        let id = window::Id::unique();
+        assert!(!grab_bar_acts_on(&SurfaceState::Hiding(id), false));
+        assert!(!grab_bar_acts_on(&SurfaceState::Measuring(id), false));
+        assert!(!grab_bar_acts_on(&SurfaceState::Hidden, false));
+    }
+
+    // --- A5: the toggle decision matrix (slide-animation spec) ---
+    //
+    // `toggle_step` decides over intent × surface state; slide
+    // activity needs no separate input because it is implied by the
+    // state — an `Out` slide only exists while `Hiding`, an `In`
+    // slide only rides a `Shown` surface — and the executors read
+    // the live slide for their offsets (A4's `hide`, A5's
+    // `reverse_show` via `slide::reverse`).
+
+    #[test]
+    fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hidden, true),
+            ToggleStep::Measure
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hidden, true),
+            ToggleStep::Measure
+        );
+    }
+
+    #[test]
+    fn toggle_or_hide_from_measuring_destroys_immediately() {
+        // Criterion 8: a measuring surface has no reshaped content
+        // to animate — the surface dies now, not in 130 ms, exactly
+        // as before animated hides existed.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(id), true),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id), true),
+            ToggleStep::DestroyNow(id)
+        );
+    }
+
+    #[test]
+    fn toggle_or_hide_from_shown_slides_out() {
+        // Criterion 2: slide out, destroy on completion. Mid-slide-in
+        // the same cell applies — the executor starts the out-slide
+        // from the live eased offset (A4's `hide`), so nothing
+        // teleports.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id), true),
+            ToggleStep::SlideOut(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), true),
+            ToggleStep::SlideOut(id)
+        );
+    }
+
+    #[test]
+    fn toggle_or_show_mid_hiding_reverses_on_the_same_surface() {
+        // Criterion 6: a mid-hide toggle reverses instead of being
+        // dropped — and on the SAME window::Id: the live surface is
+        // reused (no new measuring pass) and `reverse_show` re-grabs
+        // keyboard interactivity on it per config.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id), true),
+            ToggleStep::ReverseShow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id), true),
+            ToggleStep::ReverseShow(id)
+        );
+    }
+
+    #[test]
+    fn show_while_measuring_or_shown_is_already_satisfied() {
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Measuring(id), true),
+            ToggleStep::Leave
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Shown(id), true),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn hide_while_hiding_neither_restarts_nor_double_destroys() {
+        // A4 idempotence carried into the matrix: `WindowUnfocused`
+        // reaches `focus_lost` unguarded, and the keyboard release
+        // synthesizes its own `Unfocused` — a second hide request
+        // must neither restart the out-slide nor queue a second
+        // destroy task.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hiding(id), true),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn hide_while_hidden_destroys_nothing_in_the_matrix() {
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, true),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn a_hide_intent_never_decides_to_show() {
+        // Pins `hide()`'s unreachable arms as intended behavior: the
+        // hide column of the matrix only ever destroys, slides out,
+        // or leaves — under either slide-toggle value (settings-ui
+        // U2: the flag swaps the destroy *style*, never the
+        // direction).
+        let id = window::Id::unique();
+        for slide_enabled in [true, false] {
+            for surface in [
+                SurfaceState::Hidden,
+                SurfaceState::Measuring(id),
+                SurfaceState::Shown(id),
+                SurfaceState::Hiding(id),
+            ] {
+                assert!(matches!(
+                    toggle_step(ToggleAction::Hide, &surface, slide_enabled),
+                    ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) | ToggleStep::Leave
+                ));
+            }
+        }
+    }
+
+    // --- settings-ui U2: the slide toggle in the toggle matrix ---
+
+    #[test]
+    fn shown_hide_with_slides_disabled_destroys_immediately() {
+        // The one cell the slide toggle owns: a hide from `Shown`
+        // with the key off destroys now — instant hide with
+        // immediate destroy, the pre-slide-animation behavior (spec
+        // criterion 7). Applies to a plain hide and a toggle alike.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+    }
+
+    #[test]
+    fn hiding_reversal_ignores_the_slide_toggle() {
+        // The never-aborted reading (spec criterion 4): a running
+        // out-slide belongs to the enabled machine that started it —
+        // a show intent mid-hide still reverses on the live surface
+        // with the key off. The toggle gates transition ENTRY only;
+        // `toggle_step` takes no mid-flight input by construction.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hiding(id), false),
+            ToggleStep::ReverseShow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id), false),
+            ToggleStep::ReverseShow(id)
+        );
+    }
+
+    #[test]
+    fn measuring_and_hidden_cells_ignore_the_slide_toggle() {
+        // Only the Shown-hide cell keys on the flag: a measuring
+        // surface always died immediately (criterion 8, no content
+        // to animate), hidden always measures, and a disabled hide
+        // while hidden still leaves.
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id), false),
+            ToggleStep::DestroyNow(id)
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Show, &SurfaceState::Hidden, false),
+            ToggleStep::Measure
+        );
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, false),
+            ToggleStep::Leave
+        );
+    }
+
+    #[test]
+    fn layer_unfocused_while_hiding_is_rejected_by_the_shown_guard() {
+        // The A5 guards audit: only a shown surface reacts to losing
+        // keyboard focus — during `Hiding` (the synthesized unfocus
+        // of the hide's own keyboard release) the event must be a
+        // no-op.
+        let id = window::Id::unique();
+        assert!(layer_unfocused_acts_on(&SurfaceState::Shown(id), id));
+        assert!(!layer_unfocused_acts_on(&SurfaceState::Hiding(id), id));
+        assert!(!layer_unfocused_acts_on(
+            &SurfaceState::Shown(window::Id::unique()),
+            id
+        ));
+    }
+
+    #[test]
+    fn resize_from_the_tracked_surface_feeds_the_pin() {
+        // The granted-size stream that pins the terminal height
+        // belongs to the layer surface alone (settings-ui spec, U1):
+        // every state tracking that surface accepts its resizes,
+        // matching the pre-settings-window behavior for the only
+        // window that existed then.
+        let id = window::Id::unique();
+        assert!(resize_acts_on(&SurfaceState::Measuring(id), id));
+        assert!(resize_acts_on(&SurfaceState::Shown(id), id));
+        assert!(resize_acts_on(&SurfaceState::Hiding(id), id));
+    }
+
+    #[test]
+    fn resize_from_a_foreign_window_never_feeds_the_pin() {
+        // The settings window is resizable too, and its heights must
+        // never pin the terminal's; a hidden surface tracks no window
+        // at all.
+        let surface_id = window::Id::unique();
+        let settings_id = window::Id::unique();
+        assert!(!resize_acts_on(
+            &SurfaceState::Shown(surface_id),
+            settings_id
+        ));
+        assert!(!resize_acts_on(&SurfaceState::Hidden, settings_id));
+        assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
     }
 }
 
@@ -576,6 +1594,23 @@ impl Application for DropTerm {
                 }
             };
 
+        // The session file is one small synchronous read
+        // (session-persistence spec, S2): stashed here — before any
+        // message can spawn a tab — so restore structurally precedes
+        // the first `ensure_tabs`, whichever startup message reaches
+        // the funnel first. A missing or invalid file stashes
+        // nothing (and was already quarantined with a warning inside
+        // `load`), keeping first-run startup silent. The session
+        // toggle gates the whole entry (settings-ui U2): disabled, the
+        // file is not even read — nothing restores, and the file on
+        // disk waits untouched for a future launch with the key on.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let restore = session::restore_entry(
+            &session::state_file_path(),
+            home.as_deref(),
+            config.session_persistence_enabled,
+        );
+
         let mut app = Self {
             core,
             config_handler,
@@ -585,13 +1620,25 @@ impl Application for DropTerm {
             terminal_id: widget::Id::unique(),
             term_event_tx: None,
             next_tab_id: 0,
+            restore,
+            session_save: session::SessionSave::default(),
+            tab_cwds: HashMap::new(),
             rename: None,
+            drag: None,
+            write_back: geometry::WriteBack::default(),
+            last_written: None,
             rename_input_id: widget::Id::unique(),
             surface: SurfaceState::Hidden,
+            output_size: None,
             window_height: None,
+            pin_applied: None,
+            pending_height: None,
             surface_focused: false,
             key_binds: default_key_binds(),
             last_toggle: None,
+            slide: None,
+            settings_window: None,
+            settings_buffer: settings::SettingsBuffer::default(),
         };
         app.refresh_window_bg_color();
 
@@ -625,8 +1672,17 @@ impl Application for DropTerm {
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
             }
+            // The settings window's ✕ (settings-ui spec, U1): it never
+            // closes itself (`exit_on_close_request: false`), so the
+            // request lands here for the app to act on — the same
+            // listen seam the multi-window example uses. A foreign id
+            // (the layer surface never requests a close) matches
+            // nothing in the handler and is inert.
+            Event::Window(cosmic::iced::window::Event::CloseRequested) => {
+                Some(Message::SettingsCloseRequested(id))
+            }
             Event::Window(cosmic::iced::window::Event::Resized(size)) => {
-                Some(Message::WindowResized(size.height))
+                Some(Message::WindowResized(id, size.height))
             }
             Event::Keyboard(KeyEvent::KeyPressed {
                 key,
@@ -683,6 +1739,15 @@ impl Application for DropTerm {
             }),
         );
 
+        // Slide clock (slide-animation spec, A3): redraw-only ticks
+        // while a slide is live — 1 ms saturation so every compositor
+        // frame window contains a pending redraw request (see
+        // `SLIDE_TICK`). The stream is dropped the moment the slide
+        // parks — idle time costs no ticks.
+        if self.slide.is_some() {
+            subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SlideTick));
+        }
+
         Subscription::batch(subs)
     }
 
@@ -708,8 +1773,49 @@ impl Application for DropTerm {
         match message {
             Message::ToggleAction(action) => return self.debounced_toggle(action),
             Message::ConfigChanged(config) => {
+                let old_geom = Geometry::from_config(&self.config);
+                let new_geom = Geometry::from_config(&config);
                 self.config = config;
                 self.apply_config_to_tabs();
+                // Our own write's echo (geometry spec, G4): geometry
+                // matching the last write is absorbed — the in-memory
+                // config already agrees (updated at release), so no
+                // rewrite and no reshape; only the record is cleared.
+                // A stale record that never matches is harmless: an
+                // echo matching all four fields needs no reshape
+                // anyway.
+                if let Some(written) = self.last_written
+                    && geometry::is_own_write(&written, &new_geom)
+                {
+                    self.last_written = None;
+                    return Task::none();
+                }
+                // Geometry edits reshape a shown surface in place
+                // (geometry spec, G2) — no destroy/recreate; a hidden
+                // surface just opens with the new geometry. Non-geometry
+                // edits leave the surface alone. A geometry edit that
+                // arrives mid-drag (G3+) is deferred until release, so
+                // config reshapes and drag deltas never interleave
+                // `set_size` calls on one surface; the release's apply
+                // picks the config's other fields up (see
+                // `GrabBarReleased`). A geometry edit arriving mid-slide
+                // (slide-animation A3) skips the in-place reshape too —
+                // geometry stays frozen while animating; the in-memory
+                // config above already updated, so the next show opens
+                // with the edit applied (a 130 ms exposure window,
+                // cheaper than a deferred-reshape queue). A5 audit:
+                // `config_edit_reshapes` keys on the slide's
+                // existence, not its direction, so this holds
+                // mid-slide-out and mid-reversal alike.
+                if config_edit_reshapes(
+                    geometry::geometry_changed(&old_geom, &new_geom),
+                    self.drag.is_some(),
+                    self.slide.is_some(),
+                ) && let (SurfaceState::Shown(id), Some(output)) =
+                    (&self.surface, self.output_size)
+                {
+                    return geometry::apply_geometry(*id, &new_geom, output);
+                }
             }
             Message::TermEventTx(tx) => {
                 if self.term_event_tx.is_none() {
@@ -720,12 +1826,35 @@ impl Application for DropTerm {
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
             Message::SurfaceOpened(id, size) => {
                 if self.surface == SurfaceState::Measuring(id) {
-                    let height_px =
-                        surface::surface_height(size.height, self.config.height_percent);
+                    // The measuring pass stretched across the output, so
+                    // its first `Opened` size *is* the output size. Keep
+                    // it: every later reshape recomputes pixels from it
+                    // without a new measuring pass.
+                    let output = (size.width.round() as u32, size.height.round() as u32);
+                    self.output_size = Some(output);
+                    let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
+                    // The slide-in starts here, with the shown surface
+                    // (slide-animation spec, A3): the full surface
+                    // height is both the from-offset and the distance
+                    // — deterministic and known at open time, unlike
+                    // the granted window height, which arrives later
+                    // through the double-reported `WindowResized`
+                    // stream (the plan's pinned distance source). The
+                    // slide toggle gates this entry (settings-ui U2):
+                    // disabled, the surface opens at rest — the
+                    // pre-slide-animation behavior, byte-equal render.
+                    let distance_px =
+                        geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
+                    self.slide =
+                        slide::show_slide(self.config.slide_animation_enabled, distance_px).map(
+                            |active| slide::Playing {
+                                started: std::time::Instant::now(),
+                                active,
+                            },
+                        );
                     return Task::batch([
-                        set_anchor(id, surface::edge_anchor(self.config.edge)),
-                        set_size(id, None, Some(height_px)),
+                        geometry::apply_geometry(id, &geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
                         set_keyboard_interactivity(
                             id,
@@ -736,8 +1865,41 @@ impl Application for DropTerm {
                     ]);
                 }
             }
-            Message::WindowResized(height) => {
-                self.window_height = Some(height);
+            Message::WindowResized(id, height) => {
+                // Only the tracked layer surface's granted stream feeds
+                // the pin (`resize_acts_on`): the settings window
+                // resizes too (settings-ui spec, U1) and its heights
+                // must never pin the terminal's.
+                //
+                // While a drag is armed, the granted size only echoes
+                // the applies the drag itself made — each one
+                // double-reported, once with the previous height (the
+                // runtime synthesizes a configure per set_size whose
+                // height slot is stale), so following the echoes would
+                // bounce the pin stale/new on every move: the applies
+                // offer their targets directly instead. Outside a
+                // drag, every granted height is offered through the
+                // adoption debounce — each size arrives twice and the
+                // applies arrive at cadence rate, and reflowing the
+                // terminal on every echo made the drag sluggish on
+                // hardware.
+                if resize_acts_on(&self.surface, id)
+                    && self.drag.is_none()
+                    && let Some(task) = self.offer_window_height(height)
+                {
+                    return task;
+                }
+            }
+            Message::WindowPinDue => {
+                // Trailing adopt: a height the debounce skipped lands
+                // once the granted stream settles. The timer waited
+                // out the interval, so the gate passes; a stale fire
+                // with nothing pending does nothing.
+                if let Some(height) = self.pending_height
+                    && let Some(task) = self.offer_window_height(height)
+                {
+                    return task;
+                }
             }
             Message::LayerFocused(id) => {
                 if self.surface == SurfaceState::Shown(id) {
@@ -749,7 +1911,7 @@ impl Application for DropTerm {
                 }
             }
             Message::LayerUnfocused(id) => {
-                if self.surface == SurfaceState::Shown(id) {
+                if layer_unfocused_acts_on(&self.surface, id) {
                     return self.focus_lost();
                 }
             }
@@ -784,7 +1946,7 @@ impl Application for DropTerm {
                 // the current list so a list change between redraw and
                 // click cannot act on the wrong tab.
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
-                    self.set_active_tab(index);
+                    return self.set_active_tab(index);
                 }
             }
             Message::TabClosed(id) => {
@@ -822,6 +1984,204 @@ impl Application for DropTerm {
                 // focus handoff is needed.
                 if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+                    // The saved tab order is tab-bar order, so a
+                    // reorder is a save trigger
+                    // (session-persistence spec, S3).
+                    return self.mark_session_dirty();
+                }
+            }
+            Message::GrabBarDragged(pointer_y) => {
+                // Guards audit (A5, corrected by A6): the drag
+                // handlers (`GrabBarDragged`, `DragApplyDue`,
+                // `GrabBarReleased`) all match `Shown` exclusively,
+                // so a `Hiding` surface ignores every drag message by
+                // construction — no drag can interleave with an
+                // out-slide or its reversal. A slide-in, though,
+                // rides a `Shown` surface, so `Shown` alone cannot
+                // gate it: `grab_bar_acts_on` additionally requires
+                // the slide to be idle (the A6 frozen-geometry
+                // audit's catch — a press inside the 130 ms window
+                // neither arms a drag nor resizes the animating
+                // surface; the pointer-to-content mapping is offset
+                // mid-slide anyway).
+                //
+                // Live drag (geometry spec, G3): arm on the first move
+                // — anchored at the height the surface has right now —
+                // then retarget absolutely per move in pixels: one
+                // pixel of pointer travel is one pixel of surface, and
+                // the target recomputes from the height actually
+                // applied, so the moving window frame of a
+                // bottom-anchored surface cannot eat travel. Width and
+                // alignment always come from the config (a drag can
+                // never snap a narrow surface to fill). Applies pass a
+                // deadbanded, interval-gated cadence
+                // (geometry::drag_apply_due) — every apply reaches the
+                // app twice (the runtime double-reports each set_size)
+                // and reflows the terminal, so a fast drag cannot be
+                // allowed to storm the pipeline; skipped targets land
+                // via a trailing apply, and the release settle is
+                // exact and immediate. Config is never touched while
+                // dragging (a "never" boundary of the module);
+                // persistence is G4's release path.
+                if grab_bar_acts_on(&self.surface, self.slide.is_some())
+                    && let (SurfaceState::Shown(id), Some(output)) =
+                        (&self.surface, self.output_size)
+                {
+                    let anchored_px = geometry::surface_height(
+                        output.1 as f32,
+                        Geometry::from_config(&self.config).height_percent,
+                    );
+                    let drag = self.drag.get_or_insert(Drag {
+                        anchor: geometry::DragAnchor {
+                            anchored_px,
+                            applied_px: anchored_px,
+                            press_y: pointer_y,
+                        },
+                        pointer_y,
+                        applied: None,
+                    });
+                    drag.pointer_y = pointer_y;
+                    let target = geometry::drag_target_px(
+                        self.config.edge,
+                        output.1,
+                        drag.anchor,
+                        pointer_y,
+                    );
+                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
+                        return self.apply_drag_target(*id, output, target);
+                    }
+                    // Throttled: land the latest target even if the
+                    // pointer pauses inside the interval. A stale fire
+                    // is a no-op — the apply path re-checks the gate.
+                    return Task::perform(
+                        tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
+                        |_| cosmic::Action::App(Message::DragApplyDue),
+                    );
+                }
+            }
+            Message::DragApplyDue => {
+                // Trailing apply of a throttled live drag (geometry
+                // spec, G3): recompute from the latest reported
+                // pointer position and apply if the gate allows; a
+                // fire after the drag ended (or with nothing changed)
+                // does nothing.
+                if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size)
+                    && let Some(drag) = self.drag.as_ref()
+                {
+                    let target = geometry::drag_target_px(
+                        self.config.edge,
+                        output.1,
+                        drag.anchor,
+                        drag.pointer_y,
+                    );
+                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
+                        return self.apply_drag_target(*id, output, target);
+                    }
+                }
+            }
+            Message::GrabBarReleased => {
+                // The settle: the dragged pixels quantize to a whole
+                // percent once — the surface may snap by at most half a
+                // percent, the accepted tolerance, and then matches the
+                // percent G4 persists. The settle targets where the
+                // pointer released (the latest move), not the last
+                // target the cadence landed: throttling must never
+                // decide the final height. The in-memory config updates
+                // immediately — so a hide/show inside the debounce
+                // window reopens at the new height — and one write
+                // follows after the window, canceled by any newer drag
+                // that settles first. Re-applying also flushes a config
+                // edit that arrived mid-drag and was deferred (see
+                // `ConfigChanged`): width and alignment come from the
+                // current config, the height from the drag — the hand
+                // outranks the file.
+                if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
+                    (self.drag.take(), &self.surface, self.output_size)
+                {
+                    let geom = self.settled_geometry(&drag, output);
+                    // Write-only-if-changed: a drag that settles back
+                    // on the config's current percent persists nothing.
+                    if geom.height_percent != self.config.height_percent {
+                        self.config.height_percent = geom.height_percent;
+                        let generation = self.write_back.schedule(geom.height_percent).generation;
+                        return Task::batch([
+                            geometry::apply_geometry(*id, &geom, output),
+                            Task::perform(
+                                tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
+                                move |_| cosmic::Action::App(Message::WriteDue(generation)),
+                            ),
+                        ]);
+                    }
+                    return geometry::apply_geometry(*id, &geom, output);
+                }
+            }
+            Message::WriteDue(generation) => {
+                // The debounce window elapsed: persist the settled
+                // height once through the shared write seam
+                // (settings-ui spec, U3) — unless a newer drag
+                // rescheduled or a bare settings write canceled (the
+                // stale generation finds nothing pending).
+                // `PreApplied` because the release already applied the
+                // geometry: the seam records the written geometry so
+                // the resulting `ConfigChanged` echo is absorbed
+                // instead of reshaping (see `ConfigChanged`) — G4's
+                // behavior, byte-identical.
+                if let Some(pending) = self.write_back.due(generation) {
+                    self.write_config(
+                        settings::WriteKind::PreApplied,
+                        settings::PlannedWrite::HeightPercent(pending.height_percent),
+                    );
+                }
+            }
+            Message::SessionSaveDue(generation) => {
+                // The debounce window elapsed: capture the live tabs
+                // now and write atomically — cwds are read at write
+                // time, so a window always persists what is true at
+                // its close, not what was true when it was armed
+                // (session-persistence spec, S3). A stale generation —
+                // superseded, or a duplicate delivery after the write —
+                // writes nothing. The session toggle gates the write
+                // itself (settings-ui U2): a window armed before a
+                // mid-run disable fires into a no-write, but the
+                // machine still clears, so no zombie window ever
+                // blocks the next armed one.
+                if self
+                    .session_save
+                    .due_writes(generation, self.config.session_persistence_enabled)
+                {
+                    self.write_session();
+                }
+            }
+            Message::SlideTick => {
+                // Redraw-only clock (slide-animation spec, A3): the
+                // eased offset is evaluated at draw time inside
+                // `SlideBox`, so the tick's only job is parking the
+                // slide once the duration has fully elapsed — which
+                // also drops the tick subscription until the next
+                // slide. Between completion and this parking tick the
+                // draw already clamps to exactly the endpoint, so
+                // there is no pop.
+                if let Some(playing) = self.slide
+                    && slide::finished(
+                        &playing.active,
+                        playing.started.elapsed().as_millis() as u64,
+                    )
+                {
+                    self.slide = None;
+                    // The animated hide's destroy point (slide-animation
+                    // spec, A4): an `Out` slide's completion is the only
+                    // path that destroys a hiding surface — the app's
+                    // single `destroy_layer_surface` seam for shown
+                    // surfaces, now reached through the state machine's
+                    // completion event. Teardown note (criterion 8):
+                    // app teardown has no graceful path — process exit
+                    // destroys the surface compositor-side, inherently
+                    // immediate; any future quit action must bypass the
+                    // slide and destroy straight away, like this does.
+                    if let SurfaceState::Hiding(id) = self.surface {
+                        self.surface = SurfaceState::Hidden;
+                        return destroy_layer_surface(id);
+                    }
                 }
             }
             Message::OpenHyperlink(url) => {
@@ -834,6 +2194,71 @@ impl Application for DropTerm {
                     tab.terminal.lock().unwrap().paste(text);
                 }
             }
+            Message::SettingsCloseRequested(id) => {
+                // The settings window's single close funnel (settings-ui
+                // spec, U1): the ✕ arrives as `CloseRequested` (the
+                // window never closes itself), so the app clears its
+                // tracking and issues the close. The window's `Closed`
+                // event then reaches `on_close_requested`, which only
+                // sends this message again when the id somehow survived
+                // — a no-op here, since `take` already matched nothing
+                // and `window::close` on a dead id is inert. The app
+                // itself keeps running: this is not the main window and
+                // `exit_on_close(false)` stands (criterion 8). U4: the
+                // draft buffer clears here too, so a reopened window
+                // starts purely from config (criterion 8, no stale
+                // state).
+                self.settings_buffer.clear();
+                if self.settings_window.take() == Some(id) {
+                    return window::close(id);
+                }
+            }
+            Message::Settings(event) => {
+                // The settings window's commit funnel (settings-ui
+                // spec, U4): every event resolves through a pure
+                // planner and lands as one `Bare` write on the shared
+                // seam — the window never applies anything itself, the
+                // `ConfigChanged` echo drives every apply (criterion
+                // 3). Display-only events (drafts, slider moves) touch
+                // just the buffer; commits that fail to parse are
+                // no-ops that leave the draft for the user to fix.
+                match event {
+                    settings::SettingsEvent::Draft(field, text) => {
+                        self.settings_buffer.set_text(field, text);
+                    }
+                    settings::SettingsEvent::Submitted(field, text) => {
+                        if let Some(write) = settings::submit_write(field, &text) {
+                            // A parsed submit clears its draft so the
+                            // input falls back to the echoed config
+                            // value; a rejected one keeps the draft.
+                            self.settings_buffer.clear_text(field);
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::SliderMoved(key, value) => {
+                        self.settings_buffer.set_slider(key, value);
+                    }
+                    settings::SettingsEvent::SliderReleased(key) => {
+                        // `on_release` carries no value (the pinned
+                        // rev's API), so the release commits the
+                        // buffered position the readout showed.
+                        let value = self.settings_buffer.slider_value(key, &self.config);
+                        if let Some(write) = settings::slider_release_write(key, value) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::Picked(key, index) => {
+                        if let Some(write) = settings::dropdown_write(key, index) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                    settings::SettingsEvent::Toggled(key, checked) => {
+                        if let Some(write) = settings::toggle_write(key, checked) {
+                            self.write_config(settings::WriteKind::Bare, write);
+                        }
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -843,11 +2268,23 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
+        // The settings window (settings-ui spec, U4): the sectioned
+        // instant-apply view — rendered from config with buffered
+        // drafts winning while they exist, events mapped into the
+        // app's `Message::Settings` funnel.
+        if self.settings_window == Some(id) {
+            return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
+        }
         let Some(tab) = self.active() else {
             return widget::text("").into();
         };
-        if !matches!(&self.surface, SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) if *shown == id)
-        {
+        if !matches!(
+            &self.surface,
+            SurfaceState::Measuring(shown)
+                | SurfaceState::Shown(shown)
+                | SurfaceState::Hiding(shown)
+                if *shown == id
+        ) {
             return widget::text("").into();
         }
 
@@ -870,10 +2307,22 @@ impl Application for DropTerm {
             .on_window_unfocused(|| Message::WindowUnfocused)
             .into();
 
-        // The bar appears only with more than one tab and sits on the
-        // surface edge opposite the screen edge (tabs spec): below the
-        // terminal when top-anchored, above it when bottom-anchored.
-        if self.tabs.len() > 1 {
+        // Stacking from the screen edge (geometry spec, criterion 9):
+        // content, tab bar (only with more than one tab, tabs spec),
+        // grab bar on the free edge. The bars take their strips out of
+        // the terminal's pinned height (see
+        // `surface::terminal_view_height`), so neither pushes the other
+        // off the surface. Fill dimensions keep iced's flex from
+        // deferring the bars past the terminal's allocation: a Shrink
+        // cross-axis makes a fixed-height, fill-width bar a fourth-pass
+        // child, so the Fill terminal would take the whole surface and
+        // push the bars below its bottom edge.
+        let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
+
+        // The tab bar appears only with more than one tab and sits on
+        // the surface edge opposite the screen edge (tabs spec):
+        // between the terminal and the grab bar.
+        let column: Element<'_, Message> = if self.tabs.len() > 1 {
             let mut bar = TabBar::new(&self.tabs, self.active_tab)
                 .on_select(Message::TabSelected)
                 .on_close(Message::TabClosed)
@@ -896,24 +2345,61 @@ impl Application for DropTerm {
                         .on_unfocus(Message::RenameCancelled),
                 );
             }
-            // Fill dimensions keep iced's flex from deferring the bar
-            // past the terminal's allocation: a Shrink cross-axis makes
-            // the fixed-height, fill-width bar a fourth-pass child, so
-            // the Fill terminal would take the whole surface and push
-            // the bar below its bottom edge.
             match self.config.edge {
-                Edge::Top => widget::column![terminal, bar]
+                Edge::Top => widget::column![terminal, bar, grab_bar]
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into(),
-                Edge::Bottom => widget::column![bar, terminal]
+                Edge::Bottom => widget::column![grab_bar, bar, terminal]
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into(),
             }
         } else {
-            terminal
+            match self.config.edge {
+                Edge::Top => widget::column![terminal, grab_bar]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+                Edge::Bottom => widget::column![grab_bar, terminal]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+            }
+        };
+
+        // The slide (slide-animation spec, A3 + A4): while the surface
+        // animates — ease-in from the anchored edge after a show,
+        // ease-out back to it before a hide's destroy — the content
+        // column's pose is NOT computed here: the view runs in the
+        // runtime's AboutToWait pass but the frame presents on the
+        // compositor's frame callback, so a view-baked offset is up to
+        // one frame stale at presentation — random per-frame error
+        // that read as judder on hardware (the round-4 finding).
+        // Instead the live slide state and its true start instant are
+        // handed to `SlideBox`, which evaluates the easing inside
+        // `draw` against the frame's own clock. No animation in
+        // flight → offset 0 → the column renders byte-identically to
+        // the unwrapped one.
+        let mut slide_box = SlideBox::new(column, 0.0);
+        if let Some(playing) = self.slide {
+            slide_box = slide_box.playing(self.config.edge, playing);
         }
+        slide_box.into()
+    }
+
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        // Fires on a window's `Closed` event (cosmic routes it through
+        // its internal `SurfaceClosed` action), i.e. after the fact:
+        // the settings window's ✕ is already handled by the
+        // `CloseRequested` subscription arm, which clears the id and
+        // issues the close. This override is the defensive net for a
+        // settings window that closed without a handled request —
+        // returning the default `None` there would silently leave the
+        // dead id in app state for a later press to `gain_focus` into
+        // nothing. Layer surfaces keep the default: their `Done`
+        // closes are the hide path's own business.
+        (self.settings_window == Some(id)).then(|| Message::SettingsCloseRequested(id))
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
@@ -978,6 +2464,10 @@ impl DropTerm {
             TermEvent::Title(title) => {
                 let tab = &mut self.tabs[tab_index];
                 tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
+                // Title events double as the cwd-change sample point
+                // (session-persistence spec, S3); the title itself is
+                // not a trigger — churn alone writes nothing.
+                return self.check_tab_cwd(tab_index);
             }
             TermEvent::ResetTitle => {
                 // A shell reset (RIS) restores the default title, unless
@@ -989,6 +2479,7 @@ impl DropTerm {
                     tab.title_override.as_deref(),
                     &default_title,
                 );
+                return self.check_tab_cwd(tab_index);
             }
             TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;

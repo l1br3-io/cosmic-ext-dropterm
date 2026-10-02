@@ -1,5 +1,5 @@
 ---
-description: Implement tasks incrementally from module chunks — build, test, verify, commit. "auto" runs every task of one module in a single approved run.
+description: Implement tasks incrementally from module chunks — build, test, verify, commit. "auto" runs every task of one module in one unattended run.
 ---
 
 Load the `incremental-implementation` skill alongside `test-driven-development` with the `skill` tool, then discover the task's tech stack and load every additional skill the `Intent → skill mapping` in AGENTS.md calls for (see below).
@@ -59,8 +59,8 @@ Use this once a module's spec is approved and its chunk written, to collapse pla
 1. **Require an approved spec and a chunk.** The module must be marked approved in `SPEC.md` and have `SPEC-<module-id>.md` + `tasks/<module-id>.md`. Otherwise stop and point at `/spec` / `/plan` — do not invent requirements.
 2. **Enforce build order.** If the module has pending dependencies, stop and name them.
 3. **Establish a clean baseline.** Run `git status --porcelain`. If there are uncommitted changes outside the expected working artifacts (`SPEC*.md`, `tasks/`), stop and ask the user to commit, stash, or confirm. Autonomous per-task commits must not absorb unrelated local work.
-4. **Single checkpoint.** Present the module's chunk (its task list) and wait for an unambiguous affirmative (e.g. "approve", "go", "yes"). Hedged responses are **not** approval. This is the only human gate for the module — after approval, run autonomously.
-5. **Task loop — repeat until the chunk has no pending tasks left.** Pick the next unchecked task in the chunk and run the full single-task procedure on it (discover stack → map skills → RED → GREEN → regression suite → build → commit → mark complete in the chunk, `tasks/todo.md`, and `SPEC.md`'s status table). After each commit, re-read the chunk to find the next unchecked task and **immediately continue** — do not stop between tasks, do not ask for further approval, do not summarize early. Stage only the files that task touched plus its status updates — never `git add -A` blindly — one commit per task so any point is a clean rollback. The loop ends only when the chunk is exhausted or a stop-condition in step 6 fires.
+4. **Announce the run, then start immediately.** State the module and list its chunk's tasks once so the run is visible in the transcript, then begin the task loop without waiting for approval. The stop-conditions in step 6 are the only thing that may interrupt the run.
+5. **Task loop — repeat until the chunk has no pending tasks left.** Pick the next unchecked task in the chunk and run the full single-task procedure on it (discover stack → map skills → RED → GREEN → regression suite → build → commit → mark complete in the chunk, `tasks/todo.md`, and `SPEC.md`'s status table). After each commit, re-read the chunk to find the next unchecked task and **immediately continue** — do not stop between tasks, do not ask for approval, do not summarize early. Stage only the files that task touched plus its status updates — never `git add -A` blindly — one commit per task so any point is a clean rollback. The loop ends only when the chunk is exhausted or a stop-condition in step 6 fires.
 6. **Stop and ask the user** (do not push through) when:
    - a test can't be made to pass or the build breaks without an obvious fix → follow `debugging-and-error-recovery`
    - the spec is ambiguous, or a task needs a decision the spec doesn't cover

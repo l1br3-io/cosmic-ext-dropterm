@@ -2,7 +2,12 @@
 
 mod app;
 mod config;
+mod geometry;
+mod grab_bar;
 mod keybinds;
+mod session;
+mod settings;
+mod slide;
 mod surface;
 mod tab_bar;
 mod tabs;

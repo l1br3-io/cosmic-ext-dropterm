@@ -21,7 +21,7 @@ High-level feature list.
 - [x] Hide on focus loss
 - [ ] Width percentage and horizontal alignment
 - [ ] Drag-to-resize with remembered height
-- [ ] Slide animation
+- [x] Slide animation
 - [ ] Settings page UI
 
 ## Later

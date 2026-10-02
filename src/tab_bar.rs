@@ -186,7 +186,7 @@ const METRICS: BarMetrics = BarMetrics {
 
 /// The bar's height in logical pixels, for callers that must reserve room
 /// for it outside the widget tree (the app grows the layer surface by this
-/// much while the bar is visible — see `surface::surface_height`).
+/// much while the bar is visible — see `geometry::surface_height`).
 pub const BAR_HEIGHT: f32 = METRICS.bar_height;
 
 /// Title text size in logical pixels.
