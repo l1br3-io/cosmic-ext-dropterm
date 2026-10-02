@@ -9,7 +9,7 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 
 ## Status
 
-This is a v1 / Milestone-1 implementation: a single terminal, no tabs. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
+This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings window, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
 
 ## Building
 
