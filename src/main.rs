@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod context_menu;
 mod geometry;
 mod grab_bar;
 mod keybinds;

@@ -19,11 +19,13 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
+use cosmic::surface::Action as SurfaceAction;
 use cosmic::widget;
 use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge};
+use crate::context_menu;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
@@ -190,6 +192,25 @@ pub enum Message {
     /// a `Bare` write, whose `ConfigChanged` echo is the only apply
     /// path.
     Settings(settings::SettingsEvent),
+    /// A context-menu item was picked (context-menu module): the
+    /// item's [`terminal::Action`], funneled to `perform_action` — the
+    /// same entry point the keybind map uses, so menu and keybind
+    /// behavior cannot fork.
+    Action(Action),
+    /// The terminal's context menu should open or close
+    /// (context-menu module). Published by the `TerminalBox` press
+    /// seam: `true` on a right-press with the menu closed, `false` on
+    /// any default-mode press while open (toggle-close). The
+    /// wrapper's `on_close` also sends `false` — it fires on every
+    /// close path (Escape, click-away, item pick, compositor
+    /// dismiss), so duplicate `false`s are the norm and harmless:
+    /// the arm is a plain state set.
+    ContextMenu(bool),
+    /// A surface action from a widget (context-menu module): the
+    /// context-menu popup's create/destroy requests, forwarded to
+    /// libcosmic verbatim — popups are created and destroyed by the
+    /// runtime, never by the app (the cosmic-term one-liner).
+    Surface(SurfaceAction<Message>),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -306,6 +327,13 @@ pub struct DropTerm {
     /// U4): display-only text and slider state, cleared on window
     /// close so a reopened window renders purely from config.
     settings_buffer: settings::SettingsBuffer,
+    /// Whether the terminal's context menu is open (context-menu
+    /// module): the `TerminalBox` press seam's latch, read by the
+    /// view through `context_menu::open_trees` and fed back to the
+    /// box so any press while open toggle-closes it. Cleared by
+    /// `hide()` — the popup dies with the surface and `on_close`
+    /// never fires there.
+    context_menu_open: bool,
 }
 
 impl DropTerm {
@@ -556,6 +584,11 @@ impl DropTerm {
         self.drag = None;
         self.pending_height = None;
         self.pin_applied = None;
+        // The context menu's popup dies with the surface and its
+        // `on_close` never fires (context-menu module) — clear the
+        // latch here, or the next show's first right-click would be
+        // consumed as a toggle-close of a menu that is not there.
+        self.context_menu_open = false;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
@@ -1345,6 +1378,30 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
+/// Settings for the clipboard-anchor window (the copy-out fix).
+///
+/// libcosmic binds its single runtime [`Clipboard`] to the first
+/// window created, and when that surface is destroyed the binding is
+/// dropped — taking the smithay-clipboard connection, and with it
+/// any selection this app copied, down with it. DropTerm's only
+/// surface is the layer shell, which every hide destroys, so
+/// copying out could never survive the focus switch to the paste
+/// target. This window — invisible, never closed, created before
+/// any layer surface — owns the binding for the whole process
+/// lifetime instead: unmapped, so it appears nowhere and paints
+/// nothing, and exempt from close requests, so nothing the user or
+/// the runtime does can drop the connection mid-session.
+fn clipboard_anchor_settings() -> window::Settings {
+    window::Settings {
+        visible: false,
+        exit_on_close_request: false,
+        resizable: false,
+        decorations: false,
+        size: cosmic::iced::Size::new(1.0, 1.0),
+        ..window::Settings::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1702,6 +1759,33 @@ mod tests {
         let cosmic_dark = theme_source::by_name("COSMIC Dark").unwrap();
         assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
     }
+
+    // --- the clipboard anchor (copy-out fix) ---
+    //
+    // libcosmic binds its single runtime Clipboard to the first
+    // window created and drops that binding — and with it the
+    // smithay-clipboard connection holding any copied selection —
+    // when the owning surface is destroyed. DropTerm's only surface
+    // is the layer shell, which every hide destroys, so a copy could
+    // never survive the focus switch to wherever it would be pasted.
+    // An invisible, never-closed normal window created first owns
+    // the binding forever; these pin the two invariants that keep it
+    // both invisible and immortal.
+
+    #[test]
+    fn clipboard_anchor_window_is_invisible() {
+        // Unmapped: absent from the dock and Alt-Tab, and it never
+        // paints — it exists only to hold the clipboard binding.
+        assert!(!clipboard_anchor_settings().visible);
+    }
+
+    #[test]
+    fn clipboard_anchor_window_cannot_be_closed() {
+        // No close request is ever honored (and `exit_on_close(false)`
+        // in main means the runtime cannot exit through it either),
+        // so the binding outlives every hide/show cycle.
+        assert!(!clipboard_anchor_settings().exit_on_close_request);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1770,6 +1854,17 @@ impl Application for DropTerm {
             config.session_persistence_enabled,
         );
 
+        // The clipboard anchor (the copy-out fix) opens here, before
+        // `debounced_toggle` can request the first layer surface: the
+        // runtime binds its clipboard to the first window created, so
+        // the anchor — not the terminal's layer surface — must win
+        // that binding, or every hide would destroy the connection
+        // owning whatever the user copied. Its id is deliberately
+        // not kept: nothing references the window again (view events
+        // for it fall through the foreign-window guards), and it is
+        // never closed.
+        let (_anchor_window, open_anchor) = window::open(clipboard_anchor_settings());
+
         let mut app = Self {
             core,
             config_handler,
@@ -1798,6 +1893,7 @@ impl Application for DropTerm {
             slide: None,
             settings_window: None,
             settings_buffer: settings::SettingsBuffer::default(),
+            context_menu_open: false,
         };
         let colors = app.active_colors();
         app.refresh_window_bg_color(&colors);
@@ -1805,8 +1901,14 @@ impl Application for DropTerm {
         // A second launch never reaches this: `run_single_instance` forwards
         // its action over D-Bus to the already-running instance instead
         // (see `Application::dbus_activation` below), so the first launch's
-        // own action has to be applied here.
-        let task = app.debounced_toggle(flags.action);
+        // own action has to be applied here. The anchor window opens first
+        // in the batch: the runtime binds its clipboard to the first window
+        // created, and the anchor must win that race before any layer
+        // surface exists — afterwards the binding never moves again.
+        let task = Task::batch([
+            open_anchor.then(|_| Task::none()),
+            app.debounced_toggle(flags.action),
+        ]);
         (app, task)
     }
 
@@ -2089,6 +2191,25 @@ impl Application for DropTerm {
                 {
                     return self.perform_action(action);
                 }
+            }
+            Message::Action(action) => {
+                // The context-menu funnel (context-menu module): menu
+                // picks reuse the keybind entry point above, so an
+                // item behaves exactly like its keybind.
+                return self.perform_action(action);
+            }
+            Message::ContextMenu(open) => {
+                // The open-state latch (context-menu module): the
+                // press seam arms it, every close path clears it, and
+                // the view reads it through
+                // `context_menu::open_trees`.
+                self.context_menu_open = open;
+            }
+            Message::Surface(action) => {
+                // Popup plumbing (context-menu module): the wrapper's
+                // popup create/destroy requests, handed to libcosmic
+                // untouched — the runtime owns popup surfaces.
+                return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::WindowFocused => {
                 self.surface_focused = true;
@@ -2464,7 +2585,27 @@ impl Application for DropTerm {
             .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
             .on_window_focused(|| Message::WindowFocused)
             .on_window_unfocused(|| Message::WindowUnfocused)
+            .context_menu_open(self.context_menu_open)
+            .on_context_menu(Message::ContextMenu)
             .into();
+
+        // The context menu (context-menu module): wraps ONLY the
+        // terminal element — the wrapper triggers anywhere over its
+        // bounds, so the tab bar and grab bar must stay outside it
+        // (spec criterion 7). Trees are supplied only while open
+        // (`context_menu::open_trees`): closed, the wrapper is a
+        // plain pass-through — the pixel-identical view (criterion
+        // 6). The popup plumbing is the cosmic-term pattern
+        // (`main.rs:3444-3452`): `on_surface_action` is mandatory —
+        // `create_popup` is a no-op without it — and `window_id` must
+        // be this layer surface's id (the `view_window` parameter),
+        // never the main window's.
+        let terminal: Element<'_, Message> =
+            widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
+                .on_close(Message::ContextMenu(false))
+                .on_surface_action(Message::Surface)
+                .window_id(id)
+                .into();
 
         // Stacking from the screen edge (geometry spec, criterion 9):
         // content, tab bar (only with more than one tab, tabs spec),
