@@ -189,6 +189,11 @@ pub enum Message {
     /// a `Bare` write, whose `ConfigChanged` echo is the only apply
     /// path.
     Settings(settings::SettingsEvent),
+    /// A context-menu item was picked (context-menu module): the
+    /// item's [`terminal::Action`], funneled to `perform_action` — the
+    /// same entry point the keybind map uses, so menu and keybind
+    /// behavior cannot fork.
+    Action(Action),
 }
 
 /// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
@@ -2033,6 +2038,12 @@ impl Application for DropTerm {
                 {
                     return self.perform_action(action);
                 }
+            }
+            Message::Action(action) => {
+                // The context-menu funnel (context-menu module): menu
+                // picks reuse the keybind entry point above, so an
+                // item behaves exactly like its keybind.
+                return self.perform_action(action);
             }
             Message::WindowFocused => {
                 self.surface_focused = true;
