@@ -617,17 +617,31 @@ const CONTROL_WIDTH: f32 = 260.0;
 /// (criterion 4), and emits [`SettingsEvent`]s — the window never
 /// applies anything itself; commits land through the app's write seam
 /// and the existing `ConfigChanged` echo.
+///
+/// The scrollable rides in a [`theme::Container::WindowBackground`]
+/// wrapper filling the surface: libcosmic renders `view_window`
+/// elements bare (no window template wraps them) and styles the
+/// window background transparent (the frosted-glass design), so
+/// without a base layer the desktop showed through the padding gaps
+/// and the window glittered while moved — the same wrap libcosmic's
+/// multi-window example gives its secondary windows.
 pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static, SettingsEvent> {
     let cards = Section::ALL
         .iter()
         .map(|section| section_card(*section, config, buffer));
-    widget::scrollable(
+    let content = widget::scrollable(
         widget::column(cards)
             .spacing(16)
             .padding(16)
             .width(Length::Fill),
     )
-    .into()
+    .width(Length::Fill)
+    .height(Length::Fill);
+    widget::container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .class(theme::Container::WindowBackground)
+        .into()
 }
 
 /// One section's card: heading plus its controls, one per exposed

@@ -844,6 +844,14 @@ impl DropTerm {
         Task::batch([
             open.then(|_| Task::none()),
             self.set_window_title("DropTerm Settings".to_string(), id),
+            // Blur parity for the window's frosted base layer:
+            // libcosmic enables blur itself only for the main window
+            // and layer surfaces on theme changes — a `window::open`
+            // window is neither, so without this its translucency
+            // composited the raw, un-blurred backdrop (part of the
+            // move-glitter). A compositor with frost disabled treats
+            // the request as a no-op.
+            window::enable_blur(id),
             hide,
         ])
     }
