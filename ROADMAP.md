@@ -22,6 +22,7 @@ High-level feature list.
 - [x] Drag-to-resize with remembered height
 - [x] Slide animation
 - [x] Settings page UI
+- [ ] Built-in color scheme picker
 
 ## Later
 
@@ -29,6 +30,7 @@ High-level feature list.
 - [ ] CLI actions (`--new-tab`, `--cmd`, `--cwd`)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
+- [ ] User-defined color scheme files (import custom palettes)
 - [ ] Width percentage and horizontal alignment
 - [ ] Clean up unnecessary comments
 - [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
