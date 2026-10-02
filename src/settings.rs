@@ -79,6 +79,7 @@ impl Section {
                 ConfigKey::HideOnFocusLoss,
                 ConfigKey::SessionPersistenceEnabled,
                 ConfigKey::SlideAnimationEnabled,
+                ConfigKey::BellNotificationEnabled,
             ],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -110,6 +111,7 @@ pub enum ConfigKey {
     HideOnFocusLoss,
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
+    BellNotificationEnabled,
     Shell,
     Args,
     ScrollbackLines,
@@ -137,6 +139,7 @@ impl ConfigKey {
             ConfigKey::HideOnFocusLoss => "hide_on_focus_loss",
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
+            ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
             ConfigKey::ScrollbackLines => "scrollback_lines",
@@ -169,6 +172,7 @@ pub enum PlannedWrite {
     HideOnFocusLoss(bool),
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
+    BellNotificationEnabled(bool),
     Shell(String),
     Args(Vec<String>),
     ScrollbackLines(u32),
@@ -194,6 +198,7 @@ impl PlannedWrite {
             PlannedWrite::HideOnFocusLoss(_) => ConfigKey::HideOnFocusLoss,
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
+            PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
             PlannedWrite::ScrollbackLines(_) => ConfigKey::ScrollbackLines,
@@ -247,6 +252,9 @@ impl PlannedWrite {
             }
             PlannedWrite::SlideAnimationEnabled(value) => {
                 handler.set(ConfigKey::SlideAnimationEnabled.key_name(), *value)
+            }
+            PlannedWrite::BellNotificationEnabled(value) => {
+                handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
             }
             PlannedWrite::Shell(value) => handler.set(ConfigKey::Shell.key_name(), value),
             PlannedWrite::Args(value) => handler.set(ConfigKey::Args.key_name(), value),
@@ -402,7 +410,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         ConfigKey::Shell | ConfigKey::Args | ConfigKey::ScrollbackLines => ApplyTiming::NewTab,
         ConfigKey::HideOnFocusLoss
         | ConfigKey::SessionPersistenceEnabled
-        | ConfigKey::SlideAnimationEnabled => ApplyTiming::NextTrigger,
+        | ConfigKey::SlideAnimationEnabled
+        | ConfigKey::BellNotificationEnabled => ApplyTiming::NextTrigger,
     }
 }
 
@@ -602,6 +611,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SessionPersistenceEnabled(checked))
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
+        ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         _ => None,
     }
@@ -635,6 +645,7 @@ impl ConfigKey {
             ConfigKey::HideOnFocusLoss => "Hide on focus loss",
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
+            ConfigKey::BellNotificationEnabled => "Bell notifications",
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
@@ -813,6 +824,7 @@ fn toggle_control(
         ConfigKey::HideOnFocusLoss => config.hide_on_focus_loss,
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
+        ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
         ConfigKey::RespectPanel => config.respect_panel,
         _ => return None,
     };
@@ -880,6 +892,7 @@ mod tests {
             PlannedWrite::HideOnFocusLoss(true),
             PlannedWrite::SessionPersistenceEnabled(true),
             PlannedWrite::SlideAnimationEnabled(true),
+            PlannedWrite::BellNotificationEnabled(true),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
             PlannedWrite::ScrollbackLines(10_000),
@@ -925,6 +938,10 @@ mod tests {
                 "session_persistence_enabled",
             ),
             (ConfigKey::SlideAnimationEnabled, "slide_animation_enabled"),
+            (
+                ConfigKey::BellNotificationEnabled,
+                "bell_notification_enabled",
+            ),
             (ConfigKey::Shell, "shell"),
             (ConfigKey::Args, "args"),
             (ConfigKey::ScrollbackLines, "scrollback_lines"),

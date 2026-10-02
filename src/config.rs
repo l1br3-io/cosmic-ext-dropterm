@@ -124,8 +124,13 @@ pub struct DropTermConfig {
     /// Number of scrollback lines kept per terminal.
     pub scrollback_lines: u32,
     /// Hide the terminal automatically when it loses keyboard focus.
-    /// Defaults to `true` so a fresh run behaves like Yakuake/Guake
-    /// (click away to hide).
+    /// Defaults to `true` — a deliberate choice for a hotkey-driven
+    /// drop-down: focus is the whole interaction model, so losing it
+    /// retracts the overlay. Note this is the *minority* default among
+    /// peers (Yakuake `KeepOpen=true`, Guake `window-losefocus=false`,
+    /// Ghostty `quick-terminal-autohide=false` on Linux — see
+    /// docs/research/terminal-de-integration.md); set `false` to keep
+    /// the overlay open when it loses focus.
     pub hide_on_focus_loss: bool,
     /// Save the session on change and restore it on launch
     /// (settings-ui spec, U2). Defaults to `true` — the always-on
@@ -138,6 +143,12 @@ pub struct DropTermConfig {
     /// show/hide with immediate destroy the app had before slides
     /// existed; a running animation is never aborted by the toggle.
     pub slide_animation_enabled: bool,
+    /// Post a desktop notification when a bell rings while the
+    /// terminal is hidden (bell-notify spec) — one notification per
+    /// tab per hide period, delivered over the freedesktop
+    /// notification interface. Defaults to `true`; `false` silences
+    /// notifications (the tab-bar 🔔 marker is unaffected).
+    pub bell_notification_enabled: bool,
     /// Whether the app follows the system light/dark mode or pins one
     /// (theme-preference spec). Defaults to `System`: no override is
     /// ever issued and system flips keep driving the app.
@@ -166,6 +177,7 @@ impl Default for DropTermConfig {
             hide_on_focus_loss: true,
             session_persistence_enabled: true,
             slide_animation_enabled: true,
+            bell_notification_enabled: true,
             theme_preference: ThemePreference::default(),
         }
     }
@@ -224,6 +236,13 @@ mod tests {
         let config = DropTermConfig::default();
         assert!(config.session_persistence_enabled);
         assert!(config.slide_animation_enabled);
+    }
+
+    #[test]
+    fn bell_notifications_default_to_on() {
+        // The one DE feature a hidden drop-down uniquely needs ships
+        // enabled (bell-notify spec); the Behavior toggle turns it off.
+        assert!(DropTermConfig::default().bell_notification_enabled);
     }
 
     #[test]

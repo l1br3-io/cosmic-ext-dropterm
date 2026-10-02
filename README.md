@@ -41,7 +41,15 @@ Command: cosmic-ext-dropterm
 Key: F12
 ```
 
-Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle.
+Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle, or script new tabs with `cosmic-ext-dropterm new-tab [--cwd DIR] [--cmd COMMAND]`:
+
+```sh
+cosmic-ext-dropterm new-tab                 # a shell in the active tab's cwd
+cosmic-ext-dropterm new-tab --cwd ~/src     # a shell in an explicit directory
+cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
+```
+
+A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead.
 
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](#known-risks).
 
@@ -103,7 +111,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -116,7 +124,7 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 - `width_percent` (default `100`, range 30-100): surface width as a percentage of the output width. `100` reproduces the original full-width surface exactly.
 - `h_align` (`Left`, `Center`, or `Right`; default `Center`): horizontal placement of the surface within the output. `Left` and `Right` sit flush against that edge; `Center` splits the leftover space into equal left and right margins. Only meaningful below `width_percent` 100.
 
-`hide_on_focus_loss` defaults to `true` (click away to hide); write `false` to keep the overlay open when it loses focus.
+`hide_on_focus_loss` defaults to `true` - a deliberate choice for a hotkey-driven drop-down (focus is the whole interaction model), and notably the *opposite* of Yakuake, Guake, and Ghostty's Linux quick terminal, which all default to keeping the window open on focus loss. Write `false` to keep the overlay open when it loses focus.
 
 `respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show - toggle it in the Advanced card of the [settings window](#settings-window) or write it directly:
 
@@ -179,6 +187,15 @@ Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `
 - Dim variants are derived, not shipped: each normal color's channels are scaled by 0.66 (Alacritty's dim rule), one uniform rule for every non-COSMIC scheme. Bright variants come from the palettes themselves.
 - User-defined scheme files are not supported; the built-in registry is the whole feature (see the ROADMAP's "Later" section).
 
+## Bell notifications
+
+A bell that rings while the terminal is *hidden* posts a desktop notification naming the tab's title - the one DE feature a hidden drop-down uniquely needs (`printf '\a'` in a long-running build now finds you). Delivery goes straight to the freedesktop notification interface over D-Bus, which cosmic-notifications serves on COSMIC; COSMIC implements no Notification portal, so no portal is involved. The rules:
+
+- Only while hidden: when the overlay is visible, the tab-bar 🔔 marker alone carries the signal.
+- One notification per tab per hide period: a bell storm (`while true; printf '\a'; done`) yields a single notification - the per-tab latch clears the next time the terminal is shown.
+- Toggle with `bell_notification_enabled` (default `true`, Behavior card in the [settings window](#settings-window)); it applies at the next bell - the tab-bar markers are unaffected either way.
+- No notification daemon: the post fails with a `warn` log; nothing surfaces and the terminal is unaffected.
+
 ## Settings window
 
 Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus to open the settings window - a separate normal window in the same process. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
@@ -199,7 +216,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab; visible at the next show while the window is open - the settings window itself restyles with a theme pick |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted) |
+| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell |
 
 The two Behavior toggles default to `true`, which is exactly the pre-settings behavior:
 
@@ -216,8 +233,12 @@ Controls constrain input to the same ranges as the config (`height_percent` 10-1
 - Shell session persists while hidden (the PTY is never torn down - only the surface is)
 - COSMIC theme integration: light/dark and the built-in color schemes
 - Copy/paste (`Ctrl+Shift+C`/`V`), primary-selection paste (middle-click, `Shift+Insert`), scrollback, mouse reporting, `Ctrl`-click to open URLs
+- New tabs (`Ctrl+Shift+T`, the tab bar's `+`) inherit the active tab's working directory — `cd` once, spawn tabs where you already are; a failed read falls back to the pty's default directory
 - Zoom (`Ctrl+`/`Ctrl-`/`Ctrl+0`), select-all and clear-scrollback shortcuts
+- Tabs: open/close/rename inline/reorder by drag or `Ctrl+Shift+PageUp`/`PageDown`, cycle with `Ctrl+PageUp`/`PageDown` or `Ctrl+Tab`, jump with `Ctrl+Shift+1..8` (`Ctrl+Shift+9` always takes the last tab) - cosmic-term's binds
+- Tab attention markers: a tab that rang the bell wears `🔔` and one that produced output while inactive wears `•`, until you activate it (kitty's `bell_on_tab` + iTerm2-style activity dots)
 - In-app dismiss: `Ctrl+Shift+Q` hides the overlay; clicking away hides it too
+- Remote control from the CLI: `new-tab [--cwd DIR] [--cmd COMMAND]` opens a tab in the running instance over the single-instance D-Bus seam (Guake-style scripting without Guake's full surface)
 
 ## Known risks
 
@@ -239,6 +260,15 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] It appears correctly above a fullscreen window
 - [ ] `Ctrl+Shift+C` / `Ctrl+Shift+V` copy/paste, and middle-click / `Shift+Insert` paste the primary selection
 - [ ] `Shift+PageUp`/`PageDown` scroll the scrollback
+- [ ] Numbered tab switching: with three tabs, `Ctrl+Shift+1`/`2`/`3` activate the first/second/third; `Ctrl+Shift+9` activates the last tab; `Ctrl+Shift+5` with three tabs does nothing (no wrap, no crash); bare `Ctrl+2` reaches the shell (only `Ctrl+=`/`-`/`0` zoom)
+- [ ] Tab moves: `Ctrl+Shift+PageUp`/`PageDown` shift the active tab one slot, clamping at the list edges (no wrap); the moved tab stays active and focused, and `session.ron` records the new order
+- [ ] Attention markers: with two tabs, `printf '\a'` in the inactive tab marks it `🔔`; `echo hi` in a third (inactive) tab marks it `•`; activating a marked tab clears its marker; the active tab never gains one; a `while true; printf '\a'; done` bell storm in an inactive tab leaves one steady `🔔` (a state, not a counter); markers follow their tabs through drag-reorder and survive the closing of neighbors
+- [ ] Bell notifications: hide the terminal, `printf '\a'` inside it - exactly one desktop notification appears, naming the tab; a bell storm while hidden still yields exactly one; two different tabs belling while hidden yield two; showing and re-hiding re-arms the latch (a new bell notifies again); with the terminal visible a bell posts no notification (marker only); `bell_notification_enabled: false` silences them and the Behavior toggle round-trips to the config file
+- [ ] Remote new-tab: with the app running, `cosmic-ext-dropterm new-tab` opens a tab in the running instance, places it after the active tab, activates it, and shows the overlay; with the app not running, the first launch starts with that tab (alongside any restored session tabs)
+- [ ] `new-tab --cwd /tmp` opens the shell in `/tmp`; `new-tab --cwd /nonexistent` logs a `warn` and opens in the fallback directory; with the active tab cd'd somewhere, plain `new-tab` inherits that cwd
+- [ ] `new-tab --cmd htop` runs htop instead of the shell (no config shell arguments inherited), and closing htop closes the tab; the `--cmd` tab is absent from `session.ron` after the next debounced save, while plain `new-tab` tabs are saved like any other
+- [ ] `toggle`/`show`/`hide` still round-trip through a second launch exactly as before (including via D-Bus activation)
+- [ ] A `new-tab` sent during the 130 ms slide-out reverses the slide and ends shown with the new tab active - it never finishes the hide
 - [ ] Editing `height_percent` in the config reshapes a shown surface immediately, in place - and a hidden surface opens at the new height on its next show
 - [ ] `width_percent` below 100 (e.g. 60) sizes the surface to that fraction of the output width; the default 100 is indistinguishable from the full-width surface
 - [ ] `h_align = Left` / `Right` sits flush against that edge, `Center` centers the surface with equal left/right margins - on both `edge` values
@@ -278,6 +308,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] A toggle arriving inside the measuring window (hide immediately after show) destroys the surface immediately: no slide, no stuck state
 - [ ] Pressing or dragging the grab bar during the 130 ms slide-in does nothing to the animating surface; the drag only takes once the content rests
 - [ ] `Ctrl+Shift+I` opens the settings window while the terminal has focus, and the keypress never reaches the shell; a second press focuses the existing window - never a second one
+- [ ] New-tab cwd inheritance: `cd /tmp` in the active tab, press `Ctrl+Shift+T` - the new tab's shell starts in `/tmp`; with an unreadable `/proc` entry for the shell (e.g. under `sudo`) the new tab falls back to the default directory, never an error
 - [ ] Opening the window hides a shown terminal (animated when slides are enabled); toggling the terminal while the window is open (hotkey, second launch) closes the window first and then shows the terminal; closing the window leaves the terminal hidden until the next toggle - which shows it with every edit applied
 - [ ] Closing the settings window does not exit the app (the toggle still works); reopening the window shows current config values, no stale buffered state
 - [ ] All five cards are present with every field; for one field per card, editing it in the window persists exactly what a hand-edit of the same value would (compare the config file)

@@ -32,8 +32,7 @@ High-level feature list.
 
 ## Later
 
-
-- [ ] CLI actions (`--new-tab`, `--cmd`, `and rest of industry cli options, args`)
+- [x] CLI actions (`new-tab [--cwd] [--cmd]`, over the single-instance D-Bus seam; `--is-visible` deferred - it needs a queryable D-Bus property, not fire-and-forget activation)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] User-defined color scheme files (import custom palettes)

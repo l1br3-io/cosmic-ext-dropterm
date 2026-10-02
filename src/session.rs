@@ -52,24 +52,39 @@ pub struct TabSnapshot<'a> {
     pub title_override: Option<&'a str>,
     pub shell: &'a str,
     pub cwd: Option<&'a Path>,
+    /// Whether the tab is session-transient (a remote `--cmd` run,
+    /// remote-newtab spec): skipped by [`capture`] — the session never
+    /// resumes a program.
+    pub ephemeral: bool,
 }
 
 /// Builds the saved state from per-tab snapshots, keeping each `cwd`
 /// only while it is still a directory (Guake's staleness filter — a
 /// vanished directory must not be recorded as a spawn target).
+/// Session-transient tabs (`ephemeral`) are skipped, and `active`
+/// remaps into the surviving list — a session never resumes a
+/// program (remote-newtab spec).
 pub fn capture(snapshots: &[TabSnapshot<'_>], active: usize) -> SessionState {
+    let mut tabs = Vec::new();
+    let mut saved_active = 0usize;
+    for (index, snap) in snapshots.iter().enumerate() {
+        if snap.ephemeral {
+            continue;
+        }
+        if index == active {
+            saved_active = tabs.len();
+        }
+        tabs.push(SessionTab {
+            title: snap.title.to_owned(),
+            title_override: snap.title_override.map(str::to_owned),
+            shell: snap.shell.to_owned(),
+            cwd: snap.cwd.filter(|cwd| cwd.is_dir()).map(Path::to_owned),
+        });
+    }
     SessionState {
         version: SESSION_VERSION,
-        active: Some(active),
-        tabs: snapshots
-            .iter()
-            .map(|snap| SessionTab {
-                title: snap.title.to_owned(),
-                title_override: snap.title_override.map(str::to_owned),
-                shell: snap.shell.to_owned(),
-                cwd: snap.cwd.filter(|cwd| cwd.is_dir()).map(Path::to_owned),
-            })
-            .collect(),
+        active: Some(saved_active),
+        tabs,
     }
 }
 
@@ -473,6 +488,55 @@ mod tests {
     }
 
     #[test]
+    fn capture_skips_ephemeral_tabs_and_remaps_active() {
+        // A remote --cmd tab is session-transient: never saved, never
+        // replayed — and a saved active index must point at the same
+        // surviving tab after the skip (remote-newtab spec).
+        let snapshots = [
+            TabSnapshot {
+                title: "work",
+                title_override: None,
+                shell: "/bin/zsh",
+                cwd: None,
+                ephemeral: false,
+            },
+            TabSnapshot {
+                title: "htop",
+                title_override: None,
+                shell: "htop",
+                cwd: None,
+                ephemeral: true,
+            },
+            TabSnapshot {
+                title: "src",
+                title_override: None,
+                shell: "/bin/zsh",
+                cwd: None,
+                ephemeral: false,
+            },
+        ];
+        let state = capture(&snapshots, 2);
+        let titles: Vec<&str> = state.tabs.iter().map(|tab| tab.title.as_str()).collect();
+        assert_eq!(titles, vec!["work", "src"]);
+        assert_eq!(state.active, Some(1));
+    }
+
+    #[test]
+    fn an_all_ephemeral_layout_saves_an_empty_session() {
+        // Restore then spawns a single fresh tab — the never-empty
+        // rule — rather than replaying any program.
+        let snapshots = [TabSnapshot {
+            title: "htop",
+            title_override: None,
+            shell: "htop",
+            cwd: None,
+            ephemeral: true,
+        }];
+        let state = capture(&snapshots, 0);
+        assert!(state.tabs.is_empty());
+    }
+
+    #[test]
     fn capture_keeps_only_cwds_that_are_directories() {
         let dir = TempDir::new("capture-stale");
         let live = dir.join("live");
@@ -483,18 +547,21 @@ mod tests {
                 title_override: None,
                 shell: "/bin/sh",
                 cwd: Some(&live),
+                ephemeral: false,
             },
             TabSnapshot {
                 title: "dead",
                 title_override: None,
                 shell: "/bin/sh",
                 cwd: Some(&dead_path()),
+                ephemeral: false,
             },
             TabSnapshot {
                 title: "unset",
                 title_override: None,
                 shell: "/bin/sh",
                 cwd: None,
+                ephemeral: false,
             },
         ];
         let state = capture(&items, 2);
@@ -512,6 +579,7 @@ mod tests {
             title_override: Some("work"),
             shell: "/bin/zsh",
             cwd: None,
+            ephemeral: false,
         }];
         let state = capture(&items, 0);
         assert_eq!(state.tabs[0].title, "vim");

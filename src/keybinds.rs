@@ -83,6 +83,29 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::Tab),
         Action::PrevTab,
     );
+    // Numbered activation and keyboard moves, cosmic-term's exact binds
+    // (its shortcuts.rs TabActivate0..8 / TabMoveLeft/Right): digits
+    // 1-8 activate that tab strictly, 9 always takes the last tab; the
+    // moves shift the active tab one slot and clamp at the edges. Bare
+    // Ctrl+digits stay unbound (only =/-/0 zoom).
+    for (digit, index) in ('1'..='8').zip(0..8) {
+        map.insert(
+            bind(&[Modifier::Ctrl, Modifier::Shift], &digit.to_string()),
+            Action::ActivateTab(index),
+        );
+    }
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "9"),
+        Action::ActivateLastTab,
+    );
+    map.insert(
+        bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::PageUp),
+        Action::MoveTabLeft,
+    );
+    map.insert(
+        bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::PageDown),
+        Action::MoveTabRight,
+    );
     map
 }
 
@@ -245,6 +268,78 @@ mod tests {
         assert_eq!(
             matched_action(&binds, Modifiers::CTRL, &Key::Named(Named::PageDown), None,),
             Some(Action::NextTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_digits_activate_numbered_tabs() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("1".into()),
+                None,
+            ),
+            Some(Action::ActivateTab(0))
+        );
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("8".into()),
+                None,
+            ),
+            Some(Action::ActivateTab(7))
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_nine_activates_the_last_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("9".into()),
+                None,
+            ),
+            Some(Action::ActivateLastTab)
+        );
+    }
+
+    #[test]
+    fn bare_ctrl_digits_are_not_tab_binds() {
+        // Without Shift the digits stay free for the shell (only
+        // Ctrl+=/-/0 zoom); they must not collide with the numbered
+        // tab binds.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("2".into()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_page_keys_move_the_active_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Named(Named::PageUp),
+                None,
+            ),
+            Some(Action::MoveTabLeft)
+        );
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Named(Named::PageDown),
+                None,
+            ),
+            Some(Action::MoveTabRight)
         );
     }
 

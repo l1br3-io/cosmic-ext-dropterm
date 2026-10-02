@@ -8,6 +8,7 @@
 //! headless, without a live [`Terminal`] PTY. The app instantiates them
 //! with [`Tab`].
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::terminal::Terminal;
@@ -16,6 +17,53 @@ use crate::terminal::Terminal;
 /// while the app runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub u32);
+
+/// A tab's attention state, surfaced as a marker prefixed to its tab-bar
+/// title (bell-indicator spec): a bell marks 🔔 (kitty's `bell_on_tab`),
+/// output in an inactive tab marks activity (iTerm2's dots), and either
+/// clears the moment the tab becomes active. Only inactive tabs accrue
+/// markers — the active tab is the one the user is already looking at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Attention {
+    #[default]
+    None,
+    /// The tab produced output while inactive.
+    Activity,
+    /// The tab's terminal rang the bell. A bell is also activity, so
+    /// `Bell` outranks it in every transition.
+    Bell,
+}
+
+impl Attention {
+    /// Transition on a bell in this tab.
+    pub fn on_bell(self) -> Self {
+        Self::Bell
+    }
+
+    /// Transition on output in this tab while it is inactive: activity
+    /// at least — never demoting an existing bell marker.
+    pub fn on_activity(self) -> Self {
+        match self {
+            Self::Bell => Self::Bell,
+            _ => Self::Activity,
+        }
+    }
+
+    /// Transition on the tab becoming active: whatever marker it wore
+    /// is cleared.
+    pub fn on_activated(self) -> Self {
+        Self::None
+    }
+
+    /// The title prefix this state renders, if any.
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Activity => Some("• "),
+            Self::Bell => Some("\u{1f514} "),
+        }
+    }
+}
 
 /// One terminal inside the overlay surface.
 ///
@@ -36,6 +84,21 @@ pub struct Tab {
     /// mid-run config shell change never rewrites a live tab's shell,
     /// so what gets saved is what each tab actually runs.
     pub shell: String,
+    /// The tab's attention marker state (bell-indicator spec). Markers
+    /// accrue only while the tab is inactive and clear when it becomes
+    /// active; the session schema deliberately ignores this field.
+    pub attention: Attention,
+    /// Whether this tab is excluded from session saves (remote-newtab
+    /// spec): a `--cmd` tab runs an explicit program, and the session
+    /// model restores "a fresh shell in a familiar place" — never a
+    /// resumed program — so command tabs are transient by design.
+    pub ephemeral: bool,
+    /// Whether this tab already posted a bell notification during the
+    /// current hide period (bell-notify spec): armed when a
+    /// notification is posted, cleared for every tab when the surface
+    /// is shown — so a bell storm yields one notification per tab per
+    /// hide, and the next bell after a show notifies again.
+    pub bell_notified: bool,
     pub terminal: Mutex<Terminal>,
 }
 
@@ -49,6 +112,9 @@ impl Tab {
             title: next_default_title(id),
             title_override: None,
             shell,
+            attention: Attention::None,
+            ephemeral: false,
+            bell_notified: false,
             terminal: Mutex::new(terminal),
         }
     }
@@ -128,6 +194,62 @@ pub fn move_tab<T>(tabs: &mut Vec<T>, from: usize, to: usize) -> usize {
     let tab = tabs.remove(from);
     tabs.insert(to, tab);
     to
+}
+
+/// Resolves the working directory a new tab spawns in: an explicit request
+/// (the CLI's `--cwd`) wins, otherwise the active tab's cwd is inherited
+/// (Guake `open-tab-cwd`, cosmic-term `tab_new_inherit_working_directory`),
+/// otherwise `None` — the pty's default directory.
+pub fn resolve_new_tab_cwd(
+    explicit: Option<PathBuf>,
+    inherited: Option<PathBuf>,
+) -> Option<PathBuf> {
+    explicit.or(inherited)
+}
+
+/// Resolves a strict numbered activation (`Ctrl+Shift+1..8`) to the index
+/// to activate: the requested index when it exists, `None` — no-op —
+/// otherwise (cosmic-term `TabActivate0..7` semantics; out of range never
+/// wraps).
+pub fn activate_index_target(len: usize, requested: usize) -> Option<usize> {
+    (requested < len).then_some(requested)
+}
+
+/// Resolves the `Ctrl+Shift+9` activation to the last tab's index
+/// (cosmic-term `TabActivate8`): the final tab however many exist, `None`
+/// when there are none.
+pub fn activate_last_target(len: usize) -> Option<usize> {
+    len.checked_sub(1)
+}
+
+/// Splits an explicit command line (the CLI's `--cmd`, remote-newtab
+/// spec) into its program and trailing arguments: whitespace-split
+/// exactly like the `args` config — quoting is not supported. `None`
+/// when the line holds no program at all.
+pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = line.split_whitespace();
+    let program = parts.next()?.to_string();
+    Some((program, parts.map(str::to_string).collect()))
+}
+
+/// Which way a move-bind shifts the active tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveDirection {
+    Left,
+    Right,
+}
+
+/// Resolves a move bind to the index the active tab should land at:
+/// one slot toward the direction, `None` — no-op — when already at that
+/// edge (moves clamp, they never wrap).
+pub fn move_target(active: usize, len: usize, direction: MoveDirection) -> Option<usize> {
+    match direction {
+        MoveDirection::Left => active.checked_sub(1),
+        MoveDirection::Right => {
+            let to = active + 1;
+            (to < len).then_some(to)
+        }
+    }
 }
 
 /// Applies a completed tab drag (tabs spec, T7): moves the tab at `from`
@@ -281,6 +403,117 @@ mod tests {
     #[test]
     fn cycle_prev_wraps_around_to_last() {
         assert_eq!(cycle_prev(&[10, 20, 30], 0), 2);
+    }
+
+    #[test]
+    fn new_tab_cwd_falls_back_to_the_active_tabs_cwd() {
+        let inherited = PathBuf::from("/home/jpt/src");
+        assert_eq!(
+            resolve_new_tab_cwd(None, Some(inherited.clone())),
+            Some(inherited)
+        );
+    }
+
+    #[test]
+    fn new_tab_cwd_without_inheritance_spawns_in_the_pty_default() {
+        assert_eq!(resolve_new_tab_cwd(None, None), None);
+    }
+
+    #[test]
+    fn new_tab_cwd_an_explicit_request_wins_over_inheritance() {
+        let explicit = PathBuf::from("/tmp");
+        let inherited = PathBuf::from("/home/jpt/src");
+        assert_eq!(
+            resolve_new_tab_cwd(Some(explicit.clone()), Some(inherited)),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn numbered_activation_targets_the_requested_index() {
+        assert_eq!(activate_index_target(3, 0), Some(0));
+        assert_eq!(activate_index_target(3, 2), Some(2));
+    }
+
+    #[test]
+    fn numbered_activation_out_of_range_is_a_no_op() {
+        assert_eq!(activate_index_target(3, 3), None);
+        assert_eq!(activate_index_target(0, 0), None);
+    }
+
+    #[test]
+    fn last_tab_activation_targets_the_final_index() {
+        assert_eq!(activate_last_target(3), Some(2));
+        assert_eq!(activate_last_target(1), Some(0));
+    }
+
+    #[test]
+    fn last_tab_activation_with_no_tabs_is_a_no_op() {
+        assert_eq!(activate_last_target(0), None);
+    }
+
+    #[test]
+    fn move_target_clamps_at_the_list_edges() {
+        // Moving left from index 0 or right from the last index stays
+        // put — move binds clamp, they do not wrap.
+        assert_eq!(move_target(0, 3, MoveDirection::Left), None);
+        assert_eq!(move_target(2, 3, MoveDirection::Right), None);
+        assert_eq!(move_target(1, 3, MoveDirection::Left), Some(0));
+        assert_eq!(move_target(1, 3, MoveDirection::Right), Some(2));
+    }
+
+    #[test]
+    fn a_bell_raises_attention_to_the_bell_marker() {
+        assert_eq!(Attention::None.on_bell(), Attention::Bell);
+        assert_eq!(Attention::Activity.on_bell(), Attention::Bell);
+    }
+
+    #[test]
+    fn output_in_an_inactive_tab_raises_attention_to_activity_at_least() {
+        assert_eq!(Attention::None.on_activity(), Attention::Activity);
+    }
+
+    #[test]
+    fn output_does_not_demote_an_existing_bell_marker() {
+        assert_eq!(Attention::Bell.on_activity(), Attention::Bell);
+    }
+
+    #[test]
+    fn activating_a_tab_clears_its_attention() {
+        assert_eq!(Attention::Bell.on_activated(), Attention::None);
+        assert_eq!(Attention::Activity.on_activated(), Attention::None);
+    }
+
+    #[test]
+    fn attention_markers_prefix_the_tab_title() {
+        assert_eq!(Attention::None.marker(), None);
+        assert_eq!(Attention::Activity.marker(), Some("• "));
+        assert_eq!(Attention::Bell.marker(), Some("\u{1f514} "));
+    }
+
+    #[test]
+    fn a_command_line_splits_into_program_and_args() {
+        assert_eq!(
+            command_line_parts("htop -u root"),
+            Some((
+                "htop".to_string(),
+                vec!["-u".to_string(), "root".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_bare_command_line_has_no_trailing_args() {
+        assert_eq!(
+            command_line_parts("htop"),
+            Some(("htop".to_string(), Vec::new()))
+        );
+    }
+
+    #[test]
+    fn an_empty_command_line_is_rejected() {
+        assert_eq!(command_line_parts(""), None);
+        assert_eq!(command_line_parts("   "), None);
     }
 
     #[test]

@@ -89,6 +89,18 @@ pub enum Action {
     CloseTab,
     NextTab,
     PrevTab,
+    /// Activate the tab at the strict 0-based index (`Ctrl+Shift+1..8`);
+    /// out of range is a no-op.
+    ActivateTab(usize),
+    /// Activate the last tab (`Ctrl+Shift+9`, cosmic-term's
+    /// `TabActivate8` semantics).
+    ActivateLastTab,
+    /// Move the active tab one slot toward the list start
+    /// (`Ctrl+Shift+PageUp`), clamping at the edge.
+    MoveTabLeft,
+    /// Move the active tab one slot toward the list end
+    /// (`Ctrl+Shift+PageDown`), clamping at the edge.
+    MoveTabRight,
     Settings,
 }
 
