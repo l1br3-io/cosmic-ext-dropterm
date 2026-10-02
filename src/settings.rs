@@ -20,7 +20,7 @@ use cosmic::cosmic_config::{self, ConfigSet as _};
 
 use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
-    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT,
+    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, ThemePreference,
 };
 use crate::terminal::theme_source::scheme_names;
 
@@ -67,6 +67,7 @@ impl Section {
                 ConfigKey::Opacity,
                 ConfigKey::ColorSchemeDark,
                 ConfigKey::ColorSchemeLight,
+                ConfigKey::ThemePreference,
             ],
             Section::Geometry => &[
                 ConfigKey::HeightPercent,
@@ -117,6 +118,7 @@ pub enum ConfigKey {
     RespectPanel,
     ColorSchemeDark,
     ColorSchemeLight,
+    ThemePreference,
 }
 
 impl ConfigKey {
@@ -143,6 +145,7 @@ impl ConfigKey {
             ConfigKey::RespectPanel => "respect_panel",
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
+            ConfigKey::ThemePreference => "theme_preference",
         }
     }
 }
@@ -174,6 +177,7 @@ pub enum PlannedWrite {
     RespectPanel(bool),
     ColorSchemeDark(String),
     ColorSchemeLight(String),
+    ThemePreference(ThemePreference),
 }
 
 impl PlannedWrite {
@@ -198,6 +202,7 @@ impl PlannedWrite {
             PlannedWrite::RespectPanel(_) => ConfigKey::RespectPanel,
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
+            PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
         }
     }
 
@@ -260,6 +265,9 @@ impl PlannedWrite {
             }
             PlannedWrite::ColorSchemeLight(value) => {
                 handler.set(ConfigKey::ColorSchemeLight.key_name(), value)
+            }
+            PlannedWrite::ThemePreference(value) => {
+                handler.set(ConfigKey::ThemePreference.key_name(), value)
             }
         }
     }
@@ -386,7 +394,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::FontSize
         | ConfigKey::Opacity
         | ConfigKey::ColorSchemeDark
-        | ConfigKey::ColorSchemeLight => ApplyTiming::Live,
+        | ConfigKey::ColorSchemeLight
+        | ConfigKey::ThemePreference => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
@@ -407,6 +416,11 @@ const LAYER_OPTIONS: &[(Layer, &str)] = &[(Layer::Overlay, "Overlay"), (Layer::T
 const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
     (KeyboardMode::Exclusive, "Exclusive"),
     (KeyboardMode::OnDemand, "OnDemand"),
+];
+const THEME_PREFERENCE_OPTIONS: &[(ThemePreference, &str)] = &[
+    (ThemePreference::System, "Follow system"),
+    (ThemePreference::Dark, "Dark"),
+    (ThemePreference::Light, "Light"),
 ];
 
 /// A scheme dropdown's selection: the config name's position in the
@@ -436,6 +450,9 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
             .position(|(value, _)| *value == config.keyboard_mode),
         ConfigKey::ColorSchemeDark => scheme_index(&config.color_scheme_dark),
         ConfigKey::ColorSchemeLight => scheme_index(&config.color_scheme_light),
+        ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.theme_preference),
         _ => None,
     }
 }
@@ -463,6 +480,9 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::ColorSchemeLight => scheme_names()
             .get(index)
             .map(|name| PlannedWrite::ColorSchemeLight((*name).to_string())),
+        ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::ThemePreference(*value)),
         _ => None,
     }
 }
@@ -623,6 +643,7 @@ impl ConfigKey {
             ConfigKey::KeyboardMode => "Keyboard mode",
             ConfigKey::ColorSchemeDark => "Dark color scheme",
             ConfigKey::ColorSchemeLight => "Light color scheme",
+            ConfigKey::ThemePreference => "Application theme",
         }
     }
 }
@@ -765,6 +786,10 @@ fn dropdown_control(
         // The scheme rows offer the registry itself — names in
         // registry order (spec criterion 6), not a local table.
         ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight => scheme_names(),
+        ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
+            .iter()
+            .map(|(_, label)| *label)
+            .collect(),
         _ => return None,
     };
     Some(
@@ -863,6 +888,7 @@ mod tests {
             PlannedWrite::RespectPanel(true),
             PlannedWrite::ColorSchemeDark(String::new()),
             PlannedWrite::ColorSchemeLight(String::new()),
+            PlannedWrite::ThemePreference(ThemePreference::System),
         ];
         let keys = section_keys();
         assert_eq!(keys.len(), writers.len());
@@ -907,6 +933,7 @@ mod tests {
             (ConfigKey::RespectPanel, "respect_panel"),
             (ConfigKey::ColorSchemeDark, "color_scheme_dark"),
             (ConfigKey::ColorSchemeLight, "color_scheme_light"),
+            (ConfigKey::ThemePreference, "theme_preference"),
         ];
         for (key, name) in expected {
             assert_eq!(key.key_name(), name);
@@ -1135,6 +1162,7 @@ mod tests {
             ConfigKey::Opacity,
             ConfigKey::ColorSchemeDark,
             ConfigKey::ColorSchemeLight,
+            ConfigKey::ThemePreference,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
         }
@@ -1189,6 +1217,7 @@ mod tests {
             ConfigKey::KeyboardMode,
             ConfigKey::ColorSchemeDark,
             ConfigKey::ColorSchemeLight,
+            ConfigKey::ThemePreference,
         ] {
             let selected = dropdown_selected(key, &config)
                 .unwrap_or_else(|| panic!("{key:?} has no selection"));
@@ -1214,6 +1243,7 @@ mod tests {
             ConfigKey::KeyboardMode,
             ConfigKey::ColorSchemeDark,
             ConfigKey::ColorSchemeLight,
+            ConfigKey::ThemePreference,
         ] {
             assert!(dropdown_write(key, 99).is_none(), "{key:?}");
         }
@@ -1232,7 +1262,9 @@ mod tests {
     fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
         // C4's section move: the two scheme rows land in Appearance
         // after Opacity; Advanced keeps only the
-        // compositor-negotiation knobs, in plan order.
+        // compositor-negotiation knobs, in plan order. Appearance has
+        // since grown the theme-preference row (P2) — exact content
+        // still pinned, membership updated.
         assert_eq!(
             Section::Appearance.keys(),
             &[
@@ -1241,6 +1273,7 @@ mod tests {
                 ConfigKey::Opacity,
                 ConfigKey::ColorSchemeDark,
                 ConfigKey::ColorSchemeLight,
+                ConfigKey::ThemePreference,
             ]
         );
         assert_eq!(
@@ -1250,6 +1283,84 @@ mod tests {
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
             ]
+        );
+    }
+
+    // --- theme-preference P2: the Appearance dropdown ---
+
+    #[test]
+    fn theme_preference_sits_in_appearance_after_the_scheme_rows() {
+        // The "Application theme" row lands after the scheme rows
+        // (spec criterion 8); the exact-content assertions stay — the
+        // map is updated, not weakened.
+        assert_eq!(
+            Section::Appearance.keys(),
+            &[
+                ConfigKey::FontName,
+                ConfigKey::FontSize,
+                ConfigKey::Opacity,
+                ConfigKey::ColorSchemeDark,
+                ConfigKey::ColorSchemeLight,
+                ConfigKey::ThemePreference,
+            ]
+        );
+        assert_eq!(ConfigKey::ThemePreference.label(), "Application theme");
+    }
+
+    #[test]
+    fn theme_preference_options_are_exactly_follow_system_dark_light() {
+        // The cosmic-edit 3-way pattern (spec criterion 8): order is
+        // the plan's — Follow system first, so the default config's
+        // selection is index 0.
+        assert_eq!(
+            THEME_PREFERENCE_OPTIONS,
+            &[
+                (ThemePreference::System, "Follow system"),
+                (ThemePreference::Dark, "Dark"),
+                (ThemePreference::Light, "Light"),
+            ]
+        );
+    }
+
+    #[test]
+    fn theme_preference_picks_round_trip_and_out_of_range_rejects() {
+        // A pick commits exactly its variant — the control can never
+        // invent a value; indices past the table (including exactly
+        // len) reject instead of panicking.
+        assert_eq!(
+            dropdown_write(ConfigKey::ThemePreference, 0),
+            Some(PlannedWrite::ThemePreference(ThemePreference::System))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::ThemePreference, 1),
+            Some(PlannedWrite::ThemePreference(ThemePreference::Dark))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::ThemePreference, 2),
+            Some(PlannedWrite::ThemePreference(ThemePreference::Light))
+        );
+        assert_eq!(dropdown_write(ConfigKey::ThemePreference, 3), None);
+        assert_eq!(dropdown_write(ConfigKey::ThemePreference, 99), None);
+    }
+
+    #[test]
+    fn theme_preference_selection_mirrors_the_config_value() {
+        // Default config → Follow system → Some(0); every committed
+        // variant re-selects its own position.
+        let mut config = DropTermConfig::default();
+        assert_eq!(
+            dropdown_selected(ConfigKey::ThemePreference, &config),
+            Some(0)
+        );
+        config.theme_preference = ThemePreference::Dark;
+        assert_eq!(
+            dropdown_selected(ConfigKey::ThemePreference, &config),
+            Some(1)
+        );
+        config.theme_preference = ThemePreference::Light;
+        assert_eq!(
+            dropdown_selected(ConfigKey::ThemePreference, &config),
+            Some(2)
         );
     }
 
