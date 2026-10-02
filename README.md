@@ -103,7 +103,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`). There is no settings UI yet (see the ROADMAP); edit the files directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -128,7 +128,7 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
 
 ## Session persistence
 
-DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. This is always on - there is no toggle (one may come with the settings UI).
+DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. Toggle it with `session_persistence_enabled` (default `true`, Behavior card in the [settings window](#settings-window)): `false` stops saves *and* skips restore at launch - the app starts with a single fresh tab, and the existing `session.ron` is left untouched on disk, so re-enabling picks the session back up.
 
 What is saved - deliberately the same scope Guake and Yakuake settle on:
 
@@ -156,7 +156,36 @@ Failure behavior:
 
 ## Slide animation
 
-Showing and hiding slide the whole content column - terminal, tab bar when one is shown, grab bar - in from, and back out toward, the anchored screen edge over about 130 ms: an ease-out curve on the way in, ease-in on the way out, pure translation with no fade. This is always on - there is no config key for it yet (one may come with the settings UI) - and it is deliberately cheap: the surface's geometry never changes during the animation, only the content's painted offset does, so the compositor sees no resize traffic. A toggle arriving mid-animation reverses the slide from wherever the content stands - nothing teleports, nothing is dropped or queued - and PTYs keep running throughout: keyboard focus returns to the previously focused window the moment a hide *starts*, and the surface is destroyed only after the slide-out completes. A hide that catches the surface still measuring (a toggle within the show's measuring window) skips the animation and destroys immediately.
+Showing and hiding slide the whole content column - terminal, tab bar when one is shown, grab bar - in from, and back out toward, the anchored screen edge over about 130 ms: an ease-out curve on the way in, ease-in on the way out, pure translation with no fade. Toggle it with `slide_animation_enabled` (default `true`, Behavior card in the [settings window](#settings-window)) - `false` restores instant show/hide; either way the animation is deliberately cheap: the surface's geometry never changes during the animation, only the content's painted offset does, so the compositor sees no resize traffic. A toggle arriving mid-animation reverses the slide from wherever the content stands - nothing teleports, nothing is dropped or queued - and PTYs keep running throughout: keyboard focus returns to the previously focused window the moment a hide *starts*, and the surface is destroyed only after the slide-out completes. A hide that catches the surface still measuring (a toggle within the show's measuring window) skips the animation and destroys immediately.
+
+## Settings window
+
+Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus to open the settings window - a separate normal window in the same process. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
+
+The window shows five cards - Appearance, Geometry, Behavior, Terminal, and Advanced (`layer`, `keyboard_mode`, and the color scheme names) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
+
+While the window is open the terminal is hidden: a normal window can never stack above a layer surface on COSMIC, so opening settings hides the drop-down through its normal hide path (animated when slides are enabled) - the same resolution as Guake's default hide-on-focus-loss for its prefs. The rules:
+
+- Any show/toggle intent while the window is open (hotkey, second launch) closes the settings window first, then shows the terminal.
+- Closing the window does not re-show the terminal and does not exit the app; the next toggle brings the terminal back with every edit already applied.
+- The hide on open is unconditional - it does not touch `hide_on_focus_loss`, which keeps governing ordinary focus loss once the window is closed.
+
+Each control states next to it when its edit takes effect, and because the terminal is hidden while the window is open, even the live keys land visibly at the next show:
+
+| Field | Applies |
+|---|---|
+| `height_percent`, `width_percent`, `h_align`, `edge` | live - reshapes a shown surface in place (deferred mid-drag and mid-slide); visible at the next show while the window is open |
+| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light` | live, on every tab; visible at the next show while the window is open |
+| `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
+| `shell`, `args`, `scrollback_lines` | new tabs only |
+| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted) |
+
+The two Behavior toggles default to `true`, which is exactly the pre-settings behavior:
+
+- `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
+- `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
+
+Controls constrain input to the same ranges as the config (`height_percent` 10-100, `width_percent` 30-100, `opacity` 0-100, `scrollback_lines` non-negative); the write path never persists an out-of-range value. One known limitation: the `args` input splits on whitespace with no quoting support - arguments containing spaces stay config-file-only.
 
 ## Features (v1)
 
@@ -226,6 +255,18 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Rapid-toggle spam (10+ toggles inside 1 s): the surface always ends in the state the last toggle implies - no teleports between endpoints, no stuck or half-animated surfaces, focus correct at rest - and a toggle arriving mid-hide visibly reverses the slide on the same surface
 - [ ] A toggle arriving inside the measuring window (hide immediately after show) destroys the surface immediately: no slide, no stuck state
 - [ ] Pressing or dragging the grab bar during the 130 ms slide-in does nothing to the animating surface; the drag only takes once the content rests
+- [ ] `Ctrl+Shift+I` opens the settings window while the terminal has focus, and the keypress never reaches the shell; a second press focuses the existing window - never a second one
+- [ ] Opening the window hides a shown terminal (animated when slides are enabled); toggling the terminal while the window is open (hotkey, second launch) closes the window first and then shows the terminal; closing the window leaves the terminal hidden until the next toggle - which shows it with every edit applied
+- [ ] Closing the settings window does not exit the app (the toggle still works); reopening the window shows current config values, no stale buffered state
+- [ ] All five cards are present with every field; for one field per card, editing it in the window persists exactly what a hand-edit of the same value would (compare the config file)
+- [ ] No Apply button anywhere: toggles/dropdowns write on change, sliders on release, text inputs on Enter
+- [ ] Controls respect the config ranges (height 10-100, width 30-100, opacity 0-100, scrollback non-negative); garbage scrollback text writes nothing
+- [ ] Geometry edits from the window land at the next show; `layer`/`keyboard_mode` at the next show; `shell`/`args`/`scrollback_lines` on newly spawned tabs only; font/colors/opacity on every tab
+- [ ] `session_persistence_enabled: false` stops session saves and skips launch restore (fresh single tab); `session.ron` is left untouched; re-enabling resumes saving over it
+- [ ] `slide_animation_enabled: false` restores instant show/hide; toggling it mid-animation never aborts the running slide
+- [ ] Race check (newest intent wins): drag the grab bar, release, immediately open settings and drag the height slider - the slider's value is what lands in the config file, no write/reshape storm
+- [ ] G3/G4 re-pass after the write-path refactor: drag feel unchanged - live pixel tracking, deadband, single write-back ~400 ms after release, no echo storm
+- [ ] Default config (toggles `true`, window never opened): behavior identical to the previous build except the new keybind
 
 ## Non-goals
 
