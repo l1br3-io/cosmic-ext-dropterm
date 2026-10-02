@@ -16,13 +16,13 @@ High-level feature list.
 
 ## v2 - Yakuake parity
 
-- [ ] Tabs (new/close/rename/reorder)
-- [ ] Save sessions across shutdown
+- [x] Tabs (new/close/rename/reorder)
+- [x] Save sessions across shutdown
 - [x] Hide on focus loss
 - [ ] Width percentage and horizontal alignment
-- [ ] Drag-to-resize with remembered height
+- [x] Drag-to-resize with remembered height
 - [x] Slide animation
-- [ ] Settings page UI
+- [x] Settings page UI
 
 ## Later
 
