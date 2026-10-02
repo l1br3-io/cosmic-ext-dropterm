@@ -890,12 +890,23 @@ impl DropTerm {
 
         // A remote new-tab is not a toggle step (remote-newtab spec):
         // the tab opens — now or once the channel bootstraps — and
-        // the overlay shows, whatever state it was in. Everything
-        // above (debounce, settings close-first) applies to it like
-        // any other action.
+        // the overlay shows, whatever state it was in. The surface
+        // half rides the show-intent cells of the funnel below, so a
+        // request arriving mid-slide-out reverses on the live surface
+        // exactly like a `show` would. Everything above (debounce,
+        // settings close-first) applies to it like any other action.
         if let ToggleAction::NewTab { .. } = action {
             let open = self.open_remote_tab(action);
-            return Task::batch([close, open, self.show()]);
+            let surface = match toggle_step(
+                ToggleAction::Show,
+                &self.surface,
+                self.config.slide_animation_enabled,
+            ) {
+                ToggleStep::Measure => self.show(),
+                ToggleStep::ReverseShow(id) => self.reverse_show(id),
+                _ => Task::none(),
+            };
+            return Task::batch([close, open, surface]);
         }
 
         // The toggle funnel (slide-animation spec, A5): every matrix
