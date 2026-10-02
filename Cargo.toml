@@ -29,6 +29,14 @@ ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "time"] }
 
+# Queryable state on the app's owned bus name (dbus-state spec): direct
+# zbus dep, version-matched to the lock's 5.19 line that libcosmic and
+# notify-rust already pull in so no new code enters the build.
+# default-features = false mirrors libcosmic's own zbus declaration and
+# selects the tokio executor (the app's executor is tokio-backed); the
+# `p2p` feature exists for the headless peer-to-peer wire tests only.
+zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
+
 [dependencies.cosmic-text]
 version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]
