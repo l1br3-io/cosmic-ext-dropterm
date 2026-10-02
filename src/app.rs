@@ -621,7 +621,13 @@ impl DropTerm {
     /// Handles the surface losing keyboard focus: marks the terminal unfocused
     /// and, when configured, hides the overlay. The hide is guarded by the
     /// focus latch so a stray unfocus before any focus (possible with
-    /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface.
+    /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface, and
+    /// by the settings-window suppression gate (settings-ui spec, U5) — while
+    /// that window is open the focus bookkeeping still runs (focus genuinely
+    /// was lost: a pending rename commits, the terminal cursor dims) but the
+    /// surface stays visible. The latch is cleared only when the hide fires,
+    /// so a suppressed loss leaves it armed and the next genuine loss after
+    /// the settings window closes hides normally.
     fn focus_lost(&mut self) -> Task<Message> {
         // Losing keyboard focus commits a rename (T6): the input's own
         // unfocus signal only covers Escape and Tab, which cancel.
@@ -629,7 +635,11 @@ impl DropTerm {
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
         }
-        if self.config.hide_on_focus_loss && self.surface_focused {
+        if focus_loss_hides(
+            self.config.hide_on_focus_loss,
+            self.settings_window.is_some(),
+        ) && self.surface_focused
+        {
             self.surface_focused = false;
             return Task::batch([commit, self.hide()]);
         }
@@ -1210,6 +1220,20 @@ fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(surface, SurfaceState::Shown(shown) if *shown == id)
 }
 
+/// Whether losing keyboard focus should hide the surface (settings-ui
+/// spec, U5): `hide_on_focus_loss` fires only while the settings
+/// window is closed — while it is open the drop-down stays visible so
+/// live-apply effects stay watchable (spec criterion 6). The gate keys
+/// on the window being open, not on any config value, and only the
+/// automatic focus-loss path consults it: explicit hides (the toggle
+/// keybind, `Action::Hide`) call `hide()` directly and ignore the gate
+/// entirely. Both unfocused routes — the layer surface's
+/// `LayerUnfocused` and the settings-era `WindowUnfocused` callback —
+/// funnel into [`DropTerm::focus_lost`], so one gate covers both.
+fn focus_loss_hides(hide_on_focus_loss: bool, settings_open: bool) -> bool {
+    hide_on_focus_loss && !settings_open
+}
+
 /// Whether the grab-bar drag handlers may act (slide-animation spec,
 /// A6 frozen-geometry audit): pure so the guard is headless-testable,
 /// the [`config_edit_reshapes`]/[`layer_unfocused_acts_on`] seam
@@ -1514,6 +1538,50 @@ mod tests {
             &SurfaceState::Shown(window::Id::unique()),
             id
         ));
+    }
+
+    #[test]
+    fn focus_loss_hides_when_configured_and_the_settings_window_is_closed() {
+        // The un-suppressed baseline (settings-ui spec, U5): with
+        // `hide_on_focus_loss` on and no settings window open,
+        // losing keyboard focus hides — today's behavior, unchanged.
+        assert!(focus_loss_hides(true, false));
+    }
+
+    #[test]
+    fn focus_loss_hiding_is_suppressed_while_the_settings_window_is_open() {
+        // The U5 gate: while the settings window is open the
+        // drop-down stays visible even with `hide_on_focus_loss` on,
+        // so live-apply effects stay watchable (spec criterion 6).
+        // The gate keys on the window being open, not on any config
+        // value.
+        assert!(!focus_loss_hides(true, true));
+    }
+
+    #[test]
+    fn focus_loss_never_hides_when_focus_loss_hiding_is_off() {
+        // `hide_on_focus_loss` off means no focus-loss hide in any
+        // window state — the settings gate only ever narrows the
+        // hide, never widens it.
+        assert!(!focus_loss_hides(false, false));
+        assert!(!focus_loss_hides(false, true));
+    }
+
+    #[test]
+    fn explicit_hides_bypass_the_suppression_gate() {
+        // The gate covers the automatic focus-loss path only:
+        // explicit hide intents (the toggle keybind's `toggle_step`,
+        // `Action::Hide`) take no settings-window input and never
+        // pass through `focus_loss_hides`, so they still hide while
+        // the settings window is open. Asserted at the seams: the
+        // most suppressive gate inputs yield no hide, yet the
+        // explicit hide step still steps its hide.
+        assert!(!focus_loss_hides(true, true));
+        let id = window::Id::unique();
+        assert_eq!(
+            toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), true),
+            ToggleStep::SlideOut(id)
+        );
     }
 
     #[test]
