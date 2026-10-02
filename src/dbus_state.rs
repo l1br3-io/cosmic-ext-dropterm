@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Wired into the app by the dbus-state P2/P3 tasks; until then the
-// module compiles inertly (spec: foundation ships before wiring) and
-// its items are test-only from the bin target's point of view. Allow
-// rather than expect: `expect` goes unfulfilled in the cfg(test)
-// compilation, where the tests do use them. Drop this when P2/P3 wire
-// the module in.
+// The P2 app wiring uses the state/derive/changed/interface half; the
+// client half (V1Interface proxy, BUS_NAME, INTERFACE) stays test-only
+// until the P3 `--is-visible` query lands. Allow rather than expect:
+// `expect` goes unfulfilled in the cfg(test) compilation, where the
+// tests do use these. Drop this when P3 arrives.
 #![allow(dead_code)]
 
 //! Queryable DropTerm state over D-Bus (dbus-state spec).
@@ -57,6 +56,32 @@ pub(crate) enum SurfacePhase {
 /// and per hide.
 pub(crate) fn surface_visible(phase: SurfacePhase) -> bool {
     matches!(phase, SurfacePhase::Measuring | SurfacePhase::Shown)
+}
+
+/// Derives the served snapshot from the surface phase and the
+/// open-tab count — the pure half of the sync seam; the app supplies
+/// its own fields, keeping this module free of app types.
+pub(crate) fn derive(phase: SurfacePhase, tab_count: u32) -> State {
+    State {
+        visible: surface_visible(phase),
+        tab_count,
+    }
+}
+
+/// Which V1 properties differ between two snapshots — the dedupe half
+/// of the sync seam: only these earn a `PropertiesChanged` emission,
+/// so a no-op message emits nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Changed {
+    pub(crate) visible: bool,
+    pub(crate) tab_count: bool,
+}
+
+pub(crate) fn changed(old: State, new: State) -> Changed {
+    Changed {
+        visible: old.visible != new.visible,
+        tab_count: old.tab_count != new.tab_count,
+    }
 }
 
 /// Server side of the V1 interface. Property getters read through the
@@ -132,6 +157,70 @@ mod tests {
     fn surface_visible_is_false_while_hidden_or_hiding() {
         assert!(!surface_visible(SurfacePhase::Hidden));
         assert!(!surface_visible(SurfacePhase::Hiding));
+    }
+
+    #[test]
+    fn derive_maps_phase_and_tab_count_into_a_snapshot() {
+        assert_eq!(
+            derive(SurfacePhase::Shown, 3),
+            State {
+                visible: true,
+                tab_count: 3
+            }
+        );
+        assert_eq!(
+            derive(SurfacePhase::Hiding, 0),
+            State {
+                visible: false,
+                tab_count: 0
+            }
+        );
+    }
+
+    #[test]
+    fn changed_reports_nothing_for_identical_snapshots() {
+        let state = State {
+            visible: true,
+            tab_count: 2,
+        };
+        let diff = changed(state, state);
+        assert!(!diff.visible);
+        assert!(!diff.tab_count);
+    }
+
+    #[test]
+    fn changed_reports_each_property_independently() {
+        let old = State {
+            visible: false,
+            tab_count: 1,
+        };
+        let flip = changed(
+            old,
+            State {
+                visible: true,
+                tab_count: 1,
+            },
+        );
+        assert!(flip.visible);
+        assert!(!flip.tab_count);
+        let tabs = changed(
+            old,
+            State {
+                visible: false,
+                tab_count: 4,
+            },
+        );
+        assert!(!tabs.visible);
+        assert!(tabs.tab_count);
+        let both = changed(
+            old,
+            State {
+                visible: true,
+                tab_count: 4,
+            },
+        );
+        assert!(both.visible);
+        assert!(both.tab_count);
     }
 
     #[test]

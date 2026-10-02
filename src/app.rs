@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm, Config as TermConfig};
@@ -26,6 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, ThemePreference};
 use crate::context_menu;
+use crate::dbus_state;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
@@ -360,6 +362,14 @@ pub struct DropTerm {
     /// `hide()` — the popup dies with the surface and `on_close`
     /// never fires there.
     context_menu_open: bool,
+    /// Queryable state on the owned bus name (dbus-state spec): the
+    /// connection the `dbus_connection` hook handed over, the shared
+    /// snapshot the served V1 interface reads, and the last-served
+    /// snapshot the sync seam dedupes against. Inert until the hook
+    /// fires — headless, all three stay exactly as initialized.
+    dbus_conn: Option<zbus::Connection>,
+    dbus_shared: Arc<Mutex<dbus_state::State>>,
+    dbus_last: dbus_state::State,
 }
 
 impl DropTerm {
@@ -2265,6 +2275,15 @@ impl Application for DropTerm {
             settings_window: None,
             settings_buffer: settings::SettingsBuffer::default(),
             context_menu_open: false,
+            dbus_conn: None,
+            dbus_shared: Arc::new(Mutex::new(dbus_state::State {
+                visible: false,
+                tab_count: 0,
+            })),
+            dbus_last: dbus_state::State {
+                visible: false,
+                tab_count: 0,
+            },
         };
         let colors = app.active_colors();
         app.refresh_window_bg_color(&colors);
@@ -2418,6 +2437,343 @@ impl Application for DropTerm {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        let task = self.update_inner(message);
+        // Every surface and tab transition flows through this wrapper,
+        // so one sync after the arm — not per-arm calls — keeps the
+        // served V1 properties current (dbus-state spec); an arm's
+        // early returns are irrelevant to it. A no-op message dedupes
+        // to no emission.
+        self.sync_dbus_state();
+        task
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        widget::text("").into()
+    }
+
+    fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
+        // The settings window (settings-ui spec, U4): the sectioned
+        // instant-apply view — rendered from config with buffered
+        // drafts winning while they exist, events mapped into the
+        // app's `Message::Settings` funnel.
+        if self.settings_window == Some(id) {
+            return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
+        }
+        let Some(tab) = self.active() else {
+            return widget::text("").into();
+        };
+        if !matches!(
+            &self.surface,
+            SurfaceState::Measuring(shown)
+                | SurfaceState::Shown(shown)
+                | SurfaceState::Hiding(shown)
+                if *shown == id
+        ) {
+            return widget::text("").into();
+        }
+
+        let opacity = f32::from(self.config.opacity) / 100.0;
+        // Pin the terminal's height to the granted window minus the bar's
+        // strip: a Fill terminal would claim the bar's space and push it
+        // below the surface (see `surface::terminal_view_height`).
+        let terminal_height = self
+            .window_height
+            .map(|h| Length::Fixed(surface::terminal_view_height(h, self.tabs.len())))
+            .unwrap_or(Length::Fill);
+        let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
+            .id(self.terminal_id.clone())
+            .height(terminal_height)
+            .opacity(opacity)
+            .show_headerbar(false)
+            .on_middle_click(|| Message::MiddleClick)
+            .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
+            .on_window_focused(|| Message::WindowFocused)
+            .on_window_unfocused(|| Message::WindowUnfocused)
+            .context_menu_open(self.context_menu_open)
+            .on_context_menu(Message::ContextMenu)
+            .into();
+
+        // The context menu (context-menu module): wraps ONLY the
+        // terminal element — the wrapper triggers anywhere over its
+        // bounds, so the tab bar and grab bar must stay outside it
+        // (spec criterion 7). Trees are supplied only while open
+        // (`context_menu::open_trees`): closed, the wrapper is a
+        // plain pass-through — the pixel-identical view (criterion
+        // 6). The popup plumbing is the cosmic-term pattern
+        // (`main.rs:3444-3452`): `on_surface_action` is mandatory —
+        // `create_popup` is a no-op without it — and `window_id` must
+        // be this layer surface's id (the `view_window` parameter),
+        // never the main window's.
+        let terminal: Element<'_, Message> =
+            widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
+                .on_close(Message::ContextMenu(false))
+                .on_surface_action(Message::Surface)
+                .window_id(id)
+                .into();
+
+        // Stacking from the screen edge (geometry spec, criterion 9):
+        // content, tab bar (only with more than one tab, tabs spec),
+        // grab bar on the free edge. The bars take their strips out of
+        // the terminal's pinned height (see
+        // `surface::terminal_view_height`), so neither pushes the other
+        // off the surface. Fill dimensions keep iced's flex from
+        // deferring the bars past the terminal's allocation: a Shrink
+        // cross-axis makes a fixed-height, fill-width bar a fourth-pass
+        // child, so the Fill terminal would take the whole surface and
+        // push the bars below its bottom edge.
+        let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
+
+        // The tab bar appears only with more than one tab and sits on
+        // the surface edge opposite the screen edge (tabs spec):
+        // between the terminal and the grab bar.
+        let column: Element<'_, Message> = if self.tabs.len() > 1 {
+            let mut bar = TabBar::new(&self.tabs, self.active_tab)
+                .on_select(Message::TabSelected)
+                .on_close(Message::TabClosed)
+                .on_move(Message::TabMoved)
+                .on_rename(Message::RenameStarted)
+                .on_rename_end(|| Message::RenameCommitted);
+            if let Some(edit) = &self.rename
+                && self.tabs.iter().any(|tab| tab.id == edit.tab)
+            {
+                // The inline rename input (T6), overlaid by the bar on
+                // the renamed tab's button. Its value mirrors the app's
+                // draft so it survives every re-render.
+                bar = bar.renaming(
+                    edit.tab,
+                    widget::text_input("", edit.draft.clone())
+                        .id(self.rename_input_id.clone())
+                        .size(14.0)
+                        .on_input(Message::RenameDraftChanged)
+                        .on_submit(|_| Message::RenameCommitted)
+                        .on_unfocus(Message::RenameCancelled),
+                );
+            }
+            match self.config.edge {
+                Edge::Top => widget::column![terminal, bar, grab_bar]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+                Edge::Bottom => widget::column![grab_bar, bar, terminal]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+            }
+        } else {
+            match self.config.edge {
+                Edge::Top => widget::column![terminal, grab_bar]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+                Edge::Bottom => widget::column![grab_bar, terminal]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+            }
+        };
+
+        // The slide (slide-animation spec, A3 + A4): while the surface
+        // animates — ease-in from the anchored edge after a show,
+        // ease-out back to it before a hide's destroy — the content
+        // column's pose is NOT computed here: the view runs in the
+        // runtime's AboutToWait pass but the frame presents on the
+        // compositor's frame callback, so a view-baked offset is up to
+        // one frame stale at presentation — random per-frame error
+        // that read as judder on hardware (the round-4 finding).
+        // Instead the live slide state and its true start instant are
+        // handed to `SlideBox`, which evaluates the easing inside
+        // `draw` against the frame's own clock. No animation in
+        // flight → offset 0 → the column renders byte-identically to
+        // the unwrapped one.
+        let mut slide_box = SlideBox::new(column, 0.0);
+        if let Some(playing) = self.slide {
+            slide_box = slide_box.playing(self.config.edge, playing);
+        }
+        slide_box.into()
+    }
+
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        // Fires on a window's `Closed` event (cosmic routes it through
+        // its internal `SurfaceClosed` action), i.e. after the fact:
+        // the settings window's ✕ is already handled by the
+        // `CloseRequested` subscription arm, which clears the id and
+        // issues the close. This override is the defensive net for a
+        // settings window that closed without a handled request —
+        // returning the default `None` there would silently leave the
+        // dead id in app state for a later press to `gain_focus` into
+        // nothing. Layer surfaces keep the default: their `Done`
+        // closes are the hide path's own business.
+        (self.settings_window == Some(id)).then(|| Message::SettingsCloseRequested(id))
+    }
+
+    fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
+        use cosmic::dbus_activation::Details;
+        match msg.msg {
+            Details::Activate => Task::done(cosmic::Action::App(Message::ToggleAction(
+                ToggleAction::Toggle,
+            ))),
+            Details::ActivateAction { action, args } => {
+                // The forwarded name plus its args re-parse through the
+                // clap definitions (remote-newtab spec: single source of
+                // truth for the surface). A malformed forward degrades
+                // to a plain toggle, never an error surface.
+                let mut words = vec![action];
+                words.extend(args);
+                let parsed = crate::parse_forwarded_action(&words).unwrap_or_default();
+                Task::done(cosmic::Action::App(Message::ToggleAction(parsed)))
+            }
+            Details::Open { .. } => Task::none(),
+        }
+    }
+
+    /// Serves the V1 state interface on the bus name single-instance
+    /// activation already owns (dbus-state spec). The snapshot is
+    /// seeded from the app's current fields, so a first read is
+    /// correct even before any later sync lands.
+    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
+        let state = self.derive_dbus_state();
+        *self
+            .dbus_shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+        self.dbus_last = state;
+        self.dbus_conn = Some(conn.clone());
+        let shared = self.dbus_shared.clone();
+        // Serving is async and nothing waits on it: property reads
+        // through the object server simply don't find the interface
+        // until it lands, and a sync raced in front of it fails its
+        // emission lookup, logs, and is otherwise harmless.
+        tokio::spawn(async move {
+            match conn
+                .object_server()
+                .at(dbus_state::OBJECT_PATH, dbus_state::V1::new(shared))
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => log::warn!("V1 state interface already served"),
+                Err(err) => log::warn!("failed to serve V1 state interface: {err}"),
+            }
+        });
+        Task::none()
+    }
+}
+
+impl DropTerm {
+    fn handle_term_event(&mut self, tab_id: TabId, event: TermEvent) -> Task<Message> {
+        let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            // Events for a tab that is already gone (e.g. a trailing
+            // Wakeup after its shell exited) have no target.
+            return Task::none();
+        };
+        match event {
+            // The active tab never accrues a marker (bell-indicator
+            // spec): the user is already looking at it.
+            TermEvent::Bell => {
+                // Bell-indicator spec: only an inactive tab accrues a
+                // marker — the user is already looking at the active
+                // one.
+                if tab_index != self.active_tab {
+                    let tab = &mut self.tabs[tab_index];
+                    tab.attention = tab.attention.on_bell();
+                }
+                // Bell-notify spec: a bell while the overlay is hidden
+                // posts one desktop notification per tab per hide
+                // period (the latch arms here and clears on every
+                // show). While visible the marker above alone carries
+                // the signal.
+                let tab = &mut self.tabs[tab_index];
+                if notify::should_notify(
+                    matches!(self.surface, SurfaceState::Hidden),
+                    self.config.bell_notification_enabled,
+                    tab.bell_notified,
+                ) {
+                    tab.bell_notified = true;
+                    let title = tab.title.clone();
+                    notify::post_bell_notification(title);
+                }
+            }
+            TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
+            TermEvent::ClipboardLoad(kind, format) => match kind {
+                aterm::ClipboardType::Clipboard => {
+                    return clipboard::read().map(move |data| {
+                        format(&data.unwrap_or_default());
+                        cosmic::action::none()
+                    });
+                }
+                aterm::ClipboardType::Selection => {
+                    return clipboard::read_primary().map(move |data| {
+                        format(&data.unwrap_or_default());
+                        cosmic::action::none()
+                    });
+                }
+            },
+            TermEvent::ClipboardStore(kind, data) => match kind {
+                aterm::ClipboardType::Clipboard => return clipboard::write(data),
+                aterm::ClipboardType::Selection => return clipboard::write_primary(data),
+            },
+            TermEvent::ColorRequest(index, format) => {
+                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
+                let rgb = terminal.effective_color(index);
+                terminal.input_no_scroll(format(rgb).into_bytes());
+            }
+            TermEvent::PtyWrite(text) => {
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .input_no_scroll(text.into_bytes());
+            }
+            TermEvent::TextAreaSizeRequest(format) => {
+                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
+                let text = format(terminal.size().into());
+                terminal.input_no_scroll(text.into_bytes());
+            }
+            TermEvent::Title(title) => {
+                let tab = &mut self.tabs[tab_index];
+                tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
+                // Title events double as the cwd-change sample point
+                // (session-persistence spec, S3); the title itself is
+                // not a trigger — churn alone writes nothing.
+                return self.check_tab_cwd(tab_index);
+            }
+            TermEvent::ResetTitle => {
+                // A shell reset (RIS) restores the default title, unless
+                // the user renamed the tab.
+                let tab = &mut self.tabs[tab_index];
+                let default_title = tabs::next_default_title(tab.id);
+                tabs::apply_shell_title(
+                    &mut tab.title,
+                    tab.title_override.as_deref(),
+                    &default_title,
+                );
+                return self.check_tab_cwd(tab_index);
+            }
+            TermEvent::Wakeup => {
+                // Output arrived: an inactive tab accrues an activity
+                // marker (bell-indicator spec); the active tab shows
+                // the output itself, so nothing to signal.
+                if tab_index != self.active_tab {
+                    let tab = &mut self.tabs[tab_index];
+                    tab.attention = tab.attention.on_activity();
+                }
+                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
+            }
+            TermEvent::MouseCursorDirty => {
+                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
+            }
+            TermEvent::Exit => {
+                // A tab whose shell exits is closed; when it was the
+                // last, a fresh tab spawns in its place so the overlay
+                // is never left without a terminal (see the tabs spec).
+                return self.close_tab_at(tab_index);
+            }
+        }
+        Task::none()
+    }
+}
+
+impl DropTerm {
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ToggleAction(action) => return self.debounced_toggle(action),
             Message::ConfigChanged(config) => {
@@ -2956,297 +3312,67 @@ impl Application for DropTerm {
         }
         Task::none()
     }
-
-    fn view(&self) -> Element<'_, Self::Message> {
-        widget::text("").into()
+    /// The app's surface state as the V1 interface sees it:
+    /// `window::Id` payloads dropped, so no app type crosses into
+    /// `dbus_state`. Exhaustive on purpose — a new surface state must
+    /// pick a phase here.
+    fn surface_phase(&self) -> dbus_state::SurfacePhase {
+        match self.surface {
+            SurfaceState::Hidden => dbus_state::SurfacePhase::Hidden,
+            SurfaceState::Measuring(_) => dbus_state::SurfacePhase::Measuring,
+            SurfaceState::Shown(_) => dbus_state::SurfacePhase::Shown,
+            SurfaceState::Hiding(_) => dbus_state::SurfacePhase::Hiding,
+        }
     }
 
-    fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
-        // The settings window (settings-ui spec, U4): the sectioned
-        // instant-apply view — rendered from config with buffered
-        // drafts winning while they exist, events mapped into the
-        // app's `Message::Settings` funnel.
-        if self.settings_window == Some(id) {
-            return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
-        }
-        let Some(tab) = self.active() else {
-            return widget::text("").into();
+    fn derive_dbus_state(&self) -> dbus_state::State {
+        dbus_state::derive(self.surface_phase(), self.tabs.len() as u32)
+    }
+
+    /// Re-derives the served snapshot and emits `PropertiesChanged`
+    /// for the properties that actually moved. No-op without a bus
+    /// connection (headless) and when nothing changed.
+    fn sync_dbus_state(&mut self) {
+        let Some(conn) = self.dbus_conn.clone() else {
+            return;
         };
-        if !matches!(
-            &self.surface,
-            SurfaceState::Measuring(shown)
-                | SurfaceState::Shown(shown)
-                | SurfaceState::Hiding(shown)
-                if *shown == id
-        ) {
-            return widget::text("").into();
+        let new = self.derive_dbus_state();
+        let changed = dbus_state::changed(self.dbus_last, new);
+        if !(changed.visible || changed.tab_count) {
+            return;
         }
-
-        let opacity = f32::from(self.config.opacity) / 100.0;
-        // Pin the terminal's height to the granted window minus the bar's
-        // strip: a Fill terminal would claim the bar's space and push it
-        // below the surface (see `surface::terminal_view_height`).
-        let terminal_height = self
-            .window_height
-            .map(|h| Length::Fixed(surface::terminal_view_height(h, self.tabs.len())))
-            .unwrap_or(Length::Fill);
-        let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
-            .id(self.terminal_id.clone())
-            .height(terminal_height)
-            .opacity(opacity)
-            .show_headerbar(false)
-            .on_middle_click(|| Message::MiddleClick)
-            .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
-            .on_window_focused(|| Message::WindowFocused)
-            .on_window_unfocused(|| Message::WindowUnfocused)
-            .context_menu_open(self.context_menu_open)
-            .on_context_menu(Message::ContextMenu)
-            .into();
-
-        // The context menu (context-menu module): wraps ONLY the
-        // terminal element — the wrapper triggers anywhere over its
-        // bounds, so the tab bar and grab bar must stay outside it
-        // (spec criterion 7). Trees are supplied only while open
-        // (`context_menu::open_trees`): closed, the wrapper is a
-        // plain pass-through — the pixel-identical view (criterion
-        // 6). The popup plumbing is the cosmic-term pattern
-        // (`main.rs:3444-3452`): `on_surface_action` is mandatory —
-        // `create_popup` is a no-op without it — and `window_id` must
-        // be this layer surface's id (the `view_window` parameter),
-        // never the main window's.
-        let terminal: Element<'_, Message> =
-            widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
-                .on_close(Message::ContextMenu(false))
-                .on_surface_action(Message::Surface)
-                .window_id(id)
-                .into();
-
-        // Stacking from the screen edge (geometry spec, criterion 9):
-        // content, tab bar (only with more than one tab, tabs spec),
-        // grab bar on the free edge. The bars take their strips out of
-        // the terminal's pinned height (see
-        // `surface::terminal_view_height`), so neither pushes the other
-        // off the surface. Fill dimensions keep iced's flex from
-        // deferring the bars past the terminal's allocation: a Shrink
-        // cross-axis makes a fixed-height, fill-width bar a fourth-pass
-        // child, so the Fill terminal would take the whole surface and
-        // push the bars below its bottom edge.
-        let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
-
-        // The tab bar appears only with more than one tab and sits on
-        // the surface edge opposite the screen edge (tabs spec):
-        // between the terminal and the grab bar.
-        let column: Element<'_, Message> = if self.tabs.len() > 1 {
-            let mut bar = TabBar::new(&self.tabs, self.active_tab)
-                .on_select(Message::TabSelected)
-                .on_close(Message::TabClosed)
-                .on_move(Message::TabMoved)
-                .on_rename(Message::RenameStarted)
-                .on_rename_end(|| Message::RenameCommitted);
-            if let Some(edit) = &self.rename
-                && self.tabs.iter().any(|tab| tab.id == edit.tab)
+        *self
+            .dbus_shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new;
+        self.dbus_last = new;
+        // The emission rides a spawned task so `update` never awaits
+        // the bus; the single executor serializes messages, so a
+        // subscriber may at worst see older-then-newer values, never a
+        // wrong final state.
+        tokio::spawn(async move {
+            let iface_ref = match conn
+                .object_server()
+                .interface::<_, dbus_state::V1>(dbus_state::OBJECT_PATH)
+                .await
             {
-                // The inline rename input (T6), overlaid by the bar on
-                // the renamed tab's button. Its value mirrors the app's
-                // draft so it survives every re-render.
-                bar = bar.renaming(
-                    edit.tab,
-                    widget::text_input("", edit.draft.clone())
-                        .id(self.rename_input_id.clone())
-                        .size(14.0)
-                        .on_input(Message::RenameDraftChanged)
-                        .on_submit(|_| Message::RenameCommitted)
-                        .on_unfocus(Message::RenameCancelled),
-                );
-            }
-            match self.config.edge {
-                Edge::Top => widget::column![terminal, bar, grab_bar]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-                Edge::Bottom => widget::column![grab_bar, bar, terminal]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-            }
-        } else {
-            match self.config.edge {
-                Edge::Top => widget::column![terminal, grab_bar]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-                Edge::Bottom => widget::column![grab_bar, terminal]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-            }
-        };
-
-        // The slide (slide-animation spec, A3 + A4): while the surface
-        // animates — ease-in from the anchored edge after a show,
-        // ease-out back to it before a hide's destroy — the content
-        // column's pose is NOT computed here: the view runs in the
-        // runtime's AboutToWait pass but the frame presents on the
-        // compositor's frame callback, so a view-baked offset is up to
-        // one frame stale at presentation — random per-frame error
-        // that read as judder on hardware (the round-4 finding).
-        // Instead the live slide state and its true start instant are
-        // handed to `SlideBox`, which evaluates the easing inside
-        // `draw` against the frame's own clock. No animation in
-        // flight → offset 0 → the column renders byte-identically to
-        // the unwrapped one.
-        let mut slide_box = SlideBox::new(column, 0.0);
-        if let Some(playing) = self.slide {
-            slide_box = slide_box.playing(self.config.edge, playing);
-        }
-        slide_box.into()
-    }
-
-    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
-        // Fires on a window's `Closed` event (cosmic routes it through
-        // its internal `SurfaceClosed` action), i.e. after the fact:
-        // the settings window's ✕ is already handled by the
-        // `CloseRequested` subscription arm, which clears the id and
-        // issues the close. This override is the defensive net for a
-        // settings window that closed without a handled request —
-        // returning the default `None` there would silently leave the
-        // dead id in app state for a later press to `gain_focus` into
-        // nothing. Layer surfaces keep the default: their `Done`
-        // closes are the hide path's own business.
-        (self.settings_window == Some(id)).then(|| Message::SettingsCloseRequested(id))
-    }
-
-    fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
-        use cosmic::dbus_activation::Details;
-        match msg.msg {
-            Details::Activate => Task::done(cosmic::Action::App(Message::ToggleAction(
-                ToggleAction::Toggle,
-            ))),
-            Details::ActivateAction { action, args } => {
-                // The forwarded name plus its args re-parse through the
-                // clap definitions (remote-newtab spec: single source of
-                // truth for the surface). A malformed forward degrades
-                // to a plain toggle, never an error surface.
-                let mut words = vec![action];
-                words.extend(args);
-                let parsed = crate::parse_forwarded_action(&words).unwrap_or_default();
-                Task::done(cosmic::Action::App(Message::ToggleAction(parsed)))
-            }
-            Details::Open { .. } => Task::none(),
-        }
-    }
-}
-
-impl DropTerm {
-    fn handle_term_event(&mut self, tab_id: TabId, event: TermEvent) -> Task<Message> {
-        let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
-            // Events for a tab that is already gone (e.g. a trailing
-            // Wakeup after its shell exited) have no target.
-            return Task::none();
-        };
-        match event {
-            // The active tab never accrues a marker (bell-indicator
-            // spec): the user is already looking at it.
-            TermEvent::Bell => {
-                // Bell-indicator spec: only an inactive tab accrues a
-                // marker — the user is already looking at the active
-                // one.
-                if tab_index != self.active_tab {
-                    let tab = &mut self.tabs[tab_index];
-                    tab.attention = tab.attention.on_bell();
+                Ok(iface_ref) => iface_ref,
+                Err(err) => {
+                    log::warn!("V1 state interface lookup failed: {err}");
+                    return;
                 }
-                // Bell-notify spec: a bell while the overlay is hidden
-                // posts one desktop notification per tab per hide
-                // period (the latch arms here and clears on every
-                // show). While visible the marker above alone carries
-                // the signal.
-                let tab = &mut self.tabs[tab_index];
-                if notify::should_notify(
-                    matches!(self.surface, SurfaceState::Hidden),
-                    self.config.bell_notification_enabled,
-                    tab.bell_notified,
-                ) {
-                    tab.bell_notified = true;
-                    let title = tab.title.clone();
-                    notify::post_bell_notification(title);
-                }
+            };
+            let iface = iface_ref.get().await;
+            if changed.visible
+                && let Err(err) = iface.visible_changed(iface_ref.signal_emitter()).await
+            {
+                log::warn!("failed to emit Visible change: {err}");
             }
-            TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
-            TermEvent::ClipboardLoad(kind, format) => match kind {
-                aterm::ClipboardType::Clipboard => {
-                    return clipboard::read().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
-                    });
-                }
-                aterm::ClipboardType::Selection => {
-                    return clipboard::read_primary().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
-                    });
-                }
-            },
-            TermEvent::ClipboardStore(kind, data) => match kind {
-                aterm::ClipboardType::Clipboard => return clipboard::write(data),
-                aterm::ClipboardType::Selection => return clipboard::write_primary(data),
-            },
-            TermEvent::ColorRequest(index, format) => {
-                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
-                let rgb = terminal.effective_color(index);
-                terminal.input_no_scroll(format(rgb).into_bytes());
+            if changed.tab_count
+                && let Err(err) = iface.tab_count_changed(iface_ref.signal_emitter()).await
+            {
+                log::warn!("failed to emit TabCount change: {err}");
             }
-            TermEvent::PtyWrite(text) => {
-                self.tabs[tab_index]
-                    .terminal
-                    .lock()
-                    .unwrap()
-                    .input_no_scroll(text.into_bytes());
-            }
-            TermEvent::TextAreaSizeRequest(format) => {
-                let terminal = self.tabs[tab_index].terminal.lock().unwrap();
-                let text = format(terminal.size().into());
-                terminal.input_no_scroll(text.into_bytes());
-            }
-            TermEvent::Title(title) => {
-                let tab = &mut self.tabs[tab_index];
-                tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
-                // Title events double as the cwd-change sample point
-                // (session-persistence spec, S3); the title itself is
-                // not a trigger — churn alone writes nothing.
-                return self.check_tab_cwd(tab_index);
-            }
-            TermEvent::ResetTitle => {
-                // A shell reset (RIS) restores the default title, unless
-                // the user renamed the tab.
-                let tab = &mut self.tabs[tab_index];
-                let default_title = tabs::next_default_title(tab.id);
-                tabs::apply_shell_title(
-                    &mut tab.title,
-                    tab.title_override.as_deref(),
-                    &default_title,
-                );
-                return self.check_tab_cwd(tab_index);
-            }
-            TermEvent::Wakeup => {
-                // Output arrived: an inactive tab accrues an activity
-                // marker (bell-indicator spec); the active tab shows
-                // the output itself, so nothing to signal.
-                if tab_index != self.active_tab {
-                    let tab = &mut self.tabs[tab_index];
-                    tab.attention = tab.attention.on_activity();
-                }
-                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
-            }
-            TermEvent::MouseCursorDirty => {
-                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
-            }
-            TermEvent::Exit => {
-                // A tab whose shell exits is closed; when it was the
-                // last, a fresh tab spawns in its place so the overlay
-                // is never left without a terminal (see the tabs spec).
-                return self.close_tab_at(tab_index);
-            }
-        }
-        Task::none()
+        });
     }
 }
