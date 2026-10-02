@@ -78,6 +78,7 @@ impl Section {
                 ConfigKey::ScrollbackLines,
             ],
             Section::Advanced => &[
+                ConfigKey::RespectPanel,
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
                 ConfigKey::ColorSchemeDark,
@@ -108,6 +109,7 @@ pub enum ConfigKey {
     ScrollbackLines,
     Layer,
     KeyboardMode,
+    RespectPanel,
     ColorSchemeDark,
     ColorSchemeLight,
 }
@@ -133,6 +135,7 @@ impl ConfigKey {
             ConfigKey::ScrollbackLines => "scrollback_lines",
             ConfigKey::Layer => "layer",
             ConfigKey::KeyboardMode => "keyboard_mode",
+            ConfigKey::RespectPanel => "respect_panel",
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
         }
@@ -163,6 +166,7 @@ pub enum PlannedWrite {
     ScrollbackLines(u32),
     Layer(Layer),
     KeyboardMode(KeyboardMode),
+    RespectPanel(bool),
     ColorSchemeDark(String),
     ColorSchemeLight(String),
 }
@@ -186,6 +190,7 @@ impl PlannedWrite {
             PlannedWrite::ScrollbackLines(_) => ConfigKey::ScrollbackLines,
             PlannedWrite::Layer(_) => ConfigKey::Layer,
             PlannedWrite::KeyboardMode(_) => ConfigKey::KeyboardMode,
+            PlannedWrite::RespectPanel(_) => ConfigKey::RespectPanel,
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
         }
@@ -241,6 +246,9 @@ impl PlannedWrite {
             PlannedWrite::Layer(value) => handler.set(ConfigKey::Layer.key_name(), value),
             PlannedWrite::KeyboardMode(value) => {
                 handler.set(ConfigKey::KeyboardMode.key_name(), value)
+            }
+            PlannedWrite::RespectPanel(value) => {
+                handler.set(ConfigKey::RespectPanel.key_name(), *value)
             }
             PlannedWrite::ColorSchemeDark(value) => {
                 handler.set(ConfigKey::ColorSchemeDark.key_name(), value)
@@ -378,7 +386,9 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::Opacity
         | ConfigKey::ColorSchemeDark
         | ConfigKey::ColorSchemeLight => ApplyTiming::Live,
-        ConfigKey::Layer | ConfigKey::KeyboardMode => ApplyTiming::NextShow,
+        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
+            ApplyTiming::NextShow
+        }
         ConfigKey::Shell | ConfigKey::Args | ConfigKey::ScrollbackLines => ApplyTiming::NewTab,
         ConfigKey::HideOnFocusLoss
         | ConfigKey::SessionPersistenceEnabled
@@ -557,6 +567,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SessionPersistenceEnabled(checked))
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
+        ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         _ => None,
     }
 }
@@ -589,6 +600,7 @@ impl ConfigKey {
             ConfigKey::HideOnFocusLoss => "Hide on focus loss",
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
+            ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
             ConfigKey::ScrollbackLines => "Scrollback lines",
@@ -758,6 +770,7 @@ fn toggle_control(
         ConfigKey::HideOnFocusLoss => config.hide_on_focus_loss,
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
+        ConfigKey::RespectPanel => config.respect_panel,
         _ => return None,
     };
     Some(
@@ -831,6 +844,7 @@ mod tests {
             PlannedWrite::ScrollbackLines(10_000),
             PlannedWrite::Layer(Layer::Overlay),
             PlannedWrite::KeyboardMode(KeyboardMode::Exclusive),
+            PlannedWrite::RespectPanel(true),
             PlannedWrite::ColorSchemeDark(String::new()),
             PlannedWrite::ColorSchemeLight(String::new()),
         ];
@@ -874,6 +888,7 @@ mod tests {
             (ConfigKey::ScrollbackLines, "scrollback_lines"),
             (ConfigKey::Layer, "layer"),
             (ConfigKey::KeyboardMode, "keyboard_mode"),
+            (ConfigKey::RespectPanel, "respect_panel"),
             (ConfigKey::ColorSchemeDark, "color_scheme_dark"),
             (ConfigKey::ColorSchemeLight, "color_scheme_light"),
         ];
@@ -1099,8 +1114,9 @@ mod tests {
     #[test]
     fn apply_timing_states_each_field_s_documented_semantics() {
         // Criterion 4's copy, per key: geometry/font/colors/opacity
-        // live; layer/keyboard_mode at next show; shell/args/
-        // scrollback on new tabs; the toggles on their next trigger.
+        // live; layer/keyboard_mode/respect_panel at next show;
+        // shell/args/scrollback on new tabs; the toggles on their next
+        // trigger.
         for key in [
             ConfigKey::HeightPercent,
             ConfigKey::WidthPercent,
@@ -1114,7 +1130,11 @@ mod tests {
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
         }
-        for key in [ConfigKey::Layer, ConfigKey::KeyboardMode] {
+        for key in [
+            ConfigKey::Layer,
+            ConfigKey::KeyboardMode,
+            ConfigKey::RespectPanel,
+        ] {
             assert_eq!(apply_timing(key), ApplyTiming::NextShow, "{key:?}");
         }
         for key in [

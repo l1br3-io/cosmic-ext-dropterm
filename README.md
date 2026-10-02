@@ -118,7 +118,7 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 
 `hide_on_focus_loss` defaults to `true` (click away to hide); write `false` to keep the overlay open when it loses focus.
 
-`respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show:
+`respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show - toggle it in the Advanced card of the [settings window](#settings-window) or write it directly:
 
 ```sh
 echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_panel
@@ -235,7 +235,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] With `respect_panel: true`, `edge: bottom`, and a bottom dock, the drop-down sits above the dock
 - [ ] With `respect_panel: true`, the drop-down still appears above a fullscreen window
 - [ ] With a config directory that has no `respect_panel` key (or `false` written), the drop-down still covers the panel
-- [ ] Toggling `respect_panel` in the config while the drop-down is shown applies on the next show
+- [ ] Toggling `respect_panel` in the settings window or config file while the drop-down is shown applies on the next show
 - [ ] With an autohide panel and `respect_panel: true`, the drop-down lands below the panel's handle strip
 - [ ] Arrange several tabs (distinct titles and cwds, one renamed, a middle tab focused), quit, relaunch: the same tabs return in the same order, each a fresh shell in its saved cwd, the rename intact, the same tab focused
 - [ ] A saved cwd that no longer exists (delete the directory, or hand-edit the file): that shell respawns in `$HOME`
@@ -261,7 +261,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] All five cards are present with every field; for one field per card, editing it in the window persists exactly what a hand-edit of the same value would (compare the config file)
 - [ ] No Apply button anywhere: toggles/dropdowns write on change, sliders on release, text inputs on Enter
 - [ ] Controls respect the config ranges (height 10-100, width 30-100, opacity 0-100, scrollback non-negative); garbage scrollback text writes nothing
-- [ ] Geometry edits from the window land at the next show; `layer`/`keyboard_mode` at the next show; `shell`/`args`/`scrollback_lines` on newly spawned tabs only; font/colors/opacity on every tab
+- [ ] Geometry edits from the window land at the next show; `layer`/`keyboard_mode`/`respect_panel` at the next show; `shell`/`args`/`scrollback_lines` on newly spawned tabs only; font/colors/opacity on every tab
 - [ ] `session_persistence_enabled: false` stops session saves and skips launch restore (fresh single tab); `session.ron` is left untouched; re-enabling resumes saving over it
 - [ ] `slide_animation_enabled: false` restores instant show/hide; toggling it mid-animation never aborts the running slide
 - [ ] Race check (newest intent wins): drag the grab bar, release, immediately open settings and drag the height slider - the slider's value is what lands in the config file, no write/reshape storm
