@@ -22,6 +22,7 @@ use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
     MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT,
 };
+use crate::terminal::theme_source::scheme_names;
 
 /// The write kind a config change came from, deciding echo handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,13 @@ impl Section {
     /// once — pinned by test.
     pub const fn keys(&self) -> &'static [ConfigKey] {
         match self {
-            Section::Appearance => &[ConfigKey::FontName, ConfigKey::FontSize, ConfigKey::Opacity],
+            Section::Appearance => &[
+                ConfigKey::FontName,
+                ConfigKey::FontSize,
+                ConfigKey::Opacity,
+                ConfigKey::ColorSchemeDark,
+                ConfigKey::ColorSchemeLight,
+            ],
             Section::Geometry => &[
                 ConfigKey::HeightPercent,
                 ConfigKey::WidthPercent,
@@ -81,8 +88,6 @@ impl Section {
                 ConfigKey::RespectPanel,
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
-                ConfigKey::ColorSchemeDark,
-                ConfigKey::ColorSchemeLight,
             ],
         }
     }
@@ -300,8 +305,6 @@ pub enum TextField {
     Shell,
     Args,
     ScrollbackLines,
-    ColorSchemeDark,
-    ColorSchemeLight,
 }
 
 /// Split an `args` draft into config tokens: whitespace-separated, no
@@ -342,8 +345,6 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
         TextField::Shell => Some(PlannedWrite::Shell(raw.trim().to_string())),
         TextField::Args => Some(PlannedWrite::Args(parse_args(raw))),
         TextField::ScrollbackLines => parse_scrollback(raw).map(PlannedWrite::ScrollbackLines),
-        TextField::ColorSchemeDark => Some(PlannedWrite::ColorSchemeDark(raw.trim().to_string())),
-        TextField::ColorSchemeLight => Some(PlannedWrite::ColorSchemeLight(raw.trim().to_string())),
     }
 }
 
@@ -408,6 +409,14 @@ const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
     (KeyboardMode::OnDemand, "OnDemand"),
 ];
 
+/// A scheme dropdown's selection: the config name's position in the
+/// registry options. An unknown name selects nothing — the control
+/// never invents a value (spec criteria 4/6); `active_colors()`
+/// keeps serving the COSMIC fallback meanwhile.
+fn scheme_index(name: &str) -> Option<usize> {
+    scheme_names().iter().position(|option| *option == name)
+}
+
 /// The currently-selected dropdown index for `key` under `config`, so
 /// the control opens on the file's value. `None` for keys without a
 /// dropdown.
@@ -425,6 +434,8 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.keyboard_mode),
+        ConfigKey::ColorSchemeDark => scheme_index(&config.color_scheme_dark),
+        ConfigKey::ColorSchemeLight => scheme_index(&config.color_scheme_light),
         _ => None,
     }
 }
@@ -446,6 +457,12 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::KeyboardMode(*value)),
+        ConfigKey::ColorSchemeDark => scheme_names()
+            .get(index)
+            .map(|name| PlannedWrite::ColorSchemeDark((*name).to_string())),
+        ConfigKey::ColorSchemeLight => scheme_names()
+            .get(index)
+            .map(|name| PlannedWrite::ColorSchemeLight((*name).to_string())),
         _ => None,
     }
 }
@@ -495,8 +512,6 @@ impl SettingsBuffer {
             TextField::Shell => config.shell.clone().unwrap_or_default(),
             TextField::Args => config.args.join(" "),
             TextField::ScrollbackLines => config.scrollback_lines.to_string(),
-            TextField::ColorSchemeDark => config.color_scheme_dark.clone(),
-            TextField::ColorSchemeLight => config.color_scheme_light.clone(),
         }
     }
 
@@ -747,6 +762,9 @@ fn dropdown_control(
             .iter()
             .map(|(_, label)| *label)
             .collect(),
+        // The scheme rows offer the registry itself — names in
+        // registry order (spec criterion 6), not a local table.
+        ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight => scheme_names(),
         _ => return None,
     };
     Some(
@@ -795,8 +813,6 @@ fn text_control(
         ConfigKey::Shell => TextField::Shell,
         ConfigKey::Args => TextField::Args,
         ConfigKey::ScrollbackLines => TextField::ScrollbackLines,
-        ConfigKey::ColorSchemeDark => TextField::ColorSchemeDark,
-        ConfigKey::ColorSchemeLight => TextField::ColorSchemeLight,
         _ => return None,
     };
     let placeholder = match field {
@@ -1062,14 +1078,6 @@ mod tests {
             submit_write(TextField::Shell, " /usr/bin/fish "),
             Some(PlannedWrite::Shell("/usr/bin/fish".to_string()))
         );
-        assert_eq!(
-            submit_write(TextField::ColorSchemeDark, " Tokyo Night "),
-            Some(PlannedWrite::ColorSchemeDark("Tokyo Night".to_string()))
-        );
-        assert_eq!(
-            submit_write(TextField::ColorSchemeLight, "Tokyo Light"),
-            Some(PlannedWrite::ColorSchemeLight("Tokyo Light".to_string()))
-        );
     }
 
     #[test]
@@ -1179,6 +1187,8 @@ mod tests {
             ConfigKey::Edge,
             ConfigKey::Layer,
             ConfigKey::KeyboardMode,
+            ConfigKey::ColorSchemeDark,
+            ConfigKey::ColorSchemeLight,
         ] {
             let selected = dropdown_selected(key, &config)
                 .unwrap_or_else(|| panic!("{key:?} has no selection"));
@@ -1202,16 +1212,107 @@ mod tests {
             ConfigKey::Edge,
             ConfigKey::Layer,
             ConfigKey::KeyboardMode,
+            ConfigKey::ColorSchemeDark,
+            ConfigKey::ColorSchemeLight,
         ] {
             assert!(dropdown_write(key, 99).is_none(), "{key:?}");
         }
     }
 
     #[test]
-    fn dropdown_writes_only_serve_the_four_enum_keys() {
+    fn dropdown_writes_reject_keys_without_dropdowns() {
         assert!(dropdown_write(ConfigKey::Shell, 0).is_none());
         assert!(dropdown_write(ConfigKey::Opacity, 0).is_none());
         assert!(dropdown_selected(ConfigKey::Shell, &DropTermConfig::default()).is_none());
+    }
+
+    // --- color-schemes C4: registry-fed scheme dropdowns ---
+
+    #[test]
+    fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
+        // C4's section move: the two scheme rows land in Appearance
+        // after Opacity; Advanced keeps only the
+        // compositor-negotiation knobs, in plan order.
+        assert_eq!(
+            Section::Appearance.keys(),
+            &[
+                ConfigKey::FontName,
+                ConfigKey::FontSize,
+                ConfigKey::Opacity,
+                ConfigKey::ColorSchemeDark,
+                ConfigKey::ColorSchemeLight,
+            ]
+        );
+        assert_eq!(
+            Section::Advanced.keys(),
+            &[
+                ConfigKey::RespectPanel,
+                ConfigKey::Layer,
+                ConfigKey::KeyboardMode,
+            ]
+        );
+    }
+
+    #[test]
+    fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
+        let options = crate::terminal::theme_source::scheme_names();
+        // Twelve shipped schemes, COSMIC pair first (spec criteria
+        // 1/6) — the picker's order is the registry's order.
+        assert_eq!(options.len(), 12);
+        assert_eq!(options.first(), Some(&crate::config::COSMIC_THEME_DARK));
+        assert_eq!(options.get(1), Some(&crate::config::COSMIC_THEME_LIGHT));
+        // What the picker offers is exactly what `by_name` serves, so
+        // a pick can never name a scheme lookup would reject.
+        for name in &options {
+            assert!(
+                crate::terminal::theme_source::by_name(name).is_some(),
+                "{name:?} does not resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_dropdown_picks_commit_registry_names_only() {
+        // A pick commits exactly the option's name — the control can
+        // never invent or misspell a value (criterion 6).
+        assert_eq!(
+            dropdown_write(ConfigKey::ColorSchemeDark, 0),
+            Some(PlannedWrite::ColorSchemeDark("COSMIC Dark".to_string()))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::ColorSchemeLight, 4),
+            Some(PlannedWrite::ColorSchemeLight("Dracula".to_string()))
+        );
+        // Out of range (including exactly len) rejects instead of
+        // panicking — no index past the table commits anything.
+        let len = crate::terminal::theme_source::scheme_names().len();
+        assert_eq!(dropdown_write(ConfigKey::ColorSchemeDark, len), None);
+    }
+
+    #[test]
+    fn scheme_selection_opens_on_the_config_name_and_unknowns_select_nothing() {
+        let mut config = DropTermConfig::default();
+        // Defaults are the COSMIC pair — the registry's first two
+        // entries — so both dropdowns open on a real selection.
+        assert_eq!(
+            dropdown_selected(ConfigKey::ColorSchemeDark, &config),
+            Some(0)
+        );
+        assert_eq!(
+            dropdown_selected(ConfigKey::ColorSchemeLight, &config),
+            Some(1)
+        );
+        // A committed name selects its registry position.
+        config.color_scheme_dark = "Dracula".to_string();
+        assert_eq!(
+            dropdown_selected(ConfigKey::ColorSchemeDark, &config),
+            Some(4)
+        );
+        // An unknown name (stale, hand-typed, renamed upstream) shows
+        // no selection — the control never invents one (criterion 4),
+        // while `active_colors` keeps serving the COSMIC fallback.
+        config.color_scheme_dark = "Tokyo Night".to_string();
+        assert_eq!(dropdown_selected(ConfigKey::ColorSchemeDark, &config), None);
     }
 
     #[test]
@@ -1248,10 +1349,6 @@ mod tests {
         let buffer = SettingsBuffer::default();
         assert_eq!(buffer.text(TextField::FontName, &config), "Noto Sans Mono");
         assert_eq!(buffer.text(TextField::ScrollbackLines, &config), "10000");
-        assert_eq!(
-            buffer.text(TextField::ColorSchemeDark, &config),
-            crate::config::COSMIC_THEME_DARK
-        );
     }
 
     #[test]

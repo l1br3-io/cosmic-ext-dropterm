@@ -710,6 +710,15 @@ pub fn by_name(name: &str) -> Option<Colors> {
         .map(|entry| Colors::from(&entry.scheme))
 }
 
+/// The registry's scheme names in registry order (COSMIC pair first,
+/// the rest alphabetical) — the option list the settings dropdowns
+/// feed from (color-schemes C4). Derived from the same `SCHEMES`
+/// table `by_name` reads, so the picker can never offer a name
+/// lookup would reject (spec criterion 6).
+pub fn scheme_names() -> Vec<&'static str> {
+    SCHEMES.iter().map(|entry| entry.name).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
