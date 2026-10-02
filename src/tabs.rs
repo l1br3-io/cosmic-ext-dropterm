@@ -88,6 +88,12 @@ pub struct Tab {
     /// accrue only while the tab is inactive and clear when it becomes
     /// active; the session schema deliberately ignores this field.
     pub attention: Attention,
+    /// Whether this tab already posted a bell notification during the
+    /// current hide period (bell-notify spec): armed when a
+    /// notification is posted, cleared for every tab when the surface
+    /// is shown — so a bell storm yields one notification per tab per
+    /// hide, and the next bell after a show notifies again.
+    pub bell_notified: bool,
     pub terminal: Mutex<Terminal>,
 }
 
@@ -102,6 +108,7 @@ impl Tab {
             title_override: None,
             shell,
             attention: Attention::None,
+            bell_notified: false,
             terminal: Mutex::new(terminal),
         }
     }

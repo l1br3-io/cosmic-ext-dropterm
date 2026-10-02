@@ -138,6 +138,12 @@ pub struct DropTermConfig {
     /// show/hide with immediate destroy the app had before slides
     /// existed; a running animation is never aborted by the toggle.
     pub slide_animation_enabled: bool,
+    /// Post a desktop notification when a bell rings while the
+    /// terminal is hidden (bell-notify spec) — one notification per
+    /// tab per hide period, delivered over the freedesktop
+    /// notification interface. Defaults to `true`; `false` silences
+    /// notifications (the tab-bar 🔔 marker is unaffected).
+    pub bell_notification_enabled: bool,
     /// Whether the app follows the system light/dark mode or pins one
     /// (theme-preference spec). Defaults to `System`: no override is
     /// ever issued and system flips keep driving the app.
@@ -166,6 +172,7 @@ impl Default for DropTermConfig {
             hide_on_focus_loss: true,
             session_persistence_enabled: true,
             slide_animation_enabled: true,
+            bell_notification_enabled: true,
             theme_preference: ThemePreference::default(),
         }
     }
@@ -224,6 +231,13 @@ mod tests {
         let config = DropTermConfig::default();
         assert!(config.session_persistence_enabled);
         assert!(config.slide_animation_enabled);
+    }
+
+    #[test]
+    fn bell_notifications_default_to_on() {
+        // The one DE feature a hidden drop-down uniquely needs ships
+        // enabled (bell-notify spec); the Behavior toggle turns it off.
+        assert!(DropTermConfig::default().bell_notification_enabled);
     }
 
     #[test]

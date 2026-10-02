@@ -29,6 +29,7 @@ use crate::context_menu;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
+use crate::notify;
 use crate::session;
 use crate::settings;
 use crate::slide::{self, SlideBox};
@@ -520,6 +521,12 @@ impl DropTerm {
     fn show(&mut self) -> Task<Message> {
         if !matches!(self.surface, SurfaceState::Hidden) {
             return Task::none();
+        }
+        // The user can see the terminal again: re-arm every tab's bell
+        // notification latch (bell-notify spec), so a bell from here on
+        // is fresh news worth one notification per tab again.
+        for tab in &mut self.tabs {
+            tab.bell_notified = false;
         }
         self.ensure_tabs();
         let id = window::Id::unique();
@@ -2989,9 +2996,27 @@ impl DropTerm {
             // The active tab never accrues a marker (bell-indicator
             // spec): the user is already looking at it.
             TermEvent::Bell => {
+                // Bell-indicator spec: only an inactive tab accrues a
+                // marker — the user is already looking at the active
+                // one.
                 if tab_index != self.active_tab {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_bell();
+                }
+                // Bell-notify spec: a bell while the overlay is hidden
+                // posts one desktop notification per tab per hide
+                // period (the latch arms here and clears on every
+                // show). While visible the marker above alone carries
+                // the signal.
+                let tab = &mut self.tabs[tab_index];
+                if notify::should_notify(
+                    matches!(self.surface, SurfaceState::Hidden),
+                    self.config.bell_notification_enabled,
+                    tab.bell_notified,
+                ) {
+                    tab.bell_notified = true;
+                    let title = tab.title.clone();
+                    notify::post_bell_notification(title);
                 }
             }
             TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}

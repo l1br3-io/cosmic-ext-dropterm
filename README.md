@@ -103,7 +103,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -169,6 +169,15 @@ Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `
 - Dim variants are derived, not shipped: each normal color's channels are scaled by 0.66 (Alacritty's dim rule), one uniform rule for every non-COSMIC scheme. Bright variants come from the palettes themselves.
 - User-defined scheme files are not supported; the built-in registry is the whole feature (see the ROADMAP's "Later" section).
 
+## Bell notifications
+
+A bell that rings while the terminal is *hidden* posts a desktop notification naming the tab's title - the one DE feature a hidden drop-down uniquely needs (`printf '\a'` in a long-running build now finds you). Delivery goes straight to the freedesktop notification interface over D-Bus, which cosmic-notifications serves on COSMIC; COSMIC implements no Notification portal, so no portal is involved. The rules:
+
+- Only while hidden: when the overlay is visible, the tab-bar 🔔 marker alone carries the signal.
+- One notification per tab per hide period: a bell storm (`while true; printf '\a'; done`) yields a single notification - the per-tab latch clears the next time the terminal is shown.
+- Toggle with `bell_notification_enabled` (default `true`, Behavior card in the [settings window](#settings-window)); it applies at the next bell - the tab-bar markers are unaffected either way.
+- No notification daemon: the post fails with a `warn` log; nothing surfaces and the terminal is unaffected.
+
 ## Settings window
 
 Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus to open the settings window - a separate normal window in the same process. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
@@ -189,7 +198,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light` | live, on every tab; visible at the next show while the window is open |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted) |
+| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell |
 
 The two Behavior toggles default to `true`, which is exactly the pre-settings behavior:
 
@@ -235,6 +244,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Numbered tab switching: with three tabs, `Ctrl+Shift+1`/`2`/`3` activate the first/second/third; `Ctrl+Shift+9` activates the last tab; `Ctrl+Shift+5` with three tabs does nothing (no wrap, no crash); bare `Ctrl+2` reaches the shell (only `Ctrl+=`/`-`/`0` zoom)
 - [ ] Tab moves: `Ctrl+Shift+PageUp`/`PageDown` shift the active tab one slot, clamping at the list edges (no wrap); the moved tab stays active and focused, and `session.ron` records the new order
 - [ ] Attention markers: with two tabs, `printf '\a'` in the inactive tab marks it `🔔`; `echo hi` in a third (inactive) tab marks it `•`; activating a marked tab clears its marker; the active tab never gains one; a `while true; printf '\a'; done` bell storm in an inactive tab leaves one steady `🔔` (a state, not a counter); markers follow their tabs through drag-reorder and survive the closing of neighbors
+- [ ] Bell notifications: hide the terminal, `printf '\a'` inside it - exactly one desktop notification appears, naming the tab; a bell storm while hidden still yields exactly one; two different tabs belling while hidden yield two; showing and re-hiding re-arms the latch (a new bell notifies again); with the terminal visible a bell posts no notification (marker only); `bell_notification_enabled: false` silences them and the Behavior toggle round-trips to the config file
 - [ ] Editing `height_percent` in the config reshapes a shown surface immediately, in place - and a hidden surface opens at the new height on its next show
 - [ ] `width_percent` below 100 (e.g. 60) sizes the surface to that fraction of the output width; the default 100 is indistinguishable from the full-width surface
 - [ ] `h_align = Left` / `Right` sits flush against that edge, `Center` centers the surface with equal left/right margins - on both `edge` values
