@@ -18,6 +18,53 @@ use crate::terminal::Terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub u32);
 
+/// A tab's attention state, surfaced as a marker prefixed to its tab-bar
+/// title (bell-indicator spec): a bell marks 🔔 (kitty's `bell_on_tab`),
+/// output in an inactive tab marks activity (iTerm2's dots), and either
+/// clears the moment the tab becomes active. Only inactive tabs accrue
+/// markers — the active tab is the one the user is already looking at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Attention {
+    #[default]
+    None,
+    /// The tab produced output while inactive.
+    Activity,
+    /// The tab's terminal rang the bell. A bell is also activity, so
+    /// `Bell` outranks it in every transition.
+    Bell,
+}
+
+impl Attention {
+    /// Transition on a bell in this tab.
+    pub fn on_bell(self) -> Self {
+        Self::Bell
+    }
+
+    /// Transition on output in this tab while it is inactive: activity
+    /// at least — never demoting an existing bell marker.
+    pub fn on_activity(self) -> Self {
+        match self {
+            Self::Bell => Self::Bell,
+            _ => Self::Activity,
+        }
+    }
+
+    /// Transition on the tab becoming active: whatever marker it wore
+    /// is cleared.
+    pub fn on_activated(self) -> Self {
+        Self::None
+    }
+
+    /// The title prefix this state renders, if any.
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Activity => Some("• "),
+            Self::Bell => Some("\u{1f514} "),
+        }
+    }
+}
+
 /// One terminal inside the overlay surface.
 ///
 /// `title` is the last title the shell reported (the default comes from
@@ -37,6 +84,10 @@ pub struct Tab {
     /// mid-run config shell change never rewrites a live tab's shell,
     /// so what gets saved is what each tab actually runs.
     pub shell: String,
+    /// The tab's attention marker state (bell-indicator spec). Markers
+    /// accrue only while the tab is inactive and clear when it becomes
+    /// active; the session schema deliberately ignores this field.
+    pub attention: Attention,
     pub terminal: Mutex<Terminal>,
 }
 
@@ -50,6 +101,7 @@ impl Tab {
             title: next_default_title(id),
             title_override: None,
             shell,
+            attention: Attention::None,
             terminal: Mutex::new(terminal),
         }
     }
@@ -385,6 +437,35 @@ mod tests {
         assert_eq!(move_target(2, 3, MoveDirection::Right), None);
         assert_eq!(move_target(1, 3, MoveDirection::Left), Some(0));
         assert_eq!(move_target(1, 3, MoveDirection::Right), Some(2));
+    }
+
+    #[test]
+    fn a_bell_raises_attention_to_the_bell_marker() {
+        assert_eq!(Attention::None.on_bell(), Attention::Bell);
+        assert_eq!(Attention::Activity.on_bell(), Attention::Bell);
+    }
+
+    #[test]
+    fn output_in_an_inactive_tab_raises_attention_to_activity_at_least() {
+        assert_eq!(Attention::None.on_activity(), Attention::Activity);
+    }
+
+    #[test]
+    fn output_does_not_demote_an_existing_bell_marker() {
+        assert_eq!(Attention::Bell.on_activity(), Attention::Bell);
+    }
+
+    #[test]
+    fn activating_a_tab_clears_its_attention() {
+        assert_eq!(Attention::Bell.on_activated(), Attention::None);
+        assert_eq!(Attention::Activity.on_activated(), Attention::None);
+    }
+
+    #[test]
+    fn attention_markers_prefix_the_tab_title() {
+        assert_eq!(Attention::None.marker(), None);
+        assert_eq!(Attention::Activity.marker(), Some("• "));
+        assert_eq!(Attention::Bell.marker(), Some("\u{1f514} "));
     }
 
     #[test]

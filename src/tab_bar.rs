@@ -567,8 +567,11 @@ where
     }
 
     /// Rebuilds the cached title paragraphs: entries for closed tabs are
-    /// pruned, new or retitled tabs are (re)laid out. Returns nothing;
-    /// measurement then goes through [`TitleParagraph::min_width`].
+    /// pruned, new or retitled tabs are (re)laid out. A tab wearing an
+    /// attention marker (bell-indicator spec) renders it as a prefix to
+    /// its title, so a marker change re-lays the paragraph exactly like
+    /// a title change. Returns nothing; measurement then goes through
+    /// [`TitleParagraph::min_width`].
     fn refresh_paragraphs(&self, state: &mut State, renderer: &Renderer) {
         state
             .paragraphs
@@ -576,8 +579,16 @@ where
 
         let font = renderer.default_font();
         for tab in self.tabs {
+            let combined;
+            let content = match tab.attention.marker() {
+                Some(marker) => {
+                    combined = format!("{marker}{}", tab.title);
+                    combined.as_str()
+                }
+                None => tab.title.as_str(),
+            };
             let text = Text {
-                content: tab.title.as_str(),
+                content,
                 bounds: Size::INFINITE,
                 size: Pixels(TITLE_FONT_SIZE),
                 line_height: LineHeight::default(),

@@ -1116,6 +1116,13 @@ impl DropTerm {
         let closed = self.tabs.get(index).map(|tab| tab.id);
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
+            // The tab activation a close implies also retires the
+            // newly active tab's attention marker, exactly like a
+            // click or a numbered-switch bind would (bell-indicator
+            // spec).
+            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                tab.attention = tab.attention.on_activated();
+            }
             if decision.respawn {
                 self.ensure_tabs();
             }
@@ -1189,6 +1196,11 @@ impl DropTerm {
             old.terminal.lock().unwrap().set_focused(false);
         }
         self.active_tab = index;
+        // Activation retires whatever attention marker the tab wore
+        // (bell-indicator spec): the user is now looking at it.
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.attention = tab.attention.on_activated();
+        }
         self.focus_active_tab();
         self.mark_session_dirty()
     }
@@ -2974,7 +2986,15 @@ impl DropTerm {
             return Task::none();
         };
         match event {
-            TermEvent::Bell | TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
+            // The active tab never accrues a marker (bell-indicator
+            // spec): the user is already looking at it.
+            TermEvent::Bell => {
+                if tab_index != self.active_tab {
+                    let tab = &mut self.tabs[tab_index];
+                    tab.attention = tab.attention.on_bell();
+                }
+            }
+            TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
@@ -3030,7 +3050,17 @@ impl DropTerm {
                 );
                 return self.check_tab_cwd(tab_index);
             }
-            TermEvent::MouseCursorDirty | TermEvent::Wakeup => {
+            TermEvent::Wakeup => {
+                // Output arrived: an inactive tab accrues an activity
+                // marker (bell-indicator spec); the active tab shows
+                // the output itself, so nothing to signal.
+                if tab_index != self.active_tab {
+                    let tab = &mut self.tabs[tab_index];
+                    tab.attention = tab.attention.on_activity();
+                }
+                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
+            }
+            TermEvent::MouseCursorDirty => {
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
             }
             TermEvent::Exit => {
