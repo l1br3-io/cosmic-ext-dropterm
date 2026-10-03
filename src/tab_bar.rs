@@ -117,6 +117,24 @@ fn readable_foreground(background: Color) -> Color {
     }
 }
 
+/// Fills `bounds` as a disc — a quad rounded by half its smaller side —
+/// the shared shape of the gear's parts and the settings hover disc.
+fn fill_disc(renderer: &mut Renderer, bounds: Rectangle, color: Color) {
+    renderer.fill_quad(
+        Quad {
+            bounds,
+            border: Border {
+                radius: (bounds.width.min(bounds.height) / 2.0).into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            snap: true,
+            ..Default::default()
+        },
+        color,
+    );
+}
+
 /// Draws a `×` inside `close` as squares marched along both diagonals.
 ///
 /// The mark spans the middle of the target with a small inset, so it
@@ -215,9 +233,26 @@ const POSITION_EPSILON: f32 = 0.5;
 /// Width of the drop indicator line, in logical pixels.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
 
-/// Diameter of the settings button's placeholder disc (settings-button
-/// spec, T1): a filled circle standing in for the gear glyph T2 draws.
-const SETTINGS_PLACEHOLDER_DIAMETER: f32 = 12.0;
+/// Gear proportions as fractions of the settings target's side
+/// (settings-button spec, criterion 6): the ring's outer radius (also
+/// the radius the tooth centers ride), the punched hole's radius, and
+/// the teeth's side length. Owner-finalizable at the hardware STOP.
+const GEAR_BODY_RADIUS: f32 = 0.29;
+const GEAR_HOLE_RADIUS: f32 = 0.125;
+const GEAR_TOOTH_SIZE: f32 = 0.167;
+const GEAR_TEETH: usize = 8;
+
+/// The settings tooltip's label (settings-button spec, criterion 7):
+/// the same text as the context menu's item, ellipsis included
+/// (U+2026).
+const TOOLTIP_LABEL: &str = "Settings\u{2026}";
+
+/// Tooltip geometry (settings-button spec, criterion 7), logical
+/// pixels: tip height, label padding on each side, and the gap left
+/// between the strip and the popped tip.
+const TOOLTIP_HEIGHT: f32 = 24.0;
+const TOOLTIP_PADDING_X: f32 = 8.0;
+const TOOLTIP_GAP: f32 = 4.0;
 
 /// Vertical inset of the drop indicator from the bar's top and bottom.
 const DROP_INDICATOR_INSET: f32 = 4.0;
@@ -276,6 +311,103 @@ fn row_budget(bar_width: f32, metrics: &BarMetrics) -> f32 {
 /// carries the settings button alone.
 fn shows_tab_buttons(tab_count: usize) -> bool {
     tab_count >= 2
+}
+
+/// The vertical side of the strip the settings tooltip pops to
+/// (settings-button spec, criterion 7): the terminal's side, so the tip
+/// clears the strip into open surface instead of off the layer
+/// surface's edge. The app derives it from the configured edge — the
+/// bar itself stays edge-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TooltipSide {
+    /// The terminal sits below the strip: the tip pops downward.
+    #[default]
+    Below,
+    /// The terminal sits above the strip: the tip pops upward.
+    Above,
+}
+
+/// The settings gear's quads (see [`gear_glyph`]).
+#[derive(Debug)]
+struct GearGlyph {
+    /// The ring's outer disc.
+    body: Rectangle,
+    /// The hole punched through the body, refilled with the strip's
+    /// current background (see [`composite`]).
+    punch: Rectangle,
+    /// The teeth, rotationally placed around the body.
+    teeth: Vec<Rectangle>,
+}
+
+/// The gear glyph's quads (settings-button spec, criterion 6): a ring —
+/// a disc punched by a strip-colored disc — plus [`GEAR_TEETH`] teeth,
+/// all axis-aligned rounded quads, font-free like the close `×`. Pure
+/// geometry: every quad is contained in `target`, and the teeth are
+/// N-fold rotationally symmetric about its center (equal angular
+/// spacing, identical tooth geometry).
+fn gear_glyph(target: Rectangle) -> GearGlyph {
+    let side = target.width.min(target.height);
+    let center = target.center();
+    let disc = |radius: f32| {
+        Rectangle::new(
+            Point::new(center.x - radius, center.y - radius),
+            Size::new(radius * 2.0, radius * 2.0),
+        )
+    };
+    let ring = GEAR_BODY_RADIUS * side;
+    let tooth_side = GEAR_TOOTH_SIZE * side;
+    let teeth = (0..GEAR_TEETH)
+        .map(|tooth| {
+            let angle = tooth as f32 * (std::f32::consts::TAU / GEAR_TEETH as f32);
+            let (dx, dy) = (angle.cos() * ring, angle.sin() * ring);
+            Rectangle::new(
+                Point::new(
+                    center.x + dx - tooth_side / 2.0,
+                    center.y + dy - tooth_side / 2.0,
+                ),
+                Size::new(tooth_side, tooth_side),
+            )
+        })
+        .collect();
+    GearGlyph {
+        body: disc(ring),
+        punch: disc(GEAR_HOLE_RADIUS * side),
+        teeth,
+    }
+}
+
+/// The settings tooltip's rect (settings-button spec, criterion 7),
+/// bar-local: the right edge pinned at the strip's right corner
+/// whatever the label's width — growth is entirely leftward, so the tip
+/// can never overflow the right corner — and vertically clearing the
+/// strip toward `side` (the terminal's side).
+fn tooltip_bounds(
+    bar_width: f32,
+    label_width: f32,
+    metrics: &BarMetrics,
+    side: TooltipSide,
+) -> Rectangle {
+    let width = label_width + TOOLTIP_PADDING_X * 2.0;
+    let y = match side {
+        TooltipSide::Below => metrics.bar_height + TOOLTIP_GAP,
+        TooltipSide::Above => -TOOLTIP_HEIGHT - TOOLTIP_GAP,
+    };
+    Rectangle::new(
+        Point::new(bar_width - width, y),
+        Size::new(width, TOOLTIP_HEIGHT),
+    )
+}
+
+/// `over` blended onto an opaque `base`: the exact pixel a translucent
+/// quad leaves on the strip, used to punch the gear's hole over the
+/// hover disc so the ring reads identically hovered or not.
+fn composite(over: Color, base: Color) -> Color {
+    Color {
+        r: over.r * over.a + base.r * (1.0 - over.a),
+        g: over.g * over.a + base.g * (1.0 - over.a),
+        b: over.b * over.a + base.b * (1.0 - over.a),
+        a: 1.0,
+    }
 }
 
 /// Lays out one rectangle per title, left to right, with the close target
@@ -526,6 +658,9 @@ impl SlotAnimation {
 #[derive(Default)]
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
+    /// The tooltip's label paragraph (settings-button spec): one
+    /// constant label, cached and measured like the titles.
+    tooltip: TitleParagraph,
     click: Option<click::Click>,
     drag: Option<Drag>,
     slots: HashMap<TabId, SlotAnimation>,
@@ -581,6 +716,10 @@ pub struct TabBar<'a, Message> {
     /// text input overlaying its button. Built by the app, positioned by
     /// the bar.
     rename: Option<(TabId, Element<'a, Message>)>,
+    /// Which vertical side of the strip the settings tooltip pops to
+    /// (settings-button spec, criterion 7): the terminal's side, set
+    /// by the app from the configured edge.
+    tooltip_side: TooltipSide,
 }
 
 impl<'a, Message> TabBar<'a, Message>
@@ -599,6 +738,7 @@ where
             on_rename_end: None,
             on_settings: None,
             rename: None,
+            tooltip_side: TooltipSide::default(),
         }
     }
 
@@ -644,6 +784,13 @@ where
         self
     }
 
+    /// Sets which vertical side of the strip the settings tooltip pops
+    /// to (settings-button spec, criterion 7): the terminal's side.
+    pub fn tooltip_side(mut self, side: TooltipSide) -> Self {
+        self.tooltip_side = side;
+        self
+    }
+
     /// Hosts `input` as an overlay over the renamed tab's button (T6),
     /// swapping the title for a text input in place.
     pub fn renaming(mut self, tab: TabId, input: impl Into<Element<'a, Message>>) -> Self {
@@ -686,6 +833,18 @@ where
             };
             state.paragraphs.entry(tab.id).or_default().update(text);
         }
+        state.tooltip.update(Text {
+            content: TOOLTIP_LABEL,
+            bounds: Size::INFINITE,
+            size: Pixels(TITLE_FONT_SIZE),
+            line_height: LineHeight::default(),
+            font,
+            align_x: cosmic::iced::core::text::Alignment::Left,
+            align_y: alignment::Vertical::Center,
+            shaping: Shaping::Advanced,
+            wrapping: Wrapping::default(),
+            ellipsize: Ellipsize::None,
+        });
     }
 
     /// The current button geometry, bar-local (origin at the bar's
@@ -1196,26 +1355,39 @@ where
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         // While a rename is active (T6), host its input as an overlay
         // exactly over the renamed tab's button — the spec's "title swaps
-        // for an inline text input".
-        let rename_tab = self.rename.as_ref().map(|(tab, _)| *tab)?;
-        let index = self.tabs.iter().position(|tab| tab.id == rename_tab)?;
-        let state = tree.state.downcast_ref::<State>();
-        let button = self
-            .button_geometry(state, layout.bounds())
-            .get(index)?
-            .bounds;
-        let origin = layout.bounds().position();
-        let mut position = button.position() + Vector::new(origin.x, origin.y) + translation;
-        // Rounded like libcosmic's popover, to keep rendering crisp.
-        position.x = position.x.round();
-        position.y = position.y.round();
+        // for an inline text input". The rename overlay outranks the
+        // tooltip below: the input is interactive, the tip is dressing,
+        // and a press on the settings target commits the rename anyway.
+        if self.rename.is_some() {
+            let rename_tab = self.rename.as_ref().map(|(tab, _)| *tab)?;
+            let index = self.tabs.iter().position(|tab| tab.id == rename_tab)?;
+            let state = tree.state.downcast_ref::<State>();
+            let button = self
+                .button_geometry(state, layout.bounds())
+                .get(index)?
+                .bounds;
+            let origin = layout.bounds().position();
+            let mut position = button.position() + Vector::new(origin.x, origin.y) + translation;
+            // Rounded like libcosmic's popover, to keep rendering crisp.
+            position.x = position.x.round();
+            position.y = position.y.round();
 
-        let input = &mut self.rename.as_mut()?.1;
-        Some(overlay::Element::new(Box::new(RenameOverlay {
-            tree: tree.children.first_mut()?,
-            input,
-            position,
-            size: button.size(),
+            let input = &mut self.rename.as_mut()?.1;
+            return Some(overlay::Element::new(Box::new(RenameOverlay {
+                tree: tree.children.first_mut()?,
+                input,
+                position,
+                size: button.size(),
+            })));
+        }
+
+        // The settings tooltip (settings-button spec, criterion 7)
+        // rides the same overlay pass — see [`TooltipOverlay`].
+        let bounds = layout.bounds();
+        Some(overlay::Element::new(Box::new(TooltipOverlay {
+            state: tree.state.downcast_ref::<State>(),
+            side: self.tooltip_side,
+            bounds: Rectangle::new(bounds.position() + translation, bounds.size()),
         })))
     }
 
@@ -1360,27 +1532,89 @@ where
             },
         );
 
-        // The settings button (settings-button spec): a placeholder
-        // disc in the pane-derived foreground for now — readable on
-        // light and dark panes alike; T2 swaps it for the quad-drawn
-        // gear and adds the hover treatment.
+        // The settings button (settings-button spec, criteria 6 + 7):
+        // the gear glyph — quads only, font-free like the close `×` —
+        // over the same hover treatment the close button gets, shown
+        // the moment the cursor enters the target (no delay). The
+        // tooltip itself rides the overlay pass (see `TooltipOverlay`).
         let target = settings_target(bounds.width, &METRICS);
         let target = Rectangle::new(
             Point::new(origin.x + target.x, origin.y + target.y),
             target.size(),
         );
-        let diameter = SETTINGS_PLACEHOLDER_DIAMETER;
+        let settings_hovered = hover_point.is_some_and(|point| target.contains(point));
+        let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
+        // The punched hole must show whatever the strip shows under
+        // the glyph — the hover tint when the disc is up, the plain
+        // strip otherwise — composited exactly, so the ring reads
+        // identically either way.
+        let under_glyph = if settings_hovered {
+            fill_disc(renderer, target, hover_bg);
+            composite(hover_bg, pane_bg)
+        } else {
+            pane_bg
+        };
+        let gear = gear_glyph(target);
+        fill_disc(renderer, gear.body, pane_fg);
+        fill_disc(renderer, gear.punch, under_glyph);
+        for tooth in gear.teeth {
+            fill_disc(renderer, tooth, pane_fg);
+        }
+    }
+}
+
+/// The settings tooltip, hosted on the overlay pass (settings-button
+/// spec, criterion 7) — the rename-input precedent. A tip painted in
+/// the bar's own `draw` would be overpainted in the Bottom-edge
+/// stacking, where the column draws the terminal after the bar;
+/// overlays draw after the whole tree, so the tip stays visible
+/// clearing the strip on both edge placements. Visibility is decided
+/// per frame from the live cursor — no hover delay.
+struct TooltipOverlay<'a> {
+    /// The bar's state, carrying the tooltip's cached label paragraph.
+    state: &'a State,
+    /// Which vertical side of the strip the tip pops to.
+    side: TooltipSide,
+    /// The bar's absolute bounds (translation applied).
+    bounds: Rectangle,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> {
+    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        let tip = tooltip_bounds(
+            self.bounds.width,
+            self.state.tooltip.min_width(),
+            &METRICS,
+            self.side,
+        );
+        let position = self.bounds.position() + Vector::new(tip.x, tip.y);
+        layout::Node::new(tip.size()).move_to(position)
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+    ) {
+        let origin = self.bounds.position();
+        let target = settings_target(self.bounds.width, &METRICS);
+        let target = Rectangle::new(origin + Vector::new(target.x, target.y), target.size());
+        if cursor_position.position_in(target).is_none() {
+            return;
+        }
+        let tip = layout.bounds();
+        let (pane_bg, pane_fg) = pane_colors();
+        // The pane pair swapped: a foreground-colored bubble carrying
+        // the strip's color as its text stays readable on light and
+        // dark panes alike.
         renderer.fill_quad(
             Quad {
-                bounds: Rectangle::new(
-                    Point::new(
-                        target.x + (target.width - diameter) / 2.0,
-                        target.y + (target.height - diameter) / 2.0,
-                    ),
-                    Size::new(diameter, diameter),
-                ),
+                bounds: tip,
                 border: Border {
-                    radius: (diameter / 2.0).into(),
+                    radius: theme.cosmic().radius_s().into(),
                     width: 0.0,
                     color: Color::TRANSPARENT,
                 },
@@ -1388,6 +1622,14 @@ where
                 ..Default::default()
             },
             pane_fg,
+        );
+        let paragraph = &self.state.tooltip;
+        let text_y = tip.y + (tip.height - paragraph.min_height()) / 2.0;
+        renderer.fill_paragraph(
+            paragraph.raw(),
+            Point::new(tip.x + TOOLTIP_PADDING_X, text_y),
+            pane_bg,
+            tip,
         );
     }
 }
@@ -1772,6 +2014,113 @@ mod tests {
         assert!(!shows_tab_buttons(1));
         assert!(shows_tab_buttons(2));
         assert!(shows_tab_buttons(9));
+    }
+
+    // settings-button spec, T2: gear geometry, tooltip bounds, and the
+    // hover-punch composite.
+
+    #[test]
+    fn gear_quads_stay_inside_the_settings_target() {
+        let target = settings_target(1000.0, &M);
+        let gear = gear_glyph(target);
+        let inside = |quad: &Rectangle| {
+            target.contains(quad.position())
+                && target.contains(Point::new(quad.x + quad.width, quad.y + quad.height))
+        };
+        assert!(inside(&gear.body), "body escapes: {:?}", gear.body);
+        assert!(inside(&gear.punch), "punch escapes: {:?}", gear.punch);
+        for (i, tooth) in gear.teeth.iter().enumerate() {
+            assert!(inside(tooth), "tooth {i} escapes: {tooth:?}");
+        }
+    }
+
+    #[test]
+    fn gear_teeth_are_rotationally_symmetric() {
+        let target = settings_target(1000.0, &M);
+        let gear = gear_glyph(target);
+        let center = target.center();
+        assert_eq!(gear.teeth.len(), GEAR_TEETH);
+
+        // Every tooth is identical and rides the same radius.
+        let (side, radius) = {
+            let first = &gear.teeth[0];
+            let dx = first.center_x() - center.x;
+            let dy = first.center_y() - center.y;
+            (first.width, (dx * dx + dy * dy).sqrt())
+        };
+        for (i, tooth) in gear.teeth.iter().enumerate() {
+            assert_eq!(tooth.width, side, "tooth {i} width differs");
+            assert_eq!(tooth.height, side, "tooth {i} height differs");
+            let dx = tooth.center_x() - center.x;
+            let dy = tooth.center_y() - center.y;
+            assert!(
+                ((dx * dx + dy * dy).sqrt() - radius).abs() < 1e-4,
+                "tooth {i} rides a different radius"
+            );
+        }
+
+        // Equal angular spacing about the target's center: N-fold.
+        let step = std::f32::consts::TAU / GEAR_TEETH as f32;
+        let angles: Vec<f32> = gear
+            .teeth
+            .iter()
+            .map(|tooth| (tooth.center_y() - center.y).atan2(tooth.center_x() - center.x))
+            .collect();
+        for (i, &angle) in angles.iter().enumerate() {
+            let expected = angles[0] + step * i as f32;
+            let drift = (angle - expected).rem_euclid(std::f32::consts::TAU);
+            assert!(
+                !(1e-4..=std::f32::consts::TAU - 1e-4).contains(&drift),
+                "tooth {i} breaks the angular spacing (drift {drift})"
+            );
+        }
+    }
+
+    #[test]
+    fn tooltip_bounds_anchor_the_right_corner_and_grow_leftward() {
+        let narrow = tooltip_bounds(1000.0, 60.0, &M, TooltipSide::Below);
+        let wide = tooltip_bounds(1000.0, 200.0, &M, TooltipSide::Below);
+        // The right edge is the strip's right corner, label-independent.
+        assert_eq!(narrow.x + narrow.width, 1000.0);
+        assert_eq!(wide.x + wide.width, 1000.0);
+        assert_eq!(narrow.width, 60.0 + TOOLTIP_PADDING_X * 2.0);
+        // Growth is entirely leftward.
+        assert!(wide.x < narrow.x);
+        assert_eq!(wide.x, 1000.0 - wide.width);
+    }
+
+    #[test]
+    fn tooltip_bounds_stay_inside_the_bar_for_the_real_label() {
+        // "Settings…" at the title font size measures well under 100 px;
+        // even at that generous width the tip fits the strip.
+        let tip = tooltip_bounds(1000.0, 100.0, &M, TooltipSide::Below);
+        assert!(tip.x >= 0.0);
+        assert!(tip.x + tip.width <= 1000.0);
+    }
+
+    #[test]
+    fn tooltip_bounds_clear_the_strip_toward_the_terminal_side() {
+        let below = tooltip_bounds(1000.0, 60.0, &M, TooltipSide::Below);
+        assert_eq!(below.y, M.bar_height + TOOLTIP_GAP);
+        let above = tooltip_bounds(1000.0, 60.0, &M, TooltipSide::Above);
+        assert_eq!(above.y + above.height, -TOOLTIP_GAP);
+        assert_eq!(above.height, below.height);
+        assert_eq!(above.width, below.width);
+    }
+
+    #[test]
+    fn composite_matches_its_blend_endpoints() {
+        let base = Color::from_rgba8(0x20, 0x40, 0x60, 1.0);
+        let over = Color::from_rgba8(0xFF, 0x00, 0x80, 1.0);
+        let c = composite(Color { a: 0.0, ..over }, base);
+        assert!((c.r - base.r).abs() < 1e-6);
+        assert!((c.g - base.g).abs() < 1e-6);
+        assert!((c.b - base.b).abs() < 1e-6);
+        let c = composite(over, base);
+        assert!((c.r - over.r).abs() < 1e-6);
+        assert!((c.g - over.g).abs() < 1e-6);
+        let c = composite(Color { a: 0.5, ..over }, base);
+        assert!((c.r - (over.r * 0.5 + base.r * 0.5)).abs() < 1e-6);
     }
 
     #[test]

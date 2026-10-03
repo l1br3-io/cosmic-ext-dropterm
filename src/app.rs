@@ -36,7 +36,7 @@ use crate::session;
 use crate::settings;
 use crate::slide::{self, SlideBox};
 use crate::surface;
-use crate::tab_bar::TabBar;
+use crate::tab_bar::{TabBar, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
 use crate::terminal::{self, Action, Terminal, TerminalBox, TerminalOptions, theme_source};
 
@@ -2530,6 +2530,13 @@ impl Application for DropTerm {
         // input (T6) overlays the renamed tab's button — a rename can
         // only start from a tab-button press, i.e. with 2+ tabs, so
         // the wiring is unchanged by the unconditional mount.
+        // The tooltip pops to the terminal's side of the strip
+        // (settings-button spec, criterion 7): on the Top edge the
+        // terminal stacks above the bar, on the Bottom edge below it.
+        let tooltip_side = match self.config.edge {
+            Edge::Top => TooltipSide::Above,
+            Edge::Bottom => TooltipSide::Below,
+        };
         let mut bar = TabBar::new(&self.tabs, self.active_tab)
             .on_select(Message::TabSelected)
             .on_close(Message::TabClosed)
@@ -2538,7 +2545,8 @@ impl Application for DropTerm {
             .on_rename_end(|| Message::RenameCommitted)
             // The same funnel the context menu's `Settings…` row uses
             // (criterion 5): one click away in every tab state.
-            .on_settings(|| Message::Action(Action::Settings));
+            .on_settings(|| Message::Action(Action::Settings))
+            .tooltip_side(tooltip_side);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)
         {
