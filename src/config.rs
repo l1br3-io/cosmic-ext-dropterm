@@ -83,6 +83,30 @@ pub enum ThemePreference {
     Light,
 }
 
+/// Where the tab strip sits on the surface (tab-bar-position spec).
+///
+/// `Auto` — the default — keeps the strip at the leading edge beside
+/// the grab bar, i.e. opposite the screen edge: the placement every
+/// config had before the key existed. `Top`/`Bottom` pin the strip to
+/// that side of the surface regardless of anchor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TabPosition {
+    #[default]
+    Auto,
+    Top,
+    Bottom,
+}
+
+impl std::fmt::Display for TabPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Top => write!(f, "top"),
+            Self::Bottom => write!(f, "bottom"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 pub struct DropTermConfig {
@@ -95,6 +119,11 @@ pub struct DropTermConfig {
     pub h_align: HAlign,
     /// Screen edge the surface is anchored to.
     pub edge: Edge,
+    /// Placement of the tab strip: `auto` stacks it at the leading
+    /// edge beside the grab bar (the pre-key behavior); `top`/
+    /// `bottom` pin it to that side of the surface regardless of
+    /// anchor. Defaults to `auto`.
+    pub tab_position: TabPosition,
     /// Layer-shell layer the surface is created on.
     pub layer: Layer,
     /// Keyboard interactivity mode requested for the surface.
@@ -162,6 +191,7 @@ impl Default for DropTermConfig {
             width_percent: DEFAULT_WIDTH_PERCENT,
             h_align: HAlign::default(),
             edge: Edge::default(),
+            tab_position: TabPosition::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
             respect_panel: false,
@@ -504,6 +534,99 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert_eq!(loaded.theme_preference, ThemePreference::Dark);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_position_defaults_to_auto() {
+        // tab-bar-position criterion 2: `Auto` keeps the strip at the
+        // leading edge beside the grab bar on both anchors — default
+        // behavior stays byte-identical to the pre-module binary.
+        assert_eq!(DropTermConfig::default().tab_position, TabPosition::Auto);
+    }
+
+    #[test]
+    fn tab_position_serde_round_trips_all_variants() {
+        // The enum must survive the serde path cosmic-config uses for
+        // key values; every variant, not just the default.
+        for variant in [TabPosition::Auto, TabPosition::Top, TabPosition::Bottom] {
+            let serialized = ron::to_string(&variant).expect("serialize TabPosition");
+            let deserialized: TabPosition =
+                ron::from_str(&serialized).expect("deserialize TabPosition");
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn missing_tab_position_key_loads_as_auto() {
+        // A config directory written before `tab_position` existed
+        // loads as `Auto` (criterion 1) through the same default-entry
+        // leniency the `respect_panel` pair pins — the key list is
+        // additive, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-tabpos-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`tab_position` version by deleting the one
+        // key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("tab_position"),
+        )
+        .expect("remove tab_position key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert_eq!(loaded.tab_position, TabPosition::Auto);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_position_key_on_disk_is_honored() {
+        // Control for `missing_tab_position_key_loads_as_auto`: the
+        // same read path honors a key that does exist, so the leniency
+        // result above cannot be a vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-tabpos-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            tab_position: TabPosition::Top,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded.tab_position, TabPosition::Top);
 
         let _ = std::fs::remove_dir_all(&root);
     }

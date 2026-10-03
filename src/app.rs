@@ -25,7 +25,7 @@ use cosmic::widget;
 use cosmic::{Application, ApplicationExt, Element};
 use tokio::sync::mpsc;
 
-use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, ThemePreference};
+use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, TabPosition, ThemePreference};
 use crate::context_menu;
 use crate::dbus_state;
 use crate::geometry::{self, Geometry};
@@ -1907,6 +1907,29 @@ fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
     set_theme.then(|_| Task::done(cosmic::Action::App(Message::ReapplyColors)))
 }
 
+/// Whether the tab strip sits at the surface's bottom in this
+/// config. `Auto` keeps the pre-key behavior — the strip at the
+/// leading edge beside the grab bar, i.e. opposite the screen edge —
+/// while `Top`/`Bottom` pin it regardless of anchor.
+fn effective_bar_at_bottom(edge: Edge, tab_position: TabPosition) -> bool {
+    match tab_position {
+        TabPosition::Auto => matches!(edge, Edge::Top),
+        TabPosition::Top => false,
+        TabPosition::Bottom => true,
+    }
+}
+
+/// Which side the strip's tooltips pop to: the terminal's side of the
+/// bar, wherever the bar sits — the bar widget itself stays
+/// edge-agnostic.
+fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
+    if bar_at_bottom {
+        TooltipSide::Above
+    } else {
+        TooltipSide::Below
+    }
+}
+
 /// Settings for the clipboard-anchor window (the copy-out fix).
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
@@ -2388,6 +2411,66 @@ mod tests {
             Some(ThemeOverrideKind::FollowSystem)
         );
     }
+
+    // --- tab-bar-position T1: the placement seam + tooltip side ---
+
+    #[test]
+    fn effective_bar_at_bottom_auto_keeps_the_strip_at_the_leading_edge() {
+        // Regression pin on the pre-key layout (criterion 2): the
+        // strip stacks opposite the screen edge — surface bottom
+        // under a Top anchor, surface top under a Bottom anchor.
+        assert!(effective_bar_at_bottom(Edge::Top, TabPosition::Auto));
+        assert!(!effective_bar_at_bottom(Edge::Bottom, TabPosition::Auto));
+    }
+
+    #[test]
+    fn effective_bar_at_bottom_top_pin_places_the_bar_at_the_top() {
+        // A pin wins regardless of anchor (criterion 3).
+        assert!(!effective_bar_at_bottom(Edge::Top, TabPosition::Top));
+        assert!(!effective_bar_at_bottom(Edge::Bottom, TabPosition::Top));
+    }
+
+    #[test]
+    fn effective_bar_at_bottom_bottom_pin_places_the_bar_at_the_bottom() {
+        assert!(effective_bar_at_bottom(Edge::Top, TabPosition::Bottom));
+        assert!(effective_bar_at_bottom(Edge::Bottom, TabPosition::Bottom));
+    }
+
+    #[test]
+    fn tooltip_side_pops_terminal_ward_wherever_the_bar_sits() {
+        // The tip pops to the terminal's side of the strip (criterion
+        // 5): below a top bar, above a bottom bar — the anchor edge is
+        // not an input.
+        assert_eq!(bar_tooltip_side(false), TooltipSide::Below);
+        assert_eq!(bar_tooltip_side(true), TooltipSide::Above);
+    }
+
+    #[test]
+    fn tooltip_side_auto_layouts_match_today_on_both_edges() {
+        // Regression pins: the derived side must reproduce today's
+        // hard-coded values on both `Auto` layouts.
+        assert_eq!(
+            bar_tooltip_side(effective_bar_at_bottom(Edge::Top, TabPosition::Auto)),
+            TooltipSide::Above
+        );
+        assert_eq!(
+            bar_tooltip_side(effective_bar_at_bottom(Edge::Bottom, TabPosition::Auto)),
+            TooltipSide::Below
+        );
+    }
+
+    #[test]
+    fn tooltip_side_pinned_layouts_follow_the_bar_not_the_anchor() {
+        // A strip pinned to the screen edge still tips terminal-ward.
+        assert_eq!(
+            bar_tooltip_side(effective_bar_at_bottom(Edge::Top, TabPosition::Top)),
+            TooltipSide::Below
+        );
+        assert_eq!(
+            bar_tooltip_side(effective_bar_at_bottom(Edge::Bottom, TabPosition::Bottom)),
+            TooltipSide::Above
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2832,20 +2915,20 @@ impl Application for DropTerm {
         let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
 
         // The tab strip mounts unconditionally (settings-button spec,
-        // criterion 1) and sits on the surface edge opposite the screen
-        // edge (tabs spec), between the terminal and the grab bar; with
-        // fewer than two tabs the strip carries only its settings
-        // button (the bar's own visibility rule). The inline rename
-        // input (T6) overlays the renamed tab's button — a rename can
-        // only start from a tab-button press, i.e. with 2+ tabs, so
-        // the wiring is unchanged by the unconditional mount.
-        // The tooltip pops to the terminal's side of the strip
-        // (settings-button spec, criterion 7): on the Top edge the
-        // terminal stacks above the bar, on the Bottom edge below it.
-        let tooltip_side = match self.config.edge {
-            Edge::Top => TooltipSide::Above,
-            Edge::Bottom => TooltipSide::Below,
-        };
+        // criterion 1) and its side comes from the placement seam
+        // (tab-bar-position spec): `Auto` keeps it between the
+        // terminal and the grab bar — on the surface edge opposite
+        // the screen edge — while a pin can move it to the screen
+        // edge itself. With fewer than two tabs the strip carries
+        // only its settings button (the bar's own visibility rule).
+        // The inline rename input (T6) overlays the renamed tab's
+        // button — a rename can only start from a tab-button press,
+        // i.e. with 2+ tabs, so the wiring is unchanged by the
+        // unconditional mount. The tooltip pops to the terminal's
+        // side of the strip (settings-button spec, criterion 7),
+        // derived from the bar's side, not the anchor edge.
+        let bar_at_bottom = effective_bar_at_bottom(self.config.edge, self.config.tab_position);
+        let tooltip_side = bar_tooltip_side(bar_at_bottom);
         let mut bar = TabBar::new(&self.tabs, self.active_tab)
             .on_select(Message::TabSelected)
             .on_close(Message::TabClosed)
@@ -2872,12 +2955,33 @@ impl Application for DropTerm {
                     .on_unfocus(Message::RenameCancelled),
             );
         }
-        let column: Element<'_, Message> = match self.config.edge {
-            Edge::Top => widget::column![terminal, bar, grab_bar]
+        // Stacking (geometry spec, criterion 9 + the tab-bar-position
+        // placement table): the grab bar is fixed at the leading edge
+        // — opposite the screen edge, where all of `geometry.rs`'s
+        // drag/anchor math expects it — the terminal fills the
+        // middle, and the tab strip takes whichever side the placement
+        // seam picks. Both bars take their strips out of the
+        // terminal's pinned height (see `surface::terminal_view_height`
+        // — subtracted order-agnostically), so neither layout changes
+        // the terminal's pixel height. Fill dimensions keep iced's
+        // flex from deferring the bars past the terminal's allocation:
+        // a Shrink cross-axis makes a fixed-height, fill-width bar a
+        // fourth-pass child, so the Fill terminal would take the whole
+        // surface and push the bars below its bottom edge.
+        let column: Element<'_, Message> = match (self.config.edge, bar_at_bottom) {
+            (Edge::Top, false) => widget::column![bar, terminal, grab_bar]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into(),
-            Edge::Bottom => widget::column![grab_bar, bar, terminal]
+            (Edge::Top, true) => widget::column![terminal, bar, grab_bar]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            (Edge::Bottom, false) => widget::column![grab_bar, bar, terminal]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            (Edge::Bottom, true) => widget::column![grab_bar, terminal, bar]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into(),
