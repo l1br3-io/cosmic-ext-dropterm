@@ -5,6 +5,7 @@
 
 mod applet;
 mod dbus;
+mod subscriptions;
 
 fn main() -> cosmic::iced::Result {
     env_logger::init();

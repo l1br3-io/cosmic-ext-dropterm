@@ -6,11 +6,6 @@
 //! forwarding already rides. V1 state comes through the root lib's
 //! proxy instead (`cosmic_ext_dropterm::dbus_state`).
 
-// `send_toggle` fires from the click path, which the live-wiring
-// step connects; until then only the tests call it. That step removes
-// this attribute.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use zbus::proxy;

@@ -1,23 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The applet's `cosmic::Application`: static shell for now — an
-//! icon button with a placeholder tooltip. State tracking, click
-//! behavior, and live tooltip copy land with the live-wiring step.
-
-// The pure core below is exercised headlessly and wired into the
-// Application by the live-wiring step; until then the non-test build
-// sees it as dead. Allow rather than expect: `expect` goes
-// unfulfilled in the cfg(test) compilation, where the tests do use
-// these. The live-wiring step removes this attribute.
-#![allow(dead_code)]
+//! The applet's `cosmic::Application`: the live panel citizen —
+//! state from the D-Bus watches, clicks routed through the pure
+//! core's decision, and a tooltip from live state.
 
 use cosmic::Element;
 use cosmic::app::{Core, Task};
+use cosmic::applet::token::subscription::{
+    TokenRequest, TokenUpdate, activation_token_subscription,
+};
+use cosmic::iced::Length;
+use cosmic::iced::widget::svg;
+use std::rc::Rc;
+
+use crate::dbus;
+use crate::subscriptions::{self, Update};
+use cosmic_ext_dropterm::dbus_state;
 
 /// The symbolic icon the panel surface shows; installed alongside the
 /// binary and theme-recolorable. `utilities-terminal-symbolic` exists
 /// as a fallback in Pop's theme if ours is missing.
 const ICON_NAME: &str = "io.github.l1br3_io.CosmicExtDropterm-symbolic";
+
+/// Identity for the xdg-activation-token subscription.
+const TOKEN_SUB_ID: &str = "io.github.l1br3_io.CosmicExtDropterm.Applet.token";
 
 /// The terminal's status as the applet models it: gone, or running
 /// with its drop-down surface in one of two legible states.
@@ -88,10 +94,22 @@ pub(crate) fn tooltip(state: &TargetState, tab_count: u32) -> String {
 
 pub(crate) struct Applet {
     core: Core,
+    target: TargetState,
+    tab_count: u32,
+    /// The watch subscription's shared session bus; commands (the
+    /// toggle) ride the same connection.
+    dbus_conn: Option<zbus::Connection>,
+    /// The token-request capability handed over by the token
+    /// subscription's `Init` message, kept as the variant itself
+    /// because libcosmic does not re-export the calloop sender type.
+    token_tx: Option<TokenUpdate>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum Message {
+    Click,
+    Dbus(Update),
+    Token(TokenUpdate),
     /// Surface bookkeeping raised by the tooltip helper (popup-less,
     /// so only its no-op paths ever fire).
     Surface(cosmic::surface::Action<Message>),
@@ -112,25 +130,83 @@ impl cosmic::Application for Applet {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        (Self { core }, Task::none())
+        (
+            Self {
+                core,
+                target: TargetState::NotRunning,
+                tab_count: 0,
+                dbus_conn: None,
+                token_tx: None,
+            },
+            Task::none(),
+        )
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
-            Message::Surface(a) => cosmic::task::message(cosmic::Action::Surface(a)),
+            Message::Click => self.on_click(),
+            Message::Dbus(Update::Connected(conn)) => self.dbus_conn = Some(conn),
+            Message::Dbus(Update::Event(event)) => {
+                if let Event::TabCount(tab_count) = event {
+                    self.tab_count = tab_count;
+                }
+                self.target = transition(self.target, event);
+            }
+            Message::Token(TokenUpdate::Init(tx)) => self.token_tx = Some(TokenUpdate::Init(tx)),
+            Message::Token(TokenUpdate::Finished) => self.token_tx = None,
+            Message::Token(TokenUpdate::ActivationToken { token, exec }) => {
+                self.launch(&exec, token);
+            }
+            Message::Surface(a) => {
+                return cosmic::task::message(cosmic::Action::Surface(a));
+            }
         }
+        Task::none()
+    }
+
+    fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
+        cosmic::iced::Subscription::batch([
+            subscriptions::watch().map(Message::Dbus),
+            activation_token_subscription(TOKEN_SUB_ID).map(Message::Token),
+        ])
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        // Sizing comes from the panel's COSMIC_PANEL_SIZE hint via
-        // suggested_size(true) inside icon_button — never hardcoded
-        // pixels.
-        let button = self.core.applet.icon_button(ICON_NAME);
-        // Placeholder copy; the owner finalizes tooltip wording with
-        // real rendering.
+        // Opacity tiers proposed by the plan (dimmest when the
+        // terminal is gone, dimmed while hidden, full while visible);
+        // the owner finalizes the treatment with real rendering.
+        let alpha = match self.target {
+            TargetState::NotRunning => 0.4,
+            TargetState::Running { visible: false } => 0.65,
+            TargetState::Running { visible: true } => 1.0,
+        };
+        let suggested = self.core.applet.suggested_size(true);
+        let icon = cosmic::widget::icon(
+            cosmic::widget::icon::from_name(ICON_NAME)
+                .symbolic(true)
+                .into(),
+        )
+        .class(cosmic::theme::Svg::Custom(Rc::new(move |theme| {
+            // The applet-button tint from libcosmic's own
+            // `icon_button`, with only the alpha adjusted.
+            svg::Style {
+                color: Some({
+                    let base: cosmic::iced::Color =
+                        theme.cosmic().background(theme.transparent).on.into();
+                    cosmic::iced::Color { a: alpha, ..base }
+                }),
+            }
+        })))
+        .width(Length::Fixed(suggested.0 as f32))
+        .height(Length::Fixed(suggested.1 as f32));
+        let button = self
+            .core
+            .applet
+            .button_from_element(icon, true)
+            .on_press(Message::Click);
         Element::from(self.core.applet.applet_tooltip(
             button,
-            "DropTerm",
+            tooltip(&self.target, self.tab_count),
             false,
             Message::Surface,
             None,
@@ -139,6 +215,56 @@ impl cosmic::Application for Applet {
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
+    }
+}
+
+impl Applet {
+    /// Routes a left-click through the pure decision.
+    fn on_click(&mut self) {
+        match click_action(&self.target) {
+            ClickAction::SendToggle => {
+                // Fire-and-forget on the shared connection; debounce
+                // is the terminal's job, not the applet's.
+                if let Some(conn) = self.dbus_conn.clone() {
+                    tokio::spawn(async move {
+                        if let Err(err) = dbus::send_toggle(&conn).await {
+                            log::warn!("toggle send failed: {err}");
+                        }
+                    });
+                }
+            }
+            ClickAction::LaunchWithToken => {
+                // The time-applet pattern: ask the panel for an
+                // xdg-activation token for the terminal, spawn it with
+                // the token when it arrives.
+                if let Some(TokenUpdate::Init(tx)) = &self.token_tx {
+                    let _ = tx.send(TokenRequest {
+                        // The terminal's app id — the same string as
+                        // its bus name.
+                        app_id: dbus_state::BUS_NAME.to_string(),
+                        exec: "cosmic-ext-dropterm".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Spawns the terminal with the activation token in its
+    /// environment. Caveat, deliberately still-correct: DropTerm
+    /// today receives a forwarded activation token and drops it
+    /// (nothing applies it yet) — sending one remains the right path
+    /// for the day it does.
+    fn launch(&self, exec: &str, token: Option<String>) {
+        let mut command = tokio::process::Command::new(exec);
+        if let Some(token) = token {
+            command.env("XDG_ACTIVATION_TOKEN", &token);
+            command.env("DESKTOP_STARTUP_ID", &token);
+        }
+        // tokio's child reaping means the applet never zombies the
+        // terminal it launched.
+        if let Err(err) = command.spawn() {
+            log::warn!("failed to launch {exec}: {err}");
+        }
     }
 }
 

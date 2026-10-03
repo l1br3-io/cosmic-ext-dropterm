@@ -16,9 +16,11 @@ env_logger = "0.11"
 # the `p2p` feature exists for the headless peer-to-peer wire tests
 # only, mirroring the root package's declaration.
 zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
-# sync (mpsc) + time (timeouts) for the wire tests and subscriptions;
-# the runtime feature set arrives through zbus's own tokio dependency.
-tokio = { version = "1", features = ["sync", "time"] }
+# sync (mpsc) + time (timeouts) + process (child reaping for the
+# launch path) for the applet's own use; the runtime feature set
+# arrives through zbus's own tokio dependency.
+tokio = { version = "1", features = ["sync", "time", "process"] }
+log = "0.4"
 
 # The V1 D-Bus contract proxy and its mock server for wire tests come
 # from the root lib — one contract, one implementation.
