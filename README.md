@@ -51,6 +51,20 @@ cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
 
 A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead.
 
+The tab verbs script tab management over the same seam. All indices are 1-based (`0` is rejected at the CLI edge; out-of-range targets warn and no-op):
+
+```sh
+cosmic-ext-dropterm close-tab                       # close the active tab
+cosmic-ext-dropterm close-tab --tab-index 2         # close the second tab
+cosmic-ext-dropterm rename-tab "work"               # pin a title on the active tab
+cosmic-ext-dropterm rename-tab ""                   # clear the override; shell titles resume
+cosmic-ext-dropterm rename-tab "logs" --tab-index 3
+cosmic-ext-dropterm duplicate-tab                   # fresh shell in the active tab's cwd
+cosmic-ext-dropterm select-tab 2                    # activate the second tab, strictly
+```
+
+`close-tab` and `rename-tab` are quiet state edits for scripts - they never show the overlay. `duplicate-tab` and `select-tab` are tab-facing: like `new-tab`, they show the overlay, and a request arriving mid-slide-out reverses it instead of finishing the hide. A rename pins a title that no shell OSC title change can overwrite; the empty string is the documented reset (shell titles resume), and a pending inline rename on that tab is discarded when the remote title lands. `duplicate-tab` opens a *fresh shell* in the target tab's cwd - the running command is never copied - lands after the active tab, and becomes active; with an unresolvable target it degrades to the active tab's cwd. `select-tab N` is strict: no wrap, no `9 = last`. Sent while the app is not running, all four verbs just start the app plain - only `new-tab` carries startup meaning.
+
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](#known-risks).
 
 ### Development launcher
@@ -269,6 +283,10 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] `new-tab --cmd htop` runs htop instead of the shell (no config shell arguments inherited), and closing htop closes the tab; the `--cmd` tab is absent from `session.ron` after the next debounced save, while plain `new-tab` tabs are saved like any other
 - [ ] `toggle`/`show`/`hide` still round-trip through a second launch exactly as before (including via D-Bus activation)
 - [ ] A `new-tab` sent during the 130 ms slide-out reverses the slide and ends shown with the new tab active - it never finishes the hide
+- [ ] Remote close-tab: with the app running and two tabs, `cosmic-ext-dropterm close-tab` closes the active tab (successor activates) without showing the overlay; `close-tab --tab-index 1` closes the first; `--tab-index 0` is rejected by the CLI; closing the last tab respawns a fresh one; an out-of-range index logs a `warn` and no-ops; with the app not running, the app starts plain
+- [ ] Remote select-tab: with three tabs, `cosmic-ext-dropterm select-tab 2` activates the second and shows the overlay (a hidden terminal shows); `select-tab 4` warns and no-ops without showing; `select-tab 0` is rejected by the CLI; a select during the 130 ms slide-out reverses it and ends shown on the target tab; first launch starts plain
+- [ ] Remote rename-tab: `cosmic-ext-dropterm rename-tab "work"` pins the title - a shell OSC title change no longer overwrites it - and it persists in `session.ron`; `rename-tab ""` clears the override and shell titles resume; an inline rename open on the target tab is discarded when the remote title lands; the overlay never shows; out-of-range warns and no-ops; first launch starts plain
+- [ ] Remote duplicate-tab: with the active tab cd'd somewhere, `cosmic-ext-dropterm duplicate-tab` opens a fresh shell tab in that cwd after it, makes it active, and shows the overlay; duplicating a `--cmd htop` tab yields a plain shell in that tab's cwd; an out-of-range `--tab-index` warns and duplicates from the active tab; the duplicate saves to the session like any plain tab; first launch starts plain
 - [ ] Editing `height_percent` in the config reshapes a shown surface immediately, in place - and a hidden surface opens at the new height on its next show
 - [ ] `width_percent` below 100 (e.g. 60) sizes the surface to that fraction of the output width; the default 100 is indistinguishable from the full-width surface
 - [ ] `h_align = Left` / `Right` sits flush against that edge, `Center` centers the surface with equal left/right margins - on both `edge` values
