@@ -97,6 +97,17 @@ pub enum ToggleAction {
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         tab_index: Option<usize>,
     },
+    /// Duplicate a tab remotely — the active tab, or the 1-based
+    /// `--tab-index` target (remote-tab-actions spec): a fresh shell
+    /// opens in that tab's cwd — the running command is never copied —
+    /// lands after the active tab, and becomes active. Implies showing
+    /// the overlay; an unresolvable target degrades to the bare
+    /// new-tab inheritance with a warning.
+    DuplicateTab {
+        /// 1-based index of the tab to duplicate; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -109,6 +120,7 @@ impl std::fmt::Display for ToggleAction {
             Self::CloseTab { .. } => write!(f, "close-tab"),
             Self::SelectTab { .. } => write!(f, "select-tab"),
             Self::RenameTab { .. } => write!(f, "rename-tab"),
+            Self::DuplicateTab { .. } => write!(f, "duplicate-tab"),
         }
     }
 }
@@ -970,6 +982,19 @@ impl DropTerm {
             return Task::batch([close, open, self.show_intent_surface()]);
         }
 
+        // A remote duplicate-tab is a tab-facing verb like a new-tab
+        // (remote-tab-actions spec): a fresh shell tab opens in the
+        // target's cwd — now or once the channel bootstraps — and the
+        // overlay shows through the same show-intent cells. An
+        // unresolvable target never blocks it: the spawn degrades to
+        // the bare new-tab inheritance, so — like new-tab, and unlike
+        // the quiet verbs above — the settings close-first rule and
+        // surface half apply on every path.
+        if let ToggleAction::DuplicateTab { tab_index } = action {
+            let open = self.duplicate_remote_tab(tab_index);
+            return Task::batch([close, open, self.show_intent_surface()]);
+        }
+
         // The toggle funnel (slide-animation spec, A5): every matrix
         // cell executes here — most importantly, a mid-hide toggle or
         // `Show` reverses on the live surface instead of being
@@ -1110,6 +1135,33 @@ impl DropTerm {
                 Task::none()
             }
         }
+    }
+
+    /// Applies a remote `duplicate-tab` (remote-tab-actions spec): the
+    /// target — absent means the active tab — resolves through
+    /// [`tabs::remote_target_index`], and a fresh shell tab opens in
+    /// that tab's cwd; the running command is never copied. An
+    /// explicit but unresolvable `--tab-index` warns, and the spawn
+    /// degrades to the bare new-tab inheritance — no explicit cwd, so
+    /// the funnel takes the active tab's, then the pty default. The
+    /// spawn itself rides the existing new-tab funnel end to end
+    /// ([`Self::open_remote_tab`]): the channel-bootstrap deferral,
+    /// landing after the active tab, activation, and the session-dirty
+    /// mark are all inherited. The overlay half is the caller's.
+    fn duplicate_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        let target = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab);
+        if target.is_none() && tab_index.is_some() {
+            log::warn!(
+                "duplicate-tab: no tab at --tab-index {tab_index:?} ({} open); duplicating the active tab instead",
+                self.tabs.len()
+            );
+        }
+        let cwd = target.and_then(|index| {
+            self.tabs
+                .get(index)
+                .and_then(|tab| tab.terminal.lock().unwrap().working_directory())
+        });
+        self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None })
     }
 
     /// Ends an inline rename session sitting on the tab at `index`
@@ -1682,14 +1734,15 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
         // Structurally unreachable: `debounced_toggle` applies the
         // remote verbs — opening a new-tab, closing a close-tab,
-        // selecting a select-tab, renaming a rename-tab — outside the
-        // toggle funnel, so none ever gets here. Loud rather than
-        // silently wrong.
+        // selecting a select-tab, renaming a rename-tab, duplicating a
+        // duplicate-tab — outside the toggle funnel, so none ever gets
+        // here. Loud rather than silently wrong.
         (
             ToggleAction::NewTab { .. }
             | ToggleAction::CloseTab { .. }
             | ToggleAction::SelectTab { .. }
-            | ToggleAction::RenameTab { .. },
+            | ToggleAction::RenameTab { .. }
+            | ToggleAction::DuplicateTab { .. },
             _,
         ) => {
             unreachable!("remote verbs apply outside the funnel")
@@ -2375,6 +2428,12 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
                 forwarded.push(index.to_string());
             }
         }
+        ToggleAction::DuplicateTab {
+            tab_index: Some(index),
+        } => {
+            forwarded.push("--tab-index".to_string());
+            forwarded.push(index.to_string());
+        }
         _ => {}
     }
     forwarded
@@ -2533,7 +2592,8 @@ impl Application for DropTerm {
         let startup_action = match flags.action {
             action @ (ToggleAction::CloseTab { .. }
             | ToggleAction::SelectTab { .. }
-            | ToggleAction::RenameTab { .. }) => {
+            | ToggleAction::RenameTab { .. }
+            | ToggleAction::DuplicateTab { .. }) => {
                 log::info!("{} with no running instance: starting plain", action);
                 ToggleAction::Toggle
             }
