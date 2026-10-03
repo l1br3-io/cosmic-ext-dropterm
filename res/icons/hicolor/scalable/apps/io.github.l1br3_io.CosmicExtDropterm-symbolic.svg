@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Symbolic variant of io.github.l1br3_io.CosmicExtDropterm.svg:
+       terminal window + prompt chevron + slide-down arrow, recolored
+       to currentColor so the panel theme drives it. -->
+  <rect x="1" y="1" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M4 4 L6.5 5.5 L4 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 7.25 h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M5 12.2 L8 14.2 L11 12.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -33,6 +33,21 @@ desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
 icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 
+# The panel applet: its own workspace package so its libcosmic feature
+# set never meets the terminal's wgpu renderer.
+applet := name + '-applet'
+applet-desktop := appid + '.Applet.desktop'
+applet-icon := appid + '-symbolic.svg'
+applet-bin-src := cargo-target-dir / 'release' / applet
+applet-bin-dst := base-dir / 'bin' / applet
+applet-desktop-src := 'res' / applet-desktop
+applet-desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / applet-desktop
+applet-icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
+applet-icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
+
+# Where dev-applet installs the applet's desktop file and icon.
+dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
+
 # `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`, all
 # across the workspace. Union features are fine here: nothing renders
 # in tests or lints. Release/install recipes stay per-package.
@@ -50,12 +65,22 @@ clippy *args:
 test *args:
     cargo test --workspace {{args}}
 
-# Compiles with the debug profile
+# Compiles with the debug profile. Per-package on purpose — a plain
+# `cargo build` now spans the workspace and unifies features across
+# both crates (see build-applet for why that must not produce
+# release artifacts).
 build-debug *args:
-    cargo build {{args}}
+    cargo build -p {{name}} {{args}}
 
 # Compiles with the release profile
 build-release *args: (build-debug '--release' args)
+
+# Compiles the applet with the release profile. Per-package on
+# purpose: a unified workspace release build would hand the applet a
+# wgpu-enabled libcosmic through feature unification, and the wgpu
+# renderer falls back to llvmpipe on panel surfaces.
+build-applet *args:
+    cargo build -p {{applet}} --release {{args}}
 
 run *args:
     cargo run {{args}}
@@ -78,15 +103,27 @@ dev: dev-install dev-reload
 dev-watch:
     cargo watch -q -w src -w Cargo.toml -s 'just dev-reload'
 
+# Build the applet (debug) and install it, its desktop file, and its
+# icon under ~/.local so it can be added via COSMIC Settings → Panel.
+dev-applet:
+    cargo build -p {{applet}}
+    install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / applet}}
+    install -Dm0644 {{applet-desktop-src}} {{dev-data-dir / 'applications' / applet-desktop}}
+    install -Dm0644 {{applet-icon-src}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
+
 clean:
     cargo clean
 
-# Installs files
+# Installs files (build both artifacts first: just build-release build-applet)
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{icon-src}} {{icon-dst}}
+    install -Dm0755 {{applet-bin-src}} {{applet-bin-dst}}
+    install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
+    install -Dm0644 {{applet-icon-src}} {{applet-icon-dst}}
 
 # Uninstalls installed files
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{icon-dst}}
+    rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}}

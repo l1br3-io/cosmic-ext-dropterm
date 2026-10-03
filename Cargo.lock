@@ -1108,6 +1108,7 @@ name = "cosmic-ext-dropterm-applet"
 version = "0.1.0"
 dependencies = [
  "cosmic-ext-dropterm",
+ "env_logger",
  "libcosmic",
 ]
 

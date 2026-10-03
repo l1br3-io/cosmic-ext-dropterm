@@ -1,31 +1,61 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Stub entry for the panel-applet crate.
-//!
-//! The real `cosmic::applet::run` entry lands with the applet shell;
-//! for now this only proves the crate builds against the locked
-//! wgpu-free libcosmic feature set and reaches the root lib's V1
-//! contract from outside the terminal's crate.
+//! Entry for the panel-applet binary: a COSMIC panel citizen that
+//! reflects the terminal's state and toggles it.
 
-use cosmic_ext_dropterm::dbus_state;
+mod applet;
 
-/// Compile-time witness that every applet-facing item of the V1
-/// contract is reachable from this crate: the workspace split is only
-/// complete if the names resolve here. `V1InterfaceProxy` is the
-/// generated client — the `#[proxy]` macro consumes its input trait,
-/// so the proxy struct is the contract item downstream crates see.
-const _V1_CONTRACT: (
-    &str,
-    &str,
-    &str,
-    Option<dbus_state::State>,
-    Option<dbus_state::V1InterfaceProxy<'static>>,
-) = (
-    dbus_state::BUS_NAME,
-    dbus_state::OBJECT_PATH,
-    dbus_state::INTERFACE,
-    None,
-    None,
-);
+fn main() -> cosmic::iced::Result {
+    env_logger::init();
+    cosmic::applet::run::<applet::Applet>(())
+}
 
-fn main() {}
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    /// Pins the applet desktop file to the exact block the spec
+    /// pinned: the panel stem-matches `Exec`, cosmic-settings lists
+    /// `X-CosmicApplet=true`, the shrinkable key allows padding to
+    /// give before overflow, and — deliberately absent —
+    /// `X-HostWaylandDisplay`: the applet needs no privileged
+    /// Wayland socket.
+    #[test]
+    fn desktop_file_matches_the_pinned_contract() {
+        let path = repo_root()
+            .join("res")
+            .join("io.github.l1br3_io.CosmicExtDropterm.Applet.desktop");
+        let content = std::fs::read_to_string(path).expect("desktop file");
+        assert_eq!(
+            content,
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=DropTerm\n\
+             Exec=cosmic-ext-dropterm-applet\n\
+             Icon=io.github.l1br3_io.CosmicExtDropterm-symbolic\n\
+             NoDisplay=true\n\
+             X-CosmicApplet=true\n\
+             X-CosmicShrinkable=true\n"
+        );
+    }
+
+    /// The shipped icon must be symbolic — `currentColor` strokes and
+    /// no fixed palette — so the panel's theme recolors it.
+    #[test]
+    fn shipped_icon_is_symbolic() {
+        let path = repo_root()
+            .join("res")
+            .join("icons")
+            .join("hicolor")
+            .join("scalable")
+            .join("apps")
+            .join("io.github.l1br3_io.CosmicExtDropterm-symbolic.svg");
+        let svg = std::fs::read_to_string(path).expect("symbolic icon");
+        assert!(svg.contains("currentColor"));
+        assert!(!svg.contains('#'));
+    }
+}

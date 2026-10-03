@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DropTerm
+Exec=cosmic-ext-dropterm-applet
+Icon=io.github.l1br3_io.CosmicExtDropterm-symbolic
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicShrinkable=true
