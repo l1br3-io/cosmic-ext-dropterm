@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The drag-to-resize grab bar (geometry spec, G3): a thin visible
-//! strip on the surface's free edge — outside the tab bar, which sits
-//! between it and the content — by which the terminal's height is
-//! resized live.
-//!
-//! iced has no first-class drag API, so the bar tracks
-//! press/move/release itself — the same state machine as the tab bar's
-//! drag reorder (tabs spec, T7), itself the one of iced's own text
-//! editor (pinned rev `08a09e3`, `widget/text_editor.rs`). It reports
-//! the pointer's raw surface-local y (window-absolute, the same space
-//! `CursorMoved` carries) and stays otherwise dumb: everything that
-//! turns a pointer position into a height — the `Edge::Bottom`
-//! rebasing, the 10–100 % band, the `max(1px)` rule — lives in
-//! [`crate::geometry::drag_target_px`] as pure functions, unit-tested
-//! headless. Rendering and drag feel need real COSMIC hardware and are
-//! covered by the README manual checklist.
-//!
-//! While a press is held, moves are tracked wherever the cursor roams
-//! — the bar itself resizes under the pointer as the surface follows,
-//! and iced's column routes events to every child whatever the cursor
-//! is over (see the tab bar's release handling) — and no config is
-//! touched while dragging (a "never" boundary of the module;
-//! persistence is G4).
+//! The drag-to-resize grab bar: a thin strip on the surface's free
+//! edge by which the terminal's height is resized live. iced has no
+//! first-class drag API, so the bar tracks press/move/release and
+//! reports the pointer's window-absolute y (the space `CursorMoved`
+//! carries); pointer-to-height math lives in
+//! [`crate::geometry::drag_target_px`]. Moves track the cursor
+//! wherever it roams; config is written only at release.
 
 use std::sync::atomic::Ordering;
 
@@ -62,9 +46,9 @@ const GRIP_MAX_WIDTH: f32 = 96.0;
 /// Per-widget state: whether a left press is held on the bar, and the
 /// last pointer y published (window space) so identical positions skip
 /// republishing. Nothing is seeded at press — the press position is
-/// available bar-local (`position_in`) while moves carry window-absolute
-/// y, and mixing the two spaces was the original first-delta garbage —
-/// the app arms its absolute anchor from the first move instead.
+/// available bar-local (`position_in`) while moves carry
+/// window-absolute y, and the two spaces must not be mixed; the app
+/// arms its absolute anchor from the first move instead.
 #[derive(Default)]
 struct State {
     dragging: bool,
@@ -137,10 +121,8 @@ where
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        // An active drag grabs the cursor wherever it roams, like the
-        // tab bar's reorder (T7); otherwise the strip announces what
-        // it resizes. `ResizingVertically` verified at the pinned rev
-        // (`iced/core/src/mouse/interaction.rs`, `08a09e3`).
+        // An active drag grabs the cursor wherever it roams;
+        // otherwise the strip announces what it resizes.
         if tree.state.downcast_ref::<State>().dragging {
             return mouse::Interaction::Grabbing;
         }

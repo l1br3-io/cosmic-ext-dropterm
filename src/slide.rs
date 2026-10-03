@@ -1,20 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The drop-down slide animation (slide-animation spec): the content
-//! column slides inside the fixed surface, clipped and translated at
-//! draw time, so the surface's geometry — anchor, size, margins, layer,
-//! exclusive zone — never changes while animating and a slide costs the
-//! compositor nothing (no layer-shell traffic at all).
-//!
-//! The drawing mechanism is iced's own scrollable pattern (pinned rev
-//! `08a09e3`, `iced/widget/src/scrollable.rs`):
-//! [`Renderer::with_layer`](cosmic::iced::core::Renderer::with_layer)
-//! clips to the surface bounds and
-//! [`Renderer::with_translation`](cosmic::iced::core::Renderer::with_translation)
-//! shifts every primitive the child records. [`SlideBox`] is the
-//! wrapper the whole module renders through; the pure
-//! offset/easing/reversal math joins it here as plain functions over
-//! plain data — the same separation as `geometry.rs`.
+//! The drop-down slide animation: the content column slides inside
+//! the fixed surface, clipped and translated at draw time —
+//! `Renderer::with_layer` + `Renderer::with_translation`, iced's own
+//! scrollable pattern — so surface geometry (anchor, size, margins,
+//! layer, exclusive zone) never changes while animating and a slide
+//! sends no layer-shell traffic. [`SlideBox`] wraps the animated
+//! column; the offset/easing/reversal math is plain functions over
+//! plain data.
 
 use std::time::Duration;
 
@@ -32,12 +25,12 @@ use cosmic::theme::Theme;
 use cosmic::{Element, Renderer};
 
 /// Window-space Y translation for a content slide at `offset_px` from
-/// its resting position, on a surface anchored at `edge`
-/// (slide-animation spec): the slide always moves content toward the
-/// anchored screen edge — `Edge::Top` translates upward (negative),
-/// `Edge::Bottom` downward (positive) — so a show slides in from the
-/// anchored edge and a hide slides back out to it. Horizontal
-/// placement is never animated. `0.0` is the resting position.
+/// its resting position on a surface anchored at `edge`: the slide
+/// always moves content toward the anchored screen edge — `Edge::Top`
+/// translates upward (negative), `Edge::Bottom` downward (positive) —
+/// so a show slides in from the anchored edge and a hide slides back
+/// out to it. Horizontal placement is never animated; `0.0` is the
+/// resting position.
 pub fn translation_y(edge: Edge, offset_px: f32) -> f32 {
     match edge {
         Edge::Top => -offset_px,
@@ -45,33 +38,27 @@ pub fn translation_y(edge: Edge, offset_px: f32) -> f32 {
     }
 }
 
-/// Duration of one slide, in milliseconds (slide-animation spec,
-/// locked 2026-09-30): mid-range of the 120–150 ms band, ease-out on
-/// show / ease-in on hide. A compile-time constant — no config surface
-/// until `settings-ui`.
+/// Duration of one slide in milliseconds: mid-range of the 120–150 ms
+/// band, ease-out on show / ease-in on hide. A compile-time constant —
+/// not user-configurable.
 pub const SLIDE_DURATION_MS: u64 = 130;
 
-/// Tick cadence of the animation clock (slide-animation spec plan
-/// decision, amended round 5): the ticks exist only to provoke redraw
-/// requests — the eased offset itself is evaluated in
+/// Tick cadence of the animation clock: ticks exist only to provoke
+/// redraw requests — the eased offset itself is evaluated in
 /// [`SlideBox::draw`] at frame presentation time, so tick timing never
-/// distorts the pose. The cadence must guarantee that EVERY compositor
-/// frame window contains at least one pending redraw request: a frame
-/// callback that finds none draws nothing (the surface re-presents its
-/// previous buffer — a held frame, then a jump: the residual jitter of
-/// rounds 3–4), so the tick period must be shorter than the frame
-/// period at any refresh rate the output may run. 1 ms covers panels
-/// up to 1000 Hz and absorbs runtime scheduling noise; it is
-/// redraw-only and a state no-op (~130 messages per 130 ms slide,
-/// batched by the runtime's AboutToWait pass — no layer-shell
-/// traffic). Safe by the G3 evidence (the drag incident saturated the
-/// runtime on `set_size` storms, not redraws).
+/// distorts the pose. The cadence must put at least one pending redraw
+/// request inside every compositor frame window: a frame callback that
+/// finds none draws nothing (the surface re-presents its previous
+/// buffer — a held frame, then a jump), so the tick period must stay
+/// below the frame period at any refresh rate. 1 ms covers outputs up
+/// to 1000 Hz and absorbs scheduling noise; it is redraw-only and a
+/// state no-op (~130 messages per 130 ms slide, batched by the
+/// runtime's AboutToWait pass — no layer-shell traffic; the runtime
+/// saturates on resize storms, not redraw requests).
 pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
-/// Which way a slide is moving (slide-animation spec): `In` shows the
-/// content (offset decays to rest), `Out` hides it (offset grows to
-/// the distance). `Out` slides are constructed by the animated-hide
-/// path (A4's `hide()`) and by tests.
+/// Which way a slide is moving: `In` shows the content (offset decays
+/// to rest), `Out` hides it (offset grows to the distance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Showing: ease-out from `from_offset_px` to rest.
@@ -80,9 +67,8 @@ pub enum Direction {
     Out,
 }
 
-/// A slide in progress (slide-animation spec, A2): plain data, no
-/// clocks — elapsed time is injected at the call site. Offsets are
-/// edge-space: `0.0` is the resting position, growing toward
+/// A slide in progress: plain data, no clocks — elapsed time is
+/// injected at the call site. Offsets are edge-space: `0.0` is the resting position, growing toward
 /// `distance_px` as the content hides; the window-space sign is
 /// applied only at the draw site, by [`translation_y`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,21 +78,21 @@ pub struct Active {
     pub from_offset_px: f32,
     /// The fully-hidden offset — the slide distance,
     /// `geometry::surface_height(output.h, height_percent)`, fixed at
-    /// `SurfaceOpened` time (the plan's pinned distance source).
+    /// `SurfaceOpened` time.
     pub distance_px: f32,
 }
 
-/// The content's edge-space offset `elapsed_ms` into `active`
-/// (slide-animation spec, A2): eased from `from_offset_px` toward the
-/// direction's endpoint over exactly [`SLIDE_DURATION_MS`] —
-/// quadratic ease-out for [`Direction::In`] (fast in, settling at
-/// rest), quadratic ease-in for [`Direction::Out`] (leaving gently,
-/// accelerating off-screen). At or past completion the endpoint is
-/// returned *directly*, not recomputed — `from + (distance - from)`
-/// is not float-exact, and the completed pose must be byte-identical
-/// to the resting (In) or fully-hidden (Out) one. Pure over injected
-/// milliseconds: A3's `SlideBox::draw` feeds the wall clock at frame
-/// presentation; tests feed fakes.
+/// The content's edge-space offset `elapsed_ms` into `active`: eased
+/// from `from_offset_px` toward the direction's endpoint over exactly
+/// [`SLIDE_DURATION_MS`] — quadratic ease-out for [`Direction::In`]
+/// (fast in, settling at rest), quadratic ease-in for
+/// [`Direction::Out`] (leaving gently, accelerating off-screen). At or
+/// past completion the endpoint is returned *directly*, not
+/// recomputed — `from + (distance - from)` is not float-exact, and
+/// the completed pose must be byte-identical to the resting (In) or
+/// fully-hidden (Out) one. Pure over injected milliseconds:
+/// [`SlideBox::draw`] feeds the wall clock at frame presentation;
+/// tests feed fakes.
 pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
     let progress = (elapsed_ms as f32 / SLIDE_DURATION_MS as f32).clamp(0.0, 1.0);
     if progress >= 1.0 {
@@ -123,23 +109,21 @@ pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
     }
 }
 
-/// Whether `active` has run its full [`SLIDE_DURATION_MS`]
-/// (slide-animation spec, A2): time-based on purpose — the endpoint
-/// offset at completion is already exact, and "the first tick past
-/// the duration parks the slide" is a clock decision, not a pose
-/// one. Monotone in `elapsed_ms`: a slide completes exactly once.
+/// Whether `active` has run its full [`SLIDE_DURATION_MS`]:
+/// time-based on purpose — the endpoint offset at completion is
+/// already exact, and parking on the first tick past the duration is
+/// a clock decision, not a pose one. Monotone in `elapsed_ms`: a
+/// slide completes exactly once.
 pub fn finished(_active: &Active, elapsed_ms: u64) -> bool {
     elapsed_ms >= SLIDE_DURATION_MS
 }
 
-/// Re-target `active` from wherever it stands at `elapsed_ms`
-/// (slide-animation spec, A2 + the plan's reversal decision): capture
-/// the current offset as the new `from_offset_px`, flip the
+/// Re-target `active` from wherever it stands at `elapsed_ms`:
+/// capture the current offset as the new `from_offset_px`, flip the
 /// direction, keep the distance, and run a fresh fixed
-/// [`SLIDE_DURATION_MS`] — the re-target is NOT proportional to the
-/// remaining distance (plan decision, approved 2026-09-30). No
-/// teleport: the reversed slide's frame-0 offset equals the old
-/// slide's offset at the reversal instant.
+/// [`SLIDE_DURATION_MS`] — the re-target is not proportional to the
+/// remaining distance. No teleport: the reversed slide's frame-0
+/// offset equals the old slide's offset at the reversal instant.
 pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
     Active {
         direction: match active.direction {
@@ -151,18 +135,16 @@ pub fn reverse(active: &Active, elapsed_ms: u64) -> Active {
     }
 }
 
-/// The slide-in a freshly shown surface starts (slide-animation spec,
-/// A3; settings-ui spec, U2): the full surface height is both the
-/// from-offset and the distance — the deterministic source pinned at
+/// The slide-in a freshly shown surface starts: the full surface
+/// height is both the from-offset and the distance, pinned at
 /// `SurfaceOpened` time. `None` when `slide_animation_enabled` is
 /// off: the surface opens at rest, byte-identically to the unwrapped
-/// column (the pre-slide-animation behavior, spec criterion 7).
+/// column.
 ///
 /// The toggle is honored at transition *entry* only — this function
-/// deliberately takes no mid-flight state, so a running slide can
-/// never be aborted by its own toggle: it belongs to the enabled
-/// machine that started it and always runs to completion (or
-/// reverses through [`reverse`], which equally ignores the flag).
+/// takes no mid-flight state, so a running slide can never be aborted
+/// by its own toggle: it always runs to completion (or reverses
+/// through [`reverse`], which equally ignores the flag).
 pub fn show_slide(enabled: bool, distance_px: f32) -> Option<Active> {
     enabled.then_some(Active {
         direction: Direction::In,
@@ -171,18 +153,15 @@ pub fn show_slide(enabled: bool, distance_px: f32) -> Option<Active> {
     })
 }
 
-/// A live slide (slide-animation spec, A3): the animation state
-/// ([`Active`]) paired with its *true* start instant — carried
-/// through view rebuilds, never re-captured. The pair exists so
-/// [`SlideBox::draw`] can evaluate the pose against the frame's own
-/// clock: the runtime builds the view in its `AboutToWait` pass but
-/// presents the frame on the compositor's frame callback (pinned rev
-/// `08a09e3`, `iced/winit/src/lib.rs` `AboutToWait` →
-/// `request_redraw` → `RedrawRequested`), so an offset baked at view
-/// time is up to a full frame stale at presentation — random
-/// per-frame error that reads as judder (the round-4 spike finding).
-/// Evaluating in `draw` makes every presented frame carry the pose
-/// for its presentation instant.
+/// A live slide: the animation state ([`Active`]) paired with its
+/// *true* start instant — carried through view rebuilds, never
+/// re-captured. The pair exists so [`SlideBox::draw`] can evaluate
+/// the pose against the frame's own clock: the runtime builds the
+/// view in its `AboutToWait` pass but presents the frame on the
+/// compositor's frame callback, so an offset baked at view time is up
+/// to a full frame stale at presentation — random per-frame error
+/// that reads as judder. Evaluating in `draw` makes every presented
+/// frame carry the pose for its presentation instant.
 #[derive(Debug, Clone, Copy)]
 pub struct Playing {
     /// When the slide started (the app's slide clock).
@@ -196,18 +175,17 @@ pub struct Playing {
 /// bounds, so nothing paints outside the surface while it slides.
 ///
 /// The wrapper is *transparent*: layout, size hints, events, focus
-/// operations, and overlays all pass straight through to the child (the
-/// forwarding pattern of iced's container, pinned rev
-/// `iced/widget/src/container.rs`), so wrapping changes nothing but
-/// where the child paints. Input keeps mapping to the child's resting
-/// layout — during a 130 ms slide the pointer-to-content mapping is off
-/// by the translation (keyboard input is unaffected), the module's
-/// accepted limitation.
+/// operations, and overlays all pass straight through to the child
+/// (the forwarding pattern of iced's container), so wrapping changes
+/// nothing but where the child paints. Input keeps mapping to the
+/// child's resting layout — during a 130 ms slide the
+/// pointer-to-content mapping is off by the translation (keyboard
+/// input is unaffected).
 pub struct SlideBox<'a, Message> {
     child: Element<'a, Message>,
     offset_y: f32,
-    /// A live slide (slide-animation spec, A3): when set, `draw`
-    /// evaluates the eased offset itself (see [`Playing`]) translated
+    /// A live slide: when set, `draw` evaluates the eased offset
+    /// itself (see [`Playing`]) translated
     /// per `edge`; `offset_y` is ignored until the slide completes.
     playing: Option<(Edge, Playing)>,
 }
@@ -225,11 +203,10 @@ impl<'a, Message> SlideBox<'a, Message> {
         }
     }
 
-    /// Animate the child per `playing`'s easing (slide-animation
-    /// spec, A3): the eased edge-space offset is computed inside
-    /// `draw` against the frame's own clock and signed toward `edge`
-    /// by [`translation_y`] — never baked here in the view (the
-    /// round-4 lesson; see [`Playing`]). `started` is the slide's
+    /// Animate the child per `playing`'s easing: the eased edge-space
+    /// offset is computed inside `draw` against the frame's own clock
+    /// and signed toward `edge` by [`translation_y`] — never baked
+    /// here in the view (see [`Playing`]). `started` is the slide's
     /// true start — the same instant across every view rebuild.
     pub fn playing(mut self, edge: Edge, playing: Playing) -> Self {
         self.playing = Some((edge, playing));
@@ -333,9 +310,9 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        // The tab bar hosts the inline rename input as an overlay
-        // (tabs spec, T6); without forwarding, the rename would be
-        // unreachable under the wrapper.
+        // The tab bar hosts the inline rename input as an overlay;
+        // without forwarding, the rename would be unreachable under
+        // the wrapper.
         self.child
             .as_widget_mut()
             .overlay(tree, layout, renderer, viewport, translation)
@@ -357,10 +334,9 @@ where
         // clock — when a slide is live: the view that built this
         // widget ran in the runtime's AboutToWait pass, up to a full
         // frame before this draw executes on the compositor's frame
-        // callback, so a view-baked offset judders (the round-4
-        // finding; see `Playing`). The eased edge-space offset is
-        // signed toward the anchored edge only here, at the last
-        // possible moment (`translation_y` is the sign boundary).
+        // callback, so a view-baked offset judders (see `Playing`).
+        // The eased edge-space offset is signed toward the anchored
+        // edge only here, at the last possible moment (`translation_y` is the sign boundary).
         // The child's viewport follows the translation — the child
         // paints `offset_y` lower in window space, so a window-space
         // visible region maps to child-local space shifted up by the
@@ -620,7 +596,7 @@ mod tests {
     #[test]
     fn reverse_at_rest_targets_the_full_distance() {
         // Reversing a completed show (at rest, offset 0) hides from
-        // rest — the standard A4/A5 entry point.
+        // rest.
         let showing = Active {
             direction: Direction::In,
             from_offset_px: 835.0,
@@ -651,14 +627,13 @@ mod tests {
         assert_eq!(translation_y(Edge::Bottom, 0.0), 0.0);
     }
 
-    // --- settings-ui U2: the slide toggle at transition entry ---
+    // --- the slide toggle at transition entry ---
 
     #[test]
     fn show_slide_starts_the_full_height_slide_in_when_enabled() {
         // Day-one equality: enabled, the show path starts exactly the
         // slide `SurfaceOpened` always started — the full surface
-        // height as both the from-offset and the distance (the
-        // plan's pinned source).
+        // height as both the from-offset and the distance.
         assert_eq!(
             show_slide(true, 835.0),
             Some(Active {
@@ -673,8 +648,7 @@ mod tests {
     fn show_slide_starts_nothing_when_disabled() {
         // The toggle is honored at transition entry: a disabled show
         // opens at rest — no slide, the column renders
-        // byte-identically to the unwrapped one (the
-        // pre-slide-animation behavior, spec criterion 7).
+        // byte-identically to the unwrapped one.
         assert_eq!(show_slide(false, 835.0), None);
     }
 }
