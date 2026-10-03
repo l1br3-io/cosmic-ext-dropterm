@@ -321,8 +321,8 @@ mod tests {
                 assert_eq!(proxy.tab_count().await, Ok(3));
             })
             .await
-            .expect("wire test timed out")
-        })
+            .expect("wire test timed out");
+        });
     }
 
     #[test]
@@ -443,7 +443,7 @@ mod tests {
                 assert_eq!(proxy.tab_count().await, Ok(2));
             })
             .await
-            .expect("wire test timed out")
-        })
+            .expect("wire test timed out");
+        });
     }
 }

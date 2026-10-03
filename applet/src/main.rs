@@ -1,7 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Entry for the panel-applet binary: a COSMIC panel citizen that
-//! reflects the terminal's state and toggles it.
+// Pedantic lint table: `just clippy` runs with -D warnings, so every
+// warn below is a build error. `standing:` entries are owner-approved
+// exceptions (OQ rulings); `transient:` entries are the T1 census
+// worklist — lints firing in this crate — and are deleted as their
+// class is cleared, because an expect whose lint stops firing errors
+// out (the self-cleanup mechanism). A standing entry appears only in
+// roots where it fires, for the same reason.
+#![warn(clippy::pedantic)]
+#![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
+#![expect(
+    clippy::too_many_lines,
+    reason = "standing: OQ-4 — dissolved by module-decomposition"
+)]
+#![expect(clippy::cast_lossless, reason = "transient: T9")]
+#![expect(clippy::doc_markdown, reason = "transient: T9")]
+#![expect(clippy::match_same_arms, reason = "transient: T9")]
+#![expect(clippy::trivially_copy_pass_by_ref, reason = "transient: T9")]
+#![expect(clippy::unnested_or_patterns, reason = "transient: T9")]
+#![expect(clippy::unused_self, reason = "transient: T9")]
 
 mod applet;
 mod dbus;

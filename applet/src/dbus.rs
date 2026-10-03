@@ -88,6 +88,10 @@ mod tests {
 
     #[interface(name = "org.freedesktop.DbusActivation")]
     impl MockActivation {
+        #[expect(
+            clippy::unused_async,
+            reason = "async is required by the zbus #[interface] macro"
+        )]
         async fn activate_action(
             &mut self,
             action_name: &str,
@@ -176,8 +180,8 @@ mod tests {
                 assert!(calls[0].platform_data.is_empty());
             })
             .await
-            .expect("wire test timed out")
-        })
+            .expect("wire test timed out");
+        });
     }
 
     /// Forwards V1 `PropertiesChanged` signals to the test as core
@@ -198,9 +202,9 @@ mod tests {
                 };
                 let header = msg.header();
                 if header.message_type() != zbus::message::Type::Signal
-                    || header.interface().map(|i| i.to_string())
+                    || header.interface().map(ToString::to_string)
                         != Some("org.freedesktop.DBus.Properties".to_string())
-                    || header.member().map(|m| m.to_string())
+                    || header.member().map(ToString::to_string)
                         != Some("PropertiesChanged".to_string())
                 {
                     continue;
@@ -299,8 +303,8 @@ mod tests {
                 assert_eq!(tooltip(&core, 3), "DropTerm — visible, 3 tabs");
             })
             .await
-            .expect("wire test timed out")
-        })
+            .expect("wire test timed out");
+        });
     }
 
     /// Restore-style bursts — several rapid emissions, values only
@@ -366,7 +370,7 @@ mod tests {
                 assert_eq!(tooltip(&core, tab_count), "DropTerm — hidden, 3 tabs");
             })
             .await
-            .expect("wire test timed out")
-        })
+            .expect("wire test timed out");
+        });
     }
 }

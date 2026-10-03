@@ -60,10 +60,10 @@ fmt-check:
     cargo fmt --check --all
 
 clippy *args:
-    cargo clippy --all-targets --workspace {{args}} -- -D warnings
+    cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings
 
 test *args:
-    cargo test --workspace {{args}}
+    cargo test --workspace --locked {{args}}
 
 # Send a CLI action to the running instance, like a COSMIC keybind would:
 # `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from

@@ -1,5 +1,50 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+// Pedantic lint table: `just clippy` runs with -D warnings, so every
+// warn below is a build error. `standing:` entries are owner-approved
+// exceptions (OQ rulings); `transient:` entries are the T1 census
+// worklist — lints firing in this crate — and are deleted as their
+// class is cleared, because an expect whose lint stops firing errors
+// out (the self-cleanup mechanism). A standing entry appears only in
+// roots where it fires, for the same reason. The float_cmp transient
+// sits after the test blanket so the blanket owns test builds.
+#![warn(clippy::pedantic)]
+#![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
+#![expect(
+    clippy::too_many_lines,
+    reason = "standing: OQ-4 — dissolved by module-decomposition"
+)]
+#![expect(clippy::assigning_clones, reason = "transient: T6-T9")]
+#![expect(clippy::cast_possible_truncation, reason = "transient: T4-T7")]
+#![expect(clippy::cast_possible_wrap, reason = "transient: T4-T7")]
+#![expect(clippy::cast_precision_loss, reason = "transient: T4-T7")]
+#![expect(clippy::cast_sign_loss, reason = "transient: T4-T7")]
+#![expect(clippy::comparison_chain, reason = "transient: T6-T9")]
+#![expect(clippy::default_trait_access, reason = "transient: T5")]
+#![expect(clippy::doc_markdown, reason = "transient: T6-T9")]
+#![expect(clippy::elidable_lifetime_names, reason = "transient: T6-T9")]
+#![expect(clippy::float_cmp, reason = "transient: calibration")]
+#![expect(clippy::ignored_unit_patterns, reason = "transient: T6")]
+#![expect(clippy::implicit_clone, reason = "transient: T5")]
+#![expect(clippy::inline_always, reason = "transient: T5")]
+#![expect(clippy::items_after_statements, reason = "transient: T5")]
+#![expect(clippy::large_types_passed_by_value, reason = "transient: T5")]
+#![expect(clippy::map_unwrap_or, reason = "transient: T6-T9")]
+#![expect(clippy::match_same_arms, reason = "transient: T6-T9")]
+#![expect(clippy::needless_pass_by_value, reason = "transient: T6-T9")]
+#![expect(clippy::redundant_closure_for_method_calls, reason = "transient: T9")]
+#![expect(clippy::redundant_else, reason = "transient: T6-T9")]
+#![expect(clippy::semicolon_if_nothing_returned, reason = "transient: T6-T9")]
+#![expect(clippy::similar_names, reason = "transient: calibration")]
+#![expect(clippy::single_match_else, reason = "transient: T6")]
+#![expect(clippy::struct_excessive_bools, reason = "transient: T5/T8")]
+#![expect(clippy::trivially_copy_pass_by_ref, reason = "transient: T6-T9")]
+#![expect(clippy::uninlined_format_args, reason = "transient: T5")]
+#![expect(clippy::unnecessary_semicolon, reason = "transient: T6-T9")]
+#![expect(clippy::unnecessary_wraps, reason = "transient: T5")]
+#![expect(clippy::unreadable_literal, reason = "transient: T4")]
+#![expect(clippy::unused_self, reason = "transient: T6-T9")]
+
 mod app;
 mod config;
 mod context_menu;

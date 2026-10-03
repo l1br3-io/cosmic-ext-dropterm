@@ -951,7 +951,7 @@ mod tests {
 
     #[test]
     fn by_name_serves_every_registry_entry() {
-        for entry in SCHEMES.iter() {
+        for entry in &SCHEMES {
             assert!(
                 by_name(entry.name).is_some(),
                 "registry name {:?} does not resolve",
