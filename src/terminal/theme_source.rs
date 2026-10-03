@@ -113,6 +113,11 @@ struct ColorScheme {
 /// color.rs` `DIM_FACTOR`; docs/research/terminal-theming.md §2).
 const DIM_FACTOR: f32 = 0.66;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Alacritty's dim contract truncates normal x 0.66; a u8 source stays in [0, 168], never negative"
+)]
 fn dim_color(color: Rgb) -> Rgb {
     Rgb {
         r: (f32::from(color.r) * DIM_FACTOR) as u8,
@@ -179,6 +184,10 @@ impl From<&ColorScheme> for Colors {
 
 /// Decode a packed `0xRRGGBB` literal into an `Rgb` (const, for the
 /// palette tables).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "low-byte extraction is the 0xRRGGBB decode contract"
+)]
 const fn rgb(data: u32) -> Rgb {
     Rgb {
         r: (data >> 16) as u8,
@@ -192,40 +201,40 @@ const fn rgb(data: u32) -> Rgb {
 /// derivation never touches, and no background — the window follows
 /// the COSMIC system theme.
 const COSMIC_DARK: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xC4C4C4)),
+    foreground: Some(rgb(0xC4_C4C4)),
     background: None,
-    cursor: Some(rgb(0xC4C4C4)),
-    bright_foreground: Some(rgb(0xC4C4C4)),
-    dim_foreground: Some(rgb(0x898989)),
+    cursor: Some(rgb(0xC4_C4C4)),
+    bright_foreground: Some(rgb(0xC4_C4C4)),
+    dim_foreground: Some(rgb(0x89_8989)),
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x1B1B1B)),
-        red: Some(rgb(0xF16161)),
-        green: Some(rgb(0x7CB987)),
-        yellow: Some(rgb(0xDDC74C)),
-        blue: Some(rgb(0x6296BE)),
-        magenta: Some(rgb(0xBE6DEE)),
-        cyan: Some(rgb(0x49BAC8)),
-        white: Some(rgb(0xBEBEBE)),
+        black: Some(rgb(0x1B_1B1B)),
+        red: Some(rgb(0xF1_6161)),
+        green: Some(rgb(0x7C_B987)),
+        yellow: Some(rgb(0xDD_C74C)),
+        blue: Some(rgb(0x62_96BE)),
+        magenta: Some(rgb(0xBE_6DEE)),
+        cyan: Some(rgb(0x49_BAC8)),
+        white: Some(rgb(0xBE_BEBE)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x808080)),
-        red: Some(rgb(0xFF8985)),
-        green: Some(rgb(0x97D5A0)),
-        yellow: Some(rgb(0xFAE365)),
-        blue: Some(rgb(0x7DB1DA)),
-        magenta: Some(rgb(0xD68EFF)),
-        cyan: Some(rgb(0x49BAC8)),
-        white: Some(rgb(0xC4C4C4)),
+        black: Some(rgb(0x80_8080)),
+        red: Some(rgb(0xFF_8985)),
+        green: Some(rgb(0x97_D5A0)),
+        yellow: Some(rgb(0xFA_E365)),
+        blue: Some(rgb(0x7D_B1DA)),
+        magenta: Some(rgb(0xD6_8EFF)),
+        cyan: Some(rgb(0x49_BAC8)),
+        white: Some(rgb(0xC4_C4C4)),
     },
     dim: ColorSchemeAnsi {
-        black: Some(rgb(0x000000)),
-        red: Some(rgb(0xA04040)),
-        green: Some(rgb(0x5D7D62)),
-        yellow: Some(rgb(0x9E914A)),
-        blue: Some(rgb(0x486073)),
-        magenta: Some(rgb(0x7F46A1)),
-        cyan: Some(rgb(0x3F7F87)),
-        white: Some(rgb(0x898989)),
+        black: Some(rgb(0x00_0000)),
+        red: Some(rgb(0xA0_4040)),
+        green: Some(rgb(0x5D_7D62)),
+        yellow: Some(rgb(0x9E_914A)),
+        blue: Some(rgb(0x48_6073)),
+        magenta: Some(rgb(0x7F_46A1)),
+        cyan: Some(rgb(0x3F_7F87)),
+        white: Some(rgb(0x89_8989)),
     },
 };
 
@@ -237,40 +246,40 @@ pub fn cosmic_dark() -> Colors {
 /// The COSMIC Light palette — same traits as [`COSMIC_DARK`]:
 /// hand-tuned dims, no background.
 const COSMIC_LIGHT: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x1B1B1B)),
+    foreground: Some(rgb(0x1B_1B1B)),
     background: None,
-    cursor: Some(rgb(0x1B1B1B)),
-    bright_foreground: Some(rgb(0x000000)),
-    dim_foreground: Some(rgb(0x262626)),
+    cursor: Some(rgb(0x1B_1B1B)),
+    bright_foreground: Some(rgb(0x00_0000)),
+    dim_foreground: Some(rgb(0x26_2626)),
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x1B1B1B)),
-        red: Some(rgb(0xA24F50)),
-        green: Some(rgb(0x437E4F)),
-        yellow: Some(rgb(0x7D6E1E)),
-        blue: Some(rgb(0x516D94)),
-        magenta: Some(rgb(0x9A30CA)),
-        cyan: Some(rgb(0x227A85)),
-        white: Some(rgb(0xD7D7D7)),
+        black: Some(rgb(0x1B_1B1B)),
+        red: Some(rgb(0xA2_4F50)),
+        green: Some(rgb(0x43_7E4F)),
+        yellow: Some(rgb(0x7D_6E1E)),
+        blue: Some(rgb(0x51_6D94)),
+        magenta: Some(rgb(0x9A_30CA)),
+        cyan: Some(rgb(0x22_7A85)),
+        white: Some(rgb(0xD7_D7D7)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x000000)),
-        red: Some(rgb(0x890418)),
-        green: Some(rgb(0x185529)),
-        yellow: Some(rgb(0x534800)),
-        blue: Some(rgb(0x2E496D)),
-        magenta: Some(rgb(0x6B0091)),
-        cyan: Some(rgb(0x00525A)),
-        white: Some(rgb(0xE8E8E8)),
+        black: Some(rgb(0x00_0000)),
+        red: Some(rgb(0x89_0418)),
+        green: Some(rgb(0x18_5529)),
+        yellow: Some(rgb(0x53_4800)),
+        blue: Some(rgb(0x2E_496D)),
+        magenta: Some(rgb(0x6B_0091)),
+        cyan: Some(rgb(0x00_525A)),
+        white: Some(rgb(0xE8_E8E8)),
     },
     dim: ColorSchemeAnsi {
-        black: Some(rgb(0x262626)),
-        red: Some(rgb(0xB25D5E)),
-        green: Some(rgb(0x528D5E)),
-        yellow: Some(rgb(0x8C7D30)),
-        blue: Some(rgb(0x5F7CA4)),
-        magenta: Some(rgb(0xAA43DB)),
-        cyan: Some(rgb(0x358994)),
-        white: Some(rgb(0xC4C4C4)),
+        black: Some(rgb(0x26_2626)),
+        red: Some(rgb(0xB2_5D5E)),
+        green: Some(rgb(0x52_8D5E)),
+        yellow: Some(rgb(0x8C_7D30)),
+        blue: Some(rgb(0x5F_7CA4)),
+        magenta: Some(rgb(0xAA_43DB)),
+        cyan: Some(rgb(0x35_8994)),
+        white: Some(rgb(0xC4_C4C4)),
     },
 };
 
@@ -294,30 +303,30 @@ pub fn cosmic_light() -> Colors {
 /// match. The TOML also sets cursor/dim fields; per the uniform
 /// derivation rule we transcribe fg/bg/16/brights only.
 const CATPPUCCIN_LATTE: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x4C4F69)),
-    background: Some(rgb(0xEFF1F5)),
+    foreground: Some(rgb(0x4C_4F69)),
+    background: Some(rgb(0xEF_F1F5)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x5C5F77)),
-        red: Some(rgb(0xD20F39)),
-        green: Some(rgb(0x40A02B)),
-        yellow: Some(rgb(0xDF8E1D)),
-        blue: Some(rgb(0x1E66F5)),
-        magenta: Some(rgb(0xEA76CB)),
-        cyan: Some(rgb(0x179299)),
-        white: Some(rgb(0xACB0BE)),
+        black: Some(rgb(0x5C_5F77)),
+        red: Some(rgb(0xD2_0F39)),
+        green: Some(rgb(0x40_A02B)),
+        yellow: Some(rgb(0xDF_8E1D)),
+        blue: Some(rgb(0x1E_66F5)),
+        magenta: Some(rgb(0xEA_76CB)),
+        cyan: Some(rgb(0x17_9299)),
+        white: Some(rgb(0xAC_B0BE)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x6C6F85)),
-        red: Some(rgb(0xD20F39)),
-        green: Some(rgb(0x40A02B)),
-        yellow: Some(rgb(0xDF8E1D)),
-        blue: Some(rgb(0x1E66F5)),
-        magenta: Some(rgb(0xEA76CB)),
-        cyan: Some(rgb(0x179299)),
-        white: Some(rgb(0xBCC0CC)),
+        black: Some(rgb(0x6C_6F85)),
+        red: Some(rgb(0xD2_0F39)),
+        green: Some(rgb(0x40_A02B)),
+        yellow: Some(rgb(0xDF_8E1D)),
+        blue: Some(rgb(0x1E_66F5)),
+        magenta: Some(rgb(0xEA_76CB)),
+        cyan: Some(rgb(0x17_9299)),
+        white: Some(rgb(0xBC_C0CC)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -330,30 +339,30 @@ const CATPPUCCIN_LATTE: ColorScheme = ColorScheme {
 /// match. The TOML also sets cursor/dim fields; per the uniform
 /// derivation rule we transcribe fg/bg/16/brights only.
 const CATPPUCCIN_MOCHA: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xCDD6F4)),
-    background: Some(rgb(0x1E1E2E)),
+    foreground: Some(rgb(0xCD_D6F4)),
+    background: Some(rgb(0x1E_1E2E)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x45475A)),
-        red: Some(rgb(0xF38BA8)),
-        green: Some(rgb(0xA6E3A1)),
-        yellow: Some(rgb(0xF9E2AF)),
-        blue: Some(rgb(0x89B4FA)),
-        magenta: Some(rgb(0xF5C2E7)),
-        cyan: Some(rgb(0x94E2D5)),
-        white: Some(rgb(0xBAC2DE)),
+        black: Some(rgb(0x45_475A)),
+        red: Some(rgb(0xF3_8BA8)),
+        green: Some(rgb(0xA6_E3A1)),
+        yellow: Some(rgb(0xF9_E2AF)),
+        blue: Some(rgb(0x89_B4FA)),
+        magenta: Some(rgb(0xF5_C2E7)),
+        cyan: Some(rgb(0x94_E2D5)),
+        white: Some(rgb(0xBA_C2DE)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x585B70)),
-        red: Some(rgb(0xF38BA8)),
-        green: Some(rgb(0xA6E3A1)),
-        yellow: Some(rgb(0xF9E2AF)),
-        blue: Some(rgb(0x89B4FA)),
-        magenta: Some(rgb(0xF5C2E7)),
-        cyan: Some(rgb(0x94E2D5)),
-        white: Some(rgb(0xA6ADC8)),
+        black: Some(rgb(0x58_5B70)),
+        red: Some(rgb(0xF3_8BA8)),
+        green: Some(rgb(0xA6_E3A1)),
+        yellow: Some(rgb(0xF9_E2AF)),
+        blue: Some(rgb(0x89_B4FA)),
+        magenta: Some(rgb(0xF5_C2E7)),
+        cyan: Some(rgb(0x94_E2D5)),
+        white: Some(rgb(0xA6_ADC8)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -366,30 +375,30 @@ const CATPPUCCIN_MOCHA: ColorScheme = ColorScheme {
 /// copy (`#1e1f29` bg) diverges and loses to canonical
 /// (docs/research/terminal-theming.md §Licensing).
 const DRACULA: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xF8F8F2)),
-    background: Some(rgb(0x282A36)),
+    foreground: Some(rgb(0xF8_F8F2)),
+    background: Some(rgb(0x28_2A36)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x000000)),
-        red: Some(rgb(0xFF5555)),
-        green: Some(rgb(0x50FA7B)),
-        yellow: Some(rgb(0xF1FA8C)),
-        blue: Some(rgb(0xBD93F9)),
-        magenta: Some(rgb(0xFF79C6)),
-        cyan: Some(rgb(0x8BE9FD)),
-        white: Some(rgb(0xBBBBBB)),
+        black: Some(rgb(0x00_0000)),
+        red: Some(rgb(0xFF_5555)),
+        green: Some(rgb(0x50_FA7B)),
+        yellow: Some(rgb(0xF1_FA8C)),
+        blue: Some(rgb(0xBD_93F9)),
+        magenta: Some(rgb(0xFF_79C6)),
+        cyan: Some(rgb(0x8B_E9FD)),
+        white: Some(rgb(0xBB_BBBB)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x555555)),
-        red: Some(rgb(0xFF5555)),
-        green: Some(rgb(0x50FA7B)),
-        yellow: Some(rgb(0xF1FA8C)),
-        blue: Some(rgb(0xCAA9FA)),
-        magenta: Some(rgb(0xFF79C6)),
-        cyan: Some(rgb(0x8BE9FD)),
-        white: Some(rgb(0xFFFFFF)),
+        black: Some(rgb(0x55_5555)),
+        red: Some(rgb(0xFF_5555)),
+        green: Some(rgb(0x50_FA7B)),
+        yellow: Some(rgb(0xF1_FA8C)),
+        blue: Some(rgb(0xCA_A9FA)),
+        magenta: Some(rgb(0xFF_79C6)),
+        cyan: Some(rgb(0x8B_E9FD)),
+        white: Some(rgb(0xFF_FFFF)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -401,30 +410,30 @@ const DRACULA: ColorScheme = ColorScheme {
 /// `#ebdbb2`, red `#cc241d`/bright `#fb4934` all match (the TOML's
 /// hard/soft contrast variants stay untranscribed).
 const GRUVBOX_DARK: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xEBDBB2)),
-    background: Some(rgb(0x282828)),
+    foreground: Some(rgb(0xEB_DBB2)),
+    background: Some(rgb(0x28_2828)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x282828)),
-        red: Some(rgb(0xCC241D)),
-        green: Some(rgb(0x98971A)),
-        yellow: Some(rgb(0xD79921)),
-        blue: Some(rgb(0x458588)),
-        magenta: Some(rgb(0xB16286)),
-        cyan: Some(rgb(0x689D6A)),
-        white: Some(rgb(0xA89984)),
+        black: Some(rgb(0x28_2828)),
+        red: Some(rgb(0xCC_241D)),
+        green: Some(rgb(0x98_971A)),
+        yellow: Some(rgb(0xD7_9921)),
+        blue: Some(rgb(0x45_8588)),
+        magenta: Some(rgb(0xB1_6286)),
+        cyan: Some(rgb(0x68_9D6A)),
+        white: Some(rgb(0xA8_9984)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x928374)),
-        red: Some(rgb(0xFB4934)),
-        green: Some(rgb(0xB8BB26)),
-        yellow: Some(rgb(0xFABD2F)),
-        blue: Some(rgb(0x83A598)),
-        magenta: Some(rgb(0xD3869B)),
-        cyan: Some(rgb(0x8EC07C)),
-        white: Some(rgb(0xEBDBB2)),
+        black: Some(rgb(0x92_8374)),
+        red: Some(rgb(0xFB_4934)),
+        green: Some(rgb(0xB8_BB26)),
+        yellow: Some(rgb(0xFA_BD2F)),
+        blue: Some(rgb(0x83_A598)),
+        magenta: Some(rgb(0xD3_869B)),
+        cyan: Some(rgb(0x8E_C07C)),
+        white: Some(rgb(0xEB_DBB2)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -435,30 +444,30 @@ const GRUVBOX_DARK: ColorScheme = ColorScheme {
 /// against the canonical medium-contrast palette: bg `#fbf1c7`, fg
 /// `#3c3836`, bright yellow `#b57614` all match.
 const GRUVBOX_LIGHT: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x3C3836)),
-    background: Some(rgb(0xFBF1C7)),
+    foreground: Some(rgb(0x3C_3836)),
+    background: Some(rgb(0xFB_F1C7)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0xFBF1C7)),
-        red: Some(rgb(0xCC241D)),
-        green: Some(rgb(0x98971A)),
-        yellow: Some(rgb(0xD79921)),
-        blue: Some(rgb(0x458588)),
-        magenta: Some(rgb(0xB16286)),
-        cyan: Some(rgb(0x689D6A)),
-        white: Some(rgb(0x7C6F64)),
+        black: Some(rgb(0xFB_F1C7)),
+        red: Some(rgb(0xCC_241D)),
+        green: Some(rgb(0x98_971A)),
+        yellow: Some(rgb(0xD7_9921)),
+        blue: Some(rgb(0x45_8588)),
+        magenta: Some(rgb(0xB1_6286)),
+        cyan: Some(rgb(0x68_9D6A)),
+        white: Some(rgb(0x7C_6F64)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x928374)),
-        red: Some(rgb(0x9D0006)),
-        green: Some(rgb(0x79740E)),
-        yellow: Some(rgb(0xB57614)),
-        blue: Some(rgb(0x076678)),
-        magenta: Some(rgb(0x8F3F71)),
-        cyan: Some(rgb(0x427B58)),
-        white: Some(rgb(0x3C3836)),
+        black: Some(rgb(0x92_8374)),
+        red: Some(rgb(0x9D_0006)),
+        green: Some(rgb(0x79_740E)),
+        yellow: Some(rgb(0xB5_7614)),
+        blue: Some(rgb(0x07_6678)),
+        magenta: Some(rgb(0x8F_3F71)),
+        cyan: Some(rgb(0x42_7B58)),
+        white: Some(rgb(0x3C_3836)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -470,30 +479,30 @@ const GRUVBOX_LIGHT: ColorScheme = ColorScheme {
 /// nord0 `#2e3440`, fg nord4 `#d8dee9`, cyan nord8 `#88c0d0`, blue
 /// nord9 `#81a1c1` all match.
 const NORD: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xD8DEE9)),
-    background: Some(rgb(0x2E3440)),
+    foreground: Some(rgb(0xD8_DEE9)),
+    background: Some(rgb(0x2E_3440)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x3B4252)),
-        red: Some(rgb(0xBF616A)),
-        green: Some(rgb(0xA3BE8C)),
-        yellow: Some(rgb(0xEBCB8B)),
-        blue: Some(rgb(0x81A1C1)),
-        magenta: Some(rgb(0xB48EAD)),
-        cyan: Some(rgb(0x88C0D0)),
-        white: Some(rgb(0xE5E9F0)),
+        black: Some(rgb(0x3B_4252)),
+        red: Some(rgb(0xBF_616A)),
+        green: Some(rgb(0xA3_BE8C)),
+        yellow: Some(rgb(0xEB_CB8B)),
+        blue: Some(rgb(0x81_A1C1)),
+        magenta: Some(rgb(0xB4_8EAD)),
+        cyan: Some(rgb(0x88_C0D0)),
+        white: Some(rgb(0xE5_E9F0)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x4C566A)),
-        red: Some(rgb(0xBF616A)),
-        green: Some(rgb(0xA3BE8C)),
-        yellow: Some(rgb(0xEBCB8B)),
-        blue: Some(rgb(0x81A1C1)),
-        magenta: Some(rgb(0xB48EAD)),
-        cyan: Some(rgb(0x8FBCBB)),
-        white: Some(rgb(0xECEFF4)),
+        black: Some(rgb(0x4C_566A)),
+        red: Some(rgb(0xBF_616A)),
+        green: Some(rgb(0xA3_BE8C)),
+        yellow: Some(rgb(0xEB_CB8B)),
+        blue: Some(rgb(0x81_A1C1)),
+        magenta: Some(rgb(0xB4_8EAD)),
+        cyan: Some(rgb(0x8F_BCBB)),
+        white: Some(rgb(0xEC_EFF4)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -504,30 +513,30 @@ const NORD: ColorScheme = ColorScheme {
 /// Cross-checked against the canonical palette: bg base03 `#002b36`,
 /// fg base0 `#839496`, cyan `#2aa198`, orange `#cb4b16` all match.
 const SOLARIZED_DARK: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x839496)),
-    background: Some(rgb(0x002B36)),
+    foreground: Some(rgb(0x83_9496)),
+    background: Some(rgb(0x00_2B36)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x073642)),
-        red: Some(rgb(0xDC322F)),
-        green: Some(rgb(0x859900)),
-        yellow: Some(rgb(0xB58900)),
-        blue: Some(rgb(0x268BD2)),
-        magenta: Some(rgb(0xD33682)),
-        cyan: Some(rgb(0x2AA198)),
-        white: Some(rgb(0xEEE8D5)),
+        black: Some(rgb(0x07_3642)),
+        red: Some(rgb(0xDC_322F)),
+        green: Some(rgb(0x85_9900)),
+        yellow: Some(rgb(0xB5_8900)),
+        blue: Some(rgb(0x26_8BD2)),
+        magenta: Some(rgb(0xD3_3682)),
+        cyan: Some(rgb(0x2A_A198)),
+        white: Some(rgb(0xEE_E8D5)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x002B36)),
-        red: Some(rgb(0xCB4B16)),
-        green: Some(rgb(0x586E75)),
-        yellow: Some(rgb(0x657B83)),
-        blue: Some(rgb(0x839496)),
-        magenta: Some(rgb(0x6C71C4)),
-        cyan: Some(rgb(0x93A1A1)),
-        white: Some(rgb(0xFDF6E3)),
+        black: Some(rgb(0x00_2B36)),
+        red: Some(rgb(0xCB_4B16)),
+        green: Some(rgb(0x58_6E75)),
+        yellow: Some(rgb(0x65_7B83)),
+        blue: Some(rgb(0x83_9496)),
+        magenta: Some(rgb(0x6C_71C4)),
+        cyan: Some(rgb(0x93_A1A1)),
+        white: Some(rgb(0xFD_F6E3)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -539,30 +548,30 @@ const SOLARIZED_DARK: ColorScheme = ColorScheme {
 /// fg base01 `#586e75` all match; the 16 ANSI values are shared with
 /// Solarized Dark (base02–base1 and the accents are mode-invariant).
 const SOLARIZED_LIGHT: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x586E75)),
-    background: Some(rgb(0xFDF6E3)),
+    foreground: Some(rgb(0x58_6E75)),
+    background: Some(rgb(0xFD_F6E3)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x073642)),
-        red: Some(rgb(0xDC322F)),
-        green: Some(rgb(0x859900)),
-        yellow: Some(rgb(0xB58900)),
-        blue: Some(rgb(0x268BD2)),
-        magenta: Some(rgb(0xD33682)),
-        cyan: Some(rgb(0x2AA198)),
-        white: Some(rgb(0xEEE8D5)),
+        black: Some(rgb(0x07_3642)),
+        red: Some(rgb(0xDC_322F)),
+        green: Some(rgb(0x85_9900)),
+        yellow: Some(rgb(0xB5_8900)),
+        blue: Some(rgb(0x26_8BD2)),
+        magenta: Some(rgb(0xD3_3682)),
+        cyan: Some(rgb(0x2A_A198)),
+        white: Some(rgb(0xEE_E8D5)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x002B36)),
-        red: Some(rgb(0xCB4B16)),
-        green: Some(rgb(0x586E75)),
-        yellow: Some(rgb(0x657B83)),
-        blue: Some(rgb(0x839496)),
-        magenta: Some(rgb(0x6C71C4)),
-        cyan: Some(rgb(0x93A1A1)),
-        white: Some(rgb(0xFDF6E3)),
+        black: Some(rgb(0x00_2B36)),
+        red: Some(rgb(0xCB_4B16)),
+        green: Some(rgb(0x58_6E75)),
+        yellow: Some(rgb(0x65_7B83)),
+        blue: Some(rgb(0x83_9496)),
+        magenta: Some(rgb(0x6C_71C4)),
+        cyan: Some(rgb(0x93_A1A1)),
+        white: Some(rgb(0xFD_F6E3)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -573,30 +582,30 @@ const SOLARIZED_LIGHT: ColorScheme = ColorScheme {
 /// has no Day file. Cross-checked against the canonical palette: bg
 /// `#e1e2e7`, fg `#3760bf`, cyan `#007197` all match.
 const TOKYO_NIGHT_DAY: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x3760BF)),
-    background: Some(rgb(0xE1E2E7)),
+    foreground: Some(rgb(0x37_60BF)),
+    background: Some(rgb(0xE1_E2E7)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0xB4B5B9)),
-        red: Some(rgb(0xF52A65)),
-        green: Some(rgb(0x587539)),
-        yellow: Some(rgb(0x8C6C3E)),
-        blue: Some(rgb(0x2E7DE9)),
-        magenta: Some(rgb(0x9854F1)),
-        cyan: Some(rgb(0x007197)),
-        white: Some(rgb(0x6172B0)),
+        black: Some(rgb(0xB4_B5B9)),
+        red: Some(rgb(0xF5_2A65)),
+        green: Some(rgb(0x58_7539)),
+        yellow: Some(rgb(0x8C_6C3E)),
+        blue: Some(rgb(0x2E_7DE9)),
+        magenta: Some(rgb(0x98_54F1)),
+        cyan: Some(rgb(0x00_7197)),
+        white: Some(rgb(0x61_72B0)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0xA1A6C5)),
-        red: Some(rgb(0xFF4774)),
-        green: Some(rgb(0x5C8524)),
-        yellow: Some(rgb(0xA27629)),
-        blue: Some(rgb(0x358AFF)),
-        magenta: Some(rgb(0xA463FF)),
-        cyan: Some(rgb(0x007EA8)),
-        white: Some(rgb(0x3760BF)),
+        black: Some(rgb(0xA1_A6C5)),
+        red: Some(rgb(0xFF_4774)),
+        green: Some(rgb(0x5C_8524)),
+        yellow: Some(rgb(0xA2_7629)),
+        blue: Some(rgb(0x35_8AFF)),
+        magenta: Some(rgb(0xA4_63FF)),
+        cyan: Some(rgb(0x00_7EA8)),
+        white: Some(rgb(0x37_60BF)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -608,30 +617,30 @@ const TOKYO_NIGHT_DAY: ColorScheme = ColorScheme {
 /// palette: bg `#24283b`, fg `#a9b1d6`, blue `#7aa2f7`, red `#f7768e`
 /// all match (the port's cyan `#449dab` is its teal choice).
 const TOKYO_NIGHT_STORM: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xA9B1D6)),
-    background: Some(rgb(0x24283B)),
+    foreground: Some(rgb(0xA9_B1D6)),
+    background: Some(rgb(0x24_283B)),
     cursor: None,
     bright_foreground: None,
     dim_foreground: None,
     normal: ColorSchemeAnsi {
-        black: Some(rgb(0x32344A)),
-        red: Some(rgb(0xF7768E)),
-        green: Some(rgb(0x9ECE6A)),
-        yellow: Some(rgb(0xE0AF68)),
-        blue: Some(rgb(0x7AA2F7)),
-        magenta: Some(rgb(0xAD8EE6)),
-        cyan: Some(rgb(0x449DAB)),
-        white: Some(rgb(0x9699A8)),
+        black: Some(rgb(0x32_344A)),
+        red: Some(rgb(0xF7_768E)),
+        green: Some(rgb(0x9E_CE6A)),
+        yellow: Some(rgb(0xE0_AF68)),
+        blue: Some(rgb(0x7A_A2F7)),
+        magenta: Some(rgb(0xAD_8EE6)),
+        cyan: Some(rgb(0x44_9DAB)),
+        white: Some(rgb(0x96_99A8)),
     },
     bright: ColorSchemeAnsi {
-        black: Some(rgb(0x444B6A)),
-        red: Some(rgb(0xFF7A93)),
-        green: Some(rgb(0xB9F27C)),
-        yellow: Some(rgb(0xFF9E64)),
-        blue: Some(rgb(0x7DA6FF)),
-        magenta: Some(rgb(0xBB9AF7)),
-        cyan: Some(rgb(0x0DB9D7)),
-        white: Some(rgb(0xACB0D0)),
+        black: Some(rgb(0x44_4B6A)),
+        red: Some(rgb(0xFF_7A93)),
+        green: Some(rgb(0xB9_F27C)),
+        yellow: Some(rgb(0xFF_9E64)),
+        blue: Some(rgb(0x7D_A6FF)),
+        magenta: Some(rgb(0xBB_9AF7)),
+        cyan: Some(rgb(0x0D_B9D7)),
+        white: Some(rgb(0xAC_B0D0)),
     },
     dim: ColorSchemeAnsi::EMPTY,
 };
@@ -728,30 +737,30 @@ mod tests {
     /// and nothing else — the shape alacritty-theme TOMLs give us.
     fn plain_scheme() -> ColorScheme {
         ColorScheme {
-            foreground: Some(rgb(0xF8F8F2)),
-            background: Some(rgb(0x282A36)),
+            foreground: Some(rgb(0xF8_F8F2)),
+            background: Some(rgb(0x28_2A36)),
             cursor: None,
             bright_foreground: None,
             dim_foreground: None,
             normal: ColorSchemeAnsi {
-                black: Some(rgb(0x21222C)),
-                red: Some(rgb(0xFF5555)),
-                green: Some(rgb(0x50FA7B)),
-                yellow: Some(rgb(0xF1FA8C)),
-                blue: Some(rgb(0xBD93F9)),
-                magenta: Some(rgb(0xFF79C6)),
-                cyan: Some(rgb(0x8BE9FD)),
-                white: Some(rgb(0xF8F8F2)),
+                black: Some(rgb(0x21_222C)),
+                red: Some(rgb(0xFF_5555)),
+                green: Some(rgb(0x50_FA7B)),
+                yellow: Some(rgb(0xF1_FA8C)),
+                blue: Some(rgb(0xBD_93F9)),
+                magenta: Some(rgb(0xFF_79C6)),
+                cyan: Some(rgb(0x8B_E9FD)),
+                white: Some(rgb(0xF8_F8F2)),
             },
             bright: ColorSchemeAnsi {
-                black: Some(rgb(0x6272A4)),
-                red: Some(rgb(0xFF6E6E)),
-                green: Some(rgb(0x69FF94)),
-                yellow: Some(rgb(0xFFFFA5)),
-                blue: Some(rgb(0xD6ACFF)),
-                magenta: Some(rgb(0xFF92DF)),
-                cyan: Some(rgb(0xA4FFFF)),
-                white: Some(rgb(0xFFFFFF)),
+                black: Some(rgb(0x62_72A4)),
+                red: Some(rgb(0xFF_6E6E)),
+                green: Some(rgb(0x69_FF94)),
+                yellow: Some(rgb(0xFF_FFA5)),
+                blue: Some(rgb(0xD6_ACFF)),
+                magenta: Some(rgb(0xFF_92DF)),
+                cyan: Some(rgb(0xA4_FFFF)),
+                white: Some(rgb(0xFF_FFFF)),
             },
             dim: ColorSchemeAnsi::EMPTY,
         }
@@ -760,12 +769,12 @@ mod tests {
     #[test]
     fn conversion_fills_the_named_slots_from_the_palette() {
         let colors = Colors::from(&plain_scheme());
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF5555)));
-        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0xD6ACFF)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xF8F8F2)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_5555)));
+        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0xD6_ACFF)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xF8_F8F2)));
         // A scheme-owned background reaches the slot (the engine only
         // falls back to WINDOW_BG_COLOR while it is None).
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x282A36)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
     }
 
     #[test]
@@ -774,18 +783,18 @@ mod tests {
         // (DIM_FACTOR, docs/research/terminal-theming.md §2); the cast
         // truncates. 0xFF * 0.66 = 168.3 -> 168 = 0xA8.
         let colors = Colors::from(&plain_scheme());
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA83838)));
-        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0xA3A39F)));
+        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA8_3838)));
+        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0xA3_A39F)));
     }
 
     #[test]
     fn conversion_defaults_cursor_and_foregrounds_to_the_foreground() {
         let colors = Colors::from(&plain_scheme());
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xF8F8F2)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xF8F8F2)));
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xF8_F8F2)));
+        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xF8_F8F2)));
         // Dim foreground defaults to foreground * 0.66:
         // 0xF8 * 0.66 = 163.68 -> 163 = 0xA3, 0xF2 * 0.66 = 159.7 -> 0x9F.
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0xA3A39F)));
+        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0xA3_A39F)));
     }
 
     #[test]
@@ -793,17 +802,17 @@ mod tests {
         // The COSMIC pair ships hand-tuned dim tables; derivation must
         // never overwrite a value the scheme actually provides.
         let mut scheme = plain_scheme();
-        scheme.dim.red = Some(rgb(0xA04040));
-        scheme.cursor = Some(rgb(0xFFCC00));
-        scheme.bright_foreground = Some(rgb(0xFFFFFF));
-        scheme.dim_foreground = Some(rgb(0x898989));
+        scheme.dim.red = Some(rgb(0xA0_4040));
+        scheme.cursor = Some(rgb(0xFF_CC00));
+        scheme.bright_foreground = Some(rgb(0xFF_FFFF));
+        scheme.dim_foreground = Some(rgb(0x89_8989));
         let colors = Colors::from(&scheme);
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA04040)));
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xFFCC00)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xFFFFFF)));
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x898989)));
+        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA0_4040)));
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xFF_CC00)));
+        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xFF_FFFF)));
+        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x89_8989)));
         // Unrelated slots still derive.
-        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x34A551)));
+        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x34_A551)));
     }
 
     // --- byte-identity pins: the COSMIC pair's user-visible slots.
@@ -812,77 +821,77 @@ mod tests {
     #[test]
     fn cosmic_dark_normal_and_bright_slots_are_pinned() {
         let colors = cosmic_dark();
-        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B1B1B)));
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xF16161)));
-        assert_eq!(colors[NamedColor::Green], Some(rgb(0x7CB987)));
-        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0xDDC74C)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x6296BE)));
-        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0xBE6DEE)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x49BAC8)));
-        assert_eq!(colors[NamedColor::White], Some(rgb(0xBEBEBE)));
-        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x808080)));
-        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFF8985)));
-        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x97D5A0)));
-        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xFAE365)));
-        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x7DB1DA)));
-        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0xD68EFF)));
-        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x49BAC8)));
-        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xC4C4C4)));
+        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B_1B1B)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xF1_6161)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x7C_B987)));
+        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0xDD_C74C)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x62_96BE)));
+        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0xBE_6DEE)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x49_BAC8)));
+        assert_eq!(colors[NamedColor::White], Some(rgb(0xBE_BEBE)));
+        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x80_8080)));
+        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFF_8985)));
+        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x97_D5A0)));
+        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xFA_E365)));
+        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x7D_B1DA)));
+        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0xD6_8EFF)));
+        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x49_BAC8)));
+        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xC4_C4C4)));
     }
 
     #[test]
     fn cosmic_dark_dim_and_special_slots_are_pinned() {
         let colors = cosmic_dark();
-        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x000000)));
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA04040)));
-        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x5D7D62)));
-        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x9E914A)));
-        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x486073)));
-        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0x7F46A1)));
-        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x3F7F87)));
-        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0x898989)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xC4C4C4)));
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xC4C4C4)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xC4C4C4)));
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x898989)));
+        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x00_0000)));
+        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA0_4040)));
+        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x5D_7D62)));
+        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x9E_914A)));
+        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x48_6073)));
+        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0x7F_46A1)));
+        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x3F_7F87)));
+        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0x89_8989)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xC4_C4C4)));
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xC4_C4C4)));
+        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xC4_C4C4)));
+        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x89_8989)));
     }
 
     #[test]
     fn cosmic_light_normal_and_bright_slots_are_pinned() {
         let colors = cosmic_light();
-        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B1B1B)));
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xA24F50)));
-        assert_eq!(colors[NamedColor::Green], Some(rgb(0x437E4F)));
-        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0x7D6E1E)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x516D94)));
-        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0x9A30CA)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x227A85)));
-        assert_eq!(colors[NamedColor::White], Some(rgb(0xD7D7D7)));
-        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x000000)));
-        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0x890418)));
-        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x185529)));
-        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0x534800)));
-        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x2E496D)));
-        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0x6B0091)));
-        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x00525A)));
-        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xE8E8E8)));
+        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B_1B1B)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xA2_4F50)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x43_7E4F)));
+        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0x7D_6E1E)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x51_6D94)));
+        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0x9A_30CA)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x22_7A85)));
+        assert_eq!(colors[NamedColor::White], Some(rgb(0xD7_D7D7)));
+        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x00_0000)));
+        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0x89_0418)));
+        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x18_5529)));
+        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0x53_4800)));
+        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x2E_496D)));
+        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0x6B_0091)));
+        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x00_525A)));
+        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xE8_E8E8)));
     }
 
     #[test]
     fn cosmic_light_dim_and_special_slots_are_pinned() {
         let colors = cosmic_light();
-        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x262626)));
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xB25D5E)));
-        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x528D5E)));
-        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x8C7D30)));
-        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x5F7CA4)));
-        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0xAA43DB)));
-        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x358994)));
-        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0xC4C4C4)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x1B1B1B)));
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0x1B1B1B)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0x000000)));
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x262626)));
+        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x26_2626)));
+        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xB2_5D5E)));
+        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x52_8D5E)));
+        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x8C_7D30)));
+        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x5F_7CA4)));
+        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0xAA_43DB)));
+        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x35_8994)));
+        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0xC4_C4C4)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x1B_1B1B)));
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0x1B_1B1B)));
+        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0x00_0000)));
+        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x26_2626)));
     }
 
     #[test]
@@ -1009,80 +1018,80 @@ mod tests {
     #[test]
     fn dracula_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Dracula").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x282A36)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xF8F8F2)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0xBD93F9)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xF8_F8F2)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0xBD_93F9)));
     }
 
     #[test]
     fn solarized_dark_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Solarized Dark").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x002B36)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x839496)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x2AA198)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x00_2B36)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x83_9496)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x2A_A198)));
     }
 
     #[test]
     fn solarized_light_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Solarized Light").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFDF6E3)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x586E75)));
-        assert_eq!(colors[NamedColor::Green], Some(rgb(0x859900)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFD_F6E3)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x58_6E75)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x85_9900)));
     }
 
     #[test]
     fn gruvbox_dark_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Gruvbox Dark").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x282828)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xEBDBB2)));
-        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFB4934)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2828)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xEB_DBB2)));
+        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFB_4934)));
     }
 
     #[test]
     fn gruvbox_light_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Gruvbox Light").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFBF1C7)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x3C3836)));
-        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xB57614)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFB_F1C7)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x3C_3836)));
+        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xB5_7614)));
     }
 
     #[test]
     fn tokyo_night_storm_spot_checks_match_the_theme_toml() {
         let colors = by_name("Tokyo Night Storm").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x24283B)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xA9B1D6)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x7AA2F7)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x24_283B)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xA9_B1D6)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x7A_A2F7)));
     }
 
     #[test]
     fn tokyo_night_day_spot_checks_match_the_canonical_extra() {
         let colors = by_name("Tokyo Night Day").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0xE1E2E7)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x3760BF)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x007197)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xE1_E2E7)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x37_60BF)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x00_7197)));
     }
 
     #[test]
     fn nord_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Nord").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E3440)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xD8DEE9)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x88C0D0)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xD8_DEE9)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x88_C0D0)));
     }
 
     #[test]
     fn catppuccin_mocha_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Catppuccin Mocha").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0x1E1E2E)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xCDD6F4)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x89B4FA)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x1E_1E2E)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xCD_D6F4)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x89_B4FA)));
     }
 
     #[test]
     fn catppuccin_latte_spot_checks_match_the_alacritty_theme_toml() {
         let colors = by_name("Catppuccin Latte").expect("registry entry");
-        assert_eq!(colors[NamedColor::Background], Some(rgb(0xEFF1F5)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x4C4F69)));
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xD20F39)));
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xEF_F1F5)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x4C_4F69)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xD2_0F39)));
     }
 }
