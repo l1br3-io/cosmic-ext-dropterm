@@ -1168,8 +1168,8 @@ impl DropTerm {
         Task::none()
     }
 
-    /// The settings close-first rule's task: a toggle or show-intent
-    /// action arriving while the settings window is open — the
+    /// The settings close-first rule's task: a toggle or show action
+    /// arriving while the settings window is open — the
     /// terminal being hidden by construction then — closes the window
     /// first, because a re-shown terminal must never slide over it,
     /// and that window can never stack above the layer surface.
@@ -1615,58 +1615,54 @@ impl DropTerm {
     }
 }
 
-/// Whether a `ConfigChanged` may reshape a shown surface in place
-/// (geometry spec, G2 + G3; slide-animation spec, A3): pure so the
-/// guard is headless-testable (constructing `DropTerm` needs a live
-/// `Core`). The geometry must actually have changed; a drag armed
-/// mid-edit defers the reshape to the release settle (G3, so config
-/// reshapes and drag deltas never interleave `set_size` calls); a
-/// slide animating defers it to the next show — geometry stays frozen
-/// while animating, the module's boundary. The in-memory config still
-/// updates on every path (the caller does that first); only the live
-/// reshape is gated.
+/// Whether a `ConfigChanged` may reshape a shown surface in place:
+/// pure so the guard is headless-testable (constructing `DropTerm`
+/// needs a live `Core`). The geometry must actually have changed; a
+/// drag armed mid-edit defers the reshape to the release settle (so
+/// config reshapes and drag deltas never interleave `set_size`
+/// calls); a slide animating defers it to the next show — geometry
+/// stays frozen while animating. The in-memory config still updates
+/// on every path (the caller does that first); only the live reshape
+/// is gated.
 fn config_edit_reshapes(geometry_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
     geometry_changed && !drag_armed && !slide_animating
 }
 
-/// What a toggle-intent request must do with the surface
-/// (slide-animation spec, A5; settings-ui spec, U2): pure so the
-/// decision is headless-testable (constructing `DropTerm` needs a
-/// live `Core`). Every toggle caller funnels through here — the
+/// What a toggle-intent request must do with the surface: pure so
+/// the decision is headless-testable (constructing `DropTerm` needs
+/// a live `Core`). Every toggle caller goes through here — the
 /// toggle hotkey and D-Bus activation (`debounced_toggle`), plus
 /// `Ctrl+Shift+Q` and focus loss through `hide`'s `Hide` column —
 /// so the full state × intent matrix lives in one place and
-/// reversibility (criterion 6) is just another cell. Slide activity
-/// needs no separate input: it is implied by the state — an `Out`
-/// slide only exists while `Hiding`, an `In` slide only rides a
-/// `Shown` surface — and the executors read the live slide for
-/// offsets.
+/// reversibility is just another cell. Slide activity needs no
+/// separate input: it is implied by the state — an `Out` slide only
+/// exists while `Hiding`, an `In` slide only rides a `Shown`
+/// surface — and the executors read the live slide for offsets.
 ///
-/// `slide_animation_enabled` (settings-ui U2) gates transition
-/// *entry* only: it swaps the `Shown`-hide cell between sliding out
-/// and destroying now — the destroy *style*, never the direction.
-/// The helper takes no mid-flight input by construction, so a
-/// running slide is never aborted by its own toggle: the `Hiding`
-/// cells (destroy-on-completion, reversal) key on state alone and
-/// ignore the flag entirely.
+/// `slide_animation_enabled` gates transition *entry* only: it
+/// swaps the `Shown`-hide cell between sliding out and destroying
+/// now — the destroy *style*, never the direction. The helper takes
+/// no mid-flight input by construction, so a running slide is never
+/// aborted by its own toggle: the `Hiding` cells (destroy-on-
+/// completion, reversal) key on state alone and ignore the flag
+/// entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToggleStep {
     /// Run the measuring show pass (a hidden surface only): measure
-    /// → reshape → shown, then slide in (A3).
+    /// → reshape → shown, then slide in.
     Measure,
     /// Destroy immediately: a measuring surface has no reshaped
-    /// content to animate (criterion 8), so it keeps the immediate
-    /// destroy the app had before animated hides existed.
+    /// content to animate, so there is nothing to slide.
     DestroyNow(window::Id),
     /// Slide out from the current offset and destroy on the slide's
-    /// completion tick (criterion 2). Keyboard interactivity releases
-    /// at slide-out start (criterion 5).
+    /// completion tick. Keyboard interactivity releases at slide-out
+    /// start.
     SlideOut(window::Id),
-    /// Reverse a hiding slide back to shown on the same live surface
-    /// (criterion 6): no new measuring pass — `output_size` is
-    /// retained — the slide re-targets `In` from the current offset,
-    /// keyboard interactivity is re-grabbed per config, and
-    /// `surface_focused` resets pending the next `LayerFocused`.
+    /// Reverse a hiding slide back to shown on the same live surface:
+    /// no new measuring pass — `output_size` is retained — the slide
+    /// re-targets `In` from the current offset, keyboard
+    /// interactivity is re-grabbed per config, and `surface_focused`
+    /// resets pending the next `LayerFocused`.
     ReverseShow(window::Id),
     /// Nothing: the intent is already satisfied — a hide while
     /// hiding or hidden (no restart, no double destroy), a show
@@ -1677,10 +1673,10 @@ enum ToggleStep {
 fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool) -> ToggleStep {
     match (action, surface) {
         // Show intents: only a hidden surface starts the measuring
-        // pass; a hiding one reverses (criterion 6); a measuring or
-        // shown one is already on its way. None of these cells key on
-        // the slide toggle — a hiding surface always reverses on the
-        // live slide, whatever the flag says now (never aborted).
+        // pass; a hiding one reverses; a measuring or shown one is
+        // already on its way. None of these arms key on the slide
+        // toggle — a hiding surface always reverses on the live
+        // slide, whatever the flag says now (never aborted).
         (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hidden) => ToggleStep::Measure,
         (ToggleAction::Show | ToggleAction::Toggle, SurfaceState::Hiding(id)) => {
             ToggleStep::ReverseShow(*id)
@@ -1689,12 +1685,11 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
             ToggleStep::Leave
         }
         // Hide intents — and a toggle on any visible surface: a
-        // measuring surface dies now (criterion 8), a hiding or hidden
-        // one stays put (A4 idempotence — no restart, no double
-        // destroy). A shown one slides out (criterion 2; mid-slide-in
-        // the executor starts from the live eased offset) — or, with
-        // the slide toggle off (settings-ui U2), destroys now: instant
-        // hide, the pre-slide-animation behavior (spec criterion 7).
+        // measuring surface dies now, a hiding or hidden one stays
+        // put (idempotent — no restart, no double destroy). A shown
+        // one slides out (mid-slide-in the executor starts from the
+        // live eased offset) — or, with the slide toggle off,
+        // destroys now: instant hide.
         (ToggleAction::Hide | ToggleAction::Toggle, SurfaceState::Measuring(id)) => {
             ToggleStep::DestroyNow(*id)
         }
@@ -1708,9 +1703,9 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
         // Structurally unreachable: `debounced_toggle` applies the
         // remote verbs — opening a new-tab, closing a close-tab,
-        // selecting a select-tab, renaming a rename-tab, duplicating a
-        // duplicate-tab — outside the toggle funnel, so none ever gets
-        // here. Loud rather than silently wrong.
+        // selecting a select-tab, renaming a rename-tab, duplicating
+        // a duplicate-tab — outside the toggle step, so none ever
+        // gets here. Loud rather than silently wrong.
         (
             ToggleAction::NewTab { .. }
             | ToggleAction::CloseTab { .. }
@@ -1725,59 +1720,55 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
 }
 
 /// Whether a `LayerUnfocused` event for `id` should reach
-/// [`DropTerm::focus_lost`] (slide-animation spec, A5 guards audit):
-/// only a shown surface reacts to losing keyboard focus — one
-/// arriving while `Hiding` (the synthesized unfocus of the hide's
-/// own keyboard release, or a racing focus loss) is a no-op, so it
-/// can never restart or double-drive the out-slide.
+/// [`DropTerm::focus_lost`]: only a shown surface reacts to losing
+/// keyboard focus — one arriving while `Hiding` (the synthesized
+/// unfocus of the hide's own keyboard release, or a racing focus
+/// loss) is a no-op, so it can never restart or double-drive the
+/// out-slide.
 fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(surface, SurfaceState::Shown(shown) if *shown == id)
 }
 
-/// Whether losing keyboard focus should hide the surface: plain
-/// `hide_on_focus_loss`, the pre-U5 shape restored by the U5b
-/// reversal. No settings-window input is needed: while that window
-/// is open no shown surface exists by construction — opening it
-/// hides the terminal (`DropTerm::open_settings`), and a toggle
-/// arriving while it is open closes it first
-/// (`DropTerm::debounced_toggle`) — so the gate never runs in the
-/// settings-open state. Only the automatic focus-loss path consults
-/// it: explicit hides (the toggle keybind, `Action::Hide`) call
-/// `hide()` directly and ignore the gate entirely. Both unfocused
-/// routes — the layer surface's `LayerUnfocused` and the
-/// `WindowUnfocused` callback — funnel into
+/// Whether losing keyboard focus should hide the surface: exactly
+/// the `hide_on_focus_loss` config flag. No settings-window input
+/// is needed: while that window is open no shown surface exists by
+/// construction — opening it hides the terminal
+/// (`DropTerm::open_settings`), and a toggle arriving while it is
+/// open closes it first (`DropTerm::debounced_toggle`) — so the
+/// gate never runs in the settings-open state. Only the automatic
+/// focus-loss path consults it: explicit hides (the toggle keybind,
+/// `Action::Hide`) call `hide()` directly and ignore the gate
+/// entirely. Both unfocused routes — the layer surface's
+/// `LayerUnfocused` and the `WindowUnfocused` callback — route into
 /// [`DropTerm::focus_lost`], so one gate covers both.
 fn focus_loss_hides(hide_on_focus_loss: bool) -> bool {
     hide_on_focus_loss
 }
 
-/// Whether the grab-bar drag handlers may act (slide-animation spec,
-/// A6 frozen-geometry audit): pure so the guard is headless-testable,
-/// the [`config_edit_reshapes`]/[`layer_unfocused_acts_on`] seam
-/// style. A drag must only ever run on a shown surface at rest: the
-/// `Hiding` arm excludes out-slides and their reversals by state, and
-/// the slide arm excludes slide-ins — which ride a `Shown` surface,
-/// so the surface state alone cannot gate them (the audit's catch:
-/// a press inside the 130 ms window must not arm a drag, or the
-/// first cadence-eligible move would fire `set_size` on the
-/// animating surface). Gating the *arming* here covers the trailing
-/// `DragApplyDue` and the `GrabBarReleased` settle by construction:
-/// both only act on an armed drag, no drag can arm while a slide
-/// animates, and `hide()` clears any live drag before any slide can
-/// start. A throttled press is simply inert — the surface rests in
-/// at most 130 ms and the next press drags normally.
+/// Whether the grab-bar drag handlers may act: pure so the guard is
+/// headless-testable, in the same style as
+/// [`config_edit_reshapes`] and [`layer_unfocused_acts_on`]. A drag
+/// must only ever run on a shown surface at rest: the `Hiding` arm
+/// excludes out-slides and their reversals by state, and the slide
+/// arm excludes slide-ins — which ride a `Shown` surface, so the
+/// surface state alone cannot gate them (a press inside the 130 ms
+/// window must not arm a drag, or the first cadence-eligible move
+/// would fire `set_size` on the animating surface). Gating the
+/// *arming* here covers the trailing `DragApplyDue` and the
+/// `GrabBarReleased` settle by construction: both only act on an
+/// armed drag, no drag can arm while a slide animates, and `hide()`
+/// clears any live drag before any slide can start. A throttled
+/// press is simply inert — the surface rests in at most 130 ms and
+/// the next press drags normally.
 fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
     matches!(surface, SurfaceState::Shown(_)) && !slide_animating
 }
 
 /// Whether a `WindowResized` event for `id` may feed the
-/// terminal-height pin (settings-ui spec, U1): only the tracked layer
-/// surface's granted sizes count — the settings window is resizable
-/// too, and its heights must never pin the terminal's. For
-/// layer-surface events this is byte-identical with the single-window
-/// behavior (every state that tracks the surface accepted them; the
-/// settings window is the only new source), the
-/// [`layer_unfocused_acts_on`] seam style.
+/// terminal-height pin: only the tracked layer surface's granted
+/// sizes count — the settings window is resizable too, and its
+/// heights must never pin the terminal's. Pure, in the same style
+/// as [`layer_unfocused_acts_on`].
 fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(
         surface,
@@ -1786,14 +1777,13 @@ fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     )
 }
 
-/// The window-background source decision (color-schemes spec,
-/// criterion 3): a scheme that resolves a background owns the window
-/// background — the tab-bar/grab-bar chrome and the unset-bg cell
-/// fallback all read `WINDOW_BG_COLOR`, so they follow by
-/// construction. A scheme without one (the COSMIC pair, and any
-/// unknown name that fell back to it) defers to the system-theme
-/// derivation, passed in already packed so this stays a pure,
-/// headless-testable decision in the [`grab_bar_acts_on`] seam style.
+/// The window-background source decision: a scheme that resolves a
+/// background owns the window background — the tab-bar/grab-bar
+/// chrome and the unset-bg cell fallback all read `WINDOW_BG_COLOR`,
+/// so they follow by construction. A scheme without one (the COSMIC
+/// pair, and any unknown name that fell back to it) defers to the
+/// system-theme derivation, passed in already packed so this stays a
+/// pure, headless-testable decision.
 fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     match colors[NamedColor::Background] {
         Some(rgb) => {
@@ -1803,12 +1793,12 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
-/// Whether the app resolves colors for dark mode right now
-/// (theme-preference spec, criterion 5). The config preference is the
-/// source of truth; the global theme (what widgets read) follows via
-/// the `set_theme` task, so the seams must not wait for it. Call
-/// sites inject the current system value — the [`window_bg_color`]
-/// shape — keeping the decision pure and headless-testable.
+/// Whether the app resolves colors for dark mode right now. The
+/// config preference is the source of truth; the global theme (what
+/// widgets read) follows via the `set_theme` task, so color
+/// decisions must not wait for it. Call sites inject the current
+/// system value — the [`window_bg_color`] pattern — keeping the
+/// decision pure and headless-testable.
 fn effective_is_dark(preference: ThemePreference, system_is_dark: bool) -> bool {
     match preference {
         ThemePreference::System => system_is_dark,
@@ -1817,8 +1807,7 @@ fn effective_is_dark(preference: ThemePreference, system_is_dark: bool) -> bool 
     }
 }
 
-/// What a theme-preference transition asks the runtime to do
-/// (theme-preference spec, criterion 6).
+/// What a theme-preference transition asks the runtime to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThemeOverrideKind {
     /// Pin the app to the user's dark system palette.
@@ -1832,8 +1821,7 @@ enum ThemeOverrideKind {
 /// The one pure transition matrix shared by `init` and
 /// `ConfigChanged`: `None` when the preference did not change —
 /// steady state issues no task, so a default `System` config never
-/// calls `set_theme` (criterion 2) and unrelated config echoes never
-/// storm one.
+/// calls `set_theme` and unrelated config echoes never storm one.
 fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOverrideKind> {
     match (old, new) {
         (ThemePreference::System, ThemePreference::System)
@@ -1851,12 +1839,11 @@ fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOve
 /// theme from the user's own system palettes — never libcosmic's
 /// built-in constants — marks it through `ThemeType::prefer_dark`
 /// (which only writes through on `System`, the only theme type these
-/// constructors produce), and hands it to the runtime's global (the
-/// cosmic-edit pattern). Everything decidable is decided in the pure
-/// fns above; the chained [`Message::ReapplyColors`] re-runs the
-/// color apply once the global has landed, so the window-background
-/// derivation — the one consumer that must read the global — sees
-/// the new mode.
+/// constructors produce), and hands it to the runtime's global.
+/// Everything decidable is decided in the pure fns above; the
+/// chained [`Message::ReapplyColors`] re-runs the color apply once
+/// the global has landed, so the window-background derivation — the
+/// one consumer that must read the global — sees the new mode.
 ///
 /// The follow-up rides [`Task::chain`], never [`Task::then`]: `then`
 /// CONSUMES the first task's output and replaces it with the
@@ -1873,7 +1860,7 @@ fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
         ThemeOverrideKind::PinLight => (cosmic::theme::system_light(), Some(false)),
         // Restore: re-read the system mode from cosmic-config fresh
         // and clear the marker, so system flips resume driving the
-        // app (criterion 7).
+        // app.
         ThemeOverrideKind::FollowSystem => (cosmic::theme::system_preference(), None),
     };
     theme.theme_type.prefer_dark(prefer_dark);
@@ -1881,9 +1868,9 @@ fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
 }
 
 /// Whether the tab strip sits at the surface's bottom in this
-/// config. `Auto` keeps the pre-key behavior — the strip at the
-/// leading edge beside the grab bar, i.e. opposite the screen edge —
-/// while `Top`/`Bottom` pin it regardless of anchor.
+/// config. `Auto` places it at the leading edge beside the grab
+/// bar, i.e. opposite the screen edge; `Top`/`Bottom` pin it
+/// regardless of anchor.
 fn effective_bar_at_bottom(edge: Edge, tab_position: TabPosition) -> bool {
     match tab_position {
         TabPosition::Auto => matches!(edge, Edge::Top),
@@ -1903,7 +1890,7 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
     }
 }
 
-/// Settings for the clipboard-anchor window (the copy-out fix).
+/// Settings for the clipboard-anchor window.
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
 /// window created, and when that surface is destroyed the binding is
@@ -1933,7 +1920,7 @@ mod tests {
 
     #[test]
     fn geometry_edit_mid_slide_skips_the_in_place_reshape() {
-        // A3's frozen-geometry boundary: an edit arriving while the
+        // Frozen-geometry boundary: an edit arriving while the
         // content slides must not fire `set_size` on the animating
         // surface — the edit lands on the next show instead.
         assert!(!config_edit_reshapes(true, false, true));
@@ -1959,10 +1946,10 @@ mod tests {
         assert!(!config_edit_reshapes(true, true, true));
     }
 
-    // --- A6: the grab-bar guard (slide-animation spec, criterion 4) ---
+    // --- the grab-bar guard ---
     //
-    // `GrabBarDragged` was the one geometry-call site reachable while
-    // a slide animates: a slide-in rides a `Shown` surface, so
+    // `GrabBarDragged` is the one geometry-call site that could run
+    // while a slide animates: a slide-in rides a `Shown` surface, so
     // matching `Shown` alone does not exclude it — a press inside the
     // 130 ms window must neither arm a drag nor send `set_size` on
     // the animating surface. With arming gated, `DragApplyDue` and
@@ -1978,32 +1965,32 @@ mod tests {
 
     #[test]
     fn grab_bar_drag_mid_slide_in_does_not_act() {
-        // The frozen-geometry audit's catch: a slide-in runs in
-        // `Shown`, so the surface state alone cannot gate the drag —
-        // the guard needs the slide's existence too.
+        // A slide-in runs in `Shown`, so the surface state alone
+        // cannot gate the drag — the guard needs the slide's
+        // existence too.
         let id = window::Id::unique();
         assert!(!grab_bar_acts_on(&SurfaceState::Shown(id), true));
     }
 
     #[test]
     fn grab_bar_drag_ignores_every_non_shown_state() {
-        // A5's by-construction exclusion, now pinned: a `Hiding`
-        // surface rejects drag messages (no interleave with an
-        // out-slide or its reversal); Measuring/Hidden never arm one.
+        // Pinned: a `Hiding` surface rejects drag messages (no
+        // interleave with an out-slide or its reversal);
+        // Measuring/Hidden never arm one.
         let id = window::Id::unique();
         assert!(!grab_bar_acts_on(&SurfaceState::Hiding(id), false));
         assert!(!grab_bar_acts_on(&SurfaceState::Measuring(id), false));
         assert!(!grab_bar_acts_on(&SurfaceState::Hidden, false));
     }
 
-    // --- A5: the toggle decision matrix (slide-animation spec) ---
+    // --- the toggle decision matrix ---
     //
     // `toggle_step` decides over intent × surface state; slide
     // activity needs no separate input because it is implied by the
     // state — an `Out` slide only exists while `Hiding`, an `In`
     // slide only rides a `Shown` surface — and the executors read
-    // the live slide for their offsets (A4's `hide`, A5's
-    // `reverse_show` via `slide::reverse`).
+    // the live slide for their offsets (`hide`, `reverse_show` via
+    // `slide::reverse`).
 
     #[test]
     fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
@@ -2019,9 +2006,8 @@ mod tests {
 
     #[test]
     fn toggle_or_hide_from_measuring_destroys_immediately() {
-        // Criterion 8: a measuring surface has no reshaped content
-        // to animate — the surface dies now, not in 130 ms, exactly
-        // as before animated hides existed.
+        // A measuring surface has no reshaped content to animate —
+        // the surface dies now, not in 130 ms.
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(id), true),
@@ -2035,10 +2021,9 @@ mod tests {
 
     #[test]
     fn toggle_or_hide_from_shown_slides_out() {
-        // Criterion 2: slide out, destroy on completion. Mid-slide-in
-        // the same cell applies — the executor starts the out-slide
-        // from the live eased offset (A4's `hide`), so nothing
-        // teleports.
+        // Slide out, destroy on completion. Mid-slide-in the same
+        // decision applies — the executor starts the out-slide from
+        // the live eased offset, so nothing teleports.
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(id), true),
@@ -2052,10 +2037,10 @@ mod tests {
 
     #[test]
     fn toggle_or_show_mid_hiding_reverses_on_the_same_surface() {
-        // Criterion 6: a mid-hide toggle reverses instead of being
-        // dropped — and on the SAME window::Id: the live surface is
-        // reused (no new measuring pass) and `reverse_show` re-grabs
-        // keyboard interactivity on it per config.
+        // A mid-hide toggle reverses instead of being dropped — and
+        // on the SAME window::Id: the live surface is reused (no new
+        // measuring pass) and `reverse_show` re-grabs keyboard
+        // interactivity on it per config.
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(id), true),
@@ -2082,7 +2067,7 @@ mod tests {
 
     #[test]
     fn hide_while_hiding_neither_restarts_nor_double_destroys() {
-        // A4 idempotence carried into the matrix: `WindowUnfocused`
+        // Idempotence carried into the matrix: `WindowUnfocused`
         // reaches `focus_lost` unguarded, and the keyboard release
         // synthesizes its own `Unfocused` — a second hide request
         // must neither restart the out-slide nor queue a second
@@ -2106,9 +2091,8 @@ mod tests {
     fn a_hide_intent_never_decides_to_show() {
         // Pins `hide()`'s unreachable arms as intended behavior: the
         // hide column of the matrix only ever destroys, slides out,
-        // or leaves — under either slide-toggle value (settings-ui
-        // U2: the flag swaps the destroy *style*, never the
-        // direction).
+        // or leaves — under either slide-toggle value (the flag
+        // swaps the destroy *style*, never the direction).
         let id = window::Id::unique();
         for slide_enabled in [true, false] {
             for surface in [
@@ -2125,14 +2109,13 @@ mod tests {
         }
     }
 
-    // --- settings-ui U2: the slide toggle in the toggle matrix ---
+    // --- the slide toggle in the toggle matrix ---
 
     #[test]
     fn shown_hide_with_slides_disabled_destroys_immediately() {
-        // The one cell the slide toggle owns: a hide from `Shown`
-        // with the key off destroys now — instant hide with
-        // immediate destroy, the pre-slide-animation behavior (spec
-        // criterion 7). Applies to a plain hide and a toggle alike.
+        // The one decision the slide toggle owns: a hide from
+        // `Shown` with the key off destroys now — instant hide.
+        // Applies to a plain hide and a toggle alike.
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Hide, &SurfaceState::Shown(id), false),
@@ -2146,9 +2129,8 @@ mod tests {
 
     #[test]
     fn hiding_reversal_ignores_the_slide_toggle() {
-        // The never-aborted reading (spec criterion 4): a running
-        // out-slide belongs to the enabled machine that started it —
-        // a show intent mid-hide still reverses on the live surface
+        // A running out-slide is never aborted by its own toggle: a
+        // show intent mid-hide still reverses on the live surface
         // with the key off. The toggle gates transition ENTRY only;
         // `toggle_step` takes no mid-flight input by construction.
         let id = window::Id::unique();
@@ -2164,10 +2146,10 @@ mod tests {
 
     #[test]
     fn measuring_and_hidden_cells_ignore_the_slide_toggle() {
-        // Only the Shown-hide cell keys on the flag: a measuring
-        // surface always died immediately (criterion 8, no content
-        // to animate), hidden always measures, and a disabled hide
-        // while hidden still leaves.
+        // Only the Shown-hide decision keys on the flag: a measuring
+        // surface always dies immediately (no content to animate),
+        // hidden always measures, and a disabled hide while hidden
+        // still leaves.
         let id = window::Id::unique();
         assert_eq!(
             toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(id), false),
@@ -2185,10 +2167,9 @@ mod tests {
 
     #[test]
     fn layer_unfocused_while_hiding_is_rejected_by_the_shown_guard() {
-        // The A5 guards audit: only a shown surface reacts to losing
-        // keyboard focus — during `Hiding` (the synthesized unfocus
-        // of the hide's own keyboard release) the event must be a
-        // no-op.
+        // Only a shown surface reacts to losing keyboard focus —
+        // during `Hiding` (the synthesized unfocus of the hide's own
+        // keyboard release) the event must be a no-op.
         let id = window::Id::unique();
         assert!(layer_unfocused_acts_on(&SurfaceState::Shown(id), id));
         assert!(!layer_unfocused_acts_on(&SurfaceState::Hiding(id), id));
@@ -2200,9 +2181,8 @@ mod tests {
 
     #[test]
     fn focus_loss_hides_when_configured() {
-        // The ordinary path (settings-ui spec, U5b): with
-        // `hide_on_focus_loss` on, losing keyboard focus hides —
-        // unchanged behavior. No settings-window input is needed:
+        // The ordinary path: with `hide_on_focus_loss` on, losing
+        // keyboard focus hides. No settings-window input is needed:
         // while that window is open no shown surface exists (opening
         // it hides the terminal; a toggle while it is open closes it
         // first), so the gate never runs in the settings-open state.
@@ -2221,7 +2201,7 @@ mod tests {
         // The gate covers the automatic focus-loss path only:
         // explicit hide intents (the toggle keybind's `toggle_step`,
         // `Action::Hide`) take no gate input and never pass through
-        // `focus_loss_hides`. Asserted at the seams: the gate's most
+        // `focus_loss_hides`. Asserted side by side: the gate's most
         // restrictive input yields no hide, yet the explicit hide
         // step still steps its hide.
         assert!(!focus_loss_hides(false));
@@ -2235,10 +2215,8 @@ mod tests {
     #[test]
     fn resize_from_the_tracked_surface_feeds_the_pin() {
         // The granted-size stream that pins the terminal height
-        // belongs to the layer surface alone (settings-ui spec, U1):
-        // every state tracking that surface accepts its resizes,
-        // matching the pre-settings-window behavior for the only
-        // window that existed then.
+        // belongs to the layer surface alone: every state tracking
+        // that surface accepts its resizes.
         let id = window::Id::unique();
         assert!(resize_acts_on(&SurfaceState::Measuring(id), id));
         assert!(resize_acts_on(&SurfaceState::Shown(id), id));
@@ -2260,16 +2238,15 @@ mod tests {
         assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
     }
 
-    // --- color-schemes C3: the window-background source decision
-    // (spec criterion 3) ---
+    // --- the window-background source decision ---
 
     #[test]
     fn scheme_background_wins_over_the_system_derivation() {
         // Dracula owns its background (#282a36, alacritty-theme
         // Dracula.toml): the resolved slot must land in
         // WINDOW_BG_COLOR's packed layout (0xAARRGGBB, opaque), not
-        // the system theme's — chrome and the unset-bg cell fallback
-        // then follow by construction.
+        // the system theme's — chrome and the unset-bg fallback then
+        // follow by construction.
         let dracula = theme_source::by_name("Dracula").unwrap();
         assert_eq!(window_bg_color(&dracula, 0xFF1E_1E2E), 0xFF28_2A36);
     }
@@ -2277,15 +2254,15 @@ mod tests {
     #[test]
     fn unset_background_passes_the_system_derivation_through() {
         // The COSMIC pair owns no background (the system theme
-        // supplies it), so the decision is a byte-identical
-        // passthrough — the default-config chrome behavior is
-        // unchanged, and a bogus scheme name keeps it too (the
-        // `active_colors` fallback resolves to this same pair).
+        // supplies it), so the decision is a plain passthrough —
+        // default-config chrome follows the system theme, and a
+        // bogus scheme name keeps that too (the `active_colors`
+        // fallback resolves to this same pair).
         let cosmic_dark = theme_source::by_name("COSMIC Dark").unwrap();
         assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
     }
 
-    // --- the clipboard anchor (copy-out fix) ---
+    // --- the clipboard anchor ---
     //
     // libcosmic binds its single runtime Clipboard to the first
     // window created and drops that binding — and with it the
@@ -2312,7 +2289,7 @@ mod tests {
         assert!(!clipboard_anchor_settings().exit_on_close_request);
     }
 
-    // --- theme-preference P1: the pure decision seams ---
+    // --- the pure theme-preference decisions ---
 
     #[test]
     fn effective_is_dark_pins_dark_and_light() {
@@ -2327,18 +2304,18 @@ mod tests {
     #[test]
     fn effective_is_dark_system_follows_the_injected_mode() {
         // The system value is a parameter, not a global read (the
-        // `window_bg_color` shape): the seam stays pure, and tests
-        // never depend on the process-wide THEME state.
+        // same pattern as `window_bg_color`): the decision stays
+        // pure, and tests never depend on the process-wide THEME
+        // state.
         assert!(effective_is_dark(ThemePreference::System, true));
         assert!(!effective_is_dark(ThemePreference::System, false));
     }
 
     #[test]
     fn theme_override_is_none_when_preference_is_unchanged() {
-        // Steady state issues nothing (criterion 2): a default
-        // `System` config never calls `set_theme`, and unrelated
-        // config echoes — including our own theme echo — never storm
-        // the task.
+        // Steady state issues nothing: a default `System` config
+        // never calls `set_theme`, and unrelated config echoes —
+        // including our own theme echo — never storm the task.
         assert_eq!(
             theme_override(ThemePreference::System, ThemePreference::System),
             None
@@ -2410,12 +2387,12 @@ mod tests {
 
     #[test]
     fn theme_override_task_delivers_set_theme_then_reapply() {
-        // The bug (2026-10-03): the follow-up rode `Task::then`, which
-        // CONSUMES the `set_theme` output — the pin message never
-        // reached the runtime, the process theme never flipped, and
-        // pinning Dark left a light, frosted terminal. The task must
-        // deliver BOTH messages: the theme override first, the
-        // `ReapplyColors` echo second — `Task::chain`'s contract.
+        // `Task::then` would CONSUME the `set_theme` output — the
+        // pin message would never reach the runtime, the process
+        // theme would never flip, and pinning Dark would leave a
+        // light, frosted terminal. The task must deliver BOTH
+        // messages: the theme override first, the `ReapplyColors`
+        // echo second — `Task::chain`'s contract.
         for (kind, expected_prefer) in [
             (ThemeOverrideKind::PinDark, Some(true)),
             (ThemeOverrideKind::PinLight, Some(false)),
@@ -2444,20 +2421,20 @@ mod tests {
         }
     }
 
-    // --- tab-bar-position T1: the placement seam + tooltip side ---
+    // --- bar placement + tooltip side ---
 
     #[test]
     fn effective_bar_at_bottom_auto_keeps_the_strip_at_the_leading_edge() {
-        // Regression pin on the pre-key layout (criterion 2): the
-        // strip stacks opposite the screen edge — surface bottom
-        // under a Top anchor, surface top under a Bottom anchor.
+        // Auto placement: the strip stacks opposite the screen edge
+        // — surface bottom under a Top anchor, surface top under a
+        // Bottom anchor.
         assert!(effective_bar_at_bottom(Edge::Top, TabPosition::Auto));
         assert!(!effective_bar_at_bottom(Edge::Bottom, TabPosition::Auto));
     }
 
     #[test]
     fn effective_bar_at_bottom_top_pin_places_the_bar_at_the_top() {
-        // A pin wins regardless of anchor (criterion 3).
+        // A pin wins regardless of anchor.
         assert!(!effective_bar_at_bottom(Edge::Top, TabPosition::Top));
         assert!(!effective_bar_at_bottom(Edge::Bottom, TabPosition::Top));
     }
@@ -2470,17 +2447,17 @@ mod tests {
 
     #[test]
     fn tooltip_side_pops_terminal_ward_wherever_the_bar_sits() {
-        // The tip pops to the terminal's side of the strip (criterion
-        // 5): below a top bar, above a bottom bar — the anchor edge is
-        // not an input.
+        // The tip pops to the terminal's side of the strip: below a
+        // top bar, above a bottom bar — the anchor edge is not an
+        // input.
         assert_eq!(bar_tooltip_side(false), TooltipSide::Below);
         assert_eq!(bar_tooltip_side(true), TooltipSide::Above);
     }
 
     #[test]
     fn tooltip_side_auto_layouts_match_today_on_both_edges() {
-        // Regression pins: the derived side must reproduce today's
-        // hard-coded values on both `Auto` layouts.
+        // Regression pins: the derived side must match the fixed
+        // `Auto`-layout values on both edges.
         assert_eq!(
             bar_tooltip_side(effective_bar_at_bottom(Edge::Top, TabPosition::Auto)),
             TooltipSide::Above
@@ -2513,21 +2490,23 @@ pub struct Flags {
     /// `&str`s borrowed from `self`, which cannot hand out a formatted
     /// `--tab-index 3` — so the encoding runs once per launch instead
     /// of leaking per call, with [`forward_words`] as the single
-    /// encoder the D-Bus seam and the round-trip test both ride.
+    /// encoder the D-Bus forward path and the round-trip test both
+    /// ride.
     forwarded: Vec<String>,
 }
 
 /// Encodes the arguments a second launch forwards alongside the action's
-/// Display name (remote-newtab / remote-tab-actions specs): everything
-/// the receiving instance needs to reconstruct the exact action through
-/// `parse_forwarded_action`. Actions without payloads forward nothing.
+/// Display name: everything the receiving instance needs to
+/// reconstruct the exact action through `parse_forwarded_action`.
+/// Actions without payloads forward nothing.
 fn forward_words(action: &ToggleAction) -> Vec<String> {
     let mut forwarded = Vec::new();
     match action {
         ToggleAction::NewTab { cwd, cmd } => {
-            // A non-UTF-8 path cannot cross this borrowed-str seam: the
-            // forwarded action then simply carries no --cwd, and the
-            // receiving instance opens the tab in the inherited directory.
+            // A non-UTF-8 path cannot cross this borrowed-str
+            // boundary: the forwarded action then simply carries no
+            // --cwd, and the receiving instance opens the tab in the
+            // inherited directory.
             if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
                 forwarded.push("--cwd".to_string());
                 forwarded.push(dir.to_string());
@@ -2566,7 +2545,7 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
 
 impl Flags {
     /// Wraps `action` for launch, pre-encoding the words it forwards
-    /// over the single-instance seam (see [`Flags::forwarded`]).
+    /// to the running instance (see [`Flags::forwarded`]).
     pub(crate) fn new(action: ToggleAction) -> Self {
         let forwarded = forward_words(&action);
         Self { action, forwarded }
@@ -2581,11 +2560,11 @@ impl cosmic::app::CosmicFlags for Flags {
         Some(&self.action)
     }
 
-    /// The arguments forwarded alongside the action name (remote-newtab
-    /// spec): a `new-tab` request carries its `--cwd`/`--cmd`, a
-    /// `close-tab` or `rename-tab` its 1-based `--tab-index`, a
-    /// `select-tab` its 1-based index, a `rename-tab` its TITLE word —
-    /// everything else forwards no args.
+    /// The arguments forwarded alongside the action name: a
+    /// `new-tab` request carries its `--cwd`/`--cmd`, a `close-tab`
+    /// or `rename-tab` its 1-based `--tab-index`, a `select-tab` its
+    /// 1-based index, a `rename-tab` its TITLE word — everything else
+    /// forwards no args.
     fn args(&self) -> Vec<&str> {
         self.forwarded.iter().map(String::as_str).collect()
     }
@@ -2626,14 +2605,13 @@ impl Application for DropTerm {
                 }
             };
 
-        // The session file is one small synchronous read
-        // (session-persistence spec, S2): stashed here — before any
-        // message can spawn a tab — so restore structurally precedes
-        // the first `ensure_tabs`, whichever startup message reaches
-        // the funnel first. A missing or invalid file stashes
-        // nothing (and was already quarantined with a warning inside
-        // `load`), keeping first-run startup silent. The session
-        // toggle gates the whole entry (settings-ui U2): disabled, the
+        // The session file is one small synchronous read: stashed
+        // here — before any message can spawn a tab — so restore
+        // structurally precedes the first `ensure_tabs`, whichever
+        // startup message reaches it first. A missing or invalid
+        // file stashes nothing (and was already quarantined with a
+        // warning inside `load`), keeping first-run startup silent.
+        // The session toggle gates the whole entry: disabled, the
         // file is not even read — nothing restores, and the file on
         // disk waits untouched for a future launch with the key on.
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -2643,7 +2621,7 @@ impl Application for DropTerm {
             config.session_persistence_enabled,
         );
 
-        // The clipboard anchor (the copy-out fix) opens here, before
+        // The clipboard anchor opens here, before
         // `debounced_toggle` can request the first layer surface: the
         // runtime binds its clipboard to the first window created, so
         // the anchor — not the terminal's layer surface — must win
@@ -2704,25 +2682,24 @@ impl Application for DropTerm {
         // in the batch: the runtime binds its clipboard to the first window
         // created, and the anchor must win that race before any layer
         // surface exists — afterwards the binding never moves again.
-        // A preference pinned on disk applies at startup
-        // (theme-preference P1): the runtime's pre-init state is
-        // "following the system", so the transition input is
-        // `(System, loaded)` — one matrix serves startup and
-        // `ConfigChanged`. `System → System` is `None`, so default
-        // configs never call `set_theme` (criterion 2). This is a
+        // A preference pinned on disk applies at startup: the
+        // runtime's pre-init state is "following the system", so the
+        // transition input is `(System, loaded)` — one matrix serves
+        // startup and `ConfigChanged`. `System → System` is `None`,
+        // so default configs never call `set_theme`. This is a
         // `no_main_window` app: nothing is visible to flash — the
         // surface opens only on the first toggle, after the task
-        // lands. Startup colors above already resolved through the
-        // config-driven seam, so they are correct even before it
+        // lands. Startup colors above already resolved through
+        // `effective_is_dark`, so they are correct even before it
         // does.
         let theme_task = theme_override(ThemePreference::System, app.config.theme_preference)
             .map(theme_override_task)
             .unwrap_or_else(Task::none);
         // First launch has no running state to act on remotely: the
         // tab verbs degrade to a plain start — the default `Toggle` —
-        // with an info log, never a fabricated close or selection on a
-        // restored-or-fresh session (remote-tab-actions spec); only
-        // new-tab keeps startup application (remote-newtab spec).
+        // with an info log, never a fabricated close or selection on
+        // a restored-or-fresh session; only new-tab keeps startup
+        // application.
         let startup_action = match flags.action {
             action @ (ToggleAction::CloseTab { .. }
             | ToggleAction::SelectTab { .. }
@@ -2763,12 +2740,11 @@ impl Application for DropTerm {
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
             }
-            // The settings window's ✕ (settings-ui spec, U1): it never
-            // closes itself (`exit_on_close_request: false`), so the
-            // request lands here for the app to act on — the same
-            // listen seam the multi-window example uses. A foreign id
-            // (the layer surface never requests a close) matches
-            // nothing in the handler and is inert.
+            // The settings window's ✕: it never closes itself
+            // (`exit_on_close_request: false`), so the request lands
+            // here for the app to act on. A foreign id (the layer
+            // surface never requests a close) matches nothing in the
+            // handler and is inert.
             Event::Window(cosmic::iced::window::Event::CloseRequested) => {
                 Some(Message::SettingsCloseRequested(id))
             }
@@ -2830,11 +2806,11 @@ impl Application for DropTerm {
             }),
         );
 
-        // Slide clock (slide-animation spec, A3): redraw-only ticks
-        // while a slide is live — 1 ms saturation so every compositor
-        // frame window contains a pending redraw request (see
-        // `SLIDE_TICK`). The stream is dropped the moment the slide
-        // parks — idle time costs no ticks.
+        // Slide clock: redraw-only ticks while a slide is live —
+        // 1 ms saturation so every compositor frame window contains
+        // a pending redraw request (see `SLIDE_TICK`). The stream is
+        // dropped the moment the slide parks — idle time costs no
+        // ticks.
         if self.slide.is_some() {
             subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SlideTick));
         }
@@ -2864,9 +2840,8 @@ impl Application for DropTerm {
         let task = self.update_inner(message);
         // Every surface and tab transition flows through this wrapper,
         // so one sync after the arm — not per-arm calls — keeps the
-        // served V1 properties current (dbus-state spec); an arm's
-        // early returns are irrelevant to it. A no-op message dedupes
-        // to no emission.
+        // served V1 properties current; an arm's early returns are
+        // irrelevant to it. A no-op message dedupes to no emission.
         self.sync_dbus_state();
         task
     }
@@ -2876,10 +2851,10 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
-        // The settings window (settings-ui spec, U4): the sectioned
-        // instant-apply view — rendered from config with buffered
-        // drafts winning while they exist, events mapped into the
-        // app's `Message::Settings` funnel.
+        // The settings window: the sectioned instant-apply view —
+        // rendered from config with buffered drafts winning while
+        // they exist, events mapped into the app's
+        // `Message::Settings` handler.
         if self.settings_window == Some(id) {
             return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
         }
@@ -2917,17 +2892,16 @@ impl Application for DropTerm {
             .on_context_menu(Message::ContextMenu)
             .into();
 
-        // The context menu (context-menu module): wraps ONLY the
-        // terminal element — the wrapper triggers anywhere over its
-        // bounds, so the tab bar and grab bar must stay outside it
-        // (spec criterion 7). Trees are supplied only while open
-        // (`context_menu::open_trees`): closed, the wrapper is a
-        // plain pass-through — the pixel-identical view (criterion
-        // 6). The popup plumbing is the cosmic-term pattern
-        // (`main.rs:3444-3452`): `on_surface_action` is mandatory —
-        // `create_popup` is a no-op without it — and `window_id` must
-        // be this layer surface's id (the `view_window` parameter),
-        // never the main window's.
+        // The context menu wraps ONLY the terminal element — the
+        // wrapper triggers anywhere over its bounds, so the tab bar
+        // and grab bar must stay outside it. Trees are supplied only
+        // while open (`context_menu::open_trees`): closed, the
+        // wrapper is a plain pass-through with a pixel-identical
+        // view. The popup plumbing is the cosmic-term pattern:
+        // `on_surface_action` is mandatory — `create_popup` is a
+        // no-op without it — and `window_id` must be this layer
+        // surface's id (the `view_window` parameter), never the main
+        // window's.
         let terminal: Element<'_, Message> =
             widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
                 .on_close(Message::ContextMenu(false))
@@ -2935,30 +2909,29 @@ impl Application for DropTerm {
                 .window_id(id)
                 .into();
 
-        // Stacking from the screen edge (geometry spec, criterion 9):
-        // content, tab strip, grab bar on the free edge. Both bars take
-        // their strips out of the terminal's pinned height (see
-        // `surface::terminal_view_height`), so neither pushes the other
-        // off the surface. Fill dimensions keep iced's flex from
-        // deferring the bars past the terminal's allocation: a Shrink
-        // cross-axis makes a fixed-height, fill-width bar a fourth-pass
-        // child, so the Fill terminal would take the whole surface and
-        // push the bars below its bottom edge.
+        // Stacking from the screen edge: content, tab strip, grab
+        // bar on the free edge. Both bars take their strips out of
+        // the terminal's pinned height (see
+        // `surface::terminal_view_height`), so neither pushes the
+        // other off the surface. Fill dimensions keep iced's flex
+        // from deferring the bars past the terminal's allocation: a
+        // Shrink cross-axis makes a fixed-height, fill-width bar a
+        // fourth-pass child, so the Fill terminal would take the
+        // whole surface and push the bars below its bottom edge.
         let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
 
-        // The tab strip mounts unconditionally (settings-button spec,
-        // criterion 1) and its side comes from the placement seam
-        // (tab-bar-position spec): `Auto` keeps it between the
-        // terminal and the grab bar — on the surface edge opposite
-        // the screen edge — while a pin can move it to the screen
-        // edge itself. With fewer than two tabs the strip carries
-        // only its settings button (the bar's own visibility rule).
-        // The inline rename input (T6) overlays the renamed tab's
+        // The tab strip mounts unconditionally and its side comes
+        // from `effective_bar_at_bottom`: `Auto` keeps it between
+        // the terminal and the grab bar — on the surface edge
+        // opposite the screen edge — while a pin can move it to the
+        // screen edge itself. With fewer than two tabs the strip
+        // carries only its settings button (the bar's own visibility
+        // rule). The inline rename input overlays the renamed tab's
         // button — a rename can only start from a tab-button press,
         // i.e. with 2+ tabs, so the wiring is unchanged by the
         // unconditional mount. The tooltip pops to the terminal's
-        // side of the strip (settings-button spec, criterion 7),
-        // derived from the bar's side, not the anchor edge.
+        // side of the strip, derived from the bar's side, not the
+        // anchor edge.
         let bar_at_bottom = effective_bar_at_bottom(self.config.edge, self.config.tab_position);
         let tooltip_side = bar_tooltip_side(bar_at_bottom);
         let mut bar = TabBar::new(&self.tabs, self.active_tab)
@@ -2967,15 +2940,15 @@ impl Application for DropTerm {
             .on_move(Message::TabMoved)
             .on_rename(Message::RenameStarted)
             .on_rename_end(|| Message::RenameCommitted)
-            // The same funnel the context menu's `Settings…` row uses
-            // (criterion 5): one click away in every tab state.
+            // The same handler the context menu's `Settings…` row
+            // uses: one click away in every tab state.
             .on_settings(|| Message::Action(Action::Settings))
             .tooltip_side(tooltip_side);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)
         {
-            // The inline rename input (T6), overlaid by the bar on
-            // the renamed tab's button. Its value mirrors the app's
+            // The inline rename input, overlaid by the bar on the
+            // renamed tab's button. Its value mirrors the app's
             // draft so it survives every re-render.
             bar = bar.renaming(
                 edit.tab,
@@ -2987,19 +2960,19 @@ impl Application for DropTerm {
                     .on_unfocus(Message::RenameCancelled),
             );
         }
-        // Stacking (geometry spec, criterion 9 + the tab-bar-position
-        // placement table): the grab bar is fixed at the leading edge
-        // — opposite the screen edge, where all of `geometry.rs`'s
+        // Stacking: the grab bar is fixed at the leading edge —
+        // opposite the screen edge, where all of `geometry.rs`'s
         // drag/anchor math expects it — the terminal fills the
-        // middle, and the tab strip takes whichever side the placement
-        // seam picks. Both bars take their strips out of the
-        // terminal's pinned height (see `surface::terminal_view_height`
-        // — subtracted order-agnostically), so neither layout changes
-        // the terminal's pixel height. Fill dimensions keep iced's
-        // flex from deferring the bars past the terminal's allocation:
-        // a Shrink cross-axis makes a fixed-height, fill-width bar a
-        // fourth-pass child, so the Fill terminal would take the whole
-        // surface and push the bars below its bottom edge.
+        // middle, and the tab strip takes whichever side
+        // `effective_bar_at_bottom` picks. Both bars take their
+        // strips out of the terminal's pinned height (see
+        // `surface::terminal_view_height` — subtracted
+        // order-agnostically), so neither layout changes the
+        // terminal's pixel height. Fill dimensions keep iced's flex
+        // from deferring the bars past the terminal's allocation: a
+        // Shrink cross-axis makes a fixed-height, fill-width bar a
+        // fourth-pass child, so the Fill terminal would take the
+        // whole surface and push the bars below its bottom edge.
         let column: Element<'_, Message> = match (self.config.edge, bar_at_bottom) {
             (Edge::Top, false) => widget::column![bar, terminal, grab_bar]
                 .width(Length::Fill)
@@ -3019,19 +2992,18 @@ impl Application for DropTerm {
                 .into(),
         };
 
-        // The slide (slide-animation spec, A3 + A4): while the surface
-        // animates — ease-in from the anchored edge after a show,
-        // ease-out back to it before a hide's destroy — the content
-        // column's pose is NOT computed here: the view runs in the
-        // runtime's AboutToWait pass but the frame presents on the
-        // compositor's frame callback, so a view-baked offset is up to
-        // one frame stale at presentation — random per-frame error
-        // that read as judder on hardware (the round-4 finding).
-        // Instead the live slide state and its true start instant are
-        // handed to `SlideBox`, which evaluates the easing inside
-        // `draw` against the frame's own clock. No animation in
-        // flight → offset 0 → the column renders byte-identically to
-        // the unwrapped one.
+        // The slide: while the surface animates — ease-in from the
+        // anchored edge after a show, ease-out back to it before a
+        // hide's destroy — the content column's pose is NOT computed
+        // here: the view runs in the runtime's AboutToWait pass but
+        // the frame presents on the compositor's frame callback, so
+        // a view-baked offset is up to one frame stale at
+        // presentation — random per-frame error that read as judder
+        // on hardware. Instead the live slide state and its true
+        // start instant are handed to `SlideBox`, which evaluates
+        // the easing inside `draw` against the frame's own clock. No
+        // animation in flight → offset 0 → the column renders
+        // byte-identically to the unwrapped one.
         let mut slide_box = SlideBox::new(column, 0.0);
         if let Some(playing) = self.slide {
             slide_box = slide_box.playing(self.config.edge, playing);
@@ -3060,10 +3032,10 @@ impl Application for DropTerm {
                 ToggleAction::Toggle,
             ))),
             Details::ActivateAction { action, args } => {
-                // The forwarded name plus its args re-parse through the
-                // clap definitions (remote-newtab spec: single source of
-                // truth for the surface). A malformed forward degrades
-                // to a plain toggle, never an error surface.
+                // The forwarded name plus its args re-parse through
+                // the clap definitions — a single source of truth for
+                // the action surface. A malformed forward degrades to
+                // a plain toggle, never an error surface.
                 let mut words = vec![action];
                 words.extend(args);
                 let parsed = crate::parse_forwarded_action(&words).unwrap_or_default();
@@ -3074,9 +3046,9 @@ impl Application for DropTerm {
     }
 
     /// Serves the V1 state interface on the bus name single-instance
-    /// activation already owns (dbus-state spec). The snapshot is
-    /// seeded from the app's current fields, so a first read is
-    /// correct even before any later sync lands.
+    /// activation already owns. The snapshot is seeded from the
+    /// app's current fields, so a first read is correct even before
+    /// any later sync lands.
     fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
         let state = self.derive_dbus_state();
         *self
@@ -3113,21 +3085,19 @@ impl DropTerm {
             return Task::none();
         };
         match event {
-            // The active tab never accrues a marker (bell-indicator
-            // spec): the user is already looking at it.
+            // The active tab never accrues a marker: the user is
+            // already looking at it.
             TermEvent::Bell => {
-                // Bell-indicator spec: only an inactive tab accrues a
-                // marker — the user is already looking at the active
-                // one.
+                // Only an inactive tab accrues a marker — the user
+                // is already looking at the active one.
                 if tab_index != self.active_tab {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_bell();
                 }
-                // Bell-notify spec: a bell while the overlay is hidden
-                // posts one desktop notification per tab per hide
-                // period (the latch arms here and clears on every
-                // show). While visible the marker above alone carries
-                // the signal.
+                // A bell while the overlay is hidden posts one
+                // desktop notification per tab per hide period (the
+                // latch arms here and clears on every show). While
+                // visible the marker above alone carries the signal.
                 let tab = &mut self.tabs[tab_index];
                 if notify::should_notify(
                     matches!(self.surface, SurfaceState::Hidden),
@@ -3178,9 +3148,9 @@ impl DropTerm {
             TermEvent::Title(title) => {
                 let tab = &mut self.tabs[tab_index];
                 tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
-                // Title events double as the cwd-change sample point
-                // (session-persistence spec, S3); the title itself is
-                // not a trigger — churn alone writes nothing.
+                // Title events double as the cwd-change sample
+                // point; the title itself is not a trigger — churn
+                // alone writes nothing.
                 return self.check_tab_cwd(tab_index);
             }
             TermEvent::ResetTitle => {
@@ -3196,9 +3166,9 @@ impl DropTerm {
                 return self.check_tab_cwd(tab_index);
             }
             TermEvent::Wakeup => {
-                // Output arrived: an inactive tab accrues an activity
-                // marker (bell-indicator spec); the active tab shows
-                // the output itself, so nothing to signal.
+                // Output arrived: an inactive tab accrues an
+                // activity marker; the active tab shows the output
+                // itself, so nothing to signal.
                 if tab_index != self.active_tab {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_activity();
@@ -3210,8 +3180,9 @@ impl DropTerm {
             }
             TermEvent::Exit => {
                 // A tab whose shell exits is closed; when it was the
-                // last, a fresh tab spawns in its place so the overlay
-                // is never left without a terminal (see the tabs spec).
+                // last, a fresh tab spawns in its place so the
+                // overlay is never left without a terminal (see
+                // `ensure_tabs`).
                 return self.close_tab_at(tab_index);
             }
         }
@@ -3230,46 +3201,45 @@ impl DropTerm {
                 self.config = config;
                 self.apply_config_to_tabs();
                 // A changed theme preference overrides (or restores)
-                // the process theme (theme-preference P1). Sits after
+                // the process theme. Sits after
                 // `apply_config_to_tabs` — cells are already correct
-                // in this pass through the `effective_is_dark` seam —
-                // and before the geometry exits below: a preference
-                // echo can never be a geometry own-write
-                // (`last_written` records geometry writes only), so
-                // the two returns cannot collide. The task chains a
-                // `ReapplyColors` for the one global-reading
-                // consumer, the window-background derivation.
+                // in this pass through `effective_is_dark` — and
+                // before the geometry exits below: a preference echo
+                // can never be a geometry own-write (`last_written`
+                // records geometry writes only), so the two returns
+                // cannot collide. The task chains a `ReapplyColors`
+                // for the one global-reading consumer, the
+                // window-background derivation.
                 if let Some(kind) = theme_override(old_preference, self.config.theme_preference) {
                     return theme_override_task(kind);
                 }
-                // Our own write's echo (geometry spec, G4): geometry
-                // matching the last write is absorbed — the in-memory
-                // config already agrees (updated at release), so no
-                // rewrite and no reshape; only the record is cleared.
-                // A stale record that never matches is harmless: an
-                // echo matching all four fields needs no reshape
-                // anyway.
+                // Our own write's echo: geometry matching the last
+                // write is absorbed — the in-memory config already
+                // agrees (updated at release), so no rewrite and no
+                // reshape; only the record is cleared. A stale
+                // record that never matches is harmless: an echo
+                // matching all four fields needs no reshape anyway.
                 if let Some(written) = self.last_written
                     && geometry::is_own_write(&written, &new_geom)
                 {
                     self.last_written = None;
                     return Task::none();
                 }
-                // Geometry edits reshape a shown surface in place
-                // (geometry spec, G2) — no destroy/recreate; a hidden
-                // surface just opens with the new geometry. Non-geometry
-                // edits leave the surface alone. A geometry edit that
-                // arrives mid-drag (G3+) is deferred until release, so
-                // config reshapes and drag deltas never interleave
-                // `set_size` calls on one surface; the release's apply
-                // picks the config's other fields up (see
-                // `GrabBarReleased`). A geometry edit arriving mid-slide
-                // (slide-animation A3) skips the in-place reshape too —
-                // geometry stays frozen while animating; the in-memory
-                // config above already updated, so the next show opens
-                // with the edit applied (a 130 ms exposure window,
-                // cheaper than a deferred-reshape queue). A5 audit:
-                // `config_edit_reshapes` keys on the slide's
+                // Geometry edits reshape a shown surface in place —
+                // no destroy/recreate; a hidden surface just opens
+                // with the new geometry. Non-geometry edits leave
+                // the surface alone. A geometry edit that arrives
+                // mid-drag is deferred until release, so config
+                // reshapes and drag deltas never interleave
+                // `set_size` calls on one surface; the release's
+                // apply picks the config's other fields up (see
+                // `GrabBarReleased`). A geometry edit arriving
+                // mid-slide skips the in-place reshape too —
+                // geometry stays frozen while animating; the
+                // in-memory config above already updated, so the
+                // next show opens with the edit applied (a 130 ms
+                // exposure window, cheaper than a deferred-reshape
+                // queue). `config_edit_reshapes` keys on the slide's
                 // existence, not its direction, so this holds
                 // mid-slide-out and mid-reversal alike.
                 if config_edit_reshapes(
@@ -3283,11 +3253,10 @@ impl DropTerm {
                 }
             }
             Message::ReapplyColors => {
-                // The theme override landed (theme-preference P1):
-                // re-run the idempotent color apply so
-                // `refresh_window_bg_color` derives the fallback
-                // background from the new global mode; cells were
-                // already correct through the seam.
+                // The theme override landed: re-run the idempotent
+                // color apply so `refresh_window_bg_color` derives
+                // the fallback background from the new global mode;
+                // cells were already correct via `effective_is_dark`.
                 self.apply_config_to_tabs();
             }
             Message::TermEventTx(tx) => {
@@ -3296,7 +3265,7 @@ impl DropTerm {
                     self.ensure_tabs();
                     // A first-launch remote new-tab stashed while the
                     // channel was missing applies now, after the
-                    // session restore has landed (remote-newtab spec).
+                    // session restore has landed.
                     if let Some(request) = self.pending_remote_tab.take() {
                         return self.spawn_remote_tab(request);
                     }
@@ -3313,16 +3282,15 @@ impl DropTerm {
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
-                    // The slide-in starts here, with the shown surface
-                    // (slide-animation spec, A3): the full surface
-                    // height is both the from-offset and the distance
-                    // — deterministic and known at open time, unlike
-                    // the granted window height, which arrives later
-                    // through the double-reported `WindowResized`
-                    // stream (the plan's pinned distance source). The
-                    // slide toggle gates this entry (settings-ui U2):
-                    // disabled, the surface opens at rest — the
-                    // pre-slide-animation behavior, byte-equal render.
+                    // The slide-in starts here, with the shown
+                    // surface: the full surface height is both the
+                    // from-offset and the distance — deterministic
+                    // and known at open time, unlike the granted
+                    // window height, which arrives later through the
+                    // double-reported `WindowResized` stream. The
+                    // slide toggle gates this entry: disabled, the
+                    // surface opens at rest with a byte-equal
+                    // render.
                     let distance_px =
                         geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
                     self.slide =
@@ -3345,23 +3313,23 @@ impl DropTerm {
                 }
             }
             Message::WindowResized(id, height) => {
-                // Only the tracked layer surface's granted stream feeds
-                // the pin (`resize_acts_on`): the settings window
-                // resizes too (settings-ui spec, U1) and its heights
-                // must never pin the terminal's.
+                // Only the tracked layer surface's granted stream
+                // feeds the pin (`resize_acts_on`): the settings
+                // window resizes too and its heights must never pin
+                // the terminal's.
                 //
                 // While a drag is armed, the granted size only echoes
                 // the applies the drag itself made — each one
                 // double-reported, once with the previous height (the
                 // runtime synthesizes a configure per set_size whose
-                // height slot is stale), so following the echoes would
-                // bounce the pin stale/new on every move: the applies
-                // offer their targets directly instead. Outside a
-                // drag, every granted height is offered through the
-                // adoption debounce — each size arrives twice and the
-                // applies arrive at cadence rate, and reflowing the
-                // terminal on every echo made the drag sluggish on
-                // hardware.
+                // height slot is stale), so following the echoes
+                // would bounce the pin stale/new on every move: the
+                // applies offer their targets directly instead.
+                // Outside a drag, every granted height is offered
+                // through the adoption debounce — each size arrives
+                // twice and the applies arrive at cadence rate, and
+                // reflowing the terminal on every echo made the drag
+                // sluggish on hardware.
                 if resize_acts_on(&self.surface, id)
                     && self.drag.is_none()
                     && let Some(task) = self.offer_window_height(height)
@@ -3395,11 +3363,12 @@ impl DropTerm {
                 }
             }
             Message::KeyPressed(modifiers, key, physical_key) => {
-                // While an inline rename is active (T6) the rename input
+                // While an inline rename is active the rename input
                 // owns the keyboard: without this guard a bound combo
                 // like Ctrl+Shift+V would act on the terminal in
                 // addition to the input. The input handles Enter and
-                // Escape itself; the binds resume once the rename ends.
+                // Escape itself; the binds resume once the rename
+                // ends.
                 if self.rename.is_some() {
                     return Task::none();
                 }
@@ -3410,22 +3379,20 @@ impl DropTerm {
                 }
             }
             Message::Action(action) => {
-                // The context-menu funnel (context-menu module): menu
-                // picks reuse the keybind entry point above, so an
-                // item behaves exactly like its keybind.
+                // Context-menu picks reuse the keybind entry point
+                // above, so an item behaves exactly like its keybind.
                 return self.perform_action(action);
             }
             Message::ContextMenu(open) => {
-                // The open-state latch (context-menu module): the
-                // press seam arms it, every close path clears it, and
-                // the view reads it through
-                // `context_menu::open_trees`.
+                // The open-state latch: the press handler arms it,
+                // every close path clears it, and the view reads it
+                // through `context_menu::open_trees`.
                 self.context_menu_open = open;
             }
             Message::Surface(action) => {
-                // Popup plumbing (context-menu module): the wrapper's
-                // popup create/destroy requests, handed to libcosmic
-                // untouched — the runtime owns popup surfaces.
+                // Popup plumbing: the wrapper's popup create/destroy
+                // requests, handed to libcosmic untouched — the
+                // runtime owns popup surfaces.
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::WindowFocused => {
@@ -3456,8 +3423,7 @@ impl DropTerm {
                 if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
                     let draft = tab.title.clone();
                     self.rename = Some(RenameEdit { tab: id, draft });
-                    // Focus the input with its value selected,
-                    // Yakuake-style.
+                    // Focus the input with its value selected.
                     return Task::batch([
                         widget::text_input::focus(self.rename_input_id.clone()),
                         widget::text_input::select_all(self.rename_input_id.clone()),
@@ -3483,44 +3449,40 @@ impl DropTerm {
                 if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
                     // The saved tab order is tab-bar order, so a
-                    // reorder is a save trigger
-                    // (session-persistence spec, S3).
+                    // reorder is a save trigger.
                     return self.mark_session_dirty();
                 }
             }
             Message::GrabBarDragged(pointer_y) => {
-                // Guards audit (A5, corrected by A6): the drag
-                // handlers (`GrabBarDragged`, `DragApplyDue`,
+                // The drag handlers (`GrabBarDragged`, `DragApplyDue`,
                 // `GrabBarReleased`) all match `Shown` exclusively,
                 // so a `Hiding` surface ignores every drag message by
                 // construction — no drag can interleave with an
                 // out-slide or its reversal. A slide-in, though,
                 // rides a `Shown` surface, so `Shown` alone cannot
                 // gate it: `grab_bar_acts_on` additionally requires
-                // the slide to be idle (the A6 frozen-geometry
-                // audit's catch — a press inside the 130 ms window
-                // neither arms a drag nor resizes the animating
-                // surface; the pointer-to-content mapping is offset
-                // mid-slide anyway).
+                // the slide to be idle (a press inside the 130 ms
+                // window neither arms a drag nor resizes the
+                // animating surface; the pointer-to-content mapping
+                // is offset mid-slide anyway).
                 //
-                // Live drag (geometry spec, G3): arm on the first move
-                // — anchored at the height the surface has right now —
-                // then retarget absolutely per move in pixels: one
-                // pixel of pointer travel is one pixel of surface, and
-                // the target recomputes from the height actually
-                // applied, so the moving window frame of a
-                // bottom-anchored surface cannot eat travel. Width and
-                // alignment always come from the config (a drag can
-                // never snap a narrow surface to fill). Applies pass a
-                // deadbanded, interval-gated cadence
-                // (geometry::drag_apply_due) — every apply reaches the
-                // app twice (the runtime double-reports each set_size)
-                // and reflows the terminal, so a fast drag cannot be
-                // allowed to storm the pipeline; skipped targets land
-                // via a trailing apply, and the release settle is
-                // exact and immediate. Config is never touched while
-                // dragging (a "never" boundary of the module);
-                // persistence is G4's release path.
+                // Live drag: arm on the first move — anchored at the
+                // height the surface has right now — then retarget
+                // absolutely per move in pixels: one pixel of pointer
+                // travel is one pixel of surface, and the target
+                // recomputes from the height actually applied, so the
+                // moving window frame of a bottom-anchored surface
+                // cannot eat travel. Width and alignment always come
+                // from the config (a drag can never snap a narrow
+                // surface to fill). Applies pass a deadbanded,
+                // interval-gated cadence (geometry::drag_apply_due) —
+                // every apply reaches the app twice (the runtime
+                // double-reports each set_size) and reflows the
+                // terminal, so a fast drag cannot be allowed to storm
+                // the pipeline; skipped targets land via a trailing
+                // apply, and the release settle is exact and
+                // immediate. Config is never touched while dragging;
+                // persistence is the release path.
                 if grab_bar_acts_on(&self.surface, self.slide.is_some())
                     && let (SurfaceState::Shown(id), Some(output)) =
                         (&self.surface, self.output_size)
@@ -3558,11 +3520,10 @@ impl DropTerm {
                 }
             }
             Message::DragApplyDue => {
-                // Trailing apply of a throttled live drag (geometry
-                // spec, G3): recompute from the latest reported
-                // pointer position and apply if the gate allows; a
-                // fire after the drag ended (or with nothing changed)
-                // does nothing.
+                // Trailing apply of a throttled live drag: recompute
+                // from the latest reported pointer position and apply
+                // if the gate allows; a fire after the drag ended (or
+                // with nothing changed) does nothing.
                 if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size)
                     && let Some(drag) = self.drag.as_ref()
                 {
@@ -3579,20 +3540,20 @@ impl DropTerm {
             }
             Message::GrabBarReleased => {
                 // The settle: the dragged pixels quantize to a whole
-                // percent once — the surface may snap by at most half a
-                // percent, the accepted tolerance, and then matches the
-                // percent G4 persists. The settle targets where the
+                // percent once — the surface may snap by at most half
+                // a percent, the accepted tolerance, and then matches
+                // the persisted percent. The settle targets where the
                 // pointer released (the latest move), not the last
                 // target the cadence landed: throttling must never
-                // decide the final height. The in-memory config updates
-                // immediately — so a hide/show inside the debounce
-                // window reopens at the new height — and one write
-                // follows after the window, canceled by any newer drag
-                // that settles first. Re-applying also flushes a config
-                // edit that arrived mid-drag and was deferred (see
-                // `ConfigChanged`): width and alignment come from the
-                // current config, the height from the drag — the hand
-                // outranks the file.
+                // decide the final height. The in-memory config
+                // updates immediately — so a hide/show inside the
+                // debounce window reopens at the new height — and one
+                // write follows after the window, canceled by any
+                // newer drag that settles first. Re-applying also
+                // flushes a config edit that arrived mid-drag and was
+                // deferred (see `ConfigChanged`): width and alignment
+                // come from the current config, the height from the
+                // drag — the hand outranks the file.
                 if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
                     (self.drag.take(), &self.surface, self.output_size)
                 {
@@ -3615,15 +3576,13 @@ impl DropTerm {
             }
             Message::WriteDue(generation) => {
                 // The debounce window elapsed: persist the settled
-                // height once through the shared write seam
-                // (settings-ui spec, U3) — unless a newer drag
-                // rescheduled or a bare settings write canceled (the
-                // stale generation finds nothing pending).
-                // `PreApplied` because the release already applied the
-                // geometry: the seam records the written geometry so
-                // the resulting `ConfigChanged` echo is absorbed
-                // instead of reshaping (see `ConfigChanged`) — G4's
-                // behavior, byte-identical.
+                // height once through [`Self::write_config`] —
+                // unless a newer drag rescheduled or a bare settings
+                // write canceled (the stale generation finds nothing
+                // pending). `PreApplied` because the release already
+                // applied the geometry: the write records the written
+                // geometry so the resulting `ConfigChanged` echo is
+                // absorbed instead of reshaping (see `ConfigChanged`).
                 if let Some(pending) = self.write_back.due(generation) {
                     self.write_config(
                         settings::WriteKind::PreApplied,
@@ -3635,14 +3594,13 @@ impl DropTerm {
                 // The debounce window elapsed: capture the live tabs
                 // now and write atomically — cwds are read at write
                 // time, so a window always persists what is true at
-                // its close, not what was true when it was armed
-                // (session-persistence spec, S3). A stale generation —
-                // superseded, or a duplicate delivery after the write —
-                // writes nothing. The session toggle gates the write
-                // itself (settings-ui U2): a window armed before a
-                // mid-run disable fires into a no-write, but the
-                // machine still clears, so no zombie window ever
-                // blocks the next armed one.
+                // its close, not what was true when it was armed. A
+                // stale generation — superseded, or a duplicate
+                // delivery after the write — writes nothing. The
+                // session toggle gates the write itself: a window
+                // armed before a mid-run disable fires into a
+                // no-write, but the machine still clears, so no
+                // zombie window ever blocks the next armed one.
                 if self
                     .session_save
                     .due_writes(generation, self.config.session_persistence_enabled)
@@ -3651,14 +3609,13 @@ impl DropTerm {
                 }
             }
             Message::SlideTick => {
-                // Redraw-only clock (slide-animation spec, A3): the
-                // eased offset is evaluated at draw time inside
-                // `SlideBox`, so the tick's only job is parking the
-                // slide once the duration has fully elapsed — which
-                // also drops the tick subscription until the next
-                // slide. Between completion and this parking tick the
-                // draw already clamps to exactly the endpoint, so
-                // there is no pop.
+                // Redraw-only clock: the eased offset is evaluated at
+                // draw time inside `SlideBox`, so the tick's only job
+                // is parking the slide once the duration has fully
+                // elapsed — which also drops the tick subscription
+                // until the next slide. Between completion and this
+                // parking tick the draw already clamps to exactly the
+                // endpoint, so there is no pop.
                 if let Some(playing) = self.slide
                     && slide::finished(
                         &playing.active,
@@ -3666,16 +3623,17 @@ impl DropTerm {
                     )
                 {
                     self.slide = None;
-                    // The animated hide's destroy point (slide-animation
-                    // spec, A4): an `Out` slide's completion is the only
-                    // path that destroys a hiding surface — the app's
-                    // single `destroy_layer_surface` seam for shown
-                    // surfaces, now reached through the state machine's
-                    // completion event. Teardown note (criterion 8):
-                    // app teardown has no graceful path — process exit
-                    // destroys the surface compositor-side, inherently
-                    // immediate; any future quit action must bypass the
-                    // slide and destroy straight away, like this does.
+                    // The animated hide's destroy point: an `Out`
+                    // slide's completion is the only path that
+                    // destroys a hiding surface — the app's single
+                    // `destroy_layer_surface` call for shown
+                    // surfaces, reached through the state machine's
+                    // completion event. Teardown note: app teardown
+                    // has no graceful path — process exit destroys
+                    // the surface compositor-side, inherently
+                    // immediate; any future quit action must bypass
+                    // the slide and destroy straight away, like this
+                    // does.
                     if let SurfaceState::Hiding(id) = self.surface {
                         self.surface = SurfaceState::Hidden;
                         return destroy_layer_surface(id);
@@ -3692,31 +3650,31 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().paste(text);
                 }
             }
-            // The settings window's ✕ (settings-ui spec, U1): it
-            // arrives as `CloseRequested` (the window never closes
-            // itself) and funnels through `close_settings`, which
-            // clears the draft buffer, drops the tracking, and
-            // issues the close. A request whose id is not the
-            // tracked one (the defensive `on_close_requested` net
-            // after a handled close) finds nothing and no-ops — both
-            // the take and `window::close` on a dead id are inert, so
-            // duplicate delivery is harmless. The app itself keeps
-            // running: this is not the main window and
-            // `exit_on_close(false)` stands (criterion 8). U5b: the
-            // terminal stays hidden — the next toggle shows it with
-            // every edit applied.
+            // The settings window's ✕: it arrives as
+            // `CloseRequested` (the window never closes itself) and
+            // routes through `close_settings`, which clears the
+            // draft buffer, drops the tracking, and issues the
+            // close. A request whose id is not the tracked one (the
+            // defensive `on_close_requested` net after a handled
+            // close) finds nothing and no-ops — both the take and
+            // `window::close` on a dead id are inert, so duplicate
+            // delivery is harmless. The app itself keeps running:
+            // this is not the main window and
+            // `exit_on_close(false)` stands. The terminal stays
+            // hidden — the next toggle shows it with every edit
+            // applied.
             Message::SettingsCloseRequested(id) => {
                 if self.settings_window.is_some_and(|open| open == id) {
                     return self.close_settings();
                 }
             }
             Message::Settings(event) => {
-                // The settings window's commit funnel (settings-ui
-                // spec, U4): every event resolves through a pure
-                // planner and lands as one `Bare` write on the shared
-                // seam — the window never applies anything itself, the
-                // `ConfigChanged` echo drives every apply (criterion
-                // 3). Display-only events (drafts, slider moves) touch
+                // The settings window's commit path: every event
+                // resolves through a pure planner and lands as one
+                // `Bare` write via [`Self::write_config`] — the
+                // window never applies anything itself, the
+                // `ConfigChanged` echo drives every apply.
+                // Display-only events (drafts, slider moves) touch
                 // just the buffer; commits that fail to parse are
                 // no-ops that leave the draft for the user to fix.
                 match event {
