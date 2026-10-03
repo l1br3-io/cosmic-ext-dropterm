@@ -57,8 +57,7 @@ pub enum ToggleAction {
     Hide,
     /// Open a new tab — remotely (a second launch) or at first startup —
     /// optionally in an explicit working directory and/or running an
-    /// explicit command line (remote-newtab spec). Implies showing the
-    /// overlay.
+    /// explicit command line. Implies showing the overlay.
     NewTab {
         /// Working directory for the new tab; defaults to the active
         /// tab's cwd.
@@ -70,28 +69,27 @@ pub enum ToggleAction {
         cmd: Option<String>,
     },
     /// Close a tab remotely — the active tab, or the 1-based `--tab-index`
-    /// target. Out-of-range targets no-op with a warning (remote-tab-actions
-    /// spec); the overlay is not shown.
+    /// target. Out-of-range targets no-op with a warning; the overlay
+    /// is not shown.
     CloseTab {
         /// 1-based index of the tab to close; defaults to the active tab.
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         tab_index: Option<usize>,
     },
     /// Activate a tab remotely — the strict 1-based `N`, no wrap and no
-    /// `9 = last` keybind idiom (remote-tab-actions spec). Out-of-range
-    /// indices no-op with a warning; a resolved activation shows the
-    /// overlay, exactly like a `new-tab`.
+    /// `9 = last` keybind idiom. Out-of-range indices no-op with a
+    /// warning; a resolved activation shows the overlay, exactly like
+    /// a `new-tab`.
     SelectTab {
         /// 1-based index of the tab to activate.
         #[arg(value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         index: usize,
     },
     /// Rename a tab remotely — the active tab, or the 1-based
-    /// `--tab-index` target (remote-tab-actions spec). A non-empty
-    /// TITLE becomes the sticky override shell OSC titles never
-    /// clobber; the empty TITLE is the documented reset, clearing the
-    /// override so shell titles resume. Quiet: the overlay is not
-    /// shown.
+    /// `--tab-index` target. A non-empty TITLE becomes the sticky
+    /// override shell OSC titles never clobber; the empty TITLE is the
+    /// documented reset, clearing the override so shell titles resume.
+    /// Quiet: the overlay is not shown.
     RenameTab {
         /// New title; the empty string clears the override.
         title: String,
@@ -100,11 +98,11 @@ pub enum ToggleAction {
         tab_index: Option<usize>,
     },
     /// Duplicate a tab remotely — the active tab, or the 1-based
-    /// `--tab-index` target (remote-tab-actions spec): a fresh shell
-    /// opens in that tab's cwd — the running command is never copied —
-    /// lands after the active tab, and becomes active. Implies showing
-    /// the overlay; an unresolvable target degrades to the bare
-    /// new-tab inheritance with a warning.
+    /// `--tab-index` target: a fresh shell opens in that tab's cwd —
+    /// the running command is never copied — lands after the active
+    /// tab, and becomes active. Implies showing the overlay; an
+    /// unresolvable target degrades to the bare new-tab inheritance
+    /// with a warning.
     DuplicateTab {
         /// 1-based index of the tab to duplicate; defaults to the active tab.
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
@@ -127,10 +125,10 @@ impl std::fmt::Display for ToggleAction {
     }
 }
 
-/// What a new tab runs (remote-newtab spec): the user's shell —
-/// config-resolved or per-tab recorded — paired with the config's shell
-/// arguments, or an explicit whitespace-split command line whose exit
-/// closes the tab and whose tabs are session-transient.
+/// What a new tab runs: the user's shell — config-resolved or per-tab
+/// recorded — paired with the config's shell arguments, or an explicit
+/// whitespace-split command line whose exit closes the tab and whose
+/// tabs are session-transient.
 #[derive(Debug, Clone)]
 enum SpawnCommand {
     Shell(String),
@@ -144,14 +142,13 @@ enum SurfaceState {
     /// `Window::Opened` event so we learn that output's real size.
     Measuring(window::Id),
     Shown(window::Id),
-    /// A shown surface sliding out toward its anchored edge
-    /// (slide-animation spec, A4): the content still renders —
-    /// translated by the live `Out` slide — and the layer surface is
-    /// destroyed only when that slide completes (criterion 2).
-    /// Keyboard interactivity was already released at slide-out start
-    /// (criterion 5), so focus events find no `Shown` surface to act
-    /// on; the drag handlers and live reshape ignore this state by
-    /// construction (they match `Shown` exclusively).
+    /// A shown surface sliding out toward its anchored edge: the
+    /// content still renders — translated by the live `Out` slide —
+    /// and the layer surface is destroyed only when that slide
+    /// completes. Keyboard interactivity was already released at
+    /// slide-out start, so focus events find no `Shown` surface to
+    /// act on; the drag handlers and live reshape ignore this state
+    /// by construction (they match `Shown` exclusively).
     Hiding(window::Id),
 }
 
@@ -159,12 +156,11 @@ enum SurfaceState {
 pub enum Message {
     ToggleAction(ToggleAction),
     ConfigChanged(DropTermConfig),
-    /// The `set_theme` task from a theme-preference change landed
-    /// (theme-preference spec, criterion 6): re-run the color apply
-    /// so the `WINDOW_BG_COLOR` derivation — which reads the
-    /// process-global theme — sees the new mode. Cell colors were
-    /// already same-pass correct through the `effective_is_dark`
-    /// seam when the change arrived.
+    /// The `set_theme` task from a theme-preference change landed:
+    /// re-run the color apply so the `WINDOW_BG_COLOR` derivation —
+    /// which reads the process-global theme — sees the new mode. Cell
+    /// colors were already resolved correctly in the same pass via
+    /// `effective_is_dark` when the change arrived.
     ReapplyColors,
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
@@ -174,8 +170,8 @@ pub enum Message {
     /// height in logical pixels, used to pin the terminal's height so the
     /// tab bar keeps its strip. The id gates the stream to the tracked
     /// layer surface (`resize_acts_on`): a second app window (the
-    /// settings window, settings-ui spec U1) resizes too, and its
-    /// heights must never feed the pin.
+    /// settings window) resizes too, and its heights must never feed
+    /// the pin.
     WindowResized(window::Id, f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
@@ -183,120 +179,116 @@ pub enum Message {
     WindowFocused,
     WindowUnfocused,
     MiddleClick,
-    /// A tab bar button was left-clicked (tabs spec, T5).
+    /// A tab bar button was left-clicked.
     TabSelected(TabId),
-    /// A tab bar button was closed via its `×` or a middle-click (tabs
-    /// spec, T5).
+    /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
-    /// A tab body was double-clicked: start an inline rename (tabs spec,
-    /// T6).
+    /// A tab body was double-clicked: start an inline rename.
     RenameStarted(TabId),
-    /// The rename input's draft changed (T6).
+    /// The rename input's draft changed.
     RenameDraftChanged(String),
-    /// The rename should commit now (T6): Enter was pressed, a press
+    /// The rename should commit now: Enter was pressed, a press
     /// landed outside the input, or the surface lost focus.
     RenameCommitted,
-    /// The rename input was dismissed with Escape or Tab (T6): cancel,
+    /// The rename input was dismissed with Escape or Tab: cancel,
     /// keeping the previous title.
     RenameCancelled,
-    /// A tab was dragged to a new position in the bar (tabs spec, T7):
-    /// the dragged tab's id and the index it was dropped at.
+    /// A tab was dragged to a new position in the bar: the dragged
+    /// tab's id and the index it was dropped at.
     TabMoved(TabId, usize),
-    /// The grab bar was dragged (geometry spec, G3): the pointer's
-    /// surface-local y (window-absolute, not a delta and not bar-local)
-    /// while a press is held. Targets recompute absolutely from it, so
-    /// the moving window frame of a bottom-anchored surface cannot
-    /// compound drift into the drag.
+    /// The grab bar was dragged: the pointer's surface-local y
+    /// (window-absolute, not a delta and not bar-local) while a press
+    /// is held. Targets recompute absolutely from it, so the moving
+    /// window frame of a bottom-anchored surface cannot compound
+    /// drift into the drag.
     GrabBarDragged(f32),
-    /// A grab bar drag ended (geometry spec, G3): the surface keeps the
-    /// height it settled at; persisting it is G4.
+    /// A grab bar drag ended: the surface keeps the height it settled
+    /// at; persisting it is the debounced config write's job.
     GrabBarReleased,
-    /// The trailing apply of a throttled live drag fired (geometry
-    /// spec, G3): a target dropped inside the apply interval still
-    /// lands — the pointer pausing mid-drag must not leave the
-    /// surface behind. A stale fire (drag ended, surface hidden) is a
-    /// no-op: the apply path re-checks the cadence gate.
+    /// The trailing apply of a throttled live drag fired: a target
+    /// dropped inside the apply interval still lands — the pointer
+    /// pausing mid-drag must not leave the surface behind. A stale
+    /// fire (drag ended, surface hidden) is a no-op: the apply path
+    /// re-checks the cadence gate.
     DragApplyDue,
-    /// The trailing adopt of a debounced terminal-pin height fired
-    /// (geometry spec, G3): heights the adoption debounce skipped —
-    /// the double-reported granted stream's echoes — land once the
-    /// stream settles. A stale fire is a no-op.
+    /// The trailing adopt of a debounced terminal-pin height fired:
+    /// heights the adoption debounce skipped — the double-reported
+    /// granted stream's echoes — land once the stream settles. A
+    /// stale fire is a no-op.
     WindowPinDue,
-    /// The debounce window for a drag-release height write elapsed
-    /// (geometry spec, G4): the generation that scheduled it, checked
-    /// against the current pending write so a newer drag's schedule
-    /// cancels this stale one.
+    /// The debounce window for a drag-release height write elapsed:
+    /// the generation that scheduled it, checked against the current
+    /// pending write so a newer drag's schedule cancels this stale
+    /// one.
     WriteDue(u32),
-    /// The session-save debounce window elapsed
-    /// (session-persistence spec, S3): the generation that armed it,
-    /// checked against the armed window so a stale fire — superseded
-    /// by a newer window, or a duplicate delivery after the write —
-    /// writes nothing.
+    /// The session-save debounce window elapsed: the generation that
+    /// armed it, checked against the armed window so a stale fire —
+    /// superseded by a newer window, or a duplicate delivery after
+    /// the write — writes nothing.
     SessionSaveDue(u32),
-    /// Slide clock tick (slide-animation spec, A3 + A4): redraw-only
-    /// while a slide is live — the eased offset is evaluated at draw
-    /// time inside `SlideBox`, so the tick exists to keep redraw
-    /// requests pending (see `SLIDE_TICK`). The first tick past the
-    /// duration parks the slide at its endpoint — rest for an `In`
-    /// slide, the anchored edge (then destroy) for an `Out` one —
-    /// and drops it (and with it the subscription).
+    /// Slide clock tick: redraw-only while a slide is live — the
+    /// eased offset is evaluated at draw time inside `SlideBox`, so
+    /// the tick exists to keep redraw requests pending (see
+    /// `SLIDE_TICK`). The first tick past the duration parks the
+    /// slide at its endpoint — rest for an `In` slide, the anchored
+    /// edge (then destroy) for an `Out` one — and drops it (and with
+    /// it the subscription).
     SlideTick,
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
-    /// The settings window with `id` should close (settings-ui spec,
-    /// U1): its ✕ was pressed (`CloseRequested`, matched in the
-    /// subscription — the window never closes itself,
-    /// `exit_on_close_request: false`) or it closed without a handled
-    /// request and `on_close_requested` sends this as the defensive
-    /// cleanup so a dead id can never be `gain_focus`ed by a later
-    /// press. Both clearing the tracked id and `window::close` are
-    /// idempotent, so a duplicate delivery is inert.
+    /// The settings window with `id` should close: its ✕ was pressed
+    /// (`CloseRequested`, matched in the subscription — the window
+    /// never closes itself, `exit_on_close_request: false`) or it
+    /// closed without a handled request and `on_close_requested`
+    /// sends this as the defensive cleanup so a dead id can never be
+    /// `gain_focus`ed by a later press. Both clearing the tracked id
+    /// and `window::close` are idempotent, so a duplicate delivery is
+    /// inert.
     SettingsCloseRequested(window::Id),
-    /// An event from the settings window's controls (settings-ui
-    /// spec, U4). Inputs only — the update side resolves each through
-    /// the pure planners and commits through the shared write seam as
-    /// a `Bare` write, whose `ConfigChanged` echo is the only apply
-    /// path.
+    /// An event from the settings window's controls. Inputs only —
+    /// the update side resolves each through the pure planners and
+    /// commits it as a `Bare` write through [`Self::write_config`],
+    /// whose `ConfigChanged` echo is the only apply path.
     Settings(settings::SettingsEvent),
-    /// A context-menu item was picked (context-menu module): the
-    /// item's [`terminal::Action`], funneled to `perform_action` — the
-    /// same entry point the keybind map uses, so menu and keybind
+    /// A context-menu item was picked: the item's
+    /// [`terminal::Action`], dispatched through `perform_action` —
+    /// the same entry point the keybind map uses, so menu and keybind
     /// behavior cannot fork.
     Action(Action),
-    /// The terminal's context menu should open or close
-    /// (context-menu module). Published by the `TerminalBox` press
-    /// seam: `true` on a right-press with the menu closed, `false` on
+    /// The terminal's context menu should open or close. Published
+    /// by the `TerminalBox` press handler: `true` on a right-press
+    /// with the menu closed, `false` on
     /// any default-mode press while open (toggle-close). The
     /// wrapper's `on_close` also sends `false` — it fires on every
     /// close path (Escape, click-away, item pick, compositor
     /// dismiss), so duplicate `false`s are the norm and harmless:
     /// the arm is a plain state set.
     ContextMenu(bool),
-    /// A surface action from a widget (context-menu module): the
-    /// context-menu popup's create/destroy requests, forwarded to
-    /// libcosmic verbatim — popups are created and destroyed by the
-    /// runtime, never by the app (the cosmic-term one-liner).
+    /// A surface action from a widget: the context-menu popup's
+    /// create/destroy requests, forwarded to libcosmic verbatim —
+    /// popups are created and destroyed by the runtime, never by the
+    /// app (as in cosmic-term).
     Surface(SurfaceAction<Message>),
 }
 
-/// An in-flight inline tab rename (tabs spec, T6): the tab being renamed
-/// and the current draft. The input itself is an overlay the tab bar
-/// hosts over the renamed tab's button.
+/// An in-flight inline tab rename: the tab being renamed and the
+/// current draft. The input itself is an overlay the tab bar hosts
+/// over the renamed tab's button.
 struct RenameEdit {
     tab: TabId,
     draft: String,
 }
 
-/// An in-progress grab-bar drag's runtime state (geometry spec, G3):
-/// the pure anchor every target recomputes from (`geometry`), the
-/// latest reported pointer y, and the last live apply (when, which
-/// target) for the change-gated apply cadence — see
-/// `geometry::drag_apply_due`. Applies are bounded because each one
-/// costs the runtime two window resizes plus terminal and pty resizes
-/// (its `set_size` handling double-reports each apply), so per-move
-/// applies at pointer rate saturate the single runtime thread — the
-/// drag froze input on hardware.
+/// An in-progress grab-bar drag's runtime state: the pure anchor
+/// every target recomputes from (`geometry`), the latest reported
+/// pointer y, and the last live apply (when, which target) for the
+/// change-gated apply cadence — see `geometry::drag_apply_due`.
+/// Applies are bounded because each one costs the runtime two window
+/// resizes plus terminal and pty resizes (its `set_size` handling
+/// double-reports each apply), so per-move applies at pointer rate
+/// saturate the single runtime thread — the drag froze input on
+/// hardware.
 struct Drag {
     anchor: geometry::DragAnchor,
     /// The pointer's window y as of the last `GrabBarDragged`, so the
@@ -309,56 +301,54 @@ struct Drag {
 
 pub struct DropTerm {
     core: Core,
-    /// Config backend, consumed by the drag-resize write-back (geometry
-    /// spec, G4): `set("height_percent", …)` persists a settled drag.
-    /// `None` when the config failed to open at init — writes are
-    /// skipped, everything else works.
+    /// Config backend, consumed by the drag-resize write-back:
+    /// `set("height_percent", …)` persists a settled drag. `None`
+    /// when the config failed to open at init — writes are skipped,
+    /// everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
-    /// The overlay's terminals in tab order. Never empty while a surface
-    /// is shown: closing the last tab respawns a fresh one (see the tabs
-    /// spec).
+    /// The overlay's terminals in tab order. Never empty while a
+    /// surface is shown: closing the last tab respawns a fresh one
+    /// (see `ensure_tabs`).
     tabs: Vec<Tab>,
     /// Index into `tabs` of the focused tab.
     active_tab: usize,
     terminal_id: widget::Id,
     term_event_tx: Option<mpsc::UnboundedSender<(TabId, TermEvent)>>,
-    /// Source of monotonically increasing tab ids, never reused within a
-    /// run (see the tabs spec).
+    /// Source of monotonically increasing tab ids, never reused within
+    /// a run.
     next_tab_id: u32,
-    /// The startup session stash (session-persistence spec, S2): the
-    /// restore plan loaded from the state file in `init`, consumed by
-    /// the spawn funnel's first productive run.
+    /// The startup session stash: the restore plan loaded from the
+    /// state file in `init`, consumed by the first productive run of
+    /// `ensure_tabs`.
     restore: session::RestoreStash,
     /// A remote `new-tab` request that arrived before the terminal
-    /// event channel existed (first-launch startup, remote-newtab
-    /// spec): stashed here, applied the moment the channel
-    /// bootstraps and the session restore has landed, so the
-    /// requested tab never races — or is lost to — the restore.
+    /// event channel was created (first-launch startup): stashed
+    /// here, applied the moment the channel bootstraps and the
+    /// session restore has landed, so the requested tab never races —
+    /// or is lost to — the restore.
     pending_remote_tab: Option<ToggleAction>,
-    /// Debounced session-save state (session-persistence spec, S3):
-    /// which change window is armed and whether a write is owed (see
-    /// `session::SessionSave`).
+    /// Debounced session-save state: which change window is armed and
+    /// whether a write is owed (see `session::SessionSave`).
     session_save: session::SessionSave,
     /// Each live tab's working directory as last seen, seeded at
-    /// spawn/restore with the spawn cwd (session-persistence spec,
-    /// S3): title events compare against this cache so only a real
-    /// cwd change — not title churn — marks the session dirty.
+    /// spawn/restore with the spawn cwd: title events compare against
+    /// this cache so only a real cwd change — not title churn — marks
+    /// the session dirty.
     tab_cwds: HashMap<TabId, Option<PathBuf>>,
-    /// The active inline rename, if any (tabs spec, T6): which tab is
-    /// being renamed and the current draft, mirrored into the input the
-    /// tab bar overlays on the renamed button.
+    /// The active inline rename, if any: which tab is being renamed
+    /// and the current draft, mirrored into the input the tab bar
+    /// overlays on the renamed button.
     rename: Option<RenameEdit>,
-    /// An in-progress grab-bar height drag, if any (geometry spec, G3):
-    /// the absolute anchor every target recomputes from, plus the
-    /// runtime state of the apply cadence (see `Drag`).
+    /// An in-progress grab-bar height drag, if any: the absolute
+    /// anchor every target recomputes from, plus the runtime state of
+    /// the apply cadence (see `Drag`).
     drag: Option<Drag>,
-    /// Debounced drag-release config-write state (geometry spec, G4):
-    /// which release's persist is still pending.
+    /// Debounced drag-release config-write state: which release's
+    /// persist is still pending.
     write_back: geometry::WriteBack,
     /// The geometry of our last config write, kept to recognize and
-    /// absorb its `ConfigChanged` echo (geometry spec, G4). Cleared on
-    /// absorption.
+    /// absorb its `ConfigChanged` echo. Cleared on absorption.
     last_written: Option<Geometry>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
@@ -372,7 +362,7 @@ pub struct DropTerm {
     /// gets its strip inside the fixed-size surface.
     window_height: Option<f32>,
     /// The last pin adoption (when, which height), for the adoption
-    /// debounce (geometry spec, G3 — see `geometry::window_pin_due`).
+    /// debounce (see `geometry::window_pin_due`).
     pin_applied: Option<(std::time::Instant, f32)>,
     /// A height the debounce skipped, landing via the trailing adopt
     /// (`WindowPinDue`) once the granted stream settles.
@@ -384,34 +374,32 @@ pub struct DropTerm {
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     last_toggle: Option<std::time::Instant>,
-    /// The live slide (slide-animation spec, A3 + A4): the eased
-    /// content offset while the surface animates — in from the
-    /// anchored edge after a show, out toward it before a hide's
-    /// destroy. `None` at rest — renders byte-identically to the
-    /// unwrapped column — and cleared when the parking tick completes
-    /// the slide (`SlideTick`).
+    /// The live slide: the eased content offset while the surface
+    /// animates — in from the anchored edge after a show, out toward
+    /// it before a hide's destroy. `None` at rest — renders
+    /// byte-identically to the unwrapped column — and cleared when
+    /// the parking tick completes the slide (`SlideTick`).
     slide: Option<slide::Playing>,
-    /// The settings window, when one is open (settings-ui spec, U1):
-    /// `Some(id)` routes a repeat Ctrl+Shift+I to `gain_focus`
-    /// instead of opening a second window. Cleared when the window
-    /// closes — never left holding a dead id.
+    /// The settings window, when one is open: `Some(id)` routes a
+    /// repeat Ctrl+Shift+I to `gain_focus` instead of opening a
+    /// second window. Cleared when the window closes — never left
+    /// holding a dead id.
     settings_window: Option<window::Id>,
-    /// The settings window's in-flight drafts (settings-ui spec,
-    /// U4): display-only text and slider state, cleared on window
-    /// close so a reopened window renders purely from config.
+    /// The settings window's in-flight drafts: display-only text and
+    /// slider state, cleared on window close so a reopened window
+    /// renders purely from config.
     settings_buffer: settings::SettingsBuffer,
-    /// Whether the terminal's context menu is open (context-menu
-    /// module): the `TerminalBox` press seam's latch, read by the
-    /// view through `context_menu::open_trees` and fed back to the
-    /// box so any press while open toggle-closes it. Cleared by
-    /// `hide()` — the popup dies with the surface and `on_close`
-    /// never fires there.
+    /// Whether the terminal's context menu is open: the `TerminalBox`
+    /// press handler's latch, read by the view through
+    /// `context_menu::open_trees` and fed back to the box so any
+    /// press while open toggle-closes it. Cleared by `hide()` — the
+    /// popup dies with the surface and `on_close` never fires there.
     context_menu_open: bool,
-    /// Queryable state on the owned bus name (dbus-state spec): the
-    /// connection the `dbus_connection` hook handed over, the shared
-    /// snapshot the served V1 interface reads, and the last-served
-    /// snapshot the sync seam dedupes against. Inert until the hook
-    /// fires — headless, all three stay exactly as initialized.
+    /// Queryable state on the owned bus name: the connection the
+    /// `dbus_connection` hook handed over, the shared snapshot the
+    /// served V1 interface reads, and the last-served snapshot the
+    /// sync step dedupes against. Inert until the hook fires —
+    /// headless, all three stay exactly as initialized.
     dbus_conn: Option<zbus::Connection>,
     dbus_shared: Arc<Mutex<dbus_state::State>>,
     dbus_last: dbus_state::State,
@@ -431,9 +419,9 @@ impl DropTerm {
     }
 
     fn active_colors(&self) -> aterm::color::Colors {
-        // The config preference is the source of truth (theme-preference
-        // spec, criterion 5): the seam, not a direct global read, decides
-        // the mode, so a pick applies colors in this same pass — before
+        // The config preference is the source of truth:
+        // `effective_is_dark`, not a direct global read, decides the
+        // mode, so a pick applies colors in this same pass — before
         // the async `set_theme` task lands and moves the global.
         let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
         let scheme_name = if is_dark {
@@ -480,11 +468,11 @@ impl DropTerm {
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Spawns one terminal tab from `spec` — a session restore's
-    /// resolved spawn parameters, with its recorded shell and
-    /// re-validated cwd — or, with `None`, from the config's resolved
-    /// shell with the pty's default working directory
-    /// (session-persistence spec, S2).
+    /// Spawns one terminal tab from a session restore's resolved
+    /// spawn parameters ([`session::SpawnSpec`], with its recorded
+    /// shell and re-validated cwd) — or, with `None`, from the
+    /// config's resolved shell with the pty's default working
+    /// directory.
     fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
         let (shell, cwd) = match spec {
             Some(spec) => (spec.shell.clone(), spec.cwd.clone()),
@@ -507,9 +495,9 @@ impl DropTerm {
 
         // A shell path pairs with the config's shell arguments; an
         // explicit command line carries its own trailing arguments and
-        // never inherits them (remote-newtab spec) — `--cmd htop`
-        // must not run `htop --login`. A command tab is also
-        // session-ephemeral (never saved, never replayed).
+        // never inherits them — `--cmd htop` must not run
+        // `htop --login`. A command tab is also session-ephemeral
+        // (never saved, never replayed).
         let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
         let (shell, args) = match command {
             SpawnCommand::Shell(shell) => (shell, self.config.args.clone()),
@@ -555,12 +543,11 @@ impl DropTerm {
             Ok(terminal) => {
                 let mut tab = Tab::new(tab_id, shell, terminal);
                 tab.ephemeral = ephemeral;
-                // Seed the cwd cache with the spawn cwd
-                // (session-persistence spec, S3): a restored tab seeds
-                // its re-validated saved cwd — so the fresh shell's
-                // first title report reads as unchanged — and a
-                // default spawn seeds `None`; an inherited cwd seeds
-                // the directory the tab opened in, for the same
+                // Seed the cwd cache with the spawn cwd: a restored
+                // tab seeds its re-validated saved cwd — so the fresh
+                // shell's first title report reads as unchanged — and
+                // a default spawn seeds `None`; an inherited cwd
+                // seeds the directory the tab opened in, for the same
                 // reason.
                 self.tab_cwds.insert(tab.id, cwd);
                 Some(tab)
@@ -573,13 +560,12 @@ impl DropTerm {
     }
 
     /// Guarantees at least one tab exists — restoring the saved
-    /// session on the funnel's first productive run, spawning a fresh
-    /// default tab every other time (session-persistence spec, S2).
-    /// Every path that needs a tab (the terminal channel arriving,
-    /// showing the surface, the last tab's respawn) lands here, so
-    /// the session wins exactly once and nothing is
-    /// spawned-then-deleted; runs before the channel exists defer,
-    /// leaving the stash armed.
+    /// session on the first productive run, spawning a fresh default
+    /// tab every other time. Every path that needs a tab (the
+    /// terminal channel arriving, showing the surface, the last tab's
+    /// respawn) lands here, so the session is restored exactly once
+    /// and nothing is spawned-then-deleted; runs before the channel
+    /// exists defer, leaving the stash armed.
     fn ensure_tabs(&mut self) {
         if !self.tabs.is_empty() {
             return;
@@ -590,8 +576,8 @@ impl DropTerm {
                 if let Some(mut tab) = self.spawn_tab(Some(spec)) {
                     // Saved chrome reapplied onto the fresh tab: plain
                     // append keeps the saved order, and the override
-                    // keeps the fresh shell's first title report at
-                    // bay (the standing tabs rule).
+                    // keeps the fresh shell's first OSC title from
+                    // clobbering the saved one.
                     tab.title = spec.title.clone();
                     tab.title_override = spec.title_override.clone();
                     self.tabs.push(tab);
@@ -604,8 +590,8 @@ impl DropTerm {
                 self.active_tab = active;
                 return;
             }
-            // Every spawn failed: fall through to today's
-            // single-default-tab path.
+            // Every spawn failed: fall through to the
+            // single-default-tab path below.
         }
         if let Some(tab) = self.spawn_tab(None) {
             self.active_tab = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
@@ -617,8 +603,8 @@ impl DropTerm {
             return Task::none();
         }
         // The user can see the terminal again: re-arm every tab's bell
-        // notification latch (bell-notify spec), so a bell from here on
-        // is fresh news worth one notification per tab again.
+        // notification latch, so a bell from here on is fresh news
+        // worth one notification per tab again.
         for tab in &mut self.tabs {
             tab.bell_notified = false;
         }
@@ -630,13 +616,12 @@ impl DropTerm {
     }
 
     fn hide(&mut self) -> Task<Message> {
-        // Hiding the surface is a focus loss for the rename input (T6):
+        // Hiding the surface is a focus loss for the rename input:
         // commit before the content slides out.
         let commit = self.commit_pending_rename();
-        // The slide toggle rides in with the decision (settings-ui
-        // U2): a disabled slide turns this hide into an immediate
-        // destroy inside `toggle_step` — the executor arms below
-        // then simply never runs.
+        // The slide toggle feeds the decision: a disabled slide turns
+        // this hide into an immediate destroy inside `toggle_step` —
+        // the executor arms below then simply never runs.
         let task = match toggle_step(
             ToggleAction::Hide,
             &self.surface,
@@ -644,23 +629,22 @@ impl DropTerm {
         ) {
             ToggleStep::DestroyNow(id) => {
                 // A measuring surface has no reshaped content to
-                // animate (criterion 8): destroy immediately, exactly
-                // as before animated hides existed.
+                // animate: destroy immediately, no slide.
                 self.slide = None;
                 self.surface = SurfaceState::Hidden;
                 destroy_layer_surface(id)
             }
             ToggleStep::SlideOut(id) => {
-                // A shown surface slides out and dies on completion
-                // (criterion 2). The out-slide starts from wherever
-                // the content stands — the live eased offset of an
-                // in-flight slide-in, or rest — so nothing teleports.
-                // Its distance is the plan's pinned source (the same
-                // deterministic formula the show used), kept from the
-                // in-flight slide when one exists: a config edit that
-                // arrived mid-slide updates the config but not the
-                // frozen geometry, so the in-flight distance is the
-                // one the visible surface still has.
+                // A shown surface slides out and its layer is
+                // destroyed on completion. The out-slide starts from
+                // wherever the content stands — the live eased offset
+                // of an in-flight slide-in, or rest — so nothing
+                // teleports. Its distance is the same deterministic
+                // formula the show used, kept from the in-flight slide
+                // when one exists: a config edit that arrived
+                // mid-slide updates the config but not the frozen
+                // geometry, so the in-flight distance is the one the
+                // visible surface still has.
                 let (from_offset_px, distance_px) = match self.slide {
                     Some(playing) => (
                         slide::offset(
@@ -680,34 +664,33 @@ impl DropTerm {
                         distance_px,
                     },
                 });
-                // Keyboard interactivity releases at slide-out START
-                // (criterion 5), not at destroy: the previously
-                // focused window regains focus while the slide plays.
-                // The compositor answers with an `Unfocused` layer
-                // event, which the `Shown(id)` guard in its handler
-                // already rejects — the surface is `Hiding` by the
-                // time it arrives.
+                // Keyboard interactivity releases at slide-out START,
+                // not at destroy: the previously focused window
+                // regains focus while the slide plays. The compositor
+                // answers with an `Unfocused` layer event, which the
+                // `Shown(id)` guard in its handler already rejects —
+                // the surface is `Hiding` by the time it arrives.
                 set_keyboard_interactivity(id, KeyboardInteractivity::None)
             }
-            // `Hide` never decides to show (pinned by the matrix
-            // tests), and a hiding or hidden surface leaves with
-            // nothing: no restart, no double destroy.
+            // `Hide` never decides to show, and a hiding or hidden
+            // surface leaves with nothing: no restart, no double
+            // destroy.
             ToggleStep::Measure | ToggleStep::ReverseShow(_) | ToggleStep::Leave => Task::none(),
         };
         // The surface is leaving on every destructive path, and the
-        // cleanup is idempotent for `Leave`: any live grab-bar drag is
-        // moot (geometry spec, G3), the terminal pin's debounce state
-        // starts over so the next show's first granted size adopts
-        // immediately, and the active terminal reports the focus loss
-        // now — its PTY keeps running regardless (criterion 2: PTYs
-        // live in tabs, not the window).
+        // cleanup is idempotent for `Leave`: any live grab-bar drag
+        // is moot, the terminal pin's debounce state starts over so
+        // the next show's first granted size adopts immediately, and
+        // the active terminal reports the focus loss now — its PTY
+        // keeps running regardless, because PTYs live in tabs, not
+        // the window.
         self.drag = None;
         self.pending_height = None;
         self.pin_applied = None;
         // The context menu's popup dies with the surface and its
-        // `on_close` never fires (context-menu module) — clear the
-        // latch here, or the next show's first right-click would be
-        // consumed as a toggle-close of a menu that is not there.
+        // `on_close` never fires — clear the latch here, or the next
+        // show's first right-click would be consumed as a
+        // toggle-close of a menu that is not there.
         self.context_menu_open = false;
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(false);
@@ -715,16 +698,15 @@ impl DropTerm {
         Task::batch([commit, task])
     }
 
-    /// Reverses a hiding slide back to shown (slide-animation spec,
-    /// A5, criterion 6): the live surface is reused — no new
-    /// measuring pass, `output_size` is retained (the `geometry`
-    /// module's guarantee) — the slide re-targets `In` from the
-    /// current offset (`slide::reverse`: no teleport, a fresh fixed
-    /// 130 ms), keyboard interactivity is re-grabbed per config, the
-    /// terminal reports back the focus it lost at hide start, and
-    /// `surface_focused` resets to `false` pending the
-    /// `LayerFocused` the re-grab synthesizes. PTYs never noticed
-    /// the hide (criterion 2) and keep running throughout.
+    /// Reverses a hiding slide back to shown: the live surface is
+    /// reused — no new measuring pass, `output_size` is retained (the
+    /// `geometry` module's guarantee) — the slide re-targets `In`
+    /// from the current offset (`slide::reverse`: no teleport, a
+    /// fresh fixed 130 ms), keyboard interactivity is re-grabbed per
+    /// config, the terminal reports back the focus it lost at hide
+    /// start, and `surface_focused` resets to `false` pending the
+    /// `LayerFocused` the re-grab synthesizes. PTYs never noticed the
+    /// hide and keep running throughout.
     fn reverse_show(&mut self, id: window::Id) -> Task<Message> {
         self.surface = SurfaceState::Shown(id);
         self.surface_focused = false;
@@ -743,10 +725,10 @@ impl DropTerm {
                 ),
             });
         }
-        // The mirror of hide's focus bookkeeping (criterion 5 in
-        // reverse): report the terminal focused again — `set_focused`
-        // only reports real changes, so the `LayerFocused` this
-        // re-grab synthesizes can repeat it harmlessly.
+        // The mirror of hide's focus bookkeeping: report the terminal
+        // focused again — `set_focused` only reports real changes, so
+        // the `LayerFocused` this re-grab synthesizes can repeat it
+        // harmlessly.
         if let Some(tab) = self.active() {
             tab.terminal.lock().unwrap().set_focused(true);
         }
@@ -759,14 +741,13 @@ impl DropTerm {
         ])
     }
 
-    /// The slide distance for the currently shown surface
-    /// (slide-animation spec, the plan's pinned distance source): the
-    /// same deterministic `geometry::surface_height` formula
-    /// `SurfaceOpened` used — deliberately not the granted window
-    /// height, which double-reports through `WindowResized`. A shown
-    /// surface always has a measured output beside it; the `0.0`
-    /// fallback covers a state that cannot occur and still hides (a
-    /// degenerate at-rest out-slide that parks, then destroys).
+    /// The slide distance for the currently shown surface: the same
+    /// deterministic `geometry::surface_height` formula `SurfaceOpened`
+    /// used — deliberately not the granted window height, which
+    /// double-reports through `WindowResized`. A shown surface always
+    /// has a measured output beside it; the `0.0` fallback covers a
+    /// state that cannot occur and still hides (a degenerate at-rest
+    /// out-slide that parks, then destroys).
     fn slide_distance_px(&self) -> f32 {
         self.output_size.map_or(0.0, |output| {
             geometry::surface_height(
@@ -782,11 +763,11 @@ impl DropTerm {
     /// `keyboard_mode: OnDemand`) can't close a freshly-opened surface. The
     /// latch is cleared only when the hide fires; a loss that doesn't hide
     /// (the config off) leaves it armed. No settings-window case exists
-    /// here (settings-ui spec, U5b): while that window is open the surface
-    /// is hidden by construction, so focus-loss events cannot arrive for a
-    /// shown surface in that state.
+    /// here: while that window is open the surface is hidden by
+    /// construction, so focus-loss events cannot arrive for a shown
+    /// surface in that state.
     fn focus_lost(&mut self) -> Task<Message> {
-        // Losing keyboard focus commits a rename (T6): the input's own
+        // Losing keyboard focus commits a rename: the input's own
         // unfocus signal only covers Escape and Tab, which cancel.
         let commit = self.commit_pending_rename();
         if let Some(tab) = self.active() {
@@ -799,13 +780,13 @@ impl DropTerm {
         commit
     }
 
-    /// The geometry a settled grab-bar drag leaves behind (geometry
-    /// spec, G3): the current config's geometry with the height
-    /// quantized once from where the pointer released — the *latest*
-    /// target, not the last one the cadence gate landed, so throttling
-    /// never decides the final height. The settled surface then matches
-    /// the percent G4 persists, at most half a percent off the dragged
-    /// pixels (accepted tolerance).
+    /// The geometry a settled grab-bar drag leaves behind: the current
+    /// config's geometry with the height quantized once from where the
+    /// pointer released — the *latest* target, not the last one the
+    /// cadence gate landed, so throttling never decides the final
+    /// height. The settled surface then matches the persisted percent,
+    /// at most half a percent off the dragged pixels (accepted
+    /// tolerance).
     fn settled_geometry(&self, drag: &Drag, output: (u32, u32)) -> Geometry {
         let final_target =
             geometry::drag_target_px(self.config.edge, output.1, drag.anchor, drag.pointer_y);
@@ -814,14 +795,13 @@ impl DropTerm {
         geom
     }
 
-    /// Apply a live drag target now (geometry spec, G3): the cadence
-    /// gate has passed. Records the apply, offers the height to the
-    /// terminal pin — adoptions are debounced (see
-    /// `offer_window_height`), because the runtime double-reports
-    /// every `set_size` (once stale, once real) and each adoption
-    /// costs a terminal reflow plus a pty resize that made the drag
-    /// sluggish on hardware — and sends the single-path triple with
-    /// the pixel height.
+    /// Apply a live drag target now: the cadence gate has passed.
+    /// Records the apply, offers the height to the terminal pin —
+    /// adoptions are debounced (see `offer_window_height`), because
+    /// the runtime double-reports every `set_size` (once stale, once
+    /// real) and each adoption costs a terminal reflow plus a pty
+    /// resize that made the drag sluggish on hardware — and sends the
+    /// single-path triple with the pixel height.
     fn apply_drag_target(
         &mut self,
         id: window::Id,
@@ -841,12 +821,12 @@ impl DropTerm {
         }
     }
 
-    /// Offer a height to the terminal pin (geometry spec, G3): adopt
-    /// immediately when the debounce allows (first size, re-report of
-    /// the adopted height, or interval elapsed), else remember it and
-    /// return the trailing-adopt timer that lands it once the granted
-    /// stream settles. Every granted-size follower funnels through
-    /// here — `WindowResized` echoes outside drags and the drag's own
+    /// Offer a height to the terminal pin: adopt immediately when the
+    /// debounce allows (first size, re-report of the adopted height,
+    /// or interval elapsed), else remember it and return the
+    /// trailing-adopt timer that lands it once the granted stream
+    /// settles. Every granted-size follower goes through here —
+    /// `WindowResized` echoes outside drags and the drag's own
     /// applies — so the double-reported stream can never reflow the
     /// terminal at the apply rate.
     fn offer_window_height(&mut self, height: f32) -> Option<Task<Message>> {
@@ -873,19 +853,18 @@ impl DropTerm {
         None
     }
 
-    /// The one path every config write goes through (settings-ui
-    /// spec, U3): the drag release persists here as `PreApplied` —
-    /// the set plus the `last_written` record whose echo
-    /// `ConfigChanged` absorbs, byte-identical with G4 — and every
-    /// settings control (from U4) persists here as `Bare`, recording
-    /// nothing so its echo flows into the live-apply path. The
-    /// newest-intent race rule rides the seam: a bare write of the
-    /// drag's key first cancels any pending debounced write-back, so
-    /// the stale `WriteDue` finds nothing and the bare write's value
-    /// is what lands — while a drag release after it simply schedules
-    /// fresh and lands last. Values clamp before persisting (spec
-    /// criterion 9); a missing config backend (it failed to open at
-    /// init) logs and skips — the drag itself still resized live.
+    /// The one path every config write goes through: the drag release
+    /// persists here as `PreApplied` — the set plus the `last_written`
+    /// record whose `ConfigChanged` echo the update loop absorbs — and
+    /// every settings control persists here as `Bare`, recording
+    /// nothing so its echo flows into the live-apply path.
+    /// Newest intent wins: a bare write of the drag's key first
+    /// cancels any pending debounced write-back, so the stale
+    /// `WriteDue` finds nothing and the bare write's value is what
+    /// lands — while a drag release after it simply schedules fresh
+    /// and lands last. Values clamp before persisting; a missing
+    /// config backend (it failed to open at init) logs and skips —
+    /// the drag itself still resized live.
     fn write_config(&mut self, kind: settings::WriteKind, write: settings::PlannedWrite) {
         if kind == settings::WriteKind::Bare
             && settings::bare_write_cancels_pending_drag(write.key(), self.write_back.has_pending())
@@ -903,8 +882,8 @@ impl DropTerm {
                 // Only a pre-applied write absorbs its echo — geometry
                 // was already applied at release, so the echo must not
                 // reshape. The pre-applied writer is exactly the
-                // height-only drag release (G3 scope). A bare write
-                // records nothing: its echo *is* the apply.
+                // height-only drag release. A bare write records
+                // nothing: its echo *is* the apply.
                 if let (
                     settings::WriteKind::PreApplied,
                     settings::PlannedWrite::HeightPercent(height),
@@ -928,34 +907,34 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
-        // A remote close-tab is a quiet state edit, not a toggle step
-        // (remote-tab-actions spec): it applies through the shared close
-        // funnel and shows nothing — no overlay, and none of the
-        // settings close-first rule below (that exists so a re-shown
-        // terminal never slides over the settings window; a quiet verb
-        // never re-shows) — so a script closing a tab never disturbs
-        // what the user is looking at. The debounce above still guards
-        // it: a compositor double-delivery must not close two tabs.
+        // A remote close-tab is a quiet state edit, not a toggle
+        // step: it applies through [`Self::close_tab_at`] and shows
+        // nothing — no overlay, and none of the settings close-first
+        // rule below (that exists so a re-shown terminal never slides
+        // over the settings window; a quiet verb never re-shows) — so
+        // a script closing a tab never disturbs what the user is
+        // looking at. The debounce above still guards it: a
+        // compositor double-delivery must not close two tabs.
         if let ToggleAction::CloseTab { tab_index } = action {
             return self.close_remote_tab(tab_index);
         }
 
-        // A remote rename-tab is a quiet state edit like close-tab
-        // (remote-tab-actions spec): the title lands on the target —
-        // overriding or clearing — with no overlay and none of the
-        // settings close-first rule below. The debounce above still
-        // guards it: a compositor double-delivery must not apply the
-        // rename twice against a stale target.
+        // A remote rename-tab is a quiet state edit like close-tab:
+        // the title lands on the target — overriding or clearing —
+        // with no overlay and none of the settings close-first rule
+        // below. The debounce above still guards it: a compositor
+        // double-delivery must not apply the rename twice against a
+        // stale target.
         if let ToggleAction::RenameTab { title, tab_index } = action {
             return self.rename_remote_tab(title, tab_index);
         }
 
-        // A remote select-tab is a tab-facing verb like a new-tab
-        // (remote-tab-actions spec): a resolved target activates —
-        // riding set_active_tab's attention retirement, session-dirty
-        // mark, and already-active no-op — and the overlay shows
-        // through the same show-intent cells, mid-slide-out included.
-        // An unresolvable target — no tabs, out of range — is a quiet
+        // A remote select-tab is a tab-facing verb like a new-tab: a
+        // resolved target activates — riding set_active_tab's
+        // attention retirement, session-dirty mark, and
+        // already-active no-op — and the overlay shows through the
+        // same path a `new-tab` takes, mid-slide-out included. An
+        // unresolvable target — no tabs, out of range — is a quiet
         // no-op like close-tab's: no activation and no surface half,
         // so none of the settings close-first rule below either
         // (nothing re-shows; a script's failed select must not
@@ -975,45 +954,43 @@ impl DropTerm {
 
         // The settings close-first rule rides in with every remaining
         // action (see [`Self::close_settings_if_open`]): uniform —
-        // `Hide`'s funnel result is nothing anyway (the surface is
+        // `Hide`'s step contributes no task anyway (the surface is
         // already hidden), but the close still runs so no toggle ever
         // leaves the window stranded open behind a hidden terminal.
         let close = self.close_settings_if_open();
 
-        // A remote new-tab is not a toggle step (remote-newtab spec):
-        // the tab opens — now or once the channel bootstraps — and
-        // the overlay shows, whatever state it was in. The surface
-        // half rides the show-intent cells of the funnel below, so a
-        // request arriving mid-slide-out reverses on the live surface
-        // exactly like a `show` would. Everything above (debounce,
-        // settings close-first) applies to it like any other action.
+        // A remote new-tab is not a toggle step: the tab opens — now
+        // or once the channel bootstraps — and the overlay shows,
+        // whatever state it was in. The surface half rides the show
+        // path below, so a request arriving mid-slide-out reverses on
+        // the live surface exactly like a `show` would. Everything
+        // above (debounce, settings close-first) applies to it like
+        // any other action.
         if let ToggleAction::NewTab { .. } = action {
             let open = self.open_remote_tab(action);
             return Task::batch([close, open, self.show_intent_surface()]);
         }
 
-        // A remote duplicate-tab is a tab-facing verb like a new-tab
-        // (remote-tab-actions spec): a fresh shell tab opens in the
-        // target's cwd — now or once the channel bootstraps — and the
-        // overlay shows through the same show-intent cells. An
-        // unresolvable target never blocks it: the spawn degrades to
-        // the bare new-tab inheritance, so — like new-tab, and unlike
-        // the quiet verbs above — the settings close-first rule and
-        // surface half apply on every path.
+        // A remote duplicate-tab is a tab-facing verb like a new-tab:
+        // a fresh shell tab opens in the target's cwd — now or once
+        // the channel bootstraps — and the overlay shows through the
+        // same path. An unresolvable target never blocks it: the
+        // spawn degrades to the bare new-tab inheritance, so — like
+        // new-tab, and unlike the quiet verbs above — the settings
+        // close-first rule and surface half apply on every path.
         if let ToggleAction::DuplicateTab { tab_index } = action {
             let open = self.duplicate_remote_tab(tab_index);
             return Task::batch([close, open, self.show_intent_surface()]);
         }
 
-        // The toggle funnel (slide-animation spec, A5): every matrix
-        // cell executes here — most importantly, a mid-hide toggle or
-        // `Show` reverses on the live surface instead of being
-        // dropped. The debounce above already collapses true spam
-        // (~6–7 effective toggles per second at 150 ms, each a full
-        // reversal); the state machine itself never drops or queues.
-        // The slide toggle (settings-ui U2) rides in with the
-        // decision: with it off, a shown surface destroys now instead
-        // of sliding out — day-one equality holds with it on.
+        // Every toggle decision executes through `toggle_step` — most
+        // importantly, a mid-hide toggle or `Show` reverses on the
+        // live surface instead of being dropped. The debounce above
+        // already collapses true spam (~6–7 effective toggles per
+        // second at 150 ms, each a full reversal); the state machine
+        // itself never drops or queues. The slide toggle rides in
+        // with the decision: with it off, a shown surface destroys
+        // now instead of sliding out; with it on, every hide slides.
         match toggle_step(action, &self.surface, self.config.slide_animation_enabled) {
             ToggleStep::Measure => Task::batch([close, self.show()]),
             ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => {
@@ -1025,9 +1002,9 @@ impl DropTerm {
     }
 
     /// Opens the tab a remote `new-tab` asked for. At first launch the
-    /// terminal event channel may not exist yet — the spawn funnel
-    /// defers, the request stashes, and the channel's arrival applies
-    /// it right after the session restore (remote-newtab spec).
+    /// terminal event channel may not exist yet — the spawn defers,
+    /// the request stashes, and the channel's arrival applies it
+    /// right after the session restore.
     fn open_remote_tab(&mut self, action: ToggleAction) -> Task<Message> {
         let ToggleAction::NewTab { .. } = action else {
             return Task::none();
@@ -1050,7 +1027,7 @@ impl DropTerm {
         };
         self.ensure_tabs();
         // A nonexistent --cwd degrades to the inherited/default cwd
-        // with a warning, never an error surface (remote-newtab spec).
+        // with a warning, never an error surface.
         let explicit = cwd.filter(|dir| {
             let live = dir.is_dir();
             if !live {
@@ -1074,15 +1051,15 @@ impl DropTerm {
         Task::none()
     }
 
-    /// Applies a remote `close-tab` (remote-tab-actions spec): the
-    /// 1-based `--tab-index` resolves through
-    /// [`tabs::remote_target_index`] — absent means the active tab —
-    /// and the close rides the shared [`Self::close_tab_at`] funnel,
-    /// inheriting successor activation, respawn-when-last, attention
-    /// retirement, the session-dirty mark, and the rename-session
-    /// prune. An unresolvable target — no tabs, out of range — warns
-    /// and no-ops: the fire-and-forget seam cannot reply, and quiet
-    /// degradation is the established pattern.
+    /// Applies a remote `close-tab`: the 1-based `--tab-index`
+    /// resolves through [`tabs::remote_target_index`] — absent means
+    /// the active tab — and the close rides the shared
+    /// [`Self::close_tab_at`], inheriting successor activation,
+    /// respawn-when-last, attention retirement, the session-dirty
+    /// mark, and the rename-session prune. An unresolvable target —
+    /// no tabs, out of range — warns and no-ops: the fire-and-forget
+    /// D-Bus call has no reply to carry the failure, so degradation
+    /// is quiet.
     fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
         match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
             Some(index) => self.close_tab_at(index),
@@ -1096,15 +1073,15 @@ impl DropTerm {
         }
     }
 
-    /// Applies a remote `select-tab` (remote-tab-actions spec): the
-    /// strict 1-based `N` resolves through [`tabs::select_tab_target`]
-    /// — the wire's 1-based indices converted once, at this boundary —
-    /// and the activation rides the shared [`Self::set_active_tab`]
-    /// funnel, inheriting attention retirement, the session-dirty
-    /// mark, and the already-active no-op. An unresolvable target — no
-    /// tabs, out of range — warns and no-ops: the fire-and-forget seam
-    /// cannot reply, and quiet degradation is the established pattern.
-    /// The `None` return tells the caller to skip the surface half too.
+    /// Applies a remote `select-tab`: the strict 1-based `N` resolves
+    /// through [`tabs::select_tab_target`] — the wire's 1-based
+    /// indices converted once, at this boundary — and the activation
+    /// rides the shared [`Self::set_active_tab`], inheriting attention
+    /// retirement, the session-dirty mark, and the already-active
+    /// no-op. An unresolvable target — no tabs, out of range — warns
+    /// and no-ops: the fire-and-forget D-Bus call has no reply to
+    /// carry the failure, so degradation is quiet. The `None` return
+    /// tells the caller to skip the surface half too.
     fn select_remote_tab(&mut self, one_based: usize) -> Option<Task<Message>> {
         match tabs::select_tab_target(self.tabs.len(), one_based) {
             Some(index) => Some(self.set_active_tab(index)),
@@ -1118,11 +1095,11 @@ impl DropTerm {
         }
     }
 
-    /// Applies a remote `rename-tab` (remote-tab-actions spec): the
-    /// target resolves like close-tab's — absent means the active tab —
-    /// through [`tabs::remote_target_index`]. Any inline rename
-    /// session on that tab ends first with its draft discarded — a
-    /// pending draft must not commit over the remote title — then
+    /// Applies a remote `rename-tab`: the target resolves like
+    /// close-tab's — absent means the active tab — through
+    /// [`tabs::remote_target_index`]. Any inline rename session on
+    /// that tab ends first with its draft discarded — a pending draft
+    /// must not commit over the remote title — then
     /// [`tabs::commit_rename`] applies the payload: a non-empty TITLE
     /// sets the sticky override shell OSC titles never clobber, the
     /// empty TITLE clears it so shell titles resume. Quiet like
@@ -1147,14 +1124,14 @@ impl DropTerm {
         }
     }
 
-    /// Applies a remote `duplicate-tab` (remote-tab-actions spec): the
-    /// target — absent means the active tab — resolves through
-    /// [`tabs::remote_target_index`], and a fresh shell tab opens in
-    /// that tab's cwd; the running command is never copied. An
-    /// explicit but unresolvable `--tab-index` warns, and the spawn
-    /// degrades to the bare new-tab inheritance — no explicit cwd, so
-    /// the funnel takes the active tab's, then the pty default. The
-    /// spawn itself rides the existing new-tab funnel end to end
+    /// Applies a remote `duplicate-tab`: the target — absent means the
+    /// active tab — resolves through [`tabs::remote_target_index`],
+    /// and a fresh shell tab opens in that tab's cwd; the running
+    /// command is never copied. An explicit but unresolvable
+    /// `--tab-index` warns, and the spawn degrades to the bare
+    /// new-tab inheritance — no explicit cwd, so resolution takes the
+    /// active tab's cwd, then the pty default. The spawn itself rides
+    /// the existing new-tab path end to end
     /// ([`Self::open_remote_tab`]): the channel-bootstrap deferral,
     /// landing after the active tab, activation, and the session-dirty
     /// mark are all inherited. The overlay half is the caller's.
@@ -1174,11 +1151,11 @@ impl DropTerm {
         self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None })
     }
 
-    /// Ends an inline rename session sitting on the tab at `index`
-    /// (remote-tab-actions spec): the draft is discarded — it must not
-    /// commit over a title arriving from outside — and focus returns
-    /// to the terminal as the input overlay goes away. No-op when no
-    /// session targets that tab.
+    /// Ends an inline rename session sitting on the tab at `index`:
+    /// the draft is discarded — it must not commit over a title
+    /// arriving from outside — and focus returns to the terminal as
+    /// the input overlay goes away. No-op when no session targets
+    /// that tab.
     fn end_rename_on(&mut self, index: usize) -> Task<Message> {
         let session_on_target = self
             .tabs
@@ -1191,12 +1168,12 @@ impl DropTerm {
         Task::none()
     }
 
-    /// The settings close-first rule's task (settings-ui spec, U5b): a
-    /// toggle or show-intent action arriving while the settings window
-    /// is open — the terminal being hidden by construction then —
-    /// closes the window first, because a re-shown terminal must never
-    /// slide over it, and that window can never stack above the layer
-    /// surface. Inert when none is open.
+    /// The settings close-first rule's task: a toggle or show-intent
+    /// action arriving while the settings window is open — the
+    /// terminal being hidden by construction then — closes the window
+    /// first, because a re-shown terminal must never slide over it,
+    /// and that window can never stack above the layer surface.
+    /// Inert when none is open.
     fn close_settings_if_open(&mut self) -> Task<Message> {
         if self.settings_window.is_some() {
             self.close_settings()
@@ -1205,11 +1182,11 @@ impl DropTerm {
         }
     }
 
-    /// The surface half a tab-facing remote verb rides
-    /// (remote-tab-actions spec): the same show-intent cells a
-    /// `new-tab` takes, so the verb shows the overlay whatever state
-    /// it was in — and a request arriving mid-slide-out reverses on
-    /// the live surface exactly like a `show` would.
+    /// The surface half a tab-facing remote verb takes: the same show
+    /// decision a `new-tab` gets, so the verb shows the overlay
+    /// whatever state it was in — and a request arriving
+    /// mid-slide-out reverses on the live surface exactly like a
+    /// `show` would.
     fn show_intent_surface(&mut self) -> Task<Message> {
         match toggle_step(
             ToggleAction::Show,
@@ -1222,10 +1199,9 @@ impl DropTerm {
         }
     }
 
-    /// Opens the settings window, or focuses the existing one
-    /// (settings-ui spec, U1): one window per process, tracked by id
-    /// — every repeat press routes to `window::gain_focus`, never a
-    /// second window.
+    /// Opens the settings window, or focuses the existing one: one
+    /// window per process, tracked by id — every repeat press routes
+    /// to `window::gain_focus`, never a second window.
     fn open_settings(&mut self) -> Task<Message> {
         if let Some(id) = self.settings_window {
             return window::gain_focus(id);
@@ -1234,8 +1210,7 @@ impl DropTerm {
         // false` turns the ✕ into a `CloseRequested` event the app
         // handles (`SettingsCloseRequested`) — closing is the app's
         // decision, never the runtime's, in a layer-shell-only app
-        // that must keep running underneath (settings-ui spec,
-        // criterion 8).
+        // that must keep running underneath.
         let (id, open) = window::open(window::Settings {
             exit_on_close_request: false,
             size: cosmic::iced::Size::new(700.0, 760.0),
@@ -1244,21 +1219,19 @@ impl DropTerm {
         });
         self.settings_window = Some(id);
         // The terminal and the settings window are never shown at
-        // once (settings-ui spec, U5b): the settings window is a
-        // normal window and can never stack above the terminal's
-        // layer surface, so opening it hides the drop-down first —
-        // the normal hide path, slide-out when enabled. Unconditional,
-        // independent of `hide_on_focus_loss` (which keeps governing
-        // ordinary losses). Every surface state is safe: a shown
-        // surface slides out, a measuring one destroys now, and a
+        // once: the settings window is a normal window and can never
+        // stack above the terminal's layer surface, so opening it
+        // hides the drop-down first — the normal hide path, slide-out
+        // when enabled. Unconditional, independent of
+        // `hide_on_focus_loss` (which keeps governing ordinary
+        // losses). Every surface state is safe: a shown surface
+        // slides out, a measuring one destroys now, and a
         // hidden/hiding one is a no-op (`hide()` guards).
         let hide = self.hide();
         // The open task must be returned for the window to appear —
         // it carries the runtime's window-open command. Its
         // completion value (the id, already tracked synchronously
-        // above) is discarded; the multi-window example maps it the
-        // same way (a first-focus message this window leaves to the
-        // compositor — nothing here needs a focus task).
+        // above) is discarded; nothing here needs a focus task.
         Task::batch([
             open.then(|_| Task::none()),
             self.set_window_title("DropTerm Settings".to_string(), id),
@@ -1266,26 +1239,24 @@ impl DropTerm {
             // libcosmic enables blur itself only for the main window
             // and layer surfaces on theme changes — a `window::open`
             // window is neither, so without this its translucency
-            // composited the raw, un-blurred backdrop (part of the
-            // move-glitter). A compositor with frost disabled treats
-            // the request as a no-op.
+            // composited the raw, un-blurred backdrop. A compositor
+            // with frost disabled treats the request as a no-op.
             window::enable_blur(id),
             hide,
         ])
     }
 
-    /// The settings window's single close funnel (settings-ui spec,
-    /// U1 + U5b): clears the draft buffer (so a reopened window
-    /// starts purely from config), drops the tracked id (never left
-    /// holding a dead one), and issues the close. Idempotent — both
-    /// the take and `window::close` on a dead id are inert — so the
-    /// ✕ arm, the defensive `on_close_requested` net, and the
-    /// toggle-while-open rule can all funnel here with a duplicate
-    /// delivery doing nothing. The terminal is NOT re-shown:
-    /// closing the window leaves it hidden until the next toggle
-    /// (spec criterion 6, no auto-restore — symmetric with ordinary
-    /// focus-loss hiding, where closing the other window doesn't
-    /// reopen the drop-down either).
+    /// The settings window's single close path: clears the draft
+    /// buffer (so a reopened window starts purely from config), drops
+    /// the tracked id (never left holding a dead one), and issues the
+    /// close. Idempotent — both the take and `window::close` on a
+    /// dead id are inert — so the ✕ arm, the defensive
+    /// `on_close_requested` net, and the toggle-while-open rule all
+    /// route here with a duplicate delivery doing nothing. The
+    /// terminal is NOT re-shown: closing the window leaves it hidden
+    /// until the next toggle — no auto-restore, symmetric with
+    /// ordinary focus-loss hiding, where closing the other window
+    /// doesn't reopen the drop-down either.
     fn close_settings(&mut self) -> Task<Message> {
         self.settings_buffer.clear();
         match self.settings_window.take() {
@@ -1295,8 +1266,8 @@ impl DropTerm {
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
-        // Hiding must work even before a terminal exists (the first-run dead
-        // end this fixes: `cargo run` opens a surface with no way to close it).
+        // Hiding must work even before a terminal exists, or a fresh
+        // `cargo run` opens a surface with no way to close it.
         if action == Action::Hide {
             return self.hide();
         }
@@ -1402,12 +1373,12 @@ impl DropTerm {
     fn perform_tab_action(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::NewTab => {
-                // A new tab inherits the active tab's cwd (cwd-inherit
-                // spec): the same `/proc/<pid>/cwd` readlink the
-                // session save samples, so `Ctrl+Shift+T` after a `cd`
-                // lands in the same directory. A failed read — no
-                // active tab, non-Linux, an unreadable `/proc` entry —
-                // degrades to the pty's default directory.
+                // A new tab inherits the active tab's cwd: the same
+                // `/proc/<pid>/cwd` readlink the session save samples,
+                // so `Ctrl+Shift+T` after a `cd` lands in the same
+                // directory. A failed read — no active tab, non-Linux,
+                // an unreadable `/proc` entry — degrades to the pty's
+                // default directory.
                 let inherited = self
                     .active()
                     .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
@@ -1416,14 +1387,13 @@ impl DropTerm {
                     SpawnCommand::Shell(shell),
                     tabs::resolve_new_tab_cwd(None, inherited),
                 ) {
-                    // Yakuake-style placement: directly after the active
-                    // tab, which the new tab immediately becomes.
+                    // Placement: directly after the active tab, which
+                    // the new tab immediately becomes.
                     let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
                     let switch = self.set_active_tab(at);
-                    // The open itself is a save trigger too
-                    // (session-persistence spec, S3); when the switch
-                    // already armed a window this second mark coalesces
-                    // into it.
+                    // The open itself is a save trigger too; when the
+                    // switch already armed a window this second mark
+                    // coalesces into it.
                     return Task::batch([switch, self.mark_session_dirty()]);
                 }
             }
@@ -1435,9 +1405,9 @@ impl DropTerm {
                 return self.set_active_tab(tabs::cycle_prev(&self.tabs, self.active_tab));
             }
             Action::ActivateTab(requested) => {
-                // Strict numbered activation: out of range never wraps
-                // (tab-binds spec); set_active_tab no-ops when the tab
-                // is already active.
+                // Strict numbered activation: out of range never
+                // wraps; set_active_tab no-ops when the tab is already
+                // active.
                 if let Some(index) = tabs::activate_index_target(self.tabs.len(), requested) {
                     return self.set_active_tab(index);
                 }
@@ -1453,7 +1423,7 @@ impl DropTerm {
                 // One slot toward the direction, clamping at the edge;
                 // the moved tab stays active, so no focus handoff.
                 // Like every layout change, the move marks the session
-                // dirty (session-persistence spec, S3).
+                // dirty.
                 let direction = match action {
                     Action::MoveTabLeft => tabs::MoveDirection::Left,
                     _ => tabs::MoveDirection::Right,
@@ -1471,7 +1441,7 @@ impl DropTerm {
     /// Closes the tab at `index` and activates its successor (or, when
     /// it closed last, its predecessor). A close that took the final
     /// tab immediately spawns a fresh one — the overlay is never left
-    /// empty (see the tabs spec). Shared by the close-tab keybind and
+    /// empty (see `ensure_tabs`). Shared by the close-tab keybind and
     /// by shell exits; `set_focused` reports only real focus changes,
     /// so refocusing a tab that already had focus is a no-op.
     fn close_tab_at(&mut self, index: usize) -> Task<Message> {
@@ -1480,8 +1450,7 @@ impl DropTerm {
             self.active_tab = decision.next_active;
             // The tab activation a close implies also retires the
             // newly active tab's attention marker, exactly like a
-            // click or a numbered-switch bind would (bell-indicator
-            // spec).
+            // click or a numbered-switch bind would.
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                 tab.attention = tab.attention.on_activated();
             }
@@ -1492,12 +1461,11 @@ impl DropTerm {
             if let Some(id) = closed {
                 self.tab_cwds.remove(&id);
             }
-            // Every close funnels through here — keybind, tab-bar `×`,
+            // Every close comes through here — keybind, tab-bar `×`,
             // middle-click, and a shell exit (`TermEvent::Exit`) — so
-            // this is the close trigger's single save-marking site
-            // (session-persistence spec, S3).
+            // this is the close trigger's single save-marking site.
             let mark = self.mark_session_dirty();
-            // A close can orphan the rename input (T6): its tab may be
+            // A close can orphan the rename input: its tab may be
             // gone, or the bar may have vanished with a single tab
             // left. End the session so the terminal regains keyboard
             // focus.
@@ -1506,11 +1474,11 @@ impl DropTerm {
         self.prune_rename_session()
     }
 
-    /// Commits the active inline rename, if any (T6): the draft becomes
-    /// the tab's user rename, the session ends, and focus returns to the
-    /// terminal. Every committing focus-loss path funnels here — Enter,
-    /// a press outside the input, the surface hiding or losing keyboard
-    /// focus — while Escape and Tab cancel instead
+    /// Commits the active inline rename, if any: the draft becomes
+    /// the tab's user rename, the session ends, and focus returns to
+    /// the terminal. Every committing focus-loss path comes through
+    /// here — Enter, a press outside the input, the surface hiding or
+    /// losing keyboard focus — while Escape and Tab cancel instead
     /// ([`Message::RenameCancelled`]).
     fn commit_pending_rename(&mut self) -> Task<Message> {
         if let Some(edit) = self.rename.take() {
@@ -1518,9 +1486,8 @@ impl DropTerm {
                 tabs::commit_rename(&mut tab.title, &mut tab.title_override, &edit.draft);
             }
             // A rename commit is a save trigger — but only when a
-            // rename session actually existed (session-persistence
-            // spec, S3); every committing path funnels through here,
-            // so this is its single marking site.
+            // rename session actually existed; every committing path
+            // comes through here, so this is its single marking site.
             let mark = self.mark_session_dirty();
             return Task::batch([mark, widget::text_input::focus(self.terminal_id.clone())]);
         }
@@ -1529,7 +1496,7 @@ impl DropTerm {
 
     /// Ends the active rename when its input can no longer be shown: the
     /// renamed tab is gone, or the bar is hidden now that a single tab
-    /// remains (T6). Returns the task refocusing the terminal, if a
+    /// remains. Returns the task refocusing the terminal, if a
     /// session ended.
     fn prune_rename_session(&mut self) -> Task<Message> {
         if let Some(edit) = &self.rename {
@@ -1546,8 +1513,7 @@ impl DropTerm {
     /// both shells (FOCUS_OUT to the outgoing one, FOCUS_IN to the
     /// incoming one), the same way a window focus change does. A real
     /// switch marks the session dirty — the focused index is saved
-    /// state (session-persistence spec, S3); the index-unchanged early
-    /// return never marks.
+    /// state; the index-unchanged early return never marks.
     fn set_active_tab(&mut self, index: usize) -> Task<Message> {
         // Cycling with a single tab is a no-op; refocusing it anyway would
         // send the shell a spurious FOCUS_OUT/FOCUS_IN pair.
@@ -1558,8 +1524,8 @@ impl DropTerm {
             old.terminal.lock().unwrap().set_focused(false);
         }
         self.active_tab = index;
-        // Activation retires whatever attention marker the tab wore
-        // (bell-indicator spec): the user is now looking at it.
+        // Activation retires whatever attention marker the tab wore:
+        // the user is now looking at it.
         if let Some(tab) = self.tabs.get_mut(index) {
             tab.attention = tab.attention.on_activated();
         }
@@ -1575,17 +1541,16 @@ impl DropTerm {
         }
     }
 
-    /// Marks the session dirty and arms the debounce window
-    /// (session-persistence spec, S3): at most one `tokio::sleep` is
-    /// ever in flight — a mark while a window is armed coalesces into
-    /// that window's write — and only a mark after a write re-arms.
-    /// Returns the window's timer task when this call armed it, the
-    /// `WindowPinDue`/`WriteDue` pattern.
+    /// Marks the session dirty and arms the debounce window: at most
+    /// one `tokio::sleep` is ever in flight — a mark while a window
+    /// is armed coalesces into that window's write — and only a mark
+    /// after a write re-arms. Returns the window's timer task when
+    /// this call armed it, the `WindowPinDue`/`WriteDue` pattern.
     fn mark_session_dirty(&mut self) -> Task<Message> {
-        // The session toggle gates every save trigger (settings-ui
-        // U2): a disabled trigger no-ops — no dirty mark, no debounce
-        // window, no timer task — so a mid-run disable stops further
-        // saves immediately.
+        // The session toggle gates every save trigger: a disabled
+        // trigger no-ops — no dirty mark, no debounce window, no
+        // timer task — so a mid-run disable stops further saves
+        // immediately.
         match self
             .session_save
             .mark_gated(self.config.session_persistence_enabled)
@@ -1599,11 +1564,11 @@ impl DropTerm {
     }
 
     /// Captures the live tab list and writes the session file
-    /// atomically (session-persistence spec, S3). The cwd readlinks
-    /// happen here — at write time, not schedule time — so saved cwds
-    /// are as fresh as the debounce allows; `capture` then
-    /// staleness-filters each one. A failed write logs and leaves the
-    /// old file in place: the next dirty window retries.
+    /// atomically. The cwd readlinks happen here — at write time, not
+    /// schedule time — so saved cwds are as fresh as the debounce
+    /// allows; `capture` then staleness-filters each one. A failed
+    /// write logs and leaves the old file in place: the next dirty
+    /// window retries.
     fn write_session(&mut self) {
         let cwds: Vec<Option<PathBuf>> = self
             .tabs
@@ -1628,11 +1593,10 @@ impl DropTerm {
         }
     }
 
-    /// The cwd-change gate on a shell title event
-    /// (session-persistence spec, S3): one readlink, compared against
-    /// the tab's cached cwd. A moved cwd marks the session dirty and
-    /// updates the cache; a title churn with the cwd holding — a vim
-    /// statusline — stays quiet (Guake's change-gated cadence).
+    /// The cwd-change gate on a shell title event: one readlink,
+    /// compared against the tab's cached cwd. A moved cwd marks the
+    /// session dirty and updates the cache; a title churn with the
+    /// cwd holding — a vim statusline — stays quiet.
     fn check_tab_cwd(&mut self, tab_index: usize) -> Task<Message> {
         let tab_id = self.tabs[tab_index].id;
         let cwd = self.tabs[tab_index]
