@@ -150,9 +150,9 @@ impl RestoreStash {
     /// Stashes the restore plan for a loaded state: an absent,
     /// invalid, or tab-less session stashes nothing, leaving startup
     /// on the fresh single-tab path.
-    pub fn new(state: Option<SessionState>, home: Option<&Path>) -> Self {
+    pub fn new(state: Option<&SessionState>, home: Option<&Path>) -> Self {
         Self {
-            plan: state.as_ref().and_then(|state| plan_restore(state, home)),
+            plan: state.and_then(|state| plan_restore(state, home)),
         }
     }
 
@@ -290,7 +290,7 @@ pub fn restore_entry(path: &Path, home: Option<&Path>, enabled: bool) -> Restore
     if !enabled {
         return RestoreStash::default();
     }
-    RestoreStash::new(load(path), home)
+    RestoreStash::new(load(path).as_ref(), home)
 }
 
 /// Loads the session file. A missing file is a silent `None` (first
@@ -341,7 +341,7 @@ fn quarantine(path: &Path) -> Option<SessionState> {
     None
 }
 
-/// Atomically writes `state` to `path` (KConfig `QSaveFile` semantics):
+/// Atomically writes `state` to `path` (`KConfig` `QSaveFile` semantics):
 /// serialize to a `.tmp` sibling in the same directory, fsync it, rename
 /// over the target, then best-effort fsync the parent directory so the
 /// rename itself survives a crash. Parent directories are created on
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn restore_stash_hands_its_plan_to_the_first_run_that_can_spawn() {
-        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
         assert_eq!(
             stash.take_for_run(true),
             Some(RestorePlan {
@@ -833,7 +833,7 @@ mod tests {
     fn restore_stash_hands_nothing_to_later_runs() {
         // The plan is consumed exactly once: every later spawn run
         // spawns plain default tabs.
-        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
         assert!(stash.take_for_run(true).is_some());
         assert_eq!(stash.take_for_run(true), None);
     }
@@ -843,7 +843,7 @@ mod tests {
         // The first spawn run can arrive before the terminal event
         // channel exists (show() outracing TermEventTx): it must not
         // eat the session, or the startup race would be lost.
-        let mut stash = RestoreStash::new(Some(restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
         assert_eq!(stash.take_for_run(false), None);
         assert!(stash.take_for_run(true).is_some());
     }
@@ -860,7 +860,7 @@ mod tests {
             active: None,
             tabs: vec![],
         };
-        let mut empty_stash = RestoreStash::new(Some(empty), None);
+        let mut empty_stash = RestoreStash::new(Some(&empty), None);
         assert_eq!(empty_stash.take_for_run(true), None);
     }
 

@@ -58,7 +58,7 @@ impl Section {
     /// The config keys this section's controls write, in display
     /// order. Across all sections every exposed key appears exactly
     /// once — pinned by test.
-    pub const fn keys(&self) -> &'static [ConfigKey] {
+    pub const fn keys(self) -> &'static [ConfigKey] {
         match self {
             Section::Appearance => &[
                 ConfigKey::FontName,
@@ -127,7 +127,7 @@ impl ConfigKey {
     /// The cosmic-config entry field name this key persists under —
     /// the exact spelling `DropTermConfig`'s field serializes as, and
     /// therefore the file-format contract a write must match.
-    pub const fn key_name(&self) -> &'static str {
+    pub const fn key_name(self) -> &'static str {
         match self {
             ConfigKey::HeightPercent => "height_percent",
             ConfigKey::WidthPercent => "width_percent",
@@ -336,6 +336,11 @@ pub fn parse_args(raw: &str) -> Vec<String> {
 /// Parse a `scrollback_lines` draft (≥ 0): plain numbers land,
 /// negatives clamp to zero, and anything without a number in it
 /// rejects (`None` — no write, the draft stays for the user to fix).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to [0, u32::MAX] first, so the narrowing to u32 is lossless by construction"
+)]
 pub fn parse_scrollback(raw: &str) -> Option<u32> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -513,6 +518,11 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
 /// `as` casts saturate in Rust, so a negative buffered value clamps
 /// up to the band's floor, not wrap. `None` for keys without a
 /// slider.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded slider values clamped into each key's band before the narrowing cast"
+)]
 pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> {
     let value = value.round();
     match key {
@@ -631,7 +641,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
 
 impl Section {
     /// The card's heading text.
-    pub const fn title(&self) -> &'static str {
+    pub const fn title(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
             Section::Geometry => "Geometry",
@@ -645,7 +655,7 @@ impl Section {
 impl ConfigKey {
     /// The control's human-facing label (its file field is
     /// [`ConfigKey::key_name`]).
-    pub const fn label(&self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             ConfigKey::HeightPercent => "Height",
             ConfigKey::WidthPercent => "Width",
@@ -776,9 +786,15 @@ fn slider_control(
         ConfigKey::FontSize => FONT_SIZE_SLIDER_MIN..=FONT_SIZE_SLIDER_MAX,
         _ => return None,
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "integer readout of a range-bounded slider value; non-negative by the control's range"
+    )]
+    let readout = value.round() as u32;
     Some(
         widget::column![
-            widget::text(format!("{}", value.round() as u32)).size(12),
+            widget::text(format!("{readout}")).size(12),
             widget::slider(range, value, move |v| SettingsEvent::SliderMoved(key, v))
                 .on_release(SettingsEvent::SliderReleased(key))
                 .width(Length::Fixed(CONTROL_WIDTH)),

@@ -1388,12 +1388,7 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(
-                            event.clone(),
-                            state.modifiers,
-                            col as u32,
-                            row as u32,
-                        );
+                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
                     } else {
                         state.is_focused = true;
 
@@ -1559,12 +1554,7 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(
-                            event.clone(),
-                            state.modifiers,
-                            col as u32,
-                            row as u32,
-                        );
+                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
                     } else {
                         shell.capture_event();
                     }
@@ -1584,12 +1574,7 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(
-                            event.clone(),
-                            state.modifiers,
-                            col as u32,
-                            row as u32,
-                        );
+                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
                     }
                 }
             }
@@ -1641,12 +1626,7 @@ where
                                 clippy::cast_sign_loss,
                                 reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                             )]
-                            terminal.report_mouse(
-                                event.clone(),
-                                state.modifiers,
-                                col as u32,
-                                row as u32,
-                            );
+                            terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
                         }
                     } else {
                         let handled_buffer_drag = update_buffer_drag(

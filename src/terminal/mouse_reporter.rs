@@ -24,6 +24,11 @@ pub struct MouseReporter {
 impl MouseReporter {
     /// Accumulates a scroll delta into whole cell lines (x, y),
     /// keeping the fractional remainder for the next event.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "trunc splits accumulated cell lines from the fractional remainder; line counts < 2^24"
+    )]
     pub fn accumulate_scroll(
         &mut self,
         delta: ScrollDelta,
@@ -64,8 +69,8 @@ impl MouseReporter {
     /// position beyond the encoding's range).
     pub fn normal_mouse_code(
         &mut self,
-        event: Event,
-        modifiers: &Modifiers,
+        event: &Event,
+        modifiers: Modifiers,
         is_utf8: bool,
         x: u32,
         y: u32,
@@ -74,8 +79,8 @@ impl MouseReporter {
         //for normal/utf8 the button release is always reported as button 3
         let mut button = (match event {
             Event::Mouse(MouseEvent::ButtonPressed(b)) => {
-                self.button = Some(b);
-                Self::button_number(b)
+                self.button = Some(*b);
+                Self::button_number(*b)
             }
             Event::Mouse(MouseEvent::ButtonReleased(_b)) => {
                 self.button = None;
@@ -86,10 +91,9 @@ impl MouseReporter {
                 //And only reported if a button is previously pressed
                 if (self.last_movment_x, self.last_movment_y) == (Some(x), Some(y)) {
                     return None;
-                } else {
-                    self.last_movment_x = Some(x);
-                    self.last_movment_y = Some(y);
                 }
+                self.last_movment_x = Some(x);
+                self.last_movment_y = Some(y);
                 //It seems that we should add 32 to signal movement even for normal mode
                 //On button-motion events, xterm adds 32 to the event code (the third
                 //character, Cb).
@@ -140,6 +144,10 @@ impl MouseReporter {
             utf8_encode_and_append(x, &mut buf);
         } else {
             //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "one-byte xterm encoding: x < 95 here, or < 223 in legacy mode; 33 + x fits u8 exactly"
+            )]
             buf.push(32 + 1 + x as u8);
         }
 
@@ -147,6 +155,10 @@ impl MouseReporter {
             utf8_encode_and_append(y, &mut buf);
         } else {
             //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "one-byte xterm encoding: y < 95 here, or < 223 in legacy mode; 33 + y fits u8 exactly"
+            )]
             buf.push(32 + 1 + y as u8);
         }
         Some(buf)
@@ -156,31 +168,30 @@ impl MouseReporter {
     /// events.
     pub fn sgr_mouse_code(
         &mut self,
-        event: Event,
-        modifiers: &Modifiers,
+        event: &Event,
+        modifiers: Modifiers,
         x: u32,
         y: u32,
     ) -> Option<Vec<u8>> {
         let (button_no, event_code) = (match event {
             Event::Mouse(MouseEvent::ButtonPressed(button)) => {
                 //Button pressed is reported as button 0,1,2 and event code M
-                self.button = Some(button);
-                Some((Self::button_number(button), "M"))
+                self.button = Some(*button);
+                Some((Self::button_number(*button), "M"))
             }
             Event::Mouse(MouseEvent::ButtonReleased(button)) => {
                 //Button pressed is reported as button 0,1,2 and event code m
                 self.button = None;
-                Some((Self::button_number(button), "m"))
+                Some((Self::button_number(*button), "m"))
             }
             Event::Mouse(MouseEvent::CursorMoved { .. }) => {
                 //Button pressed is reported as button 32 + 0,1,2 and event code M
                 //And only reported if a button is previously pressed
                 if (self.last_movment_x, self.last_movment_y) == (Some(x), Some(y)) {
                     return None;
-                } else {
-                    self.last_movment_x = Some(x);
-                    self.last_movment_y = Some(y);
                 }
+                self.last_movment_x = Some(x);
+                self.last_movment_y = Some(y);
                 self.button
                     .map(|button| (Self::button_number(button).map(|b| b + 32), "M"))
             }
@@ -228,7 +239,7 @@ impl MouseReporter {
         }
         if modifiers.control() {
             modifier_flags += 16;
-        };
+        }
 
         //Resolve base inputs
         let button_no_y = match lines_y.cmp(&0) {

@@ -1103,7 +1103,7 @@ impl Terminal {
 
     pub fn report_mouse(
         &mut self,
-        event: cosmic::iced::Event,
+        event: &cosmic::iced::Event,
         modifiers: cosmic::iced::keyboard::Modifiers,
         x: u32,
         y: u32,
@@ -1113,13 +1113,13 @@ impl Terminal {
 
         #[allow(clippy::collapsible_else_if)]
         if mode.contains(TermMode::SGR_MOUSE) {
-            if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, &modifiers, x, y) {
+            if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, modifiers, x, y) {
                 self.input_no_scroll(code);
             }
         } else {
             if let Some(code) = self.mouse_reporter.normal_mouse_code(
                 event,
-                &modifiers,
+                modifiers,
                 mode.contains(TermMode::UTF8_MOUSE),
                 x,
                 y,

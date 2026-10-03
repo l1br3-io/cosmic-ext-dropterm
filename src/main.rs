@@ -14,15 +14,6 @@
     clippy::too_many_lines,
     reason = "standing: OQ-4 — dissolved by module-decomposition"
 )]
-#![expect(clippy::cast_possible_truncation, reason = "transient: T4-T7")]
-#![expect(clippy::cast_precision_loss, reason = "transient: T4-T7")]
-#![expect(clippy::cast_sign_loss, reason = "transient: T4-T7")]
-#![expect(clippy::doc_markdown, reason = "transient: T6-T9")]
-#![expect(clippy::needless_pass_by_value, reason = "transient: T6-T9")]
-#![expect(clippy::redundant_else, reason = "transient: T6-T9")]
-#![expect(clippy::struct_excessive_bools, reason = "transient: T5/T8")]
-#![expect(clippy::trivially_copy_pass_by_ref, reason = "transient: T6-T9")]
-#![expect(clippy::unnecessary_semicolon, reason = "transient: T6-T9")]
 
 mod app;
 mod config;

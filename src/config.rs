@@ -120,6 +120,10 @@ impl std::fmt::Display for TabPosition {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "config-file schema contract: each bool is its own serialized RON field; regrouping changes the on-disk format"
+)]
 pub struct DropTermConfig {
     /// Height of the surface as a percentage of the output height.
     pub height_percent: u8,

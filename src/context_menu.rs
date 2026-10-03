@@ -53,7 +53,7 @@ pub const ROWS: &[Row] = &[
 
 impl Item {
     /// The item's display label.
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Item::NewTab => "New Tab",
             Item::Copy => "Copy",
@@ -68,7 +68,7 @@ impl Item {
 
     /// The existing terminal action this item routes to — the same
     /// action its keybind produces.
-    pub fn action(&self) -> Action {
+    pub fn action(self) -> Action {
         match self {
             Item::NewTab => Action::NewTab,
             Item::Copy => Action::Copy,
