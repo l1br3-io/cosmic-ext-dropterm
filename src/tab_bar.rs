@@ -141,8 +141,18 @@ fn draw_close_mark(renderer: &mut Renderer, close: Rectangle, color: Color) {
     let thickness = (close.width / 9.0).max(2.0);
     let half = close.width / 2.0 - close.width / 4.5;
     let (cx, cy) = (close.x + close.width / 2.0, close.y + close.height / 2.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "half is a non-negative px radius derived from the target width; \
+                  truncating to a step count is the draw contract"
+    )]
     let steps = half as usize;
     for step in 0..=steps.max(1) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "step and steps are px-scale counts (< 2^24), so usize -> f32 is exact"
+        )]
         let t = -half + 2.0 * half * (step as f32 / steps.max(1) as f32);
         for dx in [t, -t] {
             renderer.fill_quad(
@@ -349,6 +359,10 @@ fn gear_glyph(target: Rectangle) -> GearGlyph {
     let tooth_side = GEAR_TOOTH_SIZE * side;
     let teeth = (0..GEAR_TEETH)
         .map(|tooth| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "tooth < GEAR_TEETH = 8 and GEAR_TEETH = 8; both usize -> f32 conversions are exact"
+            )]
             let angle = tooth as f32 * (std::f32::consts::TAU / GEAR_TEETH as f32);
             let (dx, dy) = (angle.cos() * ring, angle.sin() * ring);
             Rectangle::new(
@@ -428,6 +442,10 @@ fn layout_buttons(
 
     // Squeeze every button by the same factor when the row overflows,
     // flooring at the minimum width so buttons stay usable.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "tab count is far below 2^24, so usize -> f32 is exact"
+    )]
     let gaps = metrics.button_gap * text_widths.len().saturating_sub(1) as f32;
     let budget = (available_width - gaps).max(0.0);
     let total: f32 = widths.iter().sum();
@@ -555,8 +573,7 @@ fn drop_from_followed(
     };
     let row_width = buttons
         .last()
-        .map(|last| last.bounds.x + last.bounds.width)
-        .unwrap_or(0.0);
+        .map_or(0.0, |last| last.bounds.x + last.bounds.width);
     let followed = followed_x(row_width, button.bounds.width, cursor_x, grab_x);
     drop_index(buttons, dragged, followed + button.bounds.width / 2.0)
 }
@@ -666,7 +683,7 @@ impl State {
     }
 
     fn any_slot_animating(&self) -> bool {
-        self.slots.values().any(|slot| slot.is_animating())
+        self.slots.values().any(SlotAnimation::is_animating)
     }
 
     /// Drops the slides of tabs that no longer exist.
@@ -851,8 +868,7 @@ where
                 state
                     .paragraphs
                     .get(&tab.id)
-                    .map(|paragraph| paragraph.min_width())
-                    .unwrap_or(0.0)
+                    .map_or(0.0, TitleParagraph::min_width)
             })
             .collect();
         layout_buttons(row_budget(bounds.width, &METRICS), &widths, &METRICS)
@@ -910,7 +926,7 @@ struct PaintContext<'a> {
     hover_point: Option<Point>,
 }
 
-impl<'a, Message> TabBar<'a, Message>
+impl<Message> TabBar<'_, Message>
 where
     Message: Clone,
 {
@@ -919,7 +935,6 @@ where
     /// a stronger pill with a drop shadow, drawn by the caller after
     /// the rest of the row so it rides on top of its neighbors.
     fn paint_button(
-        &self,
         renderer: &mut Renderer,
         ctx: &PaintContext<'_>,
         tab: &Tab,
@@ -1041,7 +1056,7 @@ where
     }
 }
 
-impl<'a, Message> Widget<Message, Theme, Renderer> for TabBar<'a, Message>
+impl<Message> Widget<Message, Theme, Renderer> for TabBar<'_, Message>
 where
     Message: Clone,
 {
@@ -1379,6 +1394,13 @@ where
         })))
     }
 
+    // The pane_bg/pane_fg names match the PaintContext field
+    // vocabulary; `similar_names` resolves its level at the fn, so the
+    // expect rides here rather than on the binding.
+    #[expect(
+        clippy::similar_names,
+        reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
+    )]
     fn draw(
         &self,
         tree: &Tree,
@@ -1427,8 +1449,7 @@ where
                 let button = buttons.get(index)?;
                 let row_width = buttons
                     .last()
-                    .map(|last| last.bounds.x + last.bounds.width)
-                    .unwrap_or(0.0);
+                    .map_or(0.0, |last| last.bounds.x + last.bounds.width);
                 let followed = followed_x(row_width, button.bounds.width, drag.x, drag.grab_x);
                 let drop = drop_from_followed(&buttons, index, drag.x, drag.grab_x);
                 let widths: Vec<f32> = buttons.iter().map(|b| b.bounds.width).collect();
@@ -1465,13 +1486,13 @@ where
                     let slot_x = state
                         .slots
                         .get(&tab.id)
-                        .map_or(button.bounds.x, |slot| slot.current());
+                        .map_or(button.bounds.x, SlotAnimation::current);
                     let x = if animate { slot_x } else { button.bounds.x };
                     let bounds = Rectangle::new(
                         Point::new(origin.x + x, origin.y),
                         Size::new(button.bounds.width, METRICS.bar_height),
                     );
-                    self.paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
+                    Self::paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
                 }
 
                 // The dragged button: follows the cursor, lifted
@@ -1484,7 +1505,7 @@ where
                         Point::new(origin.x + followed, origin.y - DRAG_LIFT),
                         Size::new(button.bounds.width, METRICS.bar_height),
                     );
-                    self.paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
+                    Self::paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
                 }
 
                 // Drop indicator: a vertical accent line in the
@@ -1578,6 +1599,11 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> 
         layout::Node::new(tip.size()).move_to(position)
     }
 
+    // See the Widget draw impl for why this expect sits at the fn.
+    #[expect(
+        clippy::similar_names,
+        reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
+    )]
     fn draw(
         &self,
         renderer: &mut Renderer,
@@ -1705,13 +1731,13 @@ where
             layout,
             cursor_position,
             &viewport,
-        )
+        );
     }
 
     fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         self.input
             .as_widget_mut()
-            .operate(self.tree, layout, renderer, operation)
+            .operate(self.tree, layout, renderer, operation);
     }
 }
 
@@ -1752,7 +1778,7 @@ mod tests {
     fn pane_colors_derives_text_from_the_stored_pane_background() {
         // Drive the process-global with a known light pane (the COSMIC
         // light scheme's lavender) so the assertions are deterministic.
-        let saved = WINDOW_BG_COLOR.swap(0xAACCD0DE, std::sync::atomic::Ordering::SeqCst);
+        let saved = WINDOW_BG_COLOR.swap(0xAACC_D0DE, std::sync::atomic::Ordering::SeqCst);
         let (strip, fg) = pane_colors();
         WINDOW_BG_COLOR.store(saved, std::sync::atomic::Ordering::SeqCst);
 
@@ -2046,6 +2072,10 @@ mod tests {
         }
 
         // Equal angular spacing about the target's center: N-fold.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "GEAR_TEETH = 8, so usize -> f32 is exact"
+        )]
         let step = std::f32::consts::TAU / GEAR_TEETH as f32;
         let angles: Vec<f32> = gear
             .teeth
@@ -2053,6 +2083,10 @@ mod tests {
             .map(|tooth| (tooth.center_y() - center.y).atan2(tooth.center_x() - center.x))
             .collect();
         for (i, &angle) in angles.iter().enumerate() {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "i indexes teeth (< GEAR_TEETH = 8); usize -> f32 is exact"
+            )]
             let expected = angles[0] + step * i as f32;
             let drift = (angle - expected).rem_euclid(std::f32::consts::TAU);
             assert!(
