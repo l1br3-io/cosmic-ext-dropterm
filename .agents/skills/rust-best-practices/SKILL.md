@@ -1,58 +1,60 @@
 ---
 name: rust-best-practices
 description: >
-  Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook. Use this skill when:
+  Guide for writing idiomatic, safe, and performant Rust, synthesized from
+  Effective Rust and Rust for Rustaceans. Use this skill when:
   (1) writing new Rust code or functions,
   (2) reviewing or refactoring existing Rust code,
   (3) deciding between borrowing vs cloning or ownership patterns,
   (4) implementing error handling with Result types,
-  (5) optimizing Rust code for performance,
+  (5) touching unsafe, FFI, untrusted input, or dependencies,
   (6) writing tests or documentation for Rust projects.
 license: MIT
-compatibility: Rust 1.70+, Cargo
+compatibility: Rust 1.85+ (edition 2024), Cargo
 metadata:
-  author: apollographql
-  version: "1.1.1"
+  author: opencode-agent-harness
+  version: "2.0.0"
 allowed-tools: Bash(cargo:*) Bash(rustc:*) Bash(rustfmt:*) Bash(clippy:*) Read Write Edit Glob Grep
 ---
 
 # Rust Best Practices
 
-Apply these guidelines when writing or reviewing Rust code. Based on Apollo GraphQL's [Rust Best Practices Handbook](https://github.com/apollographql/rust-best-practices).
+Apply these guidelines when writing or reviewing Rust code. Synthesized from
+*Effective Rust* (Dry) and *Rust for Rustaceans* (Nelson); individual rules cite
+their source item/chapter (e.g. Effective 18, RfR Ch. 9).
 
-## Best Practices Reference
+## How to use this skill
 
-Before reviewing, familiarize yourself with Apollo's Rust best practices. Read ALL relevant chapters in the same turn in parallel. Reference these files when providing feedback:
+Read ONLY the reference files that match the task — never load all of them by
+default. Cite the relevant rule when providing review feedback.
 
-- [Chapter 1 - Coding Styles and Idioms](references/chapter_01.md): Borrowing vs cloning, Copy trait, Option/Result handling, iterators, comments, when to extract a function (duplication vs. wrong abstraction)
-- [Chapter 2 - Clippy and Linting](references/chapter_02.md): Clippy configuration, important lints, workspace lint setup
-- [Chapter 3 - Performance Mindset](references/chapter_03.md): Profiling, avoiding redundant clones, stack vs heap, zero-cost abstractions
-- [Chapter 4 - Error Handling](references/chapter_04.md): Result vs panic, thiserror vs anyhow, error hierarchies
-- [Chapter 5 - Automated Testing](references/chapter_05.md): Test naming, one assertion per test, snapshot testing
-- [Chapter 6 - Generics and Dispatch](references/chapter_06.md): Static vs dynamic dispatch, trait objects
-- [Chapter 7 - Type State Pattern](references/chapter_07.md): Compile-time state safety, when to use it
-- [Chapter 8 - Comments vs Documentation](references/chapter_08.md): When to comment, doc comments, rustdoc
-- [Chapter 9 - Understanding Pointers](references/chapter_09.md): Thread safety, Send/Sync, pointer types
+| Task | Read |
+|------|------|
+| Writing or reviewing any Rust code | `references/coding-style.md` + `references/patterns.md` |
+| `unsafe`, FFI, untrusted input (PTY output, env vars), secrets, dependency changes | add `references/security.md` |
+| Writing or updating tests | add `references/testing.md` |
+| Performance work (only when performance is explicitly in scope) | add `references/performance.md` |
 
 ## Quick Reference
 
 ### Borrowing & Ownership
-- Prefer `&T` over `.clone()` unless ownership transfer is required
-- Use `&str` over `String`, `&[T]` over `Vec<T>` in function parameters
-- Small `Copy` types (≤24 bytes) can be passed by value
-- Use `Cow<'_, T>` when ownership is ambiguous
+- Take the least powerful reference that works: `&T` > `&mut T` > `T`
+- Use `&str` over `String`, `&[T]` over `Vec<T>` in function parameters; own only when storing or mutating
+- Small `Copy` types can be passed by value
+- Use `Cow<'_, T>` when a function sometimes returns borrowed, sometimes owned
+- `clone()` to satisfy the borrow checker usually signals a design issue — restructure ownership; if genuinely needed, comment why
 
 ### Error Handling
-- Return `Result<T, E>` for fallible operations; avoid `panic!` in production
-- Never use `unwrap()`/`expect()` outside tests
-- Use `thiserror` for library errors, `anyhow` for binaries only
-- Prefer `?` operator over match chains for error propagation
+- Return `Result<T, E>` for fallible operations; never panic to signal expected failure
+- `unwrap()`/`expect()` only when the state is provably unreachable given type invariants, or in tests; prefer `expect("reason")` over `unwrap()`
+- Use `thiserror` for library errors (`#[non_exhaustive]`, `#[from]`), `anyhow` for binaries only
+- Prefer `?` and combinator methods (`map`, `and_then`, `ok_or`) over hand-written `match`
 
 ### Performance
-- Always benchmark with `--release` flag
+- Measure before optimizing (`cargo flamegraph`, `samply`, `criterion`) — no performance claim without a benchmark
 - Run `cargo clippy -- -D clippy::perf` for performance hints
-- Avoid cloning in loops; use `.iter()` instead of `.into_iter()` for Copy types
-- Prefer iterators over manual loops; avoid intermediate `.collect()` calls
+- `.clone()` of `String`/`Vec`/`HashMap` in a loop is a hidden allocation; `Vec::with_capacity(n)` when size is predictable
+- Prefer iterators over manual loops; keep pipelines lazy, `.collect()` once at the end
 
 ### Linting
 Run regularly: `cargo clippy --all-targets --all-features --locked -- -D warnings`
@@ -66,14 +68,14 @@ Use `#[expect(clippy::lint)]` over `#[allow(...)]` with justification comment.
 
 ### Testing
 - Name tests descriptively: `process_should_return_error_when_input_empty()`
-- One assertion per test when possible
-- Use doc tests (`///`) for public API examples
+- One logical assertion per test when possible
+- Every public capability needs at least one integration or doc test
 - Consider `cargo insta` for snapshot testing generated output
 
 ### Generics & Dispatch
 - Prefer generics (static dispatch) for performance-critical code
-- Use `dyn Trait` only when heterogeneous collections are needed
-- Box at API boundaries, not internally
+- Use `dyn Trait` only when object safety or heterogeneous collections demand it
+- For a closed set of behaviors, enum dispatch beats `Box<dyn Trait>` (see `references/patterns.md`)
 
 ### Type State Pattern
 Encode valid states in the type system to catch invalid operations at compile time:
@@ -89,6 +91,14 @@ impl Connection<Connected> {
 
 ### Documentation
 - `//` comments explain *why* (safety, workarounds, design rationale)
-- `///` doc comments explain *what* and *how* for public APIs
+- `///` doc comments explain *what* and *how* for public APIs; document `# Panics`, `# Errors`, `# Safety` sections
+- `// SAFETY:` comment is mandatory before every `unsafe` operation
 - Every `TODO` needs a linked issue: `// TODO(#42): ...`
 - Enable `#![deny(missing_docs)]` for libraries
+
+## Project gates
+
+Per `AGENTS.md`: `cargo clippy` and `cargo fmt --check` must pass before a
+change counts as done; `cargo test` is the verification gate. Runtime behavior
+is only testable on real COSMIC hardware — unit tests cover what can be tested
+headless.
