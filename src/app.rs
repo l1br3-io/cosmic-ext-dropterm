@@ -84,6 +84,19 @@ pub enum ToggleAction {
         #[arg(value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         index: usize,
     },
+    /// Rename a tab remotely — the active tab, or the 1-based
+    /// `--tab-index` target (remote-tab-actions spec). A non-empty
+    /// TITLE becomes the sticky override shell OSC titles never
+    /// clobber; the empty TITLE is the documented reset, clearing the
+    /// override so shell titles resume. Quiet: the overlay is not
+    /// shown.
+    RenameTab {
+        /// New title; the empty string clears the override.
+        title: String,
+        /// 1-based index of the tab to rename; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -95,6 +108,7 @@ impl std::fmt::Display for ToggleAction {
             Self::NewTab { .. } => write!(f, "new-tab"),
             Self::CloseTab { .. } => write!(f, "close-tab"),
             Self::SelectTab { .. } => write!(f, "select-tab"),
+            Self::RenameTab { .. } => write!(f, "rename-tab"),
         }
     }
 }
@@ -904,6 +918,16 @@ impl DropTerm {
             return self.close_remote_tab(tab_index);
         }
 
+        // A remote rename-tab is a quiet state edit like close-tab
+        // (remote-tab-actions spec): the title lands on the target —
+        // overriding or clearing — with no overlay and none of the
+        // settings close-first rule below. The debounce above still
+        // guards it: a compositor double-delivery must not apply the
+        // rename twice against a stale target.
+        if let ToggleAction::RenameTab { title, tab_index } = action {
+            return self.rename_remote_tab(title, tab_index);
+        }
+
         // A remote select-tab is a tab-facing verb like a new-tab
         // (remote-tab-actions spec): a resolved target activates —
         // riding set_active_tab's attention retirement, session-dirty
@@ -1057,6 +1081,52 @@ impl DropTerm {
                 None
             }
         }
+    }
+
+    /// Applies a remote `rename-tab` (remote-tab-actions spec): the
+    /// target resolves like close-tab's — absent means the active tab —
+    /// through [`tabs::remote_target_index`]. Any inline rename
+    /// session on that tab ends first with its draft discarded — a
+    /// pending draft must not commit over the remote title — then
+    /// [`tabs::commit_rename`] applies the payload: a non-empty TITLE
+    /// sets the sticky override shell OSC titles never clobber, the
+    /// empty TITLE clears it so shell titles resume. Quiet like
+    /// close-tab, and the session-dirty mark persists titles. An
+    /// unresolvable target warns and no-ops.
+    fn rename_remote_tab(&mut self, title: String, tab_index: Option<usize>) -> Task<Message> {
+        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
+            Some(index) => {
+                let refocus = self.end_rename_on(index);
+                if let Some(tab) = self.tabs.get_mut(index) {
+                    tabs::commit_rename(&mut tab.title, &mut tab.title_override, &title);
+                }
+                Task::batch([refocus, self.mark_session_dirty()])
+            }
+            None => {
+                log::warn!(
+                    "rename-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                    self.tabs.len()
+                );
+                Task::none()
+            }
+        }
+    }
+
+    /// Ends an inline rename session sitting on the tab at `index`
+    /// (remote-tab-actions spec): the draft is discarded — it must not
+    /// commit over a title arriving from outside — and focus returns
+    /// to the terminal as the input overlay goes away. No-op when no
+    /// session targets that tab.
+    fn end_rename_on(&mut self, index: usize) -> Task<Message> {
+        let session_on_target = self
+            .tabs
+            .get(index)
+            .is_some_and(|tab| self.rename.as_ref().is_some_and(|edit| edit.tab == tab.id));
+        if session_on_target {
+            self.rename = None;
+            return widget::text_input::focus(self.terminal_id.clone());
+        }
+        Task::none()
     }
 
     /// The settings close-first rule's task (settings-ui spec, U5b): a
@@ -1612,12 +1682,14 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
         // Structurally unreachable: `debounced_toggle` applies the
         // remote verbs — opening a new-tab, closing a close-tab,
-        // selecting a select-tab — outside the toggle funnel, so none
-        // ever gets here. Loud rather than silently wrong.
+        // selecting a select-tab, renaming a rename-tab — outside the
+        // toggle funnel, so none ever gets here. Loud rather than
+        // silently wrong.
         (
             ToggleAction::NewTab { .. }
             | ToggleAction::CloseTab { .. }
-            | ToggleAction::SelectTab { .. },
+            | ToggleAction::SelectTab { .. }
+            | ToggleAction::RenameTab { .. },
             _,
         ) => {
             unreachable!("remote verbs apply outside the funnel")
@@ -2296,6 +2368,13 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
         ToggleAction::SelectTab { index } => {
             forwarded.push(index.to_string());
         }
+        ToggleAction::RenameTab { title, tab_index } => {
+            forwarded.push(title.clone());
+            if let Some(index) = tab_index {
+                forwarded.push("--tab-index".to_string());
+                forwarded.push(index.to_string());
+            }
+        }
         _ => {}
     }
     forwarded
@@ -2320,8 +2399,9 @@ impl cosmic::app::CosmicFlags for Flags {
 
     /// The arguments forwarded alongside the action name (remote-newtab
     /// spec): a `new-tab` request carries its `--cwd`/`--cmd`, a
-    /// `close-tab` its 1-based `--tab-index` — everything else forwards
-    /// no args, exactly as before.
+    /// `close-tab` or `rename-tab` its 1-based `--tab-index`, a
+    /// `select-tab` its 1-based index, a `rename-tab` its TITLE word —
+    /// everything else forwards no args.
     fn args(&self) -> Vec<&str> {
         self.forwarded.iter().map(String::as_str).collect()
     }
@@ -2451,7 +2531,9 @@ impl Application for DropTerm {
         // restored-or-fresh session (remote-tab-actions spec); only
         // new-tab keeps startup application (remote-newtab spec).
         let startup_action = match flags.action {
-            action @ (ToggleAction::CloseTab { .. } | ToggleAction::SelectTab { .. }) => {
+            action @ (ToggleAction::CloseTab { .. }
+            | ToggleAction::SelectTab { .. }
+            | ToggleAction::RenameTab { .. }) => {
                 log::info!("{} with no running instance: starting plain", action);
                 ToggleAction::Toggle
             }

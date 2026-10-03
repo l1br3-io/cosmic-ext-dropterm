@@ -151,6 +151,49 @@ mod tests {
     }
 
     #[test]
+    fn rename_tab_parses_title_bare_and_indexed() {
+        let bare = Args::parse_from(["dropterm", "rename-tab", "work"]).action;
+        assert_eq!(
+            bare,
+            Some(ToggleAction::RenameTab {
+                title: "work".to_string(),
+                tab_index: None
+            })
+        );
+
+        let indexed =
+            Args::parse_from(["dropterm", "rename-tab", "work", "--tab-index", "2"]).action;
+        assert_eq!(
+            indexed,
+            Some(ToggleAction::RenameTab {
+                title: "work".to_string(),
+                tab_index: Some(2)
+            })
+        );
+    }
+
+    #[test]
+    fn rename_tab_empty_title_parses_as_the_documented_reset() {
+        // `rename-tab ""` clears the override (commit_rename
+        // semantics); the empty string must survive the parse —
+        // deliberately no non-empty parser on TITLE.
+        let reset = Args::parse_from(["dropterm", "rename-tab", ""]).action;
+        assert_eq!(
+            reset,
+            Some(ToggleAction::RenameTab {
+                title: String::new(),
+                tab_index: None
+            })
+        );
+    }
+
+    #[test]
+    fn rename_tab_rejects_a_zero_tab_index() {
+        let result = Args::try_parse_from(["dropterm", "rename-tab", "work", "--tab-index", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn a_malformed_forward_degrades_to_none() {
         // Words clap rejects yield None, which dbus_activation turns
         // into a plain toggle — never an error surface (the
@@ -193,6 +236,18 @@ mod tests {
             ToggleAction::CloseTab { tab_index: Some(2) },
             ToggleAction::SelectTab { index: 1 },
             ToggleAction::SelectTab { index: 3 },
+            ToggleAction::RenameTab {
+                title: "work".to_string(),
+                tab_index: None,
+            },
+            ToggleAction::RenameTab {
+                title: String::new(),
+                tab_index: None,
+            },
+            ToggleAction::RenameTab {
+                title: "logs".to_string(),
+                tab_index: Some(3),
+            },
         ];
         for action in actions {
             let flags = Flags::new(action.clone());
