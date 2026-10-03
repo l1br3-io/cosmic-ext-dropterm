@@ -65,6 +65,30 @@ clippy *args:
 test *args:
     cargo test --workspace {{args}}
 
+# Send a CLI action to the running instance, like a COSMIC keybind would:
+# `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from
+# PATH (`just dev-install` shadows an installed copy with the debug build);
+# the running instance parses the action itself, so any build drives it.
+act *args:
+    {{name}} {{args}}
+
+# Toggle the overlay (the default action of a bare launch).
+toggle:
+    {{name}} toggle
+
+# Show the overlay without toggling.
+show:
+    {{name}} show
+
+# Hide the overlay without toggling.
+hide:
+    {{name}} hide
+
+# Open a new tab in the running instance, e.g.
+# `just new-tab --cwd /tmp` or `just new-tab --cmd htop`.
+new-tab *args:
+    {{name}} new-tab {{args}}
+
 # Compiles with the debug profile. Per-package on purpose — a plain
 # `cargo build` now spans the workspace and unifies features across
 # both crates (see build-applet for why that must not produce

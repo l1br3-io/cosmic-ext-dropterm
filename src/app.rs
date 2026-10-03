@@ -69,6 +69,47 @@ pub enum ToggleAction {
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         cmd: Option<String>,
     },
+    /// Close a tab remotely — the active tab, or the 1-based `--tab-index`
+    /// target. Out-of-range targets no-op with a warning (remote-tab-actions
+    /// spec); the overlay is not shown.
+    CloseTab {
+        /// 1-based index of the tab to close; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
+    /// Activate a tab remotely — the strict 1-based `N`, no wrap and no
+    /// `9 = last` keybind idiom (remote-tab-actions spec). Out-of-range
+    /// indices no-op with a warning; a resolved activation shows the
+    /// overlay, exactly like a `new-tab`.
+    SelectTab {
+        /// 1-based index of the tab to activate.
+        #[arg(value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        index: usize,
+    },
+    /// Rename a tab remotely — the active tab, or the 1-based
+    /// `--tab-index` target (remote-tab-actions spec). A non-empty
+    /// TITLE becomes the sticky override shell OSC titles never
+    /// clobber; the empty TITLE is the documented reset, clearing the
+    /// override so shell titles resume. Quiet: the overlay is not
+    /// shown.
+    RenameTab {
+        /// New title; the empty string clears the override.
+        title: String,
+        /// 1-based index of the tab to rename; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
+    /// Duplicate a tab remotely — the active tab, or the 1-based
+    /// `--tab-index` target (remote-tab-actions spec): a fresh shell
+    /// opens in that tab's cwd — the running command is never copied —
+    /// lands after the active tab, and becomes active. Implies showing
+    /// the overlay; an unresolvable target degrades to the bare
+    /// new-tab inheritance with a warning.
+    DuplicateTab {
+        /// 1-based index of the tab to duplicate; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -78,6 +119,10 @@ impl std::fmt::Display for ToggleAction {
             Self::Show => write!(f, "show"),
             Self::Hide => write!(f, "hide"),
             Self::NewTab { .. } => write!(f, "new-tab"),
+            Self::CloseTab { .. } => write!(f, "close-tab"),
+            Self::SelectTab { .. } => write!(f, "select-tab"),
+            Self::RenameTab { .. } => write!(f, "rename-tab"),
+            Self::DuplicateTab { .. } => write!(f, "duplicate-tab"),
         }
     }
 }
@@ -883,20 +928,57 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
-        // While the settings window is open the terminal is hidden by
-        // construction (settings-ui spec, U5b): a toggle arriving now
-        // (second launch, D-Bus activation, the startup flag) closes
-        // the window first — a re-shown terminal must never slide
-        // over the settings window, which can never stack above the
-        // layer surface. Uniform across actions: `Hide`'s funnel
-        // result is nothing anyway (the surface is already hidden),
-        // but the close still runs so no toggle ever leaves the
-        // window stranded open behind a hidden terminal.
-        let close = if self.settings_window.is_some() {
-            self.close_settings()
-        } else {
-            Task::none()
-        };
+        // A remote close-tab is a quiet state edit, not a toggle step
+        // (remote-tab-actions spec): it applies through the shared close
+        // funnel and shows nothing — no overlay, and none of the
+        // settings close-first rule below (that exists so a re-shown
+        // terminal never slides over the settings window; a quiet verb
+        // never re-shows) — so a script closing a tab never disturbs
+        // what the user is looking at. The debounce above still guards
+        // it: a compositor double-delivery must not close two tabs.
+        if let ToggleAction::CloseTab { tab_index } = action {
+            return self.close_remote_tab(tab_index);
+        }
+
+        // A remote rename-tab is a quiet state edit like close-tab
+        // (remote-tab-actions spec): the title lands on the target —
+        // overriding or clearing — with no overlay and none of the
+        // settings close-first rule below. The debounce above still
+        // guards it: a compositor double-delivery must not apply the
+        // rename twice against a stale target.
+        if let ToggleAction::RenameTab { title, tab_index } = action {
+            return self.rename_remote_tab(title, tab_index);
+        }
+
+        // A remote select-tab is a tab-facing verb like a new-tab
+        // (remote-tab-actions spec): a resolved target activates —
+        // riding set_active_tab's attention retirement, session-dirty
+        // mark, and already-active no-op — and the overlay shows
+        // through the same show-intent cells, mid-slide-out included.
+        // An unresolvable target — no tabs, out of range — is a quiet
+        // no-op like close-tab's: no activation and no surface half,
+        // so none of the settings close-first rule below either
+        // (nothing re-shows; a script's failed select must not
+        // disturb what the user is looking at). The debounce above
+        // still guards it: a compositor double-delivery must not
+        // count twice.
+        if let ToggleAction::SelectTab { index } = action {
+            return match self.select_remote_tab(index) {
+                Some(activate) => Task::batch([
+                    self.close_settings_if_open(),
+                    activate,
+                    self.show_intent_surface(),
+                ]),
+                None => Task::none(),
+            };
+        }
+
+        // The settings close-first rule rides in with every remaining
+        // action (see [`Self::close_settings_if_open`]): uniform —
+        // `Hide`'s funnel result is nothing anyway (the surface is
+        // already hidden), but the close still runs so no toggle ever
+        // leaves the window stranded open behind a hidden terminal.
+        let close = self.close_settings_if_open();
 
         // A remote new-tab is not a toggle step (remote-newtab spec):
         // the tab opens — now or once the channel bootstraps — and
@@ -907,16 +989,20 @@ impl DropTerm {
         // settings close-first) applies to it like any other action.
         if let ToggleAction::NewTab { .. } = action {
             let open = self.open_remote_tab(action);
-            let surface = match toggle_step(
-                ToggleAction::Show,
-                &self.surface,
-                self.config.slide_animation_enabled,
-            ) {
-                ToggleStep::Measure => self.show(),
-                ToggleStep::ReverseShow(id) => self.reverse_show(id),
-                _ => Task::none(),
-            };
-            return Task::batch([close, open, surface]);
+            return Task::batch([close, open, self.show_intent_surface()]);
+        }
+
+        // A remote duplicate-tab is a tab-facing verb like a new-tab
+        // (remote-tab-actions spec): a fresh shell tab opens in the
+        // target's cwd — now or once the channel bootstraps — and the
+        // overlay shows through the same show-intent cells. An
+        // unresolvable target never blocks it: the spawn degrades to
+        // the bare new-tab inheritance, so — like new-tab, and unlike
+        // the quiet verbs above — the settings close-first rule and
+        // surface half apply on every path.
+        if let ToggleAction::DuplicateTab { tab_index } = action {
+            let open = self.duplicate_remote_tab(tab_index);
+            return Task::batch([close, open, self.show_intent_surface()]);
         }
 
         // The toggle funnel (slide-animation spec, A5): every matrix
@@ -986,6 +1072,154 @@ impl DropTerm {
             return Task::batch([switch, self.mark_session_dirty()]);
         }
         Task::none()
+    }
+
+    /// Applies a remote `close-tab` (remote-tab-actions spec): the
+    /// 1-based `--tab-index` resolves through
+    /// [`tabs::remote_target_index`] — absent means the active tab —
+    /// and the close rides the shared [`Self::close_tab_at`] funnel,
+    /// inheriting successor activation, respawn-when-last, attention
+    /// retirement, the session-dirty mark, and the rename-session
+    /// prune. An unresolvable target — no tabs, out of range — warns
+    /// and no-ops: the fire-and-forget seam cannot reply, and quiet
+    /// degradation is the established pattern.
+    fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
+            Some(index) => self.close_tab_at(index),
+            None => {
+                log::warn!(
+                    "close-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                    self.tabs.len()
+                );
+                Task::none()
+            }
+        }
+    }
+
+    /// Applies a remote `select-tab` (remote-tab-actions spec): the
+    /// strict 1-based `N` resolves through [`tabs::select_tab_target`]
+    /// — the wire's 1-based indices converted once, at this boundary —
+    /// and the activation rides the shared [`Self::set_active_tab`]
+    /// funnel, inheriting attention retirement, the session-dirty
+    /// mark, and the already-active no-op. An unresolvable target — no
+    /// tabs, out of range — warns and no-ops: the fire-and-forget seam
+    /// cannot reply, and quiet degradation is the established pattern.
+    /// The `None` return tells the caller to skip the surface half too.
+    fn select_remote_tab(&mut self, one_based: usize) -> Option<Task<Message>> {
+        match tabs::select_tab_target(self.tabs.len(), one_based) {
+            Some(index) => Some(self.set_active_tab(index)),
+            None => {
+                log::warn!(
+                    "select-tab: no tab at index {one_based} ({} open)",
+                    self.tabs.len()
+                );
+                None
+            }
+        }
+    }
+
+    /// Applies a remote `rename-tab` (remote-tab-actions spec): the
+    /// target resolves like close-tab's — absent means the active tab —
+    /// through [`tabs::remote_target_index`]. Any inline rename
+    /// session on that tab ends first with its draft discarded — a
+    /// pending draft must not commit over the remote title — then
+    /// [`tabs::commit_rename`] applies the payload: a non-empty TITLE
+    /// sets the sticky override shell OSC titles never clobber, the
+    /// empty TITLE clears it so shell titles resume. Quiet like
+    /// close-tab, and the session-dirty mark persists titles. An
+    /// unresolvable target warns and no-ops.
+    fn rename_remote_tab(&mut self, title: String, tab_index: Option<usize>) -> Task<Message> {
+        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
+            Some(index) => {
+                let refocus = self.end_rename_on(index);
+                if let Some(tab) = self.tabs.get_mut(index) {
+                    tabs::commit_rename(&mut tab.title, &mut tab.title_override, &title);
+                }
+                Task::batch([refocus, self.mark_session_dirty()])
+            }
+            None => {
+                log::warn!(
+                    "rename-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                    self.tabs.len()
+                );
+                Task::none()
+            }
+        }
+    }
+
+    /// Applies a remote `duplicate-tab` (remote-tab-actions spec): the
+    /// target — absent means the active tab — resolves through
+    /// [`tabs::remote_target_index`], and a fresh shell tab opens in
+    /// that tab's cwd; the running command is never copied. An
+    /// explicit but unresolvable `--tab-index` warns, and the spawn
+    /// degrades to the bare new-tab inheritance — no explicit cwd, so
+    /// the funnel takes the active tab's, then the pty default. The
+    /// spawn itself rides the existing new-tab funnel end to end
+    /// ([`Self::open_remote_tab`]): the channel-bootstrap deferral,
+    /// landing after the active tab, activation, and the session-dirty
+    /// mark are all inherited. The overlay half is the caller's.
+    fn duplicate_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        let target = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab);
+        if target.is_none() && tab_index.is_some() {
+            log::warn!(
+                "duplicate-tab: no tab at --tab-index {tab_index:?} ({} open); duplicating the active tab instead",
+                self.tabs.len()
+            );
+        }
+        let cwd = target.and_then(|index| {
+            self.tabs
+                .get(index)
+                .and_then(|tab| tab.terminal.lock().unwrap().working_directory())
+        });
+        self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None })
+    }
+
+    /// Ends an inline rename session sitting on the tab at `index`
+    /// (remote-tab-actions spec): the draft is discarded — it must not
+    /// commit over a title arriving from outside — and focus returns
+    /// to the terminal as the input overlay goes away. No-op when no
+    /// session targets that tab.
+    fn end_rename_on(&mut self, index: usize) -> Task<Message> {
+        let session_on_target = self
+            .tabs
+            .get(index)
+            .is_some_and(|tab| self.rename.as_ref().is_some_and(|edit| edit.tab == tab.id));
+        if session_on_target {
+            self.rename = None;
+            return widget::text_input::focus(self.terminal_id.clone());
+        }
+        Task::none()
+    }
+
+    /// The settings close-first rule's task (settings-ui spec, U5b): a
+    /// toggle or show-intent action arriving while the settings window
+    /// is open — the terminal being hidden by construction then —
+    /// closes the window first, because a re-shown terminal must never
+    /// slide over it, and that window can never stack above the layer
+    /// surface. Inert when none is open.
+    fn close_settings_if_open(&mut self) -> Task<Message> {
+        if self.settings_window.is_some() {
+            self.close_settings()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// The surface half a tab-facing remote verb rides
+    /// (remote-tab-actions spec): the same show-intent cells a
+    /// `new-tab` takes, so the verb shows the overlay whatever state
+    /// it was in — and a request arriving mid-slide-out reverses on
+    /// the live surface exactly like a `show` would.
+    fn show_intent_surface(&mut self) -> Task<Message> {
+        match toggle_step(
+            ToggleAction::Show,
+            &self.surface,
+            self.config.slide_animation_enabled,
+        ) {
+            ToggleStep::Measure => self.show(),
+            ToggleStep::ReverseShow(id) => self.reverse_show(id),
+            _ => Task::none(),
+        }
     }
 
     /// Opens the settings window, or focuses the existing one
@@ -1508,10 +1742,21 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
             }
         }
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
-        // Structurally unreachable: `debounced_toggle` opens a remote
-        // new-tab outside the toggle funnel, so no NewTab ever gets
+        // Structurally unreachable: `debounced_toggle` applies the
+        // remote verbs — opening a new-tab, closing a close-tab,
+        // selecting a select-tab, renaming a rename-tab, duplicating a
+        // duplicate-tab — outside the toggle funnel, so none ever gets
         // here. Loud rather than silently wrong.
-        (ToggleAction::NewTab { .. }, _) => unreachable!("new-tab opens outside the funnel"),
+        (
+            ToggleAction::NewTab { .. }
+            | ToggleAction::CloseTab { .. }
+            | ToggleAction::SelectTab { .. }
+            | ToggleAction::RenameTab { .. }
+            | ToggleAction::DuplicateTab { .. },
+            _,
+        ) => {
+            unreachable!("remote verbs apply outside the funnel")
+        }
     }
 }
 
@@ -2148,6 +2393,69 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct Flags {
     pub action: ToggleAction,
+    /// The words the action forwards alongside its Display name,
+    /// pre-encoded by [`Flags::new`]: `CosmicFlags::args` returns
+    /// `&str`s borrowed from `self`, which cannot hand out a formatted
+    /// `--tab-index 3` — so the encoding runs once per launch instead
+    /// of leaking per call, with [`forward_words`] as the single
+    /// encoder the D-Bus seam and the round-trip test both ride.
+    forwarded: Vec<String>,
+}
+
+/// Encodes the arguments a second launch forwards alongside the action's
+/// Display name (remote-newtab / remote-tab-actions specs): everything
+/// the receiving instance needs to reconstruct the exact action through
+/// `parse_forwarded_action`. Actions without payloads forward nothing.
+fn forward_words(action: &ToggleAction) -> Vec<String> {
+    let mut forwarded = Vec::new();
+    match action {
+        ToggleAction::NewTab { cwd, cmd } => {
+            // A non-UTF-8 path cannot cross this borrowed-str seam: the
+            // forwarded action then simply carries no --cwd, and the
+            // receiving instance opens the tab in the inherited directory.
+            if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
+                forwarded.push("--cwd".to_string());
+                forwarded.push(dir.to_string());
+            }
+            if let Some(cmd) = cmd {
+                forwarded.push("--cmd".to_string());
+                forwarded.push(cmd.clone());
+            }
+        }
+        ToggleAction::CloseTab {
+            tab_index: Some(index),
+        } => {
+            forwarded.push("--tab-index".to_string());
+            forwarded.push(index.to_string());
+        }
+        ToggleAction::SelectTab { index } => {
+            forwarded.push(index.to_string());
+        }
+        ToggleAction::RenameTab { title, tab_index } => {
+            forwarded.push(title.clone());
+            if let Some(index) = tab_index {
+                forwarded.push("--tab-index".to_string());
+                forwarded.push(index.to_string());
+            }
+        }
+        ToggleAction::DuplicateTab {
+            tab_index: Some(index),
+        } => {
+            forwarded.push("--tab-index".to_string());
+            forwarded.push(index.to_string());
+        }
+        _ => {}
+    }
+    forwarded
+}
+
+impl Flags {
+    /// Wraps `action` for launch, pre-encoding the words it forwards
+    /// over the single-instance seam (see [`Flags::forwarded`]).
+    pub(crate) fn new(action: ToggleAction) -> Self {
+        let forwarded = forward_words(&action);
+        Self { action, forwarded }
+    }
 }
 
 impl cosmic::app::CosmicFlags for Flags {
@@ -2159,26 +2467,12 @@ impl cosmic::app::CosmicFlags for Flags {
     }
 
     /// The arguments forwarded alongside the action name (remote-newtab
-    /// spec): a `new-tab` request carries its `--cwd`/`--cmd` so the
-    /// running instance can reconstruct the exact action — everything
-    /// else forwards no args, exactly as before.
+    /// spec): a `new-tab` request carries its `--cwd`/`--cmd`, a
+    /// `close-tab` or `rename-tab` its 1-based `--tab-index`, a
+    /// `select-tab` its 1-based index, a `rename-tab` its TITLE word —
+    /// everything else forwards no args.
     fn args(&self) -> Vec<&str> {
-        let ToggleAction::NewTab { cwd, cmd } = &self.action else {
-            return Vec::new();
-        };
-        let mut forwarded = Vec::new();
-        if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
-            forwarded.push("--cwd");
-            forwarded.push(dir);
-        }
-        // A non-UTF-8 path cannot cross this borrowed-str seam: the
-        // forwarded action then simply carries no --cwd, and the
-        // receiving instance opens the tab in the inherited directory.
-        if let Some(cmd) = cmd {
-            forwarded.push("--cmd");
-            forwarded.push(cmd);
-        }
-        forwarded
+        self.forwarded.iter().map(String::as_str).collect()
     }
 }
 
@@ -2309,9 +2603,24 @@ impl Application for DropTerm {
         let theme_task = theme_override(ThemePreference::System, app.config.theme_preference)
             .map(theme_override_task)
             .unwrap_or_else(Task::none);
+        // First launch has no running state to act on remotely: the
+        // tab verbs degrade to a plain start — the default `Toggle` —
+        // with an info log, never a fabricated close or selection on a
+        // restored-or-fresh session (remote-tab-actions spec); only
+        // new-tab keeps startup application (remote-newtab spec).
+        let startup_action = match flags.action {
+            action @ (ToggleAction::CloseTab { .. }
+            | ToggleAction::SelectTab { .. }
+            | ToggleAction::RenameTab { .. }
+            | ToggleAction::DuplicateTab { .. }) => {
+                log::info!("{} with no running instance: starting plain", action);
+                ToggleAction::Toggle
+            }
+            action => action,
+        };
         let task = Task::batch([
             open_anchor.then(|_| Task::none()),
-            app.debounced_toggle(flags.action),
+            app.debounced_toggle(startup_action),
             theme_task,
         ]);
         (app, task)
