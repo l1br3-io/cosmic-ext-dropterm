@@ -28,7 +28,7 @@ High-level feature list.
 
 ## V3 
 
-- [ ] Panel applet to toggle and show status
+- [x] Panel applet to toggle and show status
 
 ## Later
 
