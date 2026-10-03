@@ -1110,6 +1110,8 @@ dependencies = [
  "cosmic-ext-dropterm",
  "env_logger",
  "libcosmic",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]

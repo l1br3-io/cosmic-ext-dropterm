@@ -4,6 +4,7 @@
 //! reflects the terminal's state and toggles it.
 
 mod applet;
+mod dbus;
 
 fn main() -> cosmic::iced::Result {
     env_logger::init();
