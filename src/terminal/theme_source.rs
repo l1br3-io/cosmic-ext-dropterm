@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2023 System76 <info@system76.com>
 //
-// Adapted from cosmic-term (https://github.com/pop-os/cosmic-term)
-// src/terminal_theme.rs and src/config.rs at commit 9129277 (palettes)
-// and `3ef31d7` (the `ColorScheme` representation, color-schemes C1).
-// The palettes are unmodified; cosmic-term's serde/RON-file,
-// per-profile, and import/export machinery stays dropped — v1 compiles
-// its schemes in and resolves them by name (see
-// docs/research/terminal-theming.md). The ten third-party palettes
-// (color-schemes C2) are transcribed from alacritty-theme TOMLs and
-// canonical extras, each with its source and license recorded on the
-// const below; the COSMIC pair keeps its hand-tuned tables.
+// Adapted from cosmic-term
+// (<https://github.com/pop-os/cosmic-term>) src/terminal_theme.rs and
+// src/config.rs at commit 9129277 (palettes) and `3ef31d7` (the
+// `ColorScheme` representation). The palettes are unmodified;
+// cosmic-term's serde/RON-file, per-profile, and import/export
+// machinery stays dropped — schemes compile in and resolve by name
+// (see docs/research/terminal-theming.md). The ten third-party
+// palettes are transcribed from alacritty-theme TOMLs and canonical
+// extras, each with its source and license recorded on the const
+// below; the COSMIC pair keeps its hand-tuned tables.
 
 use alacritty_terminal::{
     term::color::Colors,
@@ -22,7 +22,7 @@ use crate::config::{COSMIC_THEME_DARK, COSMIC_THEME_LIGHT};
 fn auto_colors() -> Colors {
     let mut colors = Colors::default();
 
-    // These colors come from `ransid`: https://gitlab.redox-os.org/redox-os/ransid/-/blob/master/src/color.rs
+    // These colors come from `ransid`: <https://gitlab.redox-os.org/redox-os/ransid/-/blob/master/src/color.rs>
     /* Indexed colors */
     for value in 16..=231 {
         let convert = |value: u8| -> u8 {
@@ -51,13 +51,13 @@ fn auto_colors() -> Colors {
     colors
 }
 
-// --- scheme representation (color-schemes C1) ---
+// --- scheme representation ---
 //
 // Adapted from cosmic-term's `ColorScheme`/`ColorSchemeAnsi`
 // (src/config.rs @ `3ef31d7`, GPL-3.0-only like DropTerm): same field
-// shape, colors as plain `Option<Rgb>` and no serde — v1 compiles its
-// schemes in, nothing parses. Phase 2 (user scheme files, ROADMAP
-// "Later") can grow serde on this shape additively.
+// shape, colors as plain `Option<Rgb>` and no serde — schemes compile
+// in, nothing parses. User scheme files (ROADMAP "Later") can grow
+// serde on this shape additively.
 
 /// One color of a scheme table; `None` leaves the slot to a default.
 type Slot = Option<Rgb>;
@@ -164,7 +164,7 @@ impl From<&ColorScheme> for Colors {
 
         // Specials: explicit values win; the defaults follow alacritty
         // — cursor and bright foreground default to the foreground,
-        // dim foreground derives from it (research §2/§3).
+        // dim foreground derives from it.
         colors[NamedColor::Foreground] = scheme.foreground;
         colors[NamedColor::Background] = scheme.background;
         colors[NamedColor::Cursor] = scheme.cursor.or(scheme.foreground);
@@ -229,6 +229,7 @@ const COSMIC_DARK: ColorScheme = ColorScheme {
     },
 };
 
+/// The COSMIC Dark scheme as alacritty colors.
 pub fn cosmic_dark() -> Colors {
     Colors::from(&COSMIC_DARK)
 }
@@ -273,16 +274,17 @@ const COSMIC_LIGHT: ColorScheme = ColorScheme {
     },
 };
 
+/// The COSMIC Light scheme as alacritty colors.
 pub fn cosmic_light() -> Colors {
     Colors::from(&COSMIC_LIGHT)
 }
 
-// --- third-party palettes (color-schemes C2) ---
+// --- third-party palettes ---
 //
-// Transcription rule (plan decision): each palette carries exactly
-// what its theme file publishes as fg, bg, the 16 ANSI colors, and
-// brights. Dims, cursor, and dim/bright foregrounds derive uniformly
-// at conversion (spec criterion 7) — no per-scheme tables here.
+// Transcription rule: each palette carries exactly what its theme
+// file publishes as fg, bg, the 16 ANSI colors, and brights. Dims,
+// cursor, and dim/bright foregrounds derive uniformly at conversion —
+// no per-scheme tables here.
 
 /// Catppuccin Latte — `themes/catppuccin_latte.toml` in
 /// [alacritty/alacritty-theme](https://github.com/alacritty/alacritty-theme)
@@ -361,8 +363,8 @@ const CATPPUCCIN_MOCHA: ColorScheme = ColorScheme {
 /// (repo Apache-2.0); design MIT (draculatheme.com). Cross-checked
 /// against the canonical palette: bg `#282a36`, fg `#f8f8f2`, purple
 /// `#bd93f9`, pink `#ff79c6` all match — cosmic-term's own Dracula
-/// copy (`#1e1f29` bg) diverges and loses to canonical (research doc
-/// §Licensing).
+/// copy (`#1e1f29` bg) diverges and loses to canonical
+/// (docs/research/terminal-theming.md §Licensing).
 const DRACULA: ColorScheme = ColorScheme {
     foreground: Some(rgb(0xF8F8F2)),
     background: Some(rgb(0x282A36)),
@@ -634,7 +636,7 @@ const TOKYO_NIGHT_STORM: ColorScheme = ColorScheme {
     dim: ColorSchemeAnsi::EMPTY,
 };
 
-// --- registry (color-schemes C2) ---
+// --- registry ---
 
 /// One registry entry: a scheme's display name — identity, persisted
 /// under `color_scheme_dark`/`_light`, and shown in the dropdowns —
@@ -646,8 +648,8 @@ struct SchemeEntry {
 
 /// The built-in scheme registry: the single definition site the
 /// `by_name` lookup, the settings dropdowns, and the tests all read,
-/// so names, options, and lookup cannot drift (spec criterion 6).
-/// COSMIC Dark/Light first (the defaults), the rest alphabetical.
+/// so names, options, and lookup cannot drift. COSMIC Dark/Light
+/// first (the defaults), the rest alphabetical.
 const SCHEMES: [SchemeEntry; 12] = [
     SchemeEntry {
         name: COSMIC_THEME_DARK,
@@ -702,7 +704,7 @@ const SCHEMES: [SchemeEntry; 12] = [
 /// Look up a built-in color scheme by name (its display name is the
 /// on-disk config value). Unknown names return `None` — the caller
 /// (`active_colors()`) falls back to the COSMIC pair for the active
-/// mode; no error surface (spec criterion 4).
+/// mode; no error surface.
 pub fn by_name(name: &str) -> Option<Colors> {
     SCHEMES
         .iter()
@@ -712,9 +714,8 @@ pub fn by_name(name: &str) -> Option<Colors> {
 
 /// The registry's scheme names in registry order (COSMIC pair first,
 /// the rest alphabetical) — the option list the settings dropdowns
-/// feed from (color-schemes C4). Derived from the same `SCHEMES`
-/// table `by_name` reads, so the picker can never offer a name
-/// lookup would reject (spec criterion 6).
+/// feed from. Derived from the same `SCHEMES` table `by_name` reads,
+/// so the picker can never offer a name lookup would reject.
 pub fn scheme_names() -> Vec<&'static str> {
     SCHEMES.iter().map(|entry| entry.name).collect()
 }
@@ -805,9 +806,8 @@ mod tests {
         assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x34A551)));
     }
 
-    // --- byte-identity pins: the COSMIC pair's user-visible slots,
-    // literal from the pre-refactor construction. The reroute through
-    // `ColorScheme` must not move a single one. ---
+    // --- byte-identity pins: the COSMIC pair's user-visible slots.
+    // The route through `ColorScheme` must not move a single one. ---
 
     #[test]
     fn cosmic_dark_normal_and_bright_slots_are_pinned() {
@@ -905,19 +905,18 @@ mod tests {
     fn by_name_resolves_the_cosmic_pair_and_rejects_unknown_names() {
         assert!(by_name(COSMIC_THEME_DARK).is_some());
         assert!(by_name(COSMIC_THEME_LIGHT).is_some());
-        // Unknown names are `active_colors()`'s fallback signal, not an
-        // error (spec criterion 4). "Catppuccin Frappe" is a real
-        // upstream variant the registry does not ship.
+        // Unknown names are `active_colors()`'s fallback signal, not
+        // an error. "Catppuccin Frappe" is a real upstream variant
+        // the registry does not ship.
         assert!(by_name("Catppuccin Frappe").is_none());
         assert!(by_name("").is_none());
     }
 
-    // --- registry (color-schemes C2) ---
+    // --- registry ---
     //
     // The registry is the single definition site for the scheme names:
-    // `by_name`, the (C4) dropdown options, and these pins all read the
-    // same table, so UI, file format, and lookup cannot drift (spec
-    // criterion 6).
+    // `by_name`, the dropdown options, and these pins all read the
+    // same table, so UI, file format, and lookup cannot drift.
 
     #[test]
     fn registry_pins_the_shipped_scheme_order() {

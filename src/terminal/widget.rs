@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2023 System76 <info@system76.com>
 //
-// Adapted from cosmic-term (https://github.com/pop-os/cosmic-term)
-// src/terminal_box.rs at commit 9129277.
+// Adapted from cosmic-term
+// (<https://github.com/pop-os/cosmic-term>) src/terminal_box.rs at
+// commit 9129277.
 //
 // Changes from upstream: adapted for DropTerm's single-terminal
 // drop-down — no panes, profiles, or cosmic-term `Config` coupling
 // (see `terminal/mod.rs` and `engine.rs` for the full picture) — plus
 // a configurable height strategy (`height`, pinning the terminal
 // inside the fixed-size layer surface) and the context-menu publish
-// seam added by the context-menu module: `context_menu_open` /
-// `on_context_menu`, driven by `context_menu_press` from the
-// default-mode branch only, so mouse-reporting applications keep
-// every press.
+// seam: `context_menu_open` / `on_context_menu`, driven by
+// `context_menu_press` from the default-mode branch only, so
+// mouse-reporting applications keep every press.
 
 use alacritty_terminal::{
     grid::Dimensions,
@@ -160,6 +160,9 @@ impl DragAutoscroll {
     }
 }
 
+/// The terminal widget: renders a [`Terminal`] and translates iced
+/// input into terminal updates — keys to escape sequences, mouse to
+/// cell coordinates, selection drags, hyperlinks, and IME.
 pub struct TerminalBox<'a, Message> {
     terminal: &'a Mutex<Terminal>,
     id: Option<Id>,
@@ -168,13 +171,13 @@ pub struct TerminalBox<'a, Message> {
     show_headerbar: bool,
     pane_border_radius: Option<Radius>,
     click_timing: Duration,
-    /// Whether the context menu is currently open (context-menu
-    /// module). While `true`, any default-mode press publishes `false`
-    /// on `on_context_menu` — toggle-close.
+    /// Whether the context menu is currently open. While `true`, any
+    /// default-mode press publishes `false` on `on_context_menu` —
+    /// toggle-close.
     context_menu_open: bool,
-    /// The context-menu open/close signal (context-menu module):
-    /// `true` = open requested, `false` = close. `None` until the app
-    /// wiring sets it; with it unset, presses publish nothing.
+    /// The context-menu open/close signal: `true` = open requested,
+    /// `false` = close. `None` until the app wiring sets it; with it
+    /// unset, presses publish nothing.
     on_context_menu: Option<Box<dyn Fn(bool) -> Message + 'a>>,
     on_mouse_enter: Option<Box<dyn Fn() -> Message + 'a>>,
     opacity: Option<f32>,
@@ -252,17 +255,17 @@ where
         self
     }
 
-    /// Sets whether the context menu is currently open (context-menu
-    /// module): while open, any default-mode press toggle-closes it.
+    /// Sets whether the context menu is currently open: while open,
+    /// any default-mode press toggle-closes it.
     pub fn context_menu_open(mut self, context_menu_open: bool) -> Self {
         self.context_menu_open = context_menu_open;
         self
     }
 
-    /// Sets the context-menu open/close signal (context-menu module):
-    /// `true` = open requested, `false` = close. Published only from
-    /// the default-mode branch of the press handler, so
-    /// mouse-reporting applications (vim, htop) keep every press.
+    /// Sets the context-menu open/close signal: `true` = open
+    /// requested, `false` = close. Published only from the
+    /// default-mode branch of the press handler, so mouse-reporting
+    /// applications (vim, htop) keep every press.
     pub fn on_context_menu(mut self, on_context_menu: impl Fn(bool) -> Message + 'a) -> Self {
         self.on_context_menu = Some(Box::new(on_context_menu));
         self
@@ -397,7 +400,7 @@ where
 
         let mut terminal = self.terminal.lock().unwrap();
 
-        //TODO: set size?
+        // TODO: set size?
 
         // Update if needed
         if terminal.needs_update {
@@ -803,7 +806,7 @@ where
         renderer.fill_raw(Raw {
             buffer: terminal.buffer_weak(),
             position: view_position,
-            color: Color::from_rgba(1.0, 1.0, 1.0, 1.0), // TODO
+            color: Color::from_rgba(1.0, 1.0, 1.0, 1.0), // TODO:
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
 
@@ -897,7 +900,7 @@ where
                 let color = terminal.term.lock().colors()[NamedColor::Cursor]
                     .or(terminal.colors()[NamedColor::Cursor])
                     .map(|rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b))
-                    .unwrap_or(Color::WHITE); // TODO default color from theme?
+                    .unwrap_or(Color::WHITE); // TODO: default color from theme?
                 let width = terminal.size().cell_width;
                 let height = terminal.size().cell_height;
                 let top_left = view_position
@@ -1122,7 +1125,7 @@ where
                 }
 
                 //Special handle Enter, Escape, Backspace and Tab as described in
-                //https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
+                //<https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding>
                 //Also special handle Ctrl-_ to behave like xterm
                 let alt_prefix = if modifiers.alt() { "\x1B" } else { "" };
                 match named {
@@ -1169,7 +1172,7 @@ where
                     let location = if let Some(p) = cursor_position.position_in(layout.bounds()) {
                         let x = p.x - self.padding.left;
                         let y = p.y - self.padding.top;
-                        //TODO: better calculation of position
+                        // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
                         Some(terminal.viewport_to_point(TermPoint::new(
@@ -1190,7 +1193,7 @@ where
                 ..
             }) if state.is_focused && *key == Key::Character(SmolStr::new(" ")) => {
                 //Special handle Enter, Escape, Backspace and Tab as described in
-                //https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
+                //<https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding>
                 //Also special handle Ctrl-_ to behave like xterm
                 let alt_prefix = if modifiers.alt() { "\x1B" } else { "" };
 
@@ -1317,7 +1320,7 @@ where
                 if let Some(p) = cursor_position.position_in(layout.bounds()) {
                     let x = p.x - self.padding.left;
                     let y = p.y - self.padding.top;
-                    //TODO: better calculation of position
+                    // TODO: better calculation of position
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
 
@@ -1428,14 +1431,13 @@ where
                                 shell.publish(on_middle_click());
                             }
                         }
-                        // Context-menu publish seam (context-menu
-                        // module) — cosmic-term's pattern without the
-                        // hyperlink lookup: while the menu is open,
-                        // any press closes it; otherwise a right press
-                        // opens it. Published only here, inside the
-                        // default-mode branch — mouse-reporting presses
-                        // were already forwarded to the child above
-                        // (spec criterion 4).
+                        // Context-menu publish seam — cosmic-term's
+                        // pattern without the hyperlink lookup: while
+                        // the menu is open, any press closes it;
+                        // otherwise a right press opens it. Published
+                        // only here, inside the default-mode branch —
+                        // mouse-reporting presses were already
+                        // forwarded to the child above.
                         if let Some(on_context_menu) = &self.on_context_menu
                             && let Some(open) = context_menu_press(self.context_menu_open, *button)
                         {
@@ -1465,7 +1467,7 @@ where
                 if let Some(p) = cursor_position.position_in(layout.bounds()) {
                     let x = p.x - self.padding.left;
                     let y = p.y - self.padding.top;
-                    //TODO: better calculation of position
+                    // TODO: better calculation of position
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
 
@@ -1496,7 +1498,7 @@ where
                 if let Some(p) = cursor_position.position_in(layout.bounds()) {
                     let x = p.x - self.padding.left;
                     let y = p.y - self.padding.top;
-                    //TODO: better calculation of position
+                    // TODO: better calculation of position
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
                     if is_mouse_mode {
@@ -1528,7 +1530,7 @@ where
                     let col_row_opt = if let Some(p) = cursor_position.position_in(bounds) {
                         let x = p.x - self.padding.left;
                         let y = p.y - self.padding.top;
-                        //TODO: better calculation of position
+                        // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
                         let location = terminal.viewport_to_point(TermPoint::new(
@@ -1603,7 +1605,7 @@ where
                     if is_mouse_mode {
                         let x = p.x - self.padding.left;
                         let y = p.y - self.padding.top;
-                        //TODO: better calculation of position
+                        // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
                         terminal.scroll_mouse(*delta, &state.modifiers, col as u32, row as u32);
@@ -1627,7 +1629,7 @@ where
                                 shell.capture_event();
                             }
                             ScrollDelta::Pixels { x: _, y } => {
-                                //TODO: this adjustment is just a guess!
+                                // TODO: this adjustment is just a guess!
                                 state.scroll_lines = 0.0;
                                 state.scroll_pixels -= y * 6.0;
                                 let mut lines = 0;
@@ -1650,7 +1652,7 @@ where
                     {
                         let x = p.x - self.padding.left;
                         let y = p.y - self.padding.top;
-                        //TODO: better calculation of position
+                        // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
 
@@ -1792,7 +1794,7 @@ fn update_active_regex_match(
 }
 
 /// Whole lines scrolled per unit of wheel `Lines` delta.
-//TODO: this adjustment is just a guess!
+// TODO: this adjustment is just a guess!
 const SCROLL_LINE_MULTIPLIER: f32 = 6.0;
 
 /// Convert a wheel `Lines` delta into whole lines to scroll, accumulating the
@@ -1992,6 +1994,8 @@ fn update_buffer_drag(
     true
 }
 
+/// Cached per-widget interaction state: focus, click cadence, the
+/// active drag, scroll accumulators, and IME preedit.
 pub struct State {
     modifiers: Modifiers,
     click: Option<(ClickKind, Instant)>,
@@ -2070,7 +2074,7 @@ fn csi(code: &str, suffix: &str, modifiers: u8) -> Option<Vec<u8>> {
         Some(format!("\x1B[{code};{modifiers}{suffix}").into_bytes())
     }
 }
-// https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-functional-keys
+// <https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-functional-keys>
 // CSI 1 ; modifier {ABCDEFHPQS}
 // code is ABCDEFHPQS
 #[inline(always)]
@@ -2091,13 +2095,13 @@ fn ss3(code: &str, modifiers: u8) -> Option<Vec<u8>> {
     }
 }
 
-/// What a press in default mode publishes on the context-menu seam
-/// (context-menu module): `Some(false)` — close — for any press while
-/// the menu is open (toggle-close), `Some(true)` — open — for a right
-/// press while it is closed, `None` for everything else. Called only
-/// from the default-mode branch of the `ButtonPressed` handler, so it
-/// is structurally unreachable while mouse reporting is on: those
-/// presses were already forwarded to the child above.
+/// What a press in default mode publishes on the context-menu seam:
+/// `Some(false)` — close — for any press while the menu is open
+/// (toggle-close), `Some(true)` — open — for a right press while it is
+/// closed, `None` for everything else. Called only from the
+/// default-mode branch of the `ButtonPressed` handler, so it is
+/// structurally unreachable while mouse reporting is on: those presses
+/// were already forwarded to the child above.
 fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
     if menu_open {
         Some(false)
