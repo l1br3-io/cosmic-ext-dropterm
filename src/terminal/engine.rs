@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2023 System76 <info@system76.com>
 //
-// Adapted from cosmic-term (https://github.com/pop-os/cosmic-term)
-// src/terminal.rs at commit 9129277.
+// Adapted from cosmic-term
+// (<https://github.com/pop-os/cosmic-term>) src/terminal.rs at commit
+// 9129277.
 //
 // Changes from upstream: this is a drop-down terminal without
 // panes/profiles/context-menu/password-manager, so
@@ -108,17 +109,20 @@ impl TerminalOptions {
 pub const MIN_CURSOR_CONTRAST: f64 = 1.5;
 
 /// Maximum number of linewraps followed outside of the viewport during search highlighting.
-/// Duplicated from you guessed it.
+/// Duplicated from alacritty.
 /// A regex expression can start or end outside the visible screen. Therefore, without this constant, some regular expressions would not match at the top and bottom.
 pub const MAX_SEARCH_LINES: usize = 100;
 
-/// https://github.com/alacritty/alacritty/blob/4a7728bf7fac06a35f27f6c4f31e0d9214e5152b/alacritty/src/config/ui_config.rs#L36-L39
+/// The URL-detection regex alacritty ships, verbatim:
+/// <https://github.com/alacritty/alacritty/blob/4a7728bf7fac06a35f27f6c4f31e0d9214e5152b/alacritty/src/config/ui_config.rs#L36-L39>
 fn url_regex_search() -> RegexSearch {
     let url_regex = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)\
                          [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\"\\s{-}\\^⟨⟩`]+";
     RegexSearch::new(url_regex).unwrap()
 }
 
+/// Cell-aware pixel size: the widget's size plus the derived cell
+/// metrics, implementing alacritty_terminal's `Dimensions`.
 #[derive(Clone, Copy, Debug)]
 pub struct Size {
     pub width: u32,
@@ -162,7 +166,7 @@ pub struct TaggedEventProxy {
 
 impl EventListener for TaggedEventProxy {
     fn send_event(&self, event: Event) {
-        //TODO: handle error
+        // TODO: handle error
         let _ = self.tx.send((self.tab_id, event));
     }
 }
@@ -181,6 +185,10 @@ fn as_dim(mut color: Color) -> Color {
     color
 }
 
+/// The terminal pane's effective background color, packed RGBA.
+/// Written by the app when the theme applies; read as the fallback
+/// for an unset scheme background and by the chrome strips (grab bar,
+/// tab bar) to match the pane.
 pub static WINDOW_BG_COLOR: AtomicU32 = AtomicU32::new(0xFF000000);
 
 fn convert_color(colors: &Colors, color: Color) -> cosmic_text::Color {
@@ -210,6 +218,9 @@ fn convert_color(colors: &Colors, color: Color) -> cosmic_text::Color {
     cosmic_text::Color::rgb(rgb.r, rgb.g, rgb.b)
 }
 
+/// Per-cell rendering metadata (background, underline color, cell
+/// flags), interned in the terminal's [`Terminal::metadata_set`] so
+/// cosmic-text attrs can reference it by index.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Metadata {
     pub bg: cosmic_text::Color,
@@ -239,6 +250,9 @@ impl Metadata {
     }
 }
 
+/// One terminal: the alacritty_terminal grid behind a `FairMutex`,
+/// its cosmic-text buffer, the PTY notifier, and the state that
+/// renders one grid into the other.
 pub struct Terminal {
     pub metadata_set: IndexSet<Metadata>,
     pub needs_update: bool,
@@ -264,7 +278,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    //TODO: error handling
+    // TODO: error handling
     pub fn new(
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
@@ -288,7 +302,7 @@ impl Terminal {
         let default_metada = Metadata::new(default_bg, default_fg);
         let (default_metada_idx, _) = metadata_set.insert_full(default_metada);
 
-        //TODO: set color to default fg
+        // TODO: set color to default fg
         let default_attrs = Attrs::new()
             .family(Family::Monospace)
             .weight(Weight(font_weight))
@@ -540,7 +554,7 @@ impl Terminal {
     }
 
     pub fn search(&mut self, value: &str, forwards: bool) {
-        //TODO: set max lines, run in thread?
+        // TODO: set max lines, run in thread?
         {
             let mut term = self.term.lock();
 
@@ -570,7 +584,7 @@ impl Terminal {
                 .and_then(|selection| selection.to_range(&term))
             {
                 Some(range) => {
-                    //TODO: determine correct search_origin, along with side below
+                    // TODO: determine correct search_origin, along with side below
                     if forwards {
                         range.end.add(grid, Boundary::Grid, 1)
                     } else {
@@ -598,7 +612,7 @@ impl Terminal {
                 } else {
                     Direction::Left
                 },
-                //TODO: determine correct side, along with search_origin above
+                // TODO: determine correct side, along with search_origin above
                 if forwards { Side::Left } else { Side::Right },
                 None,
             ) {
@@ -760,6 +774,8 @@ impl Terminal {
         self.update();
     }
 
+    /// Rebuilds the cosmic-text buffer from the grid: text, attrs, and
+    /// metadata for every visible cell, plus URL-regex matches.
     pub fn update(&mut self) -> bool {
         // LEFT‑TO‑RIGHT ISOLATE character.
         // This will be added to the beginning of lines to force the shaper to treat detected RTL
@@ -772,8 +788,8 @@ impl Terminal {
         // Only keep default
         self.metadata_set.truncate(1);
 
-        //TODO: is redraw needed after all events?
-        //TODO: use LineDamageBounds
+        // TODO: is redraw needed after all events?
+        // TODO: use LineDamageBounds
         {
             let buffer = Arc::make_mut(&mut self.buffer);
 
@@ -783,7 +799,7 @@ impl Terminal {
             let mut attrs_list = AttrsList::new(&self.default_attrs);
             {
                 let mut term = self.term.lock();
-                //TODO: use damage?
+                // TODO: use damage?
                 match term.damage() {
                     TermDamage::Full => {}
                     TermDamage::Partial(_damage_lines) => {}
@@ -826,9 +842,9 @@ impl Terminal {
                         text.push(LRI);
                         attrs_list.clear_spans();
                     }
-                    //TODO: use indexed.point.column?
+                    // TODO: use indexed.point.column?
 
-                    //TODO: skip leading spacer?
+                    // TODO: skip leading spacer?
                     if indexed.cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                         // Skip wide spacers (cells after wide characters)
                         continue;
@@ -911,7 +927,7 @@ impl Terminal {
                         && let Some(range) = selection.to_range(&term)
                         && range.contains(indexed.point)
                     {
-                        //TODO: better handling of selection
+                        // TODO: better handling of selection
                         mem::swap(&mut fg, &mut bg);
                     }
 
@@ -960,7 +976,7 @@ impl Terminal {
                     let (meta_idx, _) = self.metadata_set.insert_full(metadata);
                     attrs = attrs.metadata(meta_idx);
 
-                    //TODO: more flags
+                    // TODO: more flags
                     if indexed.cell.flags.contains(Flags::BOLD) {
                         attrs = attrs.weight(self.bold_font_weight);
                     } else if indexed.cell.flags.contains(Flags::DIM) {
@@ -968,7 +984,7 @@ impl Terminal {
                         attrs = attrs.weight(self.dim_font_weight);
                     }
                     if indexed.cell.flags.contains(Flags::ITALIC) {
-                        //TODO: automatically use fake italic
+                        // TODO: automatically use fake italic
                         attrs = attrs.cache_key_flags(CacheKeyFlags::FAKE_ITALIC);
                     }
                     if attrs != attrs_list.defaults() {
@@ -979,7 +995,7 @@ impl Terminal {
                 }
             }
 
-            //TODO: do not repeat!
+            // TODO: do not repeat!
             while line_i >= buffer.lines.len() {
                 buffer.lines.push(BufferLine::new(
                     "",
@@ -1096,8 +1112,8 @@ impl Terminal {
     }
 }
 /// Iterate over all visible regex matches.
-/// This includes the screen +- 100 lines (MAX_SEARCH_LINES).
-/// display/hint.rs
+/// This includes the screen ± 100 lines ([`MAX_SEARCH_LINES`]).
+/// Duplicated from alacritty's display/hint.rs.
 pub fn visible_regex_match_iter<'a, T>(
     term: &'a Term<T>,
     regex: &'a mut RegexSearch,

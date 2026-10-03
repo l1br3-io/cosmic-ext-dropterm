@@ -2,7 +2,7 @@
 // Copyright 2023 System76 <info@system76.com>
 //
 // Adapted, unmodified except for this header, from cosmic-term
-// (https://github.com/pop-os/cosmic-term) src/mouse_reporter.rs at
+// (<https://github.com/pop-os/cosmic-term>) src/mouse_reporter.rs at
 // commit 9129277.
 
 use cosmic::{
@@ -10,6 +10,8 @@ use cosmic::{
     iced::{Event, keyboard::Modifiers, mouse::Button},
 };
 
+/// Builds xterm mouse-tracking escape sequences from iced mouse
+/// events, in the legacy/UTF-8 and SGR encodings.
 #[derive(Default)]
 pub struct MouseReporter {
     last_movment_x: Option<u32>,
@@ -20,6 +22,8 @@ pub struct MouseReporter {
 }
 
 impl MouseReporter {
+    /// Accumulates a scroll delta into whole cell lines (x, y),
+    /// keeping the fractional remainder for the next event.
     pub fn accumulate_scroll(
         &mut self,
         delta: ScrollDelta,
@@ -54,7 +58,10 @@ impl MouseReporter {
     }
 
     //Implemented according to
-    //https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
+    //<https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking>
+    /// The legacy (X10) mouse encoding, UTF-8-extended when `is_utf8`;
+    /// `None` when the event cannot be encoded (no button, or a
+    /// position beyond the encoding's range).
     pub fn normal_mouse_code(
         &mut self,
         event: Event,
@@ -120,31 +127,33 @@ impl MouseReporter {
             );
         };
 
-        //SPEC: Likewise, Cb will be UTF-8 encoded, to reduce confusion with wheel mouse events.
+        //xterm ctlseqs: Likewise, Cb will be UTF-8 encoded, to reduce confusion with wheel mouse events.
         //Always, or only when the the cooardinates is used? No other terminal seems to do this a
         //all? Doing what they are doing for now.
         let mut buf: Vec<u8> = vec![b'\x1b', b'[', b'M', 32 + button];
         //Should we remove 32+button from previous line, and use this instead? Or only on >= 95
         //utf8_encode_and_append(32 + button, &mut buf);
 
-        //For utf8 spec say: For positions less than 95, the resulting output is identical under both modes.
+        //For utf8, xterm ctlseqs say: For positions less than 95, the resulting output is identical under both modes.
         //But also: Under normal mouse mode, positions outside (160,94) result in byte pairs which can be interpreted as a single UTF-8
         if is_utf8 && x >= 95 {
             utf8_encode_and_append(x, &mut buf);
         } else {
-            //SPEC: For positions less than 95, the resulting output is identical under both modes.
+            //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
             buf.push(32 + 1 + x as u8);
         }
 
         if is_utf8 && y >= 95 {
             utf8_encode_and_append(y, &mut buf);
         } else {
-            //SPEC For positions less than 95, the resulting output is identical under both modes.
+            //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
             buf.push(32 + 1 + y as u8);
         }
         Some(buf)
     }
 
+    /// The SGR (mode 1006) mouse encoding for press/release/motion
+    /// events.
     pub fn sgr_mouse_code(
         &mut self,
         event: Event,
@@ -195,6 +204,7 @@ impl MouseReporter {
         }
     }
 
+    /// SGR wheel-scroll events, one per accumulated cell line.
     #[allow(clippy::too_many_arguments)]
     pub fn sgr_mouse_wheel_scroll(
         &mut self,
