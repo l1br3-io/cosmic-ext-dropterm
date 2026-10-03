@@ -207,7 +207,7 @@ A bell that rings while the terminal is *hidden* posts a desktop notification na
 
 ## Settings window
 
-Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus to open the settings window - a separate normal window in the same process. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
+Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus, or click the gear button at the right corner of the tab strip. The window is a separate normal window in the same process. The strip is always present whatever the tab count - with a single tab it carries the settings button alone - so settings are one click away in every state; hovering the button shows a `Settings…` tooltip and the click opens the same settings window the keybind opens. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
 
 The window shows five cards - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior, Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
 
@@ -285,7 +285,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] A visible grab bar renders on the free edge, outside the tab bar when one is shown; dragging it resizes the height live, and only the height - width and alignment stay put, including on a narrower-than-full-width surface
 - [ ] Dragging respects the 10-100 % height band; with `edge = bottom`, dragging away from the screen edge grows the terminal
 - [ ] After a drag is released the new height applies immediately (a hide/show right away opens at the new height) and `height_percent` is written to the config file once, about 400 ms later - no write/reshape storm, and rapid re-drags coalesce into one write
-- [ ] With default config, the only visible change from the previous build is the grab bar; tab bar placement is unchanged (from the screen edge: content, tab bar when more than one tab is open, grab bar)
+- [ ] With default config, the only visible change from the previous build is the grab bar; tab bar placement is unchanged (from the screen edge: content, tab strip, grab bar - the strip always present, its tab buttons only with more than one tab open)
 - [ ] Switching the system between light and dark updates the terminal colors
 - [ ] On a multi-monitor setup, the surface appears on the output under the cursor
 - [ ] `Ctrl+Shift+Q` hides the surface, and the session survives a re-toggle
@@ -342,6 +342,13 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Accent-color edit while pinned with the matching system mode applies to the terminal
 - [ ] Restore: switching back to Follow system picks the current system mode on the spot, and system flips resume driving the terminal
 - [ ] Untouched-default config behaves byte-identically to the previous build - no pin is ever issued, system flips drive everything as before
+- [ ] Settings button: the strip renders in every tab state - with a single tab it carries only the gear button at its right corner, and clicking it opens the settings window (the same window `Ctrl+Shift+I` opens); with two or more tabs the button anchors the tab row's right end
+- [ ] Crossing 1↔2 tabs resizes nothing: the terminal area keeps its size and the strip its height - opening or closing the second tab changes only the tab row itself
+- [ ] Many-tab squeeze: with more tabs than fit, buttons never run under the gear button - including at the minimum-width floor, where the row clips at the button's zone
+- [ ] Gear + tooltip legibility: the gear and its `Settings…` tooltip read clearly on light and dark panes; hovering shows the disc and tooltip immediately, with no delay
+- [ ] The tooltip never clips at the right corner, on both `edge = top` and `edge = bottom` - it grows leftward from the corner, clearing the strip toward the terminal
+- [ ] Clicking the settings button during an inline tab rename commits the rename and opens the window
+- [ ] Drag-reordering a tab stays clear of the gear button's zone
 
 ## Non-goals
 
