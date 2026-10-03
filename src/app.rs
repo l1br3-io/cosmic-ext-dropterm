@@ -1893,6 +1893,16 @@ fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOve
 /// color apply once the global has landed, so the window-background
 /// derivation — the one consumer that must read the global — sees
 /// the new mode.
+///
+/// The follow-up rides [`Task::chain`], never [`Task::then`]: `then`
+/// CONSUMES the first task's output and replaces it with the
+/// continuation's, so `set_theme(...).then(...)` would silently drop
+/// the `Action::AppThemeChange` message — the pin would never reach
+/// the runtime and the theme would stay whatever it was (the
+/// "dark mode does nothing" bug). `chain` forwards every output of
+/// the first task and only then runs the second, preserving both
+/// messages and their order. Pinned by
+/// `theme_override_task_delivers_set_theme_then_reapply`.
 fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
     let (mut theme, prefer_dark) = match kind {
         ThemeOverrideKind::PinDark => (cosmic::theme::system_dark(), Some(true)),
@@ -1903,8 +1913,7 @@ fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
         ThemeOverrideKind::FollowSystem => (cosmic::theme::system_preference(), None),
     };
     theme.theme_type.prefer_dark(prefer_dark);
-    let set_theme: Task<Message> = cosmic::command::set_theme(theme);
-    set_theme.then(|_| Task::done(cosmic::Action::App(Message::ReapplyColors)))
+    cosmic::command::set_theme(theme).chain(Task::done(cosmic::Action::App(Message::ReapplyColors)))
 }
 
 /// Whether the tab strip sits at the surface's bottom in this
@@ -2410,6 +2419,65 @@ mod tests {
             theme_override(ThemePreference::Light, ThemePreference::System),
             Some(ThemeOverrideKind::FollowSystem)
         );
+    }
+
+    /// Drives a [`Task`](cosmic::app::Task)'s stream to completion on
+    /// the current thread, collecting every runtime
+    /// [`Action::Output`] message in delivery order. `Task::then`
+    /// consumes the first task's output and replaces it with the
+    /// continuation's, so only a stream-level check can prove a
+    /// message actually ships.
+    fn delivered_outputs<T: Send + 'static>(task: cosmic::app::Task<T>) -> Vec<cosmic::Action<T>> {
+        use cosmic::iced::futures::StreamExt;
+        use cosmic::iced::futures::executor::block_on;
+
+        let mut stream = cosmic::iced::runtime::task::into_stream(task)
+            .expect("theme override task has a stream");
+        let mut outputs = Vec::new();
+        block_on(async {
+            while let Some(action) = stream.next().await {
+                if let cosmic::iced::runtime::Action::Output(message) = action {
+                    outputs.push(message);
+                }
+            }
+        });
+        outputs
+    }
+
+    #[test]
+    fn theme_override_task_delivers_set_theme_then_reapply() {
+        // The bug (2026-10-03): the follow-up rode `Task::then`, which
+        // CONSUMES the `set_theme` output — the pin message never
+        // reached the runtime, the process theme never flipped, and
+        // pinning Dark left a light, frosted terminal. The task must
+        // deliver BOTH messages: the theme override first, the
+        // `ReapplyColors` echo second — `Task::chain`'s contract.
+        for (kind, expected_prefer) in [
+            (ThemeOverrideKind::PinDark, Some(true)),
+            (ThemeOverrideKind::PinLight, Some(false)),
+            // FollowSystem's palette is whatever the system prefers —
+            // only the cleared marker is environment-independent.
+            (ThemeOverrideKind::FollowSystem, None),
+        ] {
+            let outputs = delivered_outputs(theme_override_task(kind));
+            assert_eq!(
+                outputs.len(),
+                2,
+                "expected exactly the set_theme + ReapplyColors pair for {kind:?}"
+            );
+            let cosmic::Action::Cosmic(cosmic::app::Action::AppThemeChange(theme)) = &outputs[0]
+            else {
+                panic!("first delivered message must be the theme override for {kind:?}");
+            };
+            let cosmic::theme::ThemeType::System { prefer_dark, .. } = &theme.theme_type else {
+                panic!("override theme must be System-typed for {kind:?}");
+            };
+            assert_eq!(*prefer_dark, expected_prefer, "marker for {kind:?}");
+            assert!(
+                matches!(&outputs[1], cosmic::Action::App(Message::ReapplyColors)),
+                "second delivered message must be the ReapplyColors echo for {kind:?}"
+            );
+        }
     }
 
     // --- tab-bar-position T1: the placement seam + tooltip side ---
