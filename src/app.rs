@@ -831,7 +831,7 @@ impl DropTerm {
         )]
         let pin_task = self.offer_window_height(target as f32);
         let geom = Geometry::from_config(&self.config);
-        let apply = geometry::apply_drag_geometry(id, &geom, output, target);
+        let apply = geometry::apply_drag_geometry(id, geom, output, target);
         match pin_task {
             Some(t) => Task::batch([apply, t]),
             None => apply,
@@ -3234,7 +3234,7 @@ impl DropTerm {
                 // record that never matches is harmless: an echo
                 // matching all four fields needs no reshape anyway.
                 if let Some(written) = self.last_written
-                    && geometry::is_own_write(&written, &new_geom)
+                    && geometry::is_own_write(written, new_geom)
                 {
                     self.last_written = None;
                     return Task::none();
@@ -3257,13 +3257,13 @@ impl DropTerm {
                 // existence, not its direction, so this holds
                 // mid-slide-out and mid-reversal alike.
                 if config_edit_reshapes(
-                    geometry::geometry_changed(&old_geom, &new_geom),
+                    geometry::geometry_changed(old_geom, new_geom),
                     self.drag.is_some(),
                     self.slide.is_some(),
                 ) && let (SurfaceState::Shown(id), Some(output)) =
                     (&self.surface, self.output_size)
                 {
-                    return geometry::apply_geometry(*id, &new_geom, output);
+                    return geometry::apply_geometry(*id, new_geom, output);
                 }
             }
             Message::ReapplyColors => {
@@ -3324,7 +3324,7 @@ impl DropTerm {
                             },
                         );
                     return Task::batch([
-                        geometry::apply_geometry(id, &geom, output),
+                        geometry::apply_geometry(id, geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),
                         set_keyboard_interactivity(
                             id,
@@ -3591,14 +3591,14 @@ impl DropTerm {
                         self.config.height_percent = geom.height_percent;
                         let generation = self.write_back.schedule(geom.height_percent).generation;
                         return Task::batch([
-                            geometry::apply_geometry(*id, &geom, output),
+                            geometry::apply_geometry(*id, geom, output),
                             Task::perform(
                                 tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
                                 move |()| cosmic::Action::App(Message::WriteDue(generation)),
                             ),
                         ]);
                     }
-                    return geometry::apply_geometry(*id, &geom, output);
+                    return geometry::apply_geometry(*id, geom, output);
                 }
             }
             Message::WriteDue(generation) => {

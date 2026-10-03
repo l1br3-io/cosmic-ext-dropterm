@@ -36,6 +36,10 @@ pub enum Attention {
 
 impl Attention {
     /// Transition on a bell in this tab.
+    #[expect(
+        clippy::unused_self,
+        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
+    )]
     pub fn on_bell(self) -> Self {
         Self::Bell
     }
@@ -51,6 +55,10 @@ impl Attention {
 
     /// Transition on the tab becoming active: whatever marker it wore
     /// is cleared.
+    #[expect(
+        clippy::unused_self,
+        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
+    )]
     pub fn on_activated(self) -> Self {
         Self::None
     }
@@ -149,12 +157,10 @@ pub fn close_tab<T>(tabs: &mut Vec<T>, index: usize, active: usize) -> Option<Cl
         return None;
     }
     tabs.remove(index);
-    let next_active = if index < active {
-        active - 1
-    } else if index > active {
-        active
-    } else {
-        active.min(tabs.len().saturating_sub(1))
+    let next_active = match index.cmp(&active) {
+        std::cmp::Ordering::Less => active - 1,
+        std::cmp::Ordering::Greater => active,
+        std::cmp::Ordering::Equal => active.min(tabs.len().saturating_sub(1)),
     };
     Some(CloseDecision {
         next_active,
@@ -307,7 +313,7 @@ pub fn next_default_title(id: TabId) -> String {
 /// the tab's default (see [`next_default_title`]).
 pub fn apply_shell_title(title: &mut String, title_override: Option<&str>, reported: &str) {
     if title_override.is_none() {
-        *title = reported.to_owned();
+        reported.clone_into(title);
     }
 }
 
@@ -321,7 +327,7 @@ pub fn commit_rename(title: &mut String, title_override: &mut Option<String>, ne
         *title_override = None;
     } else {
         *title_override = Some(new_title.to_owned());
-        *title = new_title.to_owned();
+        new_title.clone_into(title);
     }
 }
 

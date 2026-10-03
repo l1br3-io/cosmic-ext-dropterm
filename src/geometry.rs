@@ -24,6 +24,11 @@ use crate::config::{
 /// Fixed pixel height of the shown surface: `height_percent` of the
 /// output. The surface never shrinks for the tab bar — the terminal
 /// widget does (see `surface::terminal_view_height`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded percent share floored by max(1.0): positive px, truncation is the size contract"
+)]
 pub fn surface_height(output_height: f32, height_percent: u8) -> u32 {
     (output_height * f32::from(height_percent) / 100.0)
         .round()
@@ -32,6 +37,11 @@ pub fn surface_height(output_height: f32, height_percent: u8) -> u32 {
 
 /// Fixed pixel width to request: `width_percent` of the measured output
 /// width. Never rounds below one pixel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded percent share floored by max(1.0): positive px, truncation is the size contract"
+)]
 pub fn surface_width(output_width: f32, width_percent: u8) -> u32 {
     (output_width * f32::from(width_percent) / 100.0)
         .round()
@@ -83,11 +93,15 @@ impl Geometry {
 /// widths drop the anchor on the aligned side; `Center` keeps both
 /// anchors and offsets with equal margins, the odd leftover pixel
 /// going right so the total width stays exact.
-pub fn anchor_margins(geom: &Geometry, output: (u32, u32)) -> (Anchor, Margins) {
+pub fn anchor_margins(geom: Geometry, output: (u32, u32)) -> (Anchor, Margins) {
     let vertical = match geom.edge {
         Edge::Top => Anchor::TOP,
         Edge::Bottom => Anchor::BOTTOM,
     };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "center margins are half the output slack (< 2^31 px by any display standard)"
+    )]
     let (horizontal, margins) = if geom.width_percent >= MAX_WIDTH_PERCENT {
         (Anchor::LEFT | Anchor::RIGHT, Margins::default())
     } else {
@@ -95,6 +109,10 @@ pub fn anchor_margins(geom: &Geometry, output: (u32, u32)) -> (Anchor, Margins) 
             HAlign::Left => (Anchor::LEFT, Margins::default()),
             HAlign::Right => (Anchor::RIGHT, Margins::default()),
             HAlign::Center => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "output px are < 2^24, exact in f32"
+                )]
                 let width_px = surface_width(output.0 as f32, geom.width_percent);
                 let slack = output.0.saturating_sub(width_px);
                 let left = slack / 2;
@@ -115,7 +133,11 @@ pub fn anchor_margins(geom: &Geometry, output: (u32, u32)) -> (Anchor, Margins) 
 /// The size request for a geometry: height is always a fixed pixel
 /// value; width is `None` at 100% — which the compositor reads as
 /// *fill*, not *unchanged* — and fixed pixels below.
-pub fn requested_size(geom: &Geometry, output: (u32, u32)) -> (Option<u32>, u32) {
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "output px are < 2^24, exact in f32"
+)]
+pub fn requested_size(geom: Geometry, output: (u32, u32)) -> (Option<u32>, u32) {
     let width = (geom.width_percent < MAX_WIDTH_PERCENT)
         .then(|| surface_width(output.0 as f32, geom.width_percent));
     (width, surface_height(output.1 as f32, geom.height_percent))
@@ -127,7 +149,7 @@ pub fn requested_size(geom: &Geometry, output: (u32, u32)) -> (Option<u32>, u32)
 /// zero margins, or the full-width surface stays shrunk).
 fn surface_tasks<M: 'static>(
     id: window::Id,
-    geom: &Geometry,
+    geom: Geometry,
     output: (u32, u32),
     height: u32,
 ) -> Task<M> {
@@ -143,7 +165,7 @@ fn surface_tasks<M: 'static>(
 /// The single path every settled geometry change goes through: anchors,
 /// margins, and width composed from `geom`; height from its
 /// (percent-quantized) config field.
-pub fn apply_geometry<M: 'static>(id: window::Id, geom: &Geometry, output: (u32, u32)) -> Task<M> {
+pub fn apply_geometry<M: 'static>(id: window::Id, geom: Geometry, output: (u32, u32)) -> Task<M> {
     let (_, height) = requested_size(geom, output);
     surface_tasks::<M>(id, geom, output, height)
 }
@@ -157,7 +179,7 @@ pub fn apply_geometry<M: 'static>(id: window::Id, geom: &Geometry, output: (u32,
 /// surface matches the percent that gets persisted.
 pub fn apply_drag_geometry<M: 'static>(
     id: window::Id,
-    geom: &Geometry,
+    geom: Geometry,
     output: (u32, u32),
     height_px: u32,
 ) -> Task<M> {
@@ -170,7 +192,7 @@ pub fn apply_drag_geometry<M: 'static>(
 /// changes (font, colors, …) compare equal, so they never touch the
 /// surface; a hidden surface just applies the new geometry on its next
 /// show.
-pub fn geometry_changed(old: &Geometry, new: &Geometry) -> bool {
+pub fn geometry_changed(old: Geometry, new: Geometry) -> bool {
     old != new
 }
 
@@ -208,6 +230,12 @@ pub struct DragAnchor {
 /// frame of an upward-growing surface cannot compound drift. Both
 /// pull away from the screen edge to grow, clamp to the 10–100 % band
 /// in pixels, and never target below one pixel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "px-band drag math: output/drag px < 2^24 exact in f32; round+clamp+max(1.0) keeps px positive"
+)]
 pub fn drag_target_px(edge: Edge, output_height: u32, drag: DragAnchor, pointer_y: f32) -> u32 {
     let (base, grow) = match edge {
         // Free edge at the bottom: dragging down grows; frame fixed.
@@ -226,6 +254,12 @@ pub fn drag_target_px(edge: Edge, output_height: u32, drag: DragAnchor, pointer_
 /// release — the settled surface may snap by up to half a percent from
 /// the dragged pixels, the accepted tolerance — rounded to nearest and
 /// clamped to the band.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "px -> whole percent: < 2^24 px exact in f32; round+clamp keeps the result in the u8 band"
+)]
 pub fn percent_from_px(output_height: u32, height_px: u32) -> u8 {
     (height_px as f32 / output_height.max(1) as f32 * 100.0)
         .round()
@@ -289,6 +323,10 @@ pub const WINDOW_PIN_INTERVAL: Duration = Duration::from_millis(150);
 /// debounce before the terminal exists — and later changed heights
 /// wait out [`WINDOW_PIN_INTERVAL`], with the caller landing skipped
 /// heights via a trailing adopt.
+#[expect(
+    clippy::float_cmp,
+    reason = "echo detection: the compositor returns the exact f32 it was granted; equality is the re-report test"
+)]
 pub fn window_pin_due(last: Option<(Instant, f32)>, now: Instant, height: f32) -> bool {
     match last {
         None => true,
@@ -382,7 +420,7 @@ impl WriteBack {
 /// edit and reshapes live.
 ///
 /// [`ConfigChanged`]: crate::app::Message::ConfigChanged
-pub fn is_own_write(written: &Geometry, echo: &Geometry) -> bool {
+pub fn is_own_write(written: Geometry, echo: Geometry) -> bool {
     written == echo
 }
 
@@ -434,7 +472,7 @@ mod tests {
                     width_percent: 100,
                     h_align,
                 };
-                let (anchor, margins) = anchor_margins(&geom, OUTPUT);
+                let (anchor, margins) = anchor_margins(geom, OUTPUT);
                 assert_eq!(anchor, vertical_of(edge) | Anchor::LEFT | Anchor::RIGHT);
                 assert_eq!(margins, Margins::default());
             }
@@ -450,7 +488,7 @@ mod tests {
                 width_percent: 60,
                 h_align: HAlign::Left,
             };
-            let (anchor, margins) = anchor_margins(&geom, OUTPUT);
+            let (anchor, margins) = anchor_margins(geom, OUTPUT);
             assert_eq!(anchor, vertical_of(edge) | Anchor::LEFT);
             assert_eq!(margins, Margins::default());
         }
@@ -465,7 +503,7 @@ mod tests {
                 width_percent: 60,
                 h_align: HAlign::Right,
             };
-            let (anchor, margins) = anchor_margins(&geom, OUTPUT);
+            let (anchor, margins) = anchor_margins(geom, OUTPUT);
             assert_eq!(anchor, vertical_of(edge) | Anchor::RIGHT);
             assert_eq!(margins, Margins::default());
         }
@@ -481,7 +519,7 @@ mod tests {
                 width_percent: 60,
                 h_align: HAlign::Center,
             };
-            let (anchor, margins) = anchor_margins(&geom, OUTPUT);
+            let (anchor, margins) = anchor_margins(geom, OUTPUT);
             assert_eq!(anchor, vertical_of(edge) | Anchor::LEFT | Anchor::RIGHT);
             assert_eq!(margins.left, 384);
             assert_eq!(margins.right, 384);
@@ -500,11 +538,16 @@ mod tests {
             width_percent: 41,
             h_align: HAlign::Center,
         };
-        let (_, margins) = anchor_margins(&geom, (1001, 800));
+        let (_, margins) = anchor_margins(geom, (1001, 800));
         assert_eq!(margins.left, 295);
         assert_eq!(margins.right, 296);
         let width = surface_width(1001.0, 41);
-        assert_eq!(margins.left as u32 + width + margins.right as u32, 1001);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "fixture margins are non-negative px by construction"
+        )]
+        let total_width = margins.left as u32 + width + margins.right as u32;
+        assert_eq!(total_width, 1001);
     }
 
     #[test]
@@ -517,7 +560,7 @@ mod tests {
             width_percent: 100,
             h_align: HAlign::Center,
         };
-        assert_eq!(requested_size(&geom, OUTPUT), (None, 432));
+        assert_eq!(requested_size(geom, OUTPUT), (None, 432));
     }
 
     #[test]
@@ -528,13 +571,13 @@ mod tests {
             width_percent: 60,
             h_align: HAlign::Left,
         };
-        assert_eq!(requested_size(&geom, OUTPUT), (Some(1152), 432));
+        assert_eq!(requested_size(geom, OUTPUT), (Some(1152), 432));
     }
 
     #[test]
     fn geometry_changed_is_false_for_identical_geometry() {
         let geom = Geometry::from_config(&DropTermConfig::default());
-        assert!(!geometry_changed(&geom, &geom));
+        assert!(!geometry_changed(geom, geom));
     }
 
     #[test]
@@ -565,7 +608,7 @@ mod tests {
         ];
         for mutated in mutations {
             assert!(
-                geometry_changed(&base, &mutated),
+                geometry_changed(base, mutated),
                 "expected a change for {mutated:?}"
             );
         }
@@ -584,7 +627,7 @@ mod tests {
             ..DropTermConfig::default()
         };
         let new = Geometry::from_config(&edited);
-        assert!(!geometry_changed(&old, &new));
+        assert!(!geometry_changed(old, new));
     }
 
     #[test]
@@ -874,7 +917,7 @@ mod tests {
             width_percent: 80,
             h_align: HAlign::Center,
         };
-        assert!(is_own_write(&written, &written));
+        assert!(is_own_write(written, written));
     }
 
     #[test]
@@ -907,7 +950,7 @@ mod tests {
             },
         ] {
             assert!(
-                !is_own_write(&written, &edited),
+                !is_own_write(written, edited),
                 "{edited:?} must not match {written:?}"
             );
         }

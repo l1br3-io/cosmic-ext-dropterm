@@ -53,7 +53,7 @@ pub const SLIDE_DURATION_MS: u64 = 130;
 /// below the frame period at any refresh rate. 1 ms covers outputs up
 /// to 1000 Hz and absorbs scheduling noise; it is redraw-only and a
 /// state no-op (~130 messages per 130 ms slide, batched by the
-/// runtime's AboutToWait pass — no layer-shell traffic; the runtime
+/// runtime's `AboutToWait` pass — no layer-shell traffic; the runtime
 /// saturates on resize storms, not redraw requests).
 pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
@@ -94,6 +94,10 @@ pub struct Active {
 /// [`SlideBox::draw`] feeds the wall clock at frame presentation;
 /// tests feed fakes.
 pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "progress ratio only: f32 precision at any elapsed value still clamps into [0, 1]"
+    )]
     let progress = (elapsed_ms as f32 / SLIDE_DURATION_MS as f32).clamp(0.0, 1.0);
     if progress >= 1.0 {
         return match active.direction {
@@ -343,6 +347,10 @@ where
         // same amount; the scrollable passes its child the same
         // shifted viewport, and TerminalBox sizes its visible region
         // from it.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+        )]
         let offset_y = self.playing.map_or(self.offset_y, |(edge, playing)| {
             translation_y(
                 edge,
