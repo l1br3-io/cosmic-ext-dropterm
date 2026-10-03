@@ -18,8 +18,8 @@ use crate::terminal::Terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub u32);
 
-/// A tab's attention state, surfaced as a marker prefixed to its tab-bar
-/// title (bell-indicator spec): a bell marks 🔔 (kitty's `bell_on_tab`),
+/// A tab's attention state, surfaced as a marker prefixed to its
+/// tab-bar title: a bell marks 🔔 (kitty's `bell_on_tab`),
 /// output in an inactive tab marks activity (iTerm2's dots), and either
 /// clears the moment the tab becomes active. Only inactive tabs accrue
 /// markers — the active tab is the one the user is already looking at.
@@ -74,27 +74,24 @@ pub struct Tab {
     pub id: TabId,
     /// The tab's current title: the last one its shell reported,
     /// falling back to the default from [`next_default_title`].
-    /// Surfaced by the tab bar widget (T5).
     pub title: String,
-    /// A user rename, which shell title changes never clobber;
-    /// committed by the inline-rename task (T6).
+    /// A user rename, which shell title changes never clobber.
     pub title_override: Option<String>,
-    /// The shell this tab runs, recorded when it was spawned — the
-    /// field the tabs spec reserved for `session-persistence`: a
-    /// mid-run config shell change never rewrites a live tab's shell,
-    /// so what gets saved is what each tab actually runs.
+    /// The shell this tab runs, recorded at spawn: a mid-run config
+    /// shell change never rewrites a live tab's shell, so a session
+    /// save records what each tab actually runs.
     pub shell: String,
-    /// The tab's attention marker state (bell-indicator spec). Markers
+    /// The tab's attention marker state. Markers
     /// accrue only while the tab is inactive and clear when it becomes
     /// active; the session schema deliberately ignores this field.
     pub attention: Attention,
-    /// Whether this tab is excluded from session saves (remote-newtab
-    /// spec): a `--cmd` tab runs an explicit program, and the session
+    /// Whether this tab is excluded from session saves: a `--cmd`
+    /// tab runs an explicit program, and the session
     /// model restores "a fresh shell in a familiar place" — never a
     /// resumed program — so command tabs are transient by design.
     pub ephemeral: bool,
     /// Whether this tab already posted a bell notification during the
-    /// current hide period (bell-notify spec): armed when a
+    /// current hide period: armed when a
     /// notification is posted, cleared for every tab when the surface
     /// is shown — so a bell storm yields one notification per tab per
     /// hide, and the next bell after a show notifies again.
@@ -138,8 +135,7 @@ pub struct CloseDecision {
     /// when a tab before it closed.
     pub next_active: usize,
     /// Whether the close took the last tab: the app must immediately
-    /// respawn a fresh one, since the overlay is never left empty (see
-    /// the tabs spec).
+    /// respawn a fresh one, since the overlay is never left empty.
     pub respawn: bool,
 }
 
@@ -222,12 +218,12 @@ pub fn activate_last_target(len: usize) -> Option<usize> {
     len.checked_sub(1)
 }
 
-/// Resolves a remote verb's `--tab-index N` target (remote-tab-actions
-/// spec): wire indices are 1-based, so `N` resolves to `N - 1` while it
-/// sits within `1..=len`, and an absent index resolves to the active tab.
-/// Anything else — zero, past the end, or an active index into an empty
-/// list — is `None`: the caller warns and no-ops, since the
-/// fire-and-forget seam cannot reply.
+/// Resolves a remote verb's `--tab-index N` target: wire indices are
+/// 1-based, so `N` resolves to `N - 1` while it sits within `1..=len`,
+/// and an absent index resolves to the active tab. Anything else —
+/// zero, past the end, or an active index into an empty list — is
+/// `None`: the caller warns and no-ops, since the fire-and-forget CLI
+/// path cannot reply.
 pub fn remote_target_index(len: usize, one_based: Option<usize>, active: usize) -> Option<usize> {
     match one_based {
         None => (active < len).then_some(active),
@@ -235,19 +231,19 @@ pub fn remote_target_index(len: usize, one_based: Option<usize>, active: usize) 
     }
 }
 
-/// Resolves a remote `select-tab N` activation (remote-tab-actions
-/// spec): the wire index is strict 1-based, so `N` resolves to `N - 1`
-/// while it sits within `1..=len` — no wrap, no `9 = last` idiom.
-/// Anything else — zero, past the end, no tabs — is `None`: the caller
-/// warns and no-ops, since the fire-and-forget seam cannot reply.
-/// Distinct from the 0-based keybind helper [`activate_index_target`];
-/// the 1-based conversion happens once, here at this boundary.
+/// Resolves a remote `select-tab N` activation: the wire index is
+/// strict 1-based, so `N` resolves to `N - 1` while it sits within
+/// `1..=len` — no wrap, no `9 = last` idiom. Anything else — zero,
+/// past the end, no tabs — is `None`: the caller warns and no-ops,
+/// since the fire-and-forget CLI path cannot reply. Distinct from the
+/// 0-based keybind helper [`activate_index_target`]; the 1-based
+/// conversion happens once, here at this boundary.
 pub fn select_tab_target(len: usize, one_based: usize) -> Option<usize> {
     one_based.checked_sub(1).filter(|index| *index < len)
 }
 
-/// Splits an explicit command line (the CLI's `--cmd`, remote-newtab
-/// spec) into its program and trailing arguments: whitespace-split
+/// Splits an explicit command line (the CLI's `--cmd`) into its
+/// program and trailing arguments: whitespace-split
 /// exactly like the `args` config — quoting is not supported. `None`
 /// when the line holds no program at all.
 pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
@@ -276,11 +272,11 @@ pub fn move_target(active: usize, len: usize, direction: MoveDirection) -> Optio
     }
 }
 
-/// Applies a completed tab drag (tabs spec, T7): moves the tab at `from`
-/// to `to` and returns the index the previously active tab landed at, so
-/// the same tab stays active whichever tab was dragged. The resulting
-/// order is the one `session-persistence` will save (see the tabs spec's
-/// interface note). Out-of-range indices leave the list untouched.
+/// Applies a completed tab drag: moves the tab at `from` to `to` and
+/// returns the index the previously active tab landed at, so the same
+/// tab stays active whichever tab was dragged. The resulting order is
+/// the one the session save persists. Out-of-range indices leave the
+/// list untouched.
 pub fn reorder_tabs<T>(tabs: &mut Vec<T>, active: usize, from: usize, to: usize) -> usize {
     if tabs.is_empty() || from >= tabs.len() || to >= tabs.len() {
         return active.min(tabs.len().saturating_sub(1));
@@ -307,15 +303,15 @@ pub fn next_default_title(id: TabId) -> String {
 
 /// Applies a shell-reported title to a tab's stored title: the report
 /// lands only while no user rename (`title_override`) is set — a rename
-/// is never clobbered by shell title changes (see the tabs spec). A
-/// title reset reports the tab's default (see [`next_default_title`]).
+/// is never clobbered by shell title changes. A title reset reports
+/// the tab's default (see [`next_default_title`]).
 pub fn apply_shell_title(title: &mut String, title_override: Option<&str>, reported: &str) {
     if title_override.is_none() {
         *title = reported.to_owned();
     }
 }
 
-/// Applies a committed inline rename (tabs spec, T6): a non-empty new
+/// Applies a committed inline rename: a non-empty new
 /// title becomes the tab's user rename — displayed immediately and safe
 /// from later shell title changes — while committing an empty title is
 /// the explicit "clear" that removes the rename, letting shell titles
@@ -496,7 +492,7 @@ mod tests {
     #[test]
     fn remote_target_zero_is_none_even_though_the_parser_rejects_it() {
         // Defense in depth: clap already rejects --tab-index 0, but the
-        // helper is the boundary any future wire path funnels through.
+        // helper is the boundary any future wire path goes through.
         assert_eq!(remote_target_index(3, Some(0), 1), None);
     }
 
@@ -521,7 +517,7 @@ mod tests {
     #[test]
     fn select_tab_target_zero_is_none_even_though_the_parser_rejects_it() {
         // Defense in depth: clap already rejects `select-tab 0`, but the
-        // helper is the boundary any future wire path funnels through.
+        // helper is the boundary any future wire path goes through.
         assert_eq!(select_tab_target(3, 0), None);
     }
 
@@ -735,7 +731,7 @@ mod tests {
         // a real Terminal, hence a real /bin/sh PTY — because the
         // point under test is exactly what `Tab::new` captures off a
         // live spawn: the shell it was spawned with, recorded so a
-        // later save (session-persistence) replays the right one.
+        // later session save replays the right one.
         use alacritty_terminal::term::{self as aterm, Config as TermConfig};
         use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
         use tokio::sync::mpsc;

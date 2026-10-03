@@ -1,19 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+//! The on-disk config: the [`DropTermConfig`] entry cosmic-config
+//! persists one key per file, its setting enums, and the clamping
+//! that guards stale or hand-edited values.
+
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
+/// Version of the on-disk config format.
 pub const CONFIG_VERSION: u64 = 1;
 
+/// Default surface height, in percent of the output height.
 pub const DEFAULT_HEIGHT_PERCENT: u8 = 40;
+/// Inclusive lower bound for `height_percent`.
 pub const MIN_HEIGHT_PERCENT: u8 = 10;
+/// Inclusive upper bound for `height_percent`.
 pub const MAX_HEIGHT_PERCENT: u8 = 100;
 
+/// Default surface width, in percent of the output width.
 pub const DEFAULT_WIDTH_PERCENT: u8 = 100;
+/// Inclusive lower bound for `width_percent`.
 pub const MIN_WIDTH_PERCENT: u8 = 30;
+/// Inclusive upper bound for `width_percent`.
 pub const MAX_WIDTH_PERCENT: u8 = 100;
 
+/// Name of the stock COSMIC dark theme (the dark-mode scheme default).
 pub const COSMIC_THEME_DARK: &str = "COSMIC Dark";
+/// Name of the stock COSMIC light theme (the light-mode scheme default).
 pub const COSMIC_THEME_LIGHT: &str = "COSMIC Light";
 
 /// Which screen edge the drop-down is anchored to.
@@ -33,7 +46,7 @@ impl std::fmt::Display for Edge {
     }
 }
 
-/// Horizontal placement of the surface within the output (geometry spec).
+/// Horizontal placement of the surface within the output.
 ///
 /// Moot while `width_percent` is 100 (the surface fills the output);
 /// meaningful the moment the width is lowered.
@@ -68,13 +81,12 @@ pub enum KeyboardMode {
     OnDemand,
 }
 
-/// Whether the app follows the system light/dark mode or pins one
-/// (theme-preference spec).
+/// Whether the app follows the system light/dark mode or pins one.
 ///
-/// `System` — the default — is byte-identical to the app before the
-/// key existed: the OS setting drives scheme selection, the window
-/// background, and chrome. `Dark`/`Light` pin the app to the user's
-/// own system palette for that mode, independent of the OS setting.
+/// `System` — the default — lets the OS setting drive scheme
+/// selection, the window background, and chrome. `Dark`/`Light` pin
+/// the app to the user's own system palette for that mode,
+/// independent of the OS setting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemePreference {
     #[default]
@@ -83,12 +95,11 @@ pub enum ThemePreference {
     Light,
 }
 
-/// Where the tab strip sits on the surface (tab-bar-position spec).
+/// Where the tab strip sits on the surface.
 ///
 /// `Auto` — the default — keeps the strip at the leading edge beside
-/// the grab bar, i.e. opposite the screen edge: the placement every
-/// config had before the key existed. `Top`/`Bottom` pin the strip to
-/// that side of the surface regardless of anchor.
+/// the grab bar, i.e. opposite the screen edge. `Top`/`Bottom` pin
+/// the strip to that side of the surface regardless of anchor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TabPosition {
     #[default]
@@ -113,16 +124,15 @@ pub struct DropTermConfig {
     /// Height of the surface as a percentage of the output height.
     pub height_percent: u8,
     /// Width of the surface as a percentage of the output width,
-    /// 30-100. 100 (the default) keeps the v1 full-width surface.
+    /// 30-100. 100 (the default) fills the output.
     pub width_percent: u8,
     /// Horizontal placement within the output (moot at full width).
     pub h_align: HAlign,
     /// Screen edge the surface is anchored to.
     pub edge: Edge,
     /// Placement of the tab strip: `auto` stacks it at the leading
-    /// edge beside the grab bar (the pre-key behavior); `top`/
-    /// `bottom` pin it to that side of the surface regardless of
-    /// anchor. Defaults to `auto`.
+    /// edge beside the grab bar; `top`/`bottom` pin it to that side
+    /// of the surface regardless of anchor. Defaults to `auto`.
     pub tab_position: TabPosition,
     /// Layer-shell layer the surface is created on.
     pub layer: Layer,
@@ -130,7 +140,7 @@ pub struct DropTermConfig {
     pub keyboard_mode: KeyboardMode,
     /// Place the drop-down below panels and docks instead of covering them,
     /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
-    /// Applies on the next show. Default: cover, Yakuake-style.
+    /// Applies on the next show. Default: cover.
     pub respect_panel: bool,
     /// Name of the Wayland output to show on. `None` follows the
     /// compositor's notion of the "active" output (usually the one under
@@ -161,26 +171,24 @@ pub struct DropTermConfig {
     /// docs/research/terminal-de-integration.md); set `false` to keep
     /// the overlay open when it loses focus.
     pub hide_on_focus_loss: bool,
-    /// Save the session on change and restore it on launch
-    /// (settings-ui spec, U2). Defaults to `true` — the always-on
-    /// behavior before the key existed. `false` is symmetric: saves
-    /// stop and launch restore is skipped, while the state file
-    /// itself is left untouched to wait for a re-enable.
+    /// Save the session on change and restore it on launch.
+    /// Defaults to `true` — always-on persistence. `false` is
+    /// symmetric: saves stop and launch restore is skipped, while the
+    /// state file itself is left untouched to wait for a re-enable.
     pub session_persistence_enabled: bool,
-    /// Animate show/hide with the 130 ms slide (settings-ui spec,
-    /// U2). Defaults to `true`. `false` restores the instant
-    /// show/hide with immediate destroy the app had before slides
-    /// existed; a running animation is never aborted by the toggle.
+    /// Animate show/hide with the 130 ms slide. Defaults to `true`.
+    /// `false` restores instant show/hide with immediate destroy; a
+    /// running animation is never aborted by the toggle.
     pub slide_animation_enabled: bool,
     /// Post a desktop notification when a bell rings while the
-    /// terminal is hidden (bell-notify spec) — one notification per
+    /// terminal is hidden — one notification per
     /// tab per hide period, delivered over the freedesktop
     /// notification interface. Defaults to `true`; `false` silences
     /// notifications (the tab-bar 🔔 marker is unaffected).
     pub bell_notification_enabled: bool,
-    /// Whether the app follows the system light/dark mode or pins one
-    /// (theme-preference spec). Defaults to `System`: no override is
-    /// ever issued and system flips keep driving the app.
+    /// Whether the app follows the system light/dark mode or pins
+    /// one. Defaults to `System`: no override is ever issued and
+    /// system flips keep driving the app.
     pub theme_preference: ThemePreference,
 }
 
@@ -260,9 +268,8 @@ mod tests {
 
     #[test]
     fn session_and_slide_toggles_default_on() {
-        // settings-ui U2: both keys ship `true` — day-one equality
-        // with the always-on behavior these features had before the
-        // keys existed.
+        // Both keys ship `true` — the default is the always-on
+        // behavior, so existing configs keep it.
         let config = DropTermConfig::default();
         assert!(config.session_persistence_enabled);
         assert!(config.slide_animation_enabled);
@@ -271,16 +278,15 @@ mod tests {
     #[test]
     fn bell_notifications_default_to_on() {
         // The one DE feature a hidden drop-down uniquely needs ships
-        // enabled (bell-notify spec); the Behavior toggle turns it off.
+        // enabled; the Behavior toggle turns it off.
         assert!(DropTermConfig::default().bell_notification_enabled);
     }
 
     #[test]
     fn config_version_stays_at_one() {
-        // settings-ui U2: the two booleans merge into pre-existing
-        // files through the CosmicConfigEntry default-entry fallback
-        // (the G1 precedent) — no version bump, no per-field serde
-        // attributes.
+        // New boolean keys merge into pre-existing files through the
+        // CosmicConfigEntry default-entry fallback — no version bump,
+        // no per-field serde attributes.
         assert_eq!(CONFIG_VERSION, 1);
     }
 
@@ -357,6 +363,7 @@ mod tests {
         let unconfigured = DropTermConfig::default();
         assert_eq!(unconfigured.resolved_shell(), "/usr/bin/zsh");
 
+        // SAFETY: single-threaded test, no other test reads/writes SHELL.
         unsafe {
             std::env::remove_var("SHELL");
         }
@@ -366,8 +373,9 @@ mod tests {
 
     #[test]
     fn missing_respect_panel_key_loads_as_false() {
-        // A config directory written before `respect_panel` existed: every
-        // legacy key on disk, no `respect_panel` file. cosmic-config reads
+        // A config directory from a version that did not yet write
+        // `respect_panel`: every legacy key on disk, no `respect_panel`
+        // file. cosmic-config reads
         // each key independently and leaves missing keys at their default
         // (`Error::is_err` treats NotFound/NoConfigDirectory as lenient).
         let root = std::env::temp_dir().join(format!(
@@ -440,9 +448,8 @@ mod tests {
 
     #[test]
     fn theme_preference_defaults_to_system() {
-        // theme-preference criterion 2: the default is Follow system —
-        // a fresh config never issues a theme override, so default
-        // behavior stays byte-identical to the pre-module binary.
+        // The default is Follow system — a fresh config never issues
+        // a theme override.
         assert_eq!(
             DropTermConfig::default().theme_preference,
             ThemePreference::System
@@ -467,9 +474,9 @@ mod tests {
 
     #[test]
     fn missing_theme_preference_key_loads_as_system() {
-        // A config directory written before `theme_preference`
-        // existed loads as `System` (criterion 1) through the same
-        // default-entry leniency the `respect_panel` pair pins — the
+        // A config directory from a version that did not yet write
+        // `theme_preference` loads as `System` through the same
+        // default-entry leniency pinned for `respect_panel` — the
         // key list is additive, `CONFIG_VERSION` stays 1.
         let root = std::env::temp_dir().join(format!(
             "dropterm-config-test-missing-theme-key-{}",
@@ -540,9 +547,8 @@ mod tests {
 
     #[test]
     fn tab_position_defaults_to_auto() {
-        // tab-bar-position criterion 2: `Auto` keeps the strip at the
-        // leading edge beside the grab bar on both anchors — default
-        // behavior stays byte-identical to the pre-module binary.
+        // `Auto` keeps the strip at the leading edge beside the grab
+        // bar on both anchors.
         assert_eq!(DropTermConfig::default().tab_position, TabPosition::Auto);
     }
 
@@ -560,10 +566,10 @@ mod tests {
 
     #[test]
     fn missing_tab_position_key_loads_as_auto() {
-        // A config directory written before `tab_position` existed
-        // loads as `Auto` (criterion 1) through the same default-entry
-        // leniency the `respect_panel` pair pins — the key list is
-        // additive, `CONFIG_VERSION` stays 1.
+        // A config directory from a version that did not yet write
+        // `tab_position` loads as `Auto` through the same
+        // default-entry leniency pinned for `respect_panel` — the
+        // key list is additive, `CONFIG_VERSION` stays 1.
         let root = std::env::temp_dir().join(format!(
             "dropterm-config-test-missing-tabpos-key-{}",
             std::process::id()
