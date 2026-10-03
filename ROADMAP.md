@@ -32,7 +32,7 @@ High-level feature list.
 
 ## Later
 
-- [x] CLI actions (`new-tab [--cwd] [--cmd]`, over the single-instance D-Bus seam; `--is-visible` deferred - it needs a queryable D-Bus property, not fire-and-forget activation)
+- [x] CLI actions (`new-tab [--cwd] [--cmd]` over the single-instance D-Bus seam; `--is-visible` queries the `Visible` property on the `…CosmicExtDropterm.V1` state interface)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] User-defined color scheme files (import custom palettes)
