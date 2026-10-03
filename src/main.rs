@@ -57,9 +57,7 @@ fn main() -> cosmic::iced::Result {
     }
 
     let args = Args::parse();
-    let flags = Flags {
-        action: args.action.unwrap_or_default(),
-    };
+    let flags = Flags::new(args.action.unwrap_or_default());
 
     let settings = cosmic::app::Settings::default()
         .no_main_window(true)
@@ -71,6 +69,7 @@ fn main() -> cosmic::iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmic::app::CosmicFlags;
 
     #[test]
     fn new_tab_parses_with_either_or_both_flags() {
@@ -121,10 +120,41 @@ mod tests {
     }
 
     #[test]
+    fn close_tab_parses_bare_and_indexed() {
+        let bare = Args::parse_from(["dropterm", "close-tab"]).action;
+        assert_eq!(bare, Some(ToggleAction::CloseTab { tab_index: None }));
+
+        let indexed = Args::parse_from(["dropterm", "close-tab", "--tab-index", "2"]).action;
+        assert_eq!(indexed, Some(ToggleAction::CloseTab { tab_index: Some(2) }));
+    }
+
+    #[test]
+    fn close_tab_rejects_a_zero_tab_index() {
+        // Tab indices are 1-based (remote-tab-actions spec); zero dies
+        // at the CLI edge, exactly like new-tab's empty --cmd.
+        let result = Args::try_parse_from(["dropterm", "close-tab", "--tab-index", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_malformed_forward_degrades_to_none() {
+        // Words clap rejects yield None, which dbus_activation turns
+        // into a plain toggle — never an error surface (the
+        // remote-newtab rule, now carrying a bad --tab-index).
+        let words: Vec<String> = ["close-tab", "--tab-index", "0"]
+            .iter()
+            .map(|word| word.to_string())
+            .collect();
+        assert_eq!(parse_forwarded_action(&words), None);
+    }
+
+    #[test]
     fn forwarded_actions_survive_the_dbus_round_trip() {
         // The second launch serializes the action as its Display name
         // plus flags.args(); the primary reconstructs it through
-        // parse_forwarded_action. Every action must survive exactly.
+        // parse_forwarded_action. Every action must survive exactly,
+        // serialized by the real encoder — no hand-rolled words
+        // (remote-tab-actions spec).
         let actions = [
             ToggleAction::Toggle,
             ToggleAction::Show,
@@ -145,19 +175,14 @@ mod tests {
                 cwd: Some("/tmp".into()),
                 cmd: Some("htop -u root".to_string()),
             },
+            ToggleAction::CloseTab { tab_index: None },
+            ToggleAction::CloseTab { tab_index: Some(2) },
         ];
         for action in actions {
-            let mut words = vec![action.to_string()];
-            if let ToggleAction::NewTab { cwd, cmd } = &action {
-                if let Some(cwd) = cwd {
-                    words.push("--cwd".to_string());
-                    words.push(cwd.to_string_lossy().into_owned());
-                }
-                if let Some(cmd) = cmd {
-                    words.push("--cmd".to_string());
-                    words.push(cmd.clone());
-                }
-            }
+            let flags = Flags::new(action.clone());
+            let words = std::iter::once(action.to_string())
+                .chain(flags.args().into_iter().map(str::to_string))
+                .collect::<Vec<String>>();
             assert_eq!(parse_forwarded_action(&words), Some(action));
         }
     }

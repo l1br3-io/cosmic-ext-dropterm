@@ -67,6 +67,14 @@ pub enum ToggleAction {
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         cmd: Option<String>,
     },
+    /// Close a tab remotely — the active tab, or the 1-based `--tab-index`
+    /// target. Out-of-range targets no-op with a warning (remote-tab-actions
+    /// spec); the overlay is not shown.
+    CloseTab {
+        /// 1-based index of the tab to close; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -76,6 +84,7 @@ impl std::fmt::Display for ToggleAction {
             Self::Show => write!(f, "show"),
             Self::Hide => write!(f, "hide"),
             Self::NewTab { .. } => write!(f, "new-tab"),
+            Self::CloseTab { .. } => write!(f, "close-tab"),
         }
     }
 }
@@ -873,6 +882,18 @@ impl DropTerm {
         }
         self.last_toggle = Some(now);
 
+        // A remote close-tab is a quiet state edit, not a toggle step
+        // (remote-tab-actions spec): it applies through the shared close
+        // funnel and shows nothing — no overlay, and none of the
+        // settings close-first rule below (that exists so a re-shown
+        // terminal never slides over the settings window; a quiet verb
+        // never re-shows) — so a script closing a tab never disturbs
+        // what the user is looking at. The debounce above still guards
+        // it: a compositor double-delivery must not close two tabs.
+        if let ToggleAction::CloseTab { tab_index } = action {
+            return self.close_remote_tab(tab_index);
+        }
+
         // While the settings window is open the terminal is hidden by
         // construction (settings-ui spec, U5b): a toggle arriving now
         // (second launch, D-Bus activation, the startup flag) closes
@@ -976,6 +997,28 @@ impl DropTerm {
             return Task::batch([switch, self.mark_session_dirty()]);
         }
         Task::none()
+    }
+
+    /// Applies a remote `close-tab` (remote-tab-actions spec): the
+    /// 1-based `--tab-index` resolves through
+    /// [`tabs::remote_target_index`] — absent means the active tab —
+    /// and the close rides the shared [`Self::close_tab_at`] funnel,
+    /// inheriting successor activation, respawn-when-last, attention
+    /// retirement, the session-dirty mark, and the rename-session
+    /// prune. An unresolvable target — no tabs, out of range — warns
+    /// and no-ops: the fire-and-forget seam cannot reply, and quiet
+    /// degradation is the established pattern.
+    fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
+            Some(index) => self.close_tab_at(index),
+            None => {
+                log::warn!(
+                    "close-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                    self.tabs.len()
+                );
+                Task::none()
+            }
+        }
     }
 
     /// Opens the settings window, or focuses the existing one
@@ -1498,10 +1541,13 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
             }
         }
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
-        // Structurally unreachable: `debounced_toggle` opens a remote
-        // new-tab outside the toggle funnel, so no NewTab ever gets
-        // here. Loud rather than silently wrong.
-        (ToggleAction::NewTab { .. }, _) => unreachable!("new-tab opens outside the funnel"),
+        // Structurally unreachable: `debounced_toggle` applies the
+        // remote verbs — opening a new-tab, closing a close-tab —
+        // outside the toggle funnel, so none ever gets here. Loud
+        // rather than silently wrong.
+        (ToggleAction::NewTab { .. } | ToggleAction::CloseTab { .. }, _) => {
+            unreachable!("remote verbs apply outside the funnel")
+        }
     }
 }
 
@@ -2138,6 +2184,53 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct Flags {
     pub action: ToggleAction,
+    /// The words the action forwards alongside its Display name,
+    /// pre-encoded by [`Flags::new`]: `CosmicFlags::args` returns
+    /// `&str`s borrowed from `self`, which cannot hand out a formatted
+    /// `--tab-index 3` — so the encoding runs once per launch instead
+    /// of leaking per call, with [`forward_words`] as the single
+    /// encoder the D-Bus seam and the round-trip test both ride.
+    forwarded: Vec<String>,
+}
+
+/// Encodes the arguments a second launch forwards alongside the action's
+/// Display name (remote-newtab / remote-tab-actions specs): everything
+/// the receiving instance needs to reconstruct the exact action through
+/// `parse_forwarded_action`. Actions without payloads forward nothing.
+fn forward_words(action: &ToggleAction) -> Vec<String> {
+    let mut forwarded = Vec::new();
+    match action {
+        ToggleAction::NewTab { cwd, cmd } => {
+            // A non-UTF-8 path cannot cross this borrowed-str seam: the
+            // forwarded action then simply carries no --cwd, and the
+            // receiving instance opens the tab in the inherited directory.
+            if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
+                forwarded.push("--cwd".to_string());
+                forwarded.push(dir.to_string());
+            }
+            if let Some(cmd) = cmd {
+                forwarded.push("--cmd".to_string());
+                forwarded.push(cmd.clone());
+            }
+        }
+        ToggleAction::CloseTab {
+            tab_index: Some(index),
+        } => {
+            forwarded.push("--tab-index".to_string());
+            forwarded.push(index.to_string());
+        }
+        _ => {}
+    }
+    forwarded
+}
+
+impl Flags {
+    /// Wraps `action` for launch, pre-encoding the words it forwards
+    /// over the single-instance seam (see [`Flags::forwarded`]).
+    pub(crate) fn new(action: ToggleAction) -> Self {
+        let forwarded = forward_words(&action);
+        Self { action, forwarded }
+    }
 }
 
 impl cosmic::app::CosmicFlags for Flags {
@@ -2149,26 +2242,11 @@ impl cosmic::app::CosmicFlags for Flags {
     }
 
     /// The arguments forwarded alongside the action name (remote-newtab
-    /// spec): a `new-tab` request carries its `--cwd`/`--cmd` so the
-    /// running instance can reconstruct the exact action — everything
-    /// else forwards no args, exactly as before.
+    /// spec): a `new-tab` request carries its `--cwd`/`--cmd`, a
+    /// `close-tab` its 1-based `--tab-index` — everything else forwards
+    /// no args, exactly as before.
     fn args(&self) -> Vec<&str> {
-        let ToggleAction::NewTab { cwd, cmd } = &self.action else {
-            return Vec::new();
-        };
-        let mut forwarded = Vec::new();
-        if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
-            forwarded.push("--cwd");
-            forwarded.push(dir);
-        }
-        // A non-UTF-8 path cannot cross this borrowed-str seam: the
-        // forwarded action then simply carries no --cwd, and the
-        // receiving instance opens the tab in the inherited directory.
-        if let Some(cmd) = cmd {
-            forwarded.push("--cmd");
-            forwarded.push(cmd);
-        }
-        forwarded
+        self.forwarded.iter().map(String::as_str).collect()
     }
 }
 
@@ -2290,9 +2368,21 @@ impl Application for DropTerm {
         let theme_task = theme_override(ThemePreference::System, app.config.theme_preference)
             .map(theme_override_task)
             .unwrap_or_else(Task::none);
+        // First launch has no running state to act on remotely: the
+        // tab verbs degrade to a plain start — the default `Toggle` —
+        // with an info log, never a fabricated close on a
+        // restored-or-fresh session (remote-tab-actions spec); only
+        // new-tab keeps startup application (remote-newtab spec).
+        let startup_action = match flags.action {
+            ToggleAction::CloseTab { .. } => {
+                log::info!("close-tab with no running instance: starting plain");
+                ToggleAction::Toggle
+            }
+            action => action,
+        };
         let task = Task::batch([
             open_anchor.then(|_| Task::none()),
-            app.debounced_toggle(flags.action),
+            app.debounced_toggle(startup_action),
             theme_task,
         ]);
         (app, task)
