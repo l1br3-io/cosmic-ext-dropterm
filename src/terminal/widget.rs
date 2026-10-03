@@ -371,7 +371,10 @@ where
 
 /// Convenience constructor, kept from upstream cosmic-term for API parity
 /// even though dropterm currently always builds a [`TerminalBox`] directly.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "kept for upstream API parity; dropterm builds TerminalBox directly"
+)]
 pub fn terminal_box<'a, Message>(
     terminal: &'a Mutex<Terminal>,
     key_binds: &'a HashMap<KeyBind, Action>,
@@ -1393,7 +1396,10 @@ where
                         state.is_focused = true;
 
                         // Handle left click drag
-                        #[allow(clippy::collapsible_if)]
+                        #[expect(
+                            clippy::collapsible_if,
+                            reason = "the bounds check and the click-state machine stay separate reads"
+                        )]
                         if let Button::Left = button {
                             let x = p.x - self.padding.left;
                             let y = p.y - self.padding.top;
@@ -1934,11 +1940,14 @@ enum EdgeScrollDirection {
     Bottom,
 }
 
-#[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     reason = "trunc splits accumulated px into whole lines + remainder; values < 2^24"
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "edge-scroll needs the full drag state; a param struct is module-decomposition's call"
 )]
 fn edge_scroll_adjustment(
     y: f32,

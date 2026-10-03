@@ -1111,7 +1111,10 @@ impl Terminal {
         let term_lock = self.term.lock();
         let mode = term_lock.mode();
 
-        #[allow(clippy::collapsible_else_if)]
+        #[expect(
+            clippy::collapsible_else_if,
+            reason = "the SGR/normal split stays parallel if/else blocks, mirroring upstream's shape"
+        )]
         if mode.contains(TermMode::SGR_MOUSE) {
             if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, modifiers, x, y) {
                 self.input_no_scroll(code);

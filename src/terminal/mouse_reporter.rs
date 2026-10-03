@@ -216,7 +216,10 @@ impl MouseReporter {
     }
 
     /// SGR wheel-scroll events, one per accumulated cell line.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the xterm SGR encoding needs all six inputs; a param struct would obscure the upstream shape"
+    )]
     pub fn sgr_mouse_wheel_scroll(
         &mut self,
         term_cell_width: f32,
