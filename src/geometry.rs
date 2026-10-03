@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Pure geometry math plus the single layer-surface application path
-//! (geometry spec).
+//! Pure geometry math plus the single layer-surface application path.
 //!
 //! All percent/anchor/margin math lives here as plain functions over
-//! plain data — no compositor, no iced runtime state — the same
-//! separation as `tabs.rs`. Every transition that shapes the surface
-//! (show, config reshape, drag) funnels through [`apply_geometry`], so
-//! no path can leave a stale anchor, margin, or size behind.
+//! plain data — no compositor, no iced runtime state. Every transition
+//! that shapes the surface (show, config reshape, drag) goes through
+//! [`apply_geometry`], so no path can leave a stale anchor, margin, or
+//! size behind.
 
 use std::time::{Duration, Instant};
 
@@ -22,12 +21,9 @@ use crate::config::{
     MIN_WIDTH_PERCENT,
 };
 
-/// Fixed pixel height to request for the shown surface: `height_percent`
-/// of the output, bar or no bar. The surface height never changes while
-/// shown — when the tab bar appears, the terminal widget is pinned to
-/// the window height minus the bar (see
-/// `surface::terminal_view_height`), so the bar takes its strip out of
-/// the terminal's rows, Yakuake-style, rather than out of the screen.
+/// Fixed pixel height of the shown surface: `height_percent` of the
+/// output. The surface never shrinks for the tab bar — the terminal
+/// widget does (see `surface::terminal_view_height`).
 pub fn surface_height(output_height: f32, height_percent: u8) -> u32 {
     (output_height * f32::from(height_percent) / 100.0)
         .round()
@@ -65,8 +61,8 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    /// The geometry of a config, percents clamped into their bands (the
-    /// module's standing rule: clamp before applying, whoever calls).
+    /// The geometry of a config, with percents clamped into their
+    /// bands: always clamp before applying, whoever calls.
     pub fn from_config(config: &DropTermConfig) -> Self {
         Self {
             edge: config.edge,
@@ -83,11 +79,10 @@ impl Geometry {
 
 /// Compose the layer-shell anchor set and margins for a geometry.
 ///
-/// A width of 100% keeps both horizontal anchors and zero margins —
-/// identical to the v1 surface. Narrower widths drop the anchor on the
-/// aligned side; `Center` keeps both anchors and offsets with equal
-/// margins, the odd leftover pixel going right so the total width stays
-/// exact.
+/// Full width keeps both horizontal anchors and zero margins. Narrower
+/// widths drop the anchor on the aligned side; `Center` keeps both
+/// anchors and offsets with equal margins, the odd leftover pixel
+/// going right so the total width stays exact.
 pub fn anchor_margins(geom: &Geometry, output: (u32, u32)) -> (Anchor, Margins) {
     let vertical = match geom.edge {
         Edge::Top => Anchor::TOP,
@@ -129,8 +124,7 @@ pub fn requested_size(geom: &Geometry, output: (u32, u32)) -> (Option<u32>, u32)
 /// Send the `set_anchor` + `set_size` + `set_margin` triple, always all
 /// three — zero margins included — so no transition can leave stale
 /// anchors, margins, or sizes behind (e.g. width 60 -> 100 must re-send
-/// zero margins, or the "full-width" surface stays shrunk). Every
-/// geometry transition funnels through here.
+/// zero margins, or the full-width surface stays shrunk).
 fn surface_tasks<M: 'static>(
     id: window::Id,
     geom: &Geometry,
@@ -172,26 +166,24 @@ pub fn apply_drag_geometry<M: 'static>(
 
 /// Whether two geometries differ in any field that shapes the surface.
 ///
-/// The gate for in-place reshapes on config edits (geometry spec, G2):
-/// non-geometry config changes (font, colors, …) compare equal, so they
-/// never touch the surface; a hidden surface just applies the new
-/// geometry on its next show.
+/// The gate for in-place reshapes on config edits: non-geometry config
+/// changes (font, colors, …) compare equal, so they never touch the
+/// surface; a hidden surface just applies the new geometry on its next
+/// show.
 pub fn geometry_changed(old: &Geometry, new: &Geometry) -> bool {
     old != new
 }
 
-/// The fixed references of an in-progress grab-bar drag (geometry
-/// spec, G3): everything a live drag target recomputes from, per move,
-/// in pixels.
+/// The fixed references of an in-progress grab-bar drag: everything a
+/// live drag target recomputes from, per move, in pixels.
 ///
 /// Targets are recomputed absolutely — never by accumulating deltas —
-/// because both culprits of the original steppy drag were delta
-/// artifacts: percent quantization turned sub-percent travel into
+/// because percent quantization would turn sub-percent travel into
 /// dead zones and ~1 %-of-output jumps, and the window frame of a
-/// bottom-anchored surface *moves* as it grows upward, so surface-local
-/// deltas mixed pointer travel with the frame shift. Absolute targets
-/// self-correct: every move lands on the exact height the pointer
-/// implies, whichever edge, whatever the frame did last event.
+/// bottom-anchored surface moves as it grows upward, so surface-local
+/// deltas would mix pointer travel with the frame shift. Absolute
+/// targets self-correct: every move lands on the exact height the
+/// pointer implies, whichever edge, whatever the frame did last event.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DragAnchor {
     /// The surface height (px) when the drag armed.
@@ -206,8 +198,8 @@ pub struct DragAnchor {
     pub press_y: f32,
 }
 
-/// The pixel height a drag currently implies (geometry spec, G3):
-/// `pointer_y` is the pointer's *window-absolute* y this move.
+/// The pixel height a drag currently implies: `pointer_y` is the
+/// pointer's *window-absolute* y this move.
 ///
 /// `Edge::Top` targets `anchored_px + (pointer_y − press_y)` — the
 /// window frame of a top-anchored surface is fixed, so travel since the
@@ -229,8 +221,8 @@ pub fn drag_target_px(edge: Edge, output_height: u32, drag: DragAnchor, pointer_
     (base + grow).round().clamp(min_px, max_px).max(1.0) as u32
 }
 
-/// The whole-percent config value a dragged pixel height settles at
-/// (geometry spec, G3/G4): percent quantization happens once, at
+/// The whole-percent config value a dragged pixel height settles at:
+/// percent quantization happens once, at
 /// release — the settled surface may snap by up to half a percent from
 /// the dragged pixels, the accepted tolerance — rounded to nearest and
 /// clamped to the band.
@@ -240,40 +232,34 @@ pub fn percent_from_px(output_height: u32, height_px: u32) -> u8 {
         .clamp(f32::from(MIN_HEIGHT_PERCENT), f32::from(MAX_HEIGHT_PERCENT)) as u8
 }
 
-/// Minimum spacing between live drag applies (geometry spec, G3):
-/// the compositor grants each `set_size` exactly and promptly (hardware
-/// measured: ~10–40 ms, no easing), but the runtime double-reports
-/// every apply — it synthesizes a second configure per `set_size`
-/// carrying the *previous* height (see the G3 hardware notes) — so each
+/// Minimum spacing between live drag applies.
+///
+/// The compositor grants each `set_size` exactly and promptly, but the
+/// runtime double-reports every apply — it synthesizes a second
+/// configure per `set_size` carrying the previous height — so each
 /// apply becomes two window resizes, terminal reflows, and pty resizes
 /// in the app. Per-move applies at pointer rate saturate the single
-/// runtime thread — the drag froze input and the surface flickered
-/// stale/new on hardware — so applies are change-gated and spaced at
-/// least this far apart. The release settle is immediate regardless.
+/// runtime thread, so applies are change-gated and spaced at least
+/// this far apart; the release settle is immediate regardless.
 /// Tunable: raise if a drag still starves input, lower (toward one
-/// frame) if drags feel steppy on calm hardware.
+/// frame) if drags feel steppy.
 pub const DRAG_APPLY_INTERVAL: Duration = Duration::from_millis(80);
 
-/// Minimum pixel distance between live drag applies (geometry spec,
-/// G3): each apply costs the double-reported resize pipeline above,
-/// so a drag may only retarget once the surface has been given room
-/// to actually move — the surface trails the hand by at most this
-/// much mid-drag (about one percent of a typical output) while the
-/// applied height is the true live target, and the release settle is
-/// exact regardless. Slow drags (under one deadband per interval)
-/// skip redundant applies entirely instead of re-reporting sizes the
-/// surface already has.
+/// Minimum pixel distance between live drag applies: each apply costs
+/// the double-reported resize pipeline, so a drag only retargets once
+/// the surface has been given room to move — it trails the hand by at
+/// most this much mid-drag while the applied height stays the true
+/// target, and the release settle is exact regardless. Slow drags
+/// (under one deadband per interval) skip redundant applies entirely.
 pub const DRAG_APPLY_DEADBAND: u32 = 16;
 
-/// Whether a live drag target should be applied now (geometry spec,
-/// G3): `last` is the previous apply (when, which target). The first
-/// move of a drag always applies — no grab latency — and later
-/// applies need the target far enough beyond the last applied one
-/// ([`DRAG_APPLY_DEADBAND`], keeping the double-reported resize
-/// pipeline off the runtime thread for sub-deadband drift) *and* an
-/// elapsed [`DRAG_APPLY_INTERVAL`], bounding the resize/reflow storm.
-/// Skipped targets land via the trailing apply or the release settle,
-/// so throttling never loses the final height.
+/// Whether a live drag target should be applied now: `last` is the
+/// previous apply (when, which target). The first move of a drag
+/// always applies — no grab latency — and later applies need the
+/// target beyond the last applied one by [`DRAG_APPLY_DEADBAND`] *and*
+/// an elapsed [`DRAG_APPLY_INTERVAL`], bounding the resize/reflow
+/// storm. Skipped targets land via the trailing apply or the release
+/// settle, so throttling never loses the final height.
 pub fn drag_apply_due(last: Option<(Instant, u32)>, now: Instant, target: u32) -> bool {
     match last {
         None => true,
@@ -285,21 +271,20 @@ pub fn drag_apply_due(last: Option<(Instant, u32)>, now: Instant, target: u32) -
 }
 
 /// How often the terminal's pinned height may follow a *changing*
-/// granted size (geometry spec, G3): every `set_size` reaches the app
-/// twice — once as the stale synthetic configure, once as the real
-/// granted size (see the G3 hardware notes) — and a drag applies every
-/// [`DRAG_APPLY_INTERVAL`], so the granted stream outpaces what the
-/// terminal can absorb: each adoption costs a terminal reflow plus a
-/// pty resize whose SIGWINCH makes the shell redraw — the storm behind
-/// seconds of post-drag sluggishness. The pin adopts a changed height
-/// at most this often (a trailing adopt lands the final size once the
-/// stream settles), so a drag reflows the terminal a handful of times
-/// instead of on every echo. Identical heights always pass: a
-/// re-report of the size the pin already has is free.
+/// granted size: every `set_size` reaches the app twice — once as the
+/// stale synthetic configure, once as the real granted size — and a
+/// drag applies every [`DRAG_APPLY_INTERVAL`], so the granted stream
+/// outpaces what the terminal can absorb: each adoption costs a
+/// terminal reflow plus a pty resize whose SIGWINCH makes the shell
+/// redraw. The pin adopts a changed height at most this often (a
+/// trailing adopt lands the final size once the stream settles), so a
+/// drag reflows the terminal a handful of times instead of on every
+/// echo. Identical heights always pass: a re-report of the size the
+/// pin already has is free.
 pub const WINDOW_PIN_INTERVAL: Duration = Duration::from_millis(150);
 
-/// Whether the terminal pin should adopt a granted height now
-/// (geometry spec, G3): `last` is the previous adoption (when, which
+/// Whether the terminal pin should adopt a granted height now:
+/// `last` is the previous adoption (when, which
 /// height). The first size adopts immediately — there is nothing to
 /// debounce before the terminal exists — and later changed heights
 /// wait out [`WINDOW_PIN_INTERVAL`], with the caller landing skipped
@@ -316,13 +301,13 @@ pub fn window_pin_due(last: Option<(Instant, f32)>, now: Instant, height: f32) -
 }
 
 /// How long after a grab-bar drag settles before its height percent is
-/// persisted to config (geometry spec, G4): long enough that rapid
+/// persisted to config: long enough that rapid
 /// re-drags coalesce into one write, short enough that a hide/show
 /// right after a drag soon reopens at the persisted height.
 pub const WRITE_BACK_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// A drag-release config persist that has been scheduled but not yet
-/// written (geometry spec, G4).
+/// written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingWrite {
     /// Which drag release owns this write. Every new release bumps the
@@ -334,8 +319,8 @@ pub struct PendingWrite {
     pub height_percent: u8,
 }
 
-/// State of the debounced drag-release config write (geometry spec,
-/// G4): pure bookkeeping over generations. The wait itself is a
+/// State of the debounced drag-release config write: pure bookkeeping
+/// over generations. The wait itself is a
 /// `tokio::time::sleep` the app tasks in, so this machine needs no
 /// clock and stays headless-testable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -371,14 +356,14 @@ impl WriteBack {
         }
     }
 
-    /// Whether a drag write-back is still scheduled (settings-ui spec,
-    /// U3): the bare-write race rule consults this before canceling.
+    /// Whether a drag write-back is still scheduled; the app consults
+    /// this before canceling on a bare settings write.
     pub fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
 
-    /// Cancels the pending write, if any (settings-ui spec, U3): a
-    /// bare settings write of the height key supersedes a pending
+    /// Cancels the pending write, if any: a bare settings write of the
+    /// height key supersedes a pending
     /// drag write-back — newest intent wins — so the stale `WriteDue`
     /// finds nothing pending and the drag's percent never lands after
     /// the bare write's. A drag release after the cancel simply
@@ -390,11 +375,11 @@ impl WriteBack {
 }
 
 /// Whether a [`ConfigChanged`] echo is our own geometry write coming
-/// back (geometry spec, G4): all four geometry fields equal to the last
-/// write's. Compares config fields, never pixels — percent↔px
-/// quantization makes pixel comparison flaky. A match is absorbed
-/// (applied silently, no rewrite, no reshape, record cleared); anything
-/// else is an external edit and reshapes live via G2.
+/// back: all four geometry fields equal to the last write's. Compares
+/// config fields, never pixels — percent↔px quantization makes pixel
+/// comparison flaky. A match is absorbed (applied silently, no
+/// rewrite, no reshape, record cleared); anything else is an external
+/// edit and reshapes live.
 ///
 /// [`ConfigChanged`]: crate::app::Message::ConfigChanged
 pub fn is_own_write(written: &Geometry, echo: &Geometry) -> bool {
@@ -439,8 +424,8 @@ mod tests {
 
     #[test]
     fn full_width_keeps_both_anchors_and_zero_margins_whatever_the_alignment() {
-        // 100% width must stay byte-for-byte the v1 surface; the
-        // alignment is moot at full width.
+        // At full width the alignment is moot — both anchors, zero
+        // margins.
         for edge in [Edge::Top, Edge::Bottom] {
             for h_align in [HAlign::Left, HAlign::Center, HAlign::Right] {
                 let geom = Geometry {
@@ -589,8 +574,7 @@ mod tests {
     #[test]
     fn geometry_changed_ignores_non_geometry_config_fields() {
         // Font, opacity, scrollback, … edits must not reshape the
-        // surface (geometry spec, G2): only the four geometry fields
-        // count.
+        // surface: only the four geometry fields count.
         let old = Geometry::from_config(&DropTermConfig::default());
         let edited = DropTermConfig {
             font_name: "Fira Code".to_string(),
@@ -620,10 +604,8 @@ mod tests {
     #[test]
     fn live_drag_tracks_the_pointer_pixel_by_pixel_instead_of_percent_jumps() {
         // 1080p output anchored at 40 % (432 px): one pixel of pointer
-        // travel must move the surface one pixel. The percent-quantized
-        // path held 432 px for the first ~5 px of travel, then jumped
-        // ~11 px at once — the steppiness the hardware pass flagged.
-        // Percent quantization now happens once, at settle.
+        // travel must move the surface one pixel; percent quantization
+        // happens once, at settle.
         let drag = DragAnchor {
             anchored_px: 432,
             applied_px: 432,
@@ -639,9 +621,7 @@ mod tests {
     fn the_arming_move_targets_the_height_the_drag_started_at() {
         // Arming must not jump the surface: the target at the pointer's
         // arming y is the height the surface already has, whichever
-        // edge — and wherever inside the bar the grab happened. (The
-        // old delta tracker seeded itself with bar-local y while moves
-        // carry window y, making the first delta of every drag garbage.)
+        // edge — and wherever inside the bar the grab happened.
         let top = DragAnchor {
             anchored_px: 432,
             applied_px: 432,
@@ -676,9 +656,8 @@ mod tests {
         // A bottom-anchored surface grows upward, so its window origin
         // moves up under the pointer with every applied resize: 5 px
         // drags report window ys [5, 0, 0, 0] once the frame follows
-        // each apply. Delta accumulation stalled on the repeats — half
-        // -speed tracking, the bar escaping the pointer. Retargeting
-        // from the height actually applied tracks every pixel.
+        // each apply. Retargeting from the height actually applied
+        // tracks every pixel.
         let mut drag = DragAnchor {
             anchored_px: 400,
             applied_px: 400,
@@ -845,8 +824,8 @@ mod tests {
 
     #[test]
     fn bare_write_cancel_takes_the_pending_and_ages_out_its_due() {
-        // settings-ui U3, the newest-intent race rule: a bare settings
-        // write of the height key supersedes a pending drag write-back,
+        // Newest intent wins: a bare settings write of the height key
+        // supersedes a pending drag write-back,
         // so the canceled generation's `WriteDue` must find nothing and
         // the drag's percent must never land after the bare write's.
         let mut write_back = WriteBack::default();
@@ -859,8 +838,8 @@ mod tests {
 
     #[test]
     fn drag_release_after_a_cancel_schedules_and_lands_last() {
-        // The other half of the race rule: newest intent is the newest
-        // *writer*. After a bare write canceled a settle, a fresh drag
+        // The other half of newest-intent-wins: after a bare write
+        // canceled a settle, a fresh drag
         // release schedules a new generation whose `WriteDue` lands —
         // the grab bar stays usable the whole time the settings window
         // is open, so both paths genuinely interleave.
@@ -902,7 +881,7 @@ mod tests {
     fn external_edit_does_not_match_the_own_write_record() {
         // Any of the four geometry fields differing means the
         // `ConfigChanged` is someone else's write (a human editing the
-        // file): absorb nothing and let G2 reshape live.
+        // file): absorb nothing and reshape live.
         let written = Geometry {
             edge: Edge::Top,
             height_percent: 42,
