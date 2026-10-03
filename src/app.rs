@@ -445,7 +445,7 @@ impl DropTerm {
     fn apply_config_to_tabs(&mut self) {
         let options = self.terminal_options();
         let colors = self.active_colors();
-        self.refresh_window_bg_color(&colors);
+        Self::refresh_window_bg_color(&colors);
         for tab in &self.tabs {
             tab.terminal.lock().unwrap().set_config(&options, &colors);
         }
@@ -456,7 +456,7 @@ impl DropTerm {
     /// used as a fallback wherever a color scheme leaves "background"
     /// unset, so it must be refreshed whenever the active scheme or
     /// COSMIC theme changes.
-    fn refresh_window_bg_color(&self, colors: &aterm::color::Colors) {
+    fn refresh_window_bg_color(colors: &aterm::color::Colors) {
         let theme = cosmic::theme::active();
         let color = cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base);
         let bytes = color.into_rgba8();
@@ -578,8 +578,8 @@ impl DropTerm {
                     // append keeps the saved order, and the override
                     // keeps the fresh shell's first OSC title from
                     // clobbering the saved one.
-                    tab.title = spec.title.clone();
-                    tab.title_override = spec.title_override.clone();
+                    spec.title.clone_into(&mut tab.title);
+                    spec.title_override.clone_into(&mut tab.title_override);
                     self.tabs.push(tab);
                     spawned += 1;
                 }
@@ -645,6 +645,10 @@ impl DropTerm {
                 // mid-slide updates the config but not the frozen
                 // geometry, so the in-flight distance is the one the
                 // visible surface still has.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+                )]
                 let (from_offset_px, distance_px) = match self.slide {
                     Some(playing) => (
                         slide::offset(
@@ -717,13 +721,18 @@ impl DropTerm {
         // slide that already ran past its duration reverses from the
         // endpoint (the full distance), i.e. a fresh full slide-in.
         if let Some(playing) = self.slide {
-            self.slide = Some(slide::Playing {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+            )]
+            let reversed = slide::Playing {
                 started: std::time::Instant::now(),
                 active: slide::reverse(
                     &playing.active,
                     playing.started.elapsed().as_millis() as u64,
                 ),
-            });
+            };
+            self.slide = Some(reversed);
         }
         // The mirror of hide's focus bookkeeping: report the terminal
         // focused again — `set_focused` only reports real changes, so
@@ -749,6 +758,10 @@ impl DropTerm {
     /// state that cannot occur and still hides (a degenerate at-rest
     /// out-slide that parks, then destroys).
     fn slide_distance_px(&self) -> f32 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
         self.output_size.map_or(0.0, |output| {
             geometry::surface_height(
                 output.1 as f32,
@@ -812,6 +825,10 @@ impl DropTerm {
             drag.applied = Some((std::time::Instant::now(), target));
             drag.anchor.applied_px = target;
         }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "surface px are < 2^24, exact in f32"
+        )]
         let pin_task = self.offer_window_height(target as f32);
         let geom = Geometry::from_config(&self.config);
         let apply = geometry::apply_drag_geometry(id, &geom, output, target);
@@ -836,10 +853,15 @@ impl DropTerm {
             // Re-adopting the height the pin already has must not
             // refresh the adoption clock (see `window_pin_due`): the
             // echo stream would otherwise starve changed heights.
-            self.pin_applied = Some(match self.pin_applied {
+            #[expect(
+                clippy::float_cmp,
+                reason = "echo detection: the compositor returns the exact f32 it was granted"
+            )]
+            let pinned = match self.pin_applied {
                 Some((at, adopted)) if adopted == height => (at, height),
                 _ => (now, height),
-            });
+            };
+            self.pin_applied = Some(pinned);
             self.pending_height = None;
             return None;
         }
@@ -847,7 +869,7 @@ impl DropTerm {
             self.pending_height = Some(height);
             return Some(Task::perform(
                 tokio::time::sleep(geometry::WINDOW_PIN_INTERVAL),
-                |_| cosmic::Action::App(Message::WindowPinDue),
+                |()| cosmic::Action::App(Message::WindowPinDue),
             ));
         }
         None
@@ -865,7 +887,7 @@ impl DropTerm {
     /// and lands last. Values clamp before persisting; a missing
     /// config backend (it failed to open at init) logs and skips —
     /// the drag itself still resized live.
-    fn write_config(&mut self, kind: settings::WriteKind, write: settings::PlannedWrite) {
+    fn write_config(&mut self, kind: settings::WriteKind, write: &settings::PlannedWrite) {
         if kind == settings::WriteKind::Bare
             && settings::bare_write_cancels_pending_drag(write.key(), self.write_back.has_pending())
         {
@@ -926,7 +948,7 @@ impl DropTerm {
         // double-delivery must not apply the rename twice against a
         // stale target.
         if let ToggleAction::RenameTab { title, tab_index } = action {
-            return self.rename_remote_tab(title, tab_index);
+            return self.rename_remote_tab(&title, tab_index);
         }
 
         // A remote select-tab is a tab-facing verb like a new-tab: a
@@ -1061,15 +1083,15 @@ impl DropTerm {
     /// D-Bus call has no reply to carry the failure, so degradation
     /// is quiet.
     fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
-        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
-            Some(index) => self.close_tab_at(index),
-            None => {
-                log::warn!(
-                    "close-tab: no tab at --tab-index {tab_index:?} ({} open)",
-                    self.tabs.len()
-                );
-                Task::none()
-            }
+        if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
+        {
+            self.close_tab_at(index)
+        } else {
+            log::warn!(
+                "close-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                self.tabs.len()
+            );
+            Task::none()
         }
     }
 
@@ -1083,15 +1105,14 @@ impl DropTerm {
     /// carry the failure, so degradation is quiet. The `None` return
     /// tells the caller to skip the surface half too.
     fn select_remote_tab(&mut self, one_based: usize) -> Option<Task<Message>> {
-        match tabs::select_tab_target(self.tabs.len(), one_based) {
-            Some(index) => Some(self.set_active_tab(index)),
-            None => {
-                log::warn!(
-                    "select-tab: no tab at index {one_based} ({} open)",
-                    self.tabs.len()
-                );
-                None
-            }
+        if let Some(index) = tabs::select_tab_target(self.tabs.len(), one_based) {
+            Some(self.set_active_tab(index))
+        } else {
+            log::warn!(
+                "select-tab: no tab at index {one_based} ({} open)",
+                self.tabs.len()
+            );
+            None
         }
     }
 
@@ -1105,22 +1126,20 @@ impl DropTerm {
     /// empty TITLE clears it so shell titles resume. Quiet like
     /// close-tab, and the session-dirty mark persists titles. An
     /// unresolvable target warns and no-ops.
-    fn rename_remote_tab(&mut self, title: String, tab_index: Option<usize>) -> Task<Message> {
-        match tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab) {
-            Some(index) => {
-                let refocus = self.end_rename_on(index);
-                if let Some(tab) = self.tabs.get_mut(index) {
-                    tabs::commit_rename(&mut tab.title, &mut tab.title_override, &title);
-                }
-                Task::batch([refocus, self.mark_session_dirty()])
+    fn rename_remote_tab(&mut self, title: &str, tab_index: Option<usize>) -> Task<Message> {
+        if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
+        {
+            let refocus = self.end_rename_on(index);
+            if let Some(tab) = self.tabs.get_mut(index) {
+                tabs::commit_rename(&mut tab.title, &mut tab.title_override, title);
             }
-            None => {
-                log::warn!(
-                    "rename-tab: no tab at --tab-index {tab_index:?} ({} open)",
-                    self.tabs.len()
-                );
-                Task::none()
-            }
+            Task::batch([refocus, self.mark_session_dirty()])
+        } else {
+            log::warn!(
+                "rename-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                self.tabs.len()
+            );
+            Task::none()
         }
     }
 
@@ -1510,7 +1529,7 @@ impl DropTerm {
     }
 
     /// Switches the active tab to `index`, reporting the focus change to
-    /// both shells (FOCUS_OUT to the outgoing one, FOCUS_IN to the
+    /// both shells (`FOCUS_OUT` to the outgoing one, `FOCUS_IN` to the
     /// incoming one), the same way a window focus change does. A real
     /// switch marks the session dirty — the focused index is saved
     /// state; the index-unchanged early return never marks.
@@ -1557,7 +1576,7 @@ impl DropTerm {
         {
             Some(generation) => Task::perform(
                 tokio::time::sleep(session::SESSION_WRITE_INTERVAL),
-                move |_| cosmic::Action::App(Message::SessionSaveDue(generation)),
+                move |()| cosmic::Action::App(Message::SessionSaveDue(generation)),
             ),
             None => Task::none(),
         }
@@ -1895,7 +1914,7 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
 /// libcosmic binds its single runtime [`Clipboard`] to the first
 /// window created, and when that surface is destroyed the binding is
 /// dropped — taking the smithay-clipboard connection, and with it
-/// any selection this app copied, down with it. DropTerm's only
+/// any selection this app copied, down with it. `DropTerm`'s only
 /// surface is the layer shell, which every hide destroys, so
 /// copying out could never survive the focus switch to the paste
 /// target. This window — invisible, never closed, created before
@@ -2518,6 +2537,9 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
         }
         ToggleAction::CloseTab {
             tab_index: Some(index),
+        }
+        | ToggleAction::DuplicateTab {
+            tab_index: Some(index),
         } => {
             forwarded.push("--tab-index".to_string());
             forwarded.push(index.to_string());
@@ -2531,12 +2553,6 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
                 forwarded.push("--tab-index".to_string());
                 forwarded.push(index.to_string());
             }
-        }
-        ToggleAction::DuplicateTab {
-            tab_index: Some(index),
-        } => {
-            forwarded.push("--tab-index".to_string());
-            forwarded.push(index.to_string());
         }
         _ => {}
     }
@@ -2673,7 +2689,7 @@ impl Application for DropTerm {
             },
         };
         let colors = app.active_colors();
-        app.refresh_window_bg_color(&colors);
+        DropTerm::refresh_window_bg_color(&colors);
 
         // A second launch never reaches this: `run_single_instance` forwards
         // its action over D-Bus to the already-running instance instead
@@ -2693,8 +2709,7 @@ impl Application for DropTerm {
         // `effective_is_dark`, so they are correct even before it
         // does.
         let theme_task = theme_override(ThemePreference::System, app.config.theme_preference)
-            .map(theme_override_task)
-            .unwrap_or_else(Task::none);
+            .map_or_else(Task::none, theme_override_task);
         // First launch has no running state to act on remotely: the
         // tab verbs degrade to a plain start — the default `Toggle` —
         // with an info log, never a fabricated close or selection on
@@ -2705,7 +2720,7 @@ impl Application for DropTerm {
             | ToggleAction::SelectTab { .. }
             | ToggleAction::RenameTab { .. }
             | ToggleAction::DuplicateTab { .. }) => {
-                log::info!("{} with no running instance: starting plain", action);
+                log::info!("{action} with no running instance: starting plain");
                 ToggleAction::Toggle
             }
             action => action,
@@ -2875,10 +2890,9 @@ impl Application for DropTerm {
         // Pin the terminal's height to the granted window minus the bars'
         // strips — both always reserved, so the 1↔2 tab crossing never
         // resizes the terminal (see `surface::terminal_view_height`).
-        let terminal_height = self
-            .window_height
-            .map(|h| Length::Fixed(surface::terminal_view_height(h)))
-            .unwrap_or(Length::Fill);
+        let terminal_height = self.window_height.map_or(Length::Fill, |h| {
+            Length::Fixed(surface::terminal_view_height(h))
+        });
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
             .height(terminal_height)
@@ -3054,7 +3068,7 @@ impl Application for DropTerm {
         *self
             .dbus_shared
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
         self.dbus_last = state;
         self.dbus_conn = Some(conn.clone());
         let shared = self.dbus_shared.clone();
@@ -3278,6 +3292,11 @@ impl DropTerm {
                     // its first `Opened` size *is* the output size. Keep
                     // it: every later reshape recomputes pixels from it
                     // without a new measuring pass.
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "rounded surface px are non-negative and far below u32::MAX"
+                    )]
                     let output = (size.width.round() as u32, size.height.round() as u32);
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
@@ -3291,6 +3310,10 @@ impl DropTerm {
                     // slide toggle gates this entry: disabled, the
                     // surface opens at rest with a byte-equal
                     // render.
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "output px are < 2^24, exact in f32"
+                    )]
                     let distance_px =
                         geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
                     self.slide =
@@ -3487,6 +3510,10 @@ impl DropTerm {
                     && let (SurfaceState::Shown(id), Some(output)) =
                         (&self.surface, self.output_size)
                 {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "output px are < 2^24, exact in f32"
+                    )]
                     let anchored_px = geometry::surface_height(
                         output.1 as f32,
                         Geometry::from_config(&self.config).height_percent,
@@ -3515,7 +3542,7 @@ impl DropTerm {
                     // is a no-op — the apply path re-checks the gate.
                     return Task::perform(
                         tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
-                        |_| cosmic::Action::App(Message::DragApplyDue),
+                        |()| cosmic::Action::App(Message::DragApplyDue),
                     );
                 }
             }
@@ -3567,7 +3594,7 @@ impl DropTerm {
                             geometry::apply_geometry(*id, &geom, output),
                             Task::perform(
                                 tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
-                                move |_| cosmic::Action::App(Message::WriteDue(generation)),
+                                move |()| cosmic::Action::App(Message::WriteDue(generation)),
                             ),
                         ]);
                     }
@@ -3586,7 +3613,7 @@ impl DropTerm {
                 if let Some(pending) = self.write_back.due(generation) {
                     self.write_config(
                         settings::WriteKind::PreApplied,
-                        settings::PlannedWrite::HeightPercent(pending.height_percent),
+                        &settings::PlannedWrite::HeightPercent(pending.height_percent),
                     );
                 }
             }
@@ -3616,6 +3643,10 @@ impl DropTerm {
                 // until the next slide. Between completion and this
                 // parking tick the draw already clamps to exactly the
                 // endpoint, so there is no pop.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+                )]
                 if let Some(playing) = self.slide
                     && slide::finished(
                         &playing.active,
@@ -3687,7 +3718,7 @@ impl DropTerm {
                             // input falls back to the echoed config
                             // value; a rejected one keeps the draft.
                             self.settings_buffer.clear_text(field);
-                            self.write_config(settings::WriteKind::Bare, write);
+                            self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
                     settings::SettingsEvent::SliderMoved(key, value) => {
@@ -3699,17 +3730,17 @@ impl DropTerm {
                         // buffered position the readout showed.
                         let value = self.settings_buffer.slider_value(key, &self.config);
                         if let Some(write) = settings::slider_release_write(key, value) {
-                            self.write_config(settings::WriteKind::Bare, write);
+                            self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
                     settings::SettingsEvent::Picked(key, index) => {
                         if let Some(write) = settings::dropdown_write(key, index) {
-                            self.write_config(settings::WriteKind::Bare, write);
+                            self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
                     settings::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
-                            self.write_config(settings::WriteKind::Bare, write);
+                            self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
                 }
@@ -3730,6 +3761,10 @@ impl DropTerm {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "tab count is bounded far below u32::MAX"
+    )]
     fn derive_dbus_state(&self) -> dbus_state::State {
         dbus_state::derive(self.surface_phase(), self.tabs.len() as u32)
     }
@@ -3749,7 +3784,7 @@ impl DropTerm {
         *self
             .dbus_shared
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new;
         self.dbus_last = new;
         // The emission rides a spawned task so `update` never awaits
         // the bus; the single executor serializes messages, so a

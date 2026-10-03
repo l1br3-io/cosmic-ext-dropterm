@@ -22,16 +22,10 @@
 #![expect(clippy::comparison_chain, reason = "transient: T6-T9")]
 #![expect(clippy::doc_markdown, reason = "transient: T6-T9")]
 #![expect(clippy::float_cmp, reason = "transient: calibration")]
-#![expect(clippy::ignored_unit_patterns, reason = "transient: T6")]
-#![expect(clippy::map_unwrap_or, reason = "transient: T6-T9")]
-#![expect(clippy::match_same_arms, reason = "transient: T6-T9")]
 #![expect(clippy::needless_pass_by_value, reason = "transient: T6-T9")]
-#![expect(clippy::redundant_closure_for_method_calls, reason = "transient: T9")]
 #![expect(clippy::redundant_else, reason = "transient: T6-T9")]
-#![expect(clippy::single_match_else, reason = "transient: T6")]
 #![expect(clippy::struct_excessive_bools, reason = "transient: T5/T8")]
 #![expect(clippy::trivially_copy_pass_by_ref, reason = "transient: T6-T9")]
-#![expect(clippy::uninlined_format_args, reason = "transient: T5")]
 #![expect(clippy::unnecessary_semicolon, reason = "transient: T6-T9")]
 #![expect(clippy::unused_self, reason = "transient: T6-T9")]
 
@@ -130,16 +124,15 @@ fn query_visibility() -> Option<bool> {
                 .visible()
                 .await
         };
-        match read.await {
-            Ok(visible) => Some(visible),
-            Err(_) => {
-                eprintln!(
-                    "cosmic-ext-dropterm: bus name owned but the V1 state \
-                     interface is missing (stale binary?); treating as not \
-                     visible"
-                );
-                None
-            }
+        if let Ok(visible) = read.await {
+            Some(visible)
+        } else {
+            eprintln!(
+                "cosmic-ext-dropterm: bus name owned but the V1 state \
+                 interface is missing (stale binary?); treating as not \
+                 visible"
+            );
+            None
         }
     })
 }
@@ -345,7 +338,7 @@ mod tests {
         // --tab-index).
         let words: Vec<String> = ["close-tab", "--tab-index", "0"]
             .iter()
-            .map(|word| word.to_string())
+            .map(ToString::to_string)
             .collect();
         assert_eq!(parse_forwarded_action(&words), None);
     }
