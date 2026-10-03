@@ -447,7 +447,7 @@ impl DropTerm {
         let colors = self.active_colors();
         self.refresh_window_bg_color(&colors);
         for tab in &self.tabs {
-            tab.terminal.lock().unwrap().set_config(&options, colors);
+            tab.terminal.lock().unwrap().set_config(&options, &colors);
         }
     }
 
@@ -536,9 +536,9 @@ impl DropTerm {
             tab_id,
             tx,
             term_config,
-            pty_options,
+            &pty_options,
             &self.terminal_options(),
-            self.active_colors(),
+            &self.active_colors(),
         ) {
             Ok(terminal) => {
                 let mut tab = Tab::new(tab_id, shell, terminal);
@@ -3647,7 +3647,7 @@ impl DropTerm {
             }
             Message::ClipboardPasted(text) | Message::ClipboardPastedPrimary(text) => {
                 if let (Some(text), Some(tab)) = (text, self.active()) {
-                    tab.terminal.lock().unwrap().paste(text);
+                    tab.terminal.lock().unwrap().paste(&text);
                 }
             }
             // The settings window's ✕: it arrives as

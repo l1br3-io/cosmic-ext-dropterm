@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The terminal engine and widget: a `Terminal` (PTY + alacritty_terminal
+//! The terminal engine and widget: a `Terminal` (PTY + `alacritty_terminal`
 //! grid + cosmic-text buffer) rendered by a `TerminalBox` iced widget.
 //!
 //! Adapted from cosmic-term (<https://github.com/pop-os/cosmic-term>);

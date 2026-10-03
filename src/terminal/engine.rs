@@ -122,7 +122,7 @@ fn url_regex_search() -> RegexSearch {
 }
 
 /// Cell-aware pixel size: the widget's size plus the derived cell
-/// metrics, implementing alacritty_terminal's `Dimensions`.
+/// metrics, implementing `alacritty_terminal`'s `Dimensions`.
 #[derive(Clone, Copy, Debug)]
 pub struct Size {
     pub width: u32,
@@ -136,16 +136,33 @@ impl Dimensions for Size {
         self.screen_lines()
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "surface px are < 2^24 (exact in f32); floor is the rows-per-screen contract"
+    )]
     fn screen_lines(&self) -> usize {
         ((self.height as f32) / self.cell_height).floor() as usize
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "surface px are < 2^24 (exact in f32); floor is the cols-per-screen contract"
+    )]
     fn columns(&self) -> usize {
         ((self.width as f32) / self.cell_width).floor() as usize
     }
 }
 
 impl From<Size> for WindowSize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "WindowSize fields are u16; line/col/cell counts are bounded far below 65536"
+    )]
     fn from(size: Size) -> Self {
         Self {
             num_lines: size.screen_lines() as u16,
@@ -189,28 +206,27 @@ fn as_dim(mut color: Color) -> Color {
 /// Written by the app when the theme applies; read as the fallback
 /// for an unset scheme background and by the chrome strips (grab bar,
 /// tab bar) to match the pane.
-pub static WINDOW_BG_COLOR: AtomicU32 = AtomicU32::new(0xFF000000);
+pub static WINDOW_BG_COLOR: AtomicU32 = AtomicU32::new(0xFF00_0000);
 
 fn convert_color(colors: &Colors, color: Color) -> cosmic_text::Color {
     let rgb = match color {
-        Color::Named(named_color) => match colors[named_color] {
-            Some(rgb) => rgb,
-            None => {
-                if named_color == NamedColor::Background {
-                    // Allow using an unset background
-                    return cosmic_text::Color(WINDOW_BG_COLOR.load(Ordering::SeqCst));
-                } else {
-                    log::warn!("missing named color {:?}", named_color);
-                    Rgb::default()
-                }
+        Color::Named(named_color) => {
+            if let Some(rgb) = colors[named_color] {
+                rgb
+            } else if named_color == NamedColor::Background {
+                // Allow using an unset background
+                return cosmic_text::Color(WINDOW_BG_COLOR.load(Ordering::SeqCst));
+            } else {
+                log::warn!("missing named color {named_color:?}");
+                Rgb::default()
             }
-        },
+        }
         Color::Spec(rgb) => rgb,
         Color::Indexed(index) => {
             if let Some(rgb) = colors[index as usize] {
                 rgb
             } else {
-                log::warn!("missing indexed color {}", index);
+                log::warn!("missing indexed color {index}");
                 Rgb::default()
             }
         }
@@ -250,7 +266,7 @@ impl Metadata {
     }
 }
 
-/// One terminal: the alacritty_terminal grid behind a `FairMutex`,
+/// One terminal: the `alacritty_terminal` grid behind a `FairMutex`,
 /// its cosmic-text buffer, the PTY notifier, and the state that
 /// renders one grid into the other.
 pub struct Terminal {
@@ -279,13 +295,17 @@ pub struct Terminal {
 
 impl Terminal {
     // TODO: error handling
+    #[expect(
+        clippy::similar_names,
+        reason = "fg/bg pair is terminal color vocabulary"
+    )]
     pub fn new(
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
         term_config: Config,
-        pty_options: Options,
+        pty_options: &Options,
         options: &TerminalOptions,
-        colors: Colors,
+        colors: &Colors,
     ) -> Result<Self, io::Error> {
         let font_stretch = options.font_stretch;
         let font_weight = options.font_weight;
@@ -295,8 +315,8 @@ impl Terminal {
 
         let metrics = options.metrics(0);
 
-        let default_bg = convert_color(&colors, Color::Named(NamedColor::Background));
-        let default_fg = convert_color(&colors, Color::Named(NamedColor::Foreground));
+        let default_bg = convert_color(colors, Color::Named(NamedColor::Background));
+        let default_fg = convert_color(colors, Color::Named(NamedColor::Foreground));
 
         let mut metadata_set = IndexSet::new();
         let default_metada = Metadata::new(default_bg, default_fg);
@@ -325,6 +345,11 @@ impl Terminal {
             (w, metrics.line_height)
         };
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "default 80x24 grid in px: ceil is the min-size contract, far below u32::MAX"
+        )]
         let size = Size {
             width: (80.0 * cell_width).ceil() as u32,
             height: (24.0 * cell_height).ceil() as u32,
@@ -342,7 +367,7 @@ impl Terminal {
         )));
 
         let window_id = 0;
-        let pty = tty::new(&pty_options, size.into(), window_id)?;
+        let pty = tty::new(pty_options, size.into(), window_id)?;
         #[cfg(not(windows))]
         let shell_pid = Some(pty.child().id());
         #[cfg(windows)]
@@ -365,11 +390,11 @@ impl Terminal {
             regex_matches: Vec::new(),
             bold_font_weight: Weight(bold_font_weight),
             buffer: Arc::new(buffer),
-            colors,
+            colors: *colors,
             default_attrs,
             dim_font_weight: Weight(dim_font_weight),
             metadata_set,
-            mouse_reporter: Default::default(),
+            mouse_reporter: MouseReporter::default(),
             needs_update: true,
             notifier,
             search_regex_opt: None,
@@ -476,7 +501,7 @@ impl Terminal {
         self.scroll(TerminalScroll::Bottom);
     }
 
-    pub fn paste(&self, value: String) {
+    pub fn paste(&self, value: &str) {
         // This code is ported from alacritty
         let bracketed_paste = {
             let term = self.term.lock();
@@ -503,7 +528,17 @@ impl Terminal {
 
             // Clamp dimensions to ensure at least 1 row and 1 column,
             // preventing index-out-of-bounds panics in alacritty_terminal.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "one-cell minimum: cell px are positive and far below u32::MAX"
+            )]
             let min_width = self.size.cell_width.ceil() as u32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "one-cell minimum: cell px are positive and far below u32::MAX"
+            )]
             let min_height = self.size.cell_height.ceil() as u32;
             self.size.width = width.max(min_width);
             self.size.height = height.max(min_height);
@@ -511,6 +546,10 @@ impl Terminal {
             self.notifier.on_resize(self.size.into());
             self.term.lock().resize(self.size);
 
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "surface px are < 2^24, exact in f32"
+            )]
             self.with_buffer_mut(|buffer| {
                 buffer.set_size(Some(width as f32), Some(height as f32));
             });
@@ -529,7 +568,18 @@ impl Terminal {
         let mut term = self.term.lock();
         let grid = term.grid();
         let total = grid.history_size() + grid.screen_lines();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "display offset and line counts are bounded by grid capacity (< i32::MAX)"
+        )]
         let old_display_offset = grid.display_offset() as i32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            clippy::cast_precision_loss,
+            reason = "total lines < 2^24 (exact in f32); the ratio math is the scroll contract"
+        )]
         let new_display_offset =
             ((total as f32) * (1.0 - ratio)) as i32 - grid.screen_lines() as i32;
         term.scroll_display(TerminalScroll::Delta(
@@ -537,6 +587,10 @@ impl Terminal {
         ));
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "line counts < 2^24, exact in f32"
+    )]
     pub fn scrollbar(&self) -> Option<(f32, f32)> {
         let term = self.term.lock();
         let grid = term.grid();
@@ -553,6 +607,11 @@ impl Terminal {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "history and screen line counts are bounded by grid capacity (< i32::MAX)"
+    )]
     pub fn search(&mut self, value: &str, forwards: bool) {
         // TODO: set max lines, run in thread?
         {
@@ -566,7 +625,7 @@ impl Terminal {
                         term.selection = None;
                     }
                     Err(err) => {
-                        log::warn!("failed to parse regex {:?}: {}", value, err);
+                        log::warn!("failed to parse regex {value:?}: {err}");
                         return;
                     }
                 }
@@ -634,6 +693,11 @@ impl Terminal {
         self.update();
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "history and screen line counts are bounded by grid capacity (< i32::MAX)"
+    )]
     pub fn select_all(&mut self) {
         {
             let mut term = self.term.lock();
@@ -660,7 +724,7 @@ impl Terminal {
     /// active theme's `Colors` up front (from
     /// [`crate::terminal::theme_source::by_name`]) rather than this method
     /// looking them up in a profile-keyed theme map.
-    pub fn set_config(&mut self, options: &TerminalOptions, colors: Colors) {
+    pub fn set_config(&mut self, options: &TerminalOptions, colors: &Colors) {
         let mut update_cell_size = false;
         let mut update = false;
         let zoom_adj = self.zoom_adj;
@@ -722,6 +786,10 @@ impl Terminal {
         }
     }
 
+    #[expect(
+        clippy::similar_names,
+        reason = "fg/bg pair is terminal color vocabulary"
+    )]
     pub fn update_default_colors(&mut self) -> bool {
         let default_bg = convert_color(&self.colors, Color::Named(NamedColor::Background));
         let default_fg = convert_color(&self.colors, Color::Named(NamedColor::Foreground));
@@ -937,8 +1005,7 @@ impl Terminal {
                     let underline_color = indexed
                         .cell
                         .underline_color()
-                        .map(|c| convert_color(&self.colors, c))
-                        .unwrap_or(fg);
+                        .map_or(fg, |c| convert_color(&self.colors, c));
 
                     let mut flags = indexed.cell.flags;
 
@@ -1037,7 +1104,7 @@ impl Terminal {
     pub fn report_mouse(
         &mut self,
         event: cosmic::iced::Event,
-        modifiers: &cosmic::iced::keyboard::Modifiers,
+        modifiers: cosmic::iced::keyboard::Modifiers,
         x: u32,
         y: u32,
     ) {
@@ -1046,18 +1113,18 @@ impl Terminal {
 
         #[allow(clippy::collapsible_else_if)]
         if mode.contains(TermMode::SGR_MOUSE) {
-            if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, modifiers, x, y) {
-                self.input_no_scroll(code)
+            if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, &modifiers, x, y) {
+                self.input_no_scroll(code);
             }
         } else {
             if let Some(code) = self.mouse_reporter.normal_mouse_code(
                 event,
-                modifiers,
+                &modifiers,
                 mode.contains(TermMode::UTF8_MOUSE),
                 x,
                 y,
             ) {
-                self.input_no_scroll(code)
+                self.input_no_scroll(code);
             }
         }
     }
@@ -1065,7 +1132,7 @@ impl Terminal {
     pub fn scroll_mouse(
         &mut self,
         delta: ScrollDelta,
-        modifiers: &cosmic::iced::keyboard::Modifiers,
+        modifiers: cosmic::iced::keyboard::Modifiers,
         x: u32,
         y: u32,
     ) {
@@ -1076,7 +1143,7 @@ impl Terminal {
                 self.size().cell_width,
                 self.size().cell_height,
                 delta,
-                modifiers,
+                &modifiers,
                 x,
                 y,
             );
@@ -1090,6 +1157,7 @@ impl Terminal {
     }
 
     pub fn scroll_as_arrows(&mut self, delta: ScrollDelta) {
+        const SCROLL_SPEED: u32 = 3;
         let cell_width = self.size().cell_width;
         let cell_height = self.size().cell_height;
         let (_, lines_y) = self
@@ -1101,12 +1169,11 @@ impl Terminal {
         } else {
             (&b"\x1B[A"[..], &b"\x1B[B"[..])
         };
-        const SCROLL_SPEED: u32 = 3;
         for _ in 0..(lines_y.unsigned_abs() * SCROLL_SPEED) {
             if lines_y > 0 {
-                self.input_no_scroll(up)
+                self.input_no_scroll(up);
             } else if lines_y < 0 {
-                self.input_no_scroll(down)
+                self.input_no_scroll(down);
             }
         }
     }
@@ -1118,6 +1185,11 @@ pub fn visible_regex_match_iter<'a, T>(
     term: &'a Term<T>,
     regex: &'a mut RegexSearch,
 ) -> impl Iterator<Item = alacritty_terminal::term::search::Match> + 'a {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "display offset is bounded by history capacity (< i32::MAX)"
+    )]
     let viewport_start = Line(-(term.grid().display_offset() as i32));
     let viewport_end = viewport_start + term.bottommost_line();
     let mut start = term.line_search_left(Point::new(viewport_start, Column(0)));
@@ -1195,17 +1267,15 @@ impl<'a, T> HintPostProcessor<'a, T> {
                     if open_parents == 0 {
                         alacritty_terminal::grid::BidirectionalIterator::prev(&mut iter);
                         break;
-                    } else {
-                        open_parents -= 1;
                     }
+                    open_parents -= 1;
                 }
                 ']' => {
                     if open_brackets == 0 {
                         alacritty_terminal::grid::BidirectionalIterator::prev(&mut iter);
                         break;
-                    } else {
-                        open_brackets -= 1;
                     }
+                    open_brackets -= 1;
                 }
                 _ => (),
             }
@@ -1264,7 +1334,7 @@ impl<'a, T> HintPostProcessor<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for HintPostProcessor<'a, T> {
+impl<T> Iterator for HintPostProcessor<'_, T> {
     type Item = alacritty_terminal::term::search::Match;
 
     fn next(&mut self) -> Option<Self::Item> {

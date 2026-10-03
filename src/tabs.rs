@@ -743,13 +743,13 @@ mod tests {
             TabId(0),
             tx,
             TermConfig::default(),
-            PtyOptions {
+            &PtyOptions {
                 shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
                 drain_on_exit: true,
                 ..PtyOptions::default()
             },
             &TerminalOptions::default(),
-            aterm::color::Colors::default(),
+            &aterm::color::Colors::default(),
         )
         .expect("spawn a /bin/sh test terminal");
         let tab = Tab::new(TabId(3), "/bin/bash".to_owned(), terminal);

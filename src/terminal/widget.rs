@@ -49,7 +49,7 @@ use cosmic::{
     theme::Theme,
 };
 use cosmic::{iced::core::SmolStr, widget::menu::key_bind::KeyBind};
-use cosmic_text::LayoutGlyph;
+use cosmic_text::{Buffer, LayoutGlyph};
 use indexmap::IndexSet;
 use std::{
     array,
@@ -163,6 +163,10 @@ impl DragAutoscroll {
 /// The terminal widget: renders a [`Terminal`] and translates iced
 /// input into terminal updates — keys to escape sequences, mouse to
 /// cell coordinates, selection drags, hyperlinks, and IME.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "TerminalBox models each UI flag as its own bool field; reshaping the builder API is out of lint scope"
+)]
 pub struct TerminalBox<'a, Message> {
     terminal: &'a Mutex<Terminal>,
     id: Option<Id>,
@@ -340,6 +344,10 @@ where
         let mut cursor_position = Vector::<f32>::ZERO;
         let mut line_height = 0.0;
         terminal.with_buffer(|buffer| {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "cursor line is a non-negative viewport line (grid invariant)"
+            )]
             let layout = buffer.layout_runs().nth(line as usize).unwrap();
             for glyph in layout.glyphs {
                 cursor_position.x += glyph.w;
@@ -374,7 +382,7 @@ where
     TerminalBox::new(terminal, key_binds)
 }
 
-impl<'a, Message> Widget<Message, cosmic::Theme, Renderer> for TerminalBox<'a, Message>
+impl<Message> Widget<Message, cosmic::Theme, Renderer> for TerminalBox<'_, Message>
 where
     Message: Clone,
 {
@@ -413,10 +421,14 @@ where
             let mut layout_lines = 0;
             for line in &buffer.lines {
                 if let Some(layout) = line.layout_opt() {
-                    layout_lines += layout.len()
+                    layout_lines += layout.len();
                 }
             }
 
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "layout line count < 2^24, exact in f32"
+            )]
             let height = layout_lines as f32 * buffer.metrics().line_height;
             let size = Size::new(limits.max().width, height);
 
@@ -455,7 +467,7 @@ where
 
         if let Some(p) = cursor_position.position_in(layout.bounds()) {
             let terminal = self.terminal.lock().unwrap();
-            let buffer_size = terminal.with_buffer(|buffer| buffer.size());
+            let buffer_size = terminal.with_buffer(Buffer::size);
 
             let x = p.x - self.padding.left;
             let y = p.y - self.padding.top;
@@ -468,6 +480,11 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
 
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "px/cell ratios are non-negative and bounded by the surface"
+                    )]
                     let location = terminal
                         .viewport_to_point(TermPoint::new(row as usize, TermColumn(col as usize)));
                     if get_hyperlink(&terminal, location).is_some() {
@@ -516,9 +533,17 @@ where
         let scrollbar_w = f32::from(cosmic_theme.spacing.space_xxs);
 
         let view_position = layout.position() + [self.padding.left, self.padding.top].into();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "px-scale ints feeding the <= 0 emptiness check; values bounded by the surface"
+        )]
         let view_w = cmp::min(viewport.width as i32, layout.bounds().width as i32)
             - self.padding.x() as i32
             - scrollbar_w as i32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "px-scale ints feeding the <= 0 emptiness check; values bounded by the surface"
+        )]
         let view_h = cmp::min(viewport.height as i32, layout.bounds().height as i32)
             - self.padding.y() as i32;
 
@@ -553,6 +578,10 @@ where
         let mut terminal = self.terminal.lock().unwrap();
 
         // Ensure terminal is the right size
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "view dims passed the <= 0 early return above, so the u32 view is lossless"
+        )]
         terminal.resize(view_w as u32, view_h as u32);
 
         // Update if needed
@@ -602,7 +631,7 @@ where
                     metadata_set: &'a IndexSet<Metadata>,
                 }
 
-                impl<'a> BgRect<'a> {
+                impl BgRect<'_> {
                     fn update<Renderer: renderer::Renderer>(
                         &mut self,
                         glyph: &LayoutGlyph,
@@ -777,7 +806,7 @@ where
                                         0 => (1.0, Some(bottom_offset)),
                                         _ => unreachable!(),
                                     });
-                                draw_repeated(&pattern)
+                                draw_repeated(&pattern);
                             }
                         }
                     }
@@ -803,6 +832,10 @@ where
             }
         });
 
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "view px are < 2^24, exact in f32"
+        )]
         renderer.fill_raw(Raw {
             buffer: terminal.buffer_weak(),
             position: view_position,
@@ -812,8 +845,20 @@ where
 
         // Draw scrollbar
         if let Some((start, end)) = terminal.scrollbar() {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "view px are < 2^24, exact in f32"
+            )]
             let scrollbar_y = start * view_h as f32;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "view px are < 2^24, exact in f32"
+            )]
             let scrollbar_h = end * view_h as f32 - scrollbar_y;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "view px are < 2^24, exact in f32"
+            )]
             let scrollbar_rect = Rectangle::new(
                 [view_w as f32, scrollbar_y].into(),
                 Size::new(scrollbar_w, scrollbar_h),
@@ -881,7 +926,7 @@ where
 
             state.scrollbar_rect.set(scrollbar_rect);
         } else {
-            state.scrollbar_rect.set(Rectangle::default())
+            state.scrollbar_rect.set(Rectangle::default());
         }
 
         // Draw cursor (only when not scrolled, as cursor is at bottom of active area)
@@ -899,10 +944,13 @@ where
                 let line = cursor.point.line.0;
                 let color = terminal.term.lock().colors()[NamedColor::Cursor]
                     .or(terminal.colors()[NamedColor::Cursor])
-                    .map(|rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b))
-                    .unwrap_or(Color::WHITE); // TODO: default color from theme?
+                    .map_or(Color::WHITE, |rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b)); // TODO: default color from theme?
                 let width = terminal.size().cell_width;
                 let height = terminal.size().cell_height;
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "cell indices < 2^24, exact in f32"
+                )]
                 let top_left = view_position
                     + Vector::new((col as f32 * width).floor(), (line as f32 * height).floor());
                 match cursor.shape {
@@ -914,6 +962,10 @@ where
                         renderer.fill_quad(quad, color);
                     }
                     CursorShape::Underline => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "cell indices < 2^24, exact in f32"
+                        )]
                         let quad = Quad {
                             bounds: Rectangle::new(
                                 view_position
@@ -957,7 +1009,7 @@ where
         }
 
         let duration = instant.elapsed();
-        log::trace!("redraw {}, {}: {:?}", view_w, view_h, duration);
+        log::trace!("redraw {view_w}, {view_h}: {duration:?}");
     }
 
     fn update(
@@ -977,7 +1029,7 @@ where
         let state = tree.state.downcast_mut::<State>();
         let scrollbar_rect = state.scrollbar_rect.get();
         let mut terminal = self.terminal.lock().unwrap();
-        let buffer_size = terminal.with_buffer(|buffer| buffer.size());
+        let buffer_size = terminal.with_buffer(Buffer::size);
 
         let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
         let is_mouse_mode = terminal.term.lock().mode().intersects(TermMode::MOUSE_MODE);
@@ -1037,14 +1089,14 @@ where
 
                 let mod_no = calculate_modifier_number(state);
                 let escape_code = match named {
-                    Named::Insert => csi("2", "~", mod_no),
-                    Named::Delete => csi("3", "~", mod_no),
+                    Named::Insert => Some(csi("2", "~", mod_no)),
+                    Named::Delete => Some(csi("3", "~", mod_no)),
                     Named::PageUp => {
                         if modifiers.shift() {
                             terminal.scroll(TerminalScroll::PageUp);
                             None
                         } else {
-                            csi("5", "~", mod_no)
+                            Some(csi("5", "~", mod_no))
                         }
                     }
                     Named::PageDown => {
@@ -1052,35 +1104,35 @@ where
                             terminal.scroll(TerminalScroll::PageDown);
                             None
                         } else {
-                            csi("6", "~", mod_no)
+                            Some(csi("6", "~", mod_no))
                         }
                     }
                     Named::ArrowUp => {
                         if is_app_cursor {
-                            ss3("A", mod_no)
+                            Some(ss3("A", mod_no))
                         } else {
-                            csi2("A", mod_no)
+                            Some(csi2("A", mod_no))
                         }
                     }
                     Named::ArrowDown => {
                         if is_app_cursor {
-                            ss3("B", mod_no)
+                            Some(ss3("B", mod_no))
                         } else {
-                            csi2("B", mod_no)
+                            Some(csi2("B", mod_no))
                         }
                     }
                     Named::ArrowRight => {
                         if is_app_cursor {
-                            ss3("C", mod_no)
+                            Some(ss3("C", mod_no))
                         } else {
-                            csi2("C", mod_no)
+                            Some(csi2("C", mod_no))
                         }
                     }
                     Named::ArrowLeft => {
                         if is_app_cursor {
-                            ss3("D", mod_no)
+                            Some(ss3("D", mod_no))
                         } else {
-                            csi2("D", mod_no)
+                            Some(csi2("D", mod_no))
                         }
                     }
                     Named::End => {
@@ -1088,9 +1140,9 @@ where
                             terminal.scroll(TerminalScroll::Bottom);
                             None
                         } else if is_app_cursor {
-                            ss3("F", mod_no)
+                            Some(ss3("F", mod_no))
                         } else {
-                            csi2("F", mod_no)
+                            Some(csi2("F", mod_no))
                         }
                     }
                     Named::Home => {
@@ -1098,23 +1150,23 @@ where
                             terminal.scroll(TerminalScroll::Top);
                             None
                         } else if is_app_cursor {
-                            ss3("H", mod_no)
+                            Some(ss3("H", mod_no))
                         } else {
-                            csi2("H", mod_no)
+                            Some(csi2("H", mod_no))
                         }
                     }
-                    Named::F1 => ss3("P", mod_no),
-                    Named::F2 => ss3("Q", mod_no),
-                    Named::F3 => ss3("R", mod_no),
-                    Named::F4 => ss3("S", mod_no),
-                    Named::F5 => csi("15", "~", mod_no),
-                    Named::F6 => csi("17", "~", mod_no),
-                    Named::F7 => csi("18", "~", mod_no),
-                    Named::F8 => csi("19", "~", mod_no),
-                    Named::F9 => csi("20", "~", mod_no),
-                    Named::F10 => csi("21", "~", mod_no),
-                    Named::F11 => csi("23", "~", mod_no),
-                    Named::F12 => csi("24", "~", mod_no),
+                    Named::F1 => Some(ss3("P", mod_no)),
+                    Named::F2 => Some(ss3("Q", mod_no)),
+                    Named::F3 => Some(ss3("R", mod_no)),
+                    Named::F4 => Some(ss3("S", mod_no)),
+                    Named::F5 => Some(csi("15", "~", mod_no)),
+                    Named::F6 => Some(csi("17", "~", mod_no)),
+                    Named::F7 => Some(csi("18", "~", mod_no)),
+                    Named::F8 => Some(csi("19", "~", mod_no)),
+                    Named::F9 => Some(csi("20", "~", mod_no)),
+                    Named::F10 => Some(csi("21", "~", mod_no)),
+                    Named::F11 => Some(csi("23", "~", mod_no)),
+                    Named::F12 => Some(csi("24", "~", mod_no)),
                     _ => None,
                 };
                 if let Some(escape_code) = escape_code {
@@ -1169,6 +1221,11 @@ where
                 {
                     //Might need to update the url regex highlight,
                     //so we need to calculate the mouse position
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "px/cell ratios are non-negative and bounded by the surface"
+                    )]
                     let location = if let Some(p) = cursor_position.position_in(layout.bounds()) {
                         let x = p.x - self.padding.left;
                         let y = p.y - self.padding.top;
@@ -1207,7 +1264,7 @@ where
                     // Send NUL character (\x00) for Ctrl + Space
                     terminal.input_scroll(b"\x00".to_vec());
                 } else {
-                    terminal.input_scroll(format!("{}{}", alt_prefix, character).into_bytes());
+                    terminal.input_scroll(format!("{alt_prefix}{character}").into_bytes());
                 }
                 shell.capture_event();
             }
@@ -1301,17 +1358,17 @@ where
                 }
                 input_method::Event::Preedit(content, selection) => {
                     if state.is_focused {
-                        let metrics = terminal.with_buffer(|buffer| buffer.metrics());
+                        let metrics = terminal.with_buffer(Buffer::metrics);
                         state.preedit = Some(input_method::Preedit {
                             content: content.to_owned(),
                             selection: selection.clone(),
                             text_size: Some(metrics.font_size.into()),
-                        })
+                        });
                     }
                 }
                 input_method::Event::Commit(text) => {
                     if state.is_focused {
-                        terminal.paste(text.to_string());
+                        terminal.paste(text);
                         shell.capture_event();
                     }
                 }
@@ -1326,9 +1383,14 @@ where
 
                     if is_mouse_mode {
                         state.autoscroll.stop();
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
+                        )]
                         terminal.report_mouse(
                             event.clone(),
-                            &state.modifiers,
+                            state.modifiers,
                             col as u32,
                             row as u32,
                         );
@@ -1359,6 +1421,11 @@ where
                                     } else {
                                         ClickKind::Single
                                     };
+                                #[expect(
+                                    clippy::cast_possible_truncation,
+                                    clippy::cast_sign_loss,
+                                    reason = "px/cell ratios are non-negative and bounded by the surface"
+                                )]
                                 let location = terminal.viewport_to_point(TermPoint::new(
                                     row as usize,
                                     TermColumn(col as usize),
@@ -1471,6 +1538,11 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
 
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "px/cell ratios are non-negative and bounded by the surface"
+                    )]
                     let location = terminal
                         .viewport_to_point(TermPoint::new(row as usize, TermColumn(col as usize)));
                     if state.modifiers.control()
@@ -1482,9 +1554,14 @@ where
                     }
 
                     if is_mouse_mode {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
+                        )]
                         terminal.report_mouse(
                             event.clone(),
-                            &state.modifiers,
+                            state.modifiers,
                             col as u32,
                             row as u32,
                         );
@@ -1502,9 +1579,14 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
                     if is_mouse_mode {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
+                        )]
                         terminal.report_mouse(
                             event.clone(),
-                            &state.modifiers,
+                            state.modifiers,
                             col as u32,
                             row as u32,
                         );
@@ -1533,6 +1615,11 @@ where
                         // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative and bounded by the surface"
+                        )]
                         let location = terminal.viewport_to_point(TermPoint::new(
                             row as usize,
                             TermColumn(col as usize),
@@ -1549,9 +1636,14 @@ where
 
                     if is_mouse_mode {
                         if let Some((col, row)) = col_row_opt {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
+                            )]
                             terminal.report_mouse(
                                 event.clone(),
-                                &state.modifiers,
+                                state.modifiers,
                                 col as u32,
                                 row as u32,
                             );
@@ -1608,7 +1700,12 @@ where
                         // TODO: better calculation of position
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
-                        terminal.scroll_mouse(*delta, &state.modifiers, col as u32, row as u32);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
+                        )]
+                        terminal.scroll_mouse(*delta, state.modifiers, col as u32, row as u32);
                     } else if terminal.term.lock().mode().contains(TermMode::ALT_SCREEN) {
                         terminal.scroll_as_arrows(*delta);
                         shell.capture_event();
@@ -1633,7 +1730,7 @@ where
                                 state.scroll_lines = 0.0;
                                 state.scroll_pixels -= y * 6.0;
                                 let mut lines = 0;
-                                let metrics = terminal.with_buffer(|buffer| buffer.metrics());
+                                let metrics = terminal.with_buffer(Buffer::metrics);
                                 while state.scroll_pixels <= -metrics.line_height {
                                     lines -= 1;
                                     state.scroll_pixels += metrics.line_height;
@@ -1656,6 +1753,11 @@ where
                         let col = x / terminal.size().cell_width;
                         let row = y / terminal.size().cell_height;
 
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "px/cell ratios are non-negative and bounded by the surface"
+                        )]
                         let location = terminal.viewport_to_point(TermPoint::new(
                             row as usize,
                             TermColumn(col as usize),
@@ -1732,9 +1834,7 @@ fn update_active_regex_match(
     location: Option<TermPoint>,
     modifiers: Option<&Modifiers>,
 ) {
-    let allow_hyperlink = modifiers
-        .map(|mods| mods.contains(Modifiers::CTRL))
-        .unwrap_or(false);
+    let allow_hyperlink = modifiers.is_some_and(|mods| mods.contains(Modifiers::CTRL));
     //Require CTRL for keyboard and mouse interaction
     if let Some(modifiers) = modifiers {
         if !modifiers.contains(Modifiers::CTRL) {
@@ -1807,6 +1907,11 @@ const SCROLL_LINE_MULTIPLIER: f32 = 6.0;
 /// fractions add up and a full notch scrolls the intended amount.
 ///
 /// Returns `(whole_lines, new_accumulator)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "trunc splits accumulated float into whole lines + remainder; values < 2^24"
+)]
 fn accumulate_wheel_lines(y: f32, accumulator: f32) -> (i32, f32) {
     let total = accumulator + y * SCROLL_LINE_MULTIPLIER;
     let lines = total.trunc() as i32;
@@ -1850,6 +1955,11 @@ enum EdgeScrollDirection {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "trunc splits accumulated px into whole lines + remainder; values < 2^24"
+)]
 fn edge_scroll_adjustment(
     y: f32,
     buffer_height: f32,
@@ -1924,6 +2034,16 @@ fn edge_scroll_adjustment(
     (delta, row, remainder, direction, overshoot)
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "side (selection edge) vs size (cell metrics) are both domain words"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "px-to-cell conversions: ratios non-negative, dims/indices < 2^24 exact in f32"
+)]
 fn update_buffer_drag(
     state: &mut State,
     terminal: &mut Terminal,
@@ -2066,32 +2186,32 @@ fn calculate_modifier_number(state: &State) -> u8 {
     mod_no + 1
 }
 
-#[inline(always)]
-fn csi(code: &str, suffix: &str, modifiers: u8) -> Option<Vec<u8>> {
+#[inline]
+fn csi(code: &str, suffix: &str, modifiers: u8) -> Vec<u8> {
     if modifiers == 1 {
-        Some(format!("\x1B[{code}{suffix}").into_bytes())
+        format!("\x1B[{code}{suffix}").into_bytes()
     } else {
-        Some(format!("\x1B[{code};{modifiers}{suffix}").into_bytes())
+        format!("\x1B[{code};{modifiers}{suffix}").into_bytes()
     }
 }
 // <https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-functional-keys>
 // CSI 1 ; modifier {ABCDEFHPQS}
 // code is ABCDEFHPQS
-#[inline(always)]
-fn csi2(code: &str, modifiers: u8) -> Option<Vec<u8>> {
+#[inline]
+fn csi2(code: &str, modifiers: u8) -> Vec<u8> {
     if modifiers == 1 {
-        Some(format!("\x1B[{code}").into_bytes())
+        format!("\x1B[{code}").into_bytes()
     } else {
-        Some(format!("\x1B[1;{modifiers}{code}").into_bytes())
+        format!("\x1B[1;{modifiers}{code}").into_bytes()
     }
 }
 
-#[inline(always)]
-fn ss3(code: &str, modifiers: u8) -> Option<Vec<u8>> {
+#[inline]
+fn ss3(code: &str, modifiers: u8) -> Vec<u8> {
     if modifiers == 1 {
-        Some(format!("\x1B\x4F{code}").into_bytes())
+        format!("\x1B\x4F{code}").into_bytes()
     } else {
-        Some(format!("\x1B[1;{modifiers}{code}").into_bytes())
+        format!("\x1B[1;{modifiers}{code}").into_bytes()
     }
 }
 
