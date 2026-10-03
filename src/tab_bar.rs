@@ -1,43 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The tab bar widget (tabs spec, T5): one button per tab — title plus a
-//! close `×` — with the buttons shown only while more than one tab
-//! exists. The strip itself is always present (settings-button spec),
-//! carrying the settings button at its right corner in every tab state.
+//! The tab bar strip: one button per tab — title plus a close `×` —
+//! with the buttons shown only while more than one tab exists. The
+//! strip itself is always present, carrying the settings button at
+//! its right corner in every tab state.
 //!
 //! The button layout and hit-testing are pure functions over plain
-//! geometry (kept free of any windowing state, like the list operations in
-//! [`crate::tabs`]), so the behavior that decides which tab a click or
-//! middle-click lands on is unit-testable headless; rendering itself needs
-//! real COSMIC hardware and is covered by the README manual checklist.
+//! geometry (like the list operations in [`crate::tabs`]), so which
+//! tab a click or middle-click lands on is unit-testable headless;
+//! rendering needs real COSMIC hardware (README manual checklist).
 //!
-//! Inline rename (tabs spec, T6): a double-clicked tab body swaps its
-//! button for a real text input, hosted as an overlay exactly over that
-//! button — the delegation pattern of libcosmic's own popover widget
-//! (pinned rev `08a09e3`, `widget/popover.rs`). The input is built by the
-//! app (which knows its messages) and passed in via [`TabBar::renaming`];
-//! the bar only positions it, classifies the double-click, and reports
-//! presses outside the input so the app can end the session.
+//! Inline rename: a double-clicked tab body swaps its button for a
+//! real text input, hosted as an overlay exactly over that button
+//! (the delegation pattern of libcosmic's popover, pinned rev
+//! `08a09e3`, `widget/popover.rs`). The input is built by the app
+//! and passed in via [`TabBar::renaming`]; the bar only positions
+//! it, classifies the double-click, and reports presses outside the
+//! input so the app can end the session.
 //!
-//! Drag reorder (tabs spec, T7): a left press on a tab body that moves
-//! past a small threshold drags the tab horizontally. iced has no
-//! first-class drag API, so the bar tracks press/move/release itself —
-//! the state machine of iced's own text editor (pinned rev `08a09e3`,
-//! `widget/text_editor.rs`). While the drag lasts, the pressed button
-//! follows the cursor (clamped to the row, lifted and drawn on top) and
-//! every other button eases to the slot the drop would leave it in —
-//! the feedback model of libcosmic's `reorderable_flex_row` (same rev,
-//! `widget/reorderable_flex_row/widget.rs`), driven by the same
+//! Drag reorder: a left press on a tab body that moves past a small
+//! threshold drags the tab horizontally. iced has no first-class
+//! drag API, so the bar tracks press/move/release itself — the state
+//! machine of iced's own text editor (pinned rev `08a09e3`,
+//! `widget/text_editor.rs`). While the drag lasts, the pressed
+//! button follows the cursor (clamped to the row, lifted and drawn
+//! on top) and every other button eases to the slot the drop would
+//! leave it in — the feedback model of libcosmic's
+//! `reorderable_flex_row` (same rev), driven by the same
 //! redraw-request loop. [`displaced_row`], [`followed_x`] and
-//! [`drop_index`] decide all of it from plain geometry, so the drop is
-//! unit-testable headless; the release reports the drop, which the app
-//! applies via [`crate::tabs::reorder_tabs`].
+//! [`drop_index`] decide all of it from plain geometry; the release
+//! reports the drop, which the app applies via
+//! [`crate::tabs::reorder_tabs`].
 //!
 //! Colors mirror the `TabBar` preset of libcosmic's own
-//! `theme/style/segmented_button.rs` (pinned rev `08a09e3`): the active
-//! tab is `neutral_5` at 0.2 alpha with the accent text color and
-//! `radius_s` corners, inactive tabs carry no background and use the
-//! component's `on` text color.
+//! `theme/style/segmented_button.rs` (pinned rev `08a09e3`): the
+//! active tab is `neutral_5` at 0.2 alpha with the accent text color
+//! and `radius_s` corners, inactive tabs carry no background and use
+//! the component's `on` text color.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -67,8 +66,6 @@ use crate::terminal::WINDOW_BG_COLOR;
 
 use crate::tabs::{Tab, TabId};
 
-/// A cached title paragraph, one per tab, keyed by [`TabId`].
-///
 /// The bar's background and a text color readable on it.
 ///
 /// The strip is painted with the terminal pane's effective background
@@ -173,8 +170,7 @@ fn draw_close_mark(renderer: &mut Renderer, close: Rectangle, color: Color) {
 type TitleParagraph = paragraph::Plain<<Renderer as cosmic::iced::core::text::Renderer>::Paragraph>;
 
 /// Bar geometry in logical pixels. Constants rather than theme values so
-/// the pure layout functions stay deterministic and testable; the bar is a
-/// slim Yakuake-style strip rather than a document-window tab bar.
+/// the pure layout functions stay deterministic and testable.
 struct BarMetrics {
     /// Height of the whole bar (and of every tab button).
     bar_height: f32,
@@ -213,43 +209,40 @@ pub const BAR_HEIGHT: f32 = METRICS.bar_height;
 const TITLE_FONT_SIZE: f32 = 14.0;
 
 /// How far the cursor must travel horizontally from the press before a
-/// held press on a tab body counts as a drag (T7) rather than a click.
+/// held press on a tab body counts as a drag rather than a click.
 /// Matches the movement threshold of iced's own click classification
 /// (pinned rev `08a09e3`, `mouse/click.rs`: `distance < 6.0`).
 const DRAG_THRESHOLD: f32 = 6.0;
 
-/// How long a displaced button takes to slide to its new slot (T7),
+/// How long a displaced button takes to slide to its new slot,
 /// cubic-eased. Matches libcosmic's reorderable row at the pinned rev.
 const DRAG_ANIMATION: Duration = Duration::from_millis(180);
 
 /// How far the dragged button lifts out of the row while it follows
-/// the cursor (T7), in logical pixels.
+/// the cursor, in logical pixels.
 const DRAG_LIFT: f32 = 2.0;
 
 /// How close a slot's animated position must be to a new target before
-/// retargeting treats them as the same spot (T7).
+/// retargeting treats them as the same spot.
 const POSITION_EPSILON: f32 = 0.5;
 
 /// Width of the drop indicator line, in logical pixels.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
 
-/// Gear proportions as fractions of the settings target's side
-/// (settings-button spec, criterion 6): the ring's outer radius (also
-/// the radius the tooth centers ride), the punched hole's radius, and
-/// the teeth's side length. Owner-finalizable at the hardware STOP.
+/// Gear proportions as fractions of the settings target's side:
+/// the ring's outer radius (also the radius the tooth centers ride),
+/// the punched hole's radius, and the teeth's side length.
 const GEAR_BODY_RADIUS: f32 = 0.29;
 const GEAR_HOLE_RADIUS: f32 = 0.125;
 const GEAR_TOOTH_SIZE: f32 = 0.167;
 const GEAR_TEETH: usize = 8;
 
-/// The settings tooltip's label (settings-button spec, criterion 7):
-/// the same text as the context menu's item, ellipsis included
-/// (U+2026).
+/// The settings tooltip's label: the same text as the context menu's
+/// item, ellipsis included (U+2026).
 const TOOLTIP_LABEL: &str = "Settings\u{2026}";
 
-/// Tooltip geometry (settings-button spec, criterion 7), logical
-/// pixels: tip height, label padding on each side, and the gap left
-/// between the strip and the popped tip.
+/// Tooltip geometry, logical pixels: tip height, label padding on each
+/// side, and the gap left between the strip and the popped tip.
 const TOOLTIP_HEIGHT: f32 = 24.0;
 const TOOLTIP_PADDING_X: f32 = 8.0;
 const TOOLTIP_GAP: f32 = 4.0;
@@ -274,11 +267,11 @@ enum HitTarget {
     Close,
 }
 
-/// The settings button's target (settings-button spec, criterion 3): a
-/// square the size of a close target, anchored at the strip's right edge
-/// with the button inset, vertically centered — the right corner in both
-/// edge configs. Takes no tab count: the identical rect whether the strip
-/// carries a settings button alone or a full tab row.
+/// The settings button's target: a square the size of a close target,
+/// anchored at the strip's right edge with the button inset, vertically
+/// centered — the right corner in both edge configs. Takes no tab
+/// count: the identical rect whether the strip carries a settings
+/// button alone or a full tab row.
 fn settings_target(bar_width: f32, metrics: &BarMetrics) -> Rectangle {
     Rectangle::new(
         Point::new(
@@ -289,35 +282,33 @@ fn settings_target(bar_width: f32, metrics: &BarMetrics) -> Rectangle {
     )
 }
 
-/// The strip's right-hand zone the tab row must keep clear of
-/// (settings-button spec, criterion 4): inset + settings target + one
-/// inter-button gap, so the row ends a button-gap left of the target.
+/// The strip's right-hand zone the tab row must keep clear of:
+/// inset + settings target + one inter-button gap, so the row ends a
+/// button-gap left of the target.
 fn settings_zone(metrics: &BarMetrics) -> f32 {
     metrics.button_padding_x + metrics.close_size + metrics.button_gap
 }
 
-/// The width the tab row may occupy (settings-button spec, criterion 4):
-/// the bar minus the settings zone. [`TabBar::button_geometry`] feeds
-/// this to [`layout_buttons`] — the one seam the drag clamp, drop
-/// indicator, rename overlay, and hit tests already share, so every
-/// consumer stays clear of the zone with no math of their own to edit.
+/// The width the tab row may occupy: the bar minus the settings zone.
+/// [`TabBar::button_geometry`] feeds this to [`layout_buttons`] — the
+/// one seam the drag clamp, drop indicator, rename overlay, and hit
+/// tests already share, so every consumer stays clear of the zone
+/// with no math of their own to edit.
 fn row_budget(bar_width: f32, metrics: &BarMetrics) -> f32 {
     (bar_width - settings_zone(metrics)).max(0.0)
 }
 
-/// Whether the tab row renders its buttons (settings-button spec,
-/// criterion 8): the strip is always present, but tab buttons — and their
-/// close marks — only from two tabs on (tabs spec); the single-tab strip
-/// carries the settings button alone.
+/// Whether the tab row renders its buttons: the strip is always
+/// present, but tab buttons — and their close marks — only from two
+/// tabs on; the single-tab strip carries the settings button alone.
 fn shows_tab_buttons(tab_count: usize) -> bool {
     tab_count >= 2
 }
 
-/// The vertical side of the strip the settings tooltip pops to
-/// (settings-button spec, criterion 7): the terminal's side, so the tip
-/// clears the strip into open surface instead of off the layer
-/// surface's edge. The app derives it from the configured edge — the
-/// bar itself stays edge-agnostic.
+/// The vertical side of the strip the settings tooltip pops to:
+/// the terminal's side, so the tip clears the strip into open surface
+/// instead of off the layer surface's edge. The app derives it from
+/// the configured edge — the bar itself stays edge-agnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TooltipSide {
     /// The terminal sits below the strip: the tip pops downward.
@@ -339,12 +330,12 @@ struct GearGlyph {
     teeth: Vec<Rectangle>,
 }
 
-/// The gear glyph's quads (settings-button spec, criterion 6): a ring —
-/// a disc punched by a strip-colored disc — plus [`GEAR_TEETH`] teeth,
-/// all axis-aligned rounded quads, font-free like the close `×`. Pure
-/// geometry: every quad is contained in `target`, and the teeth are
-/// N-fold rotationally symmetric about its center (equal angular
-/// spacing, identical tooth geometry).
+/// The gear glyph's quads: a ring — a disc punched by a strip-colored
+/// disc — plus [`GEAR_TEETH`] teeth, all axis-aligned rounded quads,
+/// font-free like the close `×`. Pure geometry: every quad is
+/// contained in `target`, and the teeth are N-fold rotationally
+/// symmetric about its center (equal angular spacing, identical tooth
+/// geometry).
 fn gear_glyph(target: Rectangle) -> GearGlyph {
     let side = target.width.min(target.height);
     let center = target.center();
@@ -376,11 +367,11 @@ fn gear_glyph(target: Rectangle) -> GearGlyph {
     }
 }
 
-/// The settings tooltip's rect (settings-button spec, criterion 7),
-/// bar-local: the right edge pinned at the strip's right corner
-/// whatever the label's width — growth is entirely leftward, so the tip
-/// can never overflow the right corner — and vertically clearing the
-/// strip toward `side` (the terminal's side).
+/// The settings tooltip's rect, bar-local: the right edge pinned at
+/// the strip's right corner whatever the label's width — growth is
+/// entirely leftward, so the tip can never overflow the right corner
+/// — and vertically clearing the strip toward `side` (the terminal's
+/// side).
 fn tooltip_bounds(
     bar_width: f32,
     label_width: f32,
@@ -481,8 +472,8 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
     })
 }
 
-/// What a press on the strip landed on (settings-button spec,
-/// criterion 5): the settings target, or a part of a tab button.
+/// What a press on the strip landed on: the settings target, or a
+/// part of a tab button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PressTarget {
     /// The settings button's target.
@@ -542,7 +533,7 @@ fn displaced_row(widths: &[f32], dragged: usize, drop: usize, gap: f32) -> (Vec<
     (targets, indicator)
 }
 
-/// Left-edge x of the dragged button while it follows the cursor (T7),
+/// Left-edge x of the dragged button while it follows the cursor,
 /// clamped to the row so it can never leave the bar.
 fn followed_x(row_width: f32, button_width: f32, cursor_x: f32, grab_x: f32) -> f32 {
     (cursor_x - grab_x).clamp(0.0, (row_width - button_width).max(0.0))
@@ -570,11 +561,11 @@ fn drop_from_followed(
     drop_index(buttons, dragged, followed + button.bounds.width / 2.0)
 }
 
-/// An in-progress tab drag (tabs spec, T7): the tab whose button the
-/// press landed on, where that press started, how far into the button
-/// the grab sits (so the button can follow the cursor at the point it
-/// was caught), and — once the press moved past [`DRAG_THRESHOLD`] —
-/// the last bar-local x the cursor was seen at. The state machine
+/// An in-progress tab drag: the tab whose button the press landed
+/// on, where that press started, how far into the button the grab
+/// sits (so the button can follow the cursor at the point it was
+/// caught), and — once the press moved past [`DRAG_THRESHOLD`] — the
+/// last bar-local x the cursor was seen at. The state machine
 /// follows iced's own text editor (pinned rev `08a09e3`): record on
 /// press, drag on move, finish on release.
 struct Drag {
@@ -590,9 +581,9 @@ struct Drag {
     grab_x: f32,
 }
 
-/// One button's horizontal slide toward the slot a drag opens or closes
-/// for it (T7), cubic-eased over [`DRAG_ANIMATION`] — the same spring
-/// as libcosmic's reorderable row (pinned rev,
+/// One button's horizontal slide toward the slot a drag opens or
+/// closes for it, cubic-eased over [`DRAG_ANIMATION`] — the same
+/// spring as libcosmic's reorderable row (pinned rev,
 /// `reorderable_flex_row/widget.rs`).
 struct SlotAnimation {
     from: f32,
@@ -653,13 +644,13 @@ impl SlotAnimation {
 /// Per-widget state: the title paragraphs, cached across frames and
 /// rebuilt whenever a tab's title changes (measured once, then reused by
 /// layout, hit-testing and drawing), the last tab-body click for
-/// double-click detection (T6), and one slot slide per tab button (T7)
-/// for drag displacement and the settle after a release.
+/// double-click detection, and one slot slide per tab button for drag
+/// displacement and the settle after a release.
 #[derive(Default)]
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
-    /// The tooltip's label paragraph (settings-button spec): one
-    /// constant label, cached and measured like the titles.
+    /// The tooltip's label paragraph: one constant label, cached and
+    /// measured like the titles.
     tooltip: TitleParagraph,
     click: Option<click::Click>,
     drag: Option<Drag>,
@@ -685,10 +676,9 @@ impl State {
     }
 }
 
-/// The tab bar strip: always mounted by the app (settings-button spec),
-/// carrying the settings button at its right corner; the tab buttons
-/// inside it render only while more than one tab exists (tabs spec — see
-/// [`shows_tab_buttons`]).
+/// The tab bar strip: always mounted by the app, carrying the settings
+/// button at its right corner; the tab buttons inside it render only
+/// while more than one tab exists (see [`shows_tab_buttons`]).
 ///
 /// Interactions report the stable [`TabId`] of the tab they landed on, so
 /// a tab list that changes between redraw and click cannot act on the
@@ -699,26 +689,25 @@ pub struct TabBar<'a, Message> {
     active: usize,
     on_select: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
     on_close: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
-    /// Reports a completed drag (T7): the dragged tab's id and the index
-    /// it was dropped at in the current list.
+    /// Reports a completed drag: the dragged tab's id and the index it
+    /// was dropped at in the current list.
     on_move: Option<Box<dyn Fn(TabId, usize) -> Message + 'a>>,
     on_rename: Option<Box<dyn Fn(TabId) -> Message + 'a>>,
-    /// Reports a press outside the rename input while a rename is active
-    /// (T6): iced inputs keep keyboard focus on outside presses, so the
-    /// bar reports the click-away itself. The app maps it to a commit.
+    /// Reports a press outside the rename input while a rename is
+    /// active: iced inputs keep keyboard focus on outside presses, so
+    /// the bar reports the click-away itself. The app maps it to a
+    /// commit.
     on_rename_end: Option<Box<dyn Fn() -> Message + 'a>>,
-    /// Reports a left press on the settings target (settings-button
-    /// spec, criterion 5): the app maps it onto the same
-    /// `Action::Settings` funnel the context menu's `Settings…` row
-    /// uses, so the button opens the identical window.
+    /// Reports a left press on the settings target: the app maps it
+    /// onto the same `Action::Settings` path the context menu's
+    /// `Settings…` row uses, so the button opens the identical window.
     on_settings: Option<Box<dyn Fn() -> Message + 'a>>,
-    /// The active inline rename (T6): which tab is being renamed and the
-    /// text input overlaying its button. Built by the app, positioned by
-    /// the bar.
+    /// The active inline rename: which tab is being renamed and the
+    /// text input overlaying its button. Built by the app, positioned
+    /// by the bar.
     rename: Option<(TabId, Element<'a, Message>)>,
-    /// Which vertical side of the strip the settings tooltip pops to
-    /// (settings-button spec, criterion 7): the terminal's side, set
-    /// by the app from the configured edge.
+    /// Which vertical side of the strip the settings tooltip pops to:
+    /// the terminal's side, set by the app from the configured edge.
     tooltip_side: TooltipSide,
 }
 
@@ -755,7 +744,7 @@ where
         self
     }
 
-    /// Sets the message published when a tab drag completes (T7): the
+    /// Sets the message published when a tab drag completes: the
     /// dragged tab is dropped at the given index of the current list.
     pub fn on_move(mut self, on_move: impl Fn(TabId, usize) -> Message + 'a) -> Self {
         self.on_move = Some(Box::new(on_move));
@@ -763,35 +752,35 @@ where
     }
 
     /// Sets the message published when a tab body is double-clicked: the
-    /// start of an inline rename (T6).
+    /// start of an inline rename.
     pub fn on_rename(mut self, on_rename: impl Fn(TabId) -> Message + 'a) -> Self {
         self.on_rename = Some(Box::new(on_rename));
         self
     }
 
     /// Sets the message published when a press lands outside the rename
-    /// input while a rename is active (T6). The press still reaches
-    /// whatever it landed on.
+    /// input while a rename is active. The press still reaches whatever
+    /// it landed on.
     pub fn on_rename_end(mut self, on_rename_end: impl Fn() -> Message + 'a) -> Self {
         self.on_rename_end = Some(Box::new(on_rename_end));
         self
     }
 
     /// Sets the message published when the settings target is
-    /// left-pressed (settings-button spec, criterion 5).
+    /// left-pressed.
     pub fn on_settings(mut self, on_settings: impl Fn() -> Message + 'a) -> Self {
         self.on_settings = Some(Box::new(on_settings));
         self
     }
 
     /// Sets which vertical side of the strip the settings tooltip pops
-    /// to (settings-button spec, criterion 7): the terminal's side.
+    /// to: the terminal's side.
     pub fn tooltip_side(mut self, side: TooltipSide) -> Self {
         self.tooltip_side = side;
         self
     }
 
-    /// Hosts `input` as an overlay over the renamed tab's button (T6),
+    /// Hosts `input` as an overlay over the renamed tab's button,
     /// swapping the title for a text input in place.
     pub fn renaming(mut self, tab: TabId, input: impl Into<Element<'a, Message>>) -> Self {
         self.rename = Some((tab, input.into()));
@@ -800,9 +789,9 @@ where
 
     /// Rebuilds the cached title paragraphs: entries for closed tabs are
     /// pruned, new or retitled tabs are (re)laid out. A tab wearing an
-    /// attention marker (bell-indicator spec) renders it as a prefix to
-    /// its title, so a marker change re-lays the paragraph exactly like
-    /// a title change. Returns nothing; measurement then goes through
+    /// attention marker renders it as a prefix to its title, so a
+    /// marker change re-lays the paragraph exactly like a title change.
+    /// Returns nothing; measurement then goes through
     /// [`TitleParagraph::min_width`].
     fn refresh_paragraphs(&self, state: &mut State, renderer: &Renderer) {
         state
@@ -848,9 +837,9 @@ where
     }
 
     /// The current button geometry, bar-local (origin at the bar's
-    /// top-left corner). Empty while the tab-count rule hides the row
-    /// (settings-button spec, criterion 8); otherwise laid out inside
-    /// the row budget the settings zone leaves (criterion 4).
+    /// top-left corner). Empty while the tab-count rule hides the row;
+    /// otherwise laid out inside the row budget the settings zone
+    /// leaves.
     fn button_geometry(&self, state: &State, bounds: Rectangle) -> Vec<ButtonGeometry> {
         if !shows_tab_buttons(self.tabs.len()) {
             return Vec::new();
@@ -870,9 +859,9 @@ where
     }
 
     /// Retargets every non-dragged button's slot animation to the slot
-    /// the in-progress drag leaves it (T7): its position in the
-    /// reordered row. Called on every cursor move once the drag has
-    /// crossed the threshold, so neighbors ease aside live.
+    /// the in-progress drag leaves it: its position in the reordered
+    /// row. Called on every cursor move once the drag has crossed the
+    /// threshold, so neighbors ease aside live.
     fn retarget_displaced(&self, tree: &mut Tree, bounds: Rectangle) {
         let Some((drag_id, cursor_x, grab_x)) = tree
             .state
@@ -926,9 +915,9 @@ where
     Message: Clone,
 {
     /// Paints one tab button at bar-global `bounds`: pill background,
-    /// title, and close mark. `elevated` renders the dragged button
-    /// (T7) — a stronger pill with a drop shadow, drawn by the caller
-    /// after the rest of the row so it rides on top of its neighbors.
+    /// title, and close mark. `elevated` renders the dragged button —
+    /// a stronger pill with a drop shadow, drawn by the caller after
+    /// the rest of the row so it rides on top of its neighbors.
     fn paint_button(
         &self,
         renderer: &mut Renderer,
@@ -1065,7 +1054,7 @@ where
     }
 
     fn children(&self) -> Vec<Tree> {
-        // The rename input's tree, when a rename is active (T6).
+        // The rename input's tree, when a rename is active.
         self.rename
             .as_ref()
             .map(|(_, input)| Tree::new(input.as_widget()))
@@ -1076,7 +1065,7 @@ where
     fn diff(&mut self, tree: &mut Tree) {
         // Reconcile the input's tree with the current session state. The
         // default implementation clears all children, which would discard
-        // the input's cursor and focus state on every re-render (T6).
+        // the input's cursor and focus state on every re-render.
         if let Some((_, input)) = &mut self.rename {
             let input: &mut dyn Widget<Message, Theme, Renderer> = input.as_widget_mut();
             tree.diff_children(&mut [input]);
@@ -1118,7 +1107,7 @@ where
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
-        // An active drag grabs the cursor wherever it roams (T7).
+        // An active drag grabs the cursor wherever it roams.
         if state.drag.as_ref().is_some_and(|drag| drag.started) {
             return mouse::Interaction::Grabbing;
         }
@@ -1150,17 +1139,17 @@ where
         _viewport: &Rectangle<f32>,
     ) {
         // Left-click: tab body selects, close button closes. Middle-click
-        // closes whichever part of the button it lands on (Yakuake-style).
-        // A double-click on a tab body starts an inline rename (T6), any
-        // press outside the rename input ends one, and a left press on a
-        // tab body that moves beyond a small threshold drags it (T7).
+        // closes whichever part of the button it lands on. A
+        // double-click on a tab body starts an inline rename, any press
+        // outside the rename input ends one, and a left press on a tab
+        // body that moves beyond a small threshold drags it.
         //
-        // Frame tick first (T7): settle finished slot slides and keep
-        // frames coming while a drag is live or a slide still moves —
-        // the redraw loop libcosmic's reorderable row runs. With no
-        // drag in flight the slides retarget to the row's static
-        // layout, which is what animates everything home after the
-        // app applies a completed reorder.
+        // Frame tick first: settle finished slot slides and keep frames
+        // coming while a drag is live or a slide still moves — the
+        // redraw loop libcosmic's reorderable row runs. With no drag in
+        // flight the slides retarget to the row's static layout, which
+        // is what animates everything home after the app applies a
+        // completed reorder.
         if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
             let dragging = tree
                 .state
@@ -1196,7 +1185,7 @@ where
         let button = match event {
             Event::Mouse(MouseEvent::ButtonPressed(button)) => *button,
             Event::Mouse(MouseEvent::CursorMoved { position }) => {
-                // Drag progress (T7): once the press crossed the
+                // Drag progress: once the press crossed the
                 // threshold, the pressed button follows the cursor's
                 // bar-local x (clamped to the row) and its neighbors
                 // retarget to the slots the drop would leave them in.
@@ -1222,7 +1211,7 @@ where
                 return;
             }
             Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
-                // Drag finish (T7): a plain click already selected on
+                // Drag finish: a plain click already selected on
                 // press, so only a drag that crossed the threshold
                 // reports a move. The drop is decided by the followed
                 // button's center — the same rule the row painted — so
@@ -1255,7 +1244,7 @@ where
         let point = cursor_position.position_in(bounds);
         let buttons = self.button_geometry(state, bounds);
 
-        // A press outside the rename input ends the rename (T6): iced
+        // A press outside the rename input ends the rename: iced
         // inputs keep keyboard focus on outside presses, so the bar
         // reports the click-away itself and the press then lands on
         // whatever it hit — another tab, a close button, or the terminal
@@ -1279,11 +1268,10 @@ where
         let Some(point) = point else {
             return;
         };
-        // The settings target routes ahead of the tab row
-        // (settings-button spec, criterion 5): a left press inside it
-        // opens settings through the app's funnel, a middle press does
-        // nothing, and the press never arms a tab drag. A press here
-        // during a rename already ended it above.
+        // The settings target routes ahead of the tab row: a left
+        // press inside it opens settings through the app's handler, a
+        // middle press does nothing, and the press never arms a tab
+        // drag. A press here during a rename already ended it above.
         if settings_rect.contains(point) {
             if button == Button::Left
                 && let Some(message) = self.on_settings.as_ref().map(|on_settings| on_settings())
@@ -1316,7 +1304,7 @@ where
             }
         }
 
-        // A single left press on a tab body arms a potential drag (T7):
+        // A single left press on a tab body arms a potential drag:
         // the press selects now, and crossing [`DRAG_THRESHOLD`] while
         // held turns it into a reorder — the native tab bar split between
         // click and drag. The grab offset is kept so the button can
@@ -1353,11 +1341,11 @@ where
         _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        // While a rename is active (T6), host its input as an overlay
-        // exactly over the renamed tab's button — the spec's "title swaps
-        // for an inline text input". The rename overlay outranks the
-        // tooltip below: the input is interactive, the tip is dressing,
-        // and a press on the settings target commits the rename anyway.
+        // While a rename is active, host its input as an overlay
+        // exactly over the renamed tab's button. The rename overlay
+        // outranks the tooltip below: the input is interactive, the
+        // tip is dressing, and a press on the settings target commits
+        // the rename anyway.
         if self.rename.is_some() {
             let rename_tab = self.rename.as_ref().map(|(tab, _)| *tab)?;
             let index = self.tabs.iter().position(|tab| tab.id == rename_tab)?;
@@ -1381,8 +1369,8 @@ where
             })));
         }
 
-        // The settings tooltip (settings-button spec, criterion 7)
-        // rides the same overlay pass — see [`TooltipOverlay`].
+        // The settings tooltip rides the same overlay pass — see
+        // [`TooltipOverlay`].
         let bounds = layout.bounds();
         Some(overlay::Element::new(Box::new(TooltipOverlay {
             state: tree.state.downcast_ref::<State>(),
@@ -1427,7 +1415,7 @@ where
             pane_bg,
         );
 
-        // The drag's view of the row (T7): where the dragged button
+        // The drag's view of the row: where the dragged button
         // follows the cursor, where every other button's slot is
         // headed, and where the drop indicator marks the landing.
         let drag_view = state
@@ -1455,8 +1443,7 @@ where
         let animate = drag_view.is_some() || state.any_slot_animating();
 
         // The tab row paints clipped to the strip minus the settings
-        // zone (settings-button spec, criterion 4): a row at the
-        // minimum-width floor still geometrically overflows its
+        // zone: a row at the minimum-width floor still geometrically overflows its
         // budget, and without the clip its tail would run under the
         // settings button at the right corner.
         renderer.with_layer(
@@ -1487,7 +1474,7 @@ where
                     self.paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
                 }
 
-                // The dragged button (T7): follows the cursor, lifted
+                // The dragged button: follows the cursor, lifted
                 // clear of the row and painted after its neighbors so
                 // it rides on top.
                 if let Some((index, followed, _)) = drag_view
@@ -1500,7 +1487,7 @@ where
                     self.paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
                 }
 
-                // Drop indicator (T7): a vertical accent line in the
+                // Drop indicator: a vertical accent line in the
                 // slot the drag currently lands in, between the buttons
                 // that would surround the dragged tab in the displaced
                 // row.
@@ -1532,11 +1519,11 @@ where
             },
         );
 
-        // The settings button (settings-button spec, criteria 6 + 7):
-        // the gear glyph — quads only, font-free like the close `×` —
-        // over the same hover treatment the close button gets, shown
-        // the moment the cursor enters the target (no delay). The
-        // tooltip itself rides the overlay pass (see `TooltipOverlay`).
+        // The settings button: the gear glyph — quads only, font-free
+        // like the close `×` — over the same hover treatment the close
+        // button gets, shown the moment the cursor enters the target
+        // (no delay). The tooltip itself rides the overlay pass (see
+        // `TooltipOverlay`).
         let target = settings_target(bounds.width, &METRICS);
         let target = Rectangle::new(
             Point::new(origin.x + target.x, origin.y + target.y),
@@ -1563,13 +1550,13 @@ where
     }
 }
 
-/// The settings tooltip, hosted on the overlay pass (settings-button
-/// spec, criterion 7) — the rename-input precedent. A tip painted in
-/// the bar's own `draw` would be overpainted in the Bottom-edge
-/// stacking, where the column draws the terminal after the bar;
-/// overlays draw after the whole tree, so the tip stays visible
-/// clearing the strip on both edge placements. Visibility is decided
-/// per frame from the live cursor — no hover delay.
+/// The settings tooltip, hosted on the overlay pass (the
+/// rename-input precedent). A tip painted in the bar's own `draw`
+/// would be overpainted in the Bottom-edge stacking, where the
+/// column draws the terminal after the bar; overlays draw after the
+/// whole tree, so the tip stays visible clearing the strip on both
+/// edge placements. Visibility is decided per frame from the live
+/// cursor — no hover delay.
 struct TooltipOverlay<'a> {
     /// The bar's state, carrying the tooltip's cached label paragraph.
     state: &'a State,
@@ -1634,7 +1621,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> 
     }
 }
 
-/// Hosts the inline-rename input over its tab button (T6), delegating
+/// Hosts the inline-rename input over its tab button, delegating
 /// every [`overlay::Overlay`] method to the widget inside — the same
 /// hosting pattern as libcosmic's popover at the pinned rev
 /// (`widget/popover.rs`). Delegating [`overlay::Overlay::operate`] is
@@ -1923,8 +1910,8 @@ mod tests {
         assert_eq!(hit_test(&[], Point::new(5.0, 5.0)), None);
     }
 
-    // settings-button spec, T1: corner target geometry, row budget,
-    // routing precedence, and the tab-button visibility rule.
+    // Corner target geometry, row budget, routing precedence, and the
+    // tab-button visibility rule.
 
     #[test]
     fn settings_target_anchors_at_the_strip_s_right_corner() {
@@ -2016,8 +2003,7 @@ mod tests {
         assert!(shows_tab_buttons(9));
     }
 
-    // settings-button spec, T2: gear geometry, tooltip bounds, and the
-    // hover-punch composite.
+    // Gear geometry, tooltip bounds, and the hover-punch composite.
 
     #[test]
     fn gear_quads_stay_inside_the_settings_target() {
