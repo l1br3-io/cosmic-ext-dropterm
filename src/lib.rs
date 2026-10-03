@@ -13,8 +13,6 @@
     clippy::must_use_candidate,
     reason = "standing: OQ-3 — no #[must_use] attribute sweep"
 )]
-#![expect(clippy::doc_markdown, reason = "transient: T9")]
-#![expect(clippy::redundant_closure_for_method_calls, reason = "transient: T9")]
 
 //! Library target for the workspace.
 //!

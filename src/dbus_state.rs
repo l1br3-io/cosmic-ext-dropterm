@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Queryable DropTerm state over D-Bus.
+//! Queryable `DropTerm` state over D-Bus.
 //!
 //! Serves the read-only `Visible` and `TabCount` properties on the
 //! `io.github.l1br3_io.CosmicExtDropterm.V1` interface, at the bus name
@@ -115,7 +115,7 @@ impl V1 {
         *self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -363,9 +363,9 @@ mod tests {
                         };
                         let header = msg.header();
                         if header.message_type() != zbus::message::Type::Signal
-                            || header.interface().map(|i| i.to_string())
+                            || header.interface().map(ToString::to_string)
                                 != Some("org.freedesktop.DBus.Properties".to_string())
-                            || header.member().map(|m| m.to_string())
+                            || header.member().map(ToString::to_string)
                                 != Some("PropertiesChanged".to_string())
                         {
                             continue;

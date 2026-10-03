@@ -56,12 +56,11 @@ pub(crate) fn transition(state: TargetState, event: Event) -> TargetState {
     match (state, event) {
         // Owner-presuming events while ownerless are stale by
         // construction; dropping them is the zombie-safety rule.
-        (TargetState::NotRunning, Event::Visible(_) | Event::TabCount(_)) => state,
-        (_, Event::Appeared { visible }) | (_, Event::Visible(visible)) => {
+        (TargetState::NotRunning, Event::Visible(_)) | (_, Event::TabCount(_)) => state,
+        (_, Event::Appeared { visible } | Event::Visible(visible)) => {
             TargetState::Running { visible }
         }
         (_, Event::Vanished) => TargetState::NotRunning,
-        (_, Event::TabCount(_)) => state,
     }
 }
 
@@ -72,7 +71,7 @@ pub(crate) enum ClickAction {
     SendToggle,
 }
 
-pub(crate) fn click_action(state: &TargetState) -> ClickAction {
+pub(crate) fn click_action(state: TargetState) -> ClickAction {
     match state {
         TargetState::NotRunning => ClickAction::LaunchWithToken,
         TargetState::Running { .. } => ClickAction::SendToggle,
@@ -80,8 +79,8 @@ pub(crate) fn click_action(state: &TargetState) -> ClickAction {
 }
 
 /// Tooltip text: state plus tab count when running.
-pub(crate) fn tooltip(state: &TargetState, tab_count: u32) -> String {
-    match *state {
+pub(crate) fn tooltip(state: TargetState, tab_count: u32) -> String {
+    match state {
         TargetState::NotRunning => "DropTerm — not running".to_string(),
         TargetState::Running { visible } => {
             let word = if visible { "visible" } else { "hidden" };
@@ -154,7 +153,7 @@ impl cosmic::Application for Applet {
             Message::Token(TokenUpdate::Init(tx)) => self.token_tx = Some(TokenUpdate::Init(tx)),
             Message::Token(TokenUpdate::Finished) => self.token_tx = None,
             Message::Token(TokenUpdate::ActivationToken { token, exec }) => {
-                self.launch(&exec, token);
+                Self::launch(&exec, token);
             }
             Message::Surface(a) => {
                 return cosmic::task::message(cosmic::Action::Surface(a));
@@ -195,8 +194,8 @@ impl cosmic::Application for Applet {
                 }),
             }
         })))
-        .width(Length::Fixed(suggested.0 as f32))
-        .height(Length::Fixed(suggested.1 as f32));
+        .width(Length::Fixed(f32::from(suggested.0)))
+        .height(Length::Fixed(f32::from(suggested.1)));
         let button = self
             .core
             .applet
@@ -204,7 +203,7 @@ impl cosmic::Application for Applet {
             .on_press(Message::Click);
         Element::from(self.core.applet.applet_tooltip(
             button,
-            tooltip(&self.target, self.tab_count),
+            tooltip(self.target, self.tab_count),
             false,
             Message::Surface,
             None,
@@ -219,7 +218,7 @@ impl cosmic::Application for Applet {
 impl Applet {
     /// Routes a left-click through the pure decision.
     fn on_click(&mut self) {
-        match click_action(&self.target) {
+        match click_action(self.target) {
             ClickAction::SendToggle => {
                 // Fire-and-forget on the shared connection; debounce
                 // is the terminal's job, not the applet's.
@@ -248,11 +247,11 @@ impl Applet {
     }
 
     /// Spawns the terminal with the activation token in its
-    /// environment. Caveat, deliberately still-correct: DropTerm
+    /// environment. Caveat, deliberately still-correct: `DropTerm`
     /// currently receives a forwarded activation token and drops it
     /// (nothing applies it yet) — sending one remains the right path
     /// for when it does.
-    fn launch(&self, exec: &str, token: Option<String>) {
+    fn launch(exec: &str, token: Option<String>) {
         let mut command = tokio::process::Command::new(exec);
         if let Some(token) = token {
             command.env("XDG_ACTIVATION_TOKEN", &token);
@@ -338,7 +337,7 @@ mod tests {
     #[test]
     fn click_launches_when_not_running() {
         assert_eq!(
-            click_action(&TargetState::NotRunning),
+            click_action(TargetState::NotRunning),
             ClickAction::LaunchWithToken
         );
     }
@@ -346,7 +345,7 @@ mod tests {
     #[test]
     fn click_toggles_when_running_hidden() {
         assert_eq!(
-            click_action(&TargetState::Running { visible: false }),
+            click_action(TargetState::Running { visible: false }),
             ClickAction::SendToggle
         );
     }
@@ -354,7 +353,7 @@ mod tests {
     #[test]
     fn click_toggles_when_running_visible() {
         assert_eq!(
-            click_action(&TargetState::Running { visible: true }),
+            click_action(TargetState::Running { visible: true }),
             ClickAction::SendToggle
         );
     }
@@ -362,7 +361,7 @@ mod tests {
     #[test]
     fn tooltip_names_the_state_when_not_running() {
         assert_eq!(
-            tooltip(&TargetState::NotRunning, 0),
+            tooltip(TargetState::NotRunning, 0),
             "DropTerm — not running"
         );
     }
@@ -370,7 +369,7 @@ mod tests {
     #[test]
     fn tooltip_pairs_hidden_with_tab_count() {
         assert_eq!(
-            tooltip(&TargetState::Running { visible: false }, 3),
+            tooltip(TargetState::Running { visible: false }, 3),
             "DropTerm — hidden, 3 tabs"
         );
     }
@@ -378,7 +377,7 @@ mod tests {
     #[test]
     fn tooltip_pairs_visible_with_tab_count() {
         assert_eq!(
-            tooltip(&TargetState::Running { visible: true }, 2),
+            tooltip(TargetState::Running { visible: true }, 2),
             "DropTerm — visible, 2 tabs"
         );
     }
@@ -386,7 +385,7 @@ mod tests {
     #[test]
     fn tooltip_pluralizes_a_single_tab() {
         assert_eq!(
-            tooltip(&TargetState::Running { visible: true }, 1),
+            tooltip(TargetState::Running { visible: true }, 1),
             "DropTerm — visible, 1 tab"
         );
     }

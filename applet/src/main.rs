@@ -13,12 +13,6 @@
     clippy::too_many_lines,
     reason = "standing: OQ-4 — dissolved by module-decomposition"
 )]
-#![expect(clippy::cast_lossless, reason = "transient: T9")]
-#![expect(clippy::doc_markdown, reason = "transient: T9")]
-#![expect(clippy::match_same_arms, reason = "transient: T9")]
-#![expect(clippy::trivially_copy_pass_by_ref, reason = "transient: T9")]
-#![expect(clippy::unnested_or_patterns, reason = "transient: T9")]
-#![expect(clippy::unused_self, reason = "transient: T9")]
 
 mod applet;
 mod dbus;

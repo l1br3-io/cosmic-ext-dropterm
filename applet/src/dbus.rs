@@ -110,7 +110,7 @@ mod tests {
         }
     }
 
-    /// Headless p2p harness (mirrors the root lib's dbus_state tests):
+    /// Headless p2p harness (mirrors the root lib's `dbus_state` tests):
     /// both handshake ends must be driven concurrently or the SASL
     /// exchange deadlocks.
     async fn p2p_pair<T>(serve: T) -> (zbus::Connection, zbus::Connection)
@@ -300,7 +300,7 @@ mod tests {
                 let event = rx.recv().await.expect("PropertiesChanged");
                 core = transition(core, event);
                 assert_eq!(core, TargetState::Running { visible: true });
-                assert_eq!(tooltip(&core, 3), "DropTerm — visible, 3 tabs");
+                assert_eq!(tooltip(core, 3), "DropTerm — visible, 3 tabs");
             })
             .await
             .expect("wire test timed out");
@@ -367,7 +367,7 @@ mod tests {
                     }
                 }
                 assert_eq!(core, TargetState::Running { visible: false });
-                assert_eq!(tooltip(&core, tab_count), "DropTerm — hidden, 3 tabs");
+                assert_eq!(tooltip(core, tab_count), "DropTerm — hidden, 3 tabs");
             })
             .await
             .expect("wire test timed out");
