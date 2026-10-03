@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The settings window (settings-ui spec): the shared config-write
-//! contract — [`WriteKind`], the control→key map, the planned,
-//! range-clamped writes both writers persist through the app's
-//! single write seam (U3) — plus the instant-apply window view and
-//! its pure half (U4): event planning, parsing, timing copy, and the
-//! display-only draft buffer. Everything except the view builder
-//! itself is plain data and pure functions over it, so the write
-//! contract and commit rules are headless-testable (the established
-//! `config_edit_reshapes`-style seam discipline).
+//! The settings window: the shared config-write contract —
+//! [`WriteKind`], the control→key map, the planned, range-clamped
+//! writes both writers persist through the app's single write path
+//! — plus the instant-apply window view and its pure half: event
+//! planning, parsing, timing copy, and the display-only draft
+//! buffer. Everything except the view builder itself is plain data
+//! and pure functions over it, so the write contract and commit
+//! rules are headless-testable.
 
 use std::collections::HashMap;
 
@@ -34,8 +33,8 @@ pub enum WriteKind {
     Bare,
 }
 
-/// A settings section: the criterion-2 grouping of the window's
-/// cards. The sections' [`keys`](Section::keys) together are the
+/// A settings section: the grouping of the window's cards. The
+/// sections' [`keys`](Section::keys) together are the
 /// control→key map — every exposed key exactly once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -96,10 +95,9 @@ impl Section {
     }
 }
 
-/// Every config key the settings window exposes (settings-ui spec,
-/// criterion 2): all of `DropTermConfig` except `output`, which is
-/// dead at runtime since the `monitor-selection` cut and unreachable
-/// from the UI by a spec boundary.
+/// Every config key the settings window exposes: all of
+/// `DropTermConfig` except `output`, which is dead at runtime and
+/// unreachable from the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -156,13 +154,12 @@ impl ConfigKey {
     }
 }
 
-/// A planned config write (settings-ui spec, U3): the key a control
-/// commits and the value it persists — the pure half of the shared
-/// write seam. One variant per [`ConfigKey`], each carrying its key's
-/// typed value, so the key↔value pairing cannot drift. Ranged keys
-/// clamp through [`PlannedWrite::clamped`], which the seam applies
-/// before persisting, so no out-of-range value is ever written (spec
-/// criterion 9).
+/// A planned config write: the key a control commits and the value
+/// it persists — the pure half of the shared write path. One
+/// variant per [`ConfigKey`], each carrying its key's typed value,
+/// so the key↔value pairing cannot drift. Ranged keys clamp through
+/// [`PlannedWrite::clamped`], which the write path applies before
+/// persisting, so no out-of-range value is ever written.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedWrite {
     HeightPercent(u8),
@@ -217,9 +214,9 @@ impl PlannedWrite {
     }
 
     /// Clamp a ranged write into its key's band, passing every other
-    /// key's value through untouched (spec criterion 9): the write
-    /// path's guarantee that a malformed or stale control value can
-    /// never reach the config file.
+    /// key's value through untouched: the write path's guarantee that
+    /// a malformed or stale control value can never reach the config
+    /// file.
     pub fn clamped(&self) -> Self {
         match self {
             PlannedWrite::HeightPercent(raw) => {
@@ -234,7 +231,7 @@ impl PlannedWrite {
     }
 
     /// Persist through the config backend — the I/O edge of the write
-    /// seam. The failure is the caller's to log; the typed values
+    /// path. The failure is the caller's to log; the typed values
     /// serialize exactly as `DropTermConfig`'s fields do.
     pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
         match self {
@@ -289,37 +286,34 @@ impl PlannedWrite {
     }
 }
 
-/// Clamp a height percent into the config band (settings-ui spec,
-/// criterion 9 — height 10–100).
+/// Clamp a height percent into the config band (10–100).
 pub fn clamp_height_percent(raw: u8) -> u8 {
     raw.clamp(MIN_HEIGHT_PERCENT, MAX_HEIGHT_PERCENT)
 }
 
-/// Clamp a width percent into the config band (settings-ui spec,
-/// criterion 9 — width 30–100).
+/// Clamp a width percent into the config band (30–100).
 pub fn clamp_width_percent(raw: u8) -> u8 {
     raw.clamp(MIN_WIDTH_PERCENT, MAX_WIDTH_PERCENT)
 }
 
-/// Clamp an opacity into its range (settings-ui spec, criterion 9 —
-/// opacity 0–100), mirroring `DropTermConfig::clamped`'s upper-bound
-/// only check: zero is a valid, fully transparent surface.
+/// Clamp an opacity into its range (0–100), mirroring
+/// `DropTermConfig::clamped`'s upper-bound only check: zero is a
+/// valid, fully transparent surface.
 pub fn clamp_opacity(raw: u8) -> u8 {
     raw.min(100)
 }
 
 /// Whether a bare write of `key` must cancel a pending drag
-/// write-back (settings-ui spec, U3 — the newest-intent race rule):
-/// the drag path persists exactly the height percent (G3's
-/// height-only scope), so the two writers race only on that key. A
+/// write-back (newest intent wins): the drag path persists exactly
+/// the height percent, so the two writers race only on that key. A
 /// bare height write supersedes the pending settle; a bare write of
 /// any other key leaves a pending height write alone to land.
 pub fn bare_write_cancels_pending_drag(key: ConfigKey, drag_write_pending: bool) -> bool {
     drag_write_pending && key == ConfigKey::HeightPercent
 }
 
-// --- settings-ui U4: the view's pure half — parsing, per-key commit
-// planning, timing copy, and the in-window buffer ---
+// --- the view's pure half: parsing, per-key commit planning, timing
+// copy, and the in-window buffer ---
 
 /// Which text input a settings draft belongs to. Drafts live in
 /// [`SettingsBuffer`] display-only until the input is submitted.
@@ -332,17 +326,16 @@ pub enum TextField {
 }
 
 /// Split an `args` draft into config tokens: whitespace-separated, no
-/// quoting (the spec's documented limitation — args containing spaces
-/// stay config-file-only). Whitespace runs collapse; empty text is no
+/// quoting (the documented limitation — args containing spaces stay
+/// config-file-only). Whitespace runs collapse; empty text is no
 /// arguments.
 pub fn parse_args(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
 }
 
-/// Parse a `scrollback_lines` draft (spec criterion 9, ≥ 0): plain
-/// numbers land, negatives clamp to zero, and anything without a
-/// number in it rejects (`None` — no write, the draft stays for the
-/// user to fix).
+/// Parse a `scrollback_lines` draft (≥ 0): plain numbers land,
+/// negatives clamp to zero, and anything without a number in it
+/// rejects (`None` — no write, the draft stays for the user to fix).
 pub fn parse_scrollback(raw: &str) -> Option<u32> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -357,9 +350,9 @@ pub fn parse_scrollback(raw: &str) -> Option<u32> {
     }
 }
 
-/// The write a submitted text input commits (plan decision: text
-/// inputs commit on submit, never per keystroke). `None` means the
-/// draft did not parse and nothing is written.
+/// The write a submitted text input commits (text inputs commit on
+/// submit, never per keystroke). `None` means the draft did not parse
+/// and nothing is written.
 pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
     match field {
         TextField::FontName => Some(PlannedWrite::FontName(raw.trim().to_string())),
@@ -372,9 +365,8 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
     }
 }
 
-/// When a field's edit takes effect (spec criterion 4) — the copy the
-/// view states next to every control so instant-apply never
-/// misleads.
+/// When a field's edit takes effect — the copy the view states next
+/// to every control so instant-apply never misleads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyTiming {
     /// Reshapes or re-renders a shown surface immediately.
@@ -399,7 +391,7 @@ impl ApplyTiming {
     }
 }
 
-/// The documented apply timing of an exposed key (spec criterion 4).
+/// The documented apply timing of an exposed key.
 pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
     match key {
         ConfigKey::HeightPercent
@@ -448,8 +440,8 @@ const THEME_PREFERENCE_OPTIONS: &[(ThemePreference, &str)] = &[
 
 /// A scheme dropdown's selection: the config name's position in the
 /// registry options. An unknown name selects nothing — the control
-/// never invents a value (spec criteria 4/6); `active_colors()`
-/// keeps serving the COSMIC fallback meanwhile.
+/// never invents a value; `active_colors()` keeps serving the COSMIC
+/// fallback meanwhile.
 fn scheme_index(name: &str) -> Option<usize> {
     scheme_names().iter().position(|option| *option == name)
 }
@@ -483,9 +475,9 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
     }
 }
 
-/// The write a dropdown pick commits (plan decision: dropdowns commit
-/// on change). `None` when `key` has no dropdown or `index` is out of
-/// its range — a pick can never invent a value.
+/// The write a dropdown pick commits (dropdowns commit on change).
+/// `None` when `key` has no dropdown or `index` is out of its range —
+/// a pick can never invent a value.
 pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
     match key {
         ConfigKey::HAlign => H_ALIGN_OPTIONS
@@ -516,11 +508,11 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
     }
 }
 
-/// The write a slider release commits (plan decision: sliders commit
-/// on release; `on_change` is display-only). Ranged keys clamp (spec
-/// criterion 9) — float-to-int `as` casts saturate in Rust, so a
-/// negative buffered value clamps up to the band's floor, not
-/// wrap. `None` for keys without a slider.
+/// The write a slider release commits (sliders commit on release;
+/// `on_change` is display-only). Ranged keys clamp — float-to-int
+/// `as` casts saturate in Rust, so a negative buffered value clamps
+/// up to the band's floor, not wrap. `None` for keys without a
+/// slider.
 pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> {
     let value = value.round();
     match key {
@@ -536,12 +528,12 @@ pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> 
     }
 }
 
-/// The settings window's in-flight state (plan decision): text drafts
-/// buffered only until submit, slider positions buffered for the
-/// live value readout until the next change. Both are display-only —
-/// the view renders from `DropTermConfig` with a draft winning over
-/// the file's value while one exists — and [`SettingsBuffer::clear`]
-/// on window close is what makes reopening fresh (spec criterion 8).
+/// The settings window's in-flight state: text drafts buffered only
+/// until submit, slider positions buffered for the live value
+/// readout until the next change. Both are display-only — the view
+/// renders from `DropTermConfig` with a draft winning over the
+/// file's value while one exists — and [`SettingsBuffer::clear`] on
+/// window close is what makes reopening fresh.
 #[derive(Debug, Default)]
 pub struct SettingsBuffer {
     texts: HashMap<TextField, String>,
@@ -600,10 +592,10 @@ impl SettingsBuffer {
     }
 }
 
-/// An event from the settings view (settings-ui spec, U4). Events
-/// carry inputs, never [`PlannedWrite`]s: the view stays dumb about
-/// validity, and the app resolves each event through the pure
-/// planners ([`submit_write`], [`dropdown_write`], [`toggle_write`],
+/// An event from the settings view. Events carry inputs, never
+/// [`PlannedWrite`]s: the view stays dumb about validity, and the
+/// app resolves each event through the pure planners
+/// ([`submit_write`], [`dropdown_write`], [`toggle_write`],
 /// [`slider_release_write`]) so every commit is clamped and every
 /// invalid input is a no-op — never a panic in a view closure.
 #[derive(Debug, Clone)]
@@ -617,9 +609,9 @@ pub enum SettingsEvent {
     SliderMoved(ConfigKey, f32),
     /// A slider was released: commit its buffered position.
     SliderReleased(ConfigKey),
-    /// A dropdown option was picked: commit on change (plan decision).
+    /// A dropdown option was picked: commit on change.
     Picked(ConfigKey, usize),
-    /// A toggler flipped: commit on change (plan decision).
+    /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
 }
 
@@ -680,23 +672,20 @@ impl ConfigKey {
     }
 }
 
-/// The font-size slider's display range. No spec range exists for
-/// `font_size` (criterion 9 lists height, width, opacity, scrollback
-/// only); the slider constrains what the control can produce, and
-/// the write path applies no extra clamp.
+/// The font-size slider's display range. The slider constrains what
+/// the control can produce; the write path applies no extra clamp.
 const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
 const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
 
 /// A control's rough width, keeping the window's rows aligned.
 const CONTROL_WIDTH: f32 = 260.0;
 
-/// The settings window's view (settings-ui spec, U4): one scrollable
-/// column, a card per [`Section`] (plan decision — no nav sidebar for
-/// five sections). Every control renders from `config` with a
-/// buffered draft winning while one exists, states its apply timing
-/// (criterion 4), and emits [`SettingsEvent`]s — the window never
-/// applies anything itself; commits land through the app's write seam
-/// and the existing `ConfigChanged` echo.
+/// The settings window's view: one scrollable column, a card per
+/// [`Section`] (no nav sidebar for five sections). Every control
+/// renders from `config` with a buffered draft winning while one
+/// exists, states its apply timing, and emits [`SettingsEvent`]s —
+/// the window never applies anything itself; commits land through
+/// the app's write path and the existing `ConfigChanged` echo.
 ///
 /// The scrollable rides in a [`theme::Container::WindowBackground`]
 /// wrapper filling the surface: libcosmic renders `view_window`
@@ -746,10 +735,10 @@ fn section_card(
         .into()
 }
 
-/// One labeled control row: the key's label, its apply-timing copy
-/// (criterion 4), and the control itself. Each builder claims only
-/// its own keys; the `expect` is totality — every exposed key has
-/// exactly one control, pinned by the section-map test.
+/// One labeled control row: the key's label, its apply-timing copy,
+/// and the control itself. Each builder claims only its own keys;
+/// the `expect` is totality — every exposed key has exactly one
+/// control, pinned by the section-map test.
 fn control_row(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -771,9 +760,9 @@ fn control_row(
         .into()
 }
 
-/// A slider control (plan decision: commit on release). `on_change`
-/// only buffers the position for the live readout; the release
-/// commits through [`slider_release_write`], clamped.
+/// A slider control (commit on release). `on_change` only buffers
+/// the position for the live readout; the release commits through
+/// [`slider_release_write`], clamped.
 fn slider_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -799,10 +788,10 @@ fn slider_control(
     )
 }
 
-/// A dropdown control (plan decision: commit on change). The pick
-/// resolves through [`dropdown_write`]; labels and selection come
-/// from the same tables the write path reads. The widget has no
-/// width setter at the pinned rev, so a container sizes it.
+/// A dropdown control (commit on change). The pick resolves through
+/// [`dropdown_write`]; labels and selection come from the same
+/// tables the write path reads. The widget has no width setter at
+/// the pinned rev, so a container sizes it.
 fn dropdown_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -820,7 +809,7 @@ fn dropdown_control(
             .map(|(_, label)| *label)
             .collect(),
         // The scheme rows offer the registry itself — names in
-        // registry order (spec criterion 6), not a local table.
+        // registry order, not a local table.
         ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight => scheme_names(),
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .iter()
@@ -839,8 +828,8 @@ fn dropdown_control(
     )
 }
 
-/// A toggle control (plan decision: commit on change). The flip
-/// resolves through [`toggle_write`].
+/// A toggle control (commit on change). The flip resolves through
+/// [`toggle_write`].
 fn toggle_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -860,11 +849,11 @@ fn toggle_control(
     )
 }
 
-/// A text input (plan decision: commit on submit — per-keystroke
-/// writes would persist half-typed values and fight the echo, which
-/// re-renders the input from config). The input shows the buffered
-/// draft while one exists, else the file's value; the shell field's
-/// placeholder carries `resolved_shell()`.
+/// A text input (commit on submit — per-keystroke writes would
+/// persist half-typed values and fight the echo, which re-renders
+/// the input from config). The input shows the buffered draft while
+/// one exists, else the file's value; the shell field's placeholder
+/// carries `resolved_shell()`.
 fn text_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -940,8 +929,7 @@ mod tests {
                 writer.key().key_name()
             );
         }
-        // The spec boundary, pinned: `output` is not writable from the
-        // UI.
+        // `output` is not writable from the UI.
         assert!(keys.iter().all(|key| key.key_name() != "output"));
     }
 
@@ -1079,7 +1067,7 @@ mod tests {
         ));
     }
 
-    // --- settings-ui U4: parsing, timing copy, and buffer semantics ---
+    // --- parsing, timing copy, and buffer semantics ---
 
     #[test]
     fn empty_args_text_parses_to_no_arguments() {
@@ -1119,9 +1107,9 @@ mod tests {
 
     #[test]
     fn scrollback_text_clamps_negatives_to_zero() {
-        // Criterion 9: scrollback >= 0 — a negative entry never
-        // persists, clamping instead of rejecting so the intent
-        // ("as small as possible") still lands.
+        // Scrollback is >= 0 — a negative entry never persists,
+        // clamping instead of rejecting so the intent ("as small as
+        // possible") still lands.
         assert_eq!(parse_scrollback("-1"), Some(0));
         assert_eq!(parse_scrollback("-5000"), Some(0));
     }
@@ -1194,7 +1182,7 @@ mod tests {
 
     #[test]
     fn apply_timing_states_each_field_s_documented_semantics() {
-        // Criterion 4's copy, per key: geometry/font/colors/opacity
+        // The apply-timing copy, per key: geometry/font/colors/opacity
         // live; layer/keyboard_mode/respect_panel at next show;
         // shell/args/scrollback on new tabs; the toggles on their next
         // trigger.
@@ -1238,8 +1226,8 @@ mod tests {
 
     #[test]
     fn apply_timing_copy_names_every_timing() {
-        // The UI copy itself (criterion 4): each timing has its
-        // human-readable label, and they are all distinct.
+        // The UI copy itself: each timing has its human-readable
+        // label, and they are all distinct.
         let labels = [
             ApplyTiming::Live.label(),
             ApplyTiming::NewTab.label(),
@@ -1305,15 +1293,12 @@ mod tests {
         assert!(dropdown_selected(ConfigKey::Shell, &DropTermConfig::default()).is_none());
     }
 
-    // --- color-schemes C4: registry-fed scheme dropdowns ---
+    // --- registry-fed scheme dropdowns ---
 
     #[test]
     fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
-        // C4's section move: the two scheme rows land in Appearance
-        // after Opacity; Advanced keeps only the
-        // compositor-negotiation knobs, in plan order. Appearance has
-        // since grown the theme-preference row (P2) — exact content
-        // still pinned, membership updated.
+        // The two scheme rows land in Appearance after Opacity;
+        // Advanced keeps only the compositor-negotiation knobs.
         assert_eq!(
             Section::Appearance.keys(),
             &[
@@ -1335,13 +1320,11 @@ mod tests {
         );
     }
 
-    // --- theme-preference P2: the Appearance dropdown ---
+    // --- the Appearance theme dropdown ---
 
     #[test]
     fn theme_preference_sits_in_appearance_after_the_scheme_rows() {
-        // The "Application theme" row lands after the scheme rows
-        // (spec criterion 8); the exact-content assertions stay — the
-        // map is updated, not weakened.
+        // The "Application theme" row lands after the scheme rows.
         assert_eq!(
             Section::Appearance.keys(),
             &[
@@ -1358,9 +1341,8 @@ mod tests {
 
     #[test]
     fn theme_preference_options_are_exactly_follow_system_dark_light() {
-        // The cosmic-edit 3-way pattern (spec criterion 8): order is
-        // the plan's — Follow system first, so the default config's
-        // selection is index 0.
+        // Follow system first, so the default config's selection is
+        // index 0.
         assert_eq!(
             THEME_PREFERENCE_OPTIONS,
             &[
@@ -1413,13 +1395,12 @@ mod tests {
         );
     }
 
-    // --- tab-bar-position T2: the Geometry dropdown ---
+    // --- the Geometry tab-position dropdown ---
 
     #[test]
     fn tab_position_sits_in_geometry_after_edge() {
         // The "Tab bar position" row lands directly after Edge in the
-        // Geometry card; the exact-content assertion stays — the map
-        // is updated, not weakened.
+        // Geometry card.
         assert_eq!(
             Section::Geometry.keys(),
             &[
@@ -1483,8 +1464,8 @@ mod tests {
     #[test]
     fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
         let options = crate::terminal::theme_source::scheme_names();
-        // Twelve shipped schemes, COSMIC pair first (spec criteria
-        // 1/6) — the picker's order is the registry's order.
+        // Twelve shipped schemes, COSMIC pair first — the picker's
+        // order is the registry's order.
         assert_eq!(options.len(), 12);
         assert_eq!(options.first(), Some(&crate::config::COSMIC_THEME_DARK));
         assert_eq!(options.get(1), Some(&crate::config::COSMIC_THEME_LIGHT));
@@ -1501,7 +1482,7 @@ mod tests {
     #[test]
     fn scheme_dropdown_picks_commit_registry_names_only() {
         // A pick commits exactly the option's name — the control can
-        // never invent or misspell a value (criterion 6).
+        // never invent or misspell a value.
         assert_eq!(
             dropdown_write(ConfigKey::ColorSchemeDark, 0),
             Some(PlannedWrite::ColorSchemeDark("COSMIC Dark".to_string()))
@@ -1536,8 +1517,8 @@ mod tests {
             Some(4)
         );
         // An unknown name (stale, hand-typed, renamed upstream) shows
-        // no selection — the control never invents one (criterion 4),
-        // while `active_colors` keeps serving the COSMIC fallback.
+        // no selection — the control never invents one, while
+        // `active_colors` keeps serving the COSMIC fallback.
         config.color_scheme_dark = "Tokyo Night".to_string();
         assert_eq!(dropdown_selected(ConfigKey::ColorSchemeDark, &config), None);
     }
@@ -1545,7 +1526,7 @@ mod tests {
     #[test]
     fn slider_release_commits_the_ranged_keys_clamped() {
         // A stale or malformed buffered slider value can never
-        // persist out of range (criterion 9).
+        // persist out of range.
         assert_eq!(
             slider_release_write(ConfigKey::HeightPercent, 250.0),
             Some(PlannedWrite::HeightPercent(MAX_HEIGHT_PERCENT))
@@ -1599,8 +1580,8 @@ mod tests {
 
     #[test]
     fn clearing_the_buffer_restores_full_config_fallback() {
-        // Reopen freshness (criterion 8): nothing a previous window
-        // session buffered survives into a reopened window.
+        // Reopen freshness: nothing a previous window session
+        // buffered survives into a reopened window.
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
         buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
