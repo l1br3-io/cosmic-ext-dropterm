@@ -1,22 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The terminal context-menu model (context-menu module).
-//!
-//! Everything menu-shaped is plain data and pure functions here — the
-//! row list, labels, and the item→[`terminal::Action`] mapping —
-//! pinned by unit tests, while runtime behavior stays where it
-//! already lives: item picks arrive as [`app::Message`] and land in
-//! the same `perform_action` funnel the keybind map uses, so the menu
-//! is a route to existing actions, never a second implementation of
-//! them. The view wiring in `app.rs` composes libcosmic's
-//! `widget::context_menu` from [`trees`] and contains no menu logic.
-//!
-//! Composition and order follow cosmic-term's terminal context menu
-//! (research §6), with Settings… last behind the divider — the GNOME
-//! HIG "standard items at the end" placement. Right-click reaches the
-//! menu only in default mode; in mouse-reporting mode (vim, htop) it
-//! still reaches the child process, because the open signal is
-//! published only from the widget's default-mode branch.
+//! The terminal context-menu model: plain data and pure functions —
+//! the row list, labels, and the item→[`terminal::Action`] mapping.
+//! Item picks land in the same `perform_action` path the keybind map
+//! uses, so the menu routes to existing actions rather than
+//! re-implementing them; `app.rs` builds the libcosmic menu from
+//! [`trees`]. Order follows cosmic-term, Settings… last behind the
+//! divider (GNOME HIG). Right-click opens the menu only in default
+//! mode; in mouse-reporting mode it reaches the child process.
 
 use cosmic::widget::menu::{self, action::MenuAction};
 
@@ -48,8 +39,8 @@ pub enum Item {
 }
 
 /// Every row in display order. Settings is last, behind the divider —
-/// the cosmic-term composition (research §6; GNOME HIG "standard items
-/// at the end").
+/// cosmic-term's composition, matching the GNOME HIG "standard items
+/// at the end" placement.
 pub const ROWS: &[Row] = &[
     Row::Item(Item::NewTab),
     Row::Item(Item::Copy),
@@ -90,8 +81,8 @@ impl Item {
 }
 
 /// Turns a menu pick into the app message that carries it: the same
-/// funnel entry the keybind path uses, so menu behavior cannot fork
-/// from keybind behavior.
+/// entry the keybind path uses, so menu behavior cannot fork from
+/// keybind behavior.
 impl MenuAction for Action {
     type Message = app::Message;
 
@@ -117,11 +108,9 @@ pub fn trees() -> Vec<menu::Tree<app::Message>> {
 
 /// The trees the view hands `widget::context_menu` for the current
 /// open state: `None` while closed — the wrapper is then a plain
-/// pass-through of the terminal, the pixel-identical closed view
-/// (spec criterion 6) — and the full [`ROWS`] trees while open, which
-/// arms the wrapper's right-release trigger. Holding the open-state
-/// decision here keeps the view wiring free of menu logic (spec
-/// success criterion 2).
+/// pass-through of the terminal — and the full [`ROWS`] trees while
+/// open, which arms the wrapper's right-release trigger. Holding the
+/// open-state decision here keeps the view wiring free of menu logic.
 pub fn open_trees(menu_open: bool) -> Option<Vec<menu::Tree<app::Message>>> {
     menu_open.then(trees)
 }
@@ -221,9 +210,9 @@ mod tests {
 
     #[test]
     fn open_trees_is_none_while_the_menu_is_closed() {
-        // Spec criterion 6: a closed menu supplies no trees, so
-        // `widget::context_menu` renders and passes events through as
-        // a plain wrapper — the pixel-identical closed view.
+        // A closed menu supplies no trees, so `widget::context_menu`
+        // renders and passes events through as a plain wrapper — the
+        // pixel-identical closed view.
         assert!(open_trees(false).is_none());
     }
 

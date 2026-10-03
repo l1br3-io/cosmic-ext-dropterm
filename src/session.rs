@@ -52,8 +52,8 @@ pub struct TabSnapshot<'a> {
     pub title_override: Option<&'a str>,
     pub shell: &'a str,
     pub cwd: Option<&'a Path>,
-    /// Whether the tab is session-transient (a remote `--cmd` run,
-    /// remote-newtab spec): skipped by [`capture`] — the session never
+    /// Whether the tab is session-transient (a remote `--cmd` run):
+    /// skipped by [`capture`] — the session never
     /// resumes a program.
     pub ephemeral: bool,
 }
@@ -63,7 +63,7 @@ pub struct TabSnapshot<'a> {
 /// vanished directory must not be recorded as a spawn target).
 /// Session-transient tabs (`ephemeral`) are skipped, and `active`
 /// remaps into the surviving list — a session never resumes a
-/// program (remote-newtab spec).
+/// program.
 pub fn capture(snapshots: &[TabSnapshot<'_>], active: usize) -> SessionState {
     let mut tabs = Vec::new();
     let mut saved_active = 0usize;
@@ -99,7 +99,7 @@ pub struct SpawnSpec {
     pub cwd: Option<PathBuf>,
 }
 
-/// A valid restore plan: one spawn spec per saved tab, in order, plus
+/// A valid restore plan: one [`SpawnSpec`] per saved tab, in order, plus
 /// the clamped active index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RestorePlan {
@@ -107,7 +107,7 @@ pub struct RestorePlan {
     pub active: usize,
 }
 
-/// Turns a loaded state into per-tab spawn specs: each saved cwd is
+/// Turns a loaded state into per-tab [`SpawnSpec`]s: each saved cwd is
 /// re-validated (dead → `home`, missing `home` → `None`) and `active`
 /// is clamped into range. Returns `None` for an empty tab list — the
 /// caller falls back to the fresh single-tab startup. Pure: `home` is
@@ -137,11 +137,10 @@ pub fn plan_restore(state: &SessionState, home: Option<&Path>) -> Option<Restore
     })
 }
 
-/// The startup session stash (session-persistence spec, S2): the
-/// restore plan for the state `init()` loaded from the session file,
-/// handed to the spawn funnel's first productive run. Pure
-/// bookkeeping — the app performs the real spawns — so the
-/// consumption decision stays unit-testable headless.
+/// The startup session stash: the restore plan for the state `init()`
+/// loaded from the session file, handed to the first spawn run that
+/// can use it. Pure bookkeeping — the app performs the real spawns —
+/// so the consumption decision stays unit-testable headless.
 #[derive(Debug, Clone, Default)]
 pub struct RestoreStash {
     plan: Option<RestorePlan>,
@@ -169,14 +168,14 @@ impl RestoreStash {
     }
 }
 
-/// What a funnel run that consumed a plan does once its spawns
-/// settled (session-persistence spec, S2).
+/// What a spawn run that consumed a plan does once its spawns
+/// settled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreOutcome {
     /// Keep the spawned tabs and focus the saved tab, clamped onto
     /// the survivors when some spawns failed.
     Restored { active: usize },
-    /// Every spawn failed: fall back to today's single-default-tab
+    /// Every spawn failed: fall back to the single-default-tab
     /// startup.
     Fallback,
 }
@@ -195,15 +194,15 @@ pub fn restore_outcome(planned_active: usize, spawned: usize) -> RestoreOutcome 
 }
 
 /// How long after a change settles before the session file is
-/// rewritten (session-persistence spec, S3): long enough that rapid
+/// rewritten: long enough that rapid
 /// tab churn (open/close/reorder bursts, a `cd` loop) coalesces into
 /// one write, short enough that a quit right after a change reopens
 /// the change.
 pub const SESSION_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// State of the debounced session save (session-persistence spec,
-/// S3): pure bookkeeping over generations — the G4 `WriteBack` shape
-/// adapted to dirty-flag semantics. The wait itself is a
+/// State of the debounced session save: pure bookkeeping over
+/// generations — the same shape as `geometry::WriteBack`, adapted to
+/// dirty-flag semantics. The wait itself is a
 /// `tokio::time::sleep` the app tasks in, so this machine needs no
 /// clock and stays headless-testable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -251,17 +250,16 @@ impl SessionSave {
         }
     }
 
-    /// The toggle-gated save trigger (settings-ui spec, U2): a
-    /// disabled trigger is a total no-op — nothing marks dirty, no
-    /// debounce window arms, no timer task spawns — so a mid-run
-    /// disable stops further saves immediately. Enabled, this is
-    /// exactly [`SessionSave::mark`] (day-one equality).
+    /// The toggle-gated save trigger: a disabled trigger is a total
+    /// no-op — nothing marks dirty, no debounce window arms, no timer
+    /// task spawns — so a mid-run disable stops further saves
+    /// immediately. Enabled, this is exactly [`SessionSave::mark`].
     pub fn mark_gated(&mut self, enabled: bool) -> Option<u32> {
         if enabled { self.mark() } else { None }
     }
 
-    /// The toggle-gated write decision (settings-ui spec, U2): the
-    /// machine state always clears exactly as [`SessionSave::due`]
+    /// The toggle-gated write decision: the machine state always
+    /// clears exactly as [`SessionSave::due`]
     /// would — a stale window must never block a later one — but a
     /// disabled run stops the pending write itself, so the file last
     /// written before the flip stays put.
@@ -271,8 +269,8 @@ impl SessionSave {
 }
 
 /// Whether a terminal's working directory moved since it was last
-/// seen (session-persistence spec, S3): the change gate on title
-/// events — shells report titles far more often than cwds change, so
+/// seen: the change gate on title events — shells report titles far
+/// more often than cwds change, so
 /// only a moved cwd turns a title event into a save trigger (Guake's
 /// change-gated cadence). `None` on either side is just another
 /// value: a failed readlink reads as a change, and two failures in a
@@ -281,9 +279,9 @@ pub fn cwd_changed(last: Option<&Path>, current: Option<&Path>) -> bool {
     last != current
 }
 
-/// The gated restore entry the app's `init` calls (settings-ui spec,
-/// U2): honoring lives in the owner, so the toggle is decided here,
-/// before the file is ever touched. Disabled, the read is skipped
+/// The gated restore entry the app's `init` calls: the toggle is
+/// decided here, before the file is ever touched. Disabled, the read
+/// is skipped
 /// entirely — not merely the restore — because `load` quarantines
 /// invalid files, and a disabled run must leave even a corrupt state
 /// file exactly where it waits (no `.bak`, no fresh start) for a
@@ -347,7 +345,13 @@ fn quarantine(path: &Path) -> Option<SessionState> {
 /// serialize to a `.tmp` sibling in the same directory, fsync it, rename
 /// over the target, then best-effort fsync the parent directory so the
 /// rename itself survives a crash. Parent directories are created on
-/// demand. A failure at any point leaves any previous file intact.
+/// demand.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] when serialization, directory
+/// creation, writing, fsync, or the rename fails; a failure at any
+/// point leaves any previous file intact.
 pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
     let text =
         ron::to_string(state).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -385,11 +389,12 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
 /// `$XDG_STATE_HOME/io.github.l1br3_io.CosmicExtDropterm/session.ron`,
-/// defaulting to `~/.local/state/…` per the XDG base-directory spec
-/// (only an absolute `XDG_STATE_HOME` is honored).
+/// defaulting to `~/.local/state/…` per the XDG base-directory
+/// specification (only an absolute `XDG_STATE_HOME` is honored).
 pub fn state_file_path() -> PathBuf {
-    // XDG base-directory spec: only an absolute XDG_STATE_HOME counts;
-    // anything else (unset, empty, relative) falls back to ~/.local/state.
+    // XDG base-directory specification: only an absolute XDG_STATE_HOME
+    // counts; anything else (unset, empty, relative) falls back to
+    // ~/.local/state.
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|base| base.is_absolute())
@@ -412,8 +417,7 @@ mod tests {
 
     /// A per-test scratch directory under the system temp dir with a
     /// process- and test-unique name, removed (best-effort) on drop
-    /// even when an assertion fails. No dev-dependency — this is the
-    /// std-only pattern the spec prescribes.
+    /// even when an assertion fails. Std only — no dev-dependency.
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -491,7 +495,7 @@ mod tests {
     fn capture_skips_ephemeral_tabs_and_remaps_active() {
         // A remote --cmd tab is session-transient: never saved, never
         // replayed — and a saved active index must point at the same
-        // surviving tab after the skip (remote-newtab spec).
+        // surviving tab after the skip.
         let snapshots = [
             TabSnapshot {
                 title: "work",
@@ -827,7 +831,7 @@ mod tests {
 
     #[test]
     fn restore_stash_hands_nothing_to_later_runs() {
-        // The plan is consumed exactly once: every later funnel run
+        // The plan is consumed exactly once: every later spawn run
         // spawns plain default tabs.
         let mut stash = RestoreStash::new(Some(restorable_state()), None);
         assert!(stash.take_for_run(true).is_some());
@@ -836,9 +840,9 @@ mod tests {
 
     #[test]
     fn restore_stash_stays_armed_through_runs_that_cannot_spawn() {
-        // The first funnel run can arrive before the terminal event
+        // The first spawn run can arrive before the terminal event
         // channel exists (show() outracing TermEventTx): it must not
-        // eat the session, or the startup race would be lost again.
+        // eat the session, or the startup race would be lost.
         let mut stash = RestoreStash::new(Some(restorable_state()), None);
         assert_eq!(stash.take_for_run(false), None);
         assert!(stash.take_for_run(true).is_some());
@@ -937,7 +941,7 @@ mod tests {
         assert!(cwd_changed(Some(Path::new("/tmp")), None));
     }
 
-    // --- settings-ui U2: the symmetric toggle gate ---
+    // --- the symmetric toggle gate ---
 
     #[test]
     fn restore_entry_enabled_stashes_a_valid_sessions_plan() {
@@ -980,8 +984,8 @@ mod tests {
 
     #[test]
     fn enabled_save_triggers_match_the_plain_mark() {
-        // Day-one equality: enabled, the gated funnel is the machine
-        // the existing tests pin.
+        // Enabled, the gated path is the machine the existing tests
+        // pin.
         let mut gated = SessionSave::default();
         let mut plain = SessionSave::default();
         assert_eq!(gated.mark_gated(true), plain.mark());
