@@ -3,7 +3,6 @@
 mod app;
 mod config;
 mod context_menu;
-mod dbus_state;
 mod geometry;
 mod grab_bar;
 mod keybinds;
@@ -15,6 +14,10 @@ mod surface;
 mod tab_bar;
 mod tabs;
 mod terminal;
+
+// The served-state contract lives in the lib target (src/lib.rs) so
+// the panel applet crate consumes the same implementation.
+use cosmic_ext_dropterm::dbus_state;
 
 use clap::Parser;
 

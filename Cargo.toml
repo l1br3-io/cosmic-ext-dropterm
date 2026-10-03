@@ -12,6 +12,18 @@ repository = "https://github.com/l1br3-io/cosmic-ext-dropterm"
 name = "cosmic-ext-dropterm"
 path = "src/main.rs"
 
+[lib]
+name = "cosmic_ext_dropterm"
+path = "src/lib.rs"
+
+[workspace]
+members = [".", "applet"]
+
+[workspace.dependencies]
+# One pinned rev shared by both crates; members add their own feature
+# sets on top (the applet must never add `wgpu` — see applet/Cargo.toml).
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", rev = "08a09e3dfa1f729d52585fcedd6e731130235363", default-features = false }
+
 [dependencies]
 alacritty_terminal = "0.25.1"
 clap = { version = "4", features = ["derive"] }
@@ -42,10 +54,28 @@ version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]
 
 [dependencies.libcosmic]
-git = "https://github.com/pop-os/libcosmic.git"
-rev = "08a09e3dfa1f729d52585fcedd6e731130235363"
-default-features = false
-features = ["wayland", "wgpu", "tokio", "dbus-config", "single-instance"]
+workspace = true
+# The terminal's libcosmic features live behind the default-on
+# `terminal` package feature instead of here: the applet consumes this
+# crate's lib target with `default-features = false`, and features
+# listed directly on the dependency would unify into the applet's
+# build — handing it the wgpu renderer the panel surface must not use.
+features = []
+
+[features]
+default = ["terminal"]
+# Everything the terminal bin needs beyond the lib target's plain zbus
+# contract. `wgpu` must stay in here (never on the applet path): on
+# panel layer-shell surfaces the wgpu renderer fails to bind the GPU
+# and silently falls back to llvmpipe software rendering; tiny_skia is
+# the renderer stock COSMIC applets use.
+terminal = [
+    "libcosmic/wayland",
+    "libcosmic/wgpu",
+    "libcosmic/tokio",
+    "libcosmic/dbus-config",
+    "libcosmic/single-instance",
+]
 
 [profile.release]
 lto = true

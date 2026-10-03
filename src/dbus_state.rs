@@ -1,43 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// The client half (V1Interface proxy, BUS_NAME, INTERFACE) is used by
-// the P3 `--is-visible` query in main.rs; INTERFACE remains the
-// tested pin tying the macro literals to the served names (asserted
-// in-module), so it stays test-only from the bin target's point of
-// view. Allow rather than expect: `expect` goes unfulfilled in the
-// cfg(test) compilation, where the tests do use these.
-#![allow(dead_code)]
 
-//! Queryable DropTerm state over D-Bus (dbus-state spec).
+//! Queryable DropTerm state over D-Bus.
 //!
 //! Serves the read-only [`Visible`] and [`TabCount`] properties on the
 //! `io.github.l1br3_io.CosmicExtDropterm.V1` interface, at the bus name
 //! and object path the app already owns through libcosmic's
 //! single-instance activation. The module deliberately keeps the app's
-//! types out: it must stay liftable into the lib target the panel
-//! applet later consumes, so the app converts its own state into the
-//! types defined here.
+//! types out: it lives in the workspace's lib target so the panel
+//! applet consumes the same contract implementation, and the app
+//! converts its own state into the types defined here.
+//!
+//! The applet-facing contract is [`BUS_NAME`], [`OBJECT_PATH`],
+//! [`INTERFACE`], [`State`], and the [`V1InterfaceProxy`] client (plus
+//! the [`V1`] server, which the applet's wire tests use as a mock).
+//! The remaining items are `pub` only because the terminal bin reaches
+//! them through this lib target as well.
 
 use std::sync::{Arc, Mutex};
 
 use zbus::{interface, proxy};
 
 /// Bus name the running instance owns (libcosmic single-instance).
-pub(crate) const BUS_NAME: &str = "io.github.l1br3_io.CosmicExtDropterm";
+pub const BUS_NAME: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
 /// Object path libcosmic serves `org.freedesktop.DbusActivation` at; the
 /// V1 interface rides the same path.
-pub(crate) const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm";
+pub const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm";
 
 /// The V1 state interface name.
-pub(crate) const INTERFACE: &str = "io.github.l1br3_io.CosmicExtDropterm.V1";
+pub const INTERFACE: &str = "io.github.l1br3_io.CosmicExtDropterm.V1";
 
 /// State snapshot served on the V1 interface. Derived, never
 /// authoritative: `DropTerm`'s own fields remain the single source of
 /// truth; the app updates the shared copy and signals the change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct State {
-    pub(crate) visible: bool,
-    pub(crate) tab_count: u32,
+pub struct State {
+    pub visible: bool,
+    pub tab_count: u32,
 }
 
 /// The surface lifecycle phases `Visible` derives from — the app's
@@ -45,7 +44,7 @@ pub(crate) struct State {
 /// module needs no app types. The app's conversion match is
 /// exhaustiveness-checked: a new surface state cannot silently map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SurfacePhase {
+pub enum SurfacePhase {
     Hidden,
     Measuring,
     Shown,
@@ -62,7 +61,7 @@ pub(crate) fn surface_visible(phase: SurfacePhase) -> bool {
 /// Derives the served snapshot from the surface phase and the
 /// open-tab count — the pure half of the sync seam; the app supplies
 /// its own fields, keeping this module free of app types.
-pub(crate) fn derive(phase: SurfacePhase, tab_count: u32) -> State {
+pub fn derive(phase: SurfacePhase, tab_count: u32) -> State {
     State {
         visible: surface_visible(phase),
         tab_count,
@@ -73,12 +72,12 @@ pub(crate) fn derive(phase: SurfacePhase, tab_count: u32) -> State {
 /// of the sync seam: only these earn a `PropertiesChanged` emission,
 /// so a no-op message emits nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Changed {
-    pub(crate) visible: bool,
-    pub(crate) tab_count: bool,
+pub struct Changed {
+    pub visible: bool,
+    pub tab_count: bool,
 }
 
-pub(crate) fn changed(old: State, new: State) -> Changed {
+pub fn changed(old: State, new: State) -> Changed {
     Changed {
         visible: old.visible != new.visible,
         tab_count: old.tab_count != new.tab_count,
@@ -90,7 +89,7 @@ pub(crate) fn changed(old: State, new: State) -> Changed {
 /// `None` when the name is unowned or owned without a V1 interface
 /// (only the query layer's stderr note distinguishes those two).
 /// Returns the stdout line to print and the exit code to exit with.
-pub(crate) fn is_visible_decision(running: Option<bool>) -> (bool, u16) {
+pub fn is_visible_decision(running: Option<bool>) -> (bool, u16) {
     match running {
         Some(true) => (true, 0),
         Some(false) | None => (false, 1),
@@ -100,12 +99,12 @@ pub(crate) fn is_visible_decision(running: Option<bool>) -> (bool, u16) {
 /// Server side of the V1 interface. Property getters read through the
 /// shared [`State`]; the app mutates that state out-of-band and calls
 /// the generated `*_changed` helpers to emit `PropertiesChanged`.
-pub(crate) struct V1 {
+pub struct V1 {
     state: Arc<Mutex<State>>,
 }
 
 impl V1 {
-    pub(crate) fn new(state: Arc<Mutex<State>>) -> Self {
+    pub fn new(state: Arc<Mutex<State>>) -> Self {
         Self { state }
     }
 
@@ -145,7 +144,7 @@ impl V1 {
     default_service = "io.github.l1br3_io.CosmicExtDropterm",
     default_path = "/io/github/l1br3_io/CosmicExtDropterm"
 )]
-pub(crate) trait V1Interface {
+pub trait V1Interface {
     #[zbus(property)]
     fn visible(&self) -> zbus::Result<bool>;
 

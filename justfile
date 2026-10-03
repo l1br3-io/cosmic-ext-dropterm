@@ -33,20 +33,22 @@ desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
 icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 
-# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`
+# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`, all
+# across the workspace. Union features are fine here: nothing renders
+# in tests or lints. Release/install recipes stay per-package.
 check: fmt-check clippy test
 
 fmt:
-    cargo fmt
+    cargo fmt --all
 
 fmt-check:
-    cargo fmt --check
+    cargo fmt --check --all
 
 clippy *args:
-    cargo clippy --all-targets {{args}} -- -D warnings
+    cargo clippy --all-targets --workspace {{args}} -- -D warnings
 
 test *args:
-    cargo test {{args}}
+    cargo test --workspace {{args}}
 
 # Compiles with the debug profile
 build-debug *args:

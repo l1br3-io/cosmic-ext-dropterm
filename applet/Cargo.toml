@@ -1,0 +1,29 @@
+[package]
+name = "cosmic-ext-dropterm-applet"
+version = "0.1.0"
+authors = ["l1br3-io"]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.93"
+description = "COSMIC panel applet that toggles DropTerm and shows its status"
+repository = "https://github.com/l1br3-io/cosmic-ext-dropterm"
+
+[dependencies]
+# The V1 D-Bus contract proxy and its mock server for wire tests come
+# from the root lib — one contract, one implementation.
+# `default-features = false` keeps the terminal's libcosmic feature
+# set (wgpu above all) out of this crate's build: cargo unifies a path
+# dependency's static features into this graph, and only package
+# features can be switched off from the consuming side.
+cosmic-ext-dropterm = { path = "..", default-features = false }
+
+# `wgpu` must never be added here: on panel (layer-shell) surfaces the
+# wgpu renderer fails to bind the GPU and silently falls back to
+# llvmpipe software rendering. tiny_skia is the renderer stock COSMIC
+# applets use; it arrives through libcosmic's own iced dependency.
+# `single-instance` is equally forbidden: a second applet instance
+# would just forward-activate the terminal and exit, leaving a blank
+# panel slot.
+[dependencies.libcosmic]
+workspace = true
+features = ["applet", "applet-token", "tokio", "wayland"]
