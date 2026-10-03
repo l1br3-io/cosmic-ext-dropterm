@@ -35,7 +35,6 @@ High-level feature list.
 - [x] CLI actions (`new-tab [--cwd] [--cmd]`, `close-tab`/`rename-tab`/`duplicate-tab` with `[--tab-index]`, and strict `select-tab N`, over the single-instance D-Bus seam; indices 1-based; `--is-visible` queries the read-only `Visible` property on the `…CosmicExtDropterm.V1` state interface)
 - [ ] Session restore on login
 - [ ] Per-tab profiles (e.g. SSH)
-- [ ] User-defined color scheme files (import custom palettes)
 - [ ] Clean up unnecessary comments
 - [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
       libcosmic rev exposes no focused/fixed output targeting (`IcedOutput` is
