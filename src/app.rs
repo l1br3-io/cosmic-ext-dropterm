@@ -75,6 +75,15 @@ pub enum ToggleAction {
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         tab_index: Option<usize>,
     },
+    /// Activate a tab remotely — the strict 1-based `N`, no wrap and no
+    /// `9 = last` keybind idiom (remote-tab-actions spec). Out-of-range
+    /// indices no-op with a warning; a resolved activation shows the
+    /// overlay, exactly like a `new-tab`.
+    SelectTab {
+        /// 1-based index of the tab to activate.
+        #[arg(value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        index: usize,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -85,6 +94,7 @@ impl std::fmt::Display for ToggleAction {
             Self::Hide => write!(f, "hide"),
             Self::NewTab { .. } => write!(f, "new-tab"),
             Self::CloseTab { .. } => write!(f, "close-tab"),
+            Self::SelectTab { .. } => write!(f, "select-tab"),
         }
     }
 }
@@ -894,20 +904,35 @@ impl DropTerm {
             return self.close_remote_tab(tab_index);
         }
 
-        // While the settings window is open the terminal is hidden by
-        // construction (settings-ui spec, U5b): a toggle arriving now
-        // (second launch, D-Bus activation, the startup flag) closes
-        // the window first — a re-shown terminal must never slide
-        // over the settings window, which can never stack above the
-        // layer surface. Uniform across actions: `Hide`'s funnel
-        // result is nothing anyway (the surface is already hidden),
-        // but the close still runs so no toggle ever leaves the
-        // window stranded open behind a hidden terminal.
-        let close = if self.settings_window.is_some() {
-            self.close_settings()
-        } else {
-            Task::none()
-        };
+        // A remote select-tab is a tab-facing verb like a new-tab
+        // (remote-tab-actions spec): a resolved target activates —
+        // riding set_active_tab's attention retirement, session-dirty
+        // mark, and already-active no-op — and the overlay shows
+        // through the same show-intent cells, mid-slide-out included.
+        // An unresolvable target — no tabs, out of range — is a quiet
+        // no-op like close-tab's: no activation and no surface half,
+        // so none of the settings close-first rule below either
+        // (nothing re-shows; a script's failed select must not
+        // disturb what the user is looking at). The debounce above
+        // still guards it: a compositor double-delivery must not
+        // count twice.
+        if let ToggleAction::SelectTab { index } = action {
+            return match self.select_remote_tab(index) {
+                Some(activate) => Task::batch([
+                    self.close_settings_if_open(),
+                    activate,
+                    self.show_intent_surface(),
+                ]),
+                None => Task::none(),
+            };
+        }
+
+        // The settings close-first rule rides in with every remaining
+        // action (see [`Self::close_settings_if_open`]): uniform —
+        // `Hide`'s funnel result is nothing anyway (the surface is
+        // already hidden), but the close still runs so no toggle ever
+        // leaves the window stranded open behind a hidden terminal.
+        let close = self.close_settings_if_open();
 
         // A remote new-tab is not a toggle step (remote-newtab spec):
         // the tab opens — now or once the channel bootstraps — and
@@ -918,16 +943,7 @@ impl DropTerm {
         // settings close-first) applies to it like any other action.
         if let ToggleAction::NewTab { .. } = action {
             let open = self.open_remote_tab(action);
-            let surface = match toggle_step(
-                ToggleAction::Show,
-                &self.surface,
-                self.config.slide_animation_enabled,
-            ) {
-                ToggleStep::Measure => self.show(),
-                ToggleStep::ReverseShow(id) => self.reverse_show(id),
-                _ => Task::none(),
-            };
-            return Task::batch([close, open, surface]);
+            return Task::batch([close, open, self.show_intent_surface()]);
         }
 
         // The toggle funnel (slide-animation spec, A5): every matrix
@@ -1018,6 +1034,59 @@ impl DropTerm {
                 );
                 Task::none()
             }
+        }
+    }
+
+    /// Applies a remote `select-tab` (remote-tab-actions spec): the
+    /// strict 1-based `N` resolves through [`tabs::select_tab_target`]
+    /// — the wire's 1-based indices converted once, at this boundary —
+    /// and the activation rides the shared [`Self::set_active_tab`]
+    /// funnel, inheriting attention retirement, the session-dirty
+    /// mark, and the already-active no-op. An unresolvable target — no
+    /// tabs, out of range — warns and no-ops: the fire-and-forget seam
+    /// cannot reply, and quiet degradation is the established pattern.
+    /// The `None` return tells the caller to skip the surface half too.
+    fn select_remote_tab(&mut self, one_based: usize) -> Option<Task<Message>> {
+        match tabs::select_tab_target(self.tabs.len(), one_based) {
+            Some(index) => Some(self.set_active_tab(index)),
+            None => {
+                log::warn!(
+                    "select-tab: no tab at index {one_based} ({} open)",
+                    self.tabs.len()
+                );
+                None
+            }
+        }
+    }
+
+    /// The settings close-first rule's task (settings-ui spec, U5b): a
+    /// toggle or show-intent action arriving while the settings window
+    /// is open — the terminal being hidden by construction then —
+    /// closes the window first, because a re-shown terminal must never
+    /// slide over it, and that window can never stack above the layer
+    /// surface. Inert when none is open.
+    fn close_settings_if_open(&mut self) -> Task<Message> {
+        if self.settings_window.is_some() {
+            self.close_settings()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// The surface half a tab-facing remote verb rides
+    /// (remote-tab-actions spec): the same show-intent cells a
+    /// `new-tab` takes, so the verb shows the overlay whatever state
+    /// it was in — and a request arriving mid-slide-out reverses on
+    /// the live surface exactly like a `show` would.
+    fn show_intent_surface(&mut self) -> Task<Message> {
+        match toggle_step(
+            ToggleAction::Show,
+            &self.surface,
+            self.config.slide_animation_enabled,
+        ) {
+            ToggleStep::Measure => self.show(),
+            ToggleStep::ReverseShow(id) => self.reverse_show(id),
+            _ => Task::none(),
         }
     }
 
@@ -1542,10 +1611,15 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
         }
         (ToggleAction::Hide, SurfaceState::Hiding(_) | SurfaceState::Hidden) => ToggleStep::Leave,
         // Structurally unreachable: `debounced_toggle` applies the
-        // remote verbs — opening a new-tab, closing a close-tab —
-        // outside the toggle funnel, so none ever gets here. Loud
-        // rather than silently wrong.
-        (ToggleAction::NewTab { .. } | ToggleAction::CloseTab { .. }, _) => {
+        // remote verbs — opening a new-tab, closing a close-tab,
+        // selecting a select-tab — outside the toggle funnel, so none
+        // ever gets here. Loud rather than silently wrong.
+        (
+            ToggleAction::NewTab { .. }
+            | ToggleAction::CloseTab { .. }
+            | ToggleAction::SelectTab { .. },
+            _,
+        ) => {
             unreachable!("remote verbs apply outside the funnel")
         }
     }
@@ -2219,6 +2293,9 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
             forwarded.push("--tab-index".to_string());
             forwarded.push(index.to_string());
         }
+        ToggleAction::SelectTab { index } => {
+            forwarded.push(index.to_string());
+        }
         _ => {}
     }
     forwarded
@@ -2370,12 +2447,12 @@ impl Application for DropTerm {
             .unwrap_or_else(Task::none);
         // First launch has no running state to act on remotely: the
         // tab verbs degrade to a plain start — the default `Toggle` —
-        // with an info log, never a fabricated close on a
+        // with an info log, never a fabricated close or selection on a
         // restored-or-fresh session (remote-tab-actions spec); only
         // new-tab keeps startup application (remote-newtab spec).
         let startup_action = match flags.action {
-            ToggleAction::CloseTab { .. } => {
-                log::info!("close-tab with no running instance: starting plain");
+            action @ (ToggleAction::CloseTab { .. } | ToggleAction::SelectTab { .. }) => {
+                log::info!("{} with no running instance: starting plain", action);
                 ToggleAction::Toggle
             }
             action => action,

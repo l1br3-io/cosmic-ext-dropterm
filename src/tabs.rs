@@ -235,6 +235,17 @@ pub fn remote_target_index(len: usize, one_based: Option<usize>, active: usize) 
     }
 }
 
+/// Resolves a remote `select-tab N` activation (remote-tab-actions
+/// spec): the wire index is strict 1-based, so `N` resolves to `N - 1`
+/// while it sits within `1..=len` — no wrap, no `9 = last` idiom.
+/// Anything else — zero, past the end, no tabs — is `None`: the caller
+/// warns and no-ops, since the fire-and-forget seam cannot reply.
+/// Distinct from the 0-based keybind helper [`activate_index_target`];
+/// the 1-based conversion happens once, here at this boundary.
+pub fn select_tab_target(len: usize, one_based: usize) -> Option<usize> {
+    one_based.checked_sub(1).filter(|index| *index < len)
+}
+
 /// Splits an explicit command line (the CLI's `--cmd`, remote-newtab
 /// spec) into its program and trailing arguments: whitespace-split
 /// exactly like the `args` config — quoting is not supported. `None`
@@ -492,6 +503,31 @@ mod tests {
     #[test]
     fn remote_target_absent_with_no_tabs_is_none() {
         assert_eq!(remote_target_index(0, None, 0), None);
+    }
+
+    #[test]
+    fn select_tab_target_is_strictly_one_based() {
+        // The wire's N=1 is the list's index 0; N=len is the last tab —
+        // there is no `9 = last` idiom and no wrap.
+        assert_eq!(select_tab_target(3, 1), Some(0));
+        assert_eq!(select_tab_target(3, 3), Some(2));
+    }
+
+    #[test]
+    fn select_tab_target_beyond_the_list_is_none() {
+        assert_eq!(select_tab_target(3, 4), None);
+    }
+
+    #[test]
+    fn select_tab_target_zero_is_none_even_though_the_parser_rejects_it() {
+        // Defense in depth: clap already rejects `select-tab 0`, but the
+        // helper is the boundary any future wire path funnels through.
+        assert_eq!(select_tab_target(3, 0), None);
+    }
+
+    #[test]
+    fn select_tab_target_with_no_tabs_is_none() {
+        assert_eq!(select_tab_target(0, 1), None);
     }
 
     #[test]

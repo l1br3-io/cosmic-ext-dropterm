@@ -137,6 +137,20 @@ mod tests {
     }
 
     #[test]
+    fn select_tab_parses_a_one_based_index() {
+        let selected = Args::parse_from(["dropterm", "select-tab", "2"]).action;
+        assert_eq!(selected, Some(ToggleAction::SelectTab { index: 2 }));
+    }
+
+    #[test]
+    fn select_tab_rejects_a_zero_index() {
+        // Indices are strict 1-based (remote-tab-actions spec); zero
+        // dies at the CLI edge like close-tab's --tab-index 0.
+        let result = Args::try_parse_from(["dropterm", "select-tab", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn a_malformed_forward_degrades_to_none() {
         // Words clap rejects yield None, which dbus_activation turns
         // into a plain toggle — never an error surface (the
@@ -177,6 +191,8 @@ mod tests {
             },
             ToggleAction::CloseTab { tab_index: None },
             ToggleAction::CloseTab { tab_index: Some(2) },
+            ToggleAction::SelectTab { index: 1 },
+            ToggleAction::SelectTab { index: 3 },
         ];
         for action in actions {
             let flags = Flags::new(action.clone());
