@@ -2473,12 +2473,12 @@ impl Application for DropTerm {
         }
 
         let opacity = f32::from(self.config.opacity) / 100.0;
-        // Pin the terminal's height to the granted window minus the bar's
-        // strip: a Fill terminal would claim the bar's space and push it
-        // below the surface (see `surface::terminal_view_height`).
+        // Pin the terminal's height to the granted window minus the bars'
+        // strips — both always reserved, so the 1↔2 tab crossing never
+        // resizes the terminal (see `surface::terminal_view_height`).
         let terminal_height = self
             .window_height
-            .map(|h| Length::Fixed(surface::terminal_view_height(h, self.tabs.len())))
+            .map(|h| Length::Fixed(surface::terminal_view_height(h)))
             .unwrap_or(Length::Fill);
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
@@ -2512,9 +2512,8 @@ impl Application for DropTerm {
                 .into();
 
         // Stacking from the screen edge (geometry spec, criterion 9):
-        // content, tab bar (only with more than one tab, tabs spec),
-        // grab bar on the free edge. The bars take their strips out of
-        // the terminal's pinned height (see
+        // content, tab strip, grab bar on the free edge. Both bars take
+        // their strips out of the terminal's pinned height (see
         // `surface::terminal_view_height`), so neither pushes the other
         // off the surface. Fill dimensions keep iced's flex from
         // deferring the bars past the terminal's allocation: a Shrink
@@ -2523,53 +2522,48 @@ impl Application for DropTerm {
         // push the bars below its bottom edge.
         let grab_bar = GrabBar::new(Message::GrabBarDragged, || Message::GrabBarReleased);
 
-        // The tab bar appears only with more than one tab and sits on
-        // the surface edge opposite the screen edge (tabs spec):
-        // between the terminal and the grab bar.
-        let column: Element<'_, Message> = if self.tabs.len() > 1 {
-            let mut bar = TabBar::new(&self.tabs, self.active_tab)
-                .on_select(Message::TabSelected)
-                .on_close(Message::TabClosed)
-                .on_move(Message::TabMoved)
-                .on_rename(Message::RenameStarted)
-                .on_rename_end(|| Message::RenameCommitted);
-            if let Some(edit) = &self.rename
-                && self.tabs.iter().any(|tab| tab.id == edit.tab)
-            {
-                // The inline rename input (T6), overlaid by the bar on
-                // the renamed tab's button. Its value mirrors the app's
-                // draft so it survives every re-render.
-                bar = bar.renaming(
-                    edit.tab,
-                    widget::text_input("", edit.draft.clone())
-                        .id(self.rename_input_id.clone())
-                        .size(14.0)
-                        .on_input(Message::RenameDraftChanged)
-                        .on_submit(|_| Message::RenameCommitted)
-                        .on_unfocus(Message::RenameCancelled),
-                );
-            }
-            match self.config.edge {
-                Edge::Top => widget::column![terminal, bar, grab_bar]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-                Edge::Bottom => widget::column![grab_bar, bar, terminal]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-            }
-        } else {
-            match self.config.edge {
-                Edge::Top => widget::column![terminal, grab_bar]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-                Edge::Bottom => widget::column![grab_bar, terminal]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-            }
+        // The tab strip mounts unconditionally (settings-button spec,
+        // criterion 1) and sits on the surface edge opposite the screen
+        // edge (tabs spec), between the terminal and the grab bar; with
+        // fewer than two tabs the strip carries only its settings
+        // button (the bar's own visibility rule). The inline rename
+        // input (T6) overlays the renamed tab's button — a rename can
+        // only start from a tab-button press, i.e. with 2+ tabs, so
+        // the wiring is unchanged by the unconditional mount.
+        let mut bar = TabBar::new(&self.tabs, self.active_tab)
+            .on_select(Message::TabSelected)
+            .on_close(Message::TabClosed)
+            .on_move(Message::TabMoved)
+            .on_rename(Message::RenameStarted)
+            .on_rename_end(|| Message::RenameCommitted)
+            // The same funnel the context menu's `Settings…` row uses
+            // (criterion 5): one click away in every tab state.
+            .on_settings(|| Message::Action(Action::Settings));
+        if let Some(edit) = &self.rename
+            && self.tabs.iter().any(|tab| tab.id == edit.tab)
+        {
+            // The inline rename input (T6), overlaid by the bar on
+            // the renamed tab's button. Its value mirrors the app's
+            // draft so it survives every re-render.
+            bar = bar.renaming(
+                edit.tab,
+                widget::text_input("", edit.draft.clone())
+                    .id(self.rename_input_id.clone())
+                    .size(14.0)
+                    .on_input(Message::RenameDraftChanged)
+                    .on_submit(|_| Message::RenameCommitted)
+                    .on_unfocus(Message::RenameCancelled),
+            );
+        }
+        let column: Element<'_, Message> = match self.config.edge {
+            Edge::Top => widget::column![terminal, bar, grab_bar]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            Edge::Bottom => widget::column![grab_bar, bar, terminal]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
         };
 
         // The slide (slide-animation spec, A3 + A4): while the surface

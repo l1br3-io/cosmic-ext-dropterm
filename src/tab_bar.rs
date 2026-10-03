@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The tab bar widget (tabs spec, T5): one button per tab — title plus a
-//! close `×` — shown only while more than one tab exists.
+//! close `×` — with the buttons shown only while more than one tab
+//! exists. The strip itself is always present (settings-button spec),
+//! carrying the settings button at its right corner in every tab state.
 //!
 //! The button layout and hit-testing are pure functions over plain
 //! geometry (kept free of any windowing state, like the list operations in
@@ -213,6 +215,10 @@ const POSITION_EPSILON: f32 = 0.5;
 /// Width of the drop indicator line, in logical pixels.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
 
+/// Diameter of the settings button's placeholder disc (settings-button
+/// spec, T1): a filled circle standing in for the gear glyph T2 draws.
+const SETTINGS_PLACEHOLDER_DIAMETER: f32 = 12.0;
+
 /// Vertical inset of the drop indicator from the bar's top and bottom.
 const DROP_INDICATOR_INSET: f32 = 4.0;
 
@@ -233,6 +239,45 @@ enum HitTarget {
     Close,
 }
 
+/// The settings button's target (settings-button spec, criterion 3): a
+/// square the size of a close target, anchored at the strip's right edge
+/// with the button inset, vertically centered — the right corner in both
+/// edge configs. Takes no tab count: the identical rect whether the strip
+/// carries a settings button alone or a full tab row.
+fn settings_target(bar_width: f32, metrics: &BarMetrics) -> Rectangle {
+    Rectangle::new(
+        Point::new(
+            bar_width - metrics.button_padding_x - metrics.close_size,
+            (metrics.bar_height - metrics.close_size) / 2.0,
+        ),
+        Size::new(metrics.close_size, metrics.close_size),
+    )
+}
+
+/// The strip's right-hand zone the tab row must keep clear of
+/// (settings-button spec, criterion 4): inset + settings target + one
+/// inter-button gap, so the row ends a button-gap left of the target.
+fn settings_zone(metrics: &BarMetrics) -> f32 {
+    metrics.button_padding_x + metrics.close_size + metrics.button_gap
+}
+
+/// The width the tab row may occupy (settings-button spec, criterion 4):
+/// the bar minus the settings zone. [`TabBar::button_geometry`] feeds
+/// this to [`layout_buttons`] — the one seam the drag clamp, drop
+/// indicator, rename overlay, and hit tests already share, so every
+/// consumer stays clear of the zone with no math of their own to edit.
+fn row_budget(bar_width: f32, metrics: &BarMetrics) -> f32 {
+    (bar_width - settings_zone(metrics)).max(0.0)
+}
+
+/// Whether the tab row renders its buttons (settings-button spec,
+/// criterion 8): the strip is always present, but tab buttons — and their
+/// close marks — only from two tabs on (tabs spec); the single-tab strip
+/// carries the settings button alone.
+fn shows_tab_buttons(tab_count: usize) -> bool {
+    tab_count >= 2
+}
+
 /// Lays out one rectangle per title, left to right, with the close target
 /// anchored at each button's right edge.
 ///
@@ -241,7 +286,8 @@ enum HitTarget {
 /// [`BarMetrics::max_button_width`]). When the row would overflow the
 /// available width every button is squeezed proportionally, never below the
 /// minimum width — a row that still overflows at the floor (far more tabs
-/// than fit) simply clips at the surface edge.
+/// than fit) is clipped at the settings zone by the bar's drawing (see
+/// [`TabBar::draw`]).
 fn layout_buttons(
     available_width: f32,
     text_widths: &[f32],
@@ -301,6 +347,30 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
         };
         Some((index, target))
     })
+}
+
+/// What a press on the strip landed on (settings-button spec,
+/// criterion 5): the settings target, or a part of a tab button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressTarget {
+    /// The settings button's target.
+    Settings,
+    /// A tab button's body or close mark.
+    Tab(usize, HitTarget),
+}
+
+/// Classifies a bar-local `point` for pressing: the settings target is
+/// checked ahead of the tab row, so it wins over any floor-overflow
+/// button fragment that geometrically reaches under it.
+fn press_target(
+    buttons: &[ButtonGeometry],
+    settings: Rectangle,
+    point: Point,
+) -> Option<PressTarget> {
+    if settings.contains(point) {
+        return Some(PressTarget::Settings);
+    }
+    hit_test(buttons, point).map(|(index, target)| PressTarget::Tab(index, target))
 }
 
 /// Where a horizontal drag of the tab at `dragged` would drop if released
@@ -480,8 +550,10 @@ impl State {
     }
 }
 
-/// The tab bar: one button per tab — title plus a close `×` — rendered by
-/// the app only while more than one tab exists (see the tabs spec).
+/// The tab bar strip: always mounted by the app (settings-button spec),
+/// carrying the settings button at its right corner; the tab buttons
+/// inside it render only while more than one tab exists (tabs spec — see
+/// [`shows_tab_buttons`]).
 ///
 /// Interactions report the stable [`TabId`] of the tab they landed on, so
 /// a tab list that changes between redraw and click cannot act on the
@@ -500,6 +572,11 @@ pub struct TabBar<'a, Message> {
     /// (T6): iced inputs keep keyboard focus on outside presses, so the
     /// bar reports the click-away itself. The app maps it to a commit.
     on_rename_end: Option<Box<dyn Fn() -> Message + 'a>>,
+    /// Reports a left press on the settings target (settings-button
+    /// spec, criterion 5): the app maps it onto the same
+    /// `Action::Settings` funnel the context menu's `Settings…` row
+    /// uses, so the button opens the identical window.
+    on_settings: Option<Box<dyn Fn() -> Message + 'a>>,
     /// The active inline rename (T6): which tab is being renamed and the
     /// text input overlaying its button. Built by the app, positioned by
     /// the bar.
@@ -520,6 +597,7 @@ where
             on_move: None,
             on_rename: None,
             on_rename_end: None,
+            on_settings: None,
             rename: None,
         }
     }
@@ -556,6 +634,13 @@ where
     /// whatever it landed on.
     pub fn on_rename_end(mut self, on_rename_end: impl Fn() -> Message + 'a) -> Self {
         self.on_rename_end = Some(Box::new(on_rename_end));
+        self
+    }
+
+    /// Sets the message published when the settings target is
+    /// left-pressed (settings-button spec, criterion 5).
+    pub fn on_settings(mut self, on_settings: impl Fn() -> Message + 'a) -> Self {
+        self.on_settings = Some(Box::new(on_settings));
         self
     }
 
@@ -604,8 +689,13 @@ where
     }
 
     /// The current button geometry, bar-local (origin at the bar's
-    /// top-left corner).
+    /// top-left corner). Empty while the tab-count rule hides the row
+    /// (settings-button spec, criterion 8); otherwise laid out inside
+    /// the row budget the settings zone leaves (criterion 4).
     fn button_geometry(&self, state: &State, bounds: Rectangle) -> Vec<ButtonGeometry> {
+        if !shows_tab_buttons(self.tabs.len()) {
+            return Vec::new();
+        }
         let widths: Vec<f32> = self
             .tabs
             .iter()
@@ -617,7 +707,7 @@ where
                     .unwrap_or(0.0)
             })
             .collect();
-        layout_buttons(bounds.width, &widths, &METRICS)
+        layout_buttons(row_budget(bounds.width, &METRICS), &widths, &METRICS)
     }
 
     /// Retargets every non-dragged button's slot animation to the slot
@@ -873,10 +963,16 @@ where
         if state.drag.as_ref().is_some_and(|drag| drag.started) {
             return mouse::Interaction::Grabbing;
         }
-        let hit = cursor_position
-            .position_in(layout.bounds())
-            .and_then(|point| hit_test(&self.button_geometry(state, layout.bounds()), point));
-        if hit.is_some() {
+        let bounds = layout.bounds();
+        let hit = cursor_position.position_in(bounds).is_some_and(|point| {
+            press_target(
+                &self.button_geometry(state, bounds),
+                settings_target(bounds.width, &METRICS),
+                point,
+            )
+            .is_some()
+        });
+        if hit {
             mouse::Interaction::Pointer
         } else {
             mouse::Interaction::Idle
@@ -996,6 +1092,7 @@ where
 
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
+        let settings_rect = settings_target(bounds.width, &METRICS);
         let point = cursor_position.position_in(bounds);
         let buttons = self.button_geometry(state, bounds);
 
@@ -1023,6 +1120,20 @@ where
         let Some(point) = point else {
             return;
         };
+        // The settings target routes ahead of the tab row
+        // (settings-button spec, criterion 5): a left press inside it
+        // opens settings through the app's funnel, a middle press does
+        // nothing, and the press never arms a tab drag. A press here
+        // during a rename already ended it above.
+        if settings_rect.contains(point) {
+            if button == Button::Left
+                && let Some(message) = self.on_settings.as_ref().map(|on_settings| on_settings())
+            {
+                shell.publish(message);
+                shell.capture_event();
+            }
+            return;
+        }
         let Some((index, target)) = hit_test(&buttons, point) else {
             return;
         };
@@ -1120,9 +1231,10 @@ where
     ) {
         let state = tree.state.downcast_ref::<State>();
         let cosmic_theme = theme.cosmic();
-        let origin = layout.bounds().position();
-        let buttons = self.button_geometry(state, layout.bounds());
-        let hover_point = cursor_position.position_in(layout.bounds());
+        let bounds = layout.bounds();
+        let origin = bounds.position();
+        let buttons = self.button_geometry(state, bounds);
+        let hover_point = cursor_position.position_in(bounds);
 
         // The strip's own opaque background: matching the terminal pane
         // makes the bar part of the terminal surface instead of a strip
@@ -1131,7 +1243,7 @@ where
         let (pane_bg, pane_fg) = pane_colors();
         renderer.fill_quad(
             Quad {
-                bounds: layout.bounds(),
+                bounds,
                 border: Border {
                     radius: 0.0.into(),
                     width: 0.0,
@@ -1170,68 +1282,113 @@ where
         // button where the layout no longer puts it.
         let animate = drag_view.is_some() || state.any_slot_animating();
 
-        let ctx = PaintContext {
-            state,
-            cosmic_theme,
-            pane_fg,
-            hover_point,
-        };
-        for (index, (tab, button)) in self.tabs.iter().zip(&buttons).enumerate() {
-            if drag_view.is_some_and(|(dragged, ..)| dragged == index) {
-                continue; // the dragged button paints last, on top
-            }
-            let slot_x = state
-                .slots
-                .get(&tab.id)
-                .map_or(button.bounds.x, |slot| slot.current());
-            let x = if animate { slot_x } else { button.bounds.x };
-            let bounds = Rectangle::new(
-                Point::new(origin.x + x, origin.y),
-                Size::new(button.bounds.width, METRICS.bar_height),
-            );
-            self.paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
-        }
+        // The tab row paints clipped to the strip minus the settings
+        // zone (settings-button spec, criterion 4): a row at the
+        // minimum-width floor still geometrically overflows its
+        // budget, and without the clip its tail would run under the
+        // settings button at the right corner.
+        renderer.with_layer(
+            Rectangle::new(
+                origin,
+                Size::new(row_budget(bounds.width, &METRICS), METRICS.bar_height),
+            ),
+            |renderer| {
+                let ctx = PaintContext {
+                    state,
+                    cosmic_theme,
+                    pane_fg,
+                    hover_point,
+                };
+                for (index, (tab, button)) in self.tabs.iter().zip(&buttons).enumerate() {
+                    if drag_view.is_some_and(|(dragged, ..)| dragged == index) {
+                        continue; // the dragged button paints last, on top
+                    }
+                    let slot_x = state
+                        .slots
+                        .get(&tab.id)
+                        .map_or(button.bounds.x, |slot| slot.current());
+                    let x = if animate { slot_x } else { button.bounds.x };
+                    let bounds = Rectangle::new(
+                        Point::new(origin.x + x, origin.y),
+                        Size::new(button.bounds.width, METRICS.bar_height),
+                    );
+                    self.paint_button(renderer, &ctx, tab, bounds, index == self.active, false);
+                }
 
-        // The dragged button (T7): follows the cursor, lifted clear of
-        // the row and painted after its neighbors so it rides on top.
-        if let Some((index, followed, _)) = drag_view
-            && let (Some(tab), Some(button)) = (self.tabs.get(index), buttons.get(index))
-        {
-            let bounds = Rectangle::new(
-                Point::new(origin.x + followed, origin.y - DRAG_LIFT),
-                Size::new(button.bounds.width, METRICS.bar_height),
-            );
-            self.paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
-        }
+                // The dragged button (T7): follows the cursor, lifted
+                // clear of the row and painted after its neighbors so
+                // it rides on top.
+                if let Some((index, followed, _)) = drag_view
+                    && let (Some(tab), Some(button)) = (self.tabs.get(index), buttons.get(index))
+                {
+                    let bounds = Rectangle::new(
+                        Point::new(origin.x + followed, origin.y - DRAG_LIFT),
+                        Size::new(button.bounds.width, METRICS.bar_height),
+                    );
+                    self.paint_button(renderer, &ctx, tab, bounds, index == self.active, true);
+                }
 
-        // Drop indicator (T7): a vertical accent line in the slot the
-        // drag currently lands in, between the buttons that would
-        // surround the dragged tab in the displaced row.
-        if let Some((_, _, indicator)) = drag_view {
-            let x = origin.x + indicator;
-            renderer.fill_quad(
-                Quad {
-                    bounds: Rectangle::new(
-                        Point::new(
-                            x - DROP_INDICATOR_WIDTH / 2.0,
-                            origin.y + DROP_INDICATOR_INSET,
-                        ),
-                        Size::new(
-                            DROP_INDICATOR_WIDTH,
-                            METRICS.bar_height - DROP_INDICATOR_INSET * 2.0,
-                        ),
+                // Drop indicator (T7): a vertical accent line in the
+                // slot the drag currently lands in, between the buttons
+                // that would surround the dragged tab in the displaced
+                // row.
+                if let Some((_, _, indicator)) = drag_view {
+                    let x = origin.x + indicator;
+                    renderer.fill_quad(
+                        Quad {
+                            bounds: Rectangle::new(
+                                Point::new(
+                                    x - DROP_INDICATOR_WIDTH / 2.0,
+                                    origin.y + DROP_INDICATOR_INSET,
+                                ),
+                                Size::new(
+                                    DROP_INDICATOR_WIDTH,
+                                    METRICS.bar_height - DROP_INDICATOR_INSET * 2.0,
+                                ),
+                            ),
+                            border: Border {
+                                radius: (DROP_INDICATOR_WIDTH / 2.0).into(),
+                                width: 0.0,
+                                color: Color::TRANSPARENT,
+                            },
+                            snap: true,
+                            ..Default::default()
+                        },
+                        Color::from(cosmic_theme.accent_color()),
+                    );
+                }
+            },
+        );
+
+        // The settings button (settings-button spec): a placeholder
+        // disc in the pane-derived foreground for now — readable on
+        // light and dark panes alike; T2 swaps it for the quad-drawn
+        // gear and adds the hover treatment.
+        let target = settings_target(bounds.width, &METRICS);
+        let target = Rectangle::new(
+            Point::new(origin.x + target.x, origin.y + target.y),
+            target.size(),
+        );
+        let diameter = SETTINGS_PLACEHOLDER_DIAMETER;
+        renderer.fill_quad(
+            Quad {
+                bounds: Rectangle::new(
+                    Point::new(
+                        target.x + (target.width - diameter) / 2.0,
+                        target.y + (target.height - diameter) / 2.0,
                     ),
-                    border: Border {
-                        radius: (DROP_INDICATOR_WIDTH / 2.0).into(),
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
-                    },
-                    snap: true,
-                    ..Default::default()
+                    Size::new(diameter, diameter),
+                ),
+                border: Border {
+                    radius: (diameter / 2.0).into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
                 },
-                Color::from(cosmic_theme.accent_color()),
-            );
-        }
+                snap: true,
+                ..Default::default()
+            },
+            pane_fg,
+        );
     }
 }
 
@@ -1522,6 +1679,99 @@ mod tests {
     #[test]
     fn hit_test_on_an_empty_bar_misses() {
         assert_eq!(hit_test(&[], Point::new(5.0, 5.0)), None);
+    }
+
+    // settings-button spec, T1: corner target geometry, row budget,
+    // routing precedence, and the tab-button visibility rule.
+
+    #[test]
+    fn settings_target_anchors_at_the_strip_s_right_corner() {
+        // The target takes no tab count: the identical right-corner
+        // rect for 1, 2, and many tabs.
+        let target = settings_target(1000.0, &M);
+        assert_eq!(target.width, M.close_size);
+        assert_eq!(target.height, M.close_size);
+        assert_eq!(target.x + target.width, 1000.0 - M.button_padding_x);
+        assert_eq!(target.y, (M.bar_height - M.close_size) / 2.0);
+        assert_eq!(target.y * 2.0 + target.height, M.bar_height);
+    }
+
+    #[test]
+    fn settings_zone_spans_inset_target_and_gap() {
+        assert_eq!(
+            settings_zone(&M),
+            M.button_padding_x + M.close_size + M.button_gap
+        );
+        assert_eq!(row_budget(1000.0, &M), 1000.0 - settings_zone(&M));
+    }
+
+    #[test]
+    fn row_budget_never_drops_below_zero() {
+        assert_eq!(row_budget(20.0, &M), 0.0);
+    }
+
+    #[test]
+    fn squeezed_rows_end_exactly_at_the_row_budget() {
+        // A bar whose budget leaves 158 px of row: the squeezed row
+        // ends exactly at the budget, left of the settings zone.
+        let bar_width = 158.0 + settings_zone(&M);
+        let buttons = layout_buttons(row_budget(bar_width, &M), &[50.0, 50.0, 50.0], &M);
+        let last = buttons.last().unwrap();
+        assert_eq!(last.bounds.x + last.bounds.width, 158.0);
+    }
+
+    #[test]
+    fn floor_overflow_still_routes_the_settings_target_first() {
+        // Five at-48 floor buttons geometrically overflow a tiny budget
+        // and reach under the settings target; routing checks the
+        // target ahead of the row, so a press inside it is Settings.
+        let bar_width = 100.0 + settings_zone(&M);
+        let buttons = layout_buttons(row_budget(bar_width, &M), &[50.0; 5], &M);
+        let target = settings_target(bar_width, &M);
+        let last = buttons.last().unwrap();
+        assert!(last.bounds.x + last.bounds.width > target.x);
+        assert_eq!(
+            press_target(&buttons, target, center_of(&target)),
+            Some(PressTarget::Settings)
+        );
+    }
+
+    #[test]
+    fn press_target_routes_settings_tab_and_close() {
+        let bar_width = 1000.0;
+        let buttons = layout_buttons(row_budget(bar_width, &M), &[40.0, 60.0], &M);
+        let target = settings_target(bar_width, &M);
+        assert_eq!(
+            press_target(&buttons, target, center_of(&target)),
+            Some(PressTarget::Settings)
+        );
+        assert_eq!(
+            press_target(
+                &buttons,
+                target,
+                Point::new(buttons[0].bounds.x + 5.0, 10.0)
+            ),
+            Some(PressTarget::Tab(0, HitTarget::Tab))
+        );
+        assert_eq!(
+            press_target(&buttons, target, center_of(&buttons[1].close)),
+            Some(PressTarget::Tab(1, HitTarget::Close))
+        );
+        // The zone's gap, left of the target, hits nothing.
+        assert_eq!(
+            press_target(&buttons, target, Point::new(target.x - 2.0, 10.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn tab_buttons_show_only_from_two_tabs_on() {
+        // With fewer than two tabs the strip carries the settings
+        // button alone: no tab button, no close mark.
+        assert!(!shows_tab_buttons(0));
+        assert!(!shows_tab_buttons(1));
+        assert!(shows_tab_buttons(2));
+        assert!(shows_tab_buttons(9));
     }
 
     #[test]
