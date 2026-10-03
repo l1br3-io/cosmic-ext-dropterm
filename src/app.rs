@@ -477,6 +477,11 @@ impl DropTerm {
             | (u32::from(bytes[0]) << 16)
             | 0xFF00_0000;
         let data = window_bg_color(colors, system_bg);
+        // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+        log::debug!(
+            "[THEMEFLIP] WINDOW_BG_COLOR={data:#010x} system_bg={system_bg:#010x} global {:?}",
+            theme_debug_snapshot()
+        );
         terminal::WINDOW_BG_COLOR.store(data, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -1839,6 +1844,20 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
+/// TEMPORARY DEBUG (theme-flip hunt, 2026-10-03): a comparable
+/// snapshot of the process theme global — (palette is_dark, pin
+/// marker, transparent flag). Any writer that flips the runtime
+/// theme shows up as a change in this triple. Remove once the
+/// respect_panel flip is root-caused.
+fn theme_debug_snapshot() -> (bool, Option<bool>, bool) {
+    let theme = cosmic::theme::active();
+    let marker = match theme.theme_type {
+        cosmic::theme::ThemeType::System { prefer_dark, .. } => prefer_dark,
+        _ => None,
+    };
+    (theme.cosmic().is_dark, marker, theme.transparent)
+}
+
 /// Whether the app resolves colors for dark mode right now
 /// (theme-preference spec, criterion 5). The config preference is the
 /// source of truth; the global theme (what widgets read) follows via
@@ -1904,6 +1923,8 @@ fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOve
 /// messages and their order. Pinned by
 /// `theme_override_task_delivers_set_theme_then_reapply`.
 fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
+    // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+    log::warn!("[THEMEFLIP] theme_override_task built: {kind:?}");
     let (mut theme, prefer_dark) = match kind {
         ThemeOverrideKind::PinDark => (cosmic::theme::system_dark(), Some(true)),
         ThemeOverrideKind::PinLight => (cosmic::theme::system_light(), Some(false)),
@@ -2883,6 +2904,11 @@ impl Application for DropTerm {
         _keys: &[&'static str],
         _new_theme: &cosmic::cosmic_theme::Theme,
     ) -> Task<Self::Message> {
+        // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+        log::warn!(
+            "[THEMEFLIP] system_theme_update hook: {:?}",
+            theme_debug_snapshot()
+        );
         self.apply_config_to_tabs();
         Task::none()
     }
@@ -2892,12 +2918,25 @@ impl Application for DropTerm {
         _keys: &[&'static str],
         _new_theme: &cosmic::cosmic_theme::ThemeMode,
     ) -> Task<Self::Message> {
+        // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+        log::warn!(
+            "[THEMEFLIP] system_theme_mode_update hook: {:?}",
+            theme_debug_snapshot()
+        );
         self.apply_config_to_tabs();
         Task::none()
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03): net across
+        // every app message — if the theme global moves between two
+        // messages, log the transition. Remove once root-caused.
+        let theme_before = theme_debug_snapshot();
         let task = self.update_inner(message);
+        let theme_after = theme_debug_snapshot();
+        if theme_before != theme_after {
+            log::warn!("[THEMEFLIP] message moved global: {theme_before:?} -> {theme_after:?}");
+        }
         // Every surface and tab transition flows through this wrapper,
         // so one sync after the arm — not per-arm calls — keeps the
         // served V1 properties current (dbus-state spec); an arm's
@@ -3263,6 +3302,12 @@ impl DropTerm {
                 let old_geom = Geometry::from_config(&self.config);
                 let new_geom = Geometry::from_config(&config);
                 let old_preference = self.config.theme_preference;
+                // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+                log::debug!(
+                    "[THEMEFLIP] ConfigChanged echo: preference {old_preference:?} -> {:?}, global {:?}",
+                    config.theme_preference,
+                    theme_debug_snapshot()
+                );
                 self.config = config;
                 self.apply_config_to_tabs();
                 // A changed theme preference overrides (or restores)
@@ -3747,6 +3792,8 @@ impl DropTerm {
                 }
             }
             Message::Settings(event) => {
+                // TEMPORARY DEBUG (theme-flip hunt, 2026-10-03)
+                log::debug!("[THEMEFLIP] settings event: {event:?}");
                 // The settings window's commit funnel (settings-ui
                 // spec, U4): every event resolves through a pure
                 // planner and lands as one `Bare` write on the shared
