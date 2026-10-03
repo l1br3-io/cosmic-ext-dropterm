@@ -20,7 +20,7 @@ use cosmic::cosmic_config::{self, ConfigSet as _};
 
 use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
-    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, ThemePreference,
+    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, TabPosition, ThemePreference,
 };
 use crate::terminal::theme_source::scheme_names;
 
@@ -74,6 +74,7 @@ impl Section {
                 ConfigKey::WidthPercent,
                 ConfigKey::HAlign,
                 ConfigKey::Edge,
+                ConfigKey::TabPosition,
             ],
             Section::Behavior => &[
                 ConfigKey::HideOnFocusLoss,
@@ -105,6 +106,7 @@ pub enum ConfigKey {
     WidthPercent,
     HAlign,
     Edge,
+    TabPosition,
     FontName,
     FontSize,
     Opacity,
@@ -133,6 +135,7 @@ impl ConfigKey {
             ConfigKey::WidthPercent => "width_percent",
             ConfigKey::HAlign => "h_align",
             ConfigKey::Edge => "edge",
+            ConfigKey::TabPosition => "tab_position",
             ConfigKey::FontName => "font_name",
             ConfigKey::FontSize => "font_size",
             ConfigKey::Opacity => "opacity",
@@ -166,6 +169,7 @@ pub enum PlannedWrite {
     WidthPercent(u8),
     HAlign(HAlign),
     Edge(Edge),
+    TabPosition(TabPosition),
     FontName(String),
     FontSize(u16),
     Opacity(u8),
@@ -192,6 +196,7 @@ impl PlannedWrite {
             PlannedWrite::WidthPercent(_) => ConfigKey::WidthPercent,
             PlannedWrite::HAlign(_) => ConfigKey::HAlign,
             PlannedWrite::Edge(_) => ConfigKey::Edge,
+            PlannedWrite::TabPosition(_) => ConfigKey::TabPosition,
             PlannedWrite::FontName(_) => ConfigKey::FontName,
             PlannedWrite::FontSize(_) => ConfigKey::FontSize,
             PlannedWrite::Opacity(_) => ConfigKey::Opacity,
@@ -241,6 +246,9 @@ impl PlannedWrite {
             }
             PlannedWrite::HAlign(value) => handler.set(ConfigKey::HAlign.key_name(), value),
             PlannedWrite::Edge(value) => handler.set(ConfigKey::Edge.key_name(), value),
+            PlannedWrite::TabPosition(value) => {
+                handler.set(ConfigKey::TabPosition.key_name(), value)
+            }
             PlannedWrite::FontName(value) => handler.set(ConfigKey::FontName.key_name(), value),
             PlannedWrite::FontSize(value) => handler.set(ConfigKey::FontSize.key_name(), *value),
             PlannedWrite::Opacity(value) => handler.set(ConfigKey::Opacity.key_name(), *value),
@@ -398,6 +406,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::WidthPercent
         | ConfigKey::HAlign
         | ConfigKey::Edge
+        | ConfigKey::TabPosition
         | ConfigKey::FontName
         | ConfigKey::FontSize
         | ConfigKey::Opacity
@@ -421,6 +430,11 @@ const H_ALIGN_OPTIONS: &[(HAlign, &str)] = &[
     (HAlign::Right, "Right"),
 ];
 const EDGE_OPTIONS: &[(Edge, &str)] = &[(Edge::Top, "Top"), (Edge::Bottom, "Bottom")];
+const TAB_POSITION_OPTIONS: &[(TabPosition, &str)] = &[
+    (TabPosition::Auto, "Follow edge"),
+    (TabPosition::Top, "Top"),
+    (TabPosition::Bottom, "Bottom"),
+];
 const LAYER_OPTIONS: &[(Layer, &str)] = &[(Layer::Overlay, "Overlay"), (Layer::Top, "Top")];
 const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
     (KeyboardMode::Exclusive, "Exclusive"),
@@ -451,6 +465,9 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
         ConfigKey::Edge => EDGE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.edge),
+        ConfigKey::TabPosition => TAB_POSITION_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.tab_position),
         ConfigKey::Layer => LAYER_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.layer),
@@ -477,6 +494,9 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::Edge => EDGE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::Edge(*value)),
+        ConfigKey::TabPosition => TAB_POSITION_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::TabPosition(*value)),
         ConfigKey::Layer => LAYER_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::Layer(*value)),
@@ -639,6 +659,7 @@ impl ConfigKey {
             ConfigKey::WidthPercent => "Width",
             ConfigKey::HAlign => "Alignment",
             ConfigKey::Edge => "Edge",
+            ConfigKey::TabPosition => "Tab bar position",
             ConfigKey::FontName => "Font",
             ConfigKey::FontSize => "Font size",
             ConfigKey::Opacity => "Opacity",
@@ -789,6 +810,10 @@ fn dropdown_control(
     let labels: Vec<&'static str> = match key {
         ConfigKey::HAlign => H_ALIGN_OPTIONS.iter().map(|(_, label)| *label).collect(),
         ConfigKey::Edge => EDGE_OPTIONS.iter().map(|(_, label)| *label).collect(),
+        ConfigKey::TabPosition => TAB_POSITION_OPTIONS
+            .iter()
+            .map(|(_, label)| *label)
+            .collect(),
         ConfigKey::Layer => LAYER_OPTIONS.iter().map(|(_, label)| *label).collect(),
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .iter()
@@ -886,6 +911,7 @@ mod tests {
             PlannedWrite::WidthPercent(100),
             PlannedWrite::HAlign(HAlign::Center),
             PlannedWrite::Edge(Edge::Top),
+            PlannedWrite::TabPosition(TabPosition::Auto),
             PlannedWrite::FontName(String::new()),
             PlannedWrite::FontSize(14),
             PlannedWrite::Opacity(100),
@@ -929,6 +955,7 @@ mod tests {
             (ConfigKey::WidthPercent, "width_percent"),
             (ConfigKey::HAlign, "h_align"),
             (ConfigKey::Edge, "edge"),
+            (ConfigKey::TabPosition, "tab_position"),
             (ConfigKey::FontName, "font_name"),
             (ConfigKey::FontSize, "font_size"),
             (ConfigKey::Opacity, "opacity"),
@@ -1005,6 +1032,8 @@ mod tests {
         // Keys without a documented range pass through byte-identical.
         let unchanged = PlannedWrite::FontSize(999);
         assert_eq!(unchanged.clamped(), unchanged);
+        let enum_key = PlannedWrite::TabPosition(TabPosition::Bottom);
+        assert_eq!(enum_key.clamped(), enum_key);
     }
 
     #[test]
@@ -1174,6 +1203,7 @@ mod tests {
             ConfigKey::WidthPercent,
             ConfigKey::HAlign,
             ConfigKey::Edge,
+            ConfigKey::TabPosition,
             ConfigKey::FontName,
             ConfigKey::FontSize,
             ConfigKey::Opacity,
@@ -1230,6 +1260,7 @@ mod tests {
         for key in [
             ConfigKey::HAlign,
             ConfigKey::Edge,
+            ConfigKey::TabPosition,
             ConfigKey::Layer,
             ConfigKey::KeyboardMode,
             ConfigKey::ColorSchemeDark,
@@ -1256,6 +1287,7 @@ mod tests {
         for key in [
             ConfigKey::HAlign,
             ConfigKey::Edge,
+            ConfigKey::TabPosition,
             ConfigKey::Layer,
             ConfigKey::KeyboardMode,
             ConfigKey::ColorSchemeDark,
@@ -1379,6 +1411,73 @@ mod tests {
             dropdown_selected(ConfigKey::ThemePreference, &config),
             Some(2)
         );
+    }
+
+    // --- tab-bar-position T2: the Geometry dropdown ---
+
+    #[test]
+    fn tab_position_sits_in_geometry_after_edge() {
+        // The "Tab bar position" row lands directly after Edge in the
+        // Geometry card; the exact-content assertion stays — the map
+        // is updated, not weakened.
+        assert_eq!(
+            Section::Geometry.keys(),
+            &[
+                ConfigKey::HeightPercent,
+                ConfigKey::WidthPercent,
+                ConfigKey::HAlign,
+                ConfigKey::Edge,
+                ConfigKey::TabPosition,
+            ]
+        );
+        assert_eq!(ConfigKey::TabPosition.label(), "Tab bar position");
+    }
+
+    #[test]
+    fn tab_position_options_are_exactly_follow_edge_top_bottom() {
+        // Follow edge first, so the default config's selection is
+        // index 0 (the Follow system pattern).
+        assert_eq!(
+            TAB_POSITION_OPTIONS,
+            &[
+                (TabPosition::Auto, "Follow edge"),
+                (TabPosition::Top, "Top"),
+                (TabPosition::Bottom, "Bottom"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_position_picks_round_trip_and_out_of_range_rejects() {
+        // A pick commits exactly its variant — the control can never
+        // invent a value; indices past the table (including exactly
+        // len) reject instead of panicking.
+        assert_eq!(
+            dropdown_write(ConfigKey::TabPosition, 0),
+            Some(PlannedWrite::TabPosition(TabPosition::Auto))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::TabPosition, 1),
+            Some(PlannedWrite::TabPosition(TabPosition::Top))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::TabPosition, 2),
+            Some(PlannedWrite::TabPosition(TabPosition::Bottom))
+        );
+        assert_eq!(dropdown_write(ConfigKey::TabPosition, 3), None);
+        assert_eq!(dropdown_write(ConfigKey::TabPosition, 99), None);
+    }
+
+    #[test]
+    fn tab_position_selection_mirrors_the_config_value() {
+        // Default config → Auto → Some(0); every committed variant
+        // re-selects its own position.
+        let mut config = DropTermConfig::default();
+        assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(0));
+        config.tab_position = TabPosition::Top;
+        assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(1));
+        config.tab_position = TabPosition::Bottom;
+        assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(2));
     }
 
     #[test]
