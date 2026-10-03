@@ -2,7 +2,7 @@
 
 //! Queryable DropTerm state over D-Bus.
 //!
-//! Serves the read-only [`Visible`] and [`TabCount`] properties on the
+//! Serves the read-only `Visible` and `TabCount` properties on the
 //! `io.github.l1br3_io.CosmicExtDropterm.V1` interface, at the bus name
 //! and object path the app already owns through libcosmic's
 //! single-instance activation. The module deliberately keeps the app's
@@ -59,8 +59,8 @@ pub(crate) fn surface_visible(phase: SurfacePhase) -> bool {
 }
 
 /// Derives the served snapshot from the surface phase and the
-/// open-tab count — the pure half of the sync seam; the app supplies
-/// its own fields, keeping this module free of app types.
+/// open-tab count — the app supplies its own fields, keeping this
+/// module free of app types.
 pub fn derive(phase: SurfacePhase, tab_count: u32) -> State {
     State {
         visible: surface_visible(phase),
@@ -68,9 +68,8 @@ pub fn derive(phase: SurfacePhase, tab_count: u32) -> State {
     }
 }
 
-/// Which V1 properties differ between two snapshots — the dedupe half
-/// of the sync seam: only these earn a `PropertiesChanged` emission,
-/// so a no-op message emits nothing.
+/// Which V1 properties differ between two snapshots: only these earn
+/// a `PropertiesChanged` emission, so a no-op message emits nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Changed {
     pub visible: bool,
@@ -260,9 +259,6 @@ mod tests {
         assert_eq!(V1InterfaceProxy::DESTINATION.as_deref(), Some(BUS_NAME));
     }
 
-    /// Headless test harness: serves [`V1`] over a peer-to-peer unix
-    /// socket so the wire tests need no session bus and no display.
-    /// Mirrors the p2p setup of zbus's own e2e suite.
     /// Headless test harness: serves [`V1`] over a peer-to-peer unix
     /// socket so the wire tests need no session bus and no display.
     /// Mirrors the p2p setup of zbus's own e2e suite: both ends of the

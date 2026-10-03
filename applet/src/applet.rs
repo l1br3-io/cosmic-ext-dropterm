@@ -79,8 +79,7 @@ pub(crate) fn click_action(state: &TargetState) -> ClickAction {
     }
 }
 
-/// Tooltip text: state plus tab count when running. Copy shape per
-/// the spec's example; the owner finalizes wording at review.
+/// Tooltip text: state plus tab count when running.
 pub(crate) fn tooltip(state: &TargetState, tab_count: u32) -> String {
     match *state {
         TargetState::NotRunning => "DropTerm — not running".to_string(),
@@ -172,9 +171,8 @@ impl cosmic::Application for Applet {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        // Opacity tiers proposed by the plan (dimmest when the
-        // terminal is gone, dimmed while hidden, full while visible);
-        // the owner finalizes the treatment with real rendering.
+        // Opacity tiers: dimmest when the terminal is gone, dimmed
+        // while hidden, full while visible.
         let alpha = match self.target {
             TargetState::NotRunning => 0.4,
             TargetState::Running { visible: false } => 0.65,
@@ -251,9 +249,9 @@ impl Applet {
 
     /// Spawns the terminal with the activation token in its
     /// environment. Caveat, deliberately still-correct: DropTerm
-    /// today receives a forwarded activation token and drops it
+    /// currently receives a forwarded activation token and drops it
     /// (nothing applies it yet) — sending one remains the right path
-    /// for the day it does.
+    /// for when it does.
     fn launch(&self, exec: &str, token: Option<String>) {
         let mut command = tokio::process::Command::new(exec);
         if let Some(token) = token {

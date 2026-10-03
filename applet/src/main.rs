@@ -20,8 +20,8 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
     }
 
-    /// Pins the applet desktop file to the exact block the spec
-    /// pinned: the panel stem-matches `Exec`, cosmic-settings lists
+    /// Pins the applet desktop file to its exact contract: the
+    /// panel stem-matches `Exec`, cosmic-settings lists
     /// `X-CosmicApplet=true`, the shrinkable key allows padding to
     /// give before overflow, and — deliberately absent —
     /// `X-HostWaylandDisplay`: the applet needs no privileged

@@ -230,8 +230,8 @@ mod tests {
     }
 
     /// Emits changed signals for exactly the properties that differ —
-    /// the same dedupe the terminal's sync seam applies before
-    /// touching the wire.
+    /// the same dedupe the terminal applies before touching the
+    /// wire.
     async fn emit_diff(server: &zbus::Connection, old: dbus_state::State, new: dbus_state::State) {
         let diff = dbus_state::changed(old, new);
         let iface_ref = server

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Bell → desktop notification (bell-notify spec).
+//! Bell → desktop notification.
 //!
 //! The one DE feature a *hidden* terminal uniquely needs: a bell that
 //! rings while the overlay is hidden posts a freedesktop desktop
