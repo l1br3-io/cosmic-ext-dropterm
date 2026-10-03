@@ -52,8 +52,7 @@ struct Args {
 /// Parses a forwarded action — the action name plus any arguments the
 /// second launch sent along — back into a [`ToggleAction`], reusing the
 /// clap definitions above as the single source of truth for the CLI
-/// surface (remote-newtab spec: the D-Bus round-trip). `None` when the
-/// words do not form a valid action.
+/// surface. `None` when the words do not form a valid action.
 pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<ToggleAction> {
     let argv: Vec<String> = std::iter::once("cosmic-ext-dropterm".to_string())
         .chain(words.iter().cloned())
@@ -63,10 +62,9 @@ pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<ToggleAction> {
 
 /// The bus half of `--is-visible`: `Some(visible)` when a running
 /// instance answered, `None` when the name is unowned (no note owed)
-/// or owned without the V1 interface (stale binary mid-upgrade — a
-/// stderr note, per the spec's decision table). Query-only: nothing
-/// here activates or spawns the app, so the flag can never summon the
-/// terminal.
+/// or owned without the V1 interface (stale binary mid-upgrade —
+/// noted on stderr). Query-only: nothing here activates or spawns the
+/// app, so the flag can never summon the terminal.
 fn query_visibility() -> Option<bool> {
     // zbus needs a runtime with io and time; a current-thread runtime
     // is enough for one synchronous-looking query. Its feature set
@@ -118,8 +116,8 @@ fn main() -> cosmic::iced::Result {
     // these itself, and a correct TERM is needed for full-color, mouse and
     // bracketed-paste support in most shells.
     alacritty_terminal::tty::setup_env();
-    // SAFETY: called once, before any thread that reads the environment is
-    // spawned (the PTY event loop threads are spawned per-terminal, later).
+    // SAFETY: called once, before any thread that reads the environment
+    // is spawned (per-terminal PTY threads start later).
     unsafe {
         std::env::set_var("TERM", "xterm-256color");
     }
@@ -220,8 +218,8 @@ mod tests {
 
     #[test]
     fn close_tab_rejects_a_zero_tab_index() {
-        // Tab indices are 1-based (remote-tab-actions spec); zero dies
-        // at the CLI edge, exactly like new-tab's empty --cmd.
+        // Tab indices are 1-based; zero dies at the CLI edge, exactly
+        // like new-tab's empty --cmd.
         let result = Args::try_parse_from(["dropterm", "close-tab", "--tab-index", "0"]);
         assert!(result.is_err());
     }
@@ -234,8 +232,8 @@ mod tests {
 
     #[test]
     fn select_tab_rejects_a_zero_index() {
-        // Indices are strict 1-based (remote-tab-actions spec); zero
-        // dies at the CLI edge like close-tab's --tab-index 0.
+        // Indices are strict 1-based; zero dies at the CLI edge like
+        // close-tab's --tab-index 0.
         let result = Args::try_parse_from(["dropterm", "select-tab", "0"]);
         assert!(result.is_err());
     }
@@ -304,8 +302,8 @@ mod tests {
     #[test]
     fn a_malformed_forward_degrades_to_none() {
         // Words clap rejects yield None, which dbus_activation turns
-        // into a plain toggle — never an error surface (the
-        // remote-newtab rule, now carrying a bad --tab-index).
+        // into a plain toggle — never an error surface (here, a bad
+        // --tab-index).
         let words: Vec<String> = ["close-tab", "--tab-index", "0"]
             .iter()
             .map(|word| word.to_string())
@@ -318,8 +316,7 @@ mod tests {
         // The second launch serializes the action as its Display name
         // plus flags.args(); the primary reconstructs it through
         // parse_forwarded_action. Every action must survive exactly,
-        // serialized by the real encoder — no hand-rolled words
-        // (remote-tab-actions spec).
+        // serialized by the real encoder — no hand-rolled words.
         let actions = [
             ToggleAction::Toggle,
             ToggleAction::Show,

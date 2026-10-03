@@ -2,11 +2,11 @@
 
 //! The fixed set of app-level keyboard shortcuts.
 //!
-//! Unlike cosmic-term, these are not user-customizable in v1 (there is no
-//! shortcuts settings page yet - see the ROADMAP's "Later" section). The
-//! `TerminalBox` widget only uses this map to decide which key presses to
-//! swallow instead of sending to the shell; the actual behavior for a
-//! matched [`Action`] is applied in `App::update`.
+//! Unlike cosmic-term, these are not user-customizable: there is no
+//! shortcuts settings page yet (see the ROADMAP's "Later" section).
+//! The `TerminalBox` widget only uses this map to decide which key
+//! presses to swallow instead of sending to the shell; the actual
+//! behavior for a matched [`Action`] is applied in `App::update`.
 
 use std::collections::HashMap;
 
@@ -30,6 +30,7 @@ fn bind_named(modifiers: &[Modifier], key: Named) -> KeyBind {
     }
 }
 
+/// The default app-level bindings, mapped to the [`Action`] they trigger.
 pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     let mut map = HashMap::new();
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "c"), Action::Copy);
@@ -51,10 +52,9 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
-    // The settings window (settings-ui spec, U1; moved from
-    // Ctrl+Shift+, to Ctrl+Shift+I 2026-10-02, owner preference).
-    // Bare Ctrl+I must stay unbound: in a terminal it is the TAB byte
-    // (0x09), so swallowing it would break tab completion.
+    // Settings. Bare Ctrl+I must stay unbound: in a terminal it is
+    // the TAB byte (0x09), so swallowing it would break tab
+    // completion.
     map.insert(
         bind(&[Modifier::Ctrl, Modifier::Shift], "i"),
         Action::Settings,
@@ -83,11 +83,10 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::Tab),
         Action::PrevTab,
     );
-    // Numbered activation and keyboard moves, cosmic-term's exact binds
-    // (its shortcuts.rs TabActivate0..8 / TabMoveLeft/Right): digits
-    // 1-8 activate that tab strictly, 9 always takes the last tab; the
-    // moves shift the active tab one slot and clamp at the edges. Bare
-    // Ctrl+digits stay unbound (only =/-/0 zoom).
+    // Numbered activation and keyboard moves, cosmic-term's exact
+    // binds: digits 1-8 activate that tab strictly, 9 always takes
+    // the last tab; the moves shift the active tab one slot and clamp
+    // at the edges. Bare Ctrl+digits stay unbound (only =/-/0 zoom).
     for (digit, index) in ('1'..='8').zip(0..8) {
         map.insert(
             bind(&[Modifier::Ctrl, Modifier::Shift], &digit.to_string()),

@@ -2,19 +2,11 @@
 
 //! Builds the layer-shell surface for the drop-down.
 //!
-//! Every `Show` goes through two steps, because there's no API to ask "how
-//! tall is the active output" before creating a surface on it:
-//!
-//! 1. [`measuring`] creates a surface anchored to all four edges with no
-//!    fixed size, so the compositor stretches it to the active output's
-//!    full size and reports that size back through the first
-//!    `Window::Opened` event delivered for it (see `app.rs`).
-//! 2. `app.rs` then reshapes that same surface in place — anchored to one
-//!    screen edge, sized and aligned per the config — by running the
-//!    geometry through `geometry::apply_geometry` (the single
-//!    `set_anchor`/`set_size`/`set_margin` path), plus the granular
-//!    `set_keyboard_interactivity`/`set_exclusive_zone` commands, rather
-//!    than destroying and recreating it.
+//! There is no API to ask for the active output's size before creating
+//! a surface on it, so every `Show` takes two steps: [`measuring`]
+//! stretches a surface to the full output and reads its size from the
+//! first `Window::Opened`; `app.rs` then reshapes that surface in place
+//! per the config instead of recreating it.
 
 use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
     IcedOutput, SctkLayerSurfaceSettings,
@@ -27,8 +19,10 @@ use cosmic::iced::window;
 
 use crate::config::{KeyboardMode, Layer};
 
+/// Layer-shell namespace identifying this app's surfaces.
 pub const NAMESPACE: &str = "cosmic-ext-dropterm";
 
+/// Maps the configured [`Layer`] to its wlr-layer-shell equivalent.
 pub fn wlr_layer(layer: Layer) -> WlrLayer {
     match layer {
         Layer::Overlay => WlrLayer::Overlay,
@@ -36,6 +30,7 @@ pub fn wlr_layer(layer: Layer) -> WlrLayer {
     }
 }
 
+/// Maps the configured [`KeyboardMode`] to its compositor equivalent.
 pub fn keyboard_interactivity(mode: KeyboardMode) -> KeyboardInteractivity {
     match mode {
         KeyboardMode::Exclusive => KeyboardInteractivity::Exclusive,
@@ -57,10 +52,10 @@ pub fn uncapped_size_limits() -> Limits {
     Limits::NONE.min_width(1.0).min_height(1.0)
 }
 
-/// Settings for the one-shot measuring surface (see the module doc comment).
+/// Settings for the one-shot measuring surface (see the module docs).
 ///
-/// Always targets [`IcedOutput::Active`]: dropterm v1 doesn't yet support
-/// pinning to a named output (that's the v2 "monitor selection" feature).
+/// Always targets [`IcedOutput::Active`]: pinning to a named output is
+/// not configurable.
 pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
     SctkLayerSurfaceSettings {
         id,
@@ -71,25 +66,20 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
         namespace: format!("{NAMESPACE}-measure"),
         size: Some((None, None)),
         // DontCare (-1), not the default neutral zone (0): a neutral
-        // surface arranges inside the zone that *exclusive* layers (the
-        // COSMIC panel) carve out, so the measured output height came
-        // back panel-short — every percent settle referenced the wrong
-        // height. DontCare ignores the zone and stretches the full
-        // output, matching the shown surface (also DontCare).
+        // surface arranges inside the space exclusive layers like the
+        // COSMIC panel carve out, so the measured height came back
+        // panel-short. The shown surface is DontCare too — match it.
         exclusive_zone: -1,
         size_limits: uncapped_size_limits(),
         ..SctkLayerSurfaceSettings::default()
     }
 }
 
-/// Height to pin the terminal widget to inside a granted surface of
-/// `window_height` pixels: the whole window minus the grab bar's strip
-/// (always shown, geometry spec G3) and the tab strip's — equally always
-/// shown, since it carries the settings button in the single-tab state
-/// too (settings-button spec, criterion 2), so the terminal's area never
-/// changes across the 1↔2 tab crossing. Pinned as a `Fixed` length (see
-/// `TerminalBox::height`) so the surrounding flex can't hand the terminal
-/// the bars' space and push them off the surface.
+/// Height to pin the terminal widget to: the window minus the grab
+/// bar and tab strips, both always shown (the tab strip carries the
+/// settings button even with one tab), so the terminal's area never
+/// changes across the 1↔2 tab crossing. Pinned `Fixed` (see
+/// `TerminalBox::height`) so flex cannot push the bars off-surface.
 pub fn terminal_view_height(window_height: f32) -> f32 {
     (window_height - crate::tab_bar::BAR_HEIGHT - crate::grab_bar::GRAB_BAR_HEIGHT).max(1.0)
 }
@@ -100,10 +90,9 @@ mod tests {
 
     #[test]
     fn terminal_view_height_always_reserves_both_strips() {
-        // Both bars always show: the grab bar (geometry spec, G3) and
-        // the tab strip, which carries the settings button even in the
-        // single-tab state (settings-button spec, criterion 2) — so the
-        // terminal's height never jumps across the 1↔2 tab crossing.
+        // Both strips are always shown — the tab strip carries the
+        // settings button even with one tab — so the terminal's
+        // height never jumps across the 1↔2 tab crossing.
         assert_eq!(
             terminal_view_height(563.0),
             563.0 - 32.0 - crate::grab_bar::GRAB_BAR_HEIGHT
