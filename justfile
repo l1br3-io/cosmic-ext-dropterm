@@ -82,6 +82,12 @@ build-release *args: (build-debug '--release' args)
 build-applet *args:
     cargo build -p {{applet}} --release {{args}}
 
+# Both release artifacts, each per-package, in the shape `install`
+# expects. Exists as one recipe because `build-release` takes
+# arguments, so `just build-release build-applet` would pass the
+# second name through to cargo.
+build-all: build-release build-applet
+
 run *args:
     cargo run {{args}}
 
@@ -114,7 +120,7 @@ dev-applet:
 clean:
     cargo clean
 
-# Installs files (build both artifacts first: just build-release build-applet)
+# Installs files (build both artifacts first: just build-all)
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
