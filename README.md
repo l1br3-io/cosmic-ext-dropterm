@@ -105,7 +105,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`). Every one of them except the two profile keys (documented below - their settings page ships later) is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`). Every one of them except the two profile keys (documented below - their settings page ships later) is editable in the [settings window](docs/settings.md); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -118,13 +118,13 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 - `width_percent` (default `100`, range 30-100): surface width as a percentage of the output width. `100` reproduces the original full-width surface exactly.
 - `h_align` (`Left`, `Center`, or `Right`; default `Center`): horizontal placement of the surface within the output. `Left` and `Right` sit flush against that edge; `Center` splits the leftover space into equal left and right margins. Only meaningful below `width_percent` 100.
 
-`tab_position` (`Auto`, `Top`, or `Bottom`; default `Auto`): which side of the surface the tab strip sits on, independent of `edge`. `Auto` keeps the strip beside the grab bar at the leading edge - the side opposite the screen edge, which on the default top anchor is the surface's bottom; `Top`/`Bottom` pin the strip to that side regardless of anchor, so on the matching anchor it sits at the screen edge. Unlike the keys above, a change never reshapes the surface - the rows keep their heights - so a shown surface just reorders immediately. Pick it in the Geometry card of the [settings window](#settings-window).
+`tab_position` (`Auto`, `Top`, or `Bottom`; default `Auto`): which side of the surface the tab strip sits on, independent of `edge`. `Auto` keeps the strip beside the grab bar at the leading edge - the side opposite the screen edge, which on the default top anchor is the surface's bottom; `Top`/`Bottom` pin the strip to that side regardless of anchor, so on the matching anchor it sits at the screen edge. Unlike the keys above, a change never reshapes the surface - the rows keep their heights - so a shown surface just reorders immediately. Pick it in the Geometry card of the [settings window](docs/settings.md).
 
-`tab_title_mode` (`Shell`, `AbbreviatedPath`, `LastSegment`, or `Numbered`; default `Shell`): how a tab's name is generated - Guake's "Use VTE titles" checkbox and "Display as tab names" dropdown collapsed into one key. `Shell` shows the shell's OSC 0/2 title verbatim (the pre-setting behavior); `AbbreviatedPath` shortens a trailing-cwd suffix, so `jpt@box:~/src/oss/l1br3/ced` renders `jpt@box:~/s/o/l/ced` and an absolute-path suffix abbreviates identically; `LastSegment` shows the cwd's final component (`ced`, and `(root)` at `/`); `Numbered` parks every tab at `Terminal N` and shell reports never land. A user rename wins in every mode, a title with no directory suffix is left alone, and an unreadable cwd falls back to the raw title. Changing the key re-titles every live tab immediately, renamed ones excepted. Pick it in the Behavior card of the [settings window](#settings-window).
+`tab_title_mode` (`Shell`, `AbbreviatedPath`, `LastSegment`, or `Numbered`; default `Shell`): how a tab's name is generated - Guake's "Use VTE titles" checkbox and "Display as tab names" dropdown collapsed into one key. `Shell` shows the shell's OSC 0/2 title verbatim (the pre-setting behavior); `AbbreviatedPath` shortens a trailing-cwd suffix, so `jpt@box:~/src/oss/l1br3/ced` renders `jpt@box:~/s/o/l/ced` and an absolute-path suffix abbreviates identically; `LastSegment` shows the cwd's final component (`ced`, and `(root)` at `/`); `Numbered` parks every tab at `Terminal N` and shell reports never land. A user rename wins in every mode, a title with no directory suffix is left alone, and an unreadable cwd falls back to the raw title. Changing the key re-titles every live tab immediately, renamed ones excepted. Pick it in the Behavior card of the [settings window](docs/settings.md).
 
 `hide_on_focus_loss` defaults to `true` - a deliberate choice for a hotkey-driven drop-down (focus is the whole interaction model), and notably the *opposite* of Yakuake, Guake, and Ghostty's Linux quick terminal, which all default to keeping the window open on focus loss. Write `false` to keep the overlay open when it loses focus.
 
-`respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show - toggle it in the Advanced card of the [settings window](#settings-window) or write it directly:
+`respect_panel` defaults to `false`: the drop-down covers the panel and dock, Yakuake-style. Write `true` to place it inside the compositor's usable area instead - it sits flush below a top panel (or above a bottom dock, together with `edge`), while staying on its configured layer, so on the default `Overlay` layer it still appears above fullscreen windows. The setting applies on the next show - toggle it in the Advanced card of the [settings window](docs/settings.md) or write it directly:
 
 ```sh
 echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_panel
@@ -146,7 +146,7 @@ Profiles - named presets of what a tab runs - are config-file-only for now: hand
 
 ## Session persistence
 
-DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. Toggle it with `session_persistence_enabled` (default `true`, Behavior card in the [settings window](#settings-window)): `false` stops saves *and* skips restore at launch - the app starts with a single fresh tab, and the existing `session.ron` is left untouched on disk, so re-enabling picks the session back up.
+DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. Toggle it with `session_persistence_enabled` (default `true`, Behavior card in the [settings window](docs/settings.md)): `false` stops saves *and* skips restore at launch - the app starts with a single fresh tab, and the existing `session.ron` is left untouched on disk, so re-enabling picks the session back up.
 
 What is saved - deliberately the same scope Guake and Yakuake settle on:
 
@@ -176,11 +176,11 @@ Failure behavior:
 
 ## Slide animation
 
-Showing and hiding slide the whole content column - terminal, tab bar when one is shown, grab bar - in from, and back out toward, the anchored screen edge over about 130 ms: an ease-out curve on the way in, ease-in on the way out, pure translation with no fade. Toggle it with `slide_animation_enabled` (default `true`, Behavior card in the [settings window](#settings-window)) - `false` restores instant show/hide; either way the animation is deliberately cheap: the surface's geometry never changes during the animation, only the content's painted offset does, so the compositor sees no resize traffic. A toggle arriving mid-animation reverses the slide from wherever the content stands - nothing teleports, nothing is dropped or queued - and PTYs keep running throughout: keyboard focus returns to the previously focused window the moment a hide *starts*, and the surface is destroyed only after the slide-out completes. A hide that catches the surface still measuring (a toggle within the show's measuring window) skips the animation and destroys immediately.
+Showing and hiding slide the whole content column - terminal, tab bar when one is shown, grab bar - in from, and back out toward, the anchored screen edge over about 130 ms: an ease-out curve on the way in, ease-in on the way out, pure translation with no fade. Toggle it with `slide_animation_enabled` (default `true`, Behavior card in the [settings window](docs/settings.md)) - `false` restores instant show/hide; either way the animation is deliberately cheap: the surface's geometry never changes during the animation, only the content's painted offset does, so the compositor sees no resize traffic. A toggle arriving mid-animation reverses the slide from wherever the content stands - nothing teleports, nothing is dropped or queued - and PTYs keep running throughout: keyboard focus returns to the previously focused window the moment a hide *starts*, and the surface is destroyed only after the slide-out completes. A hide that catches the surface still measuring (a toggle within the show's measuring window) skips the animation and destroys immediately.
 
 ## Application theme
 
-Which theme mode is active - and with it which of the two color schemes wears, the window background derivation, and all chrome - comes from the "Application theme" dropdown in the Appearance card of the [settings window](#settings-window), so you don't need COSMIC Appearance to flip the terminal's mode:
+Which theme mode is active - and with it which of the two color schemes wears, the window background derivation, and all chrome - comes from the "Application theme" dropdown in the Appearance card of the [settings window](docs/settings.md), so you don't need COSMIC Appearance to flip the terminal's mode:
 
 - `Follow system` (the default): DropTerm tracks the system light/dark mode. Flipping COSMIC Appearance switches the terminal's scheme, background, chrome, and the settings window itself, exactly as before - a config that never touches this key behaves byte-identically to a build without the dropdown.
 - `Dark` / `Light`: the app pins that mode independently of the system. Everything resolves from the pin - scheme selection, window background, tab/grab-bar chrome, and the settings window - built on your own system palettes (accent included), and the pin survives system theme flips: COSMIC Appearance can flip back and forth while the terminal keeps wearing the pinned mode. One upstream edge: while pinned, palette edits made while the system sits in the opposite mode are dropped until the next re-pin or theme change.
@@ -190,7 +190,7 @@ Picks apply live (config key `theme_preference`: `System`, `Dark`, or `Light` - 
 
 ## Color schemes
 
-The terminal wears a built-in color scheme picked per theme mode: the Appearance card of the [settings window](#settings-window) has two dropdowns - "Dark color scheme" (worn while the app resolves dark mode) and "Light color scheme" (while it resolves light). The active mode comes from the [Application theme](#application-theme) dropdown - `Follow system` tracks COSMIC Appearance, `Dark`/`Light` pin one - and a mode change from either side switches between the two picks; a config edit or a mode change re-applies live.
+The terminal wears a built-in color scheme picked per theme mode: the Appearance card of the [settings window](docs/settings.md) has two dropdowns - "Dark color scheme" (worn while the app resolves dark mode) and "Light color scheme" (while it resolves light). The active mode comes from the [Application theme](#application-theme) dropdown - `Follow system` tracks COSMIC Appearance, `Dark`/`Light` pin one - and a mode change from either side switches between the two picks; a config edit or a mode change re-applies live.
 
 Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `Dracula`, `Solarized Dark`, `Solarized Light`, `Gruvbox Dark`, `Gruvbox Light`, `Tokyo Night Storm`, `Tokyo Night Day`, `Nord`, `Catppuccin Mocha`, and `Catppuccin Latte` - values transcribed from their canonical upstream palettes, with the source and license recorded per scheme in `src/terminal/theme_source.rs`.
 
@@ -205,40 +205,8 @@ A bell that rings while the terminal is *hidden* posts a desktop notification na
 
 - Only while hidden: when the overlay is visible, the tab-bar 🔔 marker alone carries the signal.
 - One notification per tab per hide period: a bell storm (`while true; printf '\a'; done`) yields a single notification - the per-tab latch clears the next time the terminal is shown.
-- Toggle with `bell_notification_enabled` (default `true`, Behavior card in the [settings window](#settings-window)); it applies at the next bell - the tab-bar markers are unaffected either way.
+- Toggle with `bell_notification_enabled` (default `true`, Behavior card in the [settings window](docs/settings.md)); it applies at the next bell - the tab-bar markers are unaffected either way.
 - No notification daemon: the post fails with a `warn` log; nothing surfaces and the terminal is unaffected.
-
-## Settings window
-
-Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus, or click the gear button at the right corner of the tab strip. The window is a separate normal window in the same process. The strip is always present whatever the tab count - with a single tab it carries the settings button alone - so settings are one click away in every state; hovering the button shows a `Settings…` tooltip and the click opens the same settings window the keybind opens. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
-
-The window shows five cards - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
-
-While the window is open the terminal is hidden: a normal window can never stack above a layer surface on COSMIC, so opening settings hides the drop-down through its normal hide path (animated when slides are enabled) - the same resolution as Guake's default hide-on-focus-loss for its prefs. The rules:
-
-- Any show/toggle intent while the window is open (hotkey, second launch) closes the settings window first, then shows the terminal.
-- Closing the window does not re-show the terminal and does not exit the app; the next toggle brings the terminal back with every edit already applied.
-- The hide on open is unconditional - it does not touch `hide_on_focus_loss`, which keeps governing ordinary focus loss once the window is closed.
-
-Each control states next to it when its edit takes effect, and because the terminal is hidden while the window is open, even the live keys land visibly at the next show:
-
-| Field | Applies |
-|---|---|
-| `height_percent`, `width_percent`, `h_align`, `edge` | live - reshapes a shown surface in place (deferred mid-drag and mid-slide); visible at the next show while the window is open |
-| `tab_position` | live - pure relayout, no reshape: the strip reorders immediately and nothing resizes; visible at the next show while the window is open |
-| `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title and cwd the moment the pick lands; visible at the next show while the window is open |
-| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab; visible at the next show while the window is open - the settings window itself restyles with a theme pick |
-| `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
-| `shell`, `args`, `scrollback_lines` | new tabs only |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
-
-These Behavior toggles default to `true`, which is exactly the pre-settings behavior:
-
-- `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
-- `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
-- `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
-
-Controls constrain input to the same ranges as the config (`height_percent` 10-100, `width_percent` 30-100, `opacity` 0-100, `scrollback_lines` non-negative); the write path never persists an out-of-range value. One known limitation: the `args` input splits on whitespace with no quoting support - arguments containing spaces stay config-file-only.
 
 ## Features (v1)
 
