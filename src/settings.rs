@@ -19,7 +19,7 @@ use cosmic::cosmic_config::{self, ConfigSet as _};
 
 use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
-    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, TabPosition, ThemePreference,
+    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::terminal::theme_source::scheme_names;
 
@@ -80,6 +80,7 @@ impl Section {
                 ConfigKey::SessionPersistenceEnabled,
                 ConfigKey::SlideAnimationEnabled,
                 ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
             ],
             Section::Terminal => &[
@@ -113,6 +114,7 @@ pub enum ConfigKey {
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
     BellNotificationEnabled,
+    TabTitleMode,
     NewTabAfterCurrent,
     Shell,
     Args,
@@ -143,6 +145,7 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
+            ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
@@ -177,6 +180,7 @@ pub enum PlannedWrite {
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
+    TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
     Shell(String),
     Args(Vec<String>),
@@ -205,6 +209,7 @@ impl PlannedWrite {
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
+            PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
@@ -265,6 +270,9 @@ impl PlannedWrite {
             }
             PlannedWrite::BellNotificationEnabled(value) => {
                 handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
+            }
+            PlannedWrite::TabTitleMode(value) => {
+                handler.set(ConfigKey::TabTitleMode.key_name(), value)
             }
             PlannedWrite::NewTabAfterCurrent(value) => {
                 handler.set(ConfigKey::NewTabAfterCurrent.key_name(), *value)
@@ -412,6 +420,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::HAlign
         | ConfigKey::Edge
         | ConfigKey::TabPosition
+        | ConfigKey::TabTitleMode
         | ConfigKey::FontName
         | ConfigKey::FontSize
         | ConfigKey::Opacity
@@ -440,6 +449,12 @@ const TAB_POSITION_OPTIONS: &[(TabPosition, &str)] = &[
     (TabPosition::Auto, "Follow edge"),
     (TabPosition::Top, "Top"),
     (TabPosition::Bottom, "Bottom"),
+];
+const TAB_TITLE_MODE_OPTIONS: &[(TabTitleMode, &str)] = &[
+    (TabTitleMode::Shell, "Shell title"),
+    (TabTitleMode::AbbreviatedPath, "Abbreviated path"),
+    (TabTitleMode::LastSegment, "Last segment"),
+    (TabTitleMode::Numbered, "Terminal number"),
 ];
 const LAYER_OPTIONS: &[(Layer, &str)] = &[(Layer::Overlay, "Overlay"), (Layer::Top, "Top")];
 const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
@@ -474,6 +489,9 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
         ConfigKey::TabPosition => TAB_POSITION_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.tab_position),
+        ConfigKey::TabTitleMode => TAB_TITLE_MODE_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.tab_title_mode),
         ConfigKey::Layer => LAYER_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.layer),
@@ -503,6 +521,9 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::TabPosition => TAB_POSITION_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::TabPosition(*value)),
+        ConfigKey::TabTitleMode => TAB_TITLE_MODE_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::TabTitleMode(*value)),
         ConfigKey::Layer => LAYER_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::Layer(*value)),
@@ -679,6 +700,7 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",
+            ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
@@ -830,6 +852,10 @@ fn dropdown_control(
             .iter()
             .map(|(_, label)| *label)
             .collect(),
+        ConfigKey::TabTitleMode => TAB_TITLE_MODE_OPTIONS
+            .iter()
+            .map(|(_, label)| *label)
+            .collect(),
         ConfigKey::Layer => LAYER_OPTIONS.iter().map(|(_, label)| *label).collect(),
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .iter()
@@ -936,6 +962,7 @@ mod tests {
             PlannedWrite::SessionPersistenceEnabled(true),
             PlannedWrite::SlideAnimationEnabled(true),
             PlannedWrite::BellNotificationEnabled(true),
+            PlannedWrite::TabTitleMode(TabTitleMode::Shell),
             PlannedWrite::NewTabAfterCurrent(true),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
@@ -1354,8 +1381,9 @@ mod tests {
     #[test]
     fn new_tab_after_current_sits_in_behavior_after_bell_notifications() {
         // The "New tabs after current tab" row lands after "Bell
-        // notifications" in the Behavior card; its flip commits the
-        // config bool through the single PlannedWrite path.
+        // notifications" (and the "Tab titles" row) in the Behavior
+        // card; its flip commits the config bool through the single
+        // PlannedWrite path.
         assert_eq!(
             Section::Behavior.keys(),
             &[
@@ -1363,6 +1391,7 @@ mod tests {
                 ConfigKey::SessionPersistenceEnabled,
                 ConfigKey::SlideAnimationEnabled,
                 ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
             ]
         );
@@ -1515,6 +1544,90 @@ mod tests {
         assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(1));
         config.tab_position = TabPosition::Bottom;
         assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(2));
+    }
+
+    // --- the Behavior tab-titles dropdown ---
+
+    #[test]
+    fn tab_title_mode_sits_in_behavior_after_bell_notifications() {
+        // The "Tab titles" row lands after "Bell notifications" (with
+        // only the "New tabs after current tab" row after it) in the
+        // Behavior card, and the mode flip applies live through the
+        // retitle loop.
+        assert_eq!(
+            Section::Behavior.keys(),
+            &[
+                ConfigKey::HideOnFocusLoss,
+                ConfigKey::SessionPersistenceEnabled,
+                ConfigKey::SlideAnimationEnabled,
+                ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabTitleMode,
+                ConfigKey::NewTabAfterCurrent,
+            ]
+        );
+        assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");
+        assert_eq!(ConfigKey::TabTitleMode.key_name(), "tab_title_mode");
+        assert_eq!(apply_timing(ConfigKey::TabTitleMode), ApplyTiming::Live);
+    }
+
+    #[test]
+    fn tab_title_mode_options_are_exactly_the_four_modes() {
+        // Shell title first, so the default config's selection is
+        // index 0 (the Follow system pattern).
+        assert_eq!(
+            TAB_TITLE_MODE_OPTIONS,
+            &[
+                (TabTitleMode::Shell, "Shell title"),
+                (TabTitleMode::AbbreviatedPath, "Abbreviated path"),
+                (TabTitleMode::LastSegment, "Last segment"),
+                (TabTitleMode::Numbered, "Terminal number"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_title_mode_picks_round_trip_and_out_of_range_rejects() {
+        // A pick commits exactly its variant — the control can never
+        // invent a value; indices past the table (including exactly
+        // len) reject instead of panicking.
+        assert_eq!(
+            dropdown_write(ConfigKey::TabTitleMode, 0),
+            Some(PlannedWrite::TabTitleMode(TabTitleMode::Shell))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::TabTitleMode, 1),
+            Some(PlannedWrite::TabTitleMode(TabTitleMode::AbbreviatedPath))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::TabTitleMode, 2),
+            Some(PlannedWrite::TabTitleMode(TabTitleMode::LastSegment))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::TabTitleMode, 3),
+            Some(PlannedWrite::TabTitleMode(TabTitleMode::Numbered))
+        );
+        assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 4), None);
+        assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 99), None);
+        // The write targets exactly its own key, nothing else.
+        assert_eq!(
+            PlannedWrite::TabTitleMode(TabTitleMode::Numbered).key(),
+            ConfigKey::TabTitleMode
+        );
+    }
+
+    #[test]
+    fn tab_title_mode_selection_mirrors_the_config_value() {
+        // Default config → Shell → Some(0); every committed variant
+        // re-selects its own position, so the dropdown opens on the
+        // file's current value.
+        let mut config = DropTermConfig::default();
+        assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(0));
+        config.tab_title_mode = TabTitleMode::AbbreviatedPath;
+        assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(1));
+        config.tab_title_mode = TabTitleMode::LastSegment;
+        assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(2));
+        config.tab_title_mode = TabTitleMode::Numbered;
+        assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(3));
     }
 
     #[test]
