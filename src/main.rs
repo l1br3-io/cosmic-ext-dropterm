@@ -22,6 +22,7 @@ mod geometry;
 mod grab_bar;
 mod keybinds;
 mod notify;
+mod profile;
 mod session;
 mod settings;
 mod slide;
@@ -170,7 +171,8 @@ mod tests {
             plain,
             Some(ToggleAction::NewTab {
                 cwd: None,
-                cmd: None
+                cmd: None,
+                profile: None
             })
         );
 
@@ -179,7 +181,8 @@ mod tests {
             with_cwd,
             Some(ToggleAction::NewTab {
                 cwd: Some("/tmp".into()),
-                cmd: None
+                cmd: None,
+                profile: None
             })
         );
 
@@ -188,7 +191,8 @@ mod tests {
             with_cmd,
             Some(ToggleAction::NewTab {
                 cwd: None,
-                cmd: Some("htop -u root".to_string())
+                cmd: Some("htop -u root".to_string()),
+                profile: None
             })
         );
 
@@ -198,9 +202,60 @@ mod tests {
             with_both,
             Some(ToggleAction::NewTab {
                 cwd: Some("/tmp".into()),
-                cmd: Some("htop".to_string())
+                cmd: Some("htop".to_string()),
+                profile: None
             })
         );
+    }
+
+    #[test]
+    fn new_tab_profile_parses_alone_and_composed_with_cwd() {
+        let alone = Args::parse_from(["dropterm", "new-tab", "--profile", "ssh-web"]).action;
+        assert_eq!(
+            alone,
+            Some(ToggleAction::NewTab {
+                cwd: None,
+                cmd: None,
+                profile: Some("ssh-web".to_string())
+            })
+        );
+
+        // The explicit --cwd composes with --profile (OQ-2): the tab
+        // runs the profile in the requested directory.
+        let composed = Args::parse_from([
+            "dropterm",
+            "new-tab",
+            "--cwd",
+            "/tmp",
+            "--profile",
+            "ssh-web",
+        ])
+        .action;
+        assert_eq!(
+            composed,
+            Some(ToggleAction::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: None,
+                profile: Some("ssh-web".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn profile_conflicts_with_cmd_at_parse() {
+        // A --cmd run is not a profile run; clap rejects the pairing
+        // instead of guessing which one wins.
+        let result =
+            Args::try_parse_from(["dropterm", "new-tab", "--profile", "x", "--cmd", "htop"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_profile_is_rejected_at_parse() {
+        // An empty name cannot resolve to anything; it dies at the CLI
+        // edge exactly like an empty --cmd.
+        let result = Args::try_parse_from(["dropterm", "new-tab", "--profile", ""]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -342,18 +397,32 @@ mod tests {
             ToggleAction::NewTab {
                 cwd: None,
                 cmd: None,
+                profile: None,
             },
             ToggleAction::NewTab {
                 cwd: Some("/tmp".into()),
                 cmd: None,
+                profile: None,
             },
             ToggleAction::NewTab {
                 cwd: None,
                 cmd: Some("htop".to_string()),
+                profile: None,
             },
             ToggleAction::NewTab {
                 cwd: Some("/tmp".into()),
                 cmd: Some("htop -u root".to_string()),
+                profile: None,
+            },
+            ToggleAction::NewTab {
+                cwd: None,
+                cmd: None,
+                profile: Some("ssh-web".to_string()),
+            },
+            ToggleAction::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: None,
+                profile: Some("ssh-web".to_string()),
             },
             ToggleAction::CloseTab { tab_index: None },
             ToggleAction::CloseTab { tab_index: Some(2) },

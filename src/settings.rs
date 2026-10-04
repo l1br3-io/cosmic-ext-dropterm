@@ -81,6 +81,7 @@ impl Section {
                 ConfigKey::SlideAnimationEnabled,
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
+                ConfigKey::NewTabAfterCurrent,
             ],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -114,6 +115,7 @@ pub enum ConfigKey {
     SlideAnimationEnabled,
     BellNotificationEnabled,
     TabTitleMode,
+    NewTabAfterCurrent,
     Shell,
     Args,
     ScrollbackLines,
@@ -144,6 +146,7 @@ impl ConfigKey {
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
+            ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
             ConfigKey::ScrollbackLines => "scrollback_lines",
@@ -178,6 +181,7 @@ pub enum PlannedWrite {
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
     TabTitleMode(TabTitleMode),
+    NewTabAfterCurrent(bool),
     Shell(String),
     Args(Vec<String>),
     ScrollbackLines(u32),
@@ -206,6 +210,7 @@ impl PlannedWrite {
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
+            PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
             PlannedWrite::ScrollbackLines(_) => ConfigKey::ScrollbackLines,
@@ -268,6 +273,9 @@ impl PlannedWrite {
             }
             PlannedWrite::TabTitleMode(value) => {
                 handler.set(ConfigKey::TabTitleMode.key_name(), value)
+            }
+            PlannedWrite::NewTabAfterCurrent(value) => {
+                handler.set(ConfigKey::NewTabAfterCurrent.key_name(), *value)
             }
             PlannedWrite::Shell(value) => handler.set(ConfigKey::Shell.key_name(), value),
             PlannedWrite::Args(value) => handler.set(ConfigKey::Args.key_name(), value),
@@ -426,7 +434,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         ConfigKey::HideOnFocusLoss
         | ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
-        | ConfigKey::BellNotificationEnabled => ApplyTiming::NextTrigger,
+        | ConfigKey::BellNotificationEnabled
+        | ConfigKey::NewTabAfterCurrent => ApplyTiming::NextTrigger,
     }
 }
 
@@ -655,6 +664,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
+        ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         _ => None,
     }
@@ -691,6 +701,7 @@ impl ConfigKey {
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",
             ConfigKey::TabTitleMode => "Tab titles",
+            ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
@@ -881,6 +892,7 @@ fn toggle_control(
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
+        ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::RespectPanel => config.respect_panel,
         _ => return None,
     };
@@ -951,6 +963,7 @@ mod tests {
             PlannedWrite::SlideAnimationEnabled(true),
             PlannedWrite::BellNotificationEnabled(true),
             PlannedWrite::TabTitleMode(TabTitleMode::Shell),
+            PlannedWrite::NewTabAfterCurrent(true),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
             PlannedWrite::ScrollbackLines(10_000),
@@ -1000,6 +1013,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 "bell_notification_enabled",
             ),
+            (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
             (ConfigKey::Shell, "shell"),
             (ConfigKey::Args, "args"),
             (ConfigKey::ScrollbackLines, "scrollback_lines"),
@@ -1262,6 +1276,7 @@ mod tests {
             ConfigKey::HideOnFocusLoss,
             ConfigKey::SessionPersistenceEnabled,
             ConfigKey::SlideAnimationEnabled,
+            ConfigKey::NewTabAfterCurrent,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::NextTrigger, "{key:?}");
         }
@@ -1360,6 +1375,33 @@ mod tests {
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
             ]
+        );
+    }
+
+    #[test]
+    fn new_tab_after_current_sits_in_behavior_after_bell_notifications() {
+        // The "New tabs after current tab" row lands after "Bell
+        // notifications" (and the "Tab titles" row) in the Behavior
+        // card; its flip commits the config bool through the single
+        // PlannedWrite path.
+        assert_eq!(
+            Section::Behavior.keys(),
+            &[
+                ConfigKey::HideOnFocusLoss,
+                ConfigKey::SessionPersistenceEnabled,
+                ConfigKey::SlideAnimationEnabled,
+                ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabTitleMode,
+                ConfigKey::NewTabAfterCurrent,
+            ]
+        );
+        assert_eq!(
+            ConfigKey::NewTabAfterCurrent.label(),
+            "New tabs after current tab"
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::NewTabAfterCurrent, false),
+            Some(PlannedWrite::NewTabAfterCurrent(false))
         );
     }
 
@@ -1508,8 +1550,10 @@ mod tests {
 
     #[test]
     fn tab_title_mode_sits_in_behavior_after_bell_notifications() {
-        // The "Tab titles" row lands at the end of the Behavior card,
-        // and the mode flip applies live through the retitle loop.
+        // The "Tab titles" row lands after "Bell notifications" (with
+        // only the "New tabs after current tab" row after it) in the
+        // Behavior card, and the mode flip applies live through the
+        // retitle loop.
         assert_eq!(
             Section::Behavior.keys(),
             &[
@@ -1518,6 +1562,7 @@ mod tests {
                 ConfigKey::SlideAnimationEnabled,
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
+                ConfigKey::NewTabAfterCurrent,
             ]
         );
         assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");

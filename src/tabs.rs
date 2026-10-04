@@ -109,6 +109,12 @@ pub struct Tab {
     /// model restores "a fresh shell in a familiar place" — never a
     /// resumed program — so command tabs are transient by design.
     pub ephemeral: bool,
+    /// The profile id this tab launched under, if any: recorded at
+    /// spawn so the session saves it, and re-resolved against the
+    /// live config at restore. `None` for plain-shell and `--cmd`
+    /// tabs — profiles are the explicit opt-in that makes a command
+    /// tab persistent.
+    pub profile: Option<String>,
     /// Whether this tab already posted a bell notification during the
     /// current hide period: armed when a
     /// notification is posted, cleared for every tab when the surface
@@ -131,18 +137,26 @@ impl Tab {
             shell,
             attention: Attention::None,
             ephemeral: false,
+            profile: None,
             bell_notified: false,
             terminal: Mutex::new(terminal),
         }
     }
 }
 
-/// Inserts `tab` directly after the active tab and returns the index to
-/// activate (the new tab's own index). The insertion point is clamped
-/// into the list, so an out-of-range active index — or an empty list —
-/// appends instead.
-pub fn insert_after_active<T>(tabs: &mut Vec<T>, active: usize, tab: T) -> usize {
-    let at = (active + 1).min(tabs.len());
+/// Inserts `tab` at the configured position for a new tab and returns the
+/// index to activate (the new tab's own index). `after_current` — the
+/// `new_tab_after_current` config — picks the position: `true` inserts
+/// directly after the active tab, clamped into the list so an
+/// out-of-range active index — or an empty list — appends instead;
+/// `false` appends at the end (Guake `new-tab-after`). Activation is
+/// unaffected: the new tab becomes active either way.
+pub fn insert_new_tab<T>(tabs: &mut Vec<T>, active: usize, after_current: bool, tab: T) -> usize {
+    let at = if after_current {
+        (active + 1).min(tabs.len())
+    } else {
+        tabs.len()
+    };
     tabs.insert(at, tab);
     at
 }
@@ -466,25 +480,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insert_after_active_places_new_tab_after_active() {
+    fn after_current_placement_puts_the_new_tab_after_active() {
         let mut list = vec![10, 20, 30];
-        let new_active = insert_after_active(&mut list, 1, 99);
+        let new_active = insert_new_tab(&mut list, 1, true, 99);
         assert_eq!(list, vec![10, 20, 99, 30]);
         assert_eq!(new_active, 2);
     }
 
     #[test]
-    fn insert_after_active_appends_when_active_is_last() {
+    fn after_current_placement_appends_when_active_is_last() {
         let mut list = vec![10, 20];
-        let new_active = insert_after_active(&mut list, 1, 99);
+        let new_active = insert_new_tab(&mut list, 1, true, 99);
         assert_eq!(list, vec![10, 20, 99]);
         assert_eq!(new_active, 2);
     }
 
     #[test]
-    fn insert_after_active_fills_an_empty_list() {
+    fn after_current_placement_fills_an_empty_list() {
         let mut list = Vec::new();
-        let new_active = insert_after_active(&mut list, 0, 7);
+        let new_active = insert_new_tab(&mut list, 0, true, 7);
+        assert_eq!(list, vec![7]);
+        assert_eq!(new_active, 0);
+    }
+
+    #[test]
+    fn at_end_placement_appends_past_a_mid_list_active() {
+        let mut list = vec![10, 20, 30];
+        let new_active = insert_new_tab(&mut list, 1, false, 99);
+        assert_eq!(list, vec![10, 20, 30, 99]);
+        assert_eq!(new_active, 3);
+    }
+
+    #[test]
+    fn at_end_placement_appends_when_active_is_last() {
+        let mut list = vec![10, 20];
+        let new_active = insert_new_tab(&mut list, 1, false, 99);
+        assert_eq!(list, vec![10, 20, 99]);
+        assert_eq!(new_active, 2);
+    }
+
+    #[test]
+    fn at_end_placement_fills_an_empty_list() {
+        let mut list = Vec::new();
+        let new_active = insert_new_tab(&mut list, 0, false, 7);
         assert_eq!(list, vec![7]);
         assert_eq!(new_active, 0);
     }

@@ -49,7 +49,7 @@ cosmic-ext-dropterm new-tab --cwd ~/src     # a shell in an explicit directory
 cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
 ```
 
-A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead.
+A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead. Where the tab lands follows `new_tab_after_current` (default `true`: directly after the active tab; `false`: at the end of the tab list).
 
 The tab verbs script tab management over the same seam. All indices are 1-based (`0` is rejected at the CLI edge; out-of-range targets warn and no-op):
 
@@ -63,7 +63,7 @@ cosmic-ext-dropterm duplicate-tab                   # fresh shell in the active 
 cosmic-ext-dropterm select-tab 2                    # activate the second tab, strictly
 ```
 
-`close-tab` and `rename-tab` are quiet state edits for scripts - they never show the overlay. `duplicate-tab` and `select-tab` are tab-facing: like `new-tab`, they show the overlay, and a request arriving mid-slide-out reverses it instead of finishing the hide. A rename pins a title that no shell OSC title change can overwrite; the empty string is the documented reset (shell titles resume), and a pending inline rename on that tab is discarded when the remote title lands. `duplicate-tab` opens a *fresh shell* in the target tab's cwd - the running command is never copied - lands after the active tab, and becomes active; with an unresolvable target it degrades to the active tab's cwd. `select-tab N` is strict: no wrap, no `9 = last`. Sent while the app is not running, all four verbs just start the app plain - only `new-tab` carries startup meaning.
+`close-tab` and `rename-tab` are quiet state edits for scripts - they never show the overlay. `duplicate-tab` and `select-tab` are tab-facing: like `new-tab`, they show the overlay, and a request arriving mid-slide-out reverses it instead of finishing the hide. A rename pins a title that no shell OSC title change can overwrite; the empty string is the documented reset (shell titles resume), and a pending inline rename on that tab is discarded when the remote title lands. `duplicate-tab` opens a *fresh shell* in the target tab's cwd - the running command is never copied - lands after the active tab (always, whatever `new_tab_after_current` says), and becomes active; with an unresolvable target it degrades to the active tab's cwd. `select-tab N` is strict: no wrap, no `9 = last`. Sent while the app is not running, all four verbs just start the app plain - only `new-tab` carries startup meaning.
 
 Scripts can also *ask* instead of act: `cosmic-ext-dropterm --is-visible` prints `true`/`false` and exits with a matching code (0 visible, 1 hidden or not running), without ever summoning the terminal. It cannot be combined with the action subcommands:
 
@@ -134,7 +134,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`). Every one of them except the two profile keys (documented below - their settings page ships later) is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -160,6 +160,18 @@ echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_pan
 ```
 
 With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
+
+Profiles - named presets of what a tab runs - are config-file-only for now: hand-edit them until their settings page ships. A profile is its `name` (also its id, matched exactly and case-sensitively), a `command` line (split on whitespace, like `args`), and an optional `cwd` that is not checked to exist until the tab spawns:
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/profiles
+(
+    {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web")},
+    {"name": "top", "command": "htop"},
+)
+```
+
+`default_profile` (default unset) names the profile plain new tabs launch; a name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. The ways to actually launch under a profile - the tab context menu, `new-tab --profile NAME`, and the default's application - arrive in the next release.
 
 ## Session persistence
 
@@ -227,7 +239,7 @@ A bell that rings while the terminal is *hidden* posts a desktop notification na
 
 Every setting above is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus, or click the gear button at the right corner of the tab strip. The window is a separate normal window in the same process. The strip is always present whatever the tab count - with a single tab it carries the settings button alone - so settings are one click away in every state; hovering the button shows a `Settings…` tooltip and the click opens the same settings window the keybind opens. The keypress is swallowed from the shell like every other app bind. A second press focuses the existing window; there is never a second one.
 
-The window shows five cards - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior, Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
+The window shows five cards - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
 
 While the window is open the terminal is hidden: a normal window can never stack above a layer surface on COSMIC, so opening settings hides the drop-down through its normal hide path (animated when slides are enabled) - the same resolution as Guake's default hide-on-focus-loss for its prefs. The rules:
 
@@ -245,12 +257,13 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab; visible at the next show while the window is open - the settings window itself restyles with a theme pick |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell |
+| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
 
-The two Behavior toggles default to `true`, which is exactly the pre-settings behavior:
+These Behavior toggles default to `true`, which is exactly the pre-settings behavior:
 
 - `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
 - `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
+- `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
 
 Controls constrain input to the same ranges as the config (`height_percent` 10-100, `width_percent` 30-100, `opacity` 0-100, `scrollback_lines` non-negative); the write path never persists an out-of-range value. One known limitation: the `args` input splits on whitespace with no quoting support - arguments containing spaces stay config-file-only.
 
@@ -293,7 +306,8 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Tab moves: `Ctrl+Shift+PageUp`/`PageDown` shift the active tab one slot, clamping at the list edges (no wrap); the moved tab stays active and focused, and `session.ron` records the new order
 - [ ] Attention markers: with two tabs, `printf '\a'` in the inactive tab marks it `🔔`; `echo hi` in a third (inactive) tab marks it `•`; activating a marked tab clears its marker; the active tab never gains one; a `while true; printf '\a'; done` bell storm in an inactive tab leaves one steady `🔔` (a state, not a counter); markers follow their tabs through drag-reorder and survive the closing of neighbors
 - [ ] Bell notifications: hide the terminal, `printf '\a'` inside it - exactly one desktop notification appears, naming the tab; a bell storm while hidden still yields exactly one; two different tabs belling while hidden yield two; showing and re-hiding re-arms the latch (a new bell notifies again); with the terminal visible a bell posts no notification (marker only); `bell_notification_enabled: false` silences them and the Behavior toggle round-trips to the config file
-- [ ] Remote new-tab: with the app running, `cosmic-ext-dropterm new-tab` opens a tab in the running instance, places it after the active tab, activates it, and shows the overlay; with the app not running, the first launch starts with that tab (alongside any restored session tabs)
+- [ ] Remote new-tab: with the app running, `cosmic-ext-dropterm new-tab` opens a tab in the running instance, places it per `new_tab_after_current` (default: after the active tab; see the placement item below), activates it, and shows the overlay; with the app not running, the first launch starts with that tab (alongside any restored session tabs)
+- [ ] New-tab placement: with `new_tab_after_current: false` (written to the config file or flipped via the Behavior toggle, which round-trips to the file), `Ctrl+Shift+T`, the tab bar's `+`, and `cosmic-ext-dropterm new-tab` append the new tab at the end and activate it - including a first-launch `new-tab` alongside restored session tabs; `duplicate-tab` still lands after the active tab; a restart keeps session order; with the key absent or `true`, every new tab lands after the active tab exactly as the default always did
 - [ ] `new-tab --cwd /tmp` opens the shell in `/tmp`; `new-tab --cwd /nonexistent` logs a `warn` and opens in the fallback directory; with the active tab cd'd somewhere, plain `new-tab` inherits that cwd
 - [ ] `new-tab --cmd htop` runs htop instead of the shell (no config shell arguments inherited), and closing htop closes the tab; the `--cmd` tab is absent from `session.ron` after the next debounced save, while plain `new-tab` tabs are saved like any other
 - [ ] `toggle`/`show`/`hide` still round-trip through a second launch exactly as before (including via D-Bus activation)

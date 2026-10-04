@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::profile::{Profile, find};
+
 /// The schema version this build writes and understands. Files carrying
 /// any other version are quarantined, never guessed at (see [`load`]).
 pub const SESSION_VERSION: u32 = 1;
@@ -37,10 +39,18 @@ pub struct SessionTab {
     pub title: String,
     /// A user rename, if any; survives restore un-clobbered.
     pub title_override: Option<String>,
-    /// The shell this tab ran, recorded when it was spawned.
+    /// The shell this tab ran, recorded when it was spawned. For a
+    /// profile tab this is the program path (uniform capture);
+    /// restore ignores it when the profile id resolves.
     pub shell: String,
     /// Working directory at save time; `None` spawns the default.
     pub cwd: Option<PathBuf>,
+    /// The profile id this tab launched under, if any: re-resolved
+    /// against the current config at restore, so a profile edited
+    /// between save and restart launches the edited command. Absent
+    /// in files written before profiles existed; plain-shell and
+    /// `--cmd` tabs save `None`.
+    pub profile: Option<String>,
 }
 
 /// A borrowed view of one live tab at save time. `cwd` is the raw
@@ -56,6 +66,10 @@ pub struct TabSnapshot<'a> {
     /// skipped by [`capture`] — the session never
     /// resumes a program.
     pub ephemeral: bool,
+    /// The profile id the tab launched under, if any — saved verbatim
+    /// by [`capture`]; restore re-resolves it against the live
+    /// profile list.
+    pub profile: Option<&'a str>,
 }
 
 /// Builds the saved state from per-tab snapshots, keeping each `cwd`
@@ -79,6 +93,7 @@ pub fn capture(snapshots: &[TabSnapshot<'_>], active: usize) -> SessionState {
             title_override: snap.title_override.map(str::to_owned),
             shell: snap.shell.to_owned(),
             cwd: snap.cwd.filter(|cwd| cwd.is_dir()).map(Path::to_owned),
+            profile: snap.profile.map(str::to_owned),
         });
     }
     SessionState {
@@ -97,6 +112,12 @@ pub struct SpawnSpec {
     /// Re-validated at plan time: the saved cwd while still a directory,
     /// else `$HOME`, else `None` (spawn default).
     pub cwd: Option<PathBuf>,
+    /// The profile the tab's saved id re-resolved to, if it still
+    /// exists: the *current* definition (command and cwd) governs the
+    /// respawn. `None` for plain-shell tabs — and for a saved id that
+    /// no longer resolves, which spawns the plain shell with no
+    /// chaining through any default profile.
+    pub profile: Option<Profile>,
 }
 
 /// A valid restore plan: one [`SpawnSpec`] per saved tab, in order, plus
@@ -107,28 +128,52 @@ pub struct RestorePlan {
     pub active: usize,
 }
 
-/// Turns a loaded state into per-tab [`SpawnSpec`]s: each saved cwd is
-/// re-validated (dead → `home`, missing `home` → `None`) and `active`
-/// is clamped into range. Returns `None` for an empty tab list — the
-/// caller falls back to the fresh single-tab startup. Pure: `home` is
-/// a parameter, not an environment read.
-pub fn plan_restore(state: &SessionState, home: Option<&Path>) -> Option<RestorePlan> {
+/// Turns a loaded state into per-tab [`SpawnSpec`]s: profile ids
+/// re-resolve against `profiles` — the *current* definition wins, so
+/// an edit between save and restore launches the edited command —
+/// each saved cwd is re-validated (dead → the profile's live cwd →
+/// `home`, missing `home` → `None`) and `active` is clamped into
+/// range. Returns `None` for an empty tab list — the caller falls
+/// back to the fresh single-tab startup. Pure: `home` and the
+/// profile list are parameters, not environment reads.
+pub fn plan_restore(
+    state: &SessionState,
+    home: Option<&Path>,
+    profiles: &[Profile],
+) -> Option<RestorePlan> {
     if state.tabs.is_empty() {
         return None;
     }
     let tabs = state
         .tabs
         .iter()
-        .map(|tab| SpawnSpec {
-            title: tab.title.clone(),
-            title_override: tab.title_override.clone(),
-            shell: tab.shell.clone(),
-            cwd: tab
-                .cwd
-                .as_deref()
-                .filter(|cwd| cwd.is_dir())
-                .or(home)
-                .map(Path::to_owned),
+        .map(|tab| {
+            // Re-resolve by id: the *current* definition wins, so a
+            // profile edited between save and restore launches the
+            // edited command; a missing id is the plain shell — no
+            // chaining through any default (the session records the
+            // id it launched under, and that id alone).
+            let profile = tab.profile.as_deref().and_then(|id| find(profiles, id));
+            SpawnSpec {
+                title: tab.title.clone(),
+                title_override: tab.title_override.clone(),
+                shell: tab.shell.clone(),
+                // The familiar place: the saved cwd while still a
+                // directory, else the (current) profile's cwd while
+                // still a directory, else `$HOME`, else `None`.
+                cwd: tab
+                    .cwd
+                    .as_deref()
+                    .filter(|cwd| cwd.is_dir())
+                    .or_else(|| {
+                        profile
+                            .and_then(|profile| profile.cwd.as_deref())
+                            .filter(|cwd| cwd.is_dir())
+                    })
+                    .or(home)
+                    .map(Path::to_owned),
+                profile: profile.cloned(),
+            }
         })
         .collect();
     Some(RestorePlan {
@@ -147,12 +192,14 @@ pub struct RestoreStash {
 }
 
 impl RestoreStash {
-    /// Stashes the restore plan for a loaded state: an absent,
-    /// invalid, or tab-less session stashes nothing, leaving startup
-    /// on the fresh single-tab path.
-    pub fn new(state: Option<&SessionState>, home: Option<&Path>) -> Self {
+    /// Stashes the restore plan for a loaded state — re-resolving
+    /// saved profile ids against `profiles` (see [`plan_restore`]) —
+    /// for the first spawn run that can use it. An absent, invalid,
+    /// or tab-less session stashes nothing, leaving startup on the
+    /// fresh single-tab path.
+    pub fn new(state: Option<&SessionState>, home: Option<&Path>, profiles: &[Profile]) -> Self {
         Self {
-            plan: state.and_then(|state| plan_restore(state, home)),
+            plan: state.and_then(|state| plan_restore(state, home, profiles)),
         }
     }
 
@@ -280,17 +327,23 @@ pub fn cwd_changed(last: Option<&Path>, current: Option<&Path>) -> bool {
 }
 
 /// The gated restore entry the app's `init` calls: the toggle is
-/// decided here, before the file is ever touched. Disabled, the read
-/// is skipped
-/// entirely — not merely the restore — because `load` quarantines
-/// invalid files, and a disabled run must leave even a corrupt state
-/// file exactly where it waits (no `.bak`, no fresh start) for a
-/// future launch with the key back on.
-pub fn restore_entry(path: &Path, home: Option<&Path>, enabled: bool) -> RestoreStash {
+/// decided here, before the file is ever touched, and saved profile
+/// ids re-resolve against `profiles` — the loaded config, so a
+/// profile edited between sessions wins. Disabled, the read is
+/// skipped entirely — not merely the restore — because `load`
+/// quarantines invalid files, and a disabled run must leave even a
+/// corrupt state file exactly where it waits (no `.bak`, no fresh
+/// start) for a future launch with the key back on.
+pub fn restore_entry(
+    path: &Path,
+    home: Option<&Path>,
+    enabled: bool,
+    profiles: &[Profile],
+) -> RestoreStash {
     if !enabled {
         return RestoreStash::default();
     }
-    RestoreStash::new(load(path).as_ref(), home)
+    RestoreStash::new(load(path).as_ref(), home, profiles)
 }
 
 /// Loads the session file. A missing file is a silent `None` (first
@@ -470,6 +523,7 @@ mod tests {
                 title_override: None,
                 shell: "/bin/sh".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
+                profile: None,
             }],
         }
     }
@@ -484,11 +538,47 @@ mod tests {
                 title_override: Some("work".to_owned()),
                 shell: "/bin/zsh".to_owned(),
                 cwd: Some(PathBuf::from("/home/jpt/src")),
+                profile: None,
             }],
         };
         let text = ron::to_string(&state).expect("serialize");
         let back: SessionState = ron::from_str(&text).expect("deserialize");
         assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_profile_tab_round_trips_through_ron() {
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "web-prod".to_owned(),
+                title_override: None,
+                shell: "ssh".to_owned(),
+                cwd: Some(PathBuf::from("/srv/web")),
+                profile: Some("web-prod".to_owned()),
+            }],
+        };
+        let text = ron::to_string(&state).expect("serialize");
+        let back: SessionState = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_session_file_without_the_profile_key_deserializes() {
+        // Files written before profiles existed lack the `profile`
+        // field entirely; they must load as plain-shell tabs — the
+        // additive-optional-field compatibility pin.
+        let text = r#"(
+            version: 1,
+            active: Some(0),
+            tabs: [
+                (title: "vim", title_override: None, shell: "/bin/sh", cwd: None),
+            ],
+        )"#;
+        let state: SessionState = ron::from_str(text).expect("pre-profile session parses");
+        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.tabs[0].profile, None);
     }
 
     #[test]
@@ -503,6 +593,7 @@ mod tests {
                 shell: "/bin/zsh",
                 cwd: None,
                 ephemeral: false,
+                profile: None,
             },
             TabSnapshot {
                 title: "htop",
@@ -510,6 +601,7 @@ mod tests {
                 shell: "htop",
                 cwd: None,
                 ephemeral: true,
+                profile: None,
             },
             TabSnapshot {
                 title: "src",
@@ -517,6 +609,7 @@ mod tests {
                 shell: "/bin/zsh",
                 cwd: None,
                 ephemeral: false,
+                profile: None,
             },
         ];
         let state = capture(&snapshots, 2);
@@ -535,6 +628,7 @@ mod tests {
             shell: "htop",
             cwd: None,
             ephemeral: true,
+            profile: None,
         }];
         let state = capture(&snapshots, 0);
         assert!(state.tabs.is_empty());
@@ -552,6 +646,7 @@ mod tests {
                 shell: "/bin/sh",
                 cwd: Some(&live),
                 ephemeral: false,
+                profile: None,
             },
             TabSnapshot {
                 title: "dead",
@@ -559,6 +654,7 @@ mod tests {
                 shell: "/bin/sh",
                 cwd: Some(&dead_path()),
                 ephemeral: false,
+                profile: None,
             },
             TabSnapshot {
                 title: "unset",
@@ -566,6 +662,7 @@ mod tests {
                 shell: "/bin/sh",
                 cwd: None,
                 ephemeral: false,
+                profile: None,
             },
         ];
         let state = capture(&items, 2);
@@ -584,11 +681,52 @@ mod tests {
             shell: "/bin/zsh",
             cwd: None,
             ephemeral: false,
+            profile: None,
         }];
         let state = capture(&items, 0);
         assert_eq!(state.tabs[0].title, "vim");
         assert_eq!(state.tabs[0].title_override.as_deref(), Some("work"));
         assert_eq!(state.tabs[0].shell, "/bin/zsh");
+    }
+
+    #[test]
+    fn capture_maps_the_profile_id_and_keeps_skipping_ephemerals() {
+        // The id is saved verbatim from the live tab; the ephemeral
+        // skip rule stays capture's own — a transient tab never enters
+        // the session, whatever it carries.
+        let snapshots = [
+            TabSnapshot {
+                title: "shell",
+                title_override: None,
+                shell: "/bin/zsh",
+                cwd: None,
+                ephemeral: false,
+                profile: None,
+            },
+            TabSnapshot {
+                title: "web",
+                title_override: None,
+                shell: "ssh",
+                cwd: None,
+                ephemeral: false,
+                profile: Some("web-prod"),
+            },
+            TabSnapshot {
+                title: "gone",
+                title_override: None,
+                shell: "htop",
+                cwd: None,
+                ephemeral: true,
+                profile: Some("web-prod"),
+            },
+        ];
+        let state = capture(&snapshots, 1);
+        let ids: Vec<Option<&str>> = state
+            .tabs
+            .iter()
+            .map(|tab| tab.profile.as_deref())
+            .collect();
+        assert_eq!(ids, vec![None, Some("web-prod")]);
     }
 
     #[test]
@@ -607,16 +745,18 @@ mod tests {
                     title_override: None,
                     shell: "/bin/sh".to_owned(),
                     cwd: Some(live.clone()),
+                    profile: None,
                 },
                 SessionTab {
                     title: "dead".to_owned(),
                     title_override: Some("work".to_owned()),
                     shell: "/bin/zsh".to_owned(),
                     cwd: Some(dead_path()),
+                    profile: None,
                 },
             ],
         };
-        let plan = plan_restore(&state, Some(&home)).expect("valid plan");
+        let plan = plan_restore(&state, Some(&home), &[]).expect("valid plan");
         assert_eq!(plan.tabs[0].cwd.as_deref(), Some(live.as_path()));
         assert_eq!(plan.tabs[1].cwd.as_deref(), Some(home.as_path()));
         assert_eq!(plan.tabs[1].title, "dead");
@@ -634,9 +774,10 @@ mod tests {
                 title_override: None,
                 shell: "/bin/sh".to_owned(),
                 cwd: Some(dead_path()),
+                profile: None,
             }],
         };
-        let plan = plan_restore(&state, None).expect("valid plan");
+        let plan = plan_restore(&state, None, &[]).expect("valid plan");
         assert_eq!(plan.tabs[0].cwd, None);
     }
 
@@ -651,16 +792,18 @@ mod tests {
                     title_override: None,
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
+                    profile: None,
                 },
                 SessionTab {
                     title: "b".to_owned(),
                     title_override: None,
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
+                    profile: None,
                 },
             ],
         };
-        let plan = plan_restore(&state, None).expect("valid plan");
+        let plan = plan_restore(&state, None, &[]).expect("valid plan");
         assert_eq!(plan.active, 1);
     }
 
@@ -674,9 +817,10 @@ mod tests {
                 title_override: None,
                 shell: "/bin/sh".to_owned(),
                 cwd: None,
+                profile: None,
             }],
         };
-        let plan = plan_restore(&state, None).expect("valid plan");
+        let plan = plan_restore(&state, None, &[]).expect("valid plan");
         assert_eq!(plan.active, 0);
     }
 
@@ -687,7 +831,133 @@ mod tests {
             active: None,
             tabs: vec![],
         };
-        assert!(plan_restore(&state, None).is_none());
+        assert!(plan_restore(&state, None, &[]).is_none());
+    }
+
+    fn test_profile(name: &str, command: &str, cwd: Option<PathBuf>) -> Profile {
+        Profile {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            cwd,
+        }
+    }
+
+    #[test]
+    fn plan_restore_re_resolves_a_saved_profile_id_to_the_current_definition() {
+        // Re-resolve by id: the profile's *current* definition wins, so
+        // an edit between save and restore launches the edited command
+        // — the session stores the id, never the command.
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "web-prod".to_owned(),
+                title_override: None,
+                shell: "ssh".to_owned(),
+                cwd: None,
+                profile: Some("web-prod".to_owned()),
+            }],
+        };
+        let profiles = [test_profile("web-prod", "ssh edited-host", None)];
+        let plan = plan_restore(&state, None, &profiles).expect("valid plan");
+        assert_eq!(
+            plan.tabs[0].profile,
+            Some(test_profile("web-prod", "ssh edited-host", None))
+        );
+    }
+
+    #[test]
+    fn plan_restore_missing_profile_id_spawns_the_plain_shell_without_chaining() {
+        // A saved id that no longer resolves is the plain shell in the
+        // re-validated saved cwd — never a chain through another
+        // profile (ruling 4: the session records the id it launched
+        // under, and that id alone). The decoy profile's live cwd must
+        // not be consulted.
+        let dir = TempDir::new("plan-missing-id");
+        let live = dir.join("live");
+        let decoy = dir.join("decoy");
+        fs::create_dir(&live).expect("create live dir");
+        fs::create_dir(&decoy).expect("create decoy dir");
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "gone".to_owned(),
+                title_override: None,
+                shell: "/bin/sh".to_owned(),
+                cwd: Some(live.clone()),
+                profile: Some("ghost".to_owned()),
+            }],
+        };
+        let profiles = [test_profile("other", "ssh other-host", Some(decoy))];
+        let plan = plan_restore(&state, None, &profiles).expect("valid plan");
+        assert_eq!(plan.tabs[0].profile, None);
+        assert_eq!(plan.tabs[0].cwd.as_deref(), Some(live.as_path()));
+    }
+
+    #[test]
+    fn plan_restore_keeps_a_live_saved_cwd_over_the_profile_cwd() {
+        // The saved cwd keeps the familiar place: it wins while it is
+        // still a directory, even when the profile's current
+        // definition carries a different one.
+        let dir = TempDir::new("plan-saved-wins");
+        let saved = dir.join("saved");
+        let preset = dir.join("preset");
+        fs::create_dir(&saved).expect("create saved dir");
+        fs::create_dir(&preset).expect("create preset dir");
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "web".to_owned(),
+                title_override: None,
+                shell: "ssh".to_owned(),
+                cwd: Some(saved.clone()),
+                profile: Some("web-prod".to_owned()),
+            }],
+        };
+        let profiles = [test_profile("web-prod", "ssh web-prod", Some(preset))];
+        let plan = plan_restore(&state, None, &profiles).expect("valid plan");
+        assert_eq!(plan.tabs[0].cwd.as_deref(), Some(saved.as_path()));
+    }
+
+    #[test]
+    fn plan_restore_falls_back_to_a_live_profile_cwd_then_home() {
+        // The OQ-1 chain below the saved cwd: the profile's cwd while
+        // still a directory (replacing `home` as the first fallback),
+        // then `$HOME` — program from re-resolve, place from the chain.
+        let dir = TempDir::new("plan-chain");
+        let home = dir.join("home");
+        let preset = dir.join("preset");
+        fs::create_dir(&home).expect("create home dir");
+        fs::create_dir(&preset).expect("create preset dir");
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![
+                SessionTab {
+                    title: "preset".to_owned(),
+                    title_override: None,
+                    shell: "ssh".to_owned(),
+                    cwd: Some(dead_path()),
+                    profile: Some("live-preset".to_owned()),
+                },
+                SessionTab {
+                    title: "home".to_owned(),
+                    title_override: None,
+                    shell: "ssh".to_owned(),
+                    cwd: Some(dead_path()),
+                    profile: Some("dead-preset".to_owned()),
+                },
+            ],
+        };
+        let profiles = [
+            test_profile("live-preset", "ssh one", Some(preset.clone())),
+            test_profile("dead-preset", "ssh two", Some(dead_path())),
+        ];
+        let plan = plan_restore(&state, Some(&home), &profiles).expect("valid plan");
+        assert_eq!(plan.tabs[0].cwd.as_deref(), Some(preset.as_path()));
+        assert_eq!(plan.tabs[1].cwd.as_deref(), Some(home.as_path()));
     }
 
     #[test]
@@ -808,13 +1078,14 @@ mod tests {
                 title_override: None,
                 shell: "/bin/sh".to_owned(),
                 cwd: None,
+                profile: None,
             }],
         }
     }
 
     #[test]
     fn restore_stash_hands_its_plan_to_the_first_run_that_can_spawn() {
-        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None, &[]);
         assert_eq!(
             stash.take_for_run(true),
             Some(RestorePlan {
@@ -823,6 +1094,7 @@ mod tests {
                     title_override: None,
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
+                    profile: None,
                 }],
                 active: 0,
             })
@@ -833,7 +1105,7 @@ mod tests {
     fn restore_stash_hands_nothing_to_later_runs() {
         // The plan is consumed exactly once: every later spawn run
         // spawns plain default tabs.
-        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None, &[]);
         assert!(stash.take_for_run(true).is_some());
         assert_eq!(stash.take_for_run(true), None);
     }
@@ -843,7 +1115,7 @@ mod tests {
         // The first spawn run can arrive before the terminal event
         // channel exists (show() outracing TermEventTx): it must not
         // eat the session, or the startup race would be lost.
-        let mut stash = RestoreStash::new(Some(&restorable_state()), None);
+        let mut stash = RestoreStash::new(Some(&restorable_state()), None, &[]);
         assert_eq!(stash.take_for_run(false), None);
         assert!(stash.take_for_run(true).is_some());
     }
@@ -852,7 +1124,7 @@ mod tests {
     fn restore_stash_starts_empty_without_a_restorable_session() {
         // A missing file, and a parsed-but-tab-less session, both
         // stash nothing: startup stays on the fresh single-tab path.
-        let mut missing = RestoreStash::new(None, None);
+        let mut missing = RestoreStash::new(None, None, &[]);
         assert_eq!(missing.take_for_run(true), None);
 
         let empty = SessionState {
@@ -860,7 +1132,7 @@ mod tests {
             active: None,
             tabs: vec![],
         };
-        let mut empty_stash = RestoreStash::new(Some(&empty), None);
+        let mut empty_stash = RestoreStash::new(Some(&empty), None, &[]);
         assert_eq!(empty_stash.take_for_run(true), None);
     }
 
@@ -951,7 +1223,7 @@ mod tests {
             &path,
             &ron::to_string(&restorable_state()).expect("serialize"),
         );
-        let mut stash = restore_entry(&path, None, true);
+        let mut stash = restore_entry(&path, None, true, &[]);
         assert!(stash.take_for_run(true).is_some());
     }
 
@@ -966,7 +1238,7 @@ mod tests {
         let dir = TempDir::new("restore-entry-off");
         let path = session_file(&dir);
         write_session(&path, "corrupt((");
-        let mut stash = restore_entry(&path, None, false);
+        let mut stash = restore_entry(&path, None, false, &[]);
         assert_eq!(stash.take_for_run(true), None, "disabled restores nothing");
         assert!(path.exists(), "the state file is left untouched");
         assert!(!backup_of(&path).exists(), "no quarantine while disabled");
