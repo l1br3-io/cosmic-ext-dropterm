@@ -52,13 +52,6 @@ impl Profile {
 /// is not `"SSH"`); duplicate names in a hand-edited config resolve
 /// first-match — uniqueness is a write-time concern of the settings
 /// UI, tolerated here. `None` when no profile carries the name.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "transient: consumed by profile-launch (profiles module 2)"
-    )
-)]
 pub fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
     profiles.iter().find(|profile| profile.name == name)
 }

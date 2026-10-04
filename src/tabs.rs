@@ -98,6 +98,12 @@ pub struct Tab {
     /// model restores "a fresh shell in a familiar place" — never a
     /// resumed program — so command tabs are transient by design.
     pub ephemeral: bool,
+    /// The profile id this tab launched under, if any: recorded at
+    /// spawn so the session saves it, and re-resolved against the
+    /// live config at restore. `None` for plain-shell and `--cmd`
+    /// tabs — profiles are the explicit opt-in that makes a command
+    /// tab persistent.
+    pub profile: Option<String>,
     /// Whether this tab already posted a bell notification during the
     /// current hide period: armed when a
     /// notification is posted, cleared for every tab when the surface
@@ -119,6 +125,7 @@ impl Tab {
             shell,
             attention: Attention::None,
             ephemeral: false,
+            profile: None,
             bell_notified: false,
             terminal: Mutex::new(terminal),
         }

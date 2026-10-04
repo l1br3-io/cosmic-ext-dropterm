@@ -32,6 +32,7 @@ use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds::{self, default_key_binds};
 use crate::notify;
+use crate::profile;
 use crate::session;
 use crate::settings;
 use crate::slide::{self, SlideBox};
@@ -67,6 +68,17 @@ pub enum ToggleAction {
         /// no quoting support.
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         cmd: Option<String>,
+        /// Name of the profile to launch (see the `profile` module):
+        /// resolved against the running instance's config; a name that
+        /// no longer exists warns and spawns the plain shell. An
+        /// explicit `--cwd` composes with it and wins over the
+        /// profile's cwd.
+        #[arg(
+            long,
+            value_parser = clap::builder::NonEmptyStringValueParser::new(),
+            conflicts_with = "cmd"
+        )]
+        profile: Option<String>,
     },
     /// Close a tab remotely — the active tab, or the 1-based `--tab-index`
     /// target. Out-of-range targets no-op with a warning; the overlay
@@ -126,13 +138,26 @@ impl std::fmt::Display for ToggleAction {
 }
 
 /// What a new tab runs: the user's shell — config-resolved or per-tab
-/// recorded — paired with the config's shell arguments, or an explicit
+/// recorded — paired with the config's shell arguments, an explicit
 /// whitespace-split command line whose exit closes the tab and whose
-/// tabs are session-transient.
+/// tabs are session-transient, or a profile: a named preset resolved
+/// before spawn so the tab can record the id it launched under.
+/// Profile tabs persist in the session and re-resolve by id at
+/// restore; that is the explicit opt-in a raw `--cmd` tab
+/// deliberately is not.
 #[derive(Debug, Clone)]
 enum SpawnCommand {
     Shell(String),
     CommandLine(String),
+    /// The resolved preset: the id (recorded on the tab, saved by the
+    /// session) plus the command line and cwd the id resolves to at
+    /// spawn time. Handed to [`DropTerm::spawn_shell`] already
+    /// resolved — spawn applies a profile, it never looks one up.
+    Profile {
+        name: String,
+        command: String,
+        cwd: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,15 +495,32 @@ impl DropTerm {
 
     /// Spawns one terminal tab from a session restore's resolved
     /// spawn parameters ([`session::SpawnSpec`], with its recorded
-    /// shell and re-validated cwd) — or, with `None`, from the
-    /// config's resolved shell with the pty's default working
-    /// directory.
+    /// shell or re-resolved profile and re-validated cwd) — or, with
+    /// `None`, from the config's resolved shell with the pty's
+    /// default working directory.
     fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
-        let (shell, cwd) = match spec {
-            Some(spec) => (spec.shell.clone(), spec.cwd.clone()),
-            None => (self.config.resolved_shell(), None),
+        let Some(spec) = spec else {
+            let shell = self.config.resolved_shell();
+            return self.spawn_shell(SpawnCommand::Shell(shell), None);
         };
-        self.spawn_shell(SpawnCommand::Shell(shell), cwd)
+        if let Some(profile) = &spec.profile {
+            // The id re-resolved at plan time: the current definition
+            // runs, and `spec.cwd` — the ruled chain result — already
+            // is the spawn directory, so the arm mirrors it and spawn
+            // re-derives nothing.
+            self.spawn_shell(
+                SpawnCommand::Profile {
+                    name: profile.name.clone(),
+                    command: profile.command.clone(),
+                    cwd: spec.cwd.clone(),
+                },
+                spec.cwd.clone(),
+            )
+        } else {
+            let shell = spec.shell.clone();
+            let cwd = spec.cwd.clone();
+            self.spawn_shell(SpawnCommand::Shell(shell), cwd)
+        }
     }
 
     /// Spawns one terminal tab running `command` in `cwd` — the common
@@ -494,11 +536,14 @@ impl DropTerm {
         };
 
         // A shell path pairs with the config's shell arguments; an
-        // explicit command line carries its own trailing arguments and
-        // never inherits them — `--cmd htop` must not run
-        // `htop --login`. A command tab is also session-ephemeral
-        // (never saved, never replayed).
+        // explicit command line — like a profile's stored one —
+        // carries its own trailing arguments and never inherits them:
+        // `--cmd htop` must not run `htop --login`. A command tab is
+        // also session-ephemeral (never saved, never replayed); a
+        // profile tab is the explicit opt-in for persistence, so it
+        // never is.
         let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
+        let mut profile_id: Option<String> = None;
         let (shell, args) = match command {
             SpawnCommand::Shell(shell) => (shell, self.config.args.clone()),
             SpawnCommand::CommandLine(line) => {
@@ -509,6 +554,25 @@ impl DropTerm {
                     // spawns the default shell rather than a dying
                     // exec of "".
                     None => (self.config.resolved_shell(), self.config.args.clone()),
+                }
+            }
+            SpawnCommand::Profile { name, command, .. } => {
+                if let Some((program, trailing)) = tabs::command_line_parts(&command) {
+                    // The id is recorded only when the spawn actually
+                    // runs the preset: the degraded line below spawns
+                    // a plain-shell tab, which must not save an id
+                    // restore would keep re-degrading.
+                    profile_id = Some(name);
+                    (program, trailing)
+                } else {
+                    // A hand-edited config can store a blank command
+                    // line; warn and spawn the plain shell —
+                    // degradation, never an error surface.
+                    log::warn!(
+                        "profile {name} stores no runnable command line; \
+                         spawning the shell instead"
+                    );
+                    (self.config.resolved_shell(), self.config.args.clone())
                 }
             }
         };
@@ -543,6 +607,11 @@ impl DropTerm {
             Ok(terminal) => {
                 let mut tab = Tab::new(tab_id, shell, terminal);
                 tab.ephemeral = ephemeral;
+                // The profile id a tab launched under (if any),
+                // recorded beside the ephemeral flag it is the
+                // opposite of: the session saves one and never the
+                // other.
+                tab.profile = profile_id;
                 // Seed the cwd cache with the spawn cwd: a restored
                 // tab seeds its re-validated saved cwd — so the fresh
                 // shell's first title report reads as unchanged — and
@@ -1045,12 +1114,13 @@ impl DropTerm {
 
     /// Spawns the requested remote tab: an explicit live `--cwd` wins,
     /// then the active tab's cwd, then the pty default; a `--cmd` runs
-    /// as the tab's program instead of the shell. The tab lands at the
-    /// position `after_current` picks — after the active one, or at the
-    /// end — becomes active, and — being a layout change — marks the
-    /// session dirty.
+    /// as the tab's program instead of the shell; a `--profile`
+    /// resolves against the config and runs under its id. The tab
+    /// lands at the position `after_current` picks — after the active
+    /// one, or at the end — becomes active, and — being a layout
+    /// change — marks the session dirty.
     fn spawn_remote_tab(&mut self, action: ToggleAction, after_current: bool) -> Task<Message> {
-        let ToggleAction::NewTab { cwd, cmd } = action else {
+        let ToggleAction::NewTab { cwd, cmd, profile } = action else {
             return Task::none();
         };
         self.ensure_tabs();
@@ -1066,12 +1136,50 @@ impl DropTerm {
         let inherited = self
             .active()
             .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
-        let command = match cmd {
-            Some(line) => SpawnCommand::CommandLine(line),
-            None => SpawnCommand::Shell(self.config.resolved_shell()),
+        // `--cmd` wins its arm outright (the clap conflict keeps a
+        // --cmd/--profile pairing off the wire); a profile resolves
+        // against the live config before spawn — a name that no
+        // longer exists warns and spawns the plain shell (ruling 3:
+        // the fire-and-forget forward has no reply surface).
+        let command = match (cmd, profile) {
+            (Some(line), _) => SpawnCommand::CommandLine(line),
+            (None, Some(name)) => {
+                if let Some(profile) = profile::find(&self.config.profiles, &name) {
+                    // The preset's cwd degrades the way --cwd does —
+                    // warn when dead, then the inherited/default cwd
+                    // applies — and loses to an explicit --cwd either
+                    // way (OQ-2).
+                    let preset = profile.cwd.clone().filter(|dir| {
+                        let live = dir.is_dir();
+                        if !live {
+                            log::warn!(
+                                "ignoring profile {} cwd {}: not a directory",
+                                name,
+                                dir.display()
+                            );
+                        }
+                        live
+                    });
+                    SpawnCommand::Profile {
+                        name: profile.name.clone(),
+                        command: profile.command.clone(),
+                        cwd: explicit.clone().or(preset).or(inherited.clone()),
+                    }
+                } else {
+                    log::warn!("no profile named {name}; spawning the shell instead");
+                    SpawnCommand::Shell(self.config.resolved_shell())
+                }
+            }
+            (None, None) => SpawnCommand::Shell(self.config.resolved_shell()),
         };
-        if let Some(tab) = self.spawn_shell(command, tabs::resolve_new_tab_cwd(explicit, inherited))
-        {
+        // The Profile arm carries its fully resolved spawn directory
+        // (explicit --cwd over the live preset cwd over inheritance);
+        // every other arm resolves exactly as before.
+        let spawn_cwd = match &command {
+            SpawnCommand::Profile { cwd, .. } => cwd.clone(),
+            _ => tabs::resolve_new_tab_cwd(explicit, inherited),
+        };
+        if let Some(tab) = self.spawn_shell(command, spawn_cwd) {
             let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);
             let switch = self.set_active_tab(at);
             return Task::batch([switch, self.mark_session_dirty()]);
@@ -1176,7 +1284,14 @@ impl DropTerm {
         // `true` pins the duplicate's documented after-active landing:
         // the `new_tab_after_current` setting moves new tabs, never
         // duplicates.
-        self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None }, true)
+        self.open_remote_tab(
+            ToggleAction::NewTab {
+                cwd,
+                cmd: None,
+                profile: None,
+            },
+            true,
+        )
     }
 
     /// Ends an inline rename session sitting on the tab at `index`:
@@ -1619,6 +1734,7 @@ impl DropTerm {
                 shell: &tab.shell,
                 cwd: cwd.as_deref(),
                 ephemeral: tab.ephemeral,
+                profile: tab.profile.as_deref(),
             })
             .collect();
         let state = session::capture(&snapshots, self.active_tab);
@@ -2514,6 +2630,43 @@ mod tests {
             TooltipSide::Above
         );
     }
+
+    // --- the profile flag's forward encoding ---
+
+    #[test]
+    fn forward_words_encodes_the_profile_flag() {
+        // The forwarded words must carry `--profile NAME`, or the
+        // receiving instance would re-parse a plain new-tab.
+        let action = ToggleAction::NewTab {
+            cwd: None,
+            cmd: None,
+            profile: Some("ssh-web".to_string()),
+        };
+        assert_eq!(
+            forward_words(&action),
+            vec!["--profile".to_string(), "ssh-web".to_string()]
+        );
+    }
+
+    #[test]
+    fn forward_words_composes_cwd_and_profile() {
+        // --cwd + --profile compose on the wire (OQ-2): both flags
+        // survive the forward, the explicit --cwd winning at spawn.
+        let action = ToggleAction::NewTab {
+            cwd: Some(PathBuf::from("/tmp")),
+            cmd: None,
+            profile: Some("ssh-web".to_string()),
+        };
+        assert_eq!(
+            forward_words(&action),
+            vec![
+                "--cwd".to_string(),
+                "/tmp".to_string(),
+                "--profile".to_string(),
+                "ssh-web".to_string(),
+            ]
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2536,7 +2689,7 @@ pub struct Flags {
 fn forward_words(action: &ToggleAction) -> Vec<String> {
     let mut forwarded = Vec::new();
     match action {
-        ToggleAction::NewTab { cwd, cmd } => {
+        ToggleAction::NewTab { cwd, cmd, profile } => {
             // A non-UTF-8 path cannot cross this borrowed-str
             // boundary: the forwarded action then simply carries no
             // --cwd, and the receiving instance opens the tab in the
@@ -2548,6 +2701,10 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
             if let Some(cmd) = cmd {
                 forwarded.push("--cmd".to_string());
                 forwarded.push(cmd.clone());
+            }
+            if let Some(name) = profile {
+                forwarded.push("--profile".to_string());
+                forwarded.push(name.clone());
             }
         }
         ToggleAction::CloseTab {
@@ -2650,6 +2807,7 @@ impl Application for DropTerm {
             &session::state_file_path(),
             home.as_deref(),
             config.session_persistence_enabled,
+            &config.profiles,
         );
 
         // The clipboard anchor opens here, before
