@@ -134,7 +134,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current`). Every one of them is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current`, `profiles`, `default_profile`). Every one of them except the two profile keys (documented below - their settings page ships later) is editable in the [settings window](#settings-window); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -158,6 +158,18 @@ echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_pan
 ```
 
 With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
+
+Profiles - named presets of what a tab runs - are config-file-only for now: hand-edit them until their settings page ships. A profile is its `name` (also its id, matched exactly and case-sensitively), a `command` line (split on whitespace, like `args`), and an optional `cwd` that is not checked to exist until the tab spawns:
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/profiles
+(
+    {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web")},
+    {"name": "top", "command": "htop"},
+)
+```
+
+`default_profile` (default unset) names the profile plain new tabs launch; a name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. The ways to actually launch under a profile - the tab context menu, `new-tab --profile NAME`, and the default's application - arrive in the next release.
 
 ## Session persistence
 

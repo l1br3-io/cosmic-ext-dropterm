@@ -37,18 +37,12 @@ impl Profile {
     /// authority (whitespace-split, quoting unsupported). A missing
     /// cwd is fine; cwd existence is a spawn-time concern, not a
     /// define-time one.
-    // `cfg_attr(not(test))`: the seams' only callers today are these
-    // tests, which would leave a bare `#[expect]` unfulfilled — and
-    // thus an error — in test builds. The expect still fires in every
-    // non-test build, so wiring the first real caller in
-    // `profile-launch` errors out here until the attribute is gone.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "transient: consumed by profile-launch (profiles module 2)"
-        )
-    )]
+    // No dead-code expect here, unlike the free-fn seams below: once
+    // `DropTermConfig` carried a `Vec<Profile>` (this module's T2),
+    // rustc's dead-code analysis stopped firing on this inherent
+    // method in every target — a kept `#[expect]` went unfulfilled
+    // and broke `-D warnings` — so the attribute was deleted per the
+    // unfulfilled-expect rule. Still unconsumed until `profile-launch`.
     pub fn validate(&self) -> bool {
         !self.name.trim().is_empty() && command_line_parts(&self.command).is_some()
     }

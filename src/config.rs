@@ -7,6 +7,8 @@
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
+use crate::profile::Profile;
+
 /// Version of the on-disk config format.
 pub const CONFIG_VERSION: u64 = 1;
 
@@ -201,6 +203,15 @@ pub struct DropTermConfig {
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
     pub theme_preference: ThemePreference,
+    /// Named spawn presets (the `profile` module). Defaults to
+    /// empty — profiles are hand-edited into the config files until
+    /// the settings page ships.
+    pub profiles: Vec<Profile>,
+    /// Name of the profile plain new tabs launch. `None` (the
+    /// default) keeps the configured shell; a name the `profiles`
+    /// list no longer carries also resolves to the plain shell —
+    /// loading never rewrites the config to drop it.
+    pub default_profile: Option<String>,
 }
 
 impl Default for DropTermConfig {
@@ -229,6 +240,8 @@ impl Default for DropTermConfig {
             bell_notification_enabled: true,
             new_tab_after_current: true,
             theme_preference: ThemePreference::default(),
+            profiles: Vec::new(),
+            default_profile: None,
         }
     }
 }
@@ -372,6 +385,91 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert!(!loaded.new_tab_after_current);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_profile_keys_load_as_empty_and_unset() {
+        // A config directory from a version that did not yet write
+        // `profiles` or `default_profile` loads as "no profiles, no
+        // default" — byte-identical to today's behavior — through the
+        // same default-entry leniency pinned for the other additive
+        // keys; the key list grows, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-profile-keys-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-profile version by deleting the two keys
+        // it never wrote.
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        std::fs::remove_file(version_dir.join("profiles")).expect("remove profiles key file");
+        std::fs::remove_file(version_dir.join("default_profile"))
+            .expect("remove default_profile key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("profile-less v1 config loads without error");
+        assert!(loaded.profiles.is_empty());
+        assert_eq!(loaded.default_profile, None);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_keys_round_trip_through_the_config_store() {
+        // Two distinct profiles — one with a cwd, one without — plus
+        // a set default survive a write→load cycle with equality.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-profile-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            profiles: vec![
+                Profile {
+                    name: "web-prod".to_string(),
+                    command: "ssh web-prod".to_string(),
+                    cwd: Some(std::path::PathBuf::from("/srv/web")),
+                },
+                Profile {
+                    name: "top".to_string(),
+                    command: "htop".to_string(),
+                    cwd: None,
+                },
+            ],
+            default_profile: Some("web-prod".to_string()),
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
 
         let _ = std::fs::remove_dir_all(&root);
     }
