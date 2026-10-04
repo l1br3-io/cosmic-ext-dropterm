@@ -8,9 +8,10 @@
 //! headless, without a live [`Terminal`] PTY. The app instantiates them
 //! with [`Tab`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::config::TabTitleMode;
 use crate::terminal::Terminal;
 
 /// Unique identifier for a tab, monotonically increasing and never reused
@@ -75,14 +76,24 @@ impl Attention {
 
 /// One terminal inside the overlay surface.
 ///
-/// `title` is the last title the shell reported (the default comes from
+/// `shell_title` is the last raw OSC 0/2 report and `title` the
+/// *resolved* display value (the default comes from
 /// [`next_default_title`]); `title_override` is a user rename, which
-/// shell title changes never clobber (see [`apply_shell_title`]).
+/// resolution never lets a shell report clobber (see
+/// [`resolve_title`]).
 pub struct Tab {
     pub id: TabId,
-    /// The tab's current title: the last one its shell reported,
-    /// falling back to the default from [`next_default_title`].
+    /// The tab's current title: the value [`resolve_title`] produced
+    /// for the live mode, falling back to the default from
+    /// [`next_default_title`].
     pub title: String,
+    /// The last raw OSC 0/2 report, stored in every mode so the
+    /// retitle inputs stay fresh: a mode flip or a cleared rename
+    /// re-resolves from current state instead of a stale snapshot.
+    /// `None` until the first report; a shell reset (RIS) clears it.
+    /// Deliberately not serialized — the session saves the resolved
+    /// `title`, not its inputs.
+    pub shell_title: Option<String>,
     /// A user rename, which shell title changes never clobber.
     pub title_override: Option<String>,
     /// The shell this tab runs, recorded at spawn: a mid-run config
@@ -115,6 +126,7 @@ impl Tab {
         Self {
             id,
             title: next_default_title(id),
+            shell_title: None,
             title_override: None,
             shell,
             attention: Attention::None,
@@ -307,28 +319,146 @@ pub fn next_default_title(id: TabId) -> String {
     format!("Terminal {}", id.0 + 1)
 }
 
-/// Applies a shell-reported title to a tab's stored title: the report
-/// lands only while no user rename (`title_override`) is set — a rename
-/// is never clobbered by shell title changes. A title reset reports
-/// the tab's default (see [`next_default_title`]).
-pub fn apply_shell_title(title: &mut String, title_override: Option<&str>, reported: &str) {
-    if title_override.is_none() {
-        reported.clone_into(title);
+/// Resolves the title a tab's button displays, from the inputs every
+/// apply point shares: the configured mode, the last raw OSC 0/2
+/// report, the tab's cwd, and its id (the `Terminal N` fallback). A
+/// user rename wins in every mode — the stickiness Guake's
+/// `custom_label_set`, kitty's `name or title`, and Yakuake's
+/// interactive-rename flag all implement. With no rename:
+///
+/// - `Shell` shows the raw report — today's behavior — `Terminal N`
+///   until the first report;
+/// - `AbbreviatedPath` shortens a trailing-cwd suffix Guake-style
+///   (`compute_tab_title`, `guake_app.py`: every parent component of
+///   the matched suffix cut to its first character, the last kept
+///   whole) and leaves any other report verbatim. The suffix matches
+///   the cwd in both absolute and `$HOME`→`~` spelling — a deliberate
+///   superset of Guake, since shells emit `~` in titles while
+///   `DropTerm`'s cwd cache is absolute. `$HOME` is the one environment
+///   input, the same read `DropTermConfig::resolved_shell` makes of
+///   `$SHELL`.
+/// - `LastSegment` shows the cwd's final component — `"(root)"` for
+///   `/`, Guake verbatim — falling back to the raw report when no
+///   cwd is readable (Guake's `OSError` fallback);
+/// - `Numbered` parks at `Terminal N`: reports never land (Guake
+///   `use-vte-titles=false`).
+pub fn resolve_title(
+    mode: TabTitleMode,
+    shell_title: Option<&str>,
+    cwd: Option<&Path>,
+    id: TabId,
+    title_override: Option<&str>,
+) -> String {
+    if let Some(rename) = title_override {
+        return rename.to_owned();
+    }
+    match mode {
+        TabTitleMode::Shell => raw_report_or_default(shell_title, id),
+        TabTitleMode::Numbered => next_default_title(id),
+        TabTitleMode::LastSegment => cwd
+            .and_then(last_cwd_segment)
+            .unwrap_or_else(|| raw_report_or_default(shell_title, id)),
+        TabTitleMode::AbbreviatedPath => abbreviated_report(shell_title, cwd, id),
     }
 }
 
-/// Applies a committed inline rename: a non-empty new
-/// title becomes the tab's user rename — displayed immediately and safe
-/// from later shell title changes — while committing an empty title is
-/// the explicit "clear" that removes the rename, letting shell titles
-/// land again (see [`apply_shell_title`]).
-pub fn commit_rename(title: &mut String, title_override: &mut Option<String>, new_title: &str) {
+/// The shared fallback of the report-displaying modes: the raw
+/// report, else the `Terminal N` default.
+fn raw_report_or_default(shell_title: Option<&str>, id: TabId) -> String {
+    shell_title.map_or_else(|| next_default_title(id), str::to_owned)
+}
+
+/// Guake's Last Segment value for a cwd: its final path component,
+/// `"(root)"` for the root — verbatim — `None` when the path has no
+/// meaningful final component.
+fn last_cwd_segment(cwd: &Path) -> Option<String> {
+    if cwd == Path::new("/") {
+        return Some("(root)".to_string());
+    }
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Guake's Abbreviated Path reshape: the first cwd spelling the
+/// report ends with gets abbreviated; a report with no directory
+/// suffix — or no readable cwd — stays verbatim.
+fn abbreviated_report(shell_title: Option<&str>, cwd: Option<&Path>, id: TabId) -> String {
+    let Some(report) = shell_title else {
+        return next_default_title(id);
+    };
+    let Some(cwd) = cwd else {
+        return report.to_owned();
+    };
+    for suffix in cwd_spellings(cwd) {
+        if !suffix.is_empty() && report.ends_with(&suffix) {
+            return abbreviate_suffix(report, &suffix);
+        }
+    }
+    report.to_owned()
+}
+
+/// The spellings of a cwd a shell title may end with: the absolute
+/// path, then its `$HOME`→`~` form when the cwd lies under `$HOME`.
+/// Absolute first, so results never depend on whether `$HOME` is set.
+fn cwd_spellings(cwd: &Path) -> Vec<String> {
+    let mut spellings = vec![cwd.to_string_lossy().into_owned()];
+    if let Some(home) = std::env::var("HOME").ok().filter(|home| !home.is_empty())
+        && let Ok(rest) = cwd.strip_prefix(home.as_str())
+    {
+        let tilde = if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
+        spellings.push(tilde);
+    }
+    spellings
+}
+
+/// Cuts every `/`-separated component of the matched suffix except
+/// the last to its first character, keeping the report's leading text
+/// (the `user@host:` part) untouched: `~/src/oss/l1br3/ced` →
+/// `~/s/o/l/ced`, `/home/jpt/src/ced` → `/h/j/s/ced`.
+fn abbreviate_suffix(report: &str, suffix: &str) -> String {
+    // Splitting a non-empty string yields at least one component, so
+    // the kept-whole last one always exists; the empty suffix is
+    // filtered by the caller before matching.
+    let mut components = suffix.split('/');
+    let last = components
+        .next_back()
+        .expect("a non-empty suffix has a last component");
+    let mut abbreviated = String::with_capacity(report.len());
+    abbreviated.push_str(&report[..report.len() - suffix.len()]);
+    for component in components {
+        abbreviated.extend(component.chars().take(1));
+        abbreviated.push('/');
+    }
+    abbreviated.push_str(last);
+    abbreviated
+}
+
+/// Applies a committed inline rename: a non-empty new title becomes
+/// the tab's user rename — displayed immediately and safe from later
+/// shell title changes — while committing an empty title is the
+/// explicit "clear" that removes the rename. Either way the displayed
+/// title re-resolves through [`resolve_title`]: a clear shows what
+/// the live mode dictates right away instead of parking on the
+/// cleared text until the next shell report.
+pub fn commit_rename(
+    mode: TabTitleMode,
+    shell_title: Option<&str>,
+    cwd: Option<&Path>,
+    id: TabId,
+    title: &mut String,
+    title_override: &mut Option<String>,
+    new_title: &str,
+) {
     if new_title.is_empty() {
         *title_override = None;
     } else {
         *title_override = Some(new_title.to_owned());
-        new_title.clone_into(title);
     }
+    resolve_title(mode, shell_title, cwd, id, title_override.as_deref()).clone_into(title);
 }
 
 #[cfg(test)]
@@ -676,31 +806,189 @@ mod tests {
     }
 
     #[test]
-    fn shell_title_lands_when_no_rename_is_set() {
-        let mut title = next_default_title(TabId(0));
-        apply_shell_title(&mut title, None, "vim — src/main.rs");
+    fn shell_mode_lands_the_raw_report() {
+        let title = resolve_title(
+            TabTitleMode::Shell,
+            Some("vim — src/main.rs"),
+            None,
+            TabId(0),
+            None,
+        );
         assert_eq!(title, "vim — src/main.rs");
     }
 
     #[test]
-    fn shell_title_never_clobbers_a_rename() {
-        let mut title = String::from("Terminal 1");
-        apply_shell_title(&mut title, Some("work"), "vim — src/main.rs");
+    fn a_missing_report_shows_the_default_number() {
+        // Also the RIS story: a reset clears the stored report and
+        // the default comes back.
+        let title = resolve_title(TabTitleMode::Shell, None, None, TabId(4), None);
+        assert_eq!(title, "Terminal 5");
+    }
+
+    #[test]
+    fn a_rename_wins_in_every_mode() {
+        for mode in [
+            TabTitleMode::Shell,
+            TabTitleMode::AbbreviatedPath,
+            TabTitleMode::LastSegment,
+            TabTitleMode::Numbered,
+        ] {
+            assert_eq!(
+                resolve_title(
+                    mode,
+                    Some("jpt@box:~/src"),
+                    Some(Path::new("/home/jpt/src")),
+                    TabId(0),
+                    Some("work")
+                ),
+                "work"
+            );
+        }
+    }
+
+    #[test]
+    fn numbered_mode_ignores_reports_and_parks_at_the_number() {
+        // Guake `use-vte-titles=false`: the title never moves after
+        // creation, whatever the shell reports.
+        let title = resolve_title(
+            TabTitleMode::Numbered,
+            Some("jpt@box:~/src"),
+            Some(Path::new("/home/jpt/src")),
+            TabId(0),
+            None,
+        );
         assert_eq!(title, "Terminal 1");
     }
 
     #[test]
-    fn title_reset_restores_default_when_no_rename_is_set() {
-        let mut title = String::from("vim — src/main.rs");
-        apply_shell_title(&mut title, None, &next_default_title(TabId(1)));
-        assert_eq!(title, "Terminal 2");
+    fn abbreviated_path_shortens_a_tilde_suffix() {
+        // SAFETY: the only test that writes HOME; every other
+        // resolve_title test uses cwds and reports whose outcome is
+        // HOME-independent, so the swap cannot change their results.
+        let saved_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/home/jpt") };
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            Some("jpt@box:~/src/oss/l1br3/ced"),
+            Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            TabId(0),
+            None,
+        );
+        match &saved_home {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(title, "jpt@box:~/s/o/l/ced");
+    }
+
+    #[test]
+    fn abbreviated_path_shortens_an_absolute_suffix_identically() {
+        // HOME-independent: the absolute spelling is always the first
+        // candidate, tilde or not.
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            Some("jpt@box:/home/jpt/src/oss/l1br3/ced"),
+            Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "jpt@box:/h/j/s/o/l/ced");
+    }
+
+    #[test]
+    fn abbreviated_path_leaves_a_non_directory_title_verbatim() {
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            Some("vim — src/main.rs"),
+            Some(Path::new("/home/jpt/src")),
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "vim — src/main.rs");
+    }
+
+    #[test]
+    fn abbreviated_path_without_a_cwd_shows_the_report_verbatim() {
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            Some("jpt@box:~/src"),
+            None,
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "jpt@box:~/src");
+    }
+
+    #[test]
+    fn abbreviated_path_without_a_report_shows_the_default_number() {
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            None,
+            Some(Path::new("/home/jpt/src")),
+            TabId(2),
+            None,
+        );
+        assert_eq!(title, "Terminal 3");
+    }
+
+    #[test]
+    fn last_segment_shows_the_cwds_final_component() {
+        let title = resolve_title(
+            TabTitleMode::LastSegment,
+            Some("jpt@box:~/src/oss/l1br3/ced"),
+            Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "ced");
+    }
+
+    #[test]
+    fn last_segment_renders_root_for_the_root_directory() {
+        // Guake verbatim: `/` is "(root)", not the empty string.
+        let title = resolve_title(
+            TabTitleMode::LastSegment,
+            Some("jpt@box:/"),
+            Some(Path::new("/")),
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "(root)");
+    }
+
+    #[test]
+    fn last_segment_without_a_cwd_shows_the_report_verbatim() {
+        // Guake's OSError fallback: an unreadable cwd degrades to the
+        // raw report, never an error surface.
+        let title = resolve_title(
+            TabTitleMode::LastSegment,
+            Some("jpt@box:~/src"),
+            None,
+            TabId(0),
+            None,
+        );
+        assert_eq!(title, "jpt@box:~/src");
+    }
+
+    #[test]
+    fn last_segment_with_neither_report_nor_cwd_shows_the_default_number() {
+        let title = resolve_title(TabTitleMode::LastSegment, None, None, TabId(0), None);
+        assert_eq!(title, "Terminal 1");
     }
 
     #[test]
     fn committed_rename_sets_override_and_displayed_title() {
         let mut title = String::from("vim — src/main.rs");
         let mut title_override = None;
-        commit_rename(&mut title, &mut title_override, "work");
+        commit_rename(
+            TabTitleMode::Shell,
+            Some("vim — src/main.rs"),
+            None,
+            TabId(1),
+            &mut title,
+            &mut title_override,
+            "work",
+        );
         assert_eq!(title, "work");
         assert_eq!(title_override.as_deref(), Some("work"));
     }
@@ -709,26 +997,60 @@ mod tests {
     fn committed_rename_survives_shell_title_changes() {
         let mut title = String::from("Terminal 1");
         let mut title_override = None;
-        commit_rename(&mut title, &mut title_override, "work");
-        apply_shell_title(&mut title, title_override.as_deref(), "vim — src/main.rs");
-        assert_eq!(title, "work");
+        commit_rename(
+            TabTitleMode::Shell,
+            None,
+            None,
+            TabId(0),
+            &mut title,
+            &mut title_override,
+            "work",
+        );
+        // A later report resolves under the override and cannot clobber it.
+        let resolved = resolve_title(
+            TabTitleMode::Shell,
+            Some("vim — src/main.rs"),
+            None,
+            TabId(0),
+            title_override.as_deref(),
+        );
+        assert_eq!(resolved, "work");
     }
 
     #[test]
-    fn committing_an_empty_rename_clears_the_override() {
+    fn committing_an_empty_rename_clears_the_override_and_re_resolves() {
         let mut title = String::from("work");
         let mut title_override = Some(String::from("work"));
-        commit_rename(&mut title, &mut title_override, "");
+        // The cleared rename falls back to the stored report —
+        // immediately, not on the next shell report.
+        commit_rename(
+            TabTitleMode::Shell,
+            Some("vim — src/main.rs"),
+            None,
+            TabId(1),
+            &mut title,
+            &mut title_override,
+            "",
+        );
         assert_eq!(title_override, None);
+        assert_eq!(title, "vim — src/main.rs");
     }
 
     #[test]
-    fn clearing_a_rename_resumes_shell_titles() {
+    fn clearing_a_rename_in_numbered_mode_parks_at_the_terminal_number() {
         let mut title = String::from("work");
         let mut title_override = Some(String::from("work"));
-        commit_rename(&mut title, &mut title_override, "");
-        apply_shell_title(&mut title, title_override.as_deref(), "vim — src/main.rs");
-        assert_eq!(title, "vim — src/main.rs");
+        commit_rename(
+            TabTitleMode::Numbered,
+            Some("jpt@box:~"),
+            None,
+            TabId(2),
+            &mut title,
+            &mut title_override,
+            "",
+        );
+        assert_eq!(title_override, None);
+        assert_eq!(title, "Terminal 3");
     }
 
     #[test]

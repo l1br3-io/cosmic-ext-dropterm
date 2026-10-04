@@ -1130,9 +1130,7 @@ impl DropTerm {
         if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
         {
             let refocus = self.end_rename_on(index);
-            if let Some(tab) = self.tabs.get_mut(index) {
-                tabs::commit_rename(&mut tab.title, &mut tab.title_override, title);
-            }
+            self.commit_rename_on(index, title);
             Task::batch([refocus, self.mark_session_dirty()])
         } else {
             log::warn!(
@@ -1501,8 +1499,8 @@ impl DropTerm {
     /// ([`Message::RenameCancelled`]).
     fn commit_pending_rename(&mut self) -> Task<Message> {
         if let Some(edit) = self.rename.take() {
-            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == edit.tab) {
-                tabs::commit_rename(&mut tab.title, &mut tab.title_override, &edit.draft);
+            if let Some(index) = self.tabs.iter().position(|tab| tab.id == edit.tab) {
+                self.commit_rename_on(index, &edit.draft);
             }
             // A rename commit is a save trigger — but only when a
             // rename session actually existed; every committing path
@@ -1631,6 +1629,57 @@ impl DropTerm {
             return self.mark_session_dirty();
         }
         Task::none()
+    }
+
+    /// Re-resolves one tab's displayed title from its stored state —
+    /// the shared tail of every title apply point: a report arriving
+    /// or resetting, a rename clearing, and the mode-flip retitle
+    /// loop. The cwd comes from the `tab_cwds` cache, seeded at spawn
+    /// and refreshed by [`Self::check_tab_cwd`] — which is why the
+    /// report handlers sample the cwd *before* resolving.
+    fn retitle_tab(&mut self, tab_index: usize) {
+        let mode = self.config.tab_title_mode;
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
+            tab.title = tabs::resolve_title(
+                mode,
+                tab.shell_title.as_deref(),
+                cwd,
+                tab.id,
+                tab.title_override.as_deref(),
+            );
+        }
+    }
+
+    /// A tab-title-mode change re-resolves every live tab's title
+    /// from stored state (Guake `recompute_tabs_titles`): renamed
+    /// tabs are left to [`tabs::resolve_title`]'s override rule,
+    /// which keeps them untouched. Called only on an old-vs-new mode
+    /// delta, so unrelated config echoes never churn titles.
+    fn retitle_all_tabs(&mut self) {
+        for index in 0..self.tabs.len() {
+            self.retitle_tab(index);
+        }
+    }
+
+    /// Applies a rename commit on one tab — both rename callers, the
+    /// tab-bar inline rename and the remote `rename-tab`, meet here:
+    /// the override is set or cleared and the displayed title
+    /// re-resolves per the live mode (see [`tabs::commit_rename`]).
+    fn commit_rename_on(&mut self, tab_index: usize, new_title: &str) {
+        let mode = self.config.tab_title_mode;
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
+            tabs::commit_rename(
+                mode,
+                tab.shell_title.as_deref(),
+                cwd,
+                tab.id,
+                &mut tab.title,
+                &mut tab.title_override,
+                new_title,
+            );
+        }
     }
 }
 
@@ -3160,24 +3209,26 @@ impl DropTerm {
                 terminal.input_no_scroll(text.into_bytes());
             }
             TermEvent::Title(title) => {
-                let tab = &mut self.tabs[tab_index];
-                tabs::apply_shell_title(&mut tab.title, tab.title_override.as_deref(), &title);
-                // Title events double as the cwd-change sample
-                // point; the title itself is not a trigger — churn
-                // alone writes nothing.
-                return self.check_tab_cwd(tab_index);
+                // The raw report is stored in every mode — retitle
+                // inputs stay fresh, so a mode flip or a cleared
+                // rename re-resolves from current state.
+                self.tabs[tab_index].shell_title = Some(title);
+                // Title events double as the cwd-change sample point,
+                // and the path modes resolve against the fresh cwd:
+                // sample first, then re-resolve. The title itself is
+                // not a save trigger — churn alone writes nothing.
+                let cwd_task = self.check_tab_cwd(tab_index);
+                self.retitle_tab(tab_index);
+                return cwd_task;
             }
             TermEvent::ResetTitle => {
-                // A shell reset (RIS) restores the default title, unless
-                // the user renamed the tab.
-                let tab = &mut self.tabs[tab_index];
-                let default_title = tabs::next_default_title(tab.id);
-                tabs::apply_shell_title(
-                    &mut tab.title,
-                    tab.title_override.as_deref(),
-                    &default_title,
-                );
-                return self.check_tab_cwd(tab_index);
+                // A shell reset (RIS) clears the stored report;
+                // resolution restores the mode's title — the default
+                // in Shell mode — unless the user renamed the tab.
+                self.tabs[tab_index].shell_title = None;
+                let cwd_task = self.check_tab_cwd(tab_index);
+                self.retitle_tab(tab_index);
+                return cwd_task;
             }
             TermEvent::Wakeup => {
                 // Output arrived: an inactive tab accrues an
@@ -3212,8 +3263,15 @@ impl DropTerm {
                 let old_geom = Geometry::from_config(&self.config);
                 let new_geom = Geometry::from_config(&config);
                 let old_preference = self.config.theme_preference;
+                let old_title_mode = self.config.tab_title_mode;
                 self.config = config;
                 self.apply_config_to_tabs();
+                // A tab-title-mode flip retitles every live tab from
+                // stored state, renamed ones excepted; the delta guard
+                // keeps unrelated config echoes from churning titles.
+                if old_title_mode != self.config.tab_title_mode {
+                    self.retitle_all_tabs();
+                }
                 // A changed theme preference overrides (or restores)
                 // the process theme. Sits after
                 // `apply_config_to_tabs` — cells are already correct

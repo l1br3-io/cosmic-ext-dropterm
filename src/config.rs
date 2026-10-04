@@ -118,6 +118,35 @@ impl std::fmt::Display for TabPosition {
     }
 }
 
+/// How a tab's displayed title is generated from the shell's OSC 0/2
+/// reports and the tab's cwd — Guake's `use-vte-titles` checkbox and
+/// `display-tab-names` dropdown collapsed into one enum.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TabTitleMode {
+    /// The raw OSC 0/2 report, verbatim — today's behavior.
+    #[default]
+    Shell,
+    /// The report with a trailing-cwd suffix abbreviated Guake-style:
+    /// every parent path component cut to its first character, the
+    /// last kept whole.
+    AbbreviatedPath,
+    /// The cwd's last path component, `"(root)"` for `/`.
+    LastSegment,
+    /// Reports never land; the title parks at `Terminal N`.
+    Numbered,
+}
+
+impl std::fmt::Display for TabTitleMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shell => write!(f, "shell"),
+            Self::AbbreviatedPath => write!(f, "abbreviated_path"),
+            Self::LastSegment => write!(f, "last_segment"),
+            Self::Numbered => write!(f, "numbered"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 #[expect(
@@ -138,6 +167,11 @@ pub struct DropTermConfig {
     /// edge beside the grab bar; `top`/`bottom` pin it to that side
     /// of the surface regardless of anchor. Defaults to `auto`.
     pub tab_position: TabPosition,
+    /// How a tab's displayed title is generated (see
+    /// [`TabTitleMode`]). Defaults to `Shell` — today's behavior; a
+    /// user rename wins in every mode, and a mode change re-titles
+    /// live tabs immediately.
+    pub tab_title_mode: TabTitleMode,
     /// Layer-shell layer the surface is created on.
     pub layer: Layer,
     /// Keyboard interactivity mode requested for the surface.
@@ -204,6 +238,7 @@ impl Default for DropTermConfig {
             h_align: HAlign::default(),
             edge: Edge::default(),
             tab_position: TabPosition::default(),
+            tab_title_mode: TabTitleMode::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
             respect_panel: false,
@@ -607,6 +642,106 @@ mod tests {
         assert_eq!(loaded.tab_position, TabPosition::Auto);
         // The directory is live, not ignored: the written key comes back.
         assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_title_mode_defaults_to_shell() {
+        // `Shell` is today's behavior: OSC 0/2 reports land verbatim,
+        // so a config without the key never changes a title.
+        assert_eq!(
+            DropTermConfig::default().tab_title_mode,
+            TabTitleMode::Shell
+        );
+    }
+
+    #[test]
+    fn tab_title_mode_serde_round_trips_all_variants() {
+        // The enum must survive the serde path cosmic-config uses for
+        // key values; every variant, not just the default.
+        for variant in [
+            TabTitleMode::Shell,
+            TabTitleMode::AbbreviatedPath,
+            TabTitleMode::LastSegment,
+            TabTitleMode::Numbered,
+        ] {
+            let serialized = ron::to_string(&variant).expect("serialize TabTitleMode");
+            let deserialized: TabTitleMode =
+                ron::from_str(&serialized).expect("deserialize TabTitleMode");
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn missing_tab_title_mode_key_loads_as_shell() {
+        // A config directory from a version that did not yet write
+        // `tab_title_mode` loads as `Shell` through the same
+        // default-entry leniency pinned for `respect_panel` — the
+        // key list is additive, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-titlemode-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`tab_title_mode` version by deleting the
+        // one key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("tab_title_mode"),
+        )
+        .expect("remove tab_title_mode key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert_eq!(loaded.tab_title_mode, TabTitleMode::Shell);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_title_mode_key_on_disk_is_honored() {
+        // Control for `missing_tab_title_mode_key_loads_as_shell`: the
+        // same read path honors a key that does exist, so the leniency
+        // result above cannot be a vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-titlemode-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            tab_title_mode: TabTitleMode::LastSegment,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded.tab_title_mode, TabTitleMode::LastSegment);
 
         let _ = std::fs::remove_dir_all(&root);
     }
