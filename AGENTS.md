@@ -43,7 +43,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 ## Rust project notes
 
 - Run `cargo clippy` and `cargo fmt --check` before a change counts as done; `cargo test` is the verification gate.
-- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see README's manual test checklist); unit tests cover what can be tested headless.
+- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/development.md`); unit tests cover what can be tested headless.
 
 ## Spec & task artifacts (local working docs)
 
