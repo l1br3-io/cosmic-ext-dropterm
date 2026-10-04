@@ -22,6 +22,7 @@ mod geometry;
 mod grab_bar;
 mod keybinds;
 mod notify;
+mod profile;
 mod session;
 mod settings;
 mod slide;
