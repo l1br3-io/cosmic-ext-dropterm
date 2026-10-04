@@ -594,7 +594,10 @@ impl DropTerm {
             // single-default-tab path below.
         }
         if let Some(tab) = self.spawn_tab(None) {
-            self.active_tab = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
+            // Placement is moot for the never-empty respawn's first tab:
+            // the list is empty by construction, so both positions
+            // coincide — `true` just names the shipped default.
+            self.active_tab = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
         }
     }
 
@@ -989,7 +992,7 @@ impl DropTerm {
         // above (debounce, settings close-first) applies to it like
         // any other action.
         if let ToggleAction::NewTab { .. } = action {
-            let open = self.open_remote_tab(action);
+            let open = self.open_remote_tab(action, self.config.new_tab_after_current);
             return Task::batch([close, open, self.show_intent_surface()]);
         }
 
@@ -1023,11 +1026,13 @@ impl DropTerm {
         }
     }
 
-    /// Opens the tab a remote `new-tab` asked for. At first launch the
-    /// terminal event channel may not exist yet — the spawn defers,
-    /// the request stashes, and the channel's arrival applies it
-    /// right after the session restore.
-    fn open_remote_tab(&mut self, action: ToggleAction) -> Task<Message> {
+    /// Opens the tab a remote `new-tab` asked for, placing it per
+    /// `after_current` (the `new_tab_after_current` config). At first
+    /// launch the terminal event channel may not exist yet — the
+    /// spawn defers, the request stashes, and the channel's arrival
+    /// applies it right after the session restore (re-reading the
+    /// config then, so a flipped toggle still applies to the stash).
+    fn open_remote_tab(&mut self, action: ToggleAction, after_current: bool) -> Task<Message> {
         let ToggleAction::NewTab { .. } = action else {
             return Task::none();
         };
@@ -1035,15 +1040,16 @@ impl DropTerm {
             self.pending_remote_tab = Some(action);
             return Task::none();
         }
-        self.spawn_remote_tab(action)
+        self.spawn_remote_tab(action, after_current)
     }
 
     /// Spawns the requested remote tab: an explicit live `--cwd` wins,
     /// then the active tab's cwd, then the pty default; a `--cmd` runs
-    /// as the tab's program instead of the shell. The tab lands after
-    /// the active one, becomes active, and — being a layout change —
-    /// marks the session dirty.
-    fn spawn_remote_tab(&mut self, action: ToggleAction) -> Task<Message> {
+    /// as the tab's program instead of the shell. The tab lands at the
+    /// position `after_current` picks — after the active one, or at the
+    /// end — becomes active, and — being a layout change — marks the
+    /// session dirty.
+    fn spawn_remote_tab(&mut self, action: ToggleAction, after_current: bool) -> Task<Message> {
         let ToggleAction::NewTab { cwd, cmd } = action else {
             return Task::none();
         };
@@ -1066,7 +1072,7 @@ impl DropTerm {
         };
         if let Some(tab) = self.spawn_shell(command, tabs::resolve_new_tab_cwd(explicit, inherited))
         {
-            let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
+            let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);
             let switch = self.set_active_tab(at);
             return Task::batch([switch, self.mark_session_dirty()]);
         }
@@ -1167,7 +1173,10 @@ impl DropTerm {
                 .get(index)
                 .and_then(|tab| tab.terminal.lock().unwrap().working_directory())
         });
-        self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None })
+        // `true` pins the duplicate's documented after-active landing:
+        // the `new_tab_after_current` setting moves new tabs, never
+        // duplicates.
+        self.open_remote_tab(ToggleAction::NewTab { cwd, cmd: None }, true)
     }
 
     /// Ends an inline rename session sitting on the tab at `index`:
@@ -1406,9 +1415,15 @@ impl DropTerm {
                     SpawnCommand::Shell(shell),
                     tabs::resolve_new_tab_cwd(None, inherited),
                 ) {
-                    // Placement: directly after the active tab, which
-                    // the new tab immediately becomes.
-                    let at = tabs::insert_after_active(&mut self.tabs, self.active_tab, tab);
+                    // Placement: after the active tab or at the end,
+                    // per `new_tab_after_current`; the new tab becomes
+                    // active either way.
+                    let at = tabs::insert_new_tab(
+                        &mut self.tabs,
+                        self.active_tab,
+                        self.config.new_tab_after_current,
+                        tab,
+                    );
                     let switch = self.set_active_tab(at);
                     // The open itself is a save trigger too; when the
                     // switch already armed a window this second mark
@@ -3279,9 +3294,10 @@ impl DropTerm {
                     self.ensure_tabs();
                     // A first-launch remote new-tab stashed while the
                     // channel was missing applies now, after the
-                    // session restore has landed.
+                    // session restore has landed — with the placement
+                    // the config holds at replay time.
                     if let Some(request) = self.pending_remote_tab.take() {
-                        return self.spawn_remote_tab(request);
+                        return self.spawn_remote_tab(request, self.config.new_tab_after_current);
                     }
                 }
             }
