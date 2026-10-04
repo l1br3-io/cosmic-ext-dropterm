@@ -1441,6 +1441,7 @@ impl DropTerm {
         if matches!(
             action,
             Action::NewTab
+                | Action::NewProfileTab(_)
                 | Action::CloseTab
                 | Action::NextTab
                 | Action::PrevTab
@@ -1458,6 +1459,7 @@ impl DropTerm {
             Action::Hide
             | Action::Settings
             | Action::NewTab
+            | Action::NewProfileTab(_)
             | Action::CloseTab
             | Action::NextTab
             | Action::PrevTab
@@ -1554,22 +1556,34 @@ impl DropTerm {
                     } => live_preset_cwd(name, preset.as_ref()).or(inherited),
                     _ => tabs::resolve_new_tab_cwd(None, inherited),
                 };
-                if let Some(tab) = self.spawn_shell(command, spawn_cwd) {
-                    // Placement: after the active tab or at the end,
-                    // per `new_tab_after_current`; the new tab becomes
-                    // active either way.
-                    let at = tabs::insert_new_tab(
-                        &mut self.tabs,
-                        self.active_tab,
-                        self.config.new_tab_after_current,
-                        tab,
-                    );
-                    let switch = self.set_active_tab(at);
-                    // The open itself is a save trigger too; when the
-                    // switch already armed a window this second mark
-                    // coalesces into it.
-                    return Task::batch([switch, self.mark_session_dirty()]);
+                return self.open_new_tab(command, spawn_cwd);
+            }
+            Action::NewProfileTab(index) => {
+                // A submenu pick: the index came from the menu-open
+                // snapshot of `config.profiles`, so a config edited
+                // while the menu was open can leave it stale — warn
+                // and no-op rather than launch the wrong profile.
+                if let Some(command) = profile_pick(&self.config, index) {
+                    let inherited = self
+                        .active()
+                        .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
+                    // The preset's cwd composes exactly like the
+                    // keybind arm's: live or warn-and-degrade, then
+                    // the inherited directory.
+                    let spawn_cwd = match &command {
+                        SpawnCommand::Profile {
+                            name, cwd: preset, ..
+                        } => live_preset_cwd(name, preset.as_ref()).or(inherited),
+                        // profile_pick only ever builds the Profile arm.
+                        _ => unreachable!("profile_pick returns the Profile arm"),
+                    };
+                    return self.open_new_tab(command, spawn_cwd);
                 }
+                log::warn!(
+                    "new profile tab: no profile at submenu index {index} \
+                     ({} configured)",
+                    self.config.profiles.len()
+                );
             }
             Action::CloseTab => return self.close_tab_at(self.active_tab),
             Action::NextTab => {
@@ -1610,6 +1624,29 @@ impl DropTerm {
             _ => unreachable!("not a tab action: {action:?}"),
         }
         Task::none()
+    }
+
+    /// The shared tail of every new-tab spawn — keybind, submenu
+    /// pick, remote action: spawn, place per `new_tab_after_current`,
+    /// activate, and mark the session dirty (the open itself is a
+    /// save trigger; when the activation's switch already armed a
+    /// window, this second mark coalesces into it).
+    fn open_new_tab(&mut self, command: SpawnCommand, cwd: Option<PathBuf>) -> Task<Message> {
+        if let Some(tab) = self.spawn_shell(command, cwd) {
+            // Placement: after the active tab or at the end, per
+            // `new_tab_after_current`; the new tab becomes active
+            // either way.
+            let at = tabs::insert_new_tab(
+                &mut self.tabs,
+                self.active_tab,
+                self.config.new_tab_after_current,
+                tab,
+            );
+            let switch = self.set_active_tab(at);
+            Task::batch([switch, self.mark_session_dirty()])
+        } else {
+            Task::none()
+        }
     }
 
     /// Closes the tab at `index` and activates its successor (or, when
@@ -1807,6 +1844,22 @@ fn default_spawn_command(config: &DropTermConfig) -> SpawnCommand {
         },
         None => SpawnCommand::Shell(config.resolved_shell()),
     }
+}
+
+/// Resolves a context-menu profile pick — the submenu's index into
+/// the config's profile list — into the spawn it runs: the Profile
+/// arm with the preset's stored cwd (the call site composes the live
+/// filter and inheritance on top). `None` when the index is stale, a
+/// config edited while the menu was open: the caller warns and no-ops.
+fn profile_pick(config: &DropTermConfig, index: usize) -> Option<SpawnCommand> {
+    config
+        .profiles
+        .get(index)
+        .map(|profile| SpawnCommand::Profile {
+            name: profile.name.clone(),
+            command: profile.command.clone(),
+            cwd: profile.cwd.clone(),
+        })
 }
 
 /// The live-directory filter a profile preset's cwd passes at spawn:
@@ -2792,6 +2845,45 @@ mod tests {
             SpawnCommand::Shell("/bin/sh".to_string())
         );
     }
+
+    #[test]
+    fn profile_pick_resolves_the_submenu_index_into_the_profile_arm() {
+        // The pick carries the preset verbatim; the call site composes
+        // the live-cwd filter and inheritance on top.
+        let config = test_config(
+            &[
+                named_profile("ssh", "ssh web", Some(PathBuf::from("/srv"))),
+                named_profile("top", "htop", None),
+            ],
+            None,
+        );
+        assert_eq!(
+            profile_pick(&config, 1),
+            Some(SpawnCommand::Profile {
+                name: "top".to_string(),
+                command: "htop".to_string(),
+                cwd: None,
+            })
+        );
+        assert_eq!(
+            profile_pick(&config, 0),
+            Some(SpawnCommand::Profile {
+                name: "ssh".to_string(),
+                command: "ssh web".to_string(),
+                cwd: Some(PathBuf::from("/srv")),
+            })
+        );
+    }
+
+    #[test]
+    fn profile_pick_is_none_on_a_stale_submenu_index() {
+        // The index came from the menu-open snapshot; a config edited
+        // while the menu was open can leave it out of range — the
+        // caller's warn + no-op, never a panic.
+        let config = test_config(&[named_profile("ssh", "ssh web", None)], None);
+        assert_eq!(profile_pick(&config, 1), None);
+        assert_eq!(profile_pick(&config, usize::MAX), None);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3214,12 +3306,14 @@ impl Application for DropTerm {
         // no-op without it — and `window_id` must be this layer
         // surface's id (the `view_window` parameter), never the main
         // window's.
-        let terminal: Element<'_, Message> =
-            widget::context_menu(terminal, context_menu::open_trees(self.context_menu_open))
-                .on_close(Message::ContextMenu(false))
-                .on_surface_action(Message::Surface)
-                .window_id(id)
-                .into();
+        let terminal: Element<'_, Message> = widget::context_menu(
+            terminal,
+            context_menu::open_trees(self.context_menu_open, &self.config.profiles),
+        )
+        .on_close(Message::ContextMenu(false))
+        .on_surface_action(Message::Surface)
+        .window_id(id)
+        .into();
 
         // Stacking from the screen edge: content, tab strip, grab
         // bar on the free edge. Both bars take their strips out of

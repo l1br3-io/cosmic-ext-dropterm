@@ -13,14 +13,21 @@ use cosmic::widget::menu::{self, action::MenuAction};
 
 use crate::app;
 use crate::keybinds;
+use crate::profile::Profile;
 use crate::terminal::Action;
 
-/// One rendered row of the context menu: an actionable item, or the
-/// divider separating the terminal actions from Settings….
+/// One rendered row of the context menu: an actionable item, the
+/// profiles submenu (only while ≥1 profile exists), or the divider
+/// separating the terminal actions from Settings….
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     /// A clickable item, rendered with its keybind as a hint.
     Item(Item),
+    /// The New Tab slot while ≥1 profile exists: a submenu whose
+    /// first child is the plain New Tab, followed by one row per
+    /// profile in config order (ruling 2 — zero profiles keep
+    /// today's flat menu).
+    ProfilesFolder,
     /// A horizontal separator.
     Divider,
 }
@@ -91,28 +98,65 @@ impl MenuAction for Action {
     }
 }
 
-/// The menu as libcosmic trees, one per row of [`ROWS`], each item
-/// rendered with its keybind as a hint (every menu action is bound in
-/// `default_key_binds`). Called by the view only while the menu is
-/// open.
-pub fn trees() -> Vec<menu::Tree<app::Message>> {
-    let items: Vec<menu::Item<Action, String>> = ROWS
-        .iter()
+/// The rows for the current profile list: exactly [`ROWS`] when no
+/// profile is configured — today's byte-identical flat menu, the
+/// empty-list pin — else the New Tab slot becomes the submenu slot
+/// (ruling 2).
+pub fn rows(profiles: &[Profile]) -> Vec<Row> {
+    if profiles.is_empty() {
+        return ROWS.to_vec();
+    }
+    ROWS.iter()
+        .map(|row| match row {
+            Row::Item(Item::NewTab) => Row::ProfilesFolder,
+            row => *row,
+        })
+        .collect()
+}
+
+/// The menu's item list, pre-keybind: one item per row of
+/// [`rows(profiles)`]; the submenu slot assembles its children here —
+/// the plain New Tab child first, then one button per profile in
+/// config order, each carrying its index for pick-time resolution.
+fn items(profiles: &[Profile]) -> Vec<menu::Item<Action, String>> {
+    rows(profiles)
+        .into_iter()
         .map(|row| match row {
             Row::Item(item) => menu::Item::Button(item.label().to_owned(), None, item.action()),
+            Row::ProfilesFolder => {
+                // The folder label repeats the slot's own label, so
+                // the submenu reads as "New Tab ▸".
+                let mut children = vec![menu::Item::Button(
+                    Item::NewTab.label().to_owned(),
+                    None,
+                    Item::NewTab.action(),
+                )];
+                children.extend(profiles.iter().enumerate().map(|(index, profile)| {
+                    menu::Item::Button(profile.name.clone(), None, Action::NewProfileTab(index))
+                }));
+                menu::Item::Folder(Item::NewTab.label().to_owned(), children)
+            }
             Row::Divider => menu::Item::Divider,
         })
-        .collect();
-    menu::items(&keybinds::default_key_binds(), items)
+        .collect()
+}
+
+/// The menu as libcosmic trees, one per row of [`rows(profiles)`],
+/// each item rendered with its keybind as a hint (every static action
+/// is bound in `default_key_binds`; profile rows carry none — the
+/// lookup tolerates unbound actions with an empty hint). Called by
+/// the view only while the menu is open.
+pub fn trees(profiles: &[Profile]) -> Vec<menu::Tree<app::Message>> {
+    menu::items(&keybinds::default_key_binds(), items(profiles))
 }
 
 /// The trees the view hands `widget::context_menu` for the current
 /// open state: `None` while closed — the wrapper is then a plain
-/// pass-through of the terminal — and the full [`ROWS`] trees while
-/// open, which arms the wrapper's right-release trigger. Holding the
+/// pass-through of the terminal — and the full row trees while open,
+/// which arms the wrapper's right-release trigger. Holding the
 /// open-state decision here keeps the view wiring free of menu logic.
-pub fn open_trees(menu_open: bool) -> Option<Vec<menu::Tree<app::Message>>> {
-    menu_open.then(trees)
+pub fn open_trees(menu_open: bool, profiles: &[Profile]) -> Option<Vec<menu::Tree<app::Message>>> {
+    menu_open.then(|| trees(profiles))
 }
 
 #[cfg(test)]
@@ -204,8 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn trees_yields_one_tree_per_row() {
-        assert_eq!(trees().len(), ROWS.len());
+    fn trees_yield_one_tree_per_row_with_no_profiles() {
+        assert_eq!(trees(&[]).len(), ROWS.len());
     }
 
     #[test]
@@ -213,12 +257,113 @@ mod tests {
         // A closed menu supplies no trees, so `widget::context_menu`
         // renders and passes events through as a plain wrapper — the
         // pixel-identical closed view.
-        assert!(open_trees(false).is_none());
+        assert!(open_trees(false, &[]).is_none());
     }
 
     #[test]
     fn open_trees_carries_every_row_while_the_menu_is_open() {
-        let trees = open_trees(true).expect("the open menu supplies its trees");
+        let trees = open_trees(true, &[]).expect("the open menu supplies its trees");
         assert_eq!(trees.len(), ROWS.len());
+    }
+
+    // --- the profiles submenu (ruling 2) ---
+
+    fn profile(name: &str) -> Profile {
+        Profile {
+            name: name.to_owned(),
+            command: format!("run {name}"),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn rows_with_no_profiles_is_exactly_the_static_rows() {
+        // The empty-list pin: zero profiles render today's menu,
+        // byte-identical — ruling 2's flat half.
+        assert_eq!(rows(&[]), ROWS.to_vec());
+    }
+
+    #[test]
+    fn rows_with_profiles_swap_the_new_tab_slot_for_the_submenu() {
+        let profiles = [profile("ssh-web")];
+        let with_profiles = rows(&profiles);
+        assert_eq!(with_profiles.len(), ROWS.len());
+        assert_eq!(with_profiles[0], Row::ProfilesFolder);
+        assert_eq!(&with_profiles[1..], &ROWS[1..]);
+    }
+
+    #[test]
+    fn items_with_no_profiles_stay_flat() {
+        // No folder unless a profile exists: the first item is the
+        // plain New Tab button, exactly today's shape.
+        let list = items(&[]);
+        let menu::Item::Button(label, _, action) = &list[0] else {
+            panic!("zero profiles must keep the flat New Tab button");
+        };
+        assert_eq!(label, "New Tab");
+        assert_eq!(*action, Action::NewTab);
+    }
+
+    #[test]
+    fn items_with_profiles_fold_new_tab_into_a_folder_with_plain_child_first() {
+        let profiles = [profile("ssh-web"), profile("htop")];
+        let list = items(&profiles);
+        assert_eq!(
+            list.len(),
+            ROWS.len(),
+            "the folder replaces the slot, it does not add a row"
+        );
+        let menu::Item::Folder(label, children) = &list[0] else {
+            panic!("the New Tab slot must become the submenu");
+        };
+        assert_eq!(label, "New Tab");
+        assert_eq!(children.len(), 3, "plain New Tab plus one row per profile");
+        let menu::Item::Button(label, _, action) = &children[0] else {
+            panic!("the folder's first child is the plain New Tab");
+        };
+        assert_eq!(label, "New Tab");
+        assert_eq!(*action, Action::NewTab);
+        // One row per profile, config order, index-actioned.
+        for (index, child) in children[1..].iter().enumerate() {
+            let menu::Item::Button(label, _, action) = child else {
+                panic!("profile rows are buttons");
+            };
+            assert_eq!(label, profiles[index].name.as_str());
+            assert_eq!(*action, Action::NewProfileTab(index));
+        }
+    }
+
+    #[test]
+    fn a_profile_named_like_a_static_item_tolerates_the_label_collision() {
+        // "Copy" names both a static row and a profile row — different
+        // menu levels, different actions; the menu tolerates the
+        // duplicate rather than rejecting it.
+        let profiles = [profile("Copy")];
+        let list = items(&profiles);
+        let menu::Item::Folder(_, children) = &list[0] else {
+            panic!("the New Tab slot must become the submenu");
+        };
+        let menu::Item::Button(label, _, action) = &children[1] else {
+            panic!("the profile row is a button");
+        };
+        assert_eq!(label, "Copy");
+        assert_eq!(*action, Action::NewProfileTab(0));
+        // The static Copy row is untouched by the collision.
+        let menu::Item::Button(label, _, action) = &list[1] else {
+            panic!("the static Copy row is a button");
+        };
+        assert_eq!(label, "Copy");
+        assert_eq!(*action, Action::Copy);
+    }
+
+    #[test]
+    fn open_trees_stays_none_while_closed_even_with_profiles() {
+        assert!(open_trees(false, &[profile("ssh-web")]).is_none());
+    }
+
+    #[test]
+    fn trees_carry_one_tree_per_row_with_profiles() {
+        let profiles = [profile("ssh-web"), profile("htop")];
+        assert_eq!(trees(&profiles).len(), rows(&profiles).len());
     }
 }

@@ -86,6 +86,11 @@ pub enum Action {
     ZoomReset,
     Hide,
     NewTab,
+    /// Open a new tab running the profile at this index into the
+    /// config's list — a context-menu submenu pick, resolved at apply
+    /// time; deliberately not keybindable (indices are not a stable
+    /// user surface). An out-of-range index at apply warns and no-ops.
+    NewProfileTab(usize),
     CloseTab,
     NextTab,
     PrevTab,
