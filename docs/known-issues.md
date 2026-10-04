@@ -1,0 +1,9 @@
+# Known issues
+
+The current rough edges of running DropTerm on COSMIC - each with the upstream link where it is tracked.
+
+- **Clipboard ownership vs. destroyed surfaces**: on Wayland a copied selection lives only as long as the client connection that offered it, and libcosmic binds its runtime clipboard to the first window created — for a layer-shell-only app, the drop-down surface itself, which every hide destroys. Copying out of DropTerm therefore died the moment you focused another app to paste into it. DropTerm now opens an invisible, never-closed anchor window before the first layer surface, so the clipboard binding (and your last copy) survives every hide/show cycle.
+- **Hiding a layer surface**: DropTerm hides by *destroying* its layer surface and creates a fresh one on the next show, rather than unmapping/hiding it in place. This sidesteps a compositor-connection-drop bug some other layer-shell clients (via gtk4-layer-shell) have hit on cosmic-comp when a surface is updated after its role is destroyed ([cosmic-comp#2159](https://github.com/pop-os/cosmic-comp/issues/2159)) - libcosmic's own destroy path doesn't do that.
+- **Custom shortcuts with Shift**: some Shift-modified custom shortcuts can fail to fire on COSMIC ([cosmic-epoch#2481](https://github.com/pop-os/cosmic-epoch/issues/2481)). Prefer an unshifted key such as `F12` for the toggle shortcut.
+- **No GlobalShortcuts portal**: COSMIC doesn't yet implement the XDG `GlobalShortcuts` portal, so there is no way for DropTerm to register its own hotkey - it must be bound as a COSMIC custom shortcut (above).
+- **No Flatpak packaging**: layer-shell and toplevel-management protocols aren't exposed to sandboxed (Flatpak) clients on cosmic-comp, so a true drop-down terminal isn't possible in a sandbox. This isn't planned until COSMIC exposes those protocols to sandboxes.
