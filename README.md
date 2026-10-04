@@ -41,15 +41,16 @@ Command: cosmic-ext-dropterm
 Key: F12
 ```
 
-Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle, or script new tabs with `cosmic-ext-dropterm new-tab [--cwd DIR] [--cmd COMMAND]`:
+Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle, or script new tabs with `cosmic-ext-dropterm new-tab [--cwd DIR] [--cmd COMMAND] [--profile NAME]`:
 
 ```sh
 cosmic-ext-dropterm new-tab                 # a shell in the active tab's cwd
 cosmic-ext-dropterm new-tab --cwd ~/src     # a shell in an explicit directory
 cosmic-ext-dropterm new-tab --cmd htop      # a tab running htop
+cosmic-ext-dropterm new-tab --profile web-prod  # a tab running a configured profile
 ```
 
-A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead. Where the tab lands follows `new_tab_after_current` (default `true`: directly after the active tab; `false`: at the end of the tab list).
+A `new-tab` sent while the app runs opens the tab in the running instance and shows the overlay; sent while it is not running, the app starts with that tab. `--cmd` runs the command *instead of* the shell (cosmic-term `-e` semantics): whitespace-split with no quoting support, the tab closes when the command exits, and the tab is deliberately *not* part of the saved session - the session never resumes a program. `--profile NAME` runs that configured profile's command line in its `cwd` instead of the shell, identically remote and at first launch; it cannot be combined with `--cmd`, an explicit `--cwd` wins over the profile's own `cwd`, and - unlike `--cmd` - the tab is part of the saved session. A name the config doesn't carry logs a `warn` and opens a plain shell tab: the request is fire-and-forget, so there is no error to report back. `--cwd` beats inheritance; a nonexistent directory is ignored with a warning and the tab opens in the fallback directory instead. Where the tab lands follows `new_tab_after_current` (default `true`: directly after the active tab; `false`: at the end of the tab list).
 
 The tab verbs script tab management over the same seam. All indices are 1-based (`0` is rejected at the CLI edge; out-of-range targets warn and no-op):
 
@@ -169,7 +170,7 @@ Profiles - named presets of what a tab runs - are config-file-only for now: hand
 )
 ```
 
-`default_profile` (default unset) names the profile plain new tabs launch; a name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. The ways to actually launch under a profile - the tab context menu, `new-tab --profile NAME`, and the default's application - arrive in the next release.
+`default_profile` (default unset) names the profile plain new tabs launch: with it set, `Ctrl+Shift+T`, the context menu's plain "New Tab" row, a bare `new-tab`, and the fresh-startup tab all run it as full profile tabs (a `duplicate-tab` still spawns a fresh shell - the running command is never copied). A name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. Launching under a profile is live three ways: that default application, `new-tab --profile NAME` (above), and the tab context menu - "New Tab" becomes a submenu exactly when the list is non-empty, its first child the plain New Tab, then one row per profile in config order. Config edits apply to future spawns only; a running tab is never re-launched mid-run. Managing profiles in the settings window - creating, editing, deleting, and picking the default - is the one piece still to ship; until then the list is hand-edited as above.
 
 ## Session persistence
 
@@ -177,11 +178,13 @@ DropTerm reopens your tab layout on every launch: one fresh shell per saved tab,
 
 What is saved - deliberately the same scope Guake and Yakuake settle on:
 
-- The tab list in tab-bar order: per-tab `title`, a user rename (`title_override`) if any, the `shell` recorded when the tab was spawned, and the tab's `cwd` at save time
+- The tab list in tab-bar order: per-tab `title`, a user rename (`title_override`) if any, the `shell` recorded when the tab was spawned, the tab's `cwd` at save time, and the `profile` id a tab launched under (if any)
 - The focused tab
 - A schema `version`
 
-That is all - seven schema fields (`version`, `active`, `tabs`, and per tab `title`, `title_override`, `shell`, `cwd`). Scrollback, environment, and running processes are deliberately *not* saved: a restored tab is a fresh shell in a familiar place, never a resumed program. And because each tab's shell is recorded at spawn, changing the configured `shell` mid-run only affects newly opened tabs.
+That is all - eight schema fields (`version`, `active`, `tabs`, and per tab `title`, `title_override`, `shell`, `cwd`, `profile`). Scrollback, environment, and running processes are deliberately *not* saved: a restored tab is a fresh spawn - your shell, or a profile's command - in a familiar place, never a resumed program. And because each tab's shell is recorded at spawn, changing the configured `shell` mid-run only affects newly opened tabs.
+
+Profile tabs are the explicit opt-in that makes a command tab persistent where a raw `--cmd` tab deliberately is not: the session saves the id beside the cwd, and restore re-resolves it against the *current* config, so a profile edited between save and relaunch launches the edited command. A saved id the list no longer carries falls back to a plain shell in the re-validated saved cwd - it never chains through `default_profile`.
 
 Saving happens on every layout change (open, close, reorder, rename, tab switch, or a shell's `cd`), debounced to one write within half a second; continuous changes coalesce into one write per interval. Each write is atomic - serialize to a temp file next to the target, fsync, rename over the old file - so a crash mid-write leaves the previous session intact. The trade-off for debouncing: a hard kill can lose the last ~500 ms of layout changes.
 
@@ -197,7 +200,7 @@ Failure behavior:
 
 - First run (no state file): silent - a single fresh tab, no warnings.
 - A corrupt, unreadable, or future-versioned file is moved to `session.ron.bak` (replacing any older backup), logged at `warn`, and the app starts fresh. Rename it back to `session.ron` to give it another chance.
-- A saved `cwd` that no longer exists spawns that shell in `$HOME`.
+- A saved `cwd` that no longer exists spawns that shell in `$HOME` (a profile tab first tries the profile's current `cwd`, then `$HOME`).
 
 ## Slide animation
 
@@ -307,6 +310,10 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] New-tab placement: with `new_tab_after_current: false` (written to the config file or flipped via the Behavior toggle, which round-trips to the file), `Ctrl+Shift+T`, the tab bar's `+`, and `cosmic-ext-dropterm new-tab` append the new tab at the end and activate it - including a first-launch `new-tab` alongside restored session tabs; `duplicate-tab` still lands after the active tab; a restart keeps session order; with the key absent or `true`, every new tab lands after the active tab exactly as the default always did
 - [ ] `new-tab --cwd /tmp` opens the shell in `/tmp`; `new-tab --cwd /nonexistent` logs a `warn` and opens in the fallback directory; with the active tab cd'd somewhere, plain `new-tab` inherits that cwd
 - [ ] `new-tab --cmd htop` runs htop instead of the shell (no config shell arguments inherited), and closing htop closes the tab; the `--cmd` tab is absent from `session.ron` after the next debounced save, while plain `new-tab` tabs are saved like any other
+- [ ] Profile submenu: with at least one profile configured, the terminal context menu's "New Tab" is a submenu - plain New Tab first, then one row per profile in config order - and each profile row launches that profile's command in its `cwd`; with zero profiles the menu renders flat exactly as before
+- [ ] Remote profile tab: `new-tab --profile web-prod` opens a tab running that profile, both in the running instance and at first launch; `--profile ghost` logs a `warn` and degrades to a visible plain-shell tab; `--profile` + `--cmd` is rejected by the CLI; an explicit `--cwd` beats the profile's own `cwd`
+- [ ] Default profile: with `default_profile` set, `Ctrl+Shift+T` and a fresh startup run it as full profile tabs; a restart restores the profile tab by id, and a profile edited between save and restart launches the edited command; `duplicate-tab` still spawns a fresh shell
+- [ ] Profile session semantics: a profile tab is saved to `session.ron` with its id and cwd while a `--cmd` tab stays absent; a saved id since deleted from the config restores a plain shell in the saved cwd
 - [ ] `toggle`/`show`/`hide` still round-trip through a second launch exactly as before (including via D-Bus activation)
 - [ ] A `new-tab` sent during the 130 ms slide-out reverses the slide and ends shown with the new tab active - it never finishes the hide
 - [ ] Remote close-tab: with the app running and two tabs, `cosmic-ext-dropterm close-tab` closes the active tab (successor activates) without showing the overlay; `close-tab --tab-index 1` closes the first; `--tab-index 0` is rejected by the CLI; closing the last tab respawns a fresh one; an out-of-range index logs a `warn` and no-ops; with the app not running, the app starts plain
