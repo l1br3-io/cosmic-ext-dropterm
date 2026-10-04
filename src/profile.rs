@@ -59,13 +59,6 @@ pub fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
 /// Resolves the configured default profile, if one is set and still
 /// exists. A dangling `default_profile` (profile deleted, config
 /// hand-edited) is `None` — plain shell — never a config rewrite.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "transient: consumed by profile-launch (profiles module 2)"
-    )
-)]
 pub fn effective_default<'a>(
     profiles: &'a [Profile],
     default_profile: Option<&str>,

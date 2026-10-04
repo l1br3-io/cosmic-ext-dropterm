@@ -145,7 +145,7 @@ impl std::fmt::Display for ToggleAction {
 /// Profile tabs persist in the session and re-resolve by id at
 /// restore; that is the explicit opt-in a raw `--cmd` tab
 /// deliberately is not.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SpawnCommand {
     Shell(String),
     CommandLine(String),
@@ -500,8 +500,19 @@ impl DropTerm {
     /// default working directory.
     fn spawn_tab(&mut self, spec: Option<&session::SpawnSpec>) -> Option<Tab> {
         let Some(spec) = spec else {
-            let shell = self.config.resolved_shell();
-            return self.spawn_shell(SpawnCommand::Shell(shell), None);
+            // The plain startup/respawn spawns ride the configured
+            // default (ruling 1 — the never-empty respawn is the same
+            // no-user-context plain spawn). Nothing to inherit here:
+            // a default preset's dead cwd warns and degrades to the
+            // pty's default directory.
+            let command = default_spawn_command(&self.config);
+            let cwd = match &command {
+                SpawnCommand::Profile {
+                    name, cwd: preset, ..
+                } => live_preset_cwd(name, preset.as_ref()),
+                _ => None,
+            };
+            return self.spawn_shell(command, cwd);
         };
         if let Some(profile) = &spec.profile {
             // The id re-resolved at plan time: the current definition
@@ -1124,6 +1135,12 @@ impl DropTerm {
             return Task::none();
         };
         self.ensure_tabs();
+        // Flag presence, not live-ness: an explicit --cwd guards the
+        // plain-shell branch below even when the directory turns out
+        // dead (the user asked for an override; a dead one warns and
+        // degrades within that override, it does not fall back to the
+        // default profile).
+        let explicit_cwd = cwd.is_some();
         // A nonexistent --cwd degrades to the inherited/default cwd
         // with a warning, never an error surface.
         let explicit = cwd.filter(|dir| {
@@ -1140,43 +1157,42 @@ impl DropTerm {
         // --cmd/--profile pairing off the wire); a profile resolves
         // against the live config before spawn — a name that no
         // longer exists warns and spawns the plain shell (ruling 3:
-        // the fire-and-forget forward has no reply surface).
+        // the fire-and-forget forward has no reply surface). An
+        // explicit --cwd keeps the spawn a plain shell even with a
+        // default profile set: the user overrode the preset
+        // wholesale, and duplicate-tab rides exactly here (a fresh
+        // shell in the target's cwd, never the default — ruling 1).
+        // The bare remainder is the one branch the configured default
+        // owns.
         let command = match (cmd, profile) {
             (Some(line), _) => SpawnCommand::CommandLine(line),
             (None, Some(name)) => {
                 if let Some(profile) = profile::find(&self.config.profiles, &name) {
-                    // The preset's cwd degrades the way --cwd does —
-                    // warn when dead, then the inherited/default cwd
-                    // applies — and loses to an explicit --cwd either
-                    // way (OQ-2).
-                    let preset = profile.cwd.clone().filter(|dir| {
-                        let live = dir.is_dir();
-                        if !live {
-                            log::warn!(
-                                "ignoring profile {} cwd {}: not a directory",
-                                name,
-                                dir.display()
-                            );
-                        }
-                        live
-                    });
                     SpawnCommand::Profile {
                         name: profile.name.clone(),
                         command: profile.command.clone(),
-                        cwd: explicit.clone().or(preset).or(inherited.clone()),
+                        cwd: profile.cwd.clone(),
                     }
                 } else {
                     log::warn!("no profile named {name}; spawning the shell instead");
                     SpawnCommand::Shell(self.config.resolved_shell())
                 }
             }
-            (None, None) => SpawnCommand::Shell(self.config.resolved_shell()),
+            (None, None) if explicit_cwd => SpawnCommand::Shell(self.config.resolved_shell()),
+            (None, None) => default_spawn_command(&self.config),
         };
-        // The Profile arm carries its fully resolved spawn directory
-        // (explicit --cwd over the live preset cwd over inheritance);
-        // every other arm resolves exactly as before.
+        // A profile tab's directory — by name or by default: the
+        // explicit --cwd over the preset's live cwd over inheritance,
+        // the preset degrading the way --cwd does (warn when dead,
+        // then the inherited/default directory applies). Every other
+        // arm resolves exactly as before.
         let spawn_cwd = match &command {
-            SpawnCommand::Profile { cwd, .. } => cwd.clone(),
+            SpawnCommand::Profile {
+                name, cwd: preset, ..
+            } => explicit
+                .clone()
+                .or_else(|| live_preset_cwd(name, preset.as_ref()))
+                .or(inherited.clone()),
             _ => tabs::resolve_new_tab_cwd(explicit, inherited),
         };
         if let Some(tab) = self.spawn_shell(command, spawn_cwd) {
@@ -1525,11 +1541,20 @@ impl DropTerm {
                 let inherited = self
                     .active()
                     .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
-                let shell = self.config.resolved_shell();
-                if let Some(tab) = self.spawn_shell(
-                    SpawnCommand::Shell(shell),
-                    tabs::resolve_new_tab_cwd(None, inherited),
-                ) {
+                // The plain keybind rides the configured default
+                // (ruling 1): with one set and existing, the new tab
+                // is a full profile tab — id recorded, session-
+                // persisted — in the inherited directory unless the
+                // preset's own live cwd applies. No effective default:
+                // exactly today's shell spawn.
+                let command = default_spawn_command(&self.config);
+                let spawn_cwd = match &command {
+                    SpawnCommand::Profile {
+                        name, cwd: preset, ..
+                    } => live_preset_cwd(name, preset.as_ref()).or(inherited),
+                    _ => tabs::resolve_new_tab_cwd(None, inherited),
+                };
+                if let Some(tab) = self.spawn_shell(command, spawn_cwd) {
                     // Placement: after the active tab or at the end,
                     // per `new_tab_after_current`; the new tab becomes
                     // active either way.
@@ -1763,6 +1788,41 @@ impl DropTerm {
         }
         Task::none()
     }
+}
+
+/// Resolves the effective default for a plain new tab (ruling 1): a
+/// set, existing `default_profile` becomes the full profile spawn —
+/// id recorded, session-persisted — while an unset or dangling one
+/// keeps today's plain shell (the module-1 seam's contract: the load
+/// never rewrites the config, and nothing chains onto another
+/// profile). The plain-spawn sites — the new-tab keybind, a bare
+/// remote `new-tab`, and the never-empty startup/respawn — all route
+/// through here; `duplicate-tab` and every explicit CLI flag do not.
+fn default_spawn_command(config: &DropTermConfig) -> SpawnCommand {
+    match profile::effective_default(&config.profiles, config.default_profile.as_deref()) {
+        Some(profile) => SpawnCommand::Profile {
+            name: profile.name.clone(),
+            command: profile.command.clone(),
+            cwd: profile.cwd.clone(),
+        },
+        None => SpawnCommand::Shell(config.resolved_shell()),
+    }
+}
+
+/// The live-directory filter a profile preset's cwd passes at spawn:
+/// dead → warn and `None` — the `--cwd` degradation, never an error
+/// surface — so the inherited/default directory applies instead.
+fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
+    cwd.cloned().filter(|dir| {
+        let live = dir.is_dir();
+        if !live {
+            log::warn!(
+                "ignoring profile {name} cwd {}: not a directory",
+                dir.display()
+            );
+        }
+        live
+    })
 }
 
 /// Whether a `ConfigChanged` may reshape a shown surface in place:
@@ -2665,6 +2725,71 @@ mod tests {
                 "--profile".to_string(),
                 "ssh-web".to_string(),
             ]
+        );
+    }
+
+    // --- the default-profile application policy ---
+
+    fn test_config(profiles: &[profile::Profile], default_profile: Option<&str>) -> DropTermConfig {
+        DropTermConfig {
+            shell: Some("/bin/sh".to_string()),
+            profiles: profiles.to_vec(),
+            default_profile: default_profile.map(str::to_owned),
+            ..DropTermConfig::default()
+        }
+    }
+
+    fn named_profile(name: &str, command: &str, cwd: Option<PathBuf>) -> profile::Profile {
+        profile::Profile {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            cwd,
+        }
+    }
+
+    #[test]
+    fn default_spawn_command_is_the_shell_without_a_configured_default() {
+        // Unset default (every default config): plain shell, exactly
+        // today's plain-spawn behavior.
+        let config = test_config(&[named_profile("ssh", "ssh web", None)], None);
+        assert_eq!(
+            default_spawn_command(&config),
+            SpawnCommand::Shell("/bin/sh".to_string())
+        );
+    }
+
+    #[test]
+    fn default_spawn_command_resolves_a_set_and_existing_default_into_the_profile() {
+        // A set, existing default turns every plain spawn into a full
+        // profile tab (ruling 1): id, command, and cwd cloned from the
+        // resolved profile — the spawn sites compose the live cwd
+        // filter and inheritance on top.
+        let config = test_config(
+            &[
+                named_profile("ssh", "ssh web", None),
+                named_profile("top", "htop", None),
+            ],
+            Some("top"),
+        );
+        assert_eq!(
+            default_spawn_command(&config),
+            SpawnCommand::Profile {
+                name: "top".to_string(),
+                command: "htop".to_string(),
+                cwd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn default_spawn_command_is_the_shell_on_a_dangling_default() {
+        // The default names a profile the list no longer carries:
+        // plain shell, never a config rewrite (the module-1 seam's
+        // contract) — and never a chain onto another profile.
+        let config = test_config(&[named_profile("ssh", "ssh web", None)], Some("ghost"));
+        assert_eq!(
+            default_spawn_command(&config),
+            SpawnCommand::Shell("/bin/sh".to_string())
         );
     }
 }
