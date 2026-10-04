@@ -190,6 +190,13 @@ pub struct DropTermConfig {
     /// notification interface. Defaults to `true`; `false` silences
     /// notifications (the tab-bar 🔔 marker is unaffected).
     pub bell_notification_enabled: bool,
+    /// Whether a new tab lands directly after the active tab (`true`,
+    /// the default — `DropTerm`'s shipped behavior, so existing users
+    /// keep it) or at the end of the tab list (Guake's default, its
+    /// `new-tab-after` false). Applies to the keybind new-tab and the
+    /// remote `new-tab`; `duplicate-tab` always lands after the active
+    /// tab regardless, and session restore keeps saved order.
+    pub new_tab_after_current: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
@@ -220,6 +227,7 @@ impl Default for DropTermConfig {
             session_persistence_enabled: true,
             slide_animation_enabled: true,
             bell_notification_enabled: true,
+            new_tab_after_current: true,
             theme_preference: ThemePreference::default(),
         }
     }
@@ -284,6 +292,88 @@ mod tests {
         // The one DE feature a hidden drop-down uniquely needs ships
         // enabled; the Behavior toggle turns it off.
         assert!(DropTermConfig::default().bell_notification_enabled);
+    }
+
+    #[test]
+    fn new_tabs_after_current_default_on() {
+        // The shipped behavior — insert after the active tab — is the
+        // default, so existing users keep it; turning the toggle off
+        // appends at the end instead (deliberately the inverse of
+        // Guake `new-tab-after`, whose default is at-end).
+        assert!(DropTermConfig::default().new_tab_after_current);
+    }
+
+    #[test]
+    fn missing_new_tab_after_current_key_loads_as_true() {
+        // A config directory from a version that did not yet write
+        // `new_tab_after_current` loads as `true` through the same
+        // default-entry leniency pinned for `respect_panel` — the
+        // key list is additive, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-newtabafter-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`new_tab_after_current` version by deleting
+        // the one key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("new_tab_after_current"),
+        )
+        .expect("remove new_tab_after_current key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert!(loaded.new_tab_after_current);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn new_tab_after_current_key_on_disk_is_honored() {
+        // Control for `missing_new_tab_after_current_key_loads_as_true`:
+        // the same read path honors a key that does exist, so the
+        // leniency result above cannot be a vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-newtabafter-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            new_tab_after_current: false,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert!(!loaded.new_tab_after_current);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
