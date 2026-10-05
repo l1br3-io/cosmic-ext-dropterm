@@ -2190,6 +2190,25 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
     }
 }
 
+/// What a first launch does with the startup action: pure so the
+/// degradation is headless-testable (constructing `DropTerm` needs a
+/// live `Core`). The tab verbs have no running state to act on — no
+/// tabs exist yet — so they degrade to the plain default `Toggle`,
+/// never a fabricated close, rename, duplicate, or profile switch on
+/// a restored-or-fresh session; only `new-tab` carries startup
+/// application, and the surface verbs apply as-is. The call site
+/// info-logs the degradation.
+fn startup_action(action: &ToggleAction) -> ToggleAction {
+    match action {
+        ToggleAction::CloseTab { .. }
+        | ToggleAction::SelectTab { .. }
+        | ToggleAction::RenameTab { .. }
+        | ToggleAction::DuplicateTab { .. }
+        | ToggleAction::SwitchProfileTab { .. } => ToggleAction::Toggle,
+        startup => startup.clone(),
+    }
+}
+
 /// Whether a `LayerUnfocused` event for `id` should reach
 /// [`DropTerm::focus_lost`]: only a shown surface reacts to losing
 /// keyboard focus — one arriving while `Hiding` (the synthesized
@@ -2412,6 +2431,44 @@ fn clipboard_anchor_settings() -> window::Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the first-launch degradation ---
+
+    #[test]
+    fn first_launch_tab_verbs_start_plain() {
+        // With no running instance to act on, the tab verbs degrade
+        // to the default Toggle — never a fabricated close, rename,
+        // duplicate, or profile switch on a restored-or-fresh
+        // session.
+        for action in [
+            ToggleAction::CloseTab { tab_index: None },
+            ToggleAction::SelectTab { index: 2 },
+            ToggleAction::RenameTab {
+                title: "work".to_string(),
+                tab_index: None,
+            },
+            ToggleAction::DuplicateTab { tab_index: None },
+            ToggleAction::SwitchProfileTab {
+                profile: "htop".to_string(),
+                tab_index: None,
+            },
+        ] {
+            assert_eq!(startup_action(&action), ToggleAction::Toggle);
+        }
+    }
+
+    #[test]
+    fn first_launch_keeps_new_tab_and_surface_verbs() {
+        // Only the tab verbs degrade: new-tab carries startup
+        // meaning, and the surface verbs apply as-is.
+        let new_tab = ToggleAction::NewTab {
+            cwd: None,
+            cmd: None,
+            profile: None,
+        };
+        assert_eq!(startup_action(&new_tab), new_tab);
+        assert_eq!(startup_action(&ToggleAction::Show), ToggleAction::Show);
+    }
 
     #[test]
     fn geometry_edit_mid_slide_skips_the_in_place_reshape() {
@@ -3383,22 +3440,16 @@ impl Application for DropTerm {
             .map_or_else(Task::none, theme_override_task);
         // First launch has no running state to act on remotely: the
         // tab verbs degrade to a plain start — the default `Toggle` —
-        // with an info log, never a fabricated close or selection on
-        // a restored-or-fresh session; only new-tab keeps startup
-        // application.
-        let startup_action = match flags.action {
-            action @ (ToggleAction::CloseTab { .. }
-            | ToggleAction::SelectTab { .. }
-            | ToggleAction::RenameTab { .. }
-            | ToggleAction::DuplicateTab { .. }) => {
-                log::info!("{action} with no running instance: starting plain");
-                ToggleAction::Toggle
-            }
-            action => action,
-        };
+        // through `startup_action`, never a fabricated close, rename,
+        // duplicate, or switch on a restored-or-fresh session; only
+        // new-tab keeps startup application.
+        let startup = startup_action(&flags.action);
+        if startup != flags.action {
+            log::info!("{} with no running instance: starting plain", flags.action);
+        }
         let task = Task::batch([
             open_anchor.then(|_| Task::none()),
-            app.debounced_toggle(startup_action),
+            app.debounced_toggle(startup),
             theme_task,
         ]);
         (app, task)
