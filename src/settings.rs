@@ -174,13 +174,6 @@ pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
 
 /// The tab's strip label — hardcoded English like every label in
 /// this drawer.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the strip model in settings-tabs ST-3"
-    )
-)]
 pub const fn tab_header(tab: SettingsTab) -> &'static str {
     match tab {
         SettingsTab::General => "General",
@@ -194,6 +187,53 @@ pub const fn tab_header(tab: SettingsTab) -> &'static str {
 /// door — pinned by test.
 pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
     matches!(tab, SettingsTab::General)
+}
+
+impl SettingsTab {
+    /// Every tab, in strip order — the strip's rows come from this
+    /// list and nothing else, so no row can exist without a page to
+    /// serve it (no dead `Keybindings` variant; that editor belongs
+    /// to `keybinds-editor`).
+    pub const ALL: [SettingsTab; 2] = [SettingsTab::General, SettingsTab::Advanced];
+}
+
+/// The tab strip's model: one row per tab of [`SettingsTab::ALL`],
+/// labeled [`tab_header`] and carrying its `SettingsTab` as the row
+/// data — the payload the activation handler resolves back to a tab
+/// (criterion 7's entity↔tab lockstep). Built once at init and
+/// stored on the app; the strip renders from the stored model, never
+/// a per-frame rebuild.
+/// The stored tab-strip model type — libcosmic's single-select
+/// segmented-button model, aliased so the app field and the strip
+/// builders below share one name.
+pub type TabStripModel = widget::segmented_button::SingleSelectModel;
+
+pub fn tab_strip_model() -> TabStripModel {
+    let mut model = widget::segmented_button::SingleSelectModel::default();
+    for tab in SettingsTab::ALL {
+        model
+            .insert()
+            .text(tab_header(tab))
+            .data::<SettingsTab>(tab);
+    }
+    model
+}
+
+/// Move the strip's selection to the row carrying `tab` — the
+/// lockstep sync applied after every `settings_page` mutation (a
+/// pick, the Profiles flip and its back, the explicit close's reset;
+/// criterion 7). A tab with no row — impossible while the model is
+/// built from [`SettingsTab::ALL`] — selects nothing; no row is
+/// invented.
+pub fn activate_tab_row(model: &mut TabStripModel, tab: SettingsTab) {
+    // Collect first: `iter` holds the borrow the activation needs
+    // to mutate.
+    let entities: Vec<_> = model.iter().collect();
+    for entity in entities {
+        if model.data::<SettingsTab>(entity) == Some(&tab) {
+            model.activate(entity);
+        }
+    }
 }
 
 impl ConfigKey {
@@ -1375,10 +1415,6 @@ pub enum SettingsEvent {
     Picked(ConfigKey, usize),
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
-    /// A tab strip pick: flip the drawer to that tab's page — a page
-    /// turn, never a drawer close, never a buffer clear (the
-    /// `OpenProfiles` rule: drafts on the left-behind tab survive).
-    PickTab(SettingsTab),
     /// The Settings page's Profiles entry row: flip the drawer to the
     /// Profiles page.
     OpenProfiles,
@@ -2052,6 +2088,49 @@ mod tests {
         // fluent/i18n in this repo.
         assert_eq!(tab_header(SettingsTab::General), "General");
         assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+    }
+
+    // --- the tab strip's model (settings-tabs ST-3) ---
+
+    #[test]
+    fn the_strip_model_carries_one_row_per_tab_in_order() {
+        // Criterion 7's entity↔tab lockstep, construction side:
+        // exactly the two tabs of `SettingsTab::ALL` in order (no
+        // dead Keybindings row — that variant belongs to
+        // keybinds-editor), each row labeled with its `tab_header`
+        // and carrying its `SettingsTab` as data — the payload the
+        // activation handler resolves.
+        let mut model = tab_strip_model();
+        assert_eq!(model.iter().count(), SettingsTab::ALL.len());
+        for (position, tab) in SettingsTab::ALL.iter().enumerate() {
+            let entity = model
+                .entity_at(u16::try_from(position).expect("two tabs, position 0-1"))
+                .expect("one row per tab, in ALL order");
+            assert_eq!(model.data::<SettingsTab>(entity), Some(tab));
+            assert_eq!(model.text(entity), Some(tab_header(*tab)));
+        }
+    }
+
+    #[test]
+    fn activating_a_tab_row_selects_it_and_only_it() {
+        // Criterion 7's lockstep, selection side: `activate_tab_row`
+        // moves the single selection to the row carrying the tab —
+        // the sync every page mutation applies after assigning
+        // `settings_page` (pick, Profiles back, explicit close).
+        let mut model = tab_strip_model();
+        // The strip's selection only ever moves through
+        // `activate_tab_row`: a fresh model selects nothing.
+        assert_eq!(model.active_data::<SettingsTab>(), None);
+        activate_tab_row(&mut model, SettingsTab::Advanced);
+        assert_eq!(
+            model.active_data::<SettingsTab>(),
+            Some(&SettingsTab::Advanced)
+        );
+        activate_tab_row(&mut model, SettingsTab::General);
+        assert_eq!(
+            model.active_data::<SettingsTab>(),
+            Some(&SettingsTab::General)
+        );
     }
 
     // --- the drawer's lifecycle transitions (settings-drawer T3) ---

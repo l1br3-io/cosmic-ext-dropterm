@@ -310,6 +310,12 @@ pub enum Message {
     /// commits it as a `Bare` write through [`Self::write_config`],
     /// whose `ConfigChanged` echo is the only apply path.
     Settings(settings::SettingsEvent),
+    /// The settings tab strip: a row was activated. The row's entity
+    /// rides the message — the activation closure is `'static` and
+    /// cannot borrow the stored model — and the handler resolves it
+    /// to its `SettingsTab` through the model before applying the
+    /// page-turn rule.
+    PickSettingsTab(cosmic::widget::segmented_button::Entity),
     /// A context-menu item was picked: the item's
     /// [`terminal::Action`], dispatched through `perform_action` —
     /// the same entry point the keybind map uses, so menu and keybind
@@ -453,6 +459,13 @@ pub struct DropTerm {
     /// from config — while a focus-loss hide preserves it with the
     /// drafts.
     settings_page: SettingsPage,
+    /// The tab strip's rows: built once at init
+    /// ([`settings::tab_strip_model`]) and never rebuilt per frame —
+    /// the strip renders from it, each row carrying its `SettingsTab`
+    /// as data. The selection is kept in lockstep with
+    /// `settings_page` ([`Self::sync_settings_tab_strip`]); the rows
+    /// themselves never change.
+    settings_tab_model: settings::TabStripModel,
     /// The Profiles page's selected row: the index into
     /// `config.profiles` driving the edit form. Cleared whenever the
     /// page is left (back or close) — a reopened page starts from
@@ -1635,14 +1648,29 @@ impl DropTerm {
 
     /// Leaves the Profiles page (back affordance, or the drawer's
     /// explicit close): page state — selection, the form draft —
-    /// drops so a reopened page starts from config. Focus-loss hides
+    /// drops so a reopened page starts from config, the page resets
+    /// to the General tab, and the strip follows. Focus-loss hides
     /// never route here: preservation is their rule.
     fn leave_profiles_page(&mut self) {
         self.settings_page = home_settings_page();
+        self.sync_settings_tab_strip();
         self.profile_selection = None;
         settings::apply_profile_draft_transition(
             &mut self.profile_draft,
             settings::ProfileDraftTransition::Clear,
+        );
+    }
+
+    /// Re-sync the strip's selection to `settings_page` (criterion
+    /// 7): the row of the page's tab — General's row while the
+    /// Profiles drill-down is open — becomes the model's selection.
+    /// Applied after every page mutation: a pick, the Profiles flip
+    /// and its back, the explicit close's reset. The rows themselves
+    /// never change.
+    fn sync_settings_tab_strip(&mut self) {
+        settings::activate_tab_row(
+            &mut self.settings_tab_model,
+            strip_selection(self.settings_page),
         );
     }
 
@@ -2316,6 +2344,17 @@ const fn home_settings_page() -> SettingsPage {
 /// (constructing `DropTerm` needs a live `Core`).
 const fn page_after_tab_pick(_current: SettingsPage, tab: SettingsTab) -> SettingsPage {
     SettingsPage::Tab(tab)
+}
+
+/// The strip's highlighted row while the drawer shows `page`
+/// (criterion 7's lockstep): the page's own tab, or General while
+/// the Profiles drill-down is open — the tab its Back always lands
+/// on. Pure so the sync rule is headless-testable.
+const fn strip_selection(page: SettingsPage) -> SettingsTab {
+    match page {
+        SettingsPage::Tab(tab) => tab,
+        SettingsPage::Profiles => SettingsTab::General,
+    }
 }
 
 /// Whether a `ConfigChanged` may reshape a shown surface in place:
@@ -3102,6 +3141,26 @@ mod tests {
     }
 
     #[test]
+    fn the_strip_highlights_the_page_s_tab_and_general_on_profiles() {
+        // Criterion 7's lockstep rule: the highlighted row follows
+        // `settings_page` after every mutation — a pick lands on the
+        // picked tab (pinned above), and the Profiles drill-down
+        // highlights General, where Back always lands.
+        assert_eq!(
+            strip_selection(SettingsPage::Tab(SettingsTab::Advanced)),
+            SettingsTab::Advanced
+        );
+        assert_eq!(
+            strip_selection(SettingsPage::Tab(SettingsTab::General)),
+            SettingsTab::General
+        );
+        assert_eq!(
+            strip_selection(SettingsPage::Profiles),
+            SettingsTab::General
+        );
+    }
+
+    #[test]
     fn the_close_funnel_and_back_both_reset_to_the_general_tab() {
         // Criteria 5 and 6's reset rule: an explicit close and the
         // Profiles back affordance land on General — the entry
@@ -3670,6 +3729,14 @@ impl Application for DropTerm {
         // never closed.
         let (_anchor_window, open_anchor) = window::open(clipboard_anchor_settings());
 
+        // The tab strip's model, built once (criterion 7); its
+        // selection starts in lockstep with the initial page.
+        let mut settings_tab_model = settings::tab_strip_model();
+        settings::activate_tab_row(
+            &mut settings_tab_model,
+            strip_selection(home_settings_page()),
+        );
+
         let mut app = Self {
             core,
             config_handler,
@@ -3699,6 +3766,7 @@ impl Application for DropTerm {
             slide: None,
             settings_open: false,
             settings_page: home_settings_page(),
+            settings_tab_model,
             profile_selection: None,
             profile_draft: None,
             settings_buffer: settings::SettingsBuffer::default(),
@@ -4096,10 +4164,24 @@ impl Application for DropTerm {
                 ),
             ),
         };
+        // The tab strip rides the drawer's header slot — pinned under
+        // the title, above the pane's scrollable — on every page,
+        // including the Profiles drill-down (a pick from there turns
+        // straight to the picked tab, per `page_after_tab_pick`).
+        // Rendered from the stored model (never rebuilt per frame);
+        // activation carries the row's entity back as a message —
+        // the closure is `'static` and cannot borrow the model — and
+        // the handler resolves it (criterion 7). 32px like
+        // cosmic-edit's doc tabs; the TabBar preset's 76-250px
+        // button band fits the 344px drawer floor (OQ-2's cap ruling
+        // happens at the hardware check).
+        let tab_strip = widget::tab_bar::horizontal(&self.settings_tab_model)
+            .button_height(32)
+            .on_activate(Message::PickSettingsTab);
         widget::context_drawer(
             Some(title.into()),
             None,
-            None,
+            Some(tab_strip.into()),
             None,
             Message::Action(Action::Settings),
             content,
@@ -4766,6 +4848,20 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().paste(&text);
                 }
             }
+            Message::PickSettingsTab(entity) => {
+                // The strip's row → its tab (entity↔tab lockstep,
+                // criterion 7), then the `OpenProfiles` rule for
+                // picks (criterion 4): the page turns, nothing else —
+                // no drawer close, no buffer clear, no
+                // `DrawerTransition` — and the model's selection
+                // follows the page. An entity the model does not know
+                // (impossible while rows are only `SettingsTab::ALL`)
+                // resolves to nothing: no turn, no invented tab.
+                if let Some(tab) = self.settings_tab_model.data::<SettingsTab>(entity) {
+                    self.settings_page = page_after_tab_pick(self.settings_page, *tab);
+                    self.sync_settings_tab_strip();
+                }
+            }
             Message::Settings(event) => {
                 // The settings drawer's commit path: every event
                 // resolves through a pure planner and lands as one
@@ -4810,17 +4906,12 @@ impl DropTerm {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
-                    settings::SettingsEvent::PickTab(tab) => {
-                        // A page turn, the `OpenProfiles` rule
-                        // (criterion 4): the page flips and nothing
-                        // else — no drawer close, no buffer clear, no
-                        // `DrawerTransition` (the only draft-clearing
-                        // path is the close funnel's
-                        // `ExplicitClose`).
-                        self.settings_page = page_after_tab_pick(self.settings_page, tab);
-                    }
                     settings::SettingsEvent::OpenProfiles => {
+                        // A page turn like a pick (criterion 5); the
+                        // strip keeps highlighting General — the tab
+                        // Back lands on.
                         self.settings_page = SettingsPage::Profiles;
+                        self.sync_settings_tab_strip();
                     }
                     settings::SettingsEvent::BackFromProfiles => {
                         self.leave_profiles_page();
