@@ -414,6 +414,11 @@ pub struct DropTerm {
     /// page is left (back or close) — a reopened page starts from
     /// config.
     profile_selection: Option<usize>,
+    /// The Profiles page's form draft, one at a time: an Add/Clone
+    /// draft a button opened, or the Edit draft the row selection
+    /// seeded. Focus-loss hides preserve it; an explicit close and a
+    /// page leave clear it (`ProfileDraftTransition`).
+    profile_draft: Option<settings::ProfileDraft>,
     /// The settings drawer's in-flight drafts: display-only text and
     /// slider state, cleared on an explicit drawer close so a
     /// reopened drawer renders purely from config (spec criterion 8).
@@ -713,6 +718,13 @@ impl DropTerm {
         // close ever clears (see `close_settings_drawer`).
         self.settings_buffer
             .apply_drawer_transition(settings::DrawerTransition::FocusLossHide);
+        // The page-local form draft rides the same rule: a hide
+        // preserves it (the named no-op; only the transitions in
+        // `close_settings_drawer` and `leave_profiles_page` clear).
+        settings::apply_profile_draft_transition(
+            &mut self.profile_draft,
+            settings::ProfileDraftTransition::Hide,
+        );
         // The slide toggle feeds the decision: a disabled slide turns
         // this hide into an immediate destroy inside `toggle_step` —
         // the executor arms below then simply never runs.
@@ -1387,12 +1399,16 @@ impl DropTerm {
     }
 
     /// Leaves the Profiles page (back affordance, or the drawer's
-    /// explicit close): page state — selection, and the form draft
-    /// once it exists — drops so a reopened page starts from config.
-    /// Focus-loss hides never route here: preservation is their rule.
+    /// explicit close): page state — selection, the form draft —
+    /// drops so a reopened page starts from config. Focus-loss hides
+    /// never route here: preservation is their rule.
     fn leave_profiles_page(&mut self) {
         self.settings_page = SettingsPage::Settings;
         self.profile_selection = None;
+        settings::apply_profile_draft_transition(
+            &mut self.profile_draft,
+            settings::ProfileDraftTransition::Clear,
+        );
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -3223,6 +3239,7 @@ impl Application for DropTerm {
             settings_open: false,
             settings_page: SettingsPage::Settings,
             profile_selection: None,
+            profile_draft: None,
             settings_buffer: settings::SettingsBuffer::default(),
             context_menu_open: false,
             dbus_conn: None,
@@ -3612,7 +3629,11 @@ impl Application for DropTerm {
             ),
             SettingsPage::Profiles => (
                 "Profiles",
-                settings::profiles_view(&self.config, self.profile_selection),
+                settings::profiles_view(
+                    &self.config,
+                    self.profile_selection,
+                    self.profile_draft.as_ref(),
+                ),
             ),
         };
         widget::context_drawer(
@@ -4335,9 +4356,14 @@ impl DropTerm {
                     settings::SettingsEvent::SelectProfile(index) => {
                         // The view emits live indices only; the bound
                         // guards the echo race where the list shrank
-                        // between render and press.
+                        // between render and press. Selection seeds
+                        // the edit form (one draft at a time).
                         if index < self.config.profiles.len() {
                             self.profile_selection = Some(index);
+                            self.profile_draft = Some(settings::ProfileDraft::edit(
+                                index,
+                                &self.config.profiles[index],
+                            ));
                         }
                     }
                     settings::SettingsEvent::PickDefaultProfile(index) => {
@@ -4350,6 +4376,99 @@ impl DropTerm {
                             settings::default_picker_write(&self.config.profiles, index)
                         {
                             self.write_profile_config(&write);
+                        }
+                    }
+                    settings::SettingsEvent::OpenProfileDraft => {
+                        self.profile_draft = Some(settings::ProfileDraft::add());
+                    }
+                    settings::SettingsEvent::CloneProfile(index) => {
+                        // Seeding only — no write until the draft
+                        // commits.
+                        if let Some(source) = self.config.profiles.get(index) {
+                            self.profile_draft = Some(settings::ProfileDraft::clone_of(
+                                source,
+                                &self.config.profiles,
+                            ));
+                        }
+                    }
+                    settings::SettingsEvent::DraftProfileField(field, text) => {
+                        // Display-only buffering; the keystroke also
+                        // clears any stale error.
+                        if let Some(draft) = self.profile_draft.as_mut() {
+                            draft.set_field_text(field, text);
+                        }
+                    }
+                    settings::SettingsEvent::CommitProfileField(field, text) => {
+                        // The per-field commit: plan purely, then land
+                        // one whole-list write (plus the paired
+                        // rename-cascade write). Invalid Enters keep
+                        // the draft and show the inline error.
+                        if let Some(draft) = self.profile_draft.clone() {
+                            match settings::plan_profile_commit(
+                                &draft,
+                                field,
+                                &text,
+                                &self.config.profiles,
+                                self.config.default_profile.as_deref(),
+                            ) {
+                                settings::ProfileCommitPlan::Write {
+                                    profiles,
+                                    default_after_rename,
+                                } => {
+                                    // `profiles` first, then the
+                                    // cascade — the spec's two-key
+                                    // order; read-side tolerance
+                                    // covers the crash window.
+                                    self.write_profile_config(&settings::ProfileWrite::Profiles(
+                                        profiles.clone(),
+                                    ));
+                                    if let Some(new_default) = default_after_rename {
+                                        self.write_profile_config(
+                                            &settings::ProfileWrite::DefaultProfile(Some(
+                                                new_default,
+                                            )),
+                                        );
+                                    }
+                                    match draft.mode {
+                                        settings::ProfileDraftMode::Add
+                                        | settings::ProfileDraftMode::Clone { .. } => {
+                                            // The profile entered the
+                                            // list: select it and
+                                            // continue as its edit
+                                            // draft.
+                                            let index = profiles.len() - 1;
+                                            self.profile_selection = Some(index);
+                                            self.profile_draft =
+                                                Some(settings::ProfileDraft::edit(
+                                                    index,
+                                                    &profiles[index],
+                                                ));
+                                        }
+                                        settings::ProfileDraftMode::Edit { index } => {
+                                            // Keep the draft open
+                                            // with its other fields'
+                                            // buffered text; the
+                                            // committed field falls
+                                            // back to the written
+                                            // value.
+                                            let mut draft = draft;
+                                            draft.field_committed(field, &profiles[index]);
+                                            self.profile_draft = Some(draft);
+                                        }
+                                    }
+                                }
+                                settings::ProfileCommitPlan::Invalid { field, error } => {
+                                    if let Some(draft) = self.profile_draft.as_mut() {
+                                        draft.error = Some((field, error));
+                                    }
+                                }
+                                settings::ProfileCommitPlan::StaleEdit => {
+                                    // The edited profile is gone: the
+                                    // draft (and its selection) drop.
+                                    self.profile_selection = None;
+                                    self.profile_draft = None;
+                                }
+                            }
                         }
                     }
                 }

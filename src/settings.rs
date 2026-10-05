@@ -688,10 +688,6 @@ pub enum ReorderDirection {
 /// edited (`editing`), whose own name is self-excluded — re-committing
 /// a profile's own name is not a collision. The write-time half of
 /// name-as-id; read time tolerates hand-edited duplicates.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by T3's commit planner")
-)]
 pub fn name_unique(profiles: &[Profile], editing: Option<usize>, name: &str) -> bool {
     !profiles
         .iter()
@@ -703,10 +699,6 @@ pub fn name_unique(profiles: &[Profile], editing: Option<usize>, name: &str) -> 
 /// `new_name`: the key follows the rename when it named the renamed
 /// profile — the cascade's paired write — and is untouched otherwise
 /// (an absent default stays absent).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by T3's rename cascade")
-)]
 pub fn default_after_rename(
     default: Option<&str>,
     old_name: &str,
@@ -734,10 +726,6 @@ pub fn default_after_delete(default: Option<&str>, name: &str) -> Option<String>
 /// `(copy)`, escalating to `(copy 2)`, `(copy 3)`, … past collisions,
 /// so the seed is always unique against the list it will join — the
 /// draft still validates before any write.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by T3's clone seeding")
-)]
 pub fn clone_name(profiles: &[Profile], source: &Profile) -> String {
     let mut candidate = format!("{} (copy)", source.name);
     let mut suffix = 2;
@@ -750,7 +738,6 @@ pub fn clone_name(profiles: &[Profile], source: &Profile) -> String {
 
 /// Append `addition` at the end of the list: config order is the `+`
 /// dropdown / context-menu order, so add lands last by construction.
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's add commit"))]
 pub fn add_profile(profiles: &[Profile], addition: Profile) -> Vec<Profile> {
     let mut list = profiles.to_vec();
     list.push(addition);
@@ -760,7 +747,6 @@ pub fn add_profile(profiles: &[Profile], addition: Profile) -> Vec<Profile> {
 /// Replace the profile at `index` with `edited`, every other slot
 /// byte-identical. A stale out-of-bounds index (the config shrank
 /// under the click) is a pure no-op, never a panic.
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's edit commit"))]
 pub fn apply_edit(profiles: &[Profile], index: usize, edited: Profile) -> Vec<Profile> {
     match profiles.get(index) {
         Some(_) => {
@@ -814,7 +800,6 @@ pub fn move_profile(
 /// `None` — the model's default cwd — and any other path is accepted
 /// verbatim. Existence is never checked at define time; spawn-time
 /// fallback is `profile-launch`'s.
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's cwd field"))]
 pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -829,10 +814,6 @@ pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
 /// [`command_line_parts`] — [`Profile::validate`] plus the uniqueness
 /// this page adds at write time. The cwd is not gated: any path or
 /// none is definable.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by T3's commit planner")
-)]
 pub fn draft_valid(
     profiles: &[Profile],
     editing: Option<usize>,
@@ -842,6 +823,313 @@ pub fn draft_valid(
     !name.trim().is_empty()
         && name_unique(profiles, editing, name)
         && command_line_parts(command).is_some()
+}
+
+// --- the profile form: draft, per-field commits, lifecycle ---
+
+/// One of the form's three text inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileField {
+    /// The profile's name — also its id.
+    Name,
+    /// The command line to run.
+    Command,
+    /// The optional working directory (raw path text).
+    Cwd,
+}
+
+/// Why a form commit rejected, for the inline error under the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileFieldError {
+    /// The name is empty or whitespace.
+    BlankName,
+    /// Another profile already carries the exact name.
+    DuplicateName,
+    /// The command line has no program to run.
+    BlankCommand,
+}
+
+impl ProfileFieldError {
+    /// The inline error copy shown under the field.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::BlankName => "Name is required",
+            Self::DuplicateName => "That name is already taken",
+            Self::BlankCommand => "Command needs a program to run",
+        }
+    }
+}
+
+/// What the draft is committing as: a fresh profile (Add), a copy of
+/// one (Clone), or an edit of the list profile at `index` (Edit).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProfileDraftMode {
+    /// The Add button: empty fields, appended on first valid commit.
+    Add,
+    /// A row's Clone button: seeded from `source`.
+    Clone { source: Profile },
+    /// A row selection: seeded from the profile at `index`.
+    Edit { index: usize },
+}
+
+/// The form's one-at-a-time draft: the three raw text fields plus the
+/// per-field error state of the last rejected commit. Not a
+/// [`SettingsBuffer`] extension — the page owns its lifecycle
+/// (see [`ProfileDraftTransition`]), and [`TextField`]'s four arms
+/// stay pinned to the Settings page's keys.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileDraft {
+    /// What a commit writes this draft as.
+    pub mode: ProfileDraftMode,
+    /// The name input's buffered text.
+    pub name: String,
+    /// The command input's buffered text.
+    pub command: String,
+    /// The cwd input's buffered raw path text.
+    pub cwd: String,
+    /// The last rejected commit's field and error, if any.
+    pub error: Option<(ProfileField, ProfileFieldError)>,
+}
+
+impl ProfileDraft {
+    /// The Add button's empty draft.
+    pub fn add() -> Self {
+        Self {
+            mode: ProfileDraftMode::Add,
+            name: String::new(),
+            command: String::new(),
+            cwd: String::new(),
+            error: None,
+        }
+    }
+
+    /// A row's Clone draft: the source's fields with the name
+    /// re-seeded unique by [`clone_name`]. Seeding writes nothing.
+    pub fn clone_of(source: &Profile, profiles: &[Profile]) -> Self {
+        Self {
+            mode: ProfileDraftMode::Clone {
+                source: source.clone(),
+            },
+            name: clone_name(profiles, source),
+            command: source.command.clone(),
+            cwd: cwd_text(source),
+            error: None,
+        }
+    }
+
+    /// A row selection's Edit draft, seeded from the profile at
+    /// `index`.
+    pub fn edit(index: usize, profile: &Profile) -> Self {
+        Self {
+            mode: ProfileDraftMode::Edit { index },
+            name: profile.name.clone(),
+            command: profile.command.clone(),
+            cwd: cwd_text(profile),
+            error: None,
+        }
+    }
+
+    /// Buffer a field's text (a keystroke): display-only, and any
+    /// stale error clears — it described text that no longer exists.
+    pub fn set_field_text(&mut self, field: ProfileField, text: String) {
+        self.error = None;
+        match field {
+            ProfileField::Name => self.name = text,
+            ProfileField::Command => self.command = text,
+            ProfileField::Cwd => self.cwd = text,
+        }
+    }
+
+    /// After `field`'s commit landed as `written`: reset that field's
+    /// buffered text to the written value (the input falls back to
+    /// what the echo will serve) and clear the error — the other
+    /// fields' buffered drafts persist, per-field commits.
+    pub fn field_committed(&mut self, field: ProfileField, written: &Profile) {
+        self.error = None;
+        match field {
+            ProfileField::Name => self.name.clone_from(&written.name),
+            ProfileField::Command => self.command.clone_from(&written.command),
+            ProfileField::Cwd => self.cwd = cwd_text(written),
+        }
+    }
+}
+
+/// The cwd input's text for a profile's cwd: the path verbatim, empty
+/// for `None`.
+fn cwd_text(profile: &Profile) -> String {
+    profile
+        .cwd
+        .as_ref()
+        .map_or_else(String::new, |path| path.display().to_string())
+}
+
+/// What an Enter in one form field produced: the write to land, the
+/// rejection to show, or the stale-edit drop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProfileCommitPlan {
+    /// A valid commit: one whole-list write, plus the paired
+    /// `default_profile` write when the commit renamed the
+    /// default-named profile ([`default_after_rename`] — `None` means
+    /// no paired write).
+    Write {
+        /// The new `profiles` list.
+        profiles: Vec<Profile>,
+        /// The rename cascade's new default, if the commit hit it.
+        default_after_rename: Option<String>,
+    },
+    /// An invalid commit: the field at fault and why. Nothing is
+    /// written; the draft keeps its text.
+    Invalid {
+        /// The field the inline error renders under.
+        field: ProfileField,
+        /// The rejection's reason.
+        error: ProfileFieldError,
+    },
+    /// The edited profile is gone (the list changed under the open
+    /// draft): nothing to commit — the draft is stale and drops.
+    StaleEdit,
+}
+
+/// Plan the commit an Enter in `field` with `raw` produces under
+/// `draft` — the pure heart of the form.
+///
+/// Per-field commits: an Edit-mode Enter validates that field and
+/// writes the base profile with only it replaced (buffered but
+/// un-Enter'd edits to other fields ride along nowhere). Add and
+/// Clone drafts are whole-triple gated — a profile enters the list
+/// only on its first fully valid commit, because [`Profile::validate`]
+/// rejects a blank command — with the error pointing at whichever
+/// field is invalid. Name commits trim and enforce uniqueness
+/// (self-excluded on edit); command commits go through
+/// [`command_line_parts`]; cwd commits go through [`parse_cwd`] and
+/// can never reject.
+pub fn plan_profile_commit(
+    draft: &ProfileDraft,
+    field: ProfileField,
+    raw: &str,
+    profiles: &[Profile],
+    default: Option<&str>,
+) -> ProfileCommitPlan {
+    match &draft.mode {
+        ProfileDraftMode::Edit { index } => {
+            let Some(base) = profiles.get(*index) else {
+                return ProfileCommitPlan::StaleEdit;
+            };
+            let mut edited = base.clone();
+            match field {
+                ProfileField::Name => {
+                    let name = raw.trim();
+                    if name.is_empty() {
+                        return invalid_name(ProfileFieldError::BlankName);
+                    }
+                    if !name_unique(profiles, Some(*index), name) {
+                        return invalid_name(ProfileFieldError::DuplicateName);
+                    }
+                    edited.name = name.to_string();
+                }
+                ProfileField::Command => {
+                    let command = raw.trim();
+                    if command_line_parts(command).is_none() {
+                        return ProfileCommitPlan::Invalid {
+                            field: ProfileField::Command,
+                            error: ProfileFieldError::BlankCommand,
+                        };
+                    }
+                    edited.command = command.to_string();
+                }
+                ProfileField::Cwd => edited.cwd = parse_cwd(raw),
+            }
+            // The cascade: only a real rename of the default-named
+            // profile re-points the key (a same-name re-commit is not
+            // a rename), and only when the key's value actually
+            // changes — an unchanged default writes nothing extra.
+            let default_after_rename = match field {
+                ProfileField::Name if edited.name != base.name => {
+                    match default_after_rename(default, &base.name, &edited.name) {
+                        Some(new_default) if Some(new_default.as_str()) != default => {
+                            Some(new_default)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            ProfileCommitPlan::Write {
+                profiles: apply_edit(profiles, *index, edited),
+                default_after_rename,
+            }
+        }
+        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
+            // The Enter'd raw text replaces its field; the rest of
+            // the triple is the draft's buffered text.
+            let name = match field {
+                ProfileField::Name => raw.trim(),
+                _ => draft.name.trim(),
+            };
+            let command = match field {
+                ProfileField::Command => raw.trim(),
+                _ => draft.command.trim(),
+            };
+            let cwd_raw = match field {
+                ProfileField::Cwd => raw,
+                _ => draft.cwd.as_str(),
+            };
+            // The whole-triple gate is `draft_valid`; the checks
+            // inside pinpoint the field for the inline error.
+            if !draft_valid(profiles, None, name, command) {
+                if name.is_empty() {
+                    return invalid_name(ProfileFieldError::BlankName);
+                }
+                if !name_unique(profiles, None, name) {
+                    return invalid_name(ProfileFieldError::DuplicateName);
+                }
+                return ProfileCommitPlan::Invalid {
+                    field: ProfileField::Command,
+                    error: ProfileFieldError::BlankCommand,
+                };
+            }
+            let added = Profile {
+                name: name.to_string(),
+                command: command.to_string(),
+                cwd: parse_cwd(cwd_raw),
+            };
+            ProfileCommitPlan::Write {
+                profiles: add_profile(profiles, added),
+                default_after_rename: None,
+            }
+        }
+    }
+}
+
+/// An invalid-name rejection (the field arm is always `Name`).
+fn invalid_name(error: ProfileFieldError) -> ProfileCommitPlan {
+    ProfileCommitPlan::Invalid {
+        field: ProfileField::Name,
+        error,
+    }
+}
+
+/// A Profiles-page draft lifecycle transition — the page-local
+/// half of [`DrawerTransition`]'s rule: focus-loss hides preserve the
+/// open draft (and its buffered text) for the next show; the drawer's
+/// explicit close and the page's back affordance both clear it, so a
+/// reopened page starts from config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileDraftTransition {
+    /// The surface hid with the drawer open: keep everything.
+    Hide,
+    /// An explicit drawer close, or leaving the page: drop the draft.
+    Clear,
+}
+
+/// Apply a draft lifecycle transition to the page's optional draft.
+pub fn apply_profile_draft_transition(
+    draft: &mut Option<ProfileDraft>,
+    transition: ProfileDraftTransition,
+) {
+    if matches!(transition, ProfileDraftTransition::Clear) {
+        *draft = None;
+    }
 }
 
 // --- the profile persist path: the module's write contract ---
@@ -856,7 +1144,6 @@ pub fn draft_valid(
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProfileWrite {
     /// The whole `profiles` key.
-    #[expect(dead_code, reason = "consumed by T3/T4's whole-list commits")]
     Profiles(Vec<Profile>),
     /// The `default_profile` key (`None` clears it to plain shell).
     DefaultProfile(Option<String>),
@@ -949,6 +1236,16 @@ pub enum SettingsEvent {
     SelectProfile(usize),
     /// A default-profile picker row was picked: commit on change.
     PickDefaultProfile(usize),
+    /// The Add affordance: open an empty draft form.
+    OpenProfileDraft,
+    /// A row's Clone action: seed a draft from that profile.
+    CloneProfile(usize),
+    /// A form field's content changed — display only (no write until
+    /// its Enter).
+    DraftProfileField(ProfileField, String),
+    /// A form field was submitted (Enter): validate that field, write
+    /// the whole list if it commits.
+    CommitProfileField(ProfileField, String),
 }
 
 /// The write a toggle flip commits. `None` for keys without a toggle.
@@ -1090,6 +1387,7 @@ fn profiles_entry_description(count: usize) -> String {
 pub fn profiles_view(
     config: &DropTermConfig,
     selection: Option<usize>,
+    draft: Option<&ProfileDraft>,
 ) -> Element<'static, SettingsEvent> {
     let mut cards: Vec<Element<'static, SettingsEvent>> = vec![
         widget::button::text("Back")
@@ -1123,10 +1421,10 @@ pub fn profiles_view(
                 .add(
                     widget::settings::item::builder("No profiles")
                         .description("Named presets of what a tab runs.")
-                        // Placed but inert until the form ships (T3):
-                        // no `on_press`, so the button renders
-                        // disabled — never a dead click.
-                        .control(widget::button::standard("Add profile")),
+                        .control(
+                            widget::button::standard("Add profile")
+                                .on_press(SettingsEvent::OpenProfileDraft),
+                        ),
                 )
                 .into(),
         );
@@ -1136,27 +1434,116 @@ pub fn profiles_view(
             list = list.add(profile_row(index, profile, selection == Some(index)));
         }
         cards.push(list.into());
+        // The list's add affordance, below the rows it appends after.
+        cards.push(
+            widget::button::standard("Add profile")
+                .on_press(SettingsEvent::OpenProfileDraft)
+                .into(),
+        );
+    }
+    // The form: one draft at a time — an Add/Clone draft the buttons
+    // opened, or the Edit draft a row selection seeded.
+    if let Some(draft) = draft {
+        cards.push(profile_form(draft));
     }
     widget::settings::view_column(cards).into()
+}
+
+/// The form section: the draft's three text inputs (commit on Enter,
+/// the house text-input rule) with the last rejection's inline error
+/// under its field.
+fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
+    let title = match &draft.mode {
+        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile",
+        ProfileDraftMode::Edit { .. } => "Edit profile",
+    };
+    widget::settings::section()
+        .title(title)
+        .add(form_field(
+            ProfileField::Name,
+            "Name",
+            &draft.name,
+            "web-prod",
+            draft,
+        ))
+        .add(form_field(
+            ProfileField::Command,
+            "Command",
+            &draft.command,
+            "ssh web-prod",
+            draft,
+        ))
+        .add(form_field(
+            ProfileField::Cwd,
+            "Working directory",
+            &draft.cwd,
+            "optional",
+            draft,
+        ))
+        .into()
+}
+
+/// One form field: the labeled text input with its inline error, when
+/// the last rejection pointed here.
+fn form_field(
+    field: ProfileField,
+    label: &'static str,
+    text: &str,
+    placeholder: &'static str,
+    draft: &ProfileDraft,
+) -> Element<'static, SettingsEvent> {
+    let input = widget::text_input(placeholder, text.to_string())
+        .on_input(move |text| SettingsEvent::DraftProfileField(field, text))
+        .on_submit(move |text| SettingsEvent::CommitProfileField(field, text));
+    let control = match draft.error {
+        Some((at, error)) if at == field => widget::column![
+            input,
+            widget::text(error.message())
+                .size(12)
+                .class(cosmic::theme::Text::Custom(danger_text_style)),
+        ]
+        .spacing(4),
+        _ => widget::column![input],
+    };
+    widget::settings::item::builder(label)
+        .control(control)
+        .into()
+}
+
+/// The inline-error text style: the theme's destructive color — the
+/// same red the destructive-button class carries (the pinned rev has
+/// no `Text::Danger` variant).
+fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
+    let cosmic = theme.cosmic();
+    cosmic::iced::widget::text::Style {
+        color: Some(cosmic.destructive.base.into()),
+        selected_fill: cosmic.accent.base.into(),
+        selected_text_color: Some(cosmic.on_accent_color().into()),
+    }
 }
 
 /// One list row: the profile's name with its command line as the
 /// preview beneath, the whole row a button selecting it. The selected
 /// row carries the suggested style — selection is the edit form's
 /// seed, so it must be visible on light and dark panes alike (an
-/// OQ-3 hardware item).
+/// OQ-3 hardware item). The row's action cluster starts with Clone
+/// (delete and reorder join it in T4).
 fn profile_row(index: usize, profile: &Profile, selected: bool) -> Element<'static, SettingsEvent> {
     let class = if selected {
         theme::Button::Suggested
     } else {
         theme::Button::Standard
     };
-    widget::button::custom(widget::column![
-        widget::text(profile.name.clone()),
-        widget::text(profile.command.clone()).size(12),
-    ])
-    .class(class)
-    .on_press(SettingsEvent::SelectProfile(index))
+    widget::row!(
+        widget::button::custom(widget::column![
+            widget::text(profile.name.clone()),
+            widget::text(profile.command.clone()).size(12),
+        ])
+        .class(class)
+        .on_press(SettingsEvent::SelectProfile(index)),
+        widget::button::text("Clone").on_press(SettingsEvent::CloneProfile(index)),
+    )
+    .spacing(8)
     .into()
 }
 
@@ -2478,16 +2865,24 @@ mod tests {
     #[test]
     fn the_profiles_page_builds_in_every_read_state() {
         // Construction is the assertion: empty list (the empty state
-        // with its still-inert add affordance), a populated list, and
-        // a stale selection index (a config echo shrank the list
-        // under it) must all build without panicking.
+        // with its add affordance), a populated list, a stale
+        // selection index, and every draft shape — an erroring add
+        // draft, a clone draft, an edit draft — must all build
+        // without panicking.
         let mut config = DropTermConfig::default();
-        let _ = profiles_view(&config, None);
-        let _ = profiles_view(&config, Some(0));
+        let _ = profiles_view(&config, None, None);
+        let _ = profiles_view(&config, Some(0), None);
         config.profiles = vec![profile("ssh", "ssh web-prod"), profile("top", "htop")];
-        let _ = profiles_view(&config, None);
-        let _ = profiles_view(&config, Some(1));
-        let _ = profiles_view(&config, Some(9));
+        let _ = profiles_view(&config, None, None);
+        let _ = profiles_view(&config, Some(1), None);
+        let _ = profiles_view(&config, Some(9), None);
+        let mut erroring = ProfileDraft::add();
+        erroring.error = Some((ProfileField::Name, ProfileFieldError::DuplicateName));
+        let _ = profiles_view(&config, None, Some(&erroring));
+        let cloning = ProfileDraft::clone_of(&config.profiles[0], &config.profiles);
+        let _ = profiles_view(&config, Some(0), Some(&cloning));
+        let editing = ProfileDraft::edit(0, &config.profiles[0]);
+        let _ = profiles_view(&config, Some(0), Some(&editing));
         // And the Settings page carries the entry card whatever the
         // list state.
         let _ = drawer_view(&config, &SettingsBuffer::default());
@@ -2548,5 +2943,278 @@ mod tests {
             Some(ProfileWrite::DefaultProfile(None))
         );
         assert_eq!(default_picker_write(&[], 1), None);
+    }
+
+    // --- the profile form: drafts, commits, lifecycle (T3) ---
+
+    fn sourced_profile() -> Profile {
+        Profile {
+            name: "web-prod".to_string(),
+            command: "ssh web-prod".to_string(),
+            cwd: Some(PathBuf::from("/srv/web")),
+        }
+    }
+
+    #[test]
+    fn an_add_draft_opens_empty() {
+        let draft = ProfileDraft::add();
+        assert_eq!(draft.name, "");
+        assert_eq!(draft.command, "");
+        assert_eq!(draft.cwd, "");
+        assert_eq!(draft.error, None);
+    }
+
+    #[test]
+    fn a_clone_draft_seeds_from_the_source_with_a_unique_name() {
+        // The seed is T1's clone_name output; command and cwd copy
+        // verbatim; no write happens here — seeding only.
+        let profiles = [sourced_profile()];
+        let draft = ProfileDraft::clone_of(&profiles[0], &profiles);
+        assert_eq!(draft.name, "web-prod (copy)");
+        assert_eq!(draft.command, "ssh web-prod");
+        assert_eq!(draft.cwd, "/srv/web");
+        assert_eq!(draft.error, None);
+    }
+
+    #[test]
+    fn an_edit_draft_seeds_from_the_profile() {
+        let draft = ProfileDraft::edit(0, &sourced_profile());
+        assert_eq!(draft.name, "web-prod");
+        assert_eq!(draft.command, "ssh web-prod");
+        assert_eq!(draft.cwd, "/srv/web");
+        // An unset cwd seeds as empty text.
+        let bare = ProfileDraft::edit(0, &profile("top", "htop"));
+        assert_eq!(bare.cwd, "");
+    }
+
+    #[test]
+    fn typing_into_a_draft_field_clears_the_stale_error() {
+        let mut draft = ProfileDraft::add();
+        draft.error = Some((ProfileField::Name, ProfileFieldError::DuplicateName));
+        draft.set_field_text(ProfileField::Name, "server".to_string());
+        assert_eq!(draft.error, None);
+        assert_eq!(draft.name, "server");
+    }
+
+    #[test]
+    fn an_add_commit_appends_only_on_a_valid_triple() {
+        // Draft-gated: with a valid name but a blank command the Enter
+        // is invalid on the command field — nothing is written.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.name = "monitor".to_string();
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None,),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::Command,
+                error: ProfileFieldError::BlankCommand,
+            }
+        );
+        // The first valid commit appends — and writes no default.
+        draft.command = "btop".to_string();
+        let ProfileCommitPlan::Write {
+            profiles: written,
+            default_after_rename,
+        } = plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None)
+        else {
+            panic!("a valid triple must commit");
+        };
+        assert_eq!(written.len(), 2);
+        assert_eq!(written[1].name, "monitor");
+        assert_eq!(written[1].command, "btop");
+        assert_eq!(default_after_rename, None);
+    }
+
+    #[test]
+    fn an_add_commit_rejects_blank_and_duplicate_names_at_the_name_field() {
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.command = "htop".to_string();
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Name, "  ", &profiles, None),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::Name,
+                error: ProfileFieldError::BlankName,
+            }
+        );
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, None),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::Name,
+                error: ProfileFieldError::DuplicateName,
+            }
+        );
+    }
+
+    #[test]
+    fn an_add_commit_parses_the_cwd_field() {
+        // The Enter'd raw text replaces the draft's cwd; empty clears
+        // to None, a path lands verbatim (never existence-checked).
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.name = "monitor".to_string();
+        draft.command = "btop".to_string();
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::Cwd, "/srv/mon", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(written[1].cwd, Some(PathBuf::from("/srv/mon")));
+        let ProfileCommitPlan::Write {
+            profiles: cleared, ..
+        } = plan_profile_commit(&draft, ProfileField::Cwd, "   ", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(cleared[1].cwd, None);
+    }
+
+    #[test]
+    fn an_edit_commit_rewrites_only_the_entered_field() {
+        // Per-field commits: Enter on the command field writes the
+        // base profile with only the command replaced — a buffered
+        // but un-Enter'd name edit rides along nowhere.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.name = "garbage-unentered".to_string();
+        let ProfileCommitPlan::Write {
+            profiles: written,
+            default_after_rename,
+        } = plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(written[0].name, "ssh");
+        assert_eq!(written[0].command, "btop");
+        assert_eq!(written[1].command, "htop");
+        assert_eq!(default_after_rename, None);
+    }
+
+    #[test]
+    fn a_rename_commit_cascades_only_when_it_hits_the_default() {
+        // The paired write: renaming the default-named profile
+        // re-points `default_profile` in the same interaction;
+        // non-default renames, absent defaults, and a same-name
+        // re-commit write nothing extra.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            profiles: renamed,
+            default_after_rename,
+        } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, Some("ssh"))
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(renamed[0].name, "server");
+        assert_eq!(default_after_rename, Some("server".to_string()));
+
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            default_after_rename: non_default,
+            ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, Some("top"))
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(non_default, None);
+
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            default_after_rename: absent,
+            ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(absent, None);
+
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            default_after_rename: same_name,
+            ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, Some("ssh"))
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(same_name, None);
+    }
+
+    #[test]
+    fn an_edit_commit_clears_the_cwd_on_empty_text() {
+        let profiles = [sourced_profile()];
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::Cwd, "", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(written[0].cwd, None);
+        let ProfileCommitPlan::Write {
+            profiles: repathed, ..
+        } = plan_profile_commit(&draft, ProfileField::Cwd, "~/src", &profiles, None)
+        else {
+            panic!("expected a write plan")
+        };
+        assert_eq!(repathed[0].cwd, Some(PathBuf::from("~/src")));
+    }
+
+    #[test]
+    fn an_edit_commit_rejects_a_duplicate_name_self_excluded() {
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Name, "top", &profiles, None),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::Name,
+                error: ProfileFieldError::DuplicateName,
+            }
+        );
+        // The profile's own name re-commits cleanly.
+        assert!(matches!(
+            plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, None),
+            ProfileCommitPlan::Write { .. }
+        ));
+    }
+
+    #[test]
+    fn a_stale_edit_index_plans_a_drop_not_a_write() {
+        // The list shrank under an open edit draft (an external config
+        // edit echoed in): the planner reports the staleness — never
+        // a panic, never a write.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let draft = ProfileDraft {
+            mode: ProfileDraftMode::Edit { index: 9 },
+            ..ProfileDraft::add()
+        };
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, None),
+            ProfileCommitPlan::StaleEdit
+        );
+    }
+
+    #[test]
+    fn a_focus_loss_hide_preserves_the_profile_draft_and_its_text() {
+        // The DrawerTransition rule, page-local half: a hide keeps
+        // the open draft and its buffered text for the next show.
+        let mut draft = Some(ProfileDraft::add());
+        draft.as_mut().unwrap().name = "half-typed".to_string();
+        apply_profile_draft_transition(&mut draft, ProfileDraftTransition::Hide);
+        let kept = draft.expect("the draft survives the hide");
+        assert_eq!(kept.name, "half-typed");
+    }
+
+    #[test]
+    fn an_explicit_close_or_page_leave_clears_the_profile_draft() {
+        // One transition, two call sites (the drawer's explicit
+        // close, the page's back affordance): both drop the draft —
+        // a reopened page starts from config.
+        let mut draft = Some(ProfileDraft::add());
+        apply_profile_draft_transition(&mut draft, ProfileDraftTransition::Clear);
+        assert!(draft.is_none());
+        let mut draft = Some(ProfileDraft::add());
+        apply_profile_draft_transition(&mut draft, ProfileDraftTransition::Clear);
+        assert!(draft.is_none());
     }
 }
