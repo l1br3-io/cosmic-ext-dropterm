@@ -723,6 +723,20 @@ const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
 /// A control's rough width, keeping the window's rows aligned.
 const CONTROL_WIDTH: f32 = 260.0;
 
+/// The drawer pane's maximum width, mirroring libcosmic's
+/// `Core::context_width(has_nav = false)` clamp (344–480px with the
+/// reserved content width subtracted) so the drawer composed by hand
+/// in `view_window` sizes exactly like a framework-hosted one. The
+/// overlay clamps to the surface below the floor, so the pane never
+/// overflows a narrow drop-down — how much terminal it covers there
+/// is the spec's hardware-checklist item (OQ-3).
+pub fn drawer_max_width(surface_width: f32) -> f32 {
+    // Content width (360px) + padding (8px) — the same reservation
+    // `context_width` makes for an app without a nav bar.
+    let reserved = 360.0 + 8.0;
+    (surface_width - reserved).clamp(344.0, 480.0)
+}
+
 /// The settings window's view: one scrollable column, a card per
 /// [`Section`] (no nav sidebar for five sections). Every control
 /// renders from `config` with a buffered draft winning while one
@@ -754,6 +768,22 @@ pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static
         .height(Length::Fill)
         .class(theme::Container::WindowBackground)
         .into()
+}
+
+/// The spike drawer's placeholder content (settings-drawer Task 0):
+/// stands in for the `widget::settings` sections Tasks 1–2 migrate,
+/// proving the composition seam — a drawer pinned right over the
+/// live terminal on the layer surface — before any real control
+/// lands. Generic over the message because it emits none.
+pub fn drawer_stub<Message: Clone + 'static>() -> Element<'static, Message> {
+    widget::column![
+        widget::text("Settings drawer (spike)").size(14),
+        widget::text("Real sections land in the next tasks.").size(12),
+    ]
+    .spacing(8)
+    .padding(16)
+    .width(Length::Fill)
+    .into()
 }
 
 /// One section's card: heading plus its controls, one per exposed
@@ -943,6 +973,30 @@ mod tests {
             .iter()
             .flat_map(|section| section.keys().iter().copied())
             .collect()
+    }
+
+    // --- the drawer pane's width (settings-drawer Task 0) ---
+
+    #[test]
+    fn drawer_width_clamps_into_the_framework_band() {
+        // Mirrors libcosmic `Core::context_width(has_nav = false)`:
+        // the reserved content width (360px + 8px) subtracted, then
+        // clamped to the 344–480 band — a hand-composed drawer sizes
+        // exactly like a framework-hosted one.
+        assert_eq!(drawer_max_width(2000.0), 480.0);
+        assert_eq!(drawer_max_width(800.0), 432.0);
+        assert_eq!(drawer_max_width(728.0), 360.0);
+    }
+
+    #[test]
+    fn drawer_width_floors_at_344_on_narrow_surfaces() {
+        // Below the band the pane stays at the 344px floor; the
+        // overlay clamps to the surface, so the drawer never
+        // overflows it. How much terminal it covers on a narrow
+        // output is the spec's hardware-checklist item (OQ-3).
+        assert_eq!(drawer_max_width(500.0), 344.0);
+        assert_eq!(drawer_max_width(300.0), 344.0);
+        assert_eq!(drawer_max_width(0.0), 344.0);
     }
 
     #[test]
