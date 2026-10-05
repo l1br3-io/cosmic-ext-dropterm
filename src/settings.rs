@@ -775,17 +775,16 @@ pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static
 /// from `config` with a buffered draft winning while one exists and
 /// emits [`SettingsEvent`]s — nothing here applies anything itself;
 /// commits land through the app's write path and the `ConfigChanged`
-/// echo, exactly as in the window. Task 1 hosts Appearance +
-/// Geometry (the live-edit half — opacity, font, and scheme changes
-/// visible in the terminal beneath, spec criterion 2); Task 2
-/// extends the section list to all five.
+/// echo, exactly as in the window. All five sections host here
+/// (criterion 3: every exposed key exactly once — the section map
+/// plus the all-21 construction test pin it); the live-edit half
+/// (opacity, font, scheme — criterion 2) rides the same items.
 pub fn drawer_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    let sections = [Section::Appearance, Section::Geometry];
     widget::settings::view_column(
-        sections
+        Section::ALL
             .iter()
             .map(|section| drawer_section(*section, config, buffer))
             .collect(),
@@ -826,9 +825,10 @@ fn drawer_item(
 }
 
 /// The key's control widget, shared by both hosts: sliders (the
-/// buffered readout above), then dropdowns, then text inputs — the
-/// window `control_row`'s resolution order minus the toggle (Task
-/// 2's sections own the toggles).
+/// buffered readout above), then dropdowns, then toggles, then text
+/// inputs — the window `control_row`'s resolution order. With the
+/// toggle arm in, every exposed key of every section resolves; the
+/// section-map test pins the exactly-once side (criterion 3).
 fn drawer_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -836,6 +836,7 @@ fn drawer_control(
 ) -> Option<Element<'static, SettingsEvent>> {
     slider_control(key, config, buffer)
         .or_else(|| dropdown_control(key, config))
+        .or_else(|| toggle_control(key, config))
         .or_else(|| text_control(key, config, buffer))
 }
 
@@ -1063,6 +1064,28 @@ mod tests {
         buffer.set_slider(ConfigKey::Opacity, 42.0);
         let _ = drawer_view(&config, &buffer);
         let _ = drawer_view(&config, &SettingsBuffer::default());
+    }
+
+    #[test]
+    fn every_section_item_builds_a_control_for_all_21_keys() {
+        // Criterion 3's construction side: every key of every section
+        // resolves to exactly one item control — the builder's
+        // `expect` totality panics otherwise — including the toggle
+        // keys Tasks 1's chain did not yet resolve, and with every
+        // text field holding a draft (the buffer's display-wins rule)
+        // and a scrollback draft that does not parse (the draft
+        // simply renders; rejection is the update path's job).
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::FontName, "Draft Font".to_string());
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_text(TextField::Args, "-l -i".to_string());
+        buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
+        for section in Section::ALL {
+            for key in section.keys() {
+                let _ = drawer_item(*key, &config, &buffer);
+            }
+        }
     }
 
     #[test]
