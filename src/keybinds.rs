@@ -67,6 +67,12 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "w"),
         Action::CloseTab,
     );
+    // Rename the active tab inline. Bare Ctrl+R must stay unbound:
+    // the shell owns it for reverse history search.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "r"),
+        Action::RenameTab,
+    );
     map.insert(
         bind_named(&[Modifier::Ctrl], Named::PageUp),
         Action::PrevTab,
@@ -249,6 +255,45 @@ mod tests {
                 None,
             ),
             Some(Action::CloseTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_r_starts_a_rename() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("r".into()),
+                None,
+            ),
+            Some(Action::RenameTab)
+        );
+    }
+
+    #[test]
+    fn bare_r_and_ctrl_r_stay_free_for_the_shell() {
+        // Ctrl+R is the shell's reverse history search and a bare `r`
+        // is ordinary typing: only the full Ctrl+Shift+R combo is the
+        // rename bind.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Character("r".into()),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("r".into()), None),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::SHIFT, &Key::Character("r".into()), None),
+            None
         );
     }
 
