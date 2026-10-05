@@ -33,7 +33,7 @@ High-level feature list.
 - [ ] Context menu in tab
 - [ ] Rename tab - shortcut key and context menu (if not exist yet)
 - [ ] Settings in sidebar instead of separate modal
-- [x] CLI actions (`new-tab [--cwd] [--cmd]`, `close-tab`/`rename-tab`/`duplicate-tab` with `[--tab-index]`, and strict `select-tab N`, over the single-instance D-Bus seam; indices 1-based; `--is-visible` queries the read-only `Visible` property on the `…CosmicExtDropterm.V1` state interface)
+- [x] CLI actions (`new-tab [--cwd] [--cmd]`, `close-tab`/`rename-tab`/`duplicate-tab` with `[--tab-index]`, `switch-profile-tab --profile NAME [--tab-index]` respawning a live tab under a profile, and strict `select-tab N`, over the single-instance D-Bus seam; indices 1-based; `--is-visible` queries the read-only `Visible` property on the `…CosmicExtDropterm.V1` state interface)
 
 ## Later
 - [ ] Pin tab

@@ -9,6 +9,7 @@ cosmic-ext-dropterm new-tab [--cwd DIR] [--cmd COMMAND] [--profile NAME]
 cosmic-ext-dropterm close-tab [--tab-index N]
 cosmic-ext-dropterm rename-tab TITLE [--tab-index N]
 cosmic-ext-dropterm duplicate-tab [--tab-index N]
+cosmic-ext-dropterm switch-profile-tab --profile NAME [--tab-index N]
 cosmic-ext-dropterm select-tab N          # strict: no wrap, no 9 = last
 cosmic-ext-dropterm --is-visible          # query only, never shows the overlay
 ```
@@ -39,10 +40,11 @@ cosmic-ext-dropterm rename-tab "work"               # pin a title on the active 
 cosmic-ext-dropterm rename-tab ""                   # clear the override; shell titles resume
 cosmic-ext-dropterm rename-tab "logs" --tab-index 3
 cosmic-ext-dropterm duplicate-tab                   # fresh shell in the active tab's cwd
+cosmic-ext-dropterm switch-profile-tab --profile web-prod  # respawn the active tab under the profile
 cosmic-ext-dropterm select-tab 2                    # activate the second tab, strictly
 ```
 
-`close-tab` and `rename-tab` are quiet state edits for scripts - they never show the overlay. `duplicate-tab` and `select-tab` are tab-facing: like `new-tab`, they show the overlay, and a request arriving mid-slide-out reverses it instead of finishing the hide. A rename pins a title that no shell OSC title change can overwrite; the empty string is the documented reset (shell titles resume), and a pending inline rename on that tab is discarded when the remote title lands. `duplicate-tab` opens a *fresh shell* in the target tab's cwd - the running command is never copied - lands after the active tab (always, whatever `new_tab_after_current` says), and becomes active; with an unresolvable target it degrades to the active tab's cwd. `select-tab N` is strict: no wrap, no `9 = last`. Sent while the app is not running, all four verbs just start the app plain - only `new-tab` carries startup meaning.
+`close-tab` and `rename-tab` are quiet state edits for scripts - they never show the overlay. `duplicate-tab`, `switch-profile-tab`, and `select-tab` are tab-facing: like `new-tab`, they show the overlay, and a request arriving mid-slide-out reverses it instead of finishing the hide. A rename pins a title that no shell OSC title change can overwrite; the empty string is the documented reset (shell titles resume), and a pending inline rename on that tab is discarded when the remote title lands. `duplicate-tab` opens a *fresh shell* in the target tab's cwd - the running command is never copied - lands after the active tab (always, whatever `new_tab_after_current` says), and becomes active; with an unresolvable target it degrades to the active tab's cwd. `switch-profile-tab --profile NAME` respawns the target tab *in place* under the profile: its terminal is replaced by a fresh one running the profile's command in its `cwd` - the running command and scrollback are lost, the same cost as closing and reopening the tab - while the tab keeps its slot in the row, its activation state, and a pinned rename; from then on the tab saves to the session as a profile tab, and a restart restores it as that profile. The spawn `cwd` composes like a profile launch's: the profile's own live `cwd`, else the tab's current working directory. An unrenamed tab's default title renumbers after the switch (`Terminal N` follows the fresh terminal); a renamed tab keeps its rename. An unknown `--profile` name or out-of-range `--tab-index` warns and changes nothing - unlike `duplicate-tab` there is no sensible fallback, so it never degrades to a spawn. `select-tab N` is strict: no wrap, no `9 = last`. Sent while the app is not running, all five verbs just start the app plain - only `new-tab` carries startup meaning.
 
 ## Querying visibility
 
