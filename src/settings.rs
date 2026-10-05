@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The settings window: the shared config-write contract —
+//! The settings drawer: the shared config-write contract —
 //! [`WriteKind`], the control→key map, the planned, range-clamped
 //! writes both writers persist through the app's single write path
-//! — plus the instant-apply window view and its pure half: event
-//! planning, parsing, timing copy, and the display-only draft
-//! buffer. Everything except the view builder itself is plain data
-//! and pure functions over it, so the write contract and commit
-//! rules are headless-testable.
+//! — plus the instant-apply drawer content (`widget::settings`
+//! sections hosted by the framework context drawer over the
+//! terminal) and its pure half: event planning, parsing, timing
+//! copy, and the display-only draft buffer. Everything except the
+//! view builders themselves is plain data and pure functions over
+//! it, so the write contract and commit rules are
+//! headless-testable.
 
 use std::collections::HashMap;
 
-use cosmic::iced::Length;
+use cosmic::Element;
 use cosmic::widget;
-use cosmic::{Element, theme};
 
 use cosmic::cosmic_config::{self, ConfigSet as _};
 
@@ -29,7 +30,7 @@ pub enum WriteKind {
     /// Geometry was already applied before the write (drag release):
     /// absorb the echo, skip the reshape.
     PreApplied,
-    /// Nothing applied yet (settings window): let the echo reshape.
+    /// Nothing applied yet (settings drawer): let the echo reshape.
     Bare,
 }
 
@@ -762,48 +763,14 @@ pub fn drawer_max_width(surface_width: f32) -> f32 {
     (surface_width - reserved).clamp(344.0, 480.0)
 }
 
-/// The settings window's view: one scrollable column, a card per
-/// [`Section`] (no nav sidebar for five sections). Every control
-/// renders from `config` with a buffered draft winning while one
-/// exists, states its apply timing, and emits [`SettingsEvent`]s —
-/// the window never applies anything itself; commits land through
-/// the app's write path and the existing `ConfigChanged` echo.
-///
-/// The scrollable rides in a [`theme::Container::WindowBackground`]
-/// wrapper filling the surface: libcosmic renders `view_window`
-/// elements bare (no window template wraps them) and styles the
-/// window background transparent (the frosted-glass design), so
-/// without a base layer the desktop showed through the padding gaps
-/// and the window glittered while moved — the same wrap libcosmic's
-/// multi-window example gives its secondary windows.
-pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static, SettingsEvent> {
-    let cards = Section::ALL
-        .iter()
-        .map(|section| section_card(*section, config, buffer));
-    let content = widget::scrollable(
-        widget::column(cards)
-            .spacing(16)
-            .padding(16)
-            .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill);
-    widget::container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .class(theme::Container::WindowBackground)
-        .into()
-}
-
-/// The settings drawer's content (spec decision 1): the window's
-/// instant-apply sections migrated to `widget::settings` — a titled
-/// section per [`Section`], one labeled item per exposed key with its
-/// apply timing as the description, in one column the framework
-/// drawer pane already wraps in a scrollable. Every control renders
-/// from `config` with a buffered draft winning while one exists and
-/// emits [`SettingsEvent`]s — nothing here applies anything itself;
-/// commits land through the app's write path and the `ConfigChanged`
-/// echo, exactly as in the window. All five sections host here
+/// The settings drawer's content: the instant-apply sections as
+/// `widget::settings` — a titled section per [`Section`], one labeled
+/// item per exposed key with its apply timing as the description, in
+/// one column the framework drawer pane already wraps in a scrollable.
+/// Every control renders from `config` with a buffered draft winning
+/// while one exists and emits [`SettingsEvent`]s — nothing here
+/// applies anything itself; commits land through the app's write path
+/// and the `ConfigChanged` echo. All five sections host here
 /// (criterion 3: every exposed key exactly once — the section map
 /// plus the all-21 construction test pin it); the live-edit half
 /// (opacity, font, scheme — criterion 2) rides the same items.
@@ -852,11 +819,11 @@ fn drawer_item(
         .into()
 }
 
-/// The key's control widget, shared by both hosts: sliders (the
-/// buffered readout above), then dropdowns, then toggles, then text
-/// inputs — the window `control_row`'s resolution order. With the
-/// toggle arm in, every exposed key of every section resolves; the
-/// section-map test pins the exactly-once side (criterion 3).
+/// The key's control widget: sliders (the buffered readout above),
+/// then dropdowns, then toggles, then text inputs. Each builder
+/// claims only its own keys; the `expect` in [`drawer_item`] is
+/// totality — every exposed key has exactly one control, pinned by
+/// the section-map test.
 fn drawer_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -866,53 +833,6 @@ fn drawer_control(
         .or_else(|| dropdown_control(key, config))
         .or_else(|| toggle_control(key, config))
         .or_else(|| text_control(key, config, buffer))
-}
-
-/// One section's card: heading plus its controls, one per exposed
-/// key, in display order. (The `Vec` annotation anchors the iced
-/// re-exports' `Theme` type parameter to cosmic's — with no children
-/// to infer from, a bare `Column::new()` would default to iced's
-/// theme and stop converting to cosmic `Element`s.)
-fn section_card(
-    section: Section,
-    config: &DropTermConfig,
-    buffer: &SettingsBuffer,
-) -> Element<'static, SettingsEvent> {
-    let mut rows: Vec<Element<'static, SettingsEvent>> =
-        vec![widget::text(section.title()).size(18).into()];
-    for key in section.keys() {
-        rows.push(control_row(*key, config, buffer));
-    }
-    widget::container(widget::column(rows))
-        .padding(16)
-        .width(Length::Fill)
-        .class(theme::Container::Card)
-        .into()
-}
-
-/// One labeled control row: the key's label, its apply-timing copy,
-/// and the control itself. Each builder claims only its own keys;
-/// the `expect` is totality — every exposed key has exactly one
-/// control, pinned by the section-map test.
-fn control_row(
-    key: ConfigKey,
-    config: &DropTermConfig,
-    buffer: &SettingsBuffer,
-) -> Element<'static, SettingsEvent> {
-    let caption = widget::column![
-        widget::text(key.label()).width(Length::Fill),
-        widget::text(apply_timing(key).label()).size(12),
-    ]
-    .spacing(2);
-    let control = slider_control(key, config, buffer)
-        .or_else(|| dropdown_control(key, config))
-        .or_else(|| toggle_control(key, config))
-        .or_else(|| text_control(key, config, buffer))
-        .expect("every exposed key has exactly one control (section map)");
-    widget::row![caption, control]
-        .spacing(16)
-        .align_y(cosmic::iced::alignment::Vertical::Center)
-        .into()
 }
 
 /// A slider control (commit on release). `on_change` only buffers
