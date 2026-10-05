@@ -63,6 +63,15 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "t"),
         Action::NewTab,
     );
+    // A new tab in the home directory — the plain keybind's settings
+    // composition, home in place of the inherited cwd. Bare Ctrl+H
+    // must stay unbound: in a terminal it is the backspace byte
+    // (0x08), so swallowing it would break backspace in shells that
+    // treat it literally.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "h"),
+        Action::NewTabHome,
+    );
     map.insert(
         bind(&[Modifier::Ctrl, Modifier::Shift], "w"),
         Action::CloseTab,
@@ -247,6 +256,45 @@ mod tests {
                 None,
             ),
             Some(Action::NewTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_h_opens_a_new_tab_at_home() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("h".into()),
+                None,
+            ),
+            Some(Action::NewTabHome)
+        );
+    }
+
+    #[test]
+    fn bare_h_and_ctrl_h_stay_free_for_the_shell() {
+        // Ctrl+H is the backspace byte (0x08) in a terminal and a bare
+        // `h` is ordinary typing: only the full Ctrl+Shift+H combo is
+        // the home new-tab bind.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Character("h".into()),
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("h".into()), None),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::SHIFT, &Key::Character("h".into()), None),
+            None
         );
     }
 
