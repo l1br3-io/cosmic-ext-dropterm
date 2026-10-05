@@ -27,7 +27,7 @@ High-level feature list.
 
 
 ## V3 
-- [ ] increase sidebar width size, draggable
+- [x] increase sidebar width size, draggable
 - [ ] Settings sidebar as tabs - General, Keybindings, Advance
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] Context menu in tab
