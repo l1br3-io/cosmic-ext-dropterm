@@ -1298,14 +1298,15 @@ impl DropTerm {
     /// Applies a remote `duplicate-tab`: the target — absent means the
     /// active tab — resolves through [`tabs::remote_target_index`],
     /// and a fresh shell tab opens in that tab's cwd; the running
-    /// command is never copied. An explicit but unresolvable
-    /// `--tab-index` warns, and the spawn degrades to the bare
-    /// new-tab inheritance — no explicit cwd, so resolution takes the
-    /// active tab's cwd, then the pty default. The spawn itself rides
-    /// the existing new-tab path end to end
-    /// ([`Self::open_remote_tab`]): the channel-bootstrap deferral,
-    /// landing after the active tab, activation, and the session-dirty
-    /// mark are all inherited. The overlay half is the caller's.
+    /// command is never copied, and the source's rename pin carries
+    /// (ruling 2 — the keybind, menu, and CLI cannot fork). An
+    /// explicit but unresolvable `--tab-index` warns, and the source
+    /// degrades to the active tab — the same tab the warning names —
+    /// so its cwd and pin are read, not the pty default's. The spawn
+    /// rides [`Self::open_duplicate_tab`] end to end: the
+    /// channel-bootstrap deferral, after-active landing, activation,
+    /// and the session-dirty mark are all inherited. The overlay half
+    /// is the caller's.
     fn duplicate_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
         let target = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab);
         if target.is_none() && tab_index.is_some() {
@@ -1314,22 +1315,23 @@ impl DropTerm {
                 self.tabs.len()
             );
         }
-        let cwd = target.and_then(|index| {
-            self.tabs
-                .get(index)
-                .and_then(|tab| tab.terminal.lock().unwrap().working_directory())
-        });
-        // `true` pins the duplicate's documented after-active landing:
-        // the `new_tab_after_current` setting moves new tabs, never
-        // duplicates.
-        self.open_remote_tab(
-            ToggleAction::NewTab {
-                cwd,
-                cmd: None,
-                profile: None,
-            },
-            true,
-        )
+        // The degraded path keeps the warning's promise — "duplicating
+        // the active tab instead" — by reading cwd and pin from the
+        // active tab, the same source the bare verb resolves to.
+        // Capture both before the helper's `&mut self` call.
+        let source = target
+            .or(Some(self.active_tab))
+            .filter(|&index| index < self.tabs.len());
+        let (cwd, title_override) =
+            source
+                .and_then(|index| self.tabs.get(index))
+                .map_or((None, None), |tab| {
+                    (
+                        tab.terminal.lock().unwrap().working_directory(),
+                        tab.title_override.clone(),
+                    )
+                });
+        self.open_duplicate_tab(cwd, title_override)
     }
 
     /// Ends an inline rename session sitting on the tab at `index`:
@@ -1431,6 +1433,7 @@ impl DropTerm {
             Action::NewTab
                 | Action::NewProfileTab(_)
                 | Action::CloseTab
+                | Action::DuplicateTab
                 | Action::NextTab
                 | Action::PrevTab
                 | Action::ActivateTab(_)
@@ -1449,6 +1452,7 @@ impl DropTerm {
             | Action::NewTab
             | Action::NewProfileTab(_)
             | Action::CloseTab
+            | Action::DuplicateTab
             | Action::NextTab
             | Action::PrevTab
             | Action::ActivateTab(_)
@@ -1588,6 +1592,22 @@ impl DropTerm {
                 );
             }
             Action::CloseTab => return self.close_tab_at(self.active_tab),
+            Action::DuplicateTab => {
+                // Duplicate the active tab: capture its cwd and rename
+                // pin before the helper's `&mut self` call — `active()`
+                // borrows the list the helper inserts into (the
+                // `commit_rename_on` precedent). Unlike rename there is
+                // no bar-visibility gate: duplicating a single tab is
+                // meaningful, and the fresh bar it implies shows.
+                let source = self.active().map(|tab| {
+                    (
+                        tab.terminal.lock().unwrap().working_directory(),
+                        tab.title_override.clone(),
+                    )
+                });
+                let (cwd, title_override) = source.unwrap_or((None, None));
+                return self.open_duplicate_tab(cwd, title_override);
+            }
             Action::NextTab => {
                 return self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
             }
@@ -1649,6 +1669,52 @@ impl DropTerm {
         } else {
             Task::none()
         }
+    }
+
+    /// The one canonical duplicate-tab body — the keybind arm, the
+    /// remote `duplicate-tab` verb, and (through the action) the
+    /// context-menu row all ride here, so the surfaces cannot fork.
+    /// A duplicate is a fresh shell in the source tab's cwd: the
+    /// running command is never copied and `default_profile` never
+    /// applies (the rule the removed `ToggleAction::NewTab { cwd }`
+    /// ride used to smuggle through `explicit_cwd`). The tab lands
+    /// directly after the active one whatever `new_tab_after_current`
+    /// says, becomes active, and carries the source's rename pin —
+    /// `title` and `title_override` set together (the `ensure_tabs`
+    /// restore pattern) so the bar shows the name immediately and
+    /// the fresh shell's first OSC title cannot clobber it. A missing
+    /// channel defers through the bare `pending_remote_tab` stash
+    /// exactly like a remote new-tab; that window has no tabs, so no
+    /// source ever existed to read from.
+    fn open_duplicate_tab(
+        &mut self,
+        cwd: Option<PathBuf>,
+        title_override: Option<String>,
+    ) -> Task<Message> {
+        if self.term_event_tx.is_none() {
+            self.pending_remote_tab = Some(ToggleAction::NewTab {
+                cwd: None,
+                cmd: None,
+                profile: None,
+            });
+            return Task::none();
+        }
+        self.ensure_tabs();
+        if let Some(mut tab) =
+            self.spawn_shell(SpawnCommand::Shell(self.config.resolved_shell()), cwd)
+        {
+            if let Some(name) = title_override {
+                name.clone_into(&mut tab.title);
+                tab.title_override = Some(name);
+            }
+            // `true` pins the duplicate's documented after-active
+            // landing: `new_tab_after_current` moves new tabs, never
+            // duplicates.
+            let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
+            let switch = self.set_active_tab(at);
+            return Task::batch([switch, self.mark_session_dirty()]);
+        }
+        Task::none()
     }
 
     /// Closes the tab at `index` and activates its successor (or, when

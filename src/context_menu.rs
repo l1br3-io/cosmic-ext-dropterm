@@ -43,6 +43,11 @@ pub enum Item {
     /// the `Ctrl+Shift+R` bind, down to the shared `start_rename`
     /// path and the below-two-tabs no-op.
     RenameTab,
+    /// Duplicate the active tab — the menu's twin of the
+    /// `Ctrl+Shift+D` bind: the same fresh-shell-in-its-cwd spawn,
+    /// after-active landing, and rename-pin carry-over, all inherited
+    /// from the shared `open_duplicate_tab` path.
+    DuplicateTab,
     Copy,
     Paste,
     SelectAll,
@@ -50,13 +55,14 @@ pub enum Item {
     Settings,
 }
 
-/// Every row in display order. Rename Tab clusters with New Tab (both
-/// act on tabs); Settings is last, behind the divider — cosmic-term's
-/// composition, matching the GNOME HIG "standard items at the end"
-/// placement.
+/// Every row in display order. The tab cluster leads — New Tab,
+/// Rename Tab, Duplicate Tab all act on tabs; Settings is last, behind
+/// the divider — cosmic-term's composition, matching the GNOME HIG
+/// "standard items at the end" placement.
 pub const ROWS: &[Row] = &[
     Row::Item(Item::NewTab),
     Row::Item(Item::RenameTab),
+    Row::Item(Item::DuplicateTab),
     Row::Item(Item::Copy),
     Row::Item(Item::Paste),
     Row::Item(Item::SelectAll),
@@ -71,6 +77,7 @@ impl Item {
         match self {
             Item::NewTab => "New Tab",
             Item::RenameTab => "Rename Tab",
+            Item::DuplicateTab => "Duplicate Tab",
             Item::Copy => "Copy",
             Item::Paste => "Paste",
             Item::SelectAll => "Select All",
@@ -87,6 +94,7 @@ impl Item {
         match self {
             Item::NewTab => Action::NewTab,
             Item::RenameTab => Action::RenameTab,
+            Item::DuplicateTab => Action::DuplicateTab,
             Item::Copy => Action::Copy,
             Item::Paste => Action::Paste,
             Item::SelectAll => Action::SelectAll,
@@ -172,10 +180,11 @@ pub fn open_trees(menu_open: bool, profiles: &[Profile]) -> Option<Vec<menu::Tre
 mod tests {
     use super::*;
 
-    fn all_items() -> [Item; 7] {
+    fn all_items() -> [Item; 8] {
         [
             Item::NewTab,
             Item::RenameTab,
+            Item::DuplicateTab,
             Item::Copy,
             Item::Paste,
             Item::SelectAll,
@@ -185,14 +194,16 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_new_tab_rename_tab_copy_paste_select_all_clear_scrollback_divider_settings() {
-        // Rename Tab clusters with New Tab: both act on tabs, and the
-        // clipboard cluster follows.
+    fn rows_are_new_tab_rename_tab_duplicate_tab_copy_paste_select_all_clear_scrollback_divider_settings()
+     {
+        // The tab cluster — New Tab, Rename Tab, Duplicate Tab — leads:
+        // all three act on tabs, and the clipboard cluster follows.
         assert_eq!(
             ROWS,
             &[
                 Row::Item(Item::NewTab),
                 Row::Item(Item::RenameTab),
+                Row::Item(Item::DuplicateTab),
                 Row::Item(Item::Copy),
                 Row::Item(Item::Paste),
                 Row::Item(Item::SelectAll),
@@ -250,6 +261,7 @@ mod tests {
         let expected = [
             (Item::NewTab, Action::NewTab),
             (Item::RenameTab, Action::RenameTab),
+            (Item::DuplicateTab, Action::DuplicateTab),
             (Item::Copy, Action::Copy),
             (Item::Paste, Action::Paste),
             (Item::SelectAll, Action::SelectAll),
@@ -307,12 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn rows_with_profiles_keep_rename_tab_right_after_the_folder() {
+    fn rows_with_profiles_keep_the_tab_cluster_right_after_the_folder() {
         // The folder replaces only the New Tab slot: Rename Tab stays
-        // the second row, immediately after the submenu.
+        // the second row and Duplicate Tab the third, immediately
+        // after the submenu.
         let profiles = [profile("ssh-web"), profile("htop")];
         let with_profiles = rows(&profiles);
         assert_eq!(with_profiles[1], Row::Item(Item::RenameTab));
+        assert_eq!(with_profiles[2], Row::Item(Item::DuplicateTab));
     }
 
     #[test]
@@ -372,8 +386,9 @@ mod tests {
         assert_eq!(label, "Copy");
         assert_eq!(*action, Action::NewProfileTab(0));
         // The static Copy row is untouched by the collision (one row
-        // past Rename Tab, which precedes the clipboard cluster).
-        let menu::Item::Button(label, _, action) = &list[2] else {
+        // past the tab cluster, which precedes the clipboard
+        // cluster).
+        let menu::Item::Button(label, _, action) = &list[3] else {
             panic!("the static Copy row is a button");
         };
         assert_eq!(label, "Copy");

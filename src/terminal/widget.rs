@@ -111,6 +111,12 @@ pub enum Action {
     /// no-op: the rename input overlays a tab button, and buttons
     /// show only with two or more tabs.
     RenameTab,
+    /// Duplicate the active tab (`Ctrl+Shift+D` and the context-menu
+    /// row): a fresh shell in its cwd — the running command is never
+    /// copied — landing directly after it and activated, carrying
+    /// the source's rename pin. Unlike `RenameTab` this works with a
+    /// single tab: duplicating one tab is meaningful without the bar.
+    DuplicateTab,
     Settings,
 }
 
