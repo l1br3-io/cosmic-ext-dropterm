@@ -709,6 +709,13 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input:
         // commit before the content slides out.
         let commit = self.commit_pending_rename();
+        // The drawer survives the hide (spec criterion 8): its open
+        // state and in-flight drafts stay exactly as they were for
+        // the next show. The named no-op documents that at the seam
+        // a hide would otherwise silently forget; only an explicit
+        // close ever clears (see `close_settings_drawer`).
+        self.settings_buffer
+            .apply_drawer_transition(settings::DrawerTransition::FocusLossHide);
         // The slide toggle feeds the decision: a disabled slide turns
         // this hide into an immediate destroy inside `toggle_step` —
         // the executor arms below then simply never runs.
@@ -1379,14 +1386,16 @@ impl DropTerm {
     }
 
     /// Closes the settings drawer: the explicit close path (Escape,
-    /// the toggle's repeat press, the drawer's Close button), so
-    /// drafts clear — the reopen-fresh rule carried over from the
-    /// settings window (criterion 8) — and keyboard focus returns to
-    /// the terminal the drawer had borrowed (cosmic-term's
+    /// the toggle's repeat press, the drawer's Close button), so the
+    /// buffer clears per the close-clears-vs-hide-preserves rule
+    /// (spec criterion 8 — a focus-loss hide preserves everything for
+    /// the next show; hides touch nothing) and keyboard focus returns
+    /// to the terminal the drawer had borrowed (cosmic-term's
     /// `on_context_drawer` refocus).
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
-        self.settings_buffer.clear();
+        self.settings_buffer
+            .apply_drawer_transition(settings::DrawerTransition::ExplicitClose);
         widget::text_input::focus(self.terminal_id.clone())
     }
 

@@ -568,6 +568,22 @@ pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> 
     }
 }
 
+/// A drawer lifecycle transition (spec criterion 8): which of the two
+/// paths that ends a drawer-over-terminal moment fired. The rule they
+/// encode — [`SettingsBuffer::apply_drawer_transition`] — is the
+/// close-clears vs hide-preserves decision, headless-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerTransition {
+    /// An explicit close: Escape, the toggle's repeat press, or the
+    /// drawer's Close button. The next open starts fresh from
+    /// config.
+    ExplicitClose,
+    /// The surface hid — focus loss per `hide_on_focus_loss`, or an
+    /// explicit hide — with the drawer open. The drawer and its
+    /// in-flight drafts survive untouched for the next show.
+    FocusLossHide,
+}
+
 /// The settings window's in-flight state: text drafts buffered only
 /// until submit, slider positions buffered for the live value
 /// readout until the next change. Both are display-only — the view
@@ -629,6 +645,18 @@ impl SettingsBuffer {
     pub fn clear(&mut self) {
         self.texts.clear();
         self.sliders.clear();
+    }
+
+    /// Apply a drawer lifecycle transition (spec criterion 8): an
+    /// explicit close clears — the reopen-fresh rule the settings
+    /// window carried — while a focus-loss hide preserves everything
+    /// for the next show. Hides never call this with `FocusLossHide`
+    /// and touch nothing (preservation is the default); the method
+    /// exists so the rule has one named, headless-tested home.
+    pub fn apply_drawer_transition(&mut self, transition: DrawerTransition) {
+        if matches!(transition, DrawerTransition::ExplicitClose) {
+            self.clear();
+        }
     }
 }
 
@@ -1086,6 +1114,44 @@ mod tests {
                 let _ = drawer_item(*key, &config, &buffer);
             }
         }
+    }
+
+    // --- the drawer's lifecycle transitions (settings-drawer T3) ---
+
+    #[test]
+    fn an_explicit_drawer_close_clears_the_buffer_for_a_fresh_reopen() {
+        // Criterion 8's close rule: Escape, the repeat toggle, and
+        // the Close button are explicit closes — the next open
+        // renders purely from config, the reopen-fresh rule the
+        // settings window carried.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        buffer.apply_drawer_transition(DrawerTransition::ExplicitClose);
+        assert_eq!(
+            buffer.text(TextField::Shell, &config),
+            config.shell.clone().unwrap_or_default()
+        );
+        assert_eq!(
+            buffer.slider_value(ConfigKey::Opacity, &config),
+            f32::from(config.opacity)
+        );
+    }
+
+    #[test]
+    fn a_focus_loss_hide_preserves_drafts_for_the_next_show() {
+        // Criterion 8's hide rule: the surface hiding — focus loss
+        // or an explicit hide, whatever re-shows later — never
+        // touches the drawer's state; the next show renders the
+        // drawer exactly as it was, drafts intact.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        buffer.apply_drawer_transition(DrawerTransition::FocusLossHide);
+        assert_eq!(buffer.text(TextField::Shell, &config), "/bin/tcsh");
+        assert_eq!(buffer.slider_value(ConfigKey::Opacity, &config), 42.0);
     }
 
     #[test]
