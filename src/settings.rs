@@ -104,7 +104,10 @@ impl Section {
 
 /// Every config key the settings window exposes: all of
 /// `DropTermConfig` except `output`, which is dead at runtime and
-/// unreachable from the UI.
+/// unreachable from the UI — plus `SettingsDrawerWidth`, which is
+/// written by the drawer's drag handle (drawer-resize spec), not by
+/// any settings control: no `Section` lists it, so the exposed-key
+/// exactly-once pin above stays 21.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -130,6 +133,7 @@ pub enum ConfigKey {
     ColorSchemeDark,
     ColorSchemeLight,
     ThemePreference,
+    SettingsDrawerWidth,
 }
 
 impl ConfigKey {
@@ -161,6 +165,7 @@ impl ConfigKey {
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
+            ConfigKey::SettingsDrawerWidth => "settings_drawer_width",
         }
     }
 }
@@ -196,6 +201,17 @@ pub enum PlannedWrite {
     ColorSchemeDark(String),
     ColorSchemeLight(String),
     ThemePreference(ThemePreference),
+    /// The drawer pane's dragged width (drawer-resize spec): the
+    /// px the drag released at, or `None` for the double-click
+    /// reset back to the built-in default. Floors at
+    /// [`DRAWER_MIN_WIDTH`] in `clamped`; the surface-relative cap
+    /// is render-time (`drawer_width`).
+    // `allow`, not `expect`: the variant is bin-dead until T2's
+    // drag events construct it, but the test target already
+    // constructs it — an expect would be unfulfilled there under
+    // `--all-targets`. Delete this attribute in T2.
+    #[allow(dead_code)]
+    SettingsDrawerWidth(Option<u16>),
 }
 
 impl PlannedWrite {
@@ -225,6 +241,7 @@ impl PlannedWrite {
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
+            PlannedWrite::SettingsDrawerWidth(_) => ConfigKey::SettingsDrawerWidth,
         }
     }
 
@@ -241,6 +258,11 @@ impl PlannedWrite {
                 PlannedWrite::WidthPercent(clamp_width_percent(*raw))
             }
             PlannedWrite::Opacity(raw) => PlannedWrite::Opacity(clamp_opacity(*raw)),
+            // Floor only — the cap needs the surface width the
+            // render clamp owns; `None` (reset) passes through.
+            PlannedWrite::SettingsDrawerWidth(raw) => {
+                PlannedWrite::SettingsDrawerWidth(raw.map(|px| px.max(DRAWER_MIN_WIDTH)))
+            }
             other => other.clone(),
         }
     }
@@ -302,6 +324,12 @@ impl PlannedWrite {
             }
             PlannedWrite::ThemePreference(value) => {
                 handler.set(ConfigKey::ThemePreference.key_name(), value)
+            }
+            // `Option<u16>` serializes like `default_profile`'s
+            // `Option<String>` — absent/None merges cleanly with a
+            // hand-edited file.
+            PlannedWrite::SettingsDrawerWidth(value) => {
+                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), *value)
             }
         }
     }
@@ -431,6 +459,10 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::Opacity
         | ConfigKey::ColorSchemeDark
         | ConfigKey::ColorSchemeLight
+        // The drag handle's key — not a settings control, but its
+        // echo re-renders the pane immediately: live by
+        // construction.
+        | ConfigKey::SettingsDrawerWidth
         | ConfigKey::ThemePreference => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
@@ -1395,6 +1427,10 @@ impl ConfigKey {
             ConfigKey::ColorSchemeDark => "Dark color scheme",
             ConfigKey::ColorSchemeLight => "Light color scheme",
             ConfigKey::ThemePreference => "Application theme",
+            // No control renders this label (no section lists the
+            // key); the arm keeps the match exhaustive for the
+            // drag-only writer.
+            ConfigKey::SettingsDrawerWidth => "Drawer width",
         }
     }
 }
@@ -1404,18 +1440,35 @@ impl ConfigKey {
 const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
 const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
 
-/// The drawer pane's maximum width, mirroring libcosmic's
-/// `Core::context_width(has_nav = false)` clamp (344–480px with the
-/// reserved content width subtracted) so the drawer composed by hand
-/// in `view_window` sizes exactly like a framework-hosted one. The
-/// overlay clamps to the surface below the floor, so the pane never
-/// overflows a narrow drop-down — how much terminal it covers there
-/// is the spec's hardware-checklist item (OQ-3).
-pub fn drawer_max_width(surface_width: f32) -> f32 {
-    // Content width (360px) + padding (8px) — the same reservation
-    // `context_width` makes for an app without a nav bar.
-    let reserved = 360.0 + 8.0;
-    (surface_width - reserved).clamp(344.0, 480.0)
+/// The drawer pane's default width in px (spec drawer-resize
+/// criterion 1): what a never-dragged drawer renders — `None` in
+/// the config — wherever the surface is wide enough that half of it
+/// reaches this. Deliberately above libcosmic's 480px framework
+/// band; the drawer-resize initiative widened it.
+pub const DEFAULT_DRAWER_WIDTH: u16 = 560;
+
+/// The drawer pane's minimum width in px: the settings content's
+/// floor, carried over from the framework band the settings-drawer
+/// initiative sized against.
+pub const DRAWER_MIN_WIDTH: u16 = 344;
+
+/// The drawer pane's maximum width as a fraction of the surface
+/// width (spec criterion 3): the drawer never covers more than half
+/// the drop-down, on any output.
+pub const WIDTH_CAP_FRACTION: f32 = 0.5;
+
+/// The drawer pane's width in px from the user's stored preference
+/// and the current surface width (spec criterion 4): `None` (never
+/// dragged) renders the wider default; any stored value clamps into
+/// [344px, 50% of surface] so a stale or hand-edited config can
+/// never overflow the surface or crush the settings content. This
+/// render-time clamp is the one place width policy lives — the
+/// write path only floors, because the cap needs the surface width
+/// this pure seam never sees.
+pub fn drawer_width(preferred: Option<u16>, surface_width: f32) -> f32 {
+    let preferred = preferred.map_or(f32::from(DEFAULT_DRAWER_WIDTH), f32::from);
+    let cap = (surface_width * WIDTH_CAP_FRACTION).max(f32::from(DRAWER_MIN_WIDTH));
+    preferred.clamp(f32::from(DRAWER_MIN_WIDTH), cap)
 }
 
 /// The settings drawer's content: the instant-apply sections as
@@ -1842,28 +1895,68 @@ mod tests {
             .collect()
     }
 
-    // --- the drawer pane's width (settings-drawer Task 0) ---
+    // --- the drawer pane's width (drawer-resize T1) ---
 
     #[test]
-    fn drawer_width_clamps_into_the_framework_band() {
-        // Mirrors libcosmic `Core::context_width(has_nav = false)`:
-        // the reserved content width (360px + 8px) subtracted, then
-        // clamped to the 344–480 band — a hand-composed drawer sizes
-        // exactly like a framework-hosted one.
-        assert_eq!(drawer_max_width(2000.0), 480.0);
-        assert_eq!(drawer_max_width(800.0), 432.0);
-        assert_eq!(drawer_max_width(728.0), 360.0);
+    fn drawer_width_defaults_to_560_where_the_cap_allows() {
+        // Spec drawer-resize criterion 1: never dragged (`None`)
+        // renders the wider default — 560px on any surface wide
+        // enough that half of it reaches 560 (surfaces ≥ 1120px).
+        assert_eq!(drawer_width(None, 2000.0), 560.0);
+        assert_eq!(drawer_width(None, 1120.0), 560.0);
+    }
+
+    #[test]
+    fn drawer_width_caps_the_default_at_half_the_surface() {
+        // Between 688px and 1120px the 50% cap wins over the
+        // default: the drawer never covers more than half the
+        // drop-down surface.
+        assert_eq!(drawer_width(None, 900.0), 450.0);
+        assert_eq!(drawer_width(None, 728.0), 364.0);
+        assert_eq!(drawer_width(None, 688.0), 344.0);
     }
 
     #[test]
     fn drawer_width_floors_at_344_on_narrow_surfaces() {
-        // Below the band the pane stays at the 344px floor; the
-        // overlay clamps to the surface, so the drawer never
-        // overflows it. How much terminal it covers on a narrow
-        // output is the spec's hardware-checklist item (OQ-3).
-        assert_eq!(drawer_max_width(500.0), 344.0);
-        assert_eq!(drawer_max_width(300.0), 344.0);
-        assert_eq!(drawer_max_width(0.0), 344.0);
+        // Below 688px (2 × the floor) the cap falls under the
+        // floor; the floor wins and the overlay clamps the pane to
+        // the surface — the settings-drawer OQ-3 behavior carries
+        // over unchanged.
+        assert_eq!(drawer_width(None, 600.0), 344.0);
+        assert_eq!(drawer_width(None, 0.0), 344.0);
+    }
+
+    #[test]
+    fn drawer_width_clamps_a_stored_preference_into_the_band() {
+        // Criterion 4: a stale or hand-edited stored width can
+        // never overflow the surface or crush the settings content
+        // — render clamps whatever it finds, both directions.
+        // 65_535 is `u16::MAX`, the largest a stored value can be.
+        assert_eq!(drawer_width(Some(100), 2000.0), 344.0);
+        assert_eq!(drawer_width(Some(65_535), 2000.0), 1000.0);
+        assert_eq!(drawer_width(Some(65_535), 728.0), 364.0);
+        assert_eq!(drawer_width(Some(400), 2000.0), 400.0);
+    }
+
+    #[test]
+    fn drawer_width_writes_floor_at_the_minimum_only() {
+        // The write path's half of the width policy: the floor is
+        // static, so `clamped` enforces it; the cap needs the
+        // surface width this pure seam never sees, so render owns
+        // it (see `drawer_width`). `None` — the double-click reset
+        // — passes through untouched.
+        assert_eq!(
+            PlannedWrite::SettingsDrawerWidth(Some(100)).clamped(),
+            PlannedWrite::SettingsDrawerWidth(Some(DRAWER_MIN_WIDTH))
+        );
+        assert_eq!(
+            PlannedWrite::SettingsDrawerWidth(Some(600)).clamped(),
+            PlannedWrite::SettingsDrawerWidth(Some(600))
+        );
+        assert_eq!(
+            PlannedWrite::SettingsDrawerWidth(None).clamped(),
+            PlannedWrite::SettingsDrawerWidth(None)
+        );
     }
 
     // --- the drawer's migrated content (settings-drawer Task 1) ---
@@ -2023,6 +2116,7 @@ mod tests {
             (ConfigKey::ColorSchemeDark, "color_scheme_dark"),
             (ConfigKey::ColorSchemeLight, "color_scheme_light"),
             (ConfigKey::ThemePreference, "theme_preference"),
+            (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
         ];
         for (key, name) in expected {
             assert_eq!(key.key_name(), name);

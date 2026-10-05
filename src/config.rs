@@ -245,6 +245,14 @@ pub struct DropTermConfig {
     /// list no longer carries also resolves to the plain shell —
     /// loading never rewrites the config to drop it.
     pub default_profile: Option<String>,
+    /// The settings drawer pane's width in px, as the user last
+    /// dragged it. `None` (the default) renders the built-in
+    /// default width; a stored value clamps at render into
+    /// [344px, 50% of surface width] — the render-time clamp is the
+    /// policy, so any stale or hand-edited value loads safe.
+    /// Written once per drag release; double-clicking the drawer's
+    /// drag handle resets it to `None`.
+    pub settings_drawer_width: Option<u16>,
 }
 
 impl Default for DropTermConfig {
@@ -276,6 +284,7 @@ impl Default for DropTermConfig {
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
+            settings_drawer_width: None,
         }
     }
 }
@@ -323,6 +332,10 @@ mod tests {
         assert_eq!(config.opacity, 100);
         assert!(config.hide_on_focus_loss);
         assert!(!config.respect_panel);
+        // Never dragged: the drawer renders its built-in default
+        // width (drawer-resize spec criterion 1) until the first
+        // drag release stores a px value.
+        assert!(config.settings_drawer_width.is_none());
     }
 
     #[test]

@@ -3999,6 +3999,12 @@ impl Application for DropTerm {
         if !self.settings_open {
             return content;
         }
+        // The drawer pane's width comes from the drawer-resize width
+        // policy (spec criterion 4): the stored preference — `None`
+        // until the user first drags — against the live surface
+        // width, clamped to [344px, 50% of surface]. Computed once
+        // here; the drag interaction (T2) feeds a live value through
+        // the same pure clamp.
         let surface_width = self.output_size.map_or(480.0, |(width, _)| {
             #[expect(
                 clippy::cast_precision_loss,
@@ -4037,7 +4043,7 @@ impl Application for DropTerm {
             Message::Action(Action::Settings),
             content,
             drawer_content.map(Message::Settings),
-            settings::drawer_max_width(surface_width),
+            settings::drawer_width(self.config.settings_drawer_width, surface_width),
         )
         .into()
     }
