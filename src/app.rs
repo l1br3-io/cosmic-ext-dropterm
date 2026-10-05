@@ -12,6 +12,7 @@ use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::event::listen_raw;
+use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
     KeyboardInteractivity, destroy_layer_surface, get_layer_surface, set_exclusive_zone,
@@ -22,7 +23,7 @@ use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
 use cosmic::surface::Action as SurfaceAction;
 use cosmic::widget;
-use cosmic::{Application, ApplicationExt, Element};
+use cosmic::{Application, Element};
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, TabPosition, ThemePreference};
@@ -194,9 +195,8 @@ pub enum Message {
     /// configure after a `set_size`, or the initial configure): the new
     /// height in logical pixels, used to pin the terminal's height so the
     /// tab bar keeps its strip. The id gates the stream to the tracked
-    /// layer surface (`resize_acts_on`): a second app window (the
-    /// settings window) resizes too, and its heights must never feed
-    /// the pin.
+    /// layer surface (`resize_acts_on`): a foreign window's heights
+    /// must never feed the pin.
     WindowResized(window::Id, f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
@@ -262,16 +262,7 @@ pub enum Message {
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
-    /// The settings window with `id` should close: its ✕ was pressed
-    /// (`CloseRequested`, matched in the subscription — the window
-    /// never closes itself, `exit_on_close_request: false`) or it
-    /// closed without a handled request and `on_close_requested`
-    /// sends this as the defensive cleanup so a dead id can never be
-    /// `gain_focus`ed by a later press. Both clearing the tracked id
-    /// and `window::close` are idempotent, so a duplicate delivery is
-    /// inert.
-    SettingsCloseRequested(window::Id),
-    /// An event from the settings window's controls. Inputs only —
+    /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
     /// whose `ConfigChanged` echo is the only apply path.
@@ -405,14 +396,15 @@ pub struct DropTerm {
     /// byte-identically to the unwrapped column — and cleared when
     /// the parking tick completes the slide (`SlideTick`).
     slide: Option<slide::Playing>,
-    /// The settings window, when one is open: `Some(id)` routes a
-    /// repeat Ctrl+Shift+I to `gain_focus` instead of opening a
-    /// second window. Cleared when the window closes — never left
-    /// holding a dead id.
-    settings_window: Option<window::Id>,
-    /// The settings window's in-flight drafts: display-only text and
-    /// slider state, cleared on window close so a reopened window
-    /// renders purely from config.
+    /// Whether the settings drawer is open over the surface (spec:
+    /// settings-drawer). Overlay state only — the terminal keeps its
+    /// size and the pty its grid (criterion 1); the drawer survives
+    /// focus-loss hides with its drafts intact (criterion 8), and an
+    /// explicit close clears `settings_buffer`.
+    settings_open: bool,
+    /// The settings drawer's in-flight drafts: display-only text and
+    /// slider state, cleared on an explicit drawer close so a
+    /// reopened drawer renders purely from config (spec criterion 8).
     settings_buffer: settings::SettingsBuffer,
     /// Whether the terminal's context menu is open: the `TerminalBox`
     /// press handler's latch, read by the view through
@@ -702,6 +694,13 @@ impl DropTerm {
         // Hiding the surface is a focus loss for the rename input:
         // commit before the content slides out.
         let commit = self.commit_pending_rename();
+        // The drawer survives the hide (spec criterion 8): its open
+        // state and in-flight drafts stay exactly as they were for
+        // the next show. The named no-op documents that at the seam
+        // a hide would otherwise silently forget; only an explicit
+        // close ever clears (see `close_settings_drawer`).
+        self.settings_buffer
+            .apply_drawer_transition(settings::DrawerTransition::FocusLossHide);
         // The slide toggle feeds the decision: a disabled slide turns
         // this hide into an immediate destroy inside `toggle_step` —
         // the executor arms below then simply never runs.
@@ -1014,9 +1013,7 @@ impl DropTerm {
 
         // A remote close-tab is a quiet state edit, not a toggle
         // step: it applies through [`Self::close_tab_at`] and shows
-        // nothing — no overlay, and none of the settings close-first
-        // rule below (that exists so a re-shown terminal never slides
-        // over the settings window; a quiet verb never re-shows) — so
+        // nothing — no overlay, and nothing re-shows — so
         // a script closing a tab never disturbs what the user is
         // looking at. The debounce above still guards it: a
         // compositor double-delivery must not close two tabs.
@@ -1040,52 +1037,36 @@ impl DropTerm {
         // already-active no-op — and the overlay shows through the
         // same path a `new-tab` takes, mid-slide-out included. An
         // unresolvable target — no tabs, out of range — is a quiet
-        // no-op like close-tab's: no activation and no surface half,
-        // so none of the settings close-first rule below either
+        // no-op like close-tab's: no activation and no surface half
         // (nothing re-shows; a script's failed select must not
         // disturb what the user is looking at). The debounce above
         // still guards it: a compositor double-delivery must not
         // count twice.
         if let ToggleAction::SelectTab { index } = action {
             return match self.select_remote_tab(index) {
-                Some(activate) => Task::batch([
-                    self.close_settings_if_open(),
-                    activate,
-                    self.show_intent_surface(),
-                ]),
+                Some(activate) => Task::batch([activate, self.show_intent_surface()]),
                 None => Task::none(),
             };
         }
-
-        // The settings close-first rule rides in with every remaining
-        // action (see [`Self::close_settings_if_open`]): uniform —
-        // `Hide`'s step contributes no task anyway (the surface is
-        // already hidden), but the close still runs so no toggle ever
-        // leaves the window stranded open behind a hidden terminal.
-        let close = self.close_settings_if_open();
 
         // A remote new-tab is not a toggle step: the tab opens — now
         // or once the channel bootstraps — and the overlay shows,
         // whatever state it was in. The surface half rides the show
         // path below, so a request arriving mid-slide-out reverses on
-        // the live surface exactly like a `show` would. Everything
-        // above (debounce, settings close-first) applies to it like
-        // any other action.
+        // the live surface exactly like a `show` would.
         if let ToggleAction::NewTab { .. } = action {
             let open = self.open_remote_tab(action, self.config.new_tab_after_current);
-            return Task::batch([close, open, self.show_intent_surface()]);
+            return Task::batch([open, self.show_intent_surface()]);
         }
 
         // A remote duplicate-tab is a tab-facing verb like a new-tab:
         // a fresh shell tab opens in the target's cwd — now or once
         // the channel bootstraps — and the overlay shows through the
         // same path. An unresolvable target never blocks it: the
-        // spawn degrades to the bare new-tab inheritance, so — like
-        // new-tab, and unlike the quiet verbs above — the settings
-        // close-first rule and surface half apply on every path.
+        // spawn degrades to the bare new-tab inheritance.
         if let ToggleAction::DuplicateTab { tab_index } = action {
             let open = self.duplicate_remote_tab(tab_index);
-            return Task::batch([close, open, self.show_intent_surface()]);
+            return Task::batch([open, self.show_intent_surface()]);
         }
 
         // Every toggle decision executes through `toggle_step` — most
@@ -1096,13 +1077,14 @@ impl DropTerm {
         // itself never drops or queues. The slide toggle rides in
         // with the decision: with it off, a shown surface destroys
         // now instead of sliding out; with it on, every hide slides.
+        // The settings drawer, if open, rides along: it lives inside
+        // the surface, so a hide preserves it and the next show
+        // uncovers it exactly as it was (spec criterion 8).
         match toggle_step(action, &self.surface, self.config.slide_animation_enabled) {
-            ToggleStep::Measure => Task::batch([close, self.show()]),
-            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => {
-                Task::batch([close, self.hide()])
-            }
-            ToggleStep::ReverseShow(id) => Task::batch([close, self.reverse_show(id)]),
-            ToggleStep::Leave => close,
+            ToggleStep::Measure => self.show(),
+            ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) => self.hide(),
+            ToggleStep::ReverseShow(id) => self.reverse_show(id),
+            ToggleStep::Leave => Task::none(),
         }
     }
 
@@ -1325,20 +1307,6 @@ impl DropTerm {
         Task::none()
     }
 
-    /// The settings close-first rule's task: a toggle or show action
-    /// arriving while the settings window is open — the
-    /// terminal being hidden by construction then — closes the window
-    /// first, because a re-shown terminal must never slide over it,
-    /// and that window can never stack above the layer surface.
-    /// Inert when none is open.
-    fn close_settings_if_open(&mut self) -> Task<Message> {
-        if self.settings_window.is_some() {
-            self.close_settings()
-        } else {
-            Task::none()
-        }
-    }
-
     /// The surface half a tab-facing remote verb takes: the same show
     /// decision a `new-tab` gets, so the verb shows the overlay
     /// whatever state it was in — and a request arriving
@@ -1356,70 +1324,33 @@ impl DropTerm {
         }
     }
 
-    /// Opens the settings window, or focuses the existing one: one
-    /// window per process, tracked by id — every repeat press routes
-    /// to `window::gain_focus`, never a second window.
-    fn open_settings(&mut self) -> Task<Message> {
-        if let Some(id) = self.settings_window {
-            return window::gain_focus(id);
+    /// The one settings trigger (spec criteria 5 and 7): the
+    /// keybind, the context-menu "Settings…" item, the tab-bar
+    /// settings button, and the drawer's own Close button all route
+    /// through `Action::Settings` into here. Opening flips the
+    /// drawer over the live terminal — the surface never hides or
+    /// resizes (criterion 1); a repeat press closes (criterion 5).
+    fn toggle_settings(&mut self) -> Task<Message> {
+        if self.settings_open {
+            self.close_settings_drawer()
+        } else {
+            self.settings_open = true;
+            Task::none()
         }
-        // The window never closes itself: `exit_on_close_request:
-        // false` turns the ✕ into a `CloseRequested` event the app
-        // handles (`SettingsCloseRequested`) — closing is the app's
-        // decision, never the runtime's, in a layer-shell-only app
-        // that must keep running underneath.
-        let (id, open) = window::open(window::Settings {
-            exit_on_close_request: false,
-            size: cosmic::iced::Size::new(700.0, 760.0),
-            resizable: true,
-            ..window::Settings::default()
-        });
-        self.settings_window = Some(id);
-        // The terminal and the settings window are never shown at
-        // once: the settings window is a normal window and can never
-        // stack above the terminal's layer surface, so opening it
-        // hides the drop-down first — the normal hide path, slide-out
-        // when enabled. Unconditional, independent of
-        // `hide_on_focus_loss` (which keeps governing ordinary
-        // losses). Every surface state is safe: a shown surface
-        // slides out, a measuring one destroys now, and a
-        // hidden/hiding one is a no-op (`hide()` guards).
-        let hide = self.hide();
-        // The open task must be returned for the window to appear —
-        // it carries the runtime's window-open command. Its
-        // completion value (the id, already tracked synchronously
-        // above) is discarded; nothing here needs a focus task.
-        Task::batch([
-            open.then(|_| Task::none()),
-            self.set_window_title("DropTerm Settings".to_string(), id),
-            // Blur parity for the window's frosted base layer:
-            // libcosmic enables blur itself only for the main window
-            // and layer surfaces on theme changes — a `window::open`
-            // window is neither, so without this its translucency
-            // composited the raw, un-blurred backdrop. A compositor
-            // with frost disabled treats the request as a no-op.
-            window::enable_blur(id),
-            hide,
-        ])
     }
 
-    /// The settings window's single close path: clears the draft
-    /// buffer (so a reopened window starts purely from config), drops
-    /// the tracked id (never left holding a dead one), and issues the
-    /// close. Idempotent — both the take and `window::close` on a
-    /// dead id are inert — so the ✕ arm, the defensive
-    /// `on_close_requested` net, and the toggle-while-open rule all
-    /// route here with a duplicate delivery doing nothing. The
-    /// terminal is NOT re-shown: closing the window leaves it hidden
-    /// until the next toggle — no auto-restore, symmetric with
-    /// ordinary focus-loss hiding, where closing the other window
-    /// doesn't reopen the drop-down either.
-    fn close_settings(&mut self) -> Task<Message> {
-        self.settings_buffer.clear();
-        match self.settings_window.take() {
-            Some(id) => window::close(id),
-            None => Task::none(),
-        }
+    /// Closes the settings drawer: the explicit close path (Escape,
+    /// the toggle's repeat press, the drawer's Close button), so the
+    /// buffer clears per the close-clears-vs-hide-preserves rule
+    /// (spec criterion 8 — a focus-loss hide preserves everything for
+    /// the next show; hides touch nothing) and keyboard focus returns
+    /// to the terminal the drawer had borrowed (cosmic-term's
+    /// `on_context_drawer` refocus).
+    fn close_settings_drawer(&mut self) -> Task<Message> {
+        self.settings_open = false;
+        self.settings_buffer
+            .apply_drawer_transition(settings::DrawerTransition::ExplicitClose);
+        widget::text_input::focus(self.terminal_id.clone())
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -1428,10 +1359,11 @@ impl DropTerm {
         if action == Action::Hide {
             return self.hide();
         }
-        // The settings window opens from the keybind alone — no active
-        // tab required, and it never targets the active terminal.
+        // The settings drawer toggles from the keybind alone — no
+        // active tab required — and never targets the active
+        // terminal.
         if action == Action::Settings {
-            return self.open_settings();
+            return self.toggle_settings();
         }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
@@ -2042,19 +1974,43 @@ fn layer_unfocused_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
 }
 
 /// Whether losing keyboard focus should hide the surface: exactly
-/// the `hide_on_focus_loss` config flag. No settings-window input
-/// is needed: while that window is open no shown surface exists by
-/// construction — opening it hides the terminal
-/// (`DropTerm::open_settings`), and a toggle arriving while it is
-/// open closes it first (`DropTerm::debounced_toggle`) — so the
-/// gate never runs in the settings-open state. Only the automatic
-/// focus-loss path consults it: explicit hides (the toggle keybind,
-/// `Action::Hide`) call `hide()` directly and ignore the gate
-/// entirely. Both unfocused routes — the layer surface's
-/// `LayerUnfocused` and the `WindowUnfocused` callback — route into
-/// [`DropTerm::focus_lost`], so one gate covers both.
+/// the `hide_on_focus_loss` config flag. No settings-drawer input
+/// is needed: focus loss may hide the surface with the drawer open —
+/// the drawer and its drafts survive for the next show (spec
+/// criterion 8) — so the gate runs the same in the drawer-open
+/// state. Only the automatic focus-loss path consults it: explicit
+/// hides (the toggle keybind, `Action::Hide`) call `hide()` directly
+/// and ignore the gate entirely. Both unfocused routes — the layer
+/// surface's `LayerUnfocused` and the `WindowUnfocused` callback —
+/// route into [`DropTerm::focus_lost`], so one gate covers both.
 fn focus_loss_hides(hide_on_focus_loss: bool) -> bool {
     hide_on_focus_loss
+}
+
+/// What the app does with a key press before any other key role
+/// while the settings drawer is open (spec criterion 6): Escape
+/// closes the drawer — and only that. The surface does not hide,
+/// and the press is never forwarded to the terminal (which is
+/// disabled while the drawer is open anyway, criterion 4). Every
+/// other key — including the Ctrl+Shift+I toggle, which resolves
+/// through the normal bind match into [`DropTerm::toggle_settings`]
+/// — keeps the normal routing; with the drawer closed the rule
+/// never fires and Escape is terminal input exactly as before.
+/// Pure so the drawer-first rule is headless-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrawerKeyRouting {
+    /// The drawer is open and this press closes it: swallow it here.
+    CloseDrawer,
+    /// No drawer-first role: the press takes the normal routing.
+    FallThrough,
+}
+
+fn drawer_escape_routing(settings_open: bool, key: &Key) -> DrawerKeyRouting {
+    if settings_open && matches!(key, Key::Named(Named::Escape)) {
+        DrawerKeyRouting::CloseDrawer
+    } else {
+        DrawerKeyRouting::FallThrough
+    }
 }
 
 /// Whether the grab-bar drag handlers may act: pure so the guard is
@@ -2078,8 +2034,8 @@ fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
 
 /// Whether a `WindowResized` event for `id` may feed the
 /// terminal-height pin: only the tracked layer surface's granted
-/// sizes count — the settings window is resizable too, and its
-/// heights must never pin the terminal's. Pure, in the same style
+/// sizes count — a foreign window (the clipboard anchor) must never
+/// pin the terminal's. Pure, in the same style
 /// as [`layer_unfocused_acts_on`].
 fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(
@@ -2535,11 +2491,52 @@ mod tests {
         assert!(resize_acts_on(&SurfaceState::Hiding(id), id));
     }
 
+    // --- the settings drawer's key routing (settings-drawer Task 0) ---
+
+    #[test]
+    fn escape_with_the_drawer_open_closes_it_and_only_it() {
+        // Criterion 6: with the drawer open the press closes the
+        // drawer — it never hides the surface and never reaches the
+        // terminal (disabled while the drawer is open, criterion 4).
+        assert_eq!(
+            drawer_escape_routing(true, &Key::Named(Named::Escape)),
+            DrawerKeyRouting::CloseDrawer
+        );
+    }
+
+    #[test]
+    fn escape_with_the_drawer_closed_keeps_today_s_routing() {
+        // Criterion 6's second half: with the drawer closed, Escape
+        // behaves exactly as today — terminal input, the rule never
+        // fires.
+        assert_eq!(
+            drawer_escape_routing(false, &Key::Named(Named::Escape)),
+            DrawerKeyRouting::FallThrough
+        );
+    }
+
+    #[test]
+    fn every_other_key_falls_through_even_with_the_drawer_open() {
+        // The Ctrl+Shift+I toggle resolves through the normal bind
+        // match (criterion 5), and typing never trips the escape
+        // rule — only Escape is the drawer's key.
+        for key in [
+            Key::Character("i".into()),
+            Key::Character("a".into()),
+            Key::Named(Named::Enter),
+        ] {
+            assert_eq!(
+                drawer_escape_routing(true, &key),
+                DrawerKeyRouting::FallThrough
+            );
+        }
+    }
+
     #[test]
     fn resize_from_a_foreign_window_never_feeds_the_pin() {
-        // The settings window is resizable too, and its heights must
-        // never pin the terminal's; a hidden surface tracks no window
-        // at all.
+        // A foreign window (the clipboard anchor) must never pin the
+        // terminal's height; a hidden surface tracks no window at
+        // all.
         let surface_id = window::Id::unique();
         let settings_id = window::Id::unique();
         assert!(!resize_acts_on(
@@ -3114,7 +3111,7 @@ impl Application for DropTerm {
             key_binds: default_key_binds(),
             last_toggle: None,
             slide: None,
-            settings_window: None,
+            settings_open: false,
             settings_buffer: settings::SettingsBuffer::default(),
             context_menu_open: false,
             dbus_conn: None,
@@ -3193,14 +3190,6 @@ impl Application for DropTerm {
             )) => Some(Message::LayerUnfocused(layer_id)),
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
-            }
-            // The settings window's ✕: it never closes itself
-            // (`exit_on_close_request: false`), so the request lands
-            // here for the app to act on. A foreign id (the layer
-            // surface never requests a close) matches nothing in the
-            // handler and is inert.
-            Event::Window(cosmic::iced::window::Event::CloseRequested) => {
-                Some(Message::SettingsCloseRequested(id))
             }
             Event::Window(cosmic::iced::window::Event::Resized(size)) => {
                 Some(Message::WindowResized(id, size.height))
@@ -3305,13 +3294,6 @@ impl Application for DropTerm {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Self::Message> {
-        // The settings window: the sectioned instant-apply view —
-        // rendered from config with buffered drafts winning while
-        // they exist, events mapped into the app's
-        // `Message::Settings` handler.
-        if self.settings_window == Some(id) {
-            return settings::view(&self.config, &self.settings_buffer).map(Message::Settings);
-        }
         let Some(tab) = self.active() else {
             return widget::text("").into();
         };
@@ -3337,6 +3319,12 @@ impl Application for DropTerm {
             .height(terminal_height)
             .opacity(opacity)
             .show_headerbar(false)
+            // Inert while the settings drawer is open (spec
+            // criterion 4): cosmic-term's discipline — the drawer
+            // overlay already captures pointer events over its
+            // bounds, and `disabled` keeps keyboard (and the rest of
+            // the pointer stream) away from the pty.
+            .disabled(self.settings_open)
             .on_middle_click(|| Message::MiddleClick)
             .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
             .on_window_focused(|| Message::WindowFocused)
@@ -3473,21 +3461,43 @@ impl Application for DropTerm {
         if let Some(playing) = self.slide {
             slide_box = slide_box.playing(self.config.edge, playing);
         }
-        slide_box.into()
-    }
+        let content: Element<'_, Message> = slide_box.into();
 
-    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
-        // Fires on a window's `Closed` event (cosmic routes it through
-        // its internal `SurfaceClosed` action), i.e. after the fact:
-        // the settings window's ✕ is already handled by the
-        // `CloseRequested` subscription arm, which clears the id and
-        // issues the close. This override is the defensive net for a
-        // settings window that closed without a handled request —
-        // returning the default `None` there would silently leave the
-        // dead id in app state for a later press to `gain_focus` into
-        // nothing. Layer surfaces keep the default: their `Done`
-        // closes are the hide path's own business.
-        (self.settings_window == Some(id)).then(|| Message::SettingsCloseRequested(id))
+        // The settings drawer rides as an overlay on the same layer
+        // surface (spec criterion 1): `widget::context_drawer` wraps
+        // the whole content column — terminal, tab strip, grab bar —
+        // and pins its pane to the right edge without resizing
+        // anything beneath (overlay mode, never the side-by-side
+        // layout that would reflow the pty grid). Composed by hand
+        // because the framework's `view_main` serves only the main
+        // window — this surface is a layer-shell window whose view
+        // comes from `view_window`, so the `context_drawer()` trait
+        // hook cannot reach it (spike decision, settings-drawer
+        // Task 0). The Close button routes through the same
+        // `Action::Settings` toggle as the keybind (criterion 7).
+        if !self.settings_open {
+            return content;
+        }
+        let surface_width = self.output_size.map_or(480.0, |(width, _)| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "output px are < 2^24, exact in f32"
+            )]
+            {
+                geometry::surface_width(width as f32, self.config.width_percent) as f32
+            }
+        });
+        widget::context_drawer(
+            Some("Settings".into()),
+            None,
+            None,
+            None,
+            Message::Action(Action::Settings),
+            content,
+            settings::drawer_view(&self.config, &self.settings_buffer).map(Message::Settings),
+            settings::drawer_max_width(surface_width),
+        )
+        .into()
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
@@ -3856,6 +3866,16 @@ impl DropTerm {
                 if self.rename.is_some() {
                     return Task::none();
                 }
+                // The drawer-first Escape rule (spec criterion 6):
+                // with the drawer open, Escape closes it — only
+                // that. The press never reaches the terminal and the
+                // surface does not hide; with the drawer closed the
+                // pure rule returns `FallThrough` and the bind match
+                // below runs exactly as today.
+                if drawer_escape_routing(self.settings_open, &key) == DrawerKeyRouting::CloseDrawer
+                {
+                    return self.close_settings_drawer();
+                }
                 if let Some(action) =
                     keybinds::matched_action(&self.key_binds, modifiers, &key, Some(&physical_key))
                 {
@@ -4142,29 +4162,11 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().paste(&text);
                 }
             }
-            // The settings window's ✕: it arrives as
-            // `CloseRequested` (the window never closes itself) and
-            // routes through `close_settings`, which clears the
-            // draft buffer, drops the tracking, and issues the
-            // close. A request whose id is not the tracked one (the
-            // defensive `on_close_requested` net after a handled
-            // close) finds nothing and no-ops — both the take and
-            // `window::close` on a dead id are inert, so duplicate
-            // delivery is harmless. The app itself keeps running:
-            // this is not the main window and
-            // `exit_on_close(false)` stands. The terminal stays
-            // hidden — the next toggle shows it with every edit
-            // applied.
-            Message::SettingsCloseRequested(id) => {
-                if self.settings_window.is_some_and(|open| open == id) {
-                    return self.close_settings();
-                }
-            }
             Message::Settings(event) => {
-                // The settings window's commit path: every event
+                // The settings drawer's commit path: every event
                 // resolves through a pure planner and lands as one
                 // `Bare` write via [`Self::write_config`] — the
-                // window never applies anything itself, the
+                // drawer never applies anything itself, the
                 // `ConfigChanged` echo drives every apply.
                 // Display-only events (drafts, slider moves) touch
                 // just the buffer; commits that fail to parse are

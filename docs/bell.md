@@ -6,5 +6,5 @@ A bell that rings while the terminal is *hidden* posts a desktop notification na
 
 - Only while hidden: when the overlay is visible, the tab-bar 🔔 marker alone carries the signal.
 - One notification per tab per hide period: a bell storm (`while true; printf '\a'; done`) yields a single notification - the per-tab latch clears the next time the terminal is shown.
-- Toggle with `bell_notification_enabled` (default `true`, Behavior card in the [settings window](settings.md)); it applies at the next bell - the tab-bar markers are unaffected either way.
+- Toggle with `bell_notification_enabled` (default `true`, Behavior section in the [settings drawer](settings.md)); it applies at the next bell - the tab-bar markers are unaffected either way.
 - No notification daemon: the post fails with a `warn` log; nothing surfaces and the terminal is unaffected.

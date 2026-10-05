@@ -2,7 +2,7 @@
 
 DropTerm saves your tab layout and reopens it on every launch - here is exactly what is saved, when saves happen, and how each failure mode behaves.
 
-DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. Toggle it with `session_persistence_enabled` (default `true`, Behavior card in the [settings window](settings.md)): `false` stops saves *and* skips restore at launch - the app starts with a single fresh tab, and the existing `session.ron` is left untouched on disk, so re-enabling picks the session back up.
+DropTerm reopens your tab layout on every launch: one fresh shell per saved tab, spawned in its saved working directory, with its title, and the tab that was focused when the session was saved is focused again. Toggle it with `session_persistence_enabled` (default `true`, Behavior section in the [settings drawer](settings.md)): `false` stops saves *and* skips restore at launch - the app starts with a single fresh tab, and the existing `session.ron` is left untouched on disk, so re-enabling picks the session back up.
 
 What is saved - deliberately the same scope Guake and Yakuake settle on:
 
