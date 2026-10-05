@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The settings window: the shared config-write contract —
+//! The settings drawer: the shared config-write contract —
 //! [`WriteKind`], the control→key map, the planned, range-clamped
 //! writes both writers persist through the app's single write path
-//! — plus the instant-apply window view and its pure half: event
-//! planning, parsing, timing copy, and the display-only draft
-//! buffer. Everything except the view builder itself is plain data
-//! and pure functions over it, so the write contract and commit
-//! rules are headless-testable.
+//! — plus the instant-apply drawer content (`widget::settings`
+//! sections hosted by the framework context drawer over the
+//! terminal) and its pure half: event planning, parsing, timing
+//! copy, and the display-only draft buffer. Everything except the
+//! view builders themselves is plain data and pure functions over
+//! it, so the write contract and commit rules are
+//! headless-testable.
 
 use std::collections::HashMap;
 
-use cosmic::iced::Length;
+use cosmic::Element;
 use cosmic::widget;
-use cosmic::{Element, theme};
 
 use cosmic::cosmic_config::{self, ConfigSet as _};
 
@@ -29,7 +30,7 @@ pub enum WriteKind {
     /// Geometry was already applied before the write (drag release):
     /// absorb the echo, skip the reshape.
     PreApplied,
-    /// Nothing applied yet (settings window): let the echo reshape.
+    /// Nothing applied yet (settings drawer): let the echo reshape.
     Bare,
 }
 
@@ -568,6 +569,22 @@ pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> 
     }
 }
 
+/// A drawer lifecycle transition (spec criterion 8): which of the two
+/// paths that ends a drawer-over-terminal moment fired. The rule they
+/// encode — [`SettingsBuffer::apply_drawer_transition`] — is the
+/// close-clears vs hide-preserves decision, headless-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerTransition {
+    /// An explicit close: Escape, the toggle's repeat press, or the
+    /// drawer's Close button. The next open starts fresh from
+    /// config.
+    ExplicitClose,
+    /// The surface hid — focus loss per `hide_on_focus_loss`, or an
+    /// explicit hide — with the drawer open. The drawer and its
+    /// in-flight drafts survive untouched for the next show.
+    FocusLossHide,
+}
+
 /// The settings window's in-flight state: text drafts buffered only
 /// until submit, slider positions buffered for the live value
 /// readout until the next change. Both are display-only — the view
@@ -629,6 +646,18 @@ impl SettingsBuffer {
     pub fn clear(&mut self) {
         self.texts.clear();
         self.sliders.clear();
+    }
+
+    /// Apply a drawer lifecycle transition (spec criterion 8): an
+    /// explicit close clears — the reopen-fresh rule the settings
+    /// window carried — while a focus-loss hide preserves everything
+    /// for the next show. Hides never call this with `FocusLossHide`
+    /// and touch nothing (preservation is the default); the method
+    /// exists so the rule has one named, headless-tested home.
+    pub fn apply_drawer_transition(&mut self, transition: DrawerTransition) {
+        if matches!(transition, DrawerTransition::ExplicitClose) {
+            self.clear();
+        }
     }
 }
 
@@ -720,87 +749,90 @@ impl ConfigKey {
 const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
 const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
 
-/// A control's rough width, keeping the window's rows aligned.
-const CONTROL_WIDTH: f32 = 260.0;
-
-/// The settings window's view: one scrollable column, a card per
-/// [`Section`] (no nav sidebar for five sections). Every control
-/// renders from `config` with a buffered draft winning while one
-/// exists, states its apply timing, and emits [`SettingsEvent`]s —
-/// the window never applies anything itself; commits land through
-/// the app's write path and the existing `ConfigChanged` echo.
-///
-/// The scrollable rides in a [`theme::Container::WindowBackground`]
-/// wrapper filling the surface: libcosmic renders `view_window`
-/// elements bare (no window template wraps them) and styles the
-/// window background transparent (the frosted-glass design), so
-/// without a base layer the desktop showed through the padding gaps
-/// and the window glittered while moved — the same wrap libcosmic's
-/// multi-window example gives its secondary windows.
-pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static, SettingsEvent> {
-    let cards = Section::ALL
-        .iter()
-        .map(|section| section_card(*section, config, buffer));
-    let content = widget::scrollable(
-        widget::column(cards)
-            .spacing(16)
-            .padding(16)
-            .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill);
-    widget::container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .class(theme::Container::WindowBackground)
-        .into()
+/// The drawer pane's maximum width, mirroring libcosmic's
+/// `Core::context_width(has_nav = false)` clamp (344–480px with the
+/// reserved content width subtracted) so the drawer composed by hand
+/// in `view_window` sizes exactly like a framework-hosted one. The
+/// overlay clamps to the surface below the floor, so the pane never
+/// overflows a narrow drop-down — how much terminal it covers there
+/// is the spec's hardware-checklist item (OQ-3).
+pub fn drawer_max_width(surface_width: f32) -> f32 {
+    // Content width (360px) + padding (8px) — the same reservation
+    // `context_width` makes for an app without a nav bar.
+    let reserved = 360.0 + 8.0;
+    (surface_width - reserved).clamp(344.0, 480.0)
 }
 
-/// One section's card: heading plus its controls, one per exposed
-/// key, in display order. (The `Vec` annotation anchors the iced
-/// re-exports' `Theme` type parameter to cosmic's — with no children
-/// to infer from, a bare `Column::new()` would default to iced's
-/// theme and stop converting to cosmic `Element`s.)
-fn section_card(
+/// The settings drawer's content: the instant-apply sections as
+/// `widget::settings` — a titled section per [`Section`], one labeled
+/// item per exposed key with its apply timing as the description, in
+/// one column the framework drawer pane already wraps in a scrollable.
+/// Every control renders from `config` with a buffered draft winning
+/// while one exists and emits [`SettingsEvent`]s — nothing here
+/// applies anything itself; commits land through the app's write path
+/// and the `ConfigChanged` echo. All five sections host here
+/// (criterion 3: every exposed key exactly once — the section map
+/// plus the all-21 construction test pin it); the live-edit half
+/// (opacity, font, scheme — criterion 2) rides the same items.
+pub fn drawer_view(
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    widget::settings::view_column(
+        Section::ALL
+            .iter()
+            .map(|section| drawer_section(*section, config, buffer))
+            .collect(),
+    )
+    .into()
+}
+
+/// One drawer section: a `widget::settings` section carrying the
+/// section's title and one item per key it owns, in `keys()` display
+/// order.
+fn drawer_section(
     section: Section,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    let mut rows: Vec<Element<'static, SettingsEvent>> =
-        vec![widget::text(section.title()).size(18).into()];
+    let mut built = widget::settings::section().title(section.title());
     for key in section.keys() {
-        rows.push(control_row(*key, config, buffer));
+        built = built.add(drawer_item(*key, config, buffer));
     }
-    widget::container(widget::column(rows))
-        .padding(16)
-        .width(Length::Fill)
-        .class(theme::Container::Card)
-        .into()
+    built.into()
 }
 
-/// One labeled control row: the key's label, its apply-timing copy,
-/// and the control itself. Each builder claims only its own keys;
-/// the `expect` is totality — every exposed key has exactly one
-/// control, pinned by the section-map test.
-fn control_row(
+/// One drawer item: the key's label with its apply timing as the
+/// item description (the honesty rule carried into the drawer), and
+/// the key's control on the drawer's natural widths — the window's
+/// fixed `CONTROL_WIDTH` is gone, the pane owns width now.
+fn drawer_item(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    let caption = widget::column![
-        widget::text(key.label()).width(Length::Fill),
-        widget::text(apply_timing(key).label()).size(12),
-    ]
-    .spacing(2);
-    let control = slider_control(key, config, buffer)
+    let control = drawer_control(key, config, buffer)
+        .expect("every exposed key has exactly one control (section map)");
+    widget::settings::item::builder(key.label())
+        .description(apply_timing(key).label())
+        .control(control)
+        .into()
+}
+
+/// The key's control widget: sliders (the buffered readout above),
+/// then dropdowns, then toggles, then text inputs. Each builder
+/// claims only its own keys; the `expect` in [`drawer_item`] is
+/// totality — every exposed key has exactly one control, pinned by
+/// the section-map test.
+fn drawer_control(
+    key: ConfigKey,
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Option<Element<'static, SettingsEvent>> {
+    slider_control(key, config, buffer)
         .or_else(|| dropdown_control(key, config))
         .or_else(|| toggle_control(key, config))
         .or_else(|| text_control(key, config, buffer))
-        .expect("every exposed key has exactly one control (section map)");
-    widget::row![caption, control]
-        .spacing(16)
-        .align_y(cosmic::iced::alignment::Vertical::Center)
-        .into()
 }
 
 /// A slider control (commit on release). `on_change` only buffers
@@ -829,8 +861,7 @@ fn slider_control(
         widget::column![
             widget::text(format!("{readout}")).size(12),
             widget::slider(range, value, move |v| SettingsEvent::SliderMoved(key, v))
-                .on_release(SettingsEvent::SliderReleased(key))
-                .width(Length::Fixed(CONTROL_WIDTH)),
+                .on_release(SettingsEvent::SliderReleased(key)),
         ]
         .spacing(4)
         .into(),
@@ -839,8 +870,7 @@ fn slider_control(
 
 /// A dropdown control (commit on change). The pick resolves through
 /// [`dropdown_write`]; labels and selection come from the same
-/// tables the write path reads. The widget has no width setter at
-/// the pinned rev, so a container sizes it.
+/// tables the write path reads.
 fn dropdown_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -871,12 +901,9 @@ fn dropdown_control(
         _ => return None,
     };
     Some(
-        widget::container(widget::dropdown(
-            labels,
-            dropdown_selected(key, config),
-            move |index| SettingsEvent::Picked(key, index),
-        ))
-        .width(Length::Fixed(CONTROL_WIDTH))
+        widget::dropdown(labels, dropdown_selected(key, config), move |index| {
+            SettingsEvent::Picked(key, index)
+        })
         .into(),
     )
 }
@@ -929,7 +956,6 @@ fn text_control(
         widget::text_input(placeholder, buffer.text(field, config))
             .on_input(move |text| SettingsEvent::Draft(field, text))
             .on_submit(move |text| SettingsEvent::Submitted(field, text))
-            .width(Length::Fixed(CONTROL_WIDTH))
             .into(),
     )
 }
@@ -943,6 +969,109 @@ mod tests {
             .iter()
             .flat_map(|section| section.keys().iter().copied())
             .collect()
+    }
+
+    // --- the drawer pane's width (settings-drawer Task 0) ---
+
+    #[test]
+    fn drawer_width_clamps_into_the_framework_band() {
+        // Mirrors libcosmic `Core::context_width(has_nav = false)`:
+        // the reserved content width (360px + 8px) subtracted, then
+        // clamped to the 344–480 band — a hand-composed drawer sizes
+        // exactly like a framework-hosted one.
+        assert_eq!(drawer_max_width(2000.0), 480.0);
+        assert_eq!(drawer_max_width(800.0), 432.0);
+        assert_eq!(drawer_max_width(728.0), 360.0);
+    }
+
+    #[test]
+    fn drawer_width_floors_at_344_on_narrow_surfaces() {
+        // Below the band the pane stays at the 344px floor; the
+        // overlay clamps to the surface, so the drawer never
+        // overflows it. How much terminal it covers on a narrow
+        // output is the spec's hardware-checklist item (OQ-3).
+        assert_eq!(drawer_max_width(500.0), 344.0);
+        assert_eq!(drawer_max_width(300.0), 344.0);
+        assert_eq!(drawer_max_width(0.0), 344.0);
+    }
+
+    // --- the drawer's migrated content (settings-drawer Task 1) ---
+
+    #[test]
+    fn the_drawer_builds_every_appearance_and_geometry_control() {
+        // Task 1 hosts the first two sections. Construction is the
+        // assertion: the item builder's `expect` totality panics if a
+        // key in either section resolves to no control, and the
+        // widget builders must tolerate the states the file can be
+        // in — an unknown scheme name (dropdown selects nothing),
+        // buffered drafts winning over file values, and the plain
+        // default config.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::FontName, "Draft Font".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        let _ = drawer_view(&config, &buffer);
+        let _ = drawer_view(&config, &SettingsBuffer::default());
+    }
+
+    #[test]
+    fn every_section_item_builds_a_control_for_all_21_keys() {
+        // Criterion 3's construction side: every key of every section
+        // resolves to exactly one item control — the builder's
+        // `expect` totality panics otherwise — including the toggle
+        // keys Tasks 1's chain did not yet resolve, and with every
+        // text field holding a draft (the buffer's display-wins rule)
+        // and a scrollback draft that does not parse (the draft
+        // simply renders; rejection is the update path's job).
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::FontName, "Draft Font".to_string());
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_text(TextField::Args, "-l -i".to_string());
+        buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
+        for section in Section::ALL {
+            for key in section.keys() {
+                let _ = drawer_item(*key, &config, &buffer);
+            }
+        }
+    }
+
+    // --- the drawer's lifecycle transitions (settings-drawer T3) ---
+
+    #[test]
+    fn an_explicit_drawer_close_clears_the_buffer_for_a_fresh_reopen() {
+        // Criterion 8's close rule: Escape, the repeat toggle, and
+        // the Close button are explicit closes — the next open
+        // renders purely from config, the reopen-fresh rule the
+        // settings window carried.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        buffer.apply_drawer_transition(DrawerTransition::ExplicitClose);
+        assert_eq!(
+            buffer.text(TextField::Shell, &config),
+            config.shell.clone().unwrap_or_default()
+        );
+        assert_eq!(
+            buffer.slider_value(ConfigKey::Opacity, &config),
+            f32::from(config.opacity)
+        );
+    }
+
+    #[test]
+    fn a_focus_loss_hide_preserves_drafts_for_the_next_show() {
+        // Criterion 8's hide rule: the surface hiding — focus loss
+        // or an explicit hide, whatever re-shows later — never
+        // touches the drawer's state; the next show renders the
+        // drawer exactly as it was, drafts intact.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        buffer.apply_drawer_transition(DrawerTransition::FocusLossHide);
+        assert_eq!(buffer.text(TextField::Shell, &config), "/bin/tcsh");
+        assert_eq!(buffer.slider_value(ConfigKey::Opacity, &config), 42.0);
     }
 
     #[test]

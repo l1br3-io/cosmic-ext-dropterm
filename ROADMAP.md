@@ -37,7 +37,6 @@ High-level feature list.
 
 ## Later
 - [ ] Pin tab
-- [ ] Sidebar settings
 - [x] Configurable new-tab placement (`new_tab_after_current`, default after the active tab, Behavior-card toggle; the keybind, tab-bar `+`, and remote `new-tab` follow it, `duplicate-tab` stays after-active, session restore keeps saved order)
 - [ ] Session restore on login
 - [ ] Clean up unnecessary comments

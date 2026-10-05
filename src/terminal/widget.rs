@@ -168,6 +168,28 @@ impl DragAutoscroll {
 /// The terminal widget: renders a [`Terminal`] and translates iced
 /// input into terminal updates — keys to escape sequences, mouse to
 /// cell coordinates, selection drags, hyperlinks, and IME.
+/// Which event classes a disabled [`TerminalBox`] still forwards
+/// (spec criteria 4 and 8): input is inert while the settings drawer
+/// overlays the terminal — keyboard, pointer, and IME never reach the
+/// pty — but window-focus events keep flowing, because the app's
+/// surface-focus tracking and its `hide_on_focus_loss` rule ride
+/// them; severing those would pin the surface open behind the drawer
+/// under `keyboard_mode: OnDemand`. Pins the `update` gate's policy;
+/// headless-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisabledFlow {
+    /// Keyboard, pointer, and IME events: dropped.
+    Input,
+    /// Window focus gained/lost: forwarded.
+    WindowFocus,
+}
+
+/// Whether a disabled [`TerminalBox`] forwards the event class —
+/// see [`DisabledFlow`].
+pub const fn disabled_forwards(class: DisabledFlow) -> bool {
+    matches!(class, DisabledFlow::WindowFocus)
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "TerminalBox models each UI flag as its own bool field; reshaping the builder API is out of lint scope"
@@ -1031,45 +1053,20 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle<f32>,
     ) {
-        if self.disabled {
-            return;
-        }
         let state = tree.state.downcast_mut::<State>();
-        let scrollbar_rect = state.scrollbar_rect.get();
-        let mut terminal = self.terminal.lock().unwrap();
-        let buffer_size = terminal.with_buffer(Buffer::size);
-
-        let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
-        let is_mouse_mode = terminal.term.lock().mode().intersects(TermMode::MOUSE_MODE);
-        match event {
-            Event::Window(event) => match event {
+        // Window focus flows even while the box is disabled (the
+        // settings drawer's input gate, spec criterion 4): the app's
+        // surface-focus tracking and `hide_on_focus_loss` rule ride
+        // these events, so gating input must not sever focus
+        // reporting (criterion 8) — the OnDemand keyboard-mode route
+        // especially. `disabled_forwards` pins the policy; every
+        // other event class dies at the gate below.
+        if let Event::Window(window_event) = event {
+            match window_event {
                 cosmic::iced::window::Event::Focused => {
                     if let Some(on_window_focused) = &self.on_window_focused {
                         shell.publish(on_window_focused());
                     }
-                }
-                cosmic::iced::window::Event::RedrawRequested(_) => {
-                    if is_mouse_mode {
-                        state.autoscroll.stop();
-                    } else {
-                        if let Some((pointer, multiplier)) = state.autoscroll.next_due()
-                            && update_buffer_drag(
-                                state,
-                                &mut terminal,
-                                buffer_size,
-                                pointer,
-                                layout.bounds(),
-                                self.padding,
-                                multiplier,
-                            )
-                        {
-                            shell.capture_event();
-                        }
-                        if state.autoscroll.is_active() {
-                            shell.request_redraw();
-                        }
-                    }
-                    shell.request_input_method(&self.input_method(state, layout, &terminal));
                 }
                 cosmic::iced::window::Event::Unfocused => {
                     state.is_focused = false;
@@ -1079,7 +1076,47 @@ where
                     }
                 }
                 _ => {}
-            },
+            }
+        }
+        let flow = match event {
+            Event::Window(
+                cosmic::iced::window::Event::Focused | cosmic::iced::window::Event::Unfocused,
+            ) => DisabledFlow::WindowFocus,
+            _ => DisabledFlow::Input,
+        };
+        if self.disabled && !disabled_forwards(flow) {
+            return;
+        }
+        let scrollbar_rect = state.scrollbar_rect.get();
+        let mut terminal = self.terminal.lock().unwrap();
+        let buffer_size = terminal.with_buffer(Buffer::size);
+
+        let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
+        let is_mouse_mode = terminal.term.lock().mode().intersects(TermMode::MOUSE_MODE);
+        match event {
+            Event::Window(cosmic::iced::window::Event::RedrawRequested(_)) => {
+                if is_mouse_mode {
+                    state.autoscroll.stop();
+                } else {
+                    if let Some((pointer, multiplier)) = state.autoscroll.next_due()
+                        && update_buffer_drag(
+                            state,
+                            &mut terminal,
+                            buffer_size,
+                            pointer,
+                            layout.bounds(),
+                            self.padding,
+                            multiplier,
+                        )
+                    {
+                        shell.capture_event();
+                    }
+                    if state.autoscroll.is_active() {
+                        shell.request_redraw();
+                    }
+                }
+                shell.request_input_method(&self.input_method(state, layout, &terminal));
+            }
             Event::Keyboard(KeyEvent::KeyPressed {
                 key: Key::Named(named),
                 physical_key,
@@ -2229,9 +2266,28 @@ fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EdgeScrollDirection, accumulate_wheel_lines, context_menu_press, edge_scroll_adjustment,
+        DisabledFlow, EdgeScrollDirection, accumulate_wheel_lines, context_menu_press,
+        disabled_forwards, edge_scroll_adjustment,
     };
     use cosmic::iced::mouse::Button;
+
+    #[test]
+    fn a_disabled_terminal_still_forwards_window_focus() {
+        // The settings drawer's input gate (spec criterion 4) must
+        // not sever focus reporting: the app's surface-focus
+        // tracking and its `hide_on_focus_loss` rule ride window
+        // focus events, so a drawer overlaying the terminal cannot
+        // pin the surface open behind it (criterion 8's hardware
+        // scenario, the OnDemand keyboard-mode route).
+        assert!(disabled_forwards(DisabledFlow::WindowFocus));
+    }
+
+    #[test]
+    fn a_disabled_terminal_drops_input() {
+        // Keyboard, pointer, and IME never reach the pty while the
+        // drawer is open — cosmic-term's `disabled()` discipline.
+        assert!(!disabled_forwards(DisabledFlow::Input));
+    }
 
     #[test]
     fn context_menu_press_while_open_closes_on_any_button() {

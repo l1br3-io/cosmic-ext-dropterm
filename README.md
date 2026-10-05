@@ -9,14 +9,14 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 
 ## Status
 
-This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings window, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
+This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings drawer, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
 
 ## Building
 
 ### Build dependencies (Pop!_OS / Ubuntu)
 
 ```sh
-sudo apt install just libxkbcommon-dev libwayland-dev libfontconfig-dev libfreetype-dev libexpat1-dev pkg-config
+sudo apt install just libxkbcommon-dev libwayland-dev libfontconfig-dev libfreetype-dev pkg-config
 ```
 
 Rust via [rustup](https://rustup.rs/) (stable).
@@ -55,7 +55,7 @@ The details live in the `docs/` directory:
 
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
 - [Configuration](docs/configuration.md) - all 25 config keys, profiles, and direct editing
-- [Settings window](docs/settings.md) - the five cards and when each edit applies
+- [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
 - [Theming](docs/theming.md) - the Application theme pin and the 12 built-in color schemes
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules

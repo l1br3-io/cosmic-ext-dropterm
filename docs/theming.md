@@ -4,17 +4,17 @@ How DropTerm picks its theme mode and color scheme - the Application theme dropd
 
 ## Application theme
 
-Which theme mode is active - and with it which of the two color schemes wears, the window background derivation, and all chrome - comes from the "Application theme" dropdown in the Appearance card of the [settings window](settings.md), so you don't need COSMIC Appearance to flip the terminal's mode:
+Which theme mode is active - and with it which of the two color schemes wears, the window background derivation, and all chrome - comes from the "Application theme" dropdown in the Appearance section of the [settings drawer](settings.md), so you don't need COSMIC Appearance to flip the terminal's mode:
 
-- `Follow system` (the default): DropTerm tracks the system light/dark mode. Flipping COSMIC Appearance switches the terminal's scheme, background, chrome, and the settings window itself, exactly as before - a config that never touches this key behaves byte-identically to a build without the dropdown.
-- `Dark` / `Light`: the app pins that mode independently of the system. Everything resolves from the pin - scheme selection, window background, tab/grab-bar chrome, and the settings window - built on your own system palettes (accent included), and the pin survives system theme flips: COSMIC Appearance can flip back and forth while the terminal keeps wearing the pinned mode. One upstream edge: while pinned, palette edits made while the system sits in the opposite mode are dropped until the next re-pin or theme change.
+- `Follow system` (the default): DropTerm tracks the system light/dark mode. Flipping COSMIC Appearance switches the terminal's scheme, background, chrome, and the settings drawer itself, exactly as before - a config that never touches this key behaves byte-identically to a build without the dropdown.
+- `Dark` / `Light`: the app pins that mode independently of the system. Everything resolves from the pin - scheme selection, window background, tab/grab-bar chrome, and the settings drawer - built on your own system palettes (accent included), and the pin survives system theme flips: COSMIC Appearance can flip back and forth while the terminal keeps wearing the pinned mode. One upstream edge: while pinned, palette edits made while the system sits in the opposite mode are dropped until the next re-pin or theme change.
 - Switching back to `Follow system` re-derives the current system mode on the spot, and system flips resume driving the app.
 
-Picks apply live (config key `theme_preference`: `System`, `Dark`, or `Light` - a missing key loads as `System`). While the settings window is open the terminal is hidden, but the settings window itself restyles with a theme pick, so the change is visible immediately.
+Picks apply live (config key `theme_preference`: `System`, `Dark`, or `Light` - a missing key loads as `System`). With the settings drawer open the terminal is right there beneath it, so a theme pick is visible immediately - the terminal's cells, background, and chrome restyle in the same pass, and the drawer restyles along with them.
 
 ## Color schemes
 
-The terminal wears a built-in color scheme picked per theme mode: the Appearance card of the [settings window](settings.md) has two dropdowns - "Dark color scheme" (worn while the app resolves dark mode) and "Light color scheme" (while it resolves light). The active mode comes from the [Application theme](#application-theme) dropdown - `Follow system` tracks COSMIC Appearance, `Dark`/`Light` pin one - and a mode change from either side switches between the two picks; a config edit or a mode change re-applies live.
+The terminal wears a built-in color scheme picked per theme mode: the Appearance section of the [settings drawer](settings.md) has two dropdowns - "Dark color scheme" (worn while the app resolves dark mode) and "Light color scheme" (while it resolves light). The active mode comes from the [Application theme](#application-theme) dropdown - `Follow system` tracks COSMIC Appearance, `Dark`/`Light` pin one - and a mode change from either side switches between the two picks; a config edit or a mode change re-applies live.
 
 Twelve built-in schemes ship: `COSMIC Dark` and `COSMIC Light` (the defaults), `Dracula`, `Solarized Dark`, `Solarized Light`, `Gruvbox Dark`, `Gruvbox Light`, `Tokyo Night Storm`, `Tokyo Night Day`, `Nord`, `Catppuccin Mocha`, and `Catppuccin Latte` - values transcribed from their canonical upstream palettes, with the source and license recorded per scheme in `src/terminal/theme_source.rs`.
 
