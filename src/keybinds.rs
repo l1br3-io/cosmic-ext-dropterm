@@ -212,13 +212,6 @@ impl Binding {
 /// at position `index` — the editor exposes one row per number, and
 /// the id set ends at 8 (9 is [`Action::ActivateLastTab`], its own
 /// row).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed via action_id/action_from_id; keybinds-editor KE-2"
-    )
-)]
 const ACTIVATE_TAB_IDS: [&str; 8] = [
     "activate_tab_1",
     "activate_tab_2",
@@ -235,13 +228,6 @@ const ACTIVATE_TAB_IDS: [&str; 8] = [
 /// action that is deliberately not keybindable: only
 /// [`Action::NewProfileTab`], whose indices are not a stable user
 /// surface (its enum doc is the contract).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-2 (config ids) and KE-4 (rows)"
-    )
-)]
 pub fn action_id(action: Action) -> Option<&'static str> {
     let id = match action {
         Action::Copy => "copy",
@@ -274,13 +260,6 @@ pub fn action_id(action: Action) -> Option<&'static str> {
 /// The action an id string resolves to — the inverse of [`action_id`]
 /// (round-trip pinned by test); `None` for anything else, including
 /// out-of-range activate-tab numbers.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-3 (the live-map rebuild)"
-    )
-)]
 pub fn action_from_id(id: &str) -> Option<Action> {
     if let Some(number) = id.strip_prefix("activate_tab_") {
         let index = number.parse::<usize>().ok()?;
@@ -327,13 +306,6 @@ pub fn action_from_id(id: &str) -> Option<Action> {
 /// always wins the chord it lands on, so when two customs collide the
 /// later id (the `BTreeMap`'s order) keeps the chord — one
 /// deterministic winner, never a double binding.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-3 (the live-map rebuild)"
-    )
-)]
 pub fn effective_key_binds(custom: &BTreeMap<String, Binding>) -> HashMap<KeyBind, Action> {
     let resolved: Vec<(Action, KeyBind)> = custom
         .iter()
@@ -493,10 +465,6 @@ pub fn binding_display(binding: &Binding) -> String {
 
 /// The binding a pressed chord captures — or `None` when the press is
 /// not bindable: a bare modifier key (capture stays armed on those).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by keybinds-editor KE-5 (capture)")
-)]
 pub fn binding_from_key(modifiers: Modifiers, key: &Key) -> Option<Binding> {
     if is_modifier_only_key(key) {
         return None;
@@ -519,6 +487,48 @@ pub fn binding_from_key(modifiers: Modifiers, key: &Key) -> Option<Binding> {
         modifiers: binding_modifiers,
         key,
     })
+}
+
+/// The verdict for a press while a capture is armed — the routing has
+/// exactly three outcomes; there is no fall-through (capture consumes
+/// every press, keybinds-editor criterion 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureVerdict {
+    /// The chord to bind: commit it as the action's custom binding.
+    Commit(Binding),
+    /// Escape: end the capture, keep the bindings as they are.
+    Cancel,
+    /// A bare modifier (or a key that cannot parse): stay armed.
+    Ignore,
+}
+
+/// Route a press for the armed capture — pure, so the routing policy
+/// (Escape cancels even with modifiers, matching the drawer's own
+/// Escape rule; only a real chord commits) is headless-testable. The
+/// caller owns the ordering: this runs before the drawer's Escape rule
+/// and before bind matching.
+pub fn capture_verdict(modifiers: Modifiers, key: &Key) -> CaptureVerdict {
+    if matches!(key, Key::Named(Named::Escape)) {
+        return CaptureVerdict::Cancel;
+    }
+    binding_from_key(modifiers, key).map_or(CaptureVerdict::Ignore, CaptureVerdict::Commit)
+}
+
+/// The custom map with `action`'s entry set to `binding` — the
+/// capture-commit planner: whole map in, whole map out, because the
+/// write path persists maps whole. Re-setting an action replaces its
+/// entry (single binding per action); an unkeybindable action — none
+/// can arm, but the signature admits it — leaves the map unchanged.
+pub fn with_custom_binding(
+    custom: &BTreeMap<String, Binding>,
+    action: Action,
+    binding: Binding,
+) -> BTreeMap<String, Binding> {
+    let mut updated = custom.clone();
+    if let Some(id) = action_id(action) {
+        updated.insert(id.to_string(), binding);
+    }
+    updated
 }
 
 /// The [`Key`] a persisted key name parses back to. Ported from
@@ -568,13 +578,6 @@ fn key_from_string(value: &str) -> Option<Key> {
 
 /// The persisted key name for a pressed key — single ASCII letters
 /// normalize to uppercase so `c` and `C` capture identically.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed via binding_from_key; keybinds-editor KE-5"
-    )
-)]
 fn key_to_string(key: &Key) -> Option<String> {
     match key {
         Key::Character(c) => {
@@ -593,13 +596,6 @@ fn key_to_string(key: &Key) -> Option<String> {
 
 /// Whether a key press is only a modifier being held — never a
 /// bindable chord by itself.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed via binding_from_key; keybinds-editor KE-5"
-    )
-)]
 fn is_modifier_only_key(key: &Key) -> bool {
     matches!(
         key,
@@ -1242,5 +1238,104 @@ mod tests {
             "the broken copy entry leaves the default in place"
         );
         assert_eq!(effective.get(&bind(&[Modifier::Ctrl], "x")), None);
+    }
+
+    #[test]
+    fn capture_verdict_escape_cancels_even_with_modifiers() {
+        // The drawer's own Escape rule ignores modifiers; the capture
+        // rule matches that, so Ctrl+Escape also cancels.
+        assert_eq!(
+            capture_verdict(Modifiers::empty(), &Key::Named(Named::Escape)),
+            CaptureVerdict::Cancel
+        );
+        assert_eq!(
+            capture_verdict(Modifiers::CTRL, &Key::Named(Named::Escape)),
+            CaptureVerdict::Cancel
+        );
+    }
+
+    #[test]
+    fn capture_verdict_bare_modifiers_stay_armed() {
+        assert_eq!(
+            capture_verdict(Modifiers::CTRL, &Key::Named(Named::Shift)),
+            CaptureVerdict::Ignore
+        );
+        assert_eq!(
+            capture_verdict(Modifiers::CTRL | Modifiers::SHIFT, &Key::Named(Named::Alt)),
+            CaptureVerdict::Ignore
+        );
+    }
+
+    #[test]
+    fn capture_verdict_any_other_chord_commits() {
+        assert_eq!(
+            capture_verdict(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("c".into())
+            ),
+            CaptureVerdict::Commit(Binding {
+                modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
+                key: "C".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn with_custom_binding_sets_and_replaces_whole_entries() {
+        // The capture-commit planner: whole map in, whole map out —
+        // setting again replaces (single binding per action), a
+        // numbered row lands under its per-number id, and an
+        // unkeybindable action never enters the map.
+        let empty = BTreeMap::new();
+        let once = with_custom_binding(
+            &empty,
+            Action::Copy,
+            Binding {
+                modifiers: vec![ModifierName::Ctrl, ModifierName::Alt],
+                key: "Q".to_string(),
+            },
+        );
+        assert_eq!(
+            once,
+            custom(&[("copy", &[ModifierName::Ctrl, ModifierName::Alt], "Q")])
+        );
+        let twice = with_custom_binding(
+            &once,
+            Action::Copy,
+            Binding {
+                modifiers: vec![],
+                key: "F2".to_string(),
+            },
+        );
+        assert_eq!(twice.len(), 1, "re-setting replaces, never duplicates");
+        assert_eq!(
+            twice,
+            custom(&[("copy", &[], "F2")]),
+            "the replaced entry is the new binding"
+        );
+        let numbered = with_custom_binding(
+            &twice,
+            Action::ActivateTab(2),
+            Binding {
+                modifiers: vec![],
+                key: "F3".to_string(),
+            },
+        );
+        assert_eq!(
+            numbered,
+            custom(&[("copy", &[], "F2"), ("activate_tab_3", &[], "F3")])
+        );
+        assert_eq!(
+            with_custom_binding(
+                &numbered,
+                Action::NewProfileTab(0),
+                Binding {
+                    modifiers: vec![],
+                    key: "F4".to_string(),
+                }
+            ),
+            numbered,
+            "an unkeybindable action leaves the map unchanged"
+        );
     }
 }

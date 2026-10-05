@@ -31,7 +31,7 @@ use crate::context_menu;
 use crate::dbus_state;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
-use crate::keybinds::{self, default_key_binds};
+use crate::keybinds;
 use crate::notify;
 use crate::profile;
 use crate::session;
@@ -438,6 +438,11 @@ pub struct DropTerm {
     /// make the surface open-then-instantly-close.
     surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
+    /// The armed keybinding capture (keybinds-editor): the action whose
+    /// editor row was clicked. While `Some` the `KeyPressed` arm routes
+    /// every press to the capture — see [`capture_verdict_for`] — and
+    /// nothing else in the app sees a press.
+    keybind_capture: Option<Action>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -1132,6 +1137,21 @@ impl DropTerm {
         };
         if let Err(err) = write.persist(handler) {
             log::warn!("failed to persist profile write: {err}");
+        }
+    }
+
+    /// The one path every keybinds write takes — `write_profile_config`'s
+    /// discipline for the map-shaped key: persist the whole
+    /// `custom_key_binds` map, and the `ConfigChanged` echo drives the
+    /// apply — config update plus the live-map rebuild in the echo
+    /// handler — so the very next press matches the new map.
+    fn write_keybinds_config(&mut self, write: &settings::KeybindsWrite) {
+        let Some(handler) = self.config_handler.as_ref() else {
+            log::warn!("no config handler; skipping keybinds write");
+            return;
+        };
+        if let Err(err) = write.persist(handler) {
+            log::warn!("failed to persist keybinds write: {err}");
         }
     }
 
@@ -2532,6 +2552,19 @@ fn drawer_escape_routing(settings_open: bool, key: &Key) -> DrawerKeyRouting {
     }
 }
 
+/// The `KeyPressed` arm's first gate (keybinds-editor criterion 3):
+/// while a capture is armed it owns every press — its verdict replaces
+/// the rename guard, the drawer's Escape rule, and bind matching.
+/// `None` (disarmed) is transparent: the press keeps exactly today's
+/// routing. Pure so the ordering rule is headless-testable.
+fn capture_verdict_for(
+    capture: Option<Action>,
+    modifiers: Modifiers,
+    key: &Key,
+) -> Option<keybinds::CaptureVerdict> {
+    capture.map(|_| keybinds::capture_verdict(modifiers, key))
+}
+
 /// Whether the grab-bar drag handlers may act: pure so the guard is
 /// headless-testable, in the same style as
 /// [`config_edit_reshapes`] and [`layer_unfocused_acts_on`]. A drag
@@ -3096,6 +3129,72 @@ mod tests {
                 DrawerKeyRouting::FallThrough
             );
         }
+    }
+
+    // --- the armed capture's key routing (keybinds-editor KE-3) ---
+
+    #[test]
+    fn a_disarmed_capture_gate_is_transparent() {
+        // No capture armed: no verdict, so the press keeps today's
+        // routing — rename guard, drawer Escape, bind match — exactly
+        // as before the editor existed (criterion: disarmed behavior
+        // byte-identical).
+        assert_eq!(
+            capture_verdict_for(None, Modifiers::empty(), &Key::Named(Named::Escape)),
+            None
+        );
+        assert_eq!(
+            capture_verdict_for(
+                None,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("c".into())
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_armed_capture_owns_escape_before_the_drawer_close_rule() {
+        // While armed, the capture gate sits ahead of
+        // `drawer_escape_routing`: Escape cancels the capture instead
+        // of closing the drawer (a later Escape — disarmed again —
+        // closes as today).
+        assert_eq!(
+            capture_verdict_for(
+                Some(Action::Copy),
+                Modifiers::empty(),
+                &Key::Named(Named::Escape)
+            ),
+            Some(keybinds::CaptureVerdict::Cancel)
+        );
+    }
+
+    #[test]
+    fn an_armed_capture_consumes_bound_chords_instead_of_matching_them() {
+        // Ctrl+Shift+C is Copy's live binding, but while a capture is
+        // armed the gate takes it as the captured chord — bind
+        // matching never runs (criterion: capture consumes every
+        // press, even a bound keybind).
+        assert_eq!(
+            capture_verdict_for(
+                Some(Action::ZoomIn),
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("c".into())
+            ),
+            Some(keybinds::CaptureVerdict::Commit(keybinds::Binding {
+                modifiers: vec![keybinds::ModifierName::Ctrl, keybinds::ModifierName::Shift],
+                key: "C".to_string(),
+            }))
+        );
+        // A bare modifier never commits — the capture stays armed.
+        assert_eq!(
+            capture_verdict_for(
+                Some(Action::ZoomIn),
+                Modifiers::CTRL,
+                &Key::Named(Named::Shift)
+            ),
+            Some(keybinds::CaptureVerdict::Ignore)
+        );
     }
 
     #[test]
@@ -3737,6 +3836,12 @@ impl Application for DropTerm {
             strip_selection(home_settings_page()),
         );
 
+        // The live bind map starts from the loaded config — defaults
+        // overlaid with any persisted custom bindings — so a restart
+        // keeps customizations from the first press (keybinds-editor
+        // criterion 5).
+        let key_binds = keybinds::effective_key_binds(&config.custom_key_binds);
+
         let mut app = Self {
             core,
             config_handler,
@@ -3761,7 +3866,8 @@ impl Application for DropTerm {
             pin_applied: None,
             pending_height: None,
             surface_focused: false,
-            key_binds: default_key_binds(),
+            key_binds,
+            keybind_capture: None,
             last_toggle: None,
             slide: None,
             settings_open: false,
@@ -4368,6 +4474,11 @@ impl DropTerm {
                 let old_preference = self.config.theme_preference;
                 let old_title_mode = self.config.tab_title_mode;
                 self.config = config;
+                // The live bind map follows every config change — our
+                // own write's echo and an external edit land here alike
+                // (keybinds-editor criterion 2: a hand-edited config
+                // while running stays consistent).
+                self.key_binds = keybinds::effective_key_binds(&self.config.custom_key_binds);
                 self.apply_config_to_tabs();
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; the delta guard
@@ -4548,6 +4659,32 @@ impl DropTerm {
                 }
             }
             Message::KeyPressed(modifiers, key, physical_key) => {
+                // An armed capture owns the keyboard ahead of everything
+                // else — the rename guard, the drawer's Escape rule, bind
+                // matching — so while armed, capture consumes every press
+                // (keybinds-editor criterion 3): Escape cancels, bare
+                // modifiers stay armed, any other chord commits through
+                // the whole-map write. Disarmed the gate is transparent
+                // and routing is exactly as before.
+                if let Some(verdict) = capture_verdict_for(self.keybind_capture, modifiers, &key) {
+                    match verdict {
+                        keybinds::CaptureVerdict::Cancel => self.keybind_capture = None,
+                        keybinds::CaptureVerdict::Ignore => {}
+                        keybinds::CaptureVerdict::Commit(binding) => {
+                            let action = self
+                                .keybind_capture
+                                .expect("the gate only fires on an armed capture");
+                            self.keybind_capture = None;
+                            let write = settings::KeybindsWrite(keybinds::with_custom_binding(
+                                &self.config.custom_key_binds,
+                                action,
+                                binding,
+                            ));
+                            self.write_keybinds_config(&write);
+                        }
+                    }
+                    return Task::none();
+                }
                 // While an inline rename is active the rename input
                 // owns the keyboard: without this guard a bound combo
                 // like Ctrl+Shift+V would act on the terminal in

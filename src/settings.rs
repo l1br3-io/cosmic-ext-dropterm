@@ -1365,13 +1365,6 @@ pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds:
 impl KeybindsWrite {
     /// Persist through the config backend — [`ProfileWrite::persist`]'s
     /// discipline verbatim. The failure is the caller's to log.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by keybinds-editor KE-3/KE-5 write wiring"
-        )
-    )]
     pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
         handler.set("custom_key_binds", self.0.clone())
     }
