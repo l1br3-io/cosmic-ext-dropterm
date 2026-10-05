@@ -86,6 +86,12 @@ pub enum Action {
     ZoomReset,
     Hide,
     NewTab,
+    /// Open a new tab in the home directory (`Ctrl+Shift+H`): the
+    /// same settings composition as [`Action::NewTab`] — default
+    /// profile command, live preset cwd — with home in place of the
+    /// inherited cwd as the fallback, so an applicable profile cwd
+    /// setting still applies.
+    NewTabHome,
     /// Open a new tab running the profile at this index into the
     /// config's list — a context-menu submenu pick, resolved at apply
     /// time; deliberately not keybindable (indices are not a stable

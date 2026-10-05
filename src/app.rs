@@ -1656,6 +1656,7 @@ impl DropTerm {
         if matches!(
             action,
             Action::NewTab
+                | Action::NewTabHome
                 | Action::NewProfileTab(_)
                 | Action::CloseTab
                 | Action::DuplicateTab
@@ -1675,6 +1676,7 @@ impl DropTerm {
             Action::Hide
             | Action::Settings
             | Action::NewTab
+            | Action::NewTabHome
             | Action::NewProfileTab(_)
             | Action::CloseTab
             | Action::DuplicateTab
@@ -1786,6 +1788,25 @@ impl DropTerm {
                         name, cwd: preset, ..
                     } => live_preset_cwd(name, preset.as_ref()).or(inherited),
                     _ => tabs::resolve_new_tab_cwd(None, inherited),
+                };
+                return self.open_new_tab(&command, spawn_cwd);
+            }
+            Action::NewTabHome => {
+                // Ctrl+Shift+H composes exactly like the plain keybind
+                // arm — default profile command, live preset cwd —
+                // with home standing in for the inherited directory:
+                // an applicable profile cwd setting still wins, and
+                // home is what lands without one. An unset HOME —
+                // never in a real desktop session — degrades exactly
+                // like every other unreadable directory: the pty's
+                // default.
+                let home = std::env::var_os("HOME").map(PathBuf::from);
+                let command = default_spawn_command(&self.config);
+                let spawn_cwd = match &command {
+                    SpawnCommand::Profile {
+                        name, cwd: preset, ..
+                    } => live_preset_cwd(name, preset.as_ref()).or(home),
+                    _ => home,
                 };
                 return self.open_new_tab(&command, spawn_cwd);
             }
