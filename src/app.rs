@@ -1397,6 +1397,20 @@ impl DropTerm {
             | Action::ActivateLastTab
             | Action::MoveTabLeft
             | Action::MoveTabRight => unreachable!("handled above"),
+            // Rename never reshapes the tab list, so it runs here —
+            // after the active-tab resolution — like the per-terminal
+            // actions. The id is read before the `&mut self` call:
+            // `tab` borrows the list `start_rename` mutates.
+            Action::RenameTab => {
+                // The input overlays a tab button, and buttons show
+                // only with two or more tabs: below that the press is
+                // a swallowed no-op (the `ActivateTab` out-of-range
+                // precedent).
+                if rename_overlay_hosted(self.tabs.len()) {
+                    let id = tab.id;
+                    return self.start_rename(id);
+                }
+            }
             Action::Copy => {
                 let selected = tab
                     .terminal
@@ -1646,6 +1660,26 @@ impl DropTerm {
                 self.rename = None;
                 return widget::text_input::focus(self.terminal_id.clone());
             }
+        }
+        Task::none()
+    }
+
+    /// Starts an inline rename of the tab with `id`: the draft seeds
+    /// from the tab's current title, and the input is focused with its
+    /// value selected. Both rename starters — the tab bar's
+    /// double-click ([`Message::RenameStarted`]) and the
+    /// `Ctrl+Shift+R` bind / context-menu row ([`Action::RenameTab`])
+    /// — meet here; an unknown `id` is a no-op (the tab may have
+    /// closed between the press and the apply).
+    fn start_rename(&mut self, id: TabId) -> Task<Message> {
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
+            let draft = tab.title.clone();
+            self.rename = Some(RenameEdit { tab: id, draft });
+            // Focus the input with its value selected.
+            return Task::batch([
+                widget::text_input::focus(self.rename_input_id.clone()),
+                widget::text_input::select_all(self.rename_input_id.clone()),
+            ]);
         }
         Task::none()
     }
@@ -2156,6 +2190,15 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
     } else {
         TooltipSide::Below
     }
+}
+
+/// Whether a tab button exists to host the inline-rename input: the
+/// bar hides its buttons below two tabs (its own visibility rule, the
+/// same one `prune_rename_session` enforces), and the input overlays a
+/// button — so a rename can only start, or keep running, with one to
+/// sit on.
+fn rename_overlay_hosted(tab_count: usize) -> bool {
+    tab_count > 1
 }
 
 /// Settings for the clipboard-anchor window.
@@ -2788,6 +2831,18 @@ mod tests {
             bar_tooltip_side(effective_bar_at_bottom(Edge::Bottom, TabPosition::Bottom)),
             TooltipSide::Above
         );
+    }
+
+    #[test]
+    fn rename_overlay_needs_a_hosted_tab_button() {
+        // The rename input overlays a tab button, and buttons show
+        // only with two or more tabs (the bar's own visibility rule,
+        // see `prune_rename_session`): below that there is nothing to
+        // host the input, so the rename bind is a swallowed no-op.
+        assert!(!rename_overlay_hosted(0));
+        assert!(!rename_overlay_hosted(1));
+        assert!(rename_overlay_hosted(2));
+        assert!(rename_overlay_hosted(5));
     }
 
     // --- the profile flag's forward encoding ---
@@ -3924,15 +3979,7 @@ impl DropTerm {
                 }
             }
             Message::RenameStarted(id) => {
-                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
-                    let draft = tab.title.clone();
-                    self.rename = Some(RenameEdit { tab: id, draft });
-                    // Focus the input with its value selected.
-                    return Task::batch([
-                        widget::text_input::focus(self.rename_input_id.clone()),
-                        widget::text_input::select_all(self.rename_input_id.clone()),
-                    ]);
-                }
+                return self.start_rename(id);
             }
             Message::RenameDraftChanged(value) => {
                 if let Some(edit) = &mut self.rename {

@@ -106,6 +106,11 @@ pub enum Action {
     /// Move the active tab one slot toward the list end
     /// (`Ctrl+Shift+PageDown`), clamping at the edge.
     MoveTabRight,
+    /// Start an inline rename of the active tab (`Ctrl+Shift+R` and
+    /// the context-menu row). Below two tabs the press is a swallowed
+    /// no-op: the rename input overlays a tab button, and buttons
+    /// show only with two or more tabs.
+    RenameTab,
     Settings,
 }
 
