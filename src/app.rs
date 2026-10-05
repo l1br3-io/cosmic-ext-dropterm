@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
@@ -159,6 +159,23 @@ enum SpawnCommand {
         command: String,
         cwd: Option<PathBuf>,
     },
+}
+
+/// One freshly spawned terminal plus the tab-level facts recorded
+/// beside it at spawn: the id the terminal is tagged with (allocated
+/// only once the spawn is actually attempted — a deferred spawn never
+/// burns one, so `Terminal N` numbering cannot drift), the shell
+/// actually running (a command line's program, not the config shell),
+/// the profile id the spawn ran under — set only when the preset's
+/// command line was runnable — and the session-ephemeral flag a
+/// command-line spawn carries. [`DropTerm::spawn_shell`] wraps this
+/// into a [`Tab`] and records the facts on it.
+struct SpawnedTerminal {
+    tab_id: TabId,
+    terminal: Terminal,
+    shell: String,
+    profile_id: Option<String>,
+    ephemeral: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,7 +521,7 @@ impl DropTerm {
                 } => live_preset_cwd(name, preset.as_ref()),
                 _ => None,
             };
-            return self.spawn_shell(command, cwd);
+            return self.spawn_shell(&command, cwd);
         };
         if let Some(profile) = &spec.profile {
             // The id re-resolved at plan time: the current definition
@@ -512,7 +529,7 @@ impl DropTerm {
             // is the spawn directory, so the arm mirrors it and spawn
             // re-derives nothing.
             self.spawn_shell(
-                SpawnCommand::Profile {
+                &SpawnCommand::Profile {
                     name: profile.name.clone(),
                     command: profile.command.clone(),
                     cwd: spec.cwd.clone(),
@@ -522,7 +539,7 @@ impl DropTerm {
         } else {
             let shell = spec.shell.clone();
             let cwd = spec.cwd.clone();
-            self.spawn_shell(SpawnCommand::Shell(shell), cwd)
+            self.spawn_shell(&SpawnCommand::Shell(shell), cwd)
         }
     }
 
@@ -531,8 +548,48 @@ impl DropTerm {
     /// keybind (which inherits the active tab's cwd), and the CLI's
     /// `new-tab` action. `cwd: None` means the pty's default directory.
     /// The shell is recorded per tab at spawn, so a mid-run config
-    /// change never rewrites a live tab's shell.
-    fn spawn_shell(&mut self, command: SpawnCommand, cwd: Option<PathBuf>) -> Option<Tab> {
+    /// change never rewrites a live tab's shell. The spawn itself is
+    /// [`Self::spawn_terminal`]'s; this wrapper only wraps the result
+    /// into a [`Tab`] and seeds the cwd cache.
+    fn spawn_shell(&mut self, command: &SpawnCommand, cwd: Option<PathBuf>) -> Option<Tab> {
+        let SpawnedTerminal {
+            tab_id,
+            terminal,
+            shell,
+            profile_id,
+            ephemeral,
+        } = self.spawn_terminal(command, cwd.as_deref())?;
+        let mut tab = Tab::new(tab_id, shell, terminal);
+        tab.ephemeral = ephemeral;
+        // The profile id a tab launched under (if any), recorded beside
+        // the ephemeral flag it is the opposite of: the session saves
+        // one and never the other.
+        tab.profile = profile_id;
+        // Seed the cwd cache with the spawn cwd: a restored tab seeds
+        // its re-validated saved cwd — so the fresh shell's first title
+        // report reads as unchanged — and a default spawn seeds `None`;
+        // an inherited cwd seeds the directory the tab opened in, for
+        // the same reason.
+        self.tab_cwds.insert(tab.id, cwd);
+        Some(tab)
+    }
+
+    /// Spawns one terminal running `command` in `cwd` — the bottom
+    /// half of every spawn path, below the [`Tab`] wrapping
+    /// [`Self::spawn_shell`] adds: resolve the shell/args pair, build
+    /// the pty options, allocate the tab's id, and construct the
+    /// [`Terminal`] tagged with it. `cwd: None` means the pty's
+    /// default directory. The id is allocated only once the spawn is
+    /// actually attempted — after the channel guard — so a deferred
+    /// spawn never burns one and `Terminal N` numbering cannot drift.
+    /// Returns `None` the two ways the old single fn did: no terminal
+    /// event channel yet (the caller defers), or `Terminal::new`
+    /// erroring (logged).
+    fn spawn_terminal(
+        &mut self,
+        command: &SpawnCommand,
+        cwd: Option<&Path>,
+    ) -> Option<SpawnedTerminal> {
         let Some(tx) = self.term_event_tx.clone() else {
             log::warn!("no terminal event channel yet; deferring terminal spawn");
             return None;
@@ -548,9 +605,9 @@ impl DropTerm {
         let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
         let mut profile_id: Option<String> = None;
         let (shell, args) = match command {
-            SpawnCommand::Shell(shell) => (shell, self.config.args.clone()),
+            SpawnCommand::Shell(shell) => (shell.clone(), self.config.args.clone()),
             SpawnCommand::CommandLine(line) => {
-                match tabs::command_line_parts(&line) {
+                match tabs::command_line_parts(line) {
                     Some((program, trailing)) => (program, trailing),
                     // Unreachable in practice — the CLI rejects an
                     // empty --cmd — but a degraded empty line still
@@ -560,12 +617,12 @@ impl DropTerm {
                 }
             }
             SpawnCommand::Profile { name, command, .. } => {
-                if let Some((program, trailing)) = tabs::command_line_parts(&command) {
+                if let Some((program, trailing)) = tabs::command_line_parts(command) {
                     // The id is recorded only when the spawn actually
                     // runs the preset: the degraded line below spawns
                     // a plain-shell tab, which must not save an id
                     // restore would keep re-degrading.
-                    profile_id = Some(name);
+                    profile_id = Some(name.clone());
                     (program, trailing)
                 } else {
                     // A hand-edited config can store a blank command
@@ -591,7 +648,7 @@ impl DropTerm {
             // directory ever reaches here (dead cwd → `$HOME` → unset
             // — see `plan_restore`; a new tab passes either an
             // inherited- or explicitly-requested live cwd).
-            working_directory: cwd.clone(),
+            working_directory: cwd.map(Path::to_owned),
             drain_on_exit: true,
             ..PtyOptions::default()
         };
@@ -607,23 +664,13 @@ impl DropTerm {
             &self.terminal_options(),
             &self.active_colors(),
         ) {
-            Ok(terminal) => {
-                let mut tab = Tab::new(tab_id, shell, terminal);
-                tab.ephemeral = ephemeral;
-                // The profile id a tab launched under (if any),
-                // recorded beside the ephemeral flag it is the
-                // opposite of: the session saves one and never the
-                // other.
-                tab.profile = profile_id;
-                // Seed the cwd cache with the spawn cwd: a restored
-                // tab seeds its re-validated saved cwd — so the fresh
-                // shell's first title report reads as unchanged — and
-                // a default spawn seeds `None`; an inherited cwd
-                // seeds the directory the tab opened in, for the same
-                // reason.
-                self.tab_cwds.insert(tab.id, cwd);
-                Some(tab)
-            }
+            Ok(terminal) => Some(SpawnedTerminal {
+                tab_id,
+                terminal,
+                shell,
+                profile_id,
+                ephemeral,
+            }),
             Err(err) => {
                 log::error!("failed to spawn shell: {err}");
                 None
@@ -1177,7 +1224,7 @@ impl DropTerm {
                 .or(inherited.clone()),
             _ => tabs::resolve_new_tab_cwd(explicit, inherited),
         };
-        if let Some(tab) = self.spawn_shell(command, spawn_cwd) {
+        if let Some(tab) = self.spawn_shell(&command, spawn_cwd) {
             let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);
             let switch = self.set_active_tab(at);
             return Task::batch([switch, self.mark_session_dirty()]);
@@ -1486,7 +1533,7 @@ impl DropTerm {
                     } => live_preset_cwd(name, preset.as_ref()).or(inherited),
                     _ => tabs::resolve_new_tab_cwd(None, inherited),
                 };
-                return self.open_new_tab(command, spawn_cwd);
+                return self.open_new_tab(&command, spawn_cwd);
             }
             Action::NewProfileTab(index) => {
                 // A submenu pick: the index came from the menu-open
@@ -1507,7 +1554,7 @@ impl DropTerm {
                         // profile_pick only ever builds the Profile arm.
                         _ => unreachable!("profile_pick returns the Profile arm"),
                     };
-                    return self.open_new_tab(command, spawn_cwd);
+                    return self.open_new_tab(&command, spawn_cwd);
                 }
                 log::warn!(
                     "new profile tab: no profile at submenu index {index} \
@@ -1561,7 +1608,7 @@ impl DropTerm {
     /// activate, and mark the session dirty (the open itself is a
     /// save trigger; when the activation's switch already armed a
     /// window, this second mark coalesces into it).
-    fn open_new_tab(&mut self, command: SpawnCommand, cwd: Option<PathBuf>) -> Task<Message> {
+    fn open_new_tab(&mut self, command: &SpawnCommand, cwd: Option<PathBuf>) -> Task<Message> {
         if let Some(tab) = self.spawn_shell(command, cwd) {
             // Placement: after the active tab or at the end, per
             // `new_tab_after_current`; the new tab becomes active
