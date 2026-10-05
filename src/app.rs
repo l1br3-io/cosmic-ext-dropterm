@@ -4391,6 +4391,61 @@ impl DropTerm {
                             ));
                         }
                     }
+                    settings::SettingsEvent::DeleteProfile(index) => {
+                        // Immediate delete, no dialog (OQ-1): one
+                        // whole-list write, plus the paired auto-clear
+                        // when the deleted profile was the default.
+                        // Page state follows the shrunken list
+                        // through the pure adjusters.
+                        if let Some((list, paired)) = settings::plan_profile_delete(
+                            &self.config.profiles,
+                            index,
+                            self.config.default_profile.as_deref(),
+                        ) {
+                            self.write_profile_config(&settings::ProfileWrite::Profiles(list));
+                            if let Some(clear) = paired {
+                                self.write_profile_config(&clear);
+                            }
+                            self.profile_selection =
+                                settings::selection_after_delete(self.profile_selection, index);
+                            self.profile_draft =
+                                settings::draft_after_delete(self.profile_draft.take(), index);
+                        }
+                    }
+                    settings::SettingsEvent::ReorderProfile(index, direction) => {
+                        // One slot per press, one whole-list write;
+                        // the selection follows the moved profile.
+                        // The new order is the `+` dropdown /
+                        // context-menu order on their next open.
+                        if let Some(list) =
+                            settings::plan_profile_reorder(&self.config.profiles, index, direction)
+                        {
+                            self.write_profile_config(&settings::ProfileWrite::Profiles(list));
+                            self.profile_selection = settings::selection_after_move(
+                                self.profile_selection,
+                                index,
+                                direction,
+                            );
+                            // An open edit draft names the same
+                            // profile by slot: the swap trades its
+                            // index exactly like the selection's.
+                            if let Some(settings::ProfileDraftMode::Edit {
+                                index: edited_index,
+                            }) = self.profile_draft.as_ref().map(|draft| &draft.mode)
+                            {
+                                let followed = settings::selection_after_move(
+                                    Some(*edited_index),
+                                    index,
+                                    direction,
+                                );
+                                if let Some(draft) = self.profile_draft.as_mut() {
+                                    draft.mode = settings::ProfileDraftMode::Edit {
+                                        index: followed.expect("a move never clears an edit index"),
+                                    };
+                                }
+                            }
+                        }
+                    }
                     settings::SettingsEvent::DraftProfileField(field, text) => {
                         // Display-only buffering; the keystroke also
                         // clears any stale error.

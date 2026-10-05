@@ -672,10 +672,6 @@ impl SettingsBuffer {
 /// the list's head (`Up`) or tail (`Down`) — pure data for
 /// [`move_profile`], one write per press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by T4's reorder buttons")
-)]
 pub enum ReorderDirection {
     /// Move one slot toward index 0.
     Up,
@@ -714,7 +710,6 @@ pub fn default_after_rename(
 /// The `default_profile` value after deleting `name`: the delete
 /// proceeds and the key auto-clears when it named the deleted
 /// profile — a write must never dangle (owner ruling 2026-10-05).
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's delete path"))]
 pub fn default_after_delete(default: Option<&str>, name: &str) -> Option<String> {
     match default {
         Some(default_name) if default_name != name => Some(default_name.to_string()),
@@ -760,7 +755,6 @@ pub fn apply_edit(profiles: &[Profile], index: usize, edited: Profile) -> Vec<Pr
 
 /// Drop the profile at `index`; a stale out-of-bounds index is a pure
 /// no-op (deleting what is already gone writes nothing).
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's delete path"))]
 pub fn remove_profile(profiles: &[Profile], index: usize) -> Vec<Profile> {
     match profiles.get(index) {
         Some(_) => {
@@ -776,7 +770,6 @@ pub fn remove_profile(profiles: &[Profile], index: usize) -> Vec<Profile> {
 /// its neighbor. Boundary rows (and stale out-of-bounds indices) are
 /// pure no-ops — the view disables the direction with no neighbor to
 /// swap into.
-#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's reorder path"))]
 pub fn move_profile(
     profiles: &[Profile],
     index: usize,
@@ -1132,6 +1125,99 @@ pub fn apply_profile_draft_transition(
     }
 }
 
+// --- row actions: delete + auto-clear, reorder ---
+
+/// The plan a delete produces: the list without the profile at
+/// `index`, plus the paired `default_profile` write when the deleted
+/// profile was the one the key named — the owner's auto-clear ruling
+/// (a write must never dangle; the picker can never show a stale
+/// name). A stale out-of-bounds index plans nothing. Delete is
+/// immediate — no dialog (OQ-1's standing ruling).
+pub fn plan_profile_delete(
+    profiles: &[Profile],
+    index: usize,
+    default: Option<&str>,
+) -> Option<(Vec<Profile>, Option<ProfileWrite>)> {
+    let removed = profiles.get(index)?;
+    let paired = (default == Some(removed.name.as_str()))
+        .then(|| ProfileWrite::DefaultProfile(default_after_delete(default, &removed.name)));
+    Some((remove_profile(profiles, index), paired))
+}
+
+/// The plan a reorder press produces: the list with the profile moved
+/// one slot in `direction`. Boundary presses (the disabled
+/// direction) plan nothing — no same-value write.
+pub fn plan_profile_reorder(
+    profiles: &[Profile],
+    index: usize,
+    direction: ReorderDirection,
+) -> Option<Vec<Profile>> {
+    let moved = move_profile(profiles, index, direction);
+    (moved != profiles).then_some(moved)
+}
+
+/// Whether a row's affordance for `direction` does anything: an
+/// interior neighbor exists to swap with. Boundary rows render the
+/// out-of-bounds direction disabled.
+pub const fn can_move(profiles_len: usize, index: usize, direction: ReorderDirection) -> bool {
+    match direction {
+        ReorderDirection::Up => index > 0,
+        ReorderDirection::Down => index + 1 < profiles_len,
+    }
+}
+
+/// The selection after deleting `index`: the deleted row's selection
+/// drops (its draft with it), a later selection shifts down to keep
+/// naming the same profile, anything else is untouched.
+pub const fn selection_after_delete(selection: Option<usize>, index: usize) -> Option<usize> {
+    match selection {
+        Some(selected) if selected == index => None,
+        Some(selected) if selected > index => Some(selected - 1),
+        other => other,
+    }
+}
+
+/// The edit-draft mode after deleting `index`: an edit of the deleted
+/// row drops the whole draft; a later edit shifts; non-edit drafts
+/// and no-draft pass through untouched.
+pub fn draft_after_delete(draft: Option<ProfileDraft>, index: usize) -> Option<ProfileDraft> {
+    let mut draft = draft?;
+    if let ProfileDraftMode::Edit {
+        index: edited_index,
+    } = draft.mode
+    {
+        draft.mode = match edited_index.cmp(&index) {
+            std::cmp::Ordering::Equal => return None,
+            std::cmp::Ordering::Greater => ProfileDraftMode::Edit {
+                index: edited_index - 1,
+            },
+            std::cmp::Ordering::Less => ProfileDraftMode::Edit {
+                index: edited_index,
+            },
+        };
+    }
+    Some(draft)
+}
+
+/// The selection after a reorder press on `index`: the swap trades
+/// the two involved slots' selections (the selection follows the
+/// moved profile); every other selection is untouched.
+pub const fn selection_after_move(
+    selection: Option<usize>,
+    index: usize,
+    direction: ReorderDirection,
+) -> Option<usize> {
+    let neighbor = match direction {
+        ReorderDirection::Up => index.saturating_sub(1),
+        ReorderDirection::Down => index + 1,
+    };
+    match selection {
+        Some(selected) if selected == index => Some(neighbor),
+        Some(selected) if selected == neighbor => Some(index),
+        other => other,
+    }
+}
+
 // --- the profile persist path: the module's write contract ---
 
 /// A planned profile-key write — the list-shaped analog of
@@ -1246,6 +1332,11 @@ pub enum SettingsEvent {
     /// A form field was submitted (Enter): validate that field, write
     /// the whole list if it commits.
     CommitProfileField(ProfileField, String),
+    /// A row's Delete action: immediate, no dialog (OQ-1's standing
+    /// ruling).
+    DeleteProfile(usize),
+    /// A row's reorder press: move that profile one slot.
+    ReorderProfile(usize, ReorderDirection),
 }
 
 /// The write a toggle flip commits. `None` for keys without a toggle.
@@ -1431,7 +1522,12 @@ pub fn profiles_view(
     } else {
         let mut list = widget::settings::section().title("Profiles");
         for (index, profile) in config.profiles.iter().enumerate() {
-            list = list.add(profile_row(index, profile, selection == Some(index)));
+            list = list.add(profile_row(
+                config.profiles.len(),
+                index,
+                profile,
+                selection == Some(index),
+            ));
         }
         cards.push(list.into());
         // The list's add affordance, below the rows it appends after.
@@ -1526,9 +1622,15 @@ fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text
 /// preview beneath, the whole row a button selecting it. The selected
 /// row carries the suggested style — selection is the edit form's
 /// seed, so it must be visible on light and dark panes alike (an
-/// OQ-3 hardware item). The row's action cluster starts with Clone
-/// (delete and reorder join it in T4).
-fn profile_row(index: usize, profile: &Profile, selected: bool) -> Element<'static, SettingsEvent> {
+/// OQ-3 hardware item). The action cluster: Clone, an immediate
+/// Delete (no dialog — OQ-1), and up/down reorder with the boundary
+/// direction disabled.
+fn profile_row(
+    profiles_len: usize,
+    index: usize,
+    profile: &Profile,
+    selected: bool,
+) -> Element<'static, SettingsEvent> {
     let class = if selected {
         theme::Button::Suggested
     } else {
@@ -1542,6 +1644,15 @@ fn profile_row(index: usize, profile: &Profile, selected: bool) -> Element<'stat
         .class(class)
         .on_press(SettingsEvent::SelectProfile(index)),
         widget::button::text("Clone").on_press(SettingsEvent::CloneProfile(index)),
+        widget::button::destructive("Delete").on_press(SettingsEvent::DeleteProfile(index)),
+        widget::button::text("↑").on_press_maybe(
+            can_move(profiles_len, index, ReorderDirection::Up)
+                .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Up)),
+        ),
+        widget::button::text("↓").on_press_maybe(
+            can_move(profiles_len, index, ReorderDirection::Down)
+                .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Down)),
+        ),
     )
     .spacing(8)
     .into()
@@ -3216,5 +3327,111 @@ mod tests {
         let mut draft = Some(ProfileDraft::add());
         apply_profile_draft_transition(&mut draft, ProfileDraftTransition::Clear);
         assert!(draft.is_none());
+    }
+
+    // --- row actions: delete + auto-clear, reorder (T4) ---
+
+    #[test]
+    fn a_delete_plan_removes_and_auto_clears_only_the_named_default() {
+        // The owner's auto-clear ruling: deleting the profile the
+        // key names clears `default_profile` in the same
+        // interaction; any other delete writes nothing extra.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let (list, paired) =
+            plan_profile_delete(&profiles, 0, Some("ssh")).expect("a live index deletes");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "top");
+        assert_eq!(paired, Some(ProfileWrite::DefaultProfile(None)));
+
+        let (_, untouched) =
+            plan_profile_delete(&profiles, 0, Some("top")).expect("a live index deletes");
+        assert_eq!(untouched, None);
+
+        let (_, absent) = plan_profile_delete(&profiles, 0, None).expect("a live index deletes");
+        assert_eq!(absent, None);
+    }
+
+    #[test]
+    fn a_stale_delete_index_plans_nothing() {
+        let profiles = [profile("ssh", "ssh web-prod")];
+        assert_eq!(plan_profile_delete(&profiles, 9, None), None);
+    }
+
+    #[test]
+    fn a_reorder_plan_moves_one_slot_or_rejects_the_boundary() {
+        // A move with a neighbor plans the swapped list; a boundary
+        // press (the disabled direction) plans nothing — no
+        // same-value write.
+        let profiles = [
+            profile("a", "true"),
+            profile("b", "true"),
+            profile("c", "true"),
+        ];
+        let moved = plan_profile_reorder(&profiles, 1, ReorderDirection::Up)
+            .expect("an interior row moves");
+        assert_eq!(
+            moved.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        assert_eq!(
+            plan_profile_reorder(&profiles, 0, ReorderDirection::Up),
+            None
+        );
+        assert_eq!(
+            plan_profile_reorder(&profiles, 2, ReorderDirection::Down),
+            None
+        );
+    }
+
+    #[test]
+    fn the_selection_after_a_delete_drops_or_shifts() {
+        // The deleted row's selection drops (its draft with it); a
+        // later selection shifts down to keep naming the same
+        // profile; earlier selections and none are untouched.
+        assert_eq!(selection_after_delete(Some(1), 1), None);
+        assert_eq!(selection_after_delete(Some(2), 1), Some(1));
+        assert_eq!(selection_after_delete(Some(0), 1), Some(0));
+        assert_eq!(selection_after_delete(None, 1), None);
+    }
+
+    #[test]
+    fn an_edit_draft_after_a_delete_drops_or_shifts() {
+        // An edit of the deleted row drops; a later edit shifts;
+        // non-edit drafts pass through untouched.
+        let later = ProfileDraft::edit(2, &profile("c", "true"));
+        let shifted = draft_after_delete(Some(later), 1).expect("a later edit shifts");
+        assert_eq!(shifted.mode, ProfileDraftMode::Edit { index: 1 });
+
+        let deleted = ProfileDraft::edit(1, &profile("b", "true"));
+        assert_eq!(draft_after_delete(Some(deleted), 1), None);
+
+        let adding = ProfileDraft::add();
+        let kept = draft_after_delete(Some(adding.clone()), 1).expect("an add draft survives");
+        assert_eq!(kept.mode, adding.mode);
+    }
+
+    #[test]
+    fn the_selection_after_a_reorder_follows_the_moved_profile() {
+        // The swap trades the two involved slots' selections (moving
+        // row 1 down swaps slots 1 and 2: each selection follows its
+        // profile to the other slot); every other selection is
+        // untouched.
+        assert_eq!(
+            selection_after_move(Some(1), 1, ReorderDirection::Up),
+            Some(0)
+        );
+        assert_eq!(
+            selection_after_move(Some(0), 1, ReorderDirection::Up),
+            Some(1)
+        );
+        assert_eq!(
+            selection_after_move(Some(2), 1, ReorderDirection::Down),
+            Some(1)
+        );
+        assert_eq!(
+            selection_after_move(Some(0), 1, ReorderDirection::Down),
+            Some(0)
+        );
+        assert_eq!(selection_after_move(None, 1, ReorderDirection::Up), None);
     }
 }
