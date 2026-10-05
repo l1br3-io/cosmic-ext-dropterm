@@ -1014,6 +1014,24 @@ impl DropTerm {
         }
     }
 
+    /// The one path every profile write takes — `write_config`'s
+    /// discipline verbatim (pure planner in, log-and-skip on a
+    /// missing handler, the `ConfigChanged` echo drives every apply)
+    /// but bypassing the scalar-keyed [`settings::PlannedWrite`]:
+    /// profile keys carry list- and Option-shaped values. Nothing is
+    /// recorded and nothing applies here — a bare write's echo *is*
+    /// the apply, so the in-memory config the next view build reads
+    /// is the echo-updated one.
+    fn write_profile_config(&mut self, write: &settings::ProfileWrite) {
+        let Some(handler) = self.config_handler.as_ref() else {
+            log::warn!("no config handler; skipping profile write");
+            return;
+        };
+        if let Err(err) = write.persist(handler) {
+            log::warn!("failed to persist profile write: {err}");
+        }
+    }
+
     fn debounced_toggle(&mut self, action: ToggleAction) -> Task<Message> {
         let now = std::time::Instant::now();
         if let Some(last) = self.last_toggle
@@ -4320,6 +4338,18 @@ impl DropTerm {
                         // between render and press.
                         if index < self.config.profiles.len() {
                             self.profile_selection = Some(index);
+                        }
+                    }
+                    settings::SettingsEvent::PickDefaultProfile(index) => {
+                        // Commit-on-change through the module's one
+                        // persist path; the `ConfigChanged` echo
+                        // updates the in-memory config the next view
+                        // build reads. A stale index rejects inside
+                        // the planner — no write, no invented value.
+                        if let Some(write) =
+                            settings::default_picker_write(&self.config.profiles, index)
+                        {
+                            self.write_profile_config(&write);
                         }
                     }
                 }

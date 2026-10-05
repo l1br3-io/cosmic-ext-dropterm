@@ -844,6 +844,79 @@ pub fn draft_valid(
         && command_line_parts(command).is_some()
 }
 
+// --- the profile persist path: the module's write contract ---
+
+/// A planned profile-key write — the list-shaped analog of
+/// [`PlannedWrite`]. The store persists one key per file, so the
+/// `profiles` Vec is the unit of write (every mutation — add, edit,
+/// delete, reorder, clone — lands as one whole-list write) and the
+/// default picker writes `default_profile` alone; the rename cascade
+/// and the delete auto-clear are the only two-key interactions, each
+/// a pair of writes through this one path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProfileWrite {
+    /// The whole `profiles` key.
+    #[expect(dead_code, reason = "consumed by T3/T4's whole-list commits")]
+    Profiles(Vec<Profile>),
+    /// The `default_profile` key (`None` clears it to plain shell).
+    DefaultProfile(Option<String>),
+}
+
+impl ProfileWrite {
+    /// Persist through the config backend — the I/O edge of the
+    /// profile write path, `PlannedWrite::persist`'s discipline
+    /// verbatim. The failure is the caller's to log.
+    pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
+        match self {
+            ProfileWrite::Profiles(profiles) => handler.set("profiles", profiles.clone()),
+            ProfileWrite::DefaultProfile(default) => {
+                handler.set("default_profile", default.clone())
+            }
+        }
+    }
+}
+
+// --- the default-profile picker ---
+
+/// The picker's row 0 label: the cleared key, plain shell.
+pub const DEFAULT_PICKER_NONE_ROW: &str = "None (plain shell)";
+
+/// The picker's rows: [`DEFAULT_PICKER_NONE_ROW`] first, then one
+/// entry per profile in `profiles` Vec order — the same order the `+`
+/// dropdown and the context-menu submenu serve.
+pub fn default_picker_options(profiles: &[Profile]) -> Vec<String> {
+    std::iter::once(DEFAULT_PICKER_NONE_ROW.to_string())
+        .chain(profiles.iter().map(|profile| profile.name.clone()))
+        .collect()
+}
+
+/// The picker's selection row: the row
+/// [`crate::profile::effective_default`] resolves to — row 0 when no
+/// default resolves (unset, or dangling: the picker never displays a
+/// name the list lacks; read-side tolerance, no rewrite). Always a
+/// row; the caller's `Some` is the dropdown API's shape.
+pub fn default_picker_selected(profiles: &[Profile], default: Option<&str>) -> usize {
+    // The position is found by name (not pointer identity) against
+    // the same list `effective_default` resolved it from, so it
+    // always exists.
+    let index = crate::profile::effective_default(profiles, default)
+        .and_then(|resolved| profiles.iter().position(|p| p.name == resolved.name));
+    index.map_or(0, |position| 1 + position)
+}
+
+/// The write a picker row commits: row 0 clears the key (`None`), a
+/// profile row commits its name. Any other index is stale (the list
+/// changed under the open dropdown) and rejects — no write, never an
+/// invented value.
+pub fn default_picker_write(profiles: &[Profile], index: usize) -> Option<ProfileWrite> {
+    match index {
+        0 => Some(ProfileWrite::DefaultProfile(None)),
+        _ => profiles
+            .get(index - 1)
+            .map(|profile| ProfileWrite::DefaultProfile(Some(profile.name.clone()))),
+    }
+}
+
 /// An event from the settings view. Events carry inputs, never
 /// [`PlannedWrite`]s: the view stays dumb about validity, and the
 /// app resolves each event through the pure planners
@@ -874,6 +947,8 @@ pub enum SettingsEvent {
     /// A profile row was pressed: make it the selection driving the
     /// edit form.
     SelectProfile(usize),
+    /// A default-profile picker row was picked: commit on change.
+    PickDefaultProfile(usize),
 }
 
 /// The write a toggle flip commits. `None` for keys without a toggle.
@@ -1021,6 +1096,26 @@ pub fn profiles_view(
             .on_press(SettingsEvent::BackFromProfiles)
             .into(),
     ];
+    // The default picker: commit-on-change, the drawer's dropdown
+    // rule. Selection mirrors `effective_default`, so it never opens
+    // on a name the list lacks.
+    cards.push(
+        widget::settings::section()
+            .title("Default profile")
+            .add(
+                widget::settings::item::builder("Plain new tabs run")
+                    .description("next spawn")
+                    .control(widget::dropdown(
+                        default_picker_options(&config.profiles),
+                        Some(default_picker_selected(
+                            &config.profiles,
+                            config.default_profile.as_deref(),
+                        )),
+                        SettingsEvent::PickDefaultProfile,
+                    )),
+            )
+            .into(),
+    );
     if config.profiles.is_empty() {
         cards.push(
             widget::settings::section()
@@ -2396,5 +2491,62 @@ mod tests {
         // And the Settings page carries the entry card whatever the
         // list state.
         let _ = drawer_view(&config, &SettingsBuffer::default());
+    }
+
+    // --- the default-profile picker (profile-settings T2) ---
+
+    #[test]
+    fn default_picker_options_are_plain_shell_then_config_order() {
+        // Row 0 is the None row; the profiles follow in `profiles`
+        // Vec order — the `+` dropdown / context-menu order.
+        assert_eq!(
+            default_picker_options(&[]),
+            vec!["None (plain shell)".to_string()]
+        );
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        assert_eq!(
+            default_picker_options(&profiles),
+            vec![
+                "None (plain shell)".to_string(),
+                "ssh".to_string(),
+                "top".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn default_picker_selection_mirrors_effective_default_never_a_missing_name() {
+        // Unset → row 0; a set, existing name → its row; a dangling
+        // name (hand-edited) falls back to row 0 — the picker never
+        // displays a name the list lacks.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        assert_eq!(default_picker_selected(&profiles, None), 0);
+        assert_eq!(default_picker_selected(&profiles, Some("top")), 2);
+        assert_eq!(default_picker_selected(&profiles, Some("ghost")), 0);
+        assert_eq!(default_picker_selected(&[], Some("ghost")), 0);
+    }
+
+    #[test]
+    fn default_picker_picks_resolve_to_the_key_value_or_reject() {
+        // Row 0 commits the cleared key (`None` = plain shell); a
+        // profile row commits its name; anything else is stale and
+        // rejects — a pick can never invent a value.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        assert_eq!(
+            default_picker_write(&profiles, 0),
+            Some(ProfileWrite::DefaultProfile(None))
+        );
+        assert_eq!(
+            default_picker_write(&profiles, 2),
+            Some(ProfileWrite::DefaultProfile(Some("top".to_string())))
+        );
+        assert_eq!(default_picker_write(&profiles, 3), None);
+        // The None row exists even on an empty list; profile rows do
+        // not.
+        assert_eq!(
+            default_picker_write(&[], 0),
+            Some(ProfileWrite::DefaultProfile(None))
+        );
+        assert_eq!(default_picker_write(&[], 1), None);
     }
 }
