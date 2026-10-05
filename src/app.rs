@@ -35,7 +35,7 @@ use crate::keybinds::{self, default_key_binds};
 use crate::notify;
 use crate::profile;
 use crate::session;
-use crate::settings;
+use crate::settings::{self, SettingsTab};
 use crate::slide::{self, SlideBox};
 use crate::surface;
 use crate::tab_bar::{TabBar, TooltipSide};
@@ -445,12 +445,13 @@ pub struct DropTerm {
     /// focus-loss hides with its drafts intact (criterion 8), and an
     /// explicit close clears `settings_buffer`.
     settings_open: bool,
-    /// Which page the open drawer shows: the five-section Settings
-    /// page, or the Profiles page its entry row flips to (the
-    /// cosmic-term `ContextPage` pattern, self-implemented at the one
-    /// composition site). Explicit close resets it to Settings — a
-    /// reopened drawer starts fresh from config — while a focus-loss
-    /// hide preserves it with the drafts.
+    /// Which page the open drawer shows: a tab's page (General,
+    /// Advanced) or the Profiles page the General tab's entry row
+    /// flips to (the cosmic-term `ContextPage` pattern,
+    /// self-implemented at the one composition site). An explicit
+    /// close resets it to General — a reopened drawer starts fresh
+    /// from config — while a focus-loss hide preserves it with the
+    /// drafts.
     settings_page: SettingsPage,
     /// The Profiles page's selected row: the index into
     /// `config.profiles` driving the edit form. Cleared whenever the
@@ -1621,8 +1622,8 @@ impl DropTerm {
     /// (spec criterion 8 — a focus-loss hide preserves everything for
     /// the next show; hides touch nothing) and keyboard focus returns
     /// to the terminal the drawer had borrowed (cosmic-term's
-    /// `on_context_drawer` refocus). The drawer reopens on its
-    /// Settings page with no selection — fresh from config, whatever
+    /// `on_context_drawer` refocus). The drawer reopens on the
+    /// General tab with no selection — fresh from config, whatever
     /// page it closed on.
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
@@ -1637,7 +1638,7 @@ impl DropTerm {
     /// drops so a reopened page starts from config. Focus-loss hides
     /// never route here: preservation is their rule.
     fn leave_profiles_page(&mut self) {
-        self.settings_page = SettingsPage::Settings;
+        self.settings_page = home_settings_page();
         self.profile_selection = None;
         settings::apply_profile_draft_transition(
             &mut self.profile_draft,
@@ -2285,14 +2286,36 @@ fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
 
 /// Which page the settings drawer shows. A page turn, never a drawer
 /// state: Close, Escape, and `Ctrl+Shift+I` close the whole drawer
-/// from either page — the funnel and `drawer_escape_routing` are
+/// from any page — the funnel and `drawer_escape_routing` are
 /// untouched by the flip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
-    /// The five instant-apply sections.
-    Settings,
+    /// A tab's page: the sections [`settings::tab_sections`] groups
+    /// onto it.
+    Tab(SettingsTab),
     /// The profile list and its (task-by-task growing) form.
     Profiles,
+}
+
+/// The page the drawer resets to — an explicit close and the
+/// Profiles back affordance both land here — so a reopened drawer
+/// always starts on the everyday controls, where the Profiles entry
+/// row lives (criteria 5 and 6).
+const fn home_settings_page() -> SettingsPage {
+    SettingsPage::Tab(SettingsTab::General)
+}
+
+/// The page after a tab-strip pick (criterion 4): the picked tab,
+/// from whichever page the drawer is on — including the Profiles
+/// drill-down, where the strip stays usable. The turn is the pick's
+/// whole effect: the update handler assigns this field and nothing
+/// else, so no drawer close, no `settings_buffer` clear, and no
+/// `DrawerTransition` can ride a pick (the `OpenProfiles` rule; the
+/// only draft-clearing path stays the close funnel's
+/// `ExplicitClose`). Pure so the rule is headless-testable
+/// (constructing `DropTerm` needs a live `Core`).
+const fn page_after_tab_pick(_current: SettingsPage, tab: SettingsTab) -> SettingsPage {
+    SettingsPage::Tab(tab)
 }
 
 /// Whether a `ConfigChanged` may reshape a shown surface in place:
@@ -3051,6 +3074,45 @@ mod tests {
         assert!(!resize_acts_on(&SurfaceState::Hidden, surface_id));
     }
 
+    // --- the drawer's page turns (settings-tabs ST-2) ---
+
+    #[test]
+    fn a_tab_pick_lands_on_the_picked_tab_from_every_page() {
+        // The `OpenProfiles` rule for picks: a pure page turn — the
+        // pick works from either tab and from the Profiles
+        // drill-down (the strip stays usable there), never lands on
+        // Profiles, and the left-behind page's drafts survive (the
+        // pick handler assigns this field and nothing else; the
+        // only draft-clearing path stays the close funnel's
+        // `ExplicitClose`).
+        for current in [
+            SettingsPage::Tab(SettingsTab::General),
+            SettingsPage::Tab(SettingsTab::Advanced),
+            SettingsPage::Profiles,
+        ] {
+            assert_eq!(
+                page_after_tab_pick(current, SettingsTab::Advanced),
+                SettingsPage::Tab(SettingsTab::Advanced)
+            );
+            assert_eq!(
+                page_after_tab_pick(current, SettingsTab::General),
+                SettingsPage::Tab(SettingsTab::General)
+            );
+        }
+    }
+
+    #[test]
+    fn the_close_funnel_and_back_both_reset_to_the_general_tab() {
+        // Criteria 5 and 6's reset rule: an explicit close and the
+        // Profiles back affordance land on General — the entry
+        // row's tab — so a reopened drawer always starts on the
+        // everyday controls.
+        assert_eq!(
+            home_settings_page(),
+            SettingsPage::Tab(SettingsTab::General)
+        );
+    }
+
     // --- the window-background source decision ---
 
     #[test]
@@ -3636,7 +3698,7 @@ impl Application for DropTerm {
             last_toggle: None,
             slide: None,
             settings_open: false,
-            settings_page: SettingsPage::Settings,
+            settings_page: home_settings_page(),
             profile_selection: None,
             profile_draft: None,
             settings_buffer: settings::SettingsBuffer::default(),
@@ -4008,17 +4070,22 @@ impl Application for DropTerm {
                 geometry::surface_width(width as f32, self.config.width_percent) as f32
             }
         });
-        // The drawer hosts two pages (profile-settings criterion 1):
-        // the five-section Settings page and the Profiles page its
-        // entry row flips to. The flip is this switch — title plus
-        // content at the one hand-composed site; the Close button
-        // keeps routing through the same `Action::Settings` toggle
-        // from either page, so the keybind/Close/gear funnel never
-        // changes under the page turn.
+        // The drawer hosts the tab pages plus the Profiles drill-down
+        // its entry row flips to (settings-tabs criterion 2). The
+        // flip is this switch — title plus content at the one
+        // hand-composed site; the Close button keeps routing through
+        // the same `Action::Settings` toggle from any page, so the
+        // keybind/Close/gear funnel never changes under a page turn.
+        // The title stays "Settings" on both tabs — the strip
+        // disambiguates.
         let (title, drawer_content) = match self.settings_page {
-            SettingsPage::Settings => (
+            SettingsPage::Tab(SettingsTab::General) => (
                 "Settings",
-                settings::drawer_view(&self.config, &self.settings_buffer),
+                settings::general_view(&self.config, &self.settings_buffer),
+            ),
+            SettingsPage::Tab(SettingsTab::Advanced) => (
+                "Settings",
+                settings::advanced_view(&self.config, &self.settings_buffer),
             ),
             SettingsPage::Profiles => (
                 "Profiles",
@@ -4742,6 +4809,15 @@ impl DropTerm {
                         if let Some(write) = settings::toggle_write(key, checked) {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
+                    }
+                    settings::SettingsEvent::PickTab(tab) => {
+                        // A page turn, the `OpenProfiles` rule
+                        // (criterion 4): the page flips and nothing
+                        // else — no drawer close, no buffer clear, no
+                        // `DrawerTransition` (the only draft-clearing
+                        // path is the close funnel's
+                        // `ExplicitClose`).
+                        self.settings_page = page_after_tab_pick(self.settings_page, tab);
                     }
                     settings::SettingsEvent::OpenProfiles => {
                         self.settings_page = SettingsPage::Profiles;

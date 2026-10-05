@@ -52,6 +52,18 @@ pub enum Section {
 
 impl Section {
     /// Every section, in display order.
+    // Test-facing since the tab split: runtime iterates
+    // `tab_sections`, and ALL is the registry whose partition the
+    // inline tests pin (every section exactly once, every exposed
+    // key exactly once). The expectation self-expires the moment
+    // runtime code consumes ALL again.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the tests' registry pin; runtime iterates tab_sections"
+        )
+    )]
     pub const ALL: [Section; 5] = [
         Section::Appearance,
         Section::Geometry,
@@ -138,16 +150,6 @@ pub enum ConfigKey {
 /// control→key map, is untouched by the grouping). No `Keybindings`
 /// variant ships here: the shell defines only the tabs it serves;
 /// the editor belongs to `keybinds-editor`.
-// Pure core landed ahead of its wiring (settings-tabs ST-1); the
-// page flip consumes it in ST-2. `cfg_attr` scopes the expectation
-// to the non-test build — the tests already keep it live.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "constructed by the page flip in settings-tabs ST-2"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
@@ -158,13 +160,6 @@ pub enum SettingsTab {
 /// [`Section`] appears in exactly one tab and the union is
 /// [`Section::ALL`] — pinned by test, so regrouping can never drop
 /// or duplicate a card.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the per-tab views in settings-tabs ST-2"
-    )
-)]
 pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
     match tab {
         SettingsTab::General => &[
@@ -197,13 +192,6 @@ pub const fn tab_header(tab: SettingsTab) -> &'static str {
 /// drill-down's only door lives on General, so the Back affordance
 /// always has one page to return to; Advanced never shows a second
 /// door — pinned by test.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the General view in settings-tabs ST-2"
-    )
-)]
 pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
     matches!(tab, SettingsTab::General)
 }
@@ -1387,6 +1375,10 @@ pub enum SettingsEvent {
     Picked(ConfigKey, usize),
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
+    /// A tab strip pick: flip the drawer to that tab's page — a page
+    /// turn, never a drawer close, never a buffer clear (the
+    /// `OpenProfiles` rule: drafts on the left-behind tab survive).
+    PickTab(SettingsTab),
     /// The Settings page's Profiles entry row: flip the drawer to the
     /// Profiles page.
     OpenProfiles,
@@ -1494,28 +1486,48 @@ pub fn drawer_max_width(surface_width: f32) -> f32 {
     (surface_width - reserved).clamp(344.0, 480.0)
 }
 
-/// The settings drawer's content: the instant-apply sections as
-/// `widget::settings` — a titled section per [`Section`], one labeled
-/// item per exposed key with its apply timing as the description, in
-/// one column the framework drawer pane already wraps in a scrollable.
-/// Every control renders from `config` with a buffered draft winning
-/// while one exists and emits [`SettingsEvent`]s — nothing here
-/// applies anything itself; commits land through the app's write path
-/// and the `ConfigChanged` echo. All five sections host here
-/// (criterion 3: every exposed key exactly once — the section map
-/// plus the all-21 construction test pin it); the live-edit half
-/// (opacity, font, scheme — criterion 2) rides the same items.
-pub fn drawer_view(
+/// The General tab's page: the everyday sections in [`tab_sections`]
+/// display order plus the Profiles entry row — the drill-down's only
+/// door. Every control renders from `config` with a buffered draft
+/// winning while one exists and emits [`SettingsEvent`]s — nothing
+/// here applies anything itself; commits land through the app's
+/// write path and the `ConfigChanged` echo.
+pub fn general_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    let mut cards: Vec<Element<'static, SettingsEvent>> = Section::ALL
+    tab_page(SettingsTab::General, config, buffer)
+}
+
+/// The Advanced tab's page: exactly the Advanced card as it hosted
+/// in the one-column drawer — the power controls.
+pub fn advanced_view(
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    tab_page(SettingsTab::Advanced, config, buffer)
+}
+
+/// A tab's page: one `widget::settings` card per section the tab
+/// hosts, one labeled item per exposed key with its apply timing as
+/// the description, in one column the framework drawer pane already
+/// wraps in a scrollable — plus the Profiles entry row where the tab
+/// carries it. The `drawer_section`/`drawer_item`/`drawer_control`
+/// chain is reused verbatim from the one-column drawer.
+fn tab_page(
+    tab: SettingsTab,
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    let mut cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
         .iter()
         .map(|section| drawer_section(*section, config, buffer))
         .collect();
-    // The Profiles entry card rides after the five key sections —
-    // the one row on this page that writes no key itself.
-    cards.push(profiles_entry(&config.profiles));
+    if tab_has_profiles_entry(tab) {
+        // The Profiles entry card — the one row on these pages that
+        // writes no key itself.
+        cards.push(profiles_entry(&config.profiles));
+    }
     widget::settings::view_column(cards).into()
 }
 
@@ -1945,20 +1957,27 @@ mod tests {
     // --- the drawer's migrated content (settings-drawer Task 1) ---
 
     #[test]
-    fn the_drawer_builds_every_appearance_and_geometry_control() {
-        // Task 1 hosts the first two sections. Construction is the
-        // assertion: the item builder's `expect` totality panics if a
-        // key in either section resolves to no control, and the
-        // widget builders must tolerate the states the file can be
-        // in — an unknown scheme name (dropdown selects nothing),
-        // buffered drafts winning over file values, and the plain
-        // default config.
+    fn both_tab_pages_build_with_drafts_and_from_config() {
+        // ST-2 reorganizes the one five-section column into the two
+        // per-tab pages. Construction is the assertion: the item
+        // builder's `expect` totality panics if a key resolves to no
+        // control, and the widget builders must tolerate the states
+        // the file can be in — buffered drafts winning over file
+        // values (including a scrollback draft that does not parse —
+        // the draft simply renders; rejection is the update path's
+        // job) — and the plain default config. Exactly-once across
+        // the two pages is tab_sections' partition, pinned above.
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
         buffer.set_text(TextField::FontName, "Draft Font".to_string());
+        buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
+        buffer.set_text(TextField::Args, "-l -i".to_string());
+        buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
-        let _ = drawer_view(&config, &buffer);
-        let _ = drawer_view(&config, &SettingsBuffer::default());
+        let _ = general_view(&config, &buffer);
+        let _ = advanced_view(&config, &buffer);
+        let _ = general_view(&config, &SettingsBuffer::default());
+        let _ = advanced_view(&config, &SettingsBuffer::default());
     }
 
     #[test]
@@ -3122,9 +3141,10 @@ mod tests {
         let _ = profiles_view(&config, Some(0), Some(&cloning));
         let editing = ProfileDraft::edit(0, &config.profiles[0]);
         let _ = profiles_view(&config, Some(0), Some(&editing));
-        // And the Settings page carries the entry card whatever the
-        // list state.
-        let _ = drawer_view(&config, &SettingsBuffer::default());
+        // And General carries the entry card whatever the list
+        // state; Advanced never does.
+        let _ = general_view(&config, &SettingsBuffer::default());
+        let _ = advanced_view(&config, &SettingsBuffer::default());
     }
 
     // --- the default-profile picker (profile-settings T2) ---
