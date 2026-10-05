@@ -132,6 +132,82 @@ pub enum ConfigKey {
     ThemePreference,
 }
 
+/// A settings drawer tab: a view-only regrouping of the same
+/// sections into the everyday controls and the power controls —
+/// never a second copy of the registry ([`Section::keys`], the
+/// control→key map, is untouched by the grouping). No `Keybindings`
+/// variant ships here: the shell defines only the tabs it serves;
+/// the editor belongs to `keybinds-editor`.
+// Pure core landed ahead of its wiring (settings-tabs ST-1); the
+// page flip consumes it in ST-2. `cfg_attr` scopes the expectation
+// to the non-test build — the tests already keep it live.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "constructed by the page flip in settings-tabs ST-2"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Advanced,
+}
+
+/// The sections a tab's page hosts, in display order. Every
+/// [`Section`] appears in exactly one tab and the union is
+/// [`Section::ALL`] — pinned by test, so regrouping can never drop
+/// or duplicate a card.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by the per-tab views in settings-tabs ST-2"
+    )
+)]
+pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
+    match tab {
+        SettingsTab::General => &[
+            Section::Appearance,
+            Section::Geometry,
+            Section::Behavior,
+            Section::Terminal,
+        ],
+        SettingsTab::Advanced => &[Section::Advanced],
+    }
+}
+
+/// The tab's strip label — hardcoded English like every label in
+/// this drawer.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by the strip model in settings-tabs ST-3"
+    )
+)]
+pub const fn tab_header(tab: SettingsTab) -> &'static str {
+    match tab {
+        SettingsTab::General => "General",
+        SettingsTab::Advanced => "Advanced",
+    }
+}
+
+/// Whether a tab's page carries the Profiles entry row. The
+/// drill-down's only door lives on General, so the Back affordance
+/// always has one page to return to; Advanced never shows a second
+/// door — pinned by test.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed by the General view in settings-tabs ST-2"
+    )
+)]
+pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
+    matches!(tab, SettingsTab::General)
+}
+
 impl ConfigKey {
     /// The cosmic-config entry field name this key persists under —
     /// the exact spelling `DropTermConfig`'s field serializes as, and
@@ -1905,6 +1981,58 @@ mod tests {
                 let _ = drawer_item(*key, &config, &buffer);
             }
         }
+    }
+
+    // --- the tab regrouping (settings-tabs ST-1) ---
+
+    #[test]
+    fn the_two_tabs_partition_every_section_exactly_once() {
+        // The tabs are a view-only regrouping (criterion 2): every
+        // Section appears in exactly one tab, the union is
+        // Section::ALL, and each tab's display order is pinned so
+        // the page composition cannot silently reshuffle.
+        assert_eq!(
+            tab_sections(SettingsTab::General),
+            &[
+                Section::Appearance,
+                Section::Geometry,
+                Section::Behavior,
+                Section::Terminal,
+            ]
+        );
+        assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
+        let across_tabs: Vec<Section> = [SettingsTab::General, SettingsTab::Advanced]
+            .iter()
+            .flat_map(|tab| tab_sections(*tab).iter().copied())
+            .collect();
+        assert_eq!(across_tabs.len(), Section::ALL.len());
+        for section in Section::ALL {
+            assert_eq!(
+                across_tabs
+                    .iter()
+                    .filter(|listed| **listed == section)
+                    .count(),
+                1,
+                "{section:?} must appear in exactly one tab"
+            );
+        }
+    }
+
+    #[test]
+    fn the_profiles_entry_row_lives_on_general_only() {
+        // The drill-down's only door lives on General (criterion 2),
+        // so the Back affordance can always return to it; Advanced
+        // never grows a second door.
+        assert!(tab_has_profiles_entry(SettingsTab::General));
+        assert!(!tab_has_profiles_entry(SettingsTab::Advanced));
+    }
+
+    #[test]
+    fn tab_headers_are_the_strip_labels() {
+        // Hardcoded English like every label in this drawer — no
+        // fluent/i18n in this repo.
+        assert_eq!(tab_header(SettingsTab::General), "General");
+        assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
     }
 
     // --- the drawer's lifecycle transitions (settings-drawer T3) ---
