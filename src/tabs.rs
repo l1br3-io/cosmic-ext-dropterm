@@ -475,6 +475,48 @@ pub fn commit_rename(
     resolve_title(mode, shell_title, cwd, id, title_override.as_deref()).clone_into(title);
 }
 
+/// The plain-data half of an in-place respawn: what every
+/// non-terminal field of a tab becomes when its terminal is replaced
+/// to run a profile. The app swaps the `Terminal` and applies this
+/// plan; keeping the policy here — like `resolve_title` and
+/// `commit_rename` — makes the respawn rules unit-testable headless.
+pub struct RespawnFields {
+    pub title: String,
+    pub shell_title: Option<String>,
+    pub title_override: Option<String>,
+    pub attention: Attention,
+    pub bell_notified: bool,
+    pub ephemeral: bool,
+    pub profile: Option<String>,
+}
+
+/// Plans the field half of respawning a tab under `profile_name`: the
+/// sticky user rename survives (a respawn is not a title action), the
+/// OSC 0/2 tracker resets with the new PTY, and the title re-resolves
+/// from the live mode with no report yet — a rename wins, the cwd
+/// modes read `cwd` (the spawn directory the app seeds), `Shell` and
+/// `Numbered` fall back to the fresh `Terminal N` default of the new
+/// id. The tab becomes a persistent profile tab (`ephemeral = false`,
+/// id recorded) whatever it was before — the pair `spawn_shell` sets
+/// for a profile launch.
+pub fn plan_respawn(
+    mode: TabTitleMode,
+    id: TabId,
+    cwd: Option<&Path>,
+    old_override: Option<&str>,
+    profile_name: &str,
+) -> RespawnFields {
+    RespawnFields {
+        title: resolve_title(mode, None, cwd, id, old_override),
+        shell_title: None,
+        title_override: old_override.map(str::to_owned),
+        attention: Attention::None,
+        bell_notified: false,
+        ephemeral: false,
+        profile: Some(profile_name.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,6 +1131,90 @@ mod tests {
         );
         assert_eq!(title_override, None);
         assert_eq!(title, "Terminal 3");
+    }
+
+    #[test]
+    fn plan_respawn_keeps_a_user_rename_verbatim_in_title_and_override() {
+        // The stickiness rule: a respawn is not a title action, so the
+        // rename survives in every mode — displayed title and stored
+        // override both.
+        for mode in [
+            TabTitleMode::Shell,
+            TabTitleMode::AbbreviatedPath,
+            TabTitleMode::LastSegment,
+            TabTitleMode::Numbered,
+        ] {
+            let plan = plan_respawn(mode, TabId(6), None, Some("work"), "htop");
+            assert_eq!(plan.title, "work");
+            assert_eq!(plan.title_override.as_deref(), Some("work"));
+        }
+    }
+
+    #[test]
+    fn plan_respawn_without_a_rename_titles_from_the_fresh_terminal_number() {
+        let plan = plan_respawn(TabTitleMode::Shell, TabId(6), None, None, "htop");
+        assert_eq!(plan.title, "Terminal 7");
+    }
+
+    #[test]
+    fn plan_respawn_in_last_segment_mode_titles_from_the_seeded_cwd() {
+        // The cwd the app hands over is the spawn directory, so the
+        // cwd modes resolve from it before any shell report exists.
+        let plan = plan_respawn(
+            TabTitleMode::LastSegment,
+            TabId(6),
+            Some(Path::new("/home/jpt/src/ced")),
+            None,
+            "htop",
+        );
+        assert_eq!(plan.title, "ced");
+    }
+
+    #[test]
+    fn plan_respawn_in_abbreviated_mode_falls_back_to_the_fresh_number() {
+        // The OSC tracker resets with the new PTY, so AbbreviatedPath
+        // has no report to shorten until the new shell emits one; the
+        // seeded cwd is what those future reports resolve against.
+        let plan = plan_respawn(
+            TabTitleMode::AbbreviatedPath,
+            TabId(6),
+            Some(Path::new("/home/jpt/src/ced")),
+            None,
+            "htop",
+        );
+        assert_eq!(plan.title, "Terminal 7");
+    }
+
+    #[test]
+    fn plan_respawn_resets_attention_and_bell_notification_even_from_a_bell() {
+        // The plan clears both unconditionally — a Bell the old
+        // terminal accrued dies with it, and the new program starts
+        // with a clean attention slate.
+        let plan = plan_respawn(TabTitleMode::Shell, TabId(6), None, None, "htop");
+        assert_eq!(plan.attention, Attention::None);
+        assert!(!plan.bell_notified);
+    }
+
+    #[test]
+    fn plan_respawn_clears_the_ephemeral_flag_a_cmd_tab_carried() {
+        // Whatever the tab was before — a `--cmd` tab is ephemeral —
+        // a profile respawn makes it a persistent profile tab.
+        let plan = plan_respawn(TabTitleMode::Shell, TabId(6), None, None, "htop");
+        assert!(!plan.ephemeral);
+    }
+
+    #[test]
+    fn plan_respawn_records_the_profile_name() {
+        let plan = plan_respawn(TabTitleMode::Shell, TabId(6), None, None, "htop");
+        assert_eq!(plan.profile.as_deref(), Some("htop"));
+    }
+
+    #[test]
+    fn plan_respawn_resets_the_shell_title_tracker() {
+        // The stored OSC 0/2 report belongs to the dead PTY; the new
+        // one has reported nothing yet.
+        let plan = plan_respawn(TabTitleMode::Shell, TabId(6), None, None, "htop");
+        assert_eq!(plan.shell_title, None);
     }
 
     #[test]
