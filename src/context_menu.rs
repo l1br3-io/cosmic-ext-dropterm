@@ -5,9 +5,10 @@
 //! Item picks land in the same `perform_action` path the keybind map
 //! uses, so the menu routes to existing actions rather than
 //! re-implementing them; `app.rs` builds the libcosmic menu from
-//! [`trees`]. Order follows cosmic-term, Settings… last behind the
-//! divider (GNOME HIG). Right-click opens the menu only in default
-//! mode; in mouse-reporting mode it reaches the child process.
+//! [`trees`]. Order follows cosmic-term, with `DropTerm`'s Rename Tab
+//! clustering after New Tab, and Settings… last behind the divider
+//! (GNOME HIG). Right-click opens the menu only in default mode; in
+//! mouse-reporting mode it reaches the child process.
 
 use cosmic::widget::menu::{self, action::MenuAction};
 
@@ -38,6 +39,10 @@ pub enum Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     NewTab,
+    /// Start an inline rename of the active tab — the menu's twin of
+    /// the `Ctrl+Shift+R` bind, down to the shared `start_rename`
+    /// path and the below-two-tabs no-op.
+    RenameTab,
     Copy,
     Paste,
     SelectAll,
@@ -45,11 +50,13 @@ pub enum Item {
     Settings,
 }
 
-/// Every row in display order. Settings is last, behind the divider —
-/// cosmic-term's composition, matching the GNOME HIG "standard items
-/// at the end" placement.
+/// Every row in display order. Rename Tab clusters with New Tab (both
+/// act on tabs); Settings is last, behind the divider — cosmic-term's
+/// composition, matching the GNOME HIG "standard items at the end"
+/// placement.
 pub const ROWS: &[Row] = &[
     Row::Item(Item::NewTab),
+    Row::Item(Item::RenameTab),
     Row::Item(Item::Copy),
     Row::Item(Item::Paste),
     Row::Item(Item::SelectAll),
@@ -63,6 +70,7 @@ impl Item {
     pub fn label(self) -> &'static str {
         match self {
             Item::NewTab => "New Tab",
+            Item::RenameTab => "Rename Tab",
             Item::Copy => "Copy",
             Item::Paste => "Paste",
             Item::SelectAll => "Select All",
@@ -78,6 +86,7 @@ impl Item {
     pub fn action(self) -> Action {
         match self {
             Item::NewTab => Action::NewTab,
+            Item::RenameTab => Action::RenameTab,
             Item::Copy => Action::Copy,
             Item::Paste => Action::Paste,
             Item::SelectAll => Action::SelectAll,
@@ -163,9 +172,10 @@ pub fn open_trees(menu_open: bool, profiles: &[Profile]) -> Option<Vec<menu::Tre
 mod tests {
     use super::*;
 
-    fn all_items() -> [Item; 6] {
+    fn all_items() -> [Item; 7] {
         [
             Item::NewTab,
+            Item::RenameTab,
             Item::Copy,
             Item::Paste,
             Item::SelectAll,
@@ -175,11 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_new_tab_copy_paste_select_all_clear_scrollback_divider_settings() {
+    fn rows_are_new_tab_rename_tab_copy_paste_select_all_clear_scrollback_divider_settings() {
+        // Rename Tab clusters with New Tab: both act on tabs, and the
+        // clipboard cluster follows.
         assert_eq!(
             ROWS,
             &[
                 Row::Item(Item::NewTab),
+                Row::Item(Item::RenameTab),
                 Row::Item(Item::Copy),
                 Row::Item(Item::Paste),
                 Row::Item(Item::SelectAll),
@@ -236,6 +249,7 @@ mod tests {
     fn item_actions_map_to_their_keybound_terminal_actions() {
         let expected = [
             (Item::NewTab, Action::NewTab),
+            (Item::RenameTab, Action::RenameTab),
             (Item::Copy, Action::Copy),
             (Item::Paste, Action::Paste),
             (Item::SelectAll, Action::SelectAll),
@@ -290,6 +304,15 @@ mod tests {
         assert_eq!(with_profiles.len(), ROWS.len());
         assert_eq!(with_profiles[0], Row::ProfilesFolder);
         assert_eq!(&with_profiles[1..], &ROWS[1..]);
+    }
+
+    #[test]
+    fn rows_with_profiles_keep_rename_tab_right_after_the_folder() {
+        // The folder replaces only the New Tab slot: Rename Tab stays
+        // the second row, immediately after the submenu.
+        let profiles = [profile("ssh-web"), profile("htop")];
+        let with_profiles = rows(&profiles);
+        assert_eq!(with_profiles[1], Row::Item(Item::RenameTab));
     }
 
     #[test]
@@ -348,8 +371,9 @@ mod tests {
         };
         assert_eq!(label, "Copy");
         assert_eq!(*action, Action::NewProfileTab(0));
-        // The static Copy row is untouched by the collision.
-        let menu::Item::Button(label, _, action) = &list[1] else {
+        // The static Copy row is untouched by the collision (one row
+        // past Rename Tab, which precedes the clipboard cluster).
+        let menu::Item::Button(label, _, action) = &list[2] else {
             panic!("the static Copy row is a button");
         };
         assert_eq!(label, "Copy");
