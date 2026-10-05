@@ -12,8 +12,10 @@
 //! headless-testable.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use cosmic::Element;
+use cosmic::theme;
 use cosmic::widget;
 
 use cosmic::cosmic_config::{self, ConfigSet as _};
@@ -22,6 +24,8 @@ use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
     MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, TabPosition, TabTitleMode, ThemePreference,
 };
+use crate::profile::Profile;
+use crate::tabs::command_line_parts;
 use crate::terminal::theme_source::scheme_names;
 
 /// The write kind a config change came from, deciding echo handling.
@@ -661,6 +665,185 @@ impl SettingsBuffer {
     }
 }
 
+// --- the Profiles page's pure half: the write-time contract over the
+// profile model (cascades, seeding, list transforms, draft gating) ---
+
+/// Which direction a reorder press moves a profile: one slot toward
+/// the list's head (`Up`) or tail (`Down`) — pure data for
+/// [`move_profile`], one write per press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by T4's reorder buttons")
+)]
+pub enum ReorderDirection {
+    /// Move one slot toward index 0.
+    Up,
+    /// Move one slot toward the list's end.
+    Down,
+}
+
+/// Whether `name` is free to commit under the model's id rule: exact,
+/// case-sensitive equality against every profile except the one being
+/// edited (`editing`), whose own name is self-excluded — re-committing
+/// a profile's own name is not a collision. The write-time half of
+/// name-as-id; read time tolerates hand-edited duplicates.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by T3's commit planner")
+)]
+pub fn name_unique(profiles: &[Profile], editing: Option<usize>, name: &str) -> bool {
+    !profiles
+        .iter()
+        .enumerate()
+        .any(|(index, profile)| Some(index) != editing && profile.name == name)
+}
+
+/// The `default_profile` value after renaming `old_name` to
+/// `new_name`: the key follows the rename when it named the renamed
+/// profile — the cascade's paired write — and is untouched otherwise
+/// (an absent default stays absent).
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by T3's rename cascade")
+)]
+pub fn default_after_rename(
+    default: Option<&str>,
+    old_name: &str,
+    new_name: &str,
+) -> Option<String> {
+    match default {
+        Some(default_name) if default_name == old_name => Some(new_name.to_string()),
+        Some(default_name) => Some(default_name.to_string()),
+        None => None,
+    }
+}
+
+/// The `default_profile` value after deleting `name`: the delete
+/// proceeds and the key auto-clears when it named the deleted
+/// profile — a write must never dangle (owner ruling 2026-10-05).
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's delete path"))]
+pub fn default_after_delete(default: Option<&str>, name: &str) -> Option<String> {
+    match default {
+        Some(default_name) if default_name != name => Some(default_name.to_string()),
+        _ => None,
+    }
+}
+
+/// The name a cloned draft seeds: the source's name suffixed
+/// `(copy)`, escalating to `(copy 2)`, `(copy 3)`, … past collisions,
+/// so the seed is always unique against the list it will join — the
+/// draft still validates before any write.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by T3's clone seeding")
+)]
+pub fn clone_name(profiles: &[Profile], source: &Profile) -> String {
+    let mut candidate = format!("{} (copy)", source.name);
+    let mut suffix = 2;
+    while crate::profile::find(profiles, &candidate).is_some() {
+        candidate = format!("{} (copy {suffix})", source.name);
+        suffix += 1;
+    }
+    candidate
+}
+
+/// Append `addition` at the end of the list: config order is the `+`
+/// dropdown / context-menu order, so add lands last by construction.
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's add commit"))]
+pub fn add_profile(profiles: &[Profile], addition: Profile) -> Vec<Profile> {
+    let mut list = profiles.to_vec();
+    list.push(addition);
+    list
+}
+
+/// Replace the profile at `index` with `edited`, every other slot
+/// byte-identical. A stale out-of-bounds index (the config shrank
+/// under the click) is a pure no-op, never a panic.
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's edit commit"))]
+pub fn apply_edit(profiles: &[Profile], index: usize, edited: Profile) -> Vec<Profile> {
+    match profiles.get(index) {
+        Some(_) => {
+            let mut list = profiles.to_vec();
+            list[index] = edited;
+            list
+        }
+        None => profiles.to_vec(),
+    }
+}
+
+/// Drop the profile at `index`; a stale out-of-bounds index is a pure
+/// no-op (deleting what is already gone writes nothing).
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's delete path"))]
+pub fn remove_profile(profiles: &[Profile], index: usize) -> Vec<Profile> {
+    match profiles.get(index) {
+        Some(_) => {
+            let mut list = profiles.to_vec();
+            list.remove(index);
+            list
+        }
+        None => profiles.to_vec(),
+    }
+}
+
+/// Move the profile at `index` one slot in `direction`, swapping with
+/// its neighbor. Boundary rows (and stale out-of-bounds indices) are
+/// pure no-ops — the view disables the direction with no neighbor to
+/// swap into.
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T4's reorder path"))]
+pub fn move_profile(
+    profiles: &[Profile],
+    index: usize,
+    direction: ReorderDirection,
+) -> Vec<Profile> {
+    let neighbor = match direction {
+        ReorderDirection::Up => index.checked_sub(1),
+        ReorderDirection::Down => Some(index + 1),
+    };
+    match neighbor.filter(|neighbor| *neighbor < profiles.len()) {
+        Some(neighbor) => {
+            let mut list = profiles.to_vec();
+            list.swap(index, neighbor);
+            list
+        }
+        None => profiles.to_vec(),
+    }
+}
+
+/// Parse a `cwd` draft: empty (or whitespace-only) text clears to
+/// `None` — the model's default cwd — and any other path is accepted
+/// verbatim. Existence is never checked at define time; spawn-time
+/// fallback is `profile-launch`'s.
+#[cfg_attr(not(test), expect(dead_code, reason = "consumed by T3's cwd field"))]
+pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(raw))
+    }
+}
+
+/// Whether a draft triple may commit: a non-blank name unique against
+/// the list (self-excluded on edit) plus a command line that survives
+/// [`command_line_parts`] — [`Profile::validate`] plus the uniqueness
+/// this page adds at write time. The cwd is not gated: any path or
+/// none is definable.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by T3's commit planner")
+)]
+pub fn draft_valid(
+    profiles: &[Profile],
+    editing: Option<usize>,
+    name: &str,
+    command: &str,
+) -> bool {
+    !name.trim().is_empty()
+        && name_unique(profiles, editing, name)
+        && command_line_parts(command).is_some()
+}
+
 /// An event from the settings view. Events carry inputs, never
 /// [`PlannedWrite`]s: the view stays dumb about validity, and the
 /// app resolves each event through the pure planners
@@ -682,6 +865,15 @@ pub enum SettingsEvent {
     Picked(ConfigKey, usize),
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
+    /// The Settings page's Profiles entry row: flip the drawer to the
+    /// Profiles page.
+    OpenProfiles,
+    /// The Profiles page's back affordance: return to the Settings
+    /// page (a page turn, never a drawer close).
+    BackFromProfiles,
+    /// A profile row was pressed: make it the selection driving the
+    /// edit form.
+    SelectProfile(usize),
 }
 
 /// The write a toggle flip commits. `None` for keys without a toggle.
@@ -778,12 +970,98 @@ pub fn drawer_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    widget::settings::view_column(
-        Section::ALL
-            .iter()
-            .map(|section| drawer_section(*section, config, buffer))
-            .collect(),
-    )
+    let mut cards: Vec<Element<'static, SettingsEvent>> = Section::ALL
+        .iter()
+        .map(|section| drawer_section(*section, config, buffer))
+        .collect();
+    // The Profiles entry card rides after the five key sections —
+    // the one row on this page that writes no key itself.
+    cards.push(profiles_entry(&config.profiles));
+    widget::settings::view_column(cards).into()
+}
+
+/// The Settings page's Profiles entry card (OQ-2's drafted
+/// composition, ratified at the hardware STOP): the profile count as
+/// the row's description, a `Manage…` button as the flip affordance.
+/// No key is written from here — the row's whole job is the page
+/// turn.
+fn profiles_entry(profiles: &[Profile]) -> Element<'static, SettingsEvent> {
+    widget::settings::section()
+        .title("Profiles")
+        .add(
+            widget::settings::item::builder("Profile presets")
+                .description(profiles_entry_description(profiles.len()))
+                .control(widget::button::standard("Manage…").on_press(SettingsEvent::OpenProfiles)),
+        )
+        .into()
+}
+
+/// The entry card's count copy — pure so the wording is pinned.
+fn profiles_entry_description(count: usize) -> String {
+    match count {
+        0 => "No profiles".to_string(),
+        1 => "1 profile".to_string(),
+        n => format!("{n} profiles"),
+    }
+}
+
+/// The Profiles page: the read-only list — one row per profile in
+/// config order (the `+` dropdown / context-menu order), name plus a
+/// command preview, selection driving the edit form — with a back
+/// affordance above it. An empty list shows the empty state with the
+/// add affordance placed but inert until the form ships. Read-only by
+/// construction: the rows emit selection events only; every mutation
+/// control joins in the later tasks.
+pub fn profiles_view(
+    config: &DropTermConfig,
+    selection: Option<usize>,
+) -> Element<'static, SettingsEvent> {
+    let mut cards: Vec<Element<'static, SettingsEvent>> = vec![
+        widget::button::text("Back")
+            .on_press(SettingsEvent::BackFromProfiles)
+            .into(),
+    ];
+    if config.profiles.is_empty() {
+        cards.push(
+            widget::settings::section()
+                .title("Profiles")
+                .add(
+                    widget::settings::item::builder("No profiles")
+                        .description("Named presets of what a tab runs.")
+                        // Placed but inert until the form ships (T3):
+                        // no `on_press`, so the button renders
+                        // disabled — never a dead click.
+                        .control(widget::button::standard("Add profile")),
+                )
+                .into(),
+        );
+    } else {
+        let mut list = widget::settings::section().title("Profiles");
+        for (index, profile) in config.profiles.iter().enumerate() {
+            list = list.add(profile_row(index, profile, selection == Some(index)));
+        }
+        cards.push(list.into());
+    }
+    widget::settings::view_column(cards).into()
+}
+
+/// One list row: the profile's name with its command line as the
+/// preview beneath, the whole row a button selecting it. The selected
+/// row carries the suggested style — selection is the edit form's
+/// seed, so it must be visible on light and dark panes alike (an
+/// OQ-3 hardware item).
+fn profile_row(index: usize, profile: &Profile, selected: bool) -> Element<'static, SettingsEvent> {
+    let class = if selected {
+        theme::Button::Suggested
+    } else {
+        theme::Button::Standard
+    };
+    widget::button::custom(widget::column![
+        widget::text(profile.name.clone()),
+        widget::text(profile.command.clone()).size(12),
+    ])
+    .class(class)
+    .on_press(SettingsEvent::SelectProfile(index))
     .into()
 }
 
@@ -1898,5 +2176,225 @@ mod tests {
             SettingsBuffer::default().text(TextField::Shell, &config),
             ""
         );
+    }
+
+    // --- the Profiles page's pure seams (profile-settings T1) ---
+
+    fn profile(name: &str, command: &str) -> Profile {
+        Profile {
+            name: name.to_string(),
+            command: command.to_string(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn name_unique_rejects_an_exact_duplicate_and_only_an_exact_one() {
+        // Name matching is exact and case-sensitive (the model's id
+        // rule): "SSH" does not collide with "ssh".
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        assert!(!name_unique(&profiles, None, "ssh"));
+        assert!(name_unique(&profiles, None, "SSH"));
+        assert!(name_unique(&profiles, None, "new"));
+    }
+
+    #[test]
+    fn name_unique_excludes_the_edited_profile_itself() {
+        // Re-committing a profile's own name is not a collision (the
+        // self-exclusion on edit); any *other* holder still blocks.
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        assert!(name_unique(&profiles, Some(0), "ssh"));
+        assert!(!name_unique(&profiles, Some(0), "top"));
+    }
+
+    #[test]
+    fn default_after_rename_follows_a_renamed_default() {
+        // The cascade: renaming the profile `default_profile` names
+        // re-points the key in the same interaction — a paired write.
+        assert_eq!(
+            default_after_rename(Some("ssh"), "ssh", "server"),
+            Some("server".to_string())
+        );
+    }
+
+    #[test]
+    fn default_after_rename_leaves_every_other_rename_alone() {
+        // Non-default renames and an unset default write nothing
+        // extra — no paired write outside the cascade.
+        assert_eq!(
+            default_after_rename(Some("top"), "ssh", "server"),
+            Some("top".to_string())
+        );
+        assert_eq!(default_after_rename(None, "ssh", "server"), None);
+    }
+
+    #[test]
+    fn default_after_delete_clears_when_it_named_the_deleted_profile() {
+        // The owner's auto-clear ruling: the delete proceeds and the
+        // key clears — a write must never dangle.
+        assert_eq!(default_after_delete(Some("ssh"), "ssh"), None);
+    }
+
+    #[test]
+    fn default_after_delete_keeps_a_differently_named_default() {
+        assert_eq!(
+            default_after_delete(Some("top"), "ssh"),
+            Some("top".to_string())
+        );
+        assert_eq!(default_after_delete(None, "ssh"), None);
+    }
+
+    #[test]
+    fn clone_name_seeds_the_copy_suffix() {
+        let profiles = [profile("web-prod", "ssh web-prod")];
+        assert_eq!(clone_name(&profiles, &profiles[0]), "web-prod (copy)");
+    }
+
+    #[test]
+    fn clone_name_escalates_the_suffix_on_collision() {
+        // "(copy)" taken → "(copy 2)", then "(copy 3)" — the seed is
+        // always unique against the list it will join.
+        let profiles = [
+            profile("web-prod", "ssh web-prod"),
+            profile("web-prod (copy)", "ssh web-prod"),
+        ];
+        assert_eq!(
+            clone_name(&profiles, &profiles[0]),
+            "web-prod (copy 2)".to_string()
+        );
+        let deeper = [
+            profile("web-prod", "ssh web-prod"),
+            profile("web-prod (copy)", "ssh web-prod"),
+            profile("web-prod (copy 2)", "ssh web-prod"),
+        ];
+        assert_eq!(clone_name(&deeper, &deeper[0]), "web-prod (copy 3)");
+    }
+
+    #[test]
+    fn add_profile_appends_at_the_end() {
+        // Config order is the `+` dropdown / context-menu order, so
+        // the list transform keeps append semantics explicit.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let added = add_profile(&profiles, profile("top", "htop"));
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[1].name, "top");
+    }
+
+    #[test]
+    fn apply_edit_replaces_in_place_and_ignores_a_stale_index() {
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let edited = apply_edit(&profiles, 1, profile("monitor", "btop"));
+        assert_eq!(edited[0].name, "ssh");
+        assert_eq!(edited[1].name, "monitor");
+        assert_eq!(edited.len(), 2);
+        // An out-of-bounds index (config shrank under a stale click)
+        // is a pure no-op, never a panic.
+        assert_eq!(apply_edit(&profiles, 9, profile("ghost", "true")), profiles);
+    }
+
+    #[test]
+    fn remove_profile_drops_only_the_index_and_ignores_a_stale_one() {
+        let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let removed = remove_profile(&profiles, 0);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].name, "top");
+        assert_eq!(remove_profile(&profiles, 9), profiles);
+    }
+
+    #[test]
+    fn move_profile_swaps_exactly_one_slot_per_press() {
+        let profiles = [
+            profile("a", "true"),
+            profile("b", "true"),
+            profile("c", "true"),
+        ];
+        let up = move_profile(&profiles, 1, ReorderDirection::Up);
+        assert_eq!(
+            up.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        let down = move_profile(&profiles, 1, ReorderDirection::Down);
+        assert_eq!(
+            down.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["a", "c", "b"]
+        );
+    }
+
+    #[test]
+    fn move_profile_is_a_no_op_at_the_boundaries_and_beyond() {
+        // Boundary rows have no out-of-bounds neighbor: the transform
+        // is a pure no-op (the view disables the direction instead).
+        let profiles = [profile("a", "true"), profile("b", "true")];
+        assert_eq!(move_profile(&profiles, 0, ReorderDirection::Up), profiles);
+        assert_eq!(move_profile(&profiles, 1, ReorderDirection::Down), profiles);
+        assert_eq!(move_profile(&profiles, 9, ReorderDirection::Up), profiles);
+    }
+
+    #[test]
+    fn parse_cwd_clears_empty_text_to_none() {
+        assert_eq!(parse_cwd(""), None);
+        assert_eq!(parse_cwd("   "), None);
+    }
+
+    #[test]
+    fn parse_cwd_accepts_a_path_without_existence_checks() {
+        // The model's define-time rule: a profile may be written
+        // before its directory exists; spawn-time fallback is
+        // `profile-launch`'s.
+        assert_eq!(
+            parse_cwd("/dropterm/profile-settings/not/yet/created"),
+            Some(PathBuf::from("/dropterm/profile-settings/not/yet/created"))
+        );
+        assert_eq!(parse_cwd(" ~/src "), Some(PathBuf::from("~/src")));
+    }
+
+    #[test]
+    fn draft_valid_rejects_blank_and_duplicate_names() {
+        let profiles = [profile("ssh", "ssh web-prod")];
+        assert!(!draft_valid(&profiles, None, "   ", "htop"));
+        assert!(!draft_valid(&profiles, None, "ssh", "htop"));
+        // The duplicate check is self-excluded on edit.
+        assert!(draft_valid(&profiles, Some(0), "ssh", "htop"));
+    }
+
+    #[test]
+    fn draft_valid_rejects_a_command_line_without_a_program() {
+        let profiles = [profile("ssh", "ssh web-prod")];
+        assert!(!draft_valid(&profiles, None, "top", ""));
+        assert!(!draft_valid(&profiles, None, "top", "   "));
+    }
+
+    #[test]
+    fn draft_valid_accepts_a_complete_triple() {
+        let profiles = [profile("ssh", "ssh web-prod")];
+        assert!(draft_valid(&profiles, None, "top", "htop"));
+    }
+
+    // --- the Profiles page's view (construction, profile-settings T1) ---
+
+    #[test]
+    fn the_settings_entry_card_reports_the_profile_count() {
+        // OQ-2's drafted composition: count as the row description.
+        assert_eq!(profiles_entry_description(0), "No profiles");
+        assert_eq!(profiles_entry_description(1), "1 profile");
+        assert_eq!(profiles_entry_description(2), "2 profiles");
+    }
+
+    #[test]
+    fn the_profiles_page_builds_in_every_read_state() {
+        // Construction is the assertion: empty list (the empty state
+        // with its still-inert add affordance), a populated list, and
+        // a stale selection index (a config echo shrank the list
+        // under it) must all build without panicking.
+        let mut config = DropTermConfig::default();
+        let _ = profiles_view(&config, None);
+        let _ = profiles_view(&config, Some(0));
+        config.profiles = vec![profile("ssh", "ssh web-prod"), profile("top", "htop")];
+        let _ = profiles_view(&config, None);
+        let _ = profiles_view(&config, Some(1));
+        let _ = profiles_view(&config, Some(9));
+        // And the Settings page carries the entry card whatever the
+        // list state.
+        let _ = drawer_view(&config, &SettingsBuffer::default());
     }
 }

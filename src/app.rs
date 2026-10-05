@@ -402,6 +402,18 @@ pub struct DropTerm {
     /// focus-loss hides with its drafts intact (criterion 8), and an
     /// explicit close clears `settings_buffer`.
     settings_open: bool,
+    /// Which page the open drawer shows: the five-section Settings
+    /// page, or the Profiles page its entry row flips to (the
+    /// cosmic-term `ContextPage` pattern, self-implemented at the one
+    /// composition site). Explicit close resets it to Settings — a
+    /// reopened drawer starts fresh from config — while a focus-loss
+    /// hide preserves it with the drafts.
+    settings_page: SettingsPage,
+    /// The Profiles page's selected row: the index into
+    /// `config.profiles` driving the edit form. Cleared whenever the
+    /// page is left (back or close) — a reopened page starts from
+    /// config.
+    profile_selection: Option<usize>,
     /// The settings drawer's in-flight drafts: display-only text and
     /// slider state, cleared on an explicit drawer close so a
     /// reopened drawer renders purely from config (spec criterion 8).
@@ -1345,12 +1357,24 @@ impl DropTerm {
     /// (spec criterion 8 — a focus-loss hide preserves everything for
     /// the next show; hides touch nothing) and keyboard focus returns
     /// to the terminal the drawer had borrowed (cosmic-term's
-    /// `on_context_drawer` refocus).
+    /// `on_context_drawer` refocus). The drawer reopens on its
+    /// Settings page with no selection — fresh from config, whatever
+    /// page it closed on.
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
+        self.leave_profiles_page();
         self.settings_buffer
             .apply_drawer_transition(settings::DrawerTransition::ExplicitClose);
         widget::text_input::focus(self.terminal_id.clone())
+    }
+
+    /// Leaves the Profiles page (back affordance, or the drawer's
+    /// explicit close): page state — selection, and the form draft
+    /// once it exists — drops so a reopened page starts from config.
+    /// Focus-loss hides never route here: preservation is their rule.
+    fn leave_profiles_page(&mut self) {
+        self.settings_page = SettingsPage::Settings;
+        self.profile_selection = None;
     }
 
     fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -1891,6 +1915,18 @@ fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
         }
         live
     })
+}
+
+/// Which page the settings drawer shows. A page turn, never a drawer
+/// state: Close, Escape, and `Ctrl+Shift+I` close the whole drawer
+/// from either page — the funnel and `drawer_escape_routing` are
+/// untouched by the flip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsPage {
+    /// The five instant-apply sections.
+    Settings,
+    /// The profile list and its (task-by-task growing) form.
+    Profiles,
 }
 
 /// Whether a `ConfigChanged` may reshape a shown surface in place:
@@ -3167,6 +3203,8 @@ impl Application for DropTerm {
             last_toggle: None,
             slide: None,
             settings_open: false,
+            settings_page: SettingsPage::Settings,
+            profile_selection: None,
             settings_buffer: settings::SettingsBuffer::default(),
             context_menu_open: false,
             dbus_conn: None,
@@ -3542,14 +3580,31 @@ impl Application for DropTerm {
                 geometry::surface_width(width as f32, self.config.width_percent) as f32
             }
         });
+        // The drawer hosts two pages (profile-settings criterion 1):
+        // the five-section Settings page and the Profiles page its
+        // entry row flips to. The flip is this switch — title plus
+        // content at the one hand-composed site; the Close button
+        // keeps routing through the same `Action::Settings` toggle
+        // from either page, so the keybind/Close/gear funnel never
+        // changes under the page turn.
+        let (title, drawer_content) = match self.settings_page {
+            SettingsPage::Settings => (
+                "Settings",
+                settings::drawer_view(&self.config, &self.settings_buffer),
+            ),
+            SettingsPage::Profiles => (
+                "Profiles",
+                settings::profiles_view(&self.config, self.profile_selection),
+            ),
+        };
         widget::context_drawer(
-            Some("Settings".into()),
+            Some(title.into()),
             None,
             None,
             None,
             Message::Action(Action::Settings),
             content,
-            settings::drawer_view(&self.config, &self.settings_buffer).map(Message::Settings),
+            drawer_content.map(Message::Settings),
             settings::drawer_max_width(surface_width),
         )
         .into()
@@ -4251,6 +4306,20 @@ impl DropTerm {
                     settings::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
                             self.write_config(settings::WriteKind::Bare, &write);
+                        }
+                    }
+                    settings::SettingsEvent::OpenProfiles => {
+                        self.settings_page = SettingsPage::Profiles;
+                    }
+                    settings::SettingsEvent::BackFromProfiles => {
+                        self.leave_profiles_page();
+                    }
+                    settings::SettingsEvent::SelectProfile(index) => {
+                        // The view emits live indices only; the bound
+                        // guards the echo race where the list shrank
+                        // between render and press.
+                        if index < self.config.profiles.len() {
+                            self.profile_selection = Some(index);
                         }
                     }
                 }
