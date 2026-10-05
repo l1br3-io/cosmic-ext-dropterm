@@ -73,6 +73,12 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "r"),
         Action::RenameTab,
     );
+    // Duplicate the active tab. Bare Ctrl+D must stay unbound: the
+    // shell owns it for end-of-file (EOF).
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "d"),
+        Action::DuplicateTab,
+    );
     map.insert(
         bind_named(&[Modifier::Ctrl], Named::PageUp),
         Action::PrevTab,
@@ -293,6 +299,45 @@ mod tests {
         );
         assert_eq!(
             matched_action(&binds, Modifiers::SHIFT, &Key::Character("r".into()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_d_duplicates_the_active_tab() {
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("d".into()),
+                None,
+            ),
+            Some(Action::DuplicateTab)
+        );
+    }
+
+    #[test]
+    fn bare_d_and_ctrl_d_stay_free_for_the_shell() {
+        // Ctrl+D is the shell's end-of-file (EOF) and a bare `d` is
+        // ordinary typing: only the full Ctrl+Shift+D combo is the
+        // duplicate bind.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Character("d".into()),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("d".into()), None),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::SHIFT, &Key::Character("d".into()), None),
             None
         );
     }
