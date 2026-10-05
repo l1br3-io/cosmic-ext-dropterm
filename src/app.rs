@@ -121,6 +121,24 @@ pub enum ToggleAction {
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         tab_index: Option<usize>,
     },
+    /// Switch a live tab's profile remotely — the active tab, or the
+    /// 1-based `--tab-index` target: the tab's terminal is replaced
+    /// in place by a fresh one running `--profile`'s resolved
+    /// command/cwd (the running command and scrollback are lost, the
+    /// same close+reopen cost), keeping the tab's slot, activation
+    /// state, and sticky user rename; the tab is a persistent profile
+    /// tab from then on. Implies showing the overlay; an unknown
+    /// profile name or unresolvable target warns and edits nothing.
+    SwitchProfileTab {
+        /// Name of the profile to switch to (see the `profile`
+        /// module): exact, case-sensitive, first-match against the
+        /// running instance's config.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        profile: String,
+        /// 1-based index of the tab to switch; defaults to the active tab.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        tab_index: Option<usize>,
+    },
 }
 
 impl std::fmt::Display for ToggleAction {
@@ -134,6 +152,7 @@ impl std::fmt::Display for ToggleAction {
             Self::SelectTab { .. } => write!(f, "select-tab"),
             Self::RenameTab { .. } => write!(f, "rename-tab"),
             Self::DuplicateTab { .. } => write!(f, "duplicate-tab"),
+            Self::SwitchProfileTab { .. } => write!(f, "switch-profile-tab"),
         }
     }
 }
@@ -225,6 +244,13 @@ pub enum Message {
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
+    /// Switch a live tab's profile in place: the tab id (the bar's
+    /// stable handle, like every tab message) and the config profile
+    /// index — resolved at apply time, the `NewProfileTab`
+    /// precedent, so a config edit between snapshot and pick can
+    /// still be caught as stale. The apply respawns the tab's
+    /// terminal under the profile (see [`DropTerm::switch_tab_profile`]).
+    SwitchTabProfile(TabId, usize),
     /// A tab body was double-clicked: start an inline rename.
     RenameStarted(TabId),
     /// The rename input's draft changed.
@@ -1116,6 +1142,49 @@ impl DropTerm {
             return Task::batch([open, self.show_intent_surface()]);
         }
 
+        // A remote switch-profile-tab is a tab-facing verb like a
+        // duplicate-tab: the result — the tab now running the
+        // profile — is meant to be seen, so the overlay shows through
+        // the same path whatever state it was in. The verb resolves
+        // its inputs up front and rides the `Message::SwitchTabProfile`
+        // seam — the same apply the tab context menu will use, and
+        // the construction that keeps the variant live under
+        // `-D warnings`. Unresolvable inputs warn and edit nothing —
+        // unlike duplicate-tab there is no sensible bare fallback —
+        // while the surface half still shows.
+        if let ToggleAction::SwitchProfileTab { profile, tab_index } = action {
+            // `profile::find`'s exact, case-sensitive, first-match
+            // rule, resolved to the index the apply wants.
+            let Some(profile_index) = self
+                .config
+                .profiles
+                .iter()
+                .position(|candidate| candidate.name == profile)
+            else {
+                log::warn!("switch-profile-tab: no profile named {profile}");
+                return self.show_intent_surface();
+            };
+            // The target — absent means the active tab — resolves
+            // like every remote tab verb's, strict 1-based.
+            let Some(target) =
+                tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
+            else {
+                log::warn!(
+                    "switch-profile-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                    self.tabs.len()
+                );
+                return self.show_intent_surface();
+            };
+            let tab_id = self.tabs[target].id;
+            return Task::batch([
+                cosmic::task::message(cosmic::Action::App(Message::SwitchTabProfile(
+                    tab_id,
+                    profile_index,
+                ))),
+                self.show_intent_surface(),
+            ]);
+        }
+
         // Every toggle decision executes through `toggle_step` — most
         // importantly, a mid-hide toggle or `Show` reverses on the
         // live surface instead of being dropped. The debounce above
@@ -1335,6 +1404,115 @@ impl DropTerm {
             },
             true,
         )
+    }
+
+    /// Applies an in-place profile switch: the tab identified by `tab`
+    /// keeps its slot in the list, its activation state, and its sticky
+    /// user rename, while its terminal is replaced by a fresh PTY
+    /// running the profile `profile_index` resolves to — the seam the
+    /// remote `switch-profile-tab` rides through
+    /// [`Message::SwitchTabProfile`]. Unresolvable inputs warn and
+    /// no-op, never degrading into a spawn: an unknown tab id, or a
+    /// stale profile index (a config edited while a menu snapshot was
+    /// open — the `NewProfileTab` precedent). The respawn cwd composes
+    /// like a profile launch's — the preset's live cwd
+    /// (warn-and-degrade when dead), else the tab's own working
+    /// directory read before any teardown — with the tab itself
+    /// replacing the "active tab" as the inheritance source. The
+    /// replacement takes a fresh [`TabId`]: `Terminal::drop` sends
+    /// `Msg::Shutdown` asynchronously, so the dying PTY can still have
+    /// events in flight, and those late events then find no tab
+    /// carrying the old id (`handle_term_event` drops unknown ids —
+    /// the `close_tab` safety). The cosmetic cost — an unrenamed tab's
+    /// default title renumbers — is accepted. A respawn is a save
+    /// trigger: the next session save records the profile (and the
+    /// surviving rename), and a restore re-resolves the tab as that
+    /// profile.
+    fn switch_tab_profile(&mut self, tab: TabId, profile_index: usize) -> Task<Message> {
+        let Some(index) = self.tabs.iter().position(|candidate| candidate.id == tab) else {
+            log::warn!(
+                "switch profile: no tab with id {:?} ({} open)",
+                tab,
+                self.tabs.len()
+            );
+            return Task::none();
+        };
+        let Some(command) = profile_pick(&self.config, profile_index) else {
+            log::warn!(
+                "switch profile: no profile at index {profile_index} ({} configured)",
+                self.config.profiles.len()
+            );
+            return Task::none();
+        };
+        let SpawnCommand::Profile {
+            name, cwd: preset, ..
+        } = &command
+        else {
+            unreachable!("profile_pick returns the Profile arm");
+        };
+        // The respawn cwd, read before any teardown: the preset's live
+        // directory when it has one, else the tab's own — the
+        // NewProfileTab composition with the target tab as the
+        // inheritance source.
+        let respawn_cwd = live_preset_cwd(name, preset.as_ref()).or_else(|| {
+            self.tabs[index]
+                .terminal
+                .lock()
+                .unwrap()
+                .working_directory()
+        });
+        // An open inline rename on the target is discarded (the
+        // rename-tab precedent): the draft must not commit over the
+        // respawn, and the explicit end gives the deterministic
+        // refocus below.
+        let refocus = self.end_rename_on(index);
+        let old_override = self.tabs[index].title_override.clone();
+        let Some(SpawnedTerminal {
+            tab_id,
+            terminal,
+            shell,
+            ..
+        }) = self.spawn_terminal(&command, respawn_cwd.as_deref())
+        else {
+            // Deferred (no event channel yet) or the spawn errored —
+            // both already logged; the tab is untouched.
+            return Task::none();
+        };
+        let plan = tabs::plan_respawn(
+            self.config.tab_title_mode,
+            tab_id,
+            respawn_cwd.as_deref(),
+            old_override.as_deref(),
+            name,
+        );
+        let target = &mut self.tabs[index];
+        // Every field the old terminal's life touched comes from the
+        // plan — the profile id included: the tab is a profile tab
+        // from now on, whatever it was before. (A degraded blank
+        // command line still records the pick; the next restore
+        // re-derives the pair through `spawn_shell`, which drops the
+        // id for a degraded line, so a broken preset heals itself
+        // after one cycle.)
+        target.title = plan.title;
+        target.shell_title = plan.shell_title;
+        target.title_override = plan.title_override;
+        target.attention = plan.attention;
+        target.bell_notified = plan.bell_notified;
+        target.ephemeral = plan.ephemeral;
+        target.profile = plan.profile;
+        target.shell = shell;
+        // The id swap and terminal swap land together: assigning the
+        // field drops the old `Terminal`, whose `Drop` sends
+        // `Msg::Shutdown`, and late events from the dying PTY find no
+        // tab carrying the old id.
+        target.id = tab_id;
+        target.terminal = Mutex::new(terminal);
+        // The cwd cache follows the id swap: drop the dead tab's
+        // entry, seed the new one with the respawn cwd so the fresh
+        // shell's first OSC title report reads as unchanged.
+        self.tab_cwds.remove(&tab);
+        self.tab_cwds.insert(tab_id, respawn_cwd);
+        Task::batch([refocus, self.mark_session_dirty()])
     }
 
     /// Ends an inline rename session sitting on the tab at `index`:
@@ -1995,14 +2173,16 @@ fn toggle_step(action: ToggleAction, surface: &SurfaceState, slide_enabled: bool
         // Structurally unreachable: `debounced_toggle` applies the
         // remote verbs — opening a new-tab, closing a close-tab,
         // selecting a select-tab, renaming a rename-tab, duplicating
-        // a duplicate-tab — outside the toggle step, so none ever
-        // gets here. Loud rather than silently wrong.
+        // a duplicate-tab, switching a switch-profile-tab — outside
+        // the toggle step, so none ever gets here. Loud rather than
+        // silently wrong.
         (
             ToggleAction::NewTab { .. }
             | ToggleAction::CloseTab { .. }
             | ToggleAction::SelectTab { .. }
             | ToggleAction::RenameTab { .. }
-            | ToggleAction::DuplicateTab { .. },
+            | ToggleAction::DuplicateTab { .. }
+            | ToggleAction::SwitchProfileTab { .. },
             _,
         ) => {
             unreachable!("remote verbs apply outside the funnel")
@@ -3036,6 +3216,14 @@ fn forward_words(action: &ToggleAction) -> Vec<String> {
                 forwarded.push(index.to_string());
             }
         }
+        ToggleAction::SwitchProfileTab { profile, tab_index } => {
+            forwarded.push("--profile".to_string());
+            forwarded.push(profile.clone());
+            if let Some(index) = tab_index {
+                forwarded.push("--tab-index".to_string());
+                forwarded.push(index.to_string());
+            }
+        }
         _ => {}
     }
     forwarded
@@ -3969,6 +4157,9 @@ impl DropTerm {
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
                     return self.close_tab_at(index);
                 }
+            }
+            Message::SwitchTabProfile(id, profile_index) => {
+                return self.switch_tab_profile(id, profile_index);
             }
             Message::RenameStarted(id) => {
                 if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {

@@ -373,6 +373,56 @@ mod tests {
     }
 
     #[test]
+    fn switch_profile_tab_parses_bare_and_indexed() {
+        let bare = Args::parse_from(["dropterm", "switch-profile-tab", "--profile", "htop"]).action;
+        assert_eq!(
+            bare,
+            Some(ToggleAction::SwitchProfileTab {
+                profile: "htop".to_string(),
+                tab_index: None
+            })
+        );
+
+        let indexed = Args::parse_from([
+            "dropterm",
+            "switch-profile-tab",
+            "--profile",
+            "htop",
+            "--tab-index",
+            "2",
+        ])
+        .action;
+        assert_eq!(
+            indexed,
+            Some(ToggleAction::SwitchProfileTab {
+                profile: "htop".to_string(),
+                tab_index: Some(2)
+            })
+        );
+    }
+
+    #[test]
+    fn switch_profile_tab_requires_a_profile_name() {
+        // --profile is the verb's whole payload: a bare
+        // switch-profile-tab is a clap error, never a runtime guess.
+        let result = Args::try_parse_from(["dropterm", "switch-profile-tab"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn switch_profile_tab_rejects_a_zero_tab_index() {
+        let result = Args::try_parse_from([
+            "dropterm",
+            "switch-profile-tab",
+            "--profile",
+            "htop",
+            "--tab-index",
+            "0",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn a_malformed_forward_degrades_to_none() {
         // Words clap rejects yield None, which dbus_activation turns
         // into a plain toggle — never an error surface (here, a bad
@@ -442,6 +492,14 @@ mod tests {
             },
             ToggleAction::DuplicateTab { tab_index: None },
             ToggleAction::DuplicateTab { tab_index: Some(2) },
+            ToggleAction::SwitchProfileTab {
+                profile: "htop".to_string(),
+                tab_index: None,
+            },
+            ToggleAction::SwitchProfileTab {
+                profile: "ssh-web".to_string(),
+                tab_index: Some(2),
+            },
         ];
         for action in actions {
             let flags = Flags::new(action.clone());
