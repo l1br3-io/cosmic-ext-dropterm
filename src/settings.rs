@@ -720,9 +720,6 @@ impl ConfigKey {
 const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
 const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
 
-/// A control's rough width, keeping the window's rows aligned.
-const CONTROL_WIDTH: f32 = 260.0;
-
 /// The drawer pane's maximum width, mirroring libcosmic's
 /// `Core::context_width(has_nav = false)` clamp (344–480px with the
 /// reserved content width subtracted) so the drawer composed by hand
@@ -770,20 +767,76 @@ pub fn view(config: &DropTermConfig, buffer: &SettingsBuffer) -> Element<'static
         .into()
 }
 
-/// The spike drawer's placeholder content (settings-drawer Task 0):
-/// stands in for the `widget::settings` sections Tasks 1–2 migrate,
-/// proving the composition seam — a drawer pinned right over the
-/// live terminal on the layer surface — before any real control
-/// lands. Generic over the message because it emits none.
-pub fn drawer_stub<Message: Clone + 'static>() -> Element<'static, Message> {
-    widget::column![
-        widget::text("Settings drawer (spike)").size(14),
-        widget::text("Real sections land in the next tasks.").size(12),
-    ]
-    .spacing(8)
-    .padding(16)
-    .width(Length::Fill)
+/// The settings drawer's content (spec decision 1): the window's
+/// instant-apply sections migrated to `widget::settings` — a titled
+/// section per [`Section`], one labeled item per exposed key with its
+/// apply timing as the description, in one column the framework
+/// drawer pane already wraps in a scrollable. Every control renders
+/// from `config` with a buffered draft winning while one exists and
+/// emits [`SettingsEvent`]s — nothing here applies anything itself;
+/// commits land through the app's write path and the `ConfigChanged`
+/// echo, exactly as in the window. Task 1 hosts Appearance +
+/// Geometry (the live-edit half — opacity, font, and scheme changes
+/// visible in the terminal beneath, spec criterion 2); Task 2
+/// extends the section list to all five.
+pub fn drawer_view(
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    let sections = [Section::Appearance, Section::Geometry];
+    widget::settings::view_column(
+        sections
+            .iter()
+            .map(|section| drawer_section(*section, config, buffer))
+            .collect(),
+    )
     .into()
+}
+
+/// One drawer section: a `widget::settings` section carrying the
+/// section's title and one item per key it owns, in `keys()` display
+/// order.
+fn drawer_section(
+    section: Section,
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    let mut built = widget::settings::section().title(section.title());
+    for key in section.keys() {
+        built = built.add(drawer_item(*key, config, buffer));
+    }
+    built.into()
+}
+
+/// One drawer item: the key's label with its apply timing as the
+/// item description (the honesty rule carried into the drawer), and
+/// the key's control on the drawer's natural widths — the window's
+/// fixed `CONTROL_WIDTH` is gone, the pane owns width now.
+fn drawer_item(
+    key: ConfigKey,
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    let control = drawer_control(key, config, buffer)
+        .expect("every exposed key has exactly one control (section map)");
+    widget::settings::item::builder(key.label())
+        .description(apply_timing(key).label())
+        .control(control)
+        .into()
+}
+
+/// The key's control widget, shared by both hosts: sliders (the
+/// buffered readout above), then dropdowns, then text inputs — the
+/// window `control_row`'s resolution order minus the toggle (Task
+/// 2's sections own the toggles).
+fn drawer_control(
+    key: ConfigKey,
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Option<Element<'static, SettingsEvent>> {
+    slider_control(key, config, buffer)
+        .or_else(|| dropdown_control(key, config))
+        .or_else(|| text_control(key, config, buffer))
 }
 
 /// One section's card: heading plus its controls, one per exposed
@@ -859,8 +912,7 @@ fn slider_control(
         widget::column![
             widget::text(format!("{readout}")).size(12),
             widget::slider(range, value, move |v| SettingsEvent::SliderMoved(key, v))
-                .on_release(SettingsEvent::SliderReleased(key))
-                .width(Length::Fixed(CONTROL_WIDTH)),
+                .on_release(SettingsEvent::SliderReleased(key)),
         ]
         .spacing(4)
         .into(),
@@ -869,8 +921,7 @@ fn slider_control(
 
 /// A dropdown control (commit on change). The pick resolves through
 /// [`dropdown_write`]; labels and selection come from the same
-/// tables the write path reads. The widget has no width setter at
-/// the pinned rev, so a container sizes it.
+/// tables the write path reads.
 fn dropdown_control(
     key: ConfigKey,
     config: &DropTermConfig,
@@ -901,12 +952,9 @@ fn dropdown_control(
         _ => return None,
     };
     Some(
-        widget::container(widget::dropdown(
-            labels,
-            dropdown_selected(key, config),
-            move |index| SettingsEvent::Picked(key, index),
-        ))
-        .width(Length::Fixed(CONTROL_WIDTH))
+        widget::dropdown(labels, dropdown_selected(key, config), move |index| {
+            SettingsEvent::Picked(key, index)
+        })
         .into(),
     )
 }
@@ -959,7 +1007,6 @@ fn text_control(
         widget::text_input(placeholder, buffer.text(field, config))
             .on_input(move |text| SettingsEvent::Draft(field, text))
             .on_submit(move |text| SettingsEvent::Submitted(field, text))
-            .width(Length::Fixed(CONTROL_WIDTH))
             .into(),
     )
 }
@@ -997,6 +1044,25 @@ mod tests {
         assert_eq!(drawer_max_width(500.0), 344.0);
         assert_eq!(drawer_max_width(300.0), 344.0);
         assert_eq!(drawer_max_width(0.0), 344.0);
+    }
+
+    // --- the drawer's migrated content (settings-drawer Task 1) ---
+
+    #[test]
+    fn the_drawer_builds_every_appearance_and_geometry_control() {
+        // Task 1 hosts the first two sections. Construction is the
+        // assertion: the item builder's `expect` totality panics if a
+        // key in either section resolves to no control, and the
+        // widget builders must tolerate the states the file can be
+        // in — an unknown scheme name (dropdown selects nothing),
+        // buffered drafts winning over file values, and the plain
+        // default config.
+        let config = DropTermConfig::default();
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::FontName, "Draft Font".to_string());
+        buffer.set_slider(ConfigKey::Opacity, 42.0);
+        let _ = drawer_view(&config, &buffer);
+        let _ = drawer_view(&config, &SettingsBuffer::default());
     }
 
     #[test]

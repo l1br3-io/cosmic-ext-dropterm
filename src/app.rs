@@ -3554,7 +3554,7 @@ impl Application for DropTerm {
             None,
             Message::Action(Action::Settings),
             content,
-            settings::drawer_stub(),
+            settings::drawer_view(&self.config, &self.settings_buffer).map(Message::Settings),
             settings::drawer_max_width(surface_width),
         )
         .into()
