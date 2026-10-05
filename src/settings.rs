@@ -147,19 +147,23 @@ pub enum ConfigKey {
 /// A settings drawer tab: a view-only regrouping of the same
 /// sections into the everyday controls and the power controls —
 /// never a second copy of the registry ([`Section::keys`], the
-/// control→key map, is untouched by the grouping). No `Keybindings`
-/// variant ships here: the shell defines only the tabs it serves;
-/// the editor belongs to `keybinds-editor`.
+/// control→key map, is untouched by the grouping) — plus the
+/// Keybindings editor's tab, which hosts no `Section` card at all
+/// (its page is [`keybindings_view`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
     Advanced,
+    /// The keybinding editor ([`keybindings_view`]) — no sections, so
+    /// it never perturbs the section partition.
+    Keybindings,
 }
 
 /// The sections a tab's page hosts, in display order. Every
 /// [`Section`] appears in exactly one tab and the union is
 /// [`Section::ALL`] — pinned by test, so regrouping can never drop
-/// or duplicate a card.
+/// or duplicate a card. The Keybindings tab hosts none: its page is
+/// the editor, not section cards.
 pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
     match tab {
         SettingsTab::General => &[
@@ -169,6 +173,7 @@ pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
             Section::Terminal,
         ],
         SettingsTab::Advanced => &[Section::Advanced],
+        SettingsTab::Keybindings => &[],
     }
 }
 
@@ -178,12 +183,13 @@ pub const fn tab_header(tab: SettingsTab) -> &'static str {
     match tab {
         SettingsTab::General => "General",
         SettingsTab::Advanced => "Advanced",
+        SettingsTab::Keybindings => "Keybindings",
     }
 }
 
 /// Whether a tab's page carries the Profiles entry row. The
 /// drill-down's only door lives on General, so the Back affordance
-/// always has one page to return to; Advanced never shows a second
+/// always has one page to return to; no other tab shows a second
 /// door — pinned by test.
 pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
     matches!(tab, SettingsTab::General)
@@ -192,9 +198,12 @@ pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
 impl SettingsTab {
     /// Every tab, in strip order — the strip's rows come from this
     /// list and nothing else, so no row can exist without a page to
-    /// serve it (no dead `Keybindings` variant; that editor belongs
-    /// to `keybinds-editor`).
-    pub const ALL: [SettingsTab; 2] = [SettingsTab::General, SettingsTab::Advanced];
+    /// serve it.
+    pub const ALL: [SettingsTab; 3] = [
+        SettingsTab::General,
+        SettingsTab::Advanced,
+        SettingsTab::Keybindings,
+    ];
 }
 
 /// The tab strip's model: one row per tab of [`SettingsTab::ALL`],
@@ -1438,6 +1447,9 @@ pub enum SettingsEvent {
     /// The Profiles page's back affordance: return to the Settings
     /// page (a page turn, never a drawer close).
     BackFromProfiles,
+    /// The Keybindings tab's search box changed — display only; the
+    /// view re-filters its rows.
+    KeybindSearchChanged(String),
     /// A profile row was pressed: make it the selection driving the
     /// edit form.
     SelectProfile(usize),
@@ -1559,6 +1571,58 @@ pub fn advanced_view(
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
     tab_page(SettingsTab::Advanced, config, buffer)
+}
+
+/// The Keybindings tab's page: the search input on top, then one
+/// card per group of [`crate::keybinds::action_groups`] — every
+/// bindable action exactly once, each row the action's label with
+/// its effective binding text ([`crate::keybinds::action_binding_display`]:
+/// the custom binding, or the joined defaults, or "None"). The search
+/// filters rows case-insensitively by label; a group whose rows all
+/// fell away drops out, and a query nothing matches renders the
+/// empty state. Nothing here applies anything itself — the row
+/// affordances join in keybinds-editor KE-5.
+pub fn keybindings_view(
+    custom: &std::collections::BTreeMap<String, crate::keybinds::Binding>,
+    search: &str,
+) -> Element<'static, SettingsEvent> {
+    let mut cards: Vec<Element<'static, SettingsEvent>> = vec![
+        widget::text_input::search_input("Search", search.to_string())
+            .on_input(SettingsEvent::KeybindSearchChanged)
+            .into(),
+    ];
+    for group in crate::keybinds::action_groups() {
+        let mut list = widget::list::list_column();
+        let mut found = false;
+        for action in group.actions {
+            if !crate::keybinds::action_matches_search(action, search) {
+                continue;
+            }
+            found = true;
+            list = list.add(
+                widget::settings::item::builder(crate::keybinds::action_label(action)).control(
+                    widget::text(crate::keybinds::action_binding_display(action, custom)),
+                ),
+            );
+        }
+        if found {
+            cards.push(
+                widget::settings::section::with_column(list)
+                    .title(group.title)
+                    .into(),
+            );
+        }
+    }
+    if cards.len() == 1 {
+        // Only the search input survived the filter — the empty
+        // result state.
+        cards.push(
+            widget::settings::section()
+                .add(widget::text("No matching actions"))
+                .into(),
+        );
+    }
+    widget::settings::view_column(cards).into()
 }
 
 /// A tab's page: one `widget::settings` card per section the tab
@@ -1975,6 +2039,7 @@ fn text_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn section_keys() -> Vec<ConfigKey> {
         Section::ALL
@@ -2058,11 +2123,12 @@ mod tests {
     // --- the tab regrouping (settings-tabs ST-1) ---
 
     #[test]
-    fn the_two_tabs_partition_every_section_exactly_once() {
+    fn the_tabs_partition_every_section_exactly_once() {
         // The tabs are a view-only regrouping (criterion 2): every
         // Section appears in exactly one tab, the union is
         // Section::ALL, and each tab's display order is pinned so
-        // the page composition cannot silently reshuffle.
+        // the page composition cannot silently reshuffle. The
+        // Keybindings tab hosts the editor, never a Section card.
         assert_eq!(
             tab_sections(SettingsTab::General),
             &[
@@ -2073,7 +2139,8 @@ mod tests {
             ]
         );
         assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
-        let across_tabs: Vec<Section> = [SettingsTab::General, SettingsTab::Advanced]
+        assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
+        let across_tabs: Vec<Section> = SettingsTab::ALL
             .iter()
             .flat_map(|tab| tab_sections(*tab).iter().copied())
             .collect();
@@ -2105,6 +2172,28 @@ mod tests {
         // fluent/i18n in this repo.
         assert_eq!(tab_header(SettingsTab::General), "General");
         assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+        assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
+    }
+
+    #[test]
+    fn the_keybindings_tab_builds_with_and_without_matches() {
+        // The third tab's static view (keybinds-editor criterion 1):
+        // construction smoke — every group renders with the empty
+        // query, and a query nothing matches still builds (the
+        // empty-result state). Row inventory and filtering are pinned
+        // in `keybinds` (the groups and search tests).
+        let _unfiltered = keybindings_view(&BTreeMap::new(), "");
+        let _no_matches = keybindings_view(&BTreeMap::new(), "xyzzy-no-action-has-this");
+        let _filtered = keybindings_view(
+            &BTreeMap::from([(
+                "copy".to_string(),
+                crate::keybinds::Binding {
+                    modifiers: vec![crate::keybinds::ModifierName::Alt],
+                    key: "C".to_string(),
+                },
+            )]),
+            "copy",
+        );
     }
 
     // --- the tab strip's model (settings-tabs ST-3) ---
@@ -2121,7 +2210,7 @@ mod tests {
         assert_eq!(model.iter().count(), SettingsTab::ALL.len());
         for (position, tab) in SettingsTab::ALL.iter().enumerate() {
             let entity = model
-                .entity_at(u16::try_from(position).expect("two tabs, position 0-1"))
+                .entity_at(u16::try_from(position).expect("three tabs, position 0-2"))
                 .expect("one row per tab, in ALL order");
             assert_eq!(model.data::<SettingsTab>(entity), Some(tab));
             assert_eq!(model.text(entity), Some(tab_header(*tab)));

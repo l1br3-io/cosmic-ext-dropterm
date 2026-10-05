@@ -443,6 +443,10 @@ pub struct DropTerm {
     /// every press to the capture — see [`capture_verdict_for`] — and
     /// nothing else in the app sees a press.
     keybind_capture: Option<Action>,
+    /// The Keybindings tab's search box (keybinds-editor):
+    /// display-only filter state following the drawer's buffer rule —
+    /// an explicit close clears it, a focus-loss hide preserves it.
+    keybind_search: String,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -1661,6 +1665,9 @@ impl DropTerm {
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
         self.leave_profiles_page();
+        // The Keybindings tab's search is drawer buffer state: cleared
+        // on the explicit close, preserved across focus-loss hides.
+        self.keybind_search.clear();
         self.settings_buffer
             .apply_drawer_transition(settings::DrawerTransition::ExplicitClose);
         widget::text_input::focus(self.terminal_id.clone())
@@ -3868,6 +3875,7 @@ impl Application for DropTerm {
             surface_focused: false,
             key_binds,
             keybind_capture: None,
+            keybind_search: String::new(),
             last_toggle: None,
             slide: None,
             settings_open: false,
@@ -4260,6 +4268,10 @@ impl Application for DropTerm {
             SettingsPage::Tab(SettingsTab::Advanced) => (
                 "Settings",
                 settings::advanced_view(&self.config, &self.settings_buffer),
+            ),
+            SettingsPage::Tab(SettingsTab::Keybindings) => (
+                "Settings",
+                settings::keybindings_view(&self.config.custom_key_binds, &self.keybind_search),
             ),
             SettingsPage::Profiles => (
                 "Profiles",
@@ -5049,6 +5061,11 @@ impl DropTerm {
                         // Back lands on.
                         self.settings_page = SettingsPage::Profiles;
                         self.sync_settings_tab_strip();
+                    }
+                    settings::SettingsEvent::KeybindSearchChanged(text) => {
+                        // Display only: the next view build re-filters
+                        // the Keybindings tab's rows.
+                        self.keybind_search = text;
                     }
                     settings::SettingsEvent::BackFromProfiles => {
                         self.leave_profiles_page();

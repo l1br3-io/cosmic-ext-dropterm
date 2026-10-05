@@ -330,13 +330,6 @@ pub fn effective_key_binds(custom: &BTreeMap<String, Binding>) -> HashMap<KeyBin
 
 /// A titled group of editor rows — the Keybindings tab's sections, in
 /// display order.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-4 (the tab's sections)"
-    )
-)]
 pub struct ActionGroup {
     pub title: &'static str,
     pub actions: Vec<Action>,
@@ -346,13 +339,6 @@ pub struct ActionGroup {
 /// once, grouped for display (coverage pinned by test). The numbered
 /// activate rows are one entry per digit, 1 through 8, with 9 as
 /// [`Action::ActivateLastTab`].
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-4 (the tab's rows)"
-    )
-)]
 pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
     let activate_rows = (0..8).map(Action::ActivateTab);
     [
@@ -398,10 +384,6 @@ pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
 
 /// The labels of the numbered activate rows: display number 1-based,
 /// matching the id suffixes.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed via action_label; keybinds-editor KE-4")
-)]
 const ACTIVATE_TAB_LABELS: [&str; 8] = [
     "Activate tab 1",
     "Activate tab 2",
@@ -415,10 +397,6 @@ const ACTIVATE_TAB_LABELS: [&str; 8] = [
 
 /// An action's row label — hardcoded English like every label in this
 /// app.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by keybinds-editor KE-4 (row labels)")
-)]
 pub fn action_label(action: Action) -> &'static str {
     match action {
         Action::Copy => "Copy",
@@ -453,10 +431,6 @@ pub fn action_label(action: Action) -> &'static str {
 /// The human form of a binding (`Ctrl + Shift + C`), via the runtime
 /// [`KeyBind`]'s display; a key that does not parse falls back to the
 /// raw key string.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by keybinds-editor KE-4 (binding text)")
-)]
 pub fn binding_display(binding: &Binding) -> String {
     binding
         .to_key_bind()
@@ -529,6 +503,39 @@ pub fn with_custom_binding(
         updated.insert(id.to_string(), binding);
     }
     updated
+}
+
+/// The row's binding text for the Keybindings tab: the action's
+/// custom binding when it has one, else every default chord joined
+/// (`" / "`, sorted for determinism), else "None" for actions that
+/// ship unbound and have no custom.
+pub fn action_binding_display(action: Action, custom: &BTreeMap<String, Binding>) -> String {
+    if let Some(id) = action_id(action)
+        && let Some(binding) = custom.get(id)
+    {
+        return binding_display(binding);
+    }
+    let mut chords: Vec<String> = default_key_binds()
+        .into_iter()
+        .filter(|(_, bound)| *bound == action)
+        .map(|(key_bind, _)| key_bind.to_string())
+        .collect();
+    if chords.is_empty() {
+        return "None".to_string();
+    }
+    chords.sort();
+    chords.join(" / ")
+}
+
+/// Whether a row's label matches the Keybindings tab's search box —
+/// case-insensitive substring; an empty query matches everything.
+pub fn action_matches_search(action: Action, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    action_label(action)
+        .to_lowercase()
+        .contains(&query.to_lowercase())
 }
 
 /// The [`Key`] a persisted key name parses back to. Ported from
@@ -1337,5 +1344,41 @@ mod tests {
             numbered,
             "an unkeybindable action leaves the map unchanged"
         );
+    }
+
+    #[test]
+    fn binding_text_shows_joined_defaults_custom_or_none() {
+        // The row's binding text (keybinds-editor KE-4): a custom
+        // binding replaces the display wholesale; uncustomized actions
+        // show every default chord, sorted for determinism ("+" sorts
+        // before "="); an action with no bindings at all shows "None".
+        let custom = custom(&[("zoom_in", &[ModifierName::Alt], "z")]);
+        assert_eq!(
+            action_binding_display(Action::ZoomIn, &BTreeMap::new()),
+            "Ctrl + + / Ctrl + ="
+        );
+        assert_eq!(action_binding_display(Action::ZoomIn, &custom), "Alt + Z");
+        assert_eq!(
+            action_binding_display(Action::Copy, &BTreeMap::new()),
+            "Ctrl + Shift + C"
+        );
+        assert_eq!(
+            action_binding_display(Action::CopyPrimary, &BTreeMap::new()),
+            "None",
+            "CopyPrimary ships unbound by default"
+        );
+    }
+
+    #[test]
+    fn search_matches_labels_case_insensitively() {
+        // The Keybindings tab's filter: case-insensitive substring over
+        // labels; an empty query matches everything.
+        assert!(action_matches_search(Action::Copy, ""));
+        assert!(action_matches_search(Action::Copy, "cop"));
+        assert!(action_matches_search(Action::Copy, "COPY"));
+        assert!(!action_matches_search(Action::Copy, "zoom"));
+        assert!(action_matches_search(Action::ZoomIn, "zoom"));
+        assert!(action_matches_search(Action::ActivateTab(0), "tab 1"));
+        assert!(!action_matches_search(Action::Copy, "xyzzy"));
     }
 }
