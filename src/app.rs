@@ -3402,6 +3402,12 @@ impl Application for DropTerm {
             // the default-profile/cwd-inheritance/placement funnel
             // unchanged.
             .on_new_tab(|| Message::Action(Action::NewTab))
+            // The dropdown rides the same profile list the context
+            // menu reads, and its picks the same funnels: the plain
+            // row is the default spawn, a profile row the submenu's
+            // apply-time-resolved `NewProfileTab` pick.
+            .profiles(&self.config.profiles)
+            .on_profile_pick(|index| Message::Action(Action::NewProfileTab(index)))
             .tooltip_side(tooltip_side);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)

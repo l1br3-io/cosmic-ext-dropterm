@@ -64,6 +64,7 @@ use cosmic::{Element, Renderer, cosmic_theme::palette::WithAlpha};
 
 use crate::terminal::WINDOW_BG_COLOR;
 
+use crate::profile::Profile;
 use crate::tabs::{Tab, TabId};
 
 /// The bar's background and a text color readable on it.
@@ -279,6 +280,13 @@ const TOOLTIP_HEIGHT: f32 = 24.0;
 const TOOLTIP_PADDING_X: f32 = 8.0;
 const TOOLTIP_GAP: f32 = 4.0;
 
+/// Dropdown geometry, logical pixels: row height, label padding on
+/// each side, and the gap left between the strip and the popped
+/// dropdown (row metrics are OQ-2, ratified at the hardware STOP).
+const DROPDOWN_ROW_HEIGHT: f32 = 28.0;
+const DROPDOWN_PADDING_X: f32 = 10.0;
+const DROPDOWN_GAP: f32 = 4.0;
+
 /// Vertical inset of the drop indicator from the bar's top and bottom.
 const DROP_INDICATOR_INSET: f32 = 4.0;
 
@@ -447,6 +455,87 @@ fn plus_glyph(target: Rectangle) -> PlusGlyph {
         horizontal,
         vertical,
     }
+}
+
+/// One profile-dropdown row: the label to draw and which launch a
+/// pick runs — the plain default spawn (row 0) or the profile at
+/// this config index. Plain data, the `context_menu::rows`
+/// precedent, so the composition is unit-testable without a
+/// renderer.
+struct DropdownRow {
+    /// Label drawn in the row.
+    label: String,
+    /// The launch a pick publishes: `None` = the default spawn
+    /// (`Action::NewTab` semantics), `Some(index)` =
+    /// `Action::NewProfileTab(index)`, resolved at apply time.
+    profile: Option<usize>,
+}
+
+/// The dropdown's rows: row 0 is the plain `New Tab` (the default
+/// spawn — same semantics as the `+`'s left click), then one row per
+/// profile in config order — the context-menu submenu's composition.
+/// An empty profile list yields no rows: zero profiles, no dropdown
+/// (the flat-menu ruling).
+fn dropdown_rows(profiles: &[Profile]) -> Vec<DropdownRow> {
+    if profiles.is_empty() {
+        return Vec::new();
+    }
+    let mut rows = vec![DropdownRow {
+        label: NEW_TAB_LABEL.to_owned(),
+        profile: None,
+    }];
+    rows.extend(
+        profiles
+            .iter()
+            .enumerate()
+            .map(|(index, profile)| DropdownRow {
+                label: profile.name.clone(),
+                profile: Some(index),
+            }),
+    );
+    rows
+}
+
+/// The dropdown's rect, bar-local: right edge pinned at the strip's
+/// right corner with growth entirely leftward (the tooltip rule, so
+/// it can never overflow the surface's right edge), width from the
+/// widest row label plus padding, rows stacked on
+/// [`DROPDOWN_ROW_HEIGHT`], popping to the terminal's side of the
+/// strip (`side`, the tooltip derivation reused).
+fn dropdown_bounds(
+    bar_width: f32,
+    widest_label: f32,
+    row_count: usize,
+    metrics: &BarMetrics,
+    side: TooltipSide,
+) -> Rectangle {
+    let width = widest_label + DROPDOWN_PADDING_X * 2.0;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "row count is far below 2^24, so usize -> f32 is exact"
+    )]
+    let height = row_count as f32 * DROPDOWN_ROW_HEIGHT;
+    let y = match side {
+        TooltipSide::Below => metrics.bar_height + DROPDOWN_GAP,
+        TooltipSide::Above => -height - DROPDOWN_GAP,
+    };
+    Rectangle::new(Point::new(bar_width - width, y), Size::new(width, height))
+}
+
+/// Which dropdown row a point lands on, `None` outside the
+/// dropdown's rect: the pure press classification behind dismissal —
+/// a row pick and an away-press close both reduce to this.
+fn dropdown_row_at(dropdown: Rectangle, point: Point) -> Option<usize> {
+    if !dropdown.contains(point) {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a contained point is inside the rect, so the offset is a \
+                  non-negative row multiple; truncation is the floor the row index is"
+    )]
+    Some(((point.y - dropdown.y) / DROPDOWN_ROW_HEIGHT) as usize)
 }
 
 /// The settings tooltip's rect, bar-local: the right edge pinned at
@@ -748,6 +837,16 @@ struct State {
     /// The new-tab button's tooltip label paragraph, cached the same
     /// way (one constant label).
     newtab_tooltip: TitleParagraph,
+    /// The dropdown's row label paragraphs (label + paragraph pairs),
+    /// cached like the titles and rebuilt whenever the profile list
+    /// changes — a config edit while the dropdown is open re-lays
+    /// the rows on the next frame.
+    dropdown_paragraphs: Vec<(String, TitleParagraph)>,
+    /// Whether the profile dropdown is open. Bar-local by design: the
+    /// flag lives in the bar's widget tree, and hiding the surface
+    /// destroys that tree with it — an open dropdown can never
+    /// survive a hide/show cycle (STOP-confirmed).
+    dropdown_open: bool,
     click: Option<click::Click>,
     drag: Option<Drag>,
     slots: HashMap<TabId, SlotAnimation>,
@@ -802,6 +901,15 @@ pub struct TabBar<'a, Message> {
     /// onto the same `Action::NewTab` path as the `Ctrl+Shift+T`
     /// keybind, so the click is byte-identical to the keypress.
     on_new_tab: Option<Box<dyn Fn() -> Message + 'a>>,
+    /// Reports a profile-row pick from the dropdown: the app maps it
+    /// onto the same `Action::NewProfileTab(index)` path the
+    /// context-menu submenu uses (index into the same profile list,
+    /// resolved — and stale-warned — at apply time).
+    on_profile_pick: Option<Box<dyn Fn(usize) -> Message + 'a>>,
+    /// The configured profiles the dropdown lists. The app passes
+    /// the same `config.profiles` slice the context menu reads, so
+    /// both surfaces agree on order and membership.
+    profiles: &'a [Profile],
     /// The active inline rename: which tab is being renamed and the
     /// text input overlaying its button. Built by the app, positioned
     /// by the bar.
@@ -827,6 +935,8 @@ where
             on_rename_end: None,
             on_settings: None,
             on_new_tab: None,
+            on_profile_pick: None,
+            profiles: &[],
             rename: None,
             tooltip_side: TooltipSide::default(),
         }
@@ -881,6 +991,19 @@ where
         self
     }
 
+    /// Sets the message published when a profile row is picked from
+    /// the dropdown: the row's index into [`TabBar::profiles`].
+    pub fn on_profile_pick(mut self, on_profile_pick: impl Fn(usize) -> Message + 'a) -> Self {
+        self.on_profile_pick = Some(Box::new(on_profile_pick));
+        self
+    }
+
+    /// Sets the profiles the `+`'s right-click dropdown lists.
+    pub fn profiles(mut self, profiles: &'a [Profile]) -> Self {
+        self.profiles = profiles;
+        self
+    }
+
     /// Sets which vertical side of the strip the settings tooltip pops
     /// to: the terminal's side.
     pub fn tooltip_side(mut self, side: TooltipSide) -> Self {
@@ -932,6 +1055,25 @@ where
         }
         state.tooltip.update(label_text(SETTINGS_LABEL, font));
         state.newtab_tooltip.update(label_text(NEW_TAB_LABEL, font));
+
+        // The dropdown's row labels, cached like the titles: the vec
+        // is rebuilt only when the labels change, the paragraphs
+        // re-laid every pass (the titles' cost model).
+        let rows = dropdown_rows(self.profiles);
+        let labels_match = state
+            .dropdown_paragraphs
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .eq(rows.iter().map(|row| row.label.as_str()));
+        if !labels_match {
+            state.dropdown_paragraphs = rows
+                .iter()
+                .map(|row| (row.label.clone(), TitleParagraph::default()))
+                .collect();
+        }
+        for (label, paragraph) in &mut state.dropdown_paragraphs {
+            paragraph.update(label_text(label, font));
+        }
     }
 
     /// The current button geometry, bar-local (origin at the bar's
@@ -1360,12 +1502,28 @@ where
             }
         }
 
-        if !matches!(button, Button::Left | Button::Middle) {
-            return;
-        }
         let Some(point) = point else {
             return;
         };
+
+        // The `+`'s right-press opens the profile dropdown exactly
+        // when ≥1 profile exists — zero profiles keeps the strip's
+        // right-click today's no-op (the context menu's zero-profiles
+        // flat-menu ruling). Toggle-close never runs here: while the
+        // dropdown is open, its overlay sees and captures every press
+        // first (see `DropdownOverlay::update`), so this branch only
+        // ever handles the closed-side press.
+        if button == Button::Right {
+            if newtab_rect.contains(point) && !self.profiles.is_empty() {
+                state.dropdown_open = true;
+                shell.capture_event();
+                shell.request_redraw();
+            }
+            return;
+        }
+        if !matches!(button, Button::Left | Button::Middle) {
+            return;
+        }
         // The settings target routes ahead of the tab row: a left
         // press inside it opens settings through the app's handler, a
         // middle press does nothing, and the press never arms a tab
@@ -1457,9 +1615,8 @@ where
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         // While a rename is active, host its input as an overlay
         // exactly over the renamed tab's button. The rename overlay
-        // outranks the tooltip below: the input is interactive, the
-        // tip is dressing, and a press on the settings target commits
-        // the rename anyway.
+        // outranks everything below: the input is interactive, and a
+        // press on either corner target commits the rename anyway.
         if self.rename.is_some() {
             let rename_tab = self.rename.as_ref().map(|(tab, _)| *tab)?;
             let index = self.tabs.iter().position(|tab| tab.id == rename_tab)?;
@@ -1483,13 +1640,32 @@ where
             })));
         }
 
-        // The settings tooltip rides the same overlay pass — see
-        // [`TooltipOverlay`].
         let bounds = layout.bounds();
+        let absolute = Rectangle::new(bounds.position() + translation, bounds.size());
+
+        // While the dropdown is open it outranks the tooltip — the
+        // dropdown is the stronger affordance at that corner, so the
+        // `+`'s tip is suppressed — and it must be an overlay at all
+        // because its rect hangs over the terminal: only the overlay
+        // pass sees presses there, ahead of the tree, and a captured
+        // overlay press reaches nothing else (iced's user_interface).
+        if !self.profiles.is_empty() && tree.state.downcast_ref::<State>().dropdown_open {
+            return Some(overlay::Element::new(Box::new(DropdownOverlay {
+                state: tree.state.downcast_mut::<State>(),
+                profiles: self.profiles,
+                on_new_tab: &self.on_new_tab,
+                on_profile_pick: &self.on_profile_pick,
+                side: self.tooltip_side,
+                bounds: absolute,
+            })));
+        }
+
+        // Otherwise the corner buttons' tooltips ride the same
+        // overlay pass — see [`TooltipOverlay`].
         Some(overlay::Element::new(Box::new(TooltipOverlay {
             state: tree.state.downcast_ref::<State>(),
             side: self.tooltip_side,
-            bounds: Rectangle::new(bounds.position() + translation, bounds.size()),
+            bounds: absolute,
         })))
     }
 
@@ -1803,6 +1979,186 @@ fn paint_tip(renderer: &mut Renderer, theme: &Theme, tip: Rectangle, paragraph: 
         pane_bg,
         tip,
     );
+}
+
+/// The profile dropdown, hand-drawn on the overlay pass (the tooltip
+/// precedent — no hosted menu machinery): a pane-inverted bubble of
+/// rows beside the strip's right corner, one row per
+/// [`dropdown_rows`] entry. It exists only while open, and while it
+/// exists it owns every press: the overlay pass runs ahead of the
+/// tree, so a captured press reaches nothing else — no spawn from the
+/// `+` under a toggle press, no tab select, no drag armed, no
+/// fall-through to the terminal below (iced's `user_interface`
+/// forwards a captured overlay event to nothing).
+struct DropdownOverlay<'a, 'b, Message> {
+    /// The bar's state: the open flag (cleared on any press) and the
+    /// cached row label paragraphs.
+    state: &'a mut State,
+    /// The profile list the rows are built from — the bar's slice for
+    /// this frame.
+    profiles: &'a [Profile],
+    /// The plain row's launch — the `+`'s left-click handler.
+    on_new_tab: &'a Option<Box<dyn Fn() -> Message + 'b>>,
+    /// A profile row's launch — the context-menu submenu's handler.
+    on_profile_pick: &'a Option<Box<dyn Fn(usize) -> Message + 'b>>,
+    /// Which vertical side of the strip the dropdown pops to.
+    side: TooltipSide,
+    /// The bar's absolute bounds (translation applied).
+    bounds: Rectangle,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '_, Message> {
+    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        let rows = dropdown_rows(self.profiles);
+        let widest = self
+            .state
+            .dropdown_paragraphs
+            .iter()
+            .map(|(_, paragraph)| paragraph.min_width())
+            .fold(0.0, f32::max);
+        let bar_local = dropdown_bounds(self.bounds.width, widest, rows.len(), &METRICS, self.side);
+        let position = self.bounds.position() + Vector::new(bar_local.x, bar_local.y);
+        layout::Node::new(bar_local.size()).move_to(position)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        // Dismissal is press-driven and captured: every press closes
+        // the dropdown, a left press on a row first publishes its
+        // launch, and every press is captured so nothing under the
+        // dropdown — the `+` itself (toggle), the strip, the terminal
+        // — acts on it. Motion and keyboard pass through: the bar
+        // handles no keyboard, and row hover rides the cursor's own
+        // frames.
+        let Event::Mouse(MouseEvent::ButtonPressed(button)) = event else {
+            return;
+        };
+        let dropdown = layout.bounds();
+        let row = cursor
+            .position()
+            .and_then(|point| dropdown_row_at(dropdown, point))
+            .and_then(|index| {
+                dropdown_rows(self.profiles)
+                    .get(index)
+                    .map(|row| row.profile)
+            });
+        if *button == Button::Left
+            && let Some(profile) = row
+        {
+            let message = match profile {
+                None => self.on_new_tab.as_ref().map(|on_new_tab| on_new_tab()),
+                Some(index) => self
+                    .on_profile_pick
+                    .as_ref()
+                    .map(|on_profile_pick| on_profile_pick(index)),
+            };
+            if let Some(message) = message {
+                shell.publish(message);
+            }
+        }
+        self.state.dropdown_open = false;
+        shell.capture_event();
+        shell.request_redraw();
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        // Pointer over the rows only: elsewhere the interaction falls
+        // back to whatever the strip itself reports.
+        let over_rows = cursor
+            .position()
+            .is_some_and(|point| dropdown_row_at(layout.bounds(), point).is_some());
+        if over_rows {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::None
+        }
+    }
+
+    // The pane_bg/pane_fg names match the PaintContext field
+    // vocabulary; `similar_names` resolves its level at the fn, so
+    // the expect rides here rather than on the binding.
+    #[expect(
+        clippy::similar_names,
+        reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
+    )]
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+    ) {
+        let dropdown = layout.bounds();
+        let (pane_bg, pane_fg) = pane_colors();
+        // The pane pair swapped, the tooltip rule: a
+        // foreground-colored bubble carrying the strip's color as its
+        // text stays readable on light and dark panes alike.
+        renderer.fill_quad(
+            Quad {
+                bounds: dropdown,
+                border: Border {
+                    radius: theme.cosmic().radius_s().into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            pane_fg,
+        );
+
+        let hovered = cursor_position
+            .position()
+            .and_then(|point| dropdown_row_at(dropdown, point));
+        for (index, (_, paragraph)) in self.state.dropdown_paragraphs.iter().enumerate() {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "row count is far below 2^24, so usize -> f32 is exact"
+            )]
+            let row_bounds = Rectangle::new(
+                Point::new(dropdown.x, dropdown.y + index as f32 * DROPDOWN_ROW_HEIGHT),
+                Size::new(dropdown.width, DROPDOWN_ROW_HEIGHT),
+            );
+            // Rows highlight on hover like tab bodies: a subtle tint
+            // over the bubble (row metrics and this treatment are
+            // OQ-2, ratified at the hardware STOP).
+            if hovered == Some(index) {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: row_bounds,
+                        border: Border {
+                            radius: theme.cosmic().radius_s().into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.15, ..pane_bg },
+                );
+            }
+            let text_y = row_bounds.y + (row_bounds.height - paragraph.min_height()) / 2.0;
+            renderer.fill_paragraph(
+                paragraph.raw(),
+                Point::new(row_bounds.x + DROPDOWN_PADDING_X, text_y),
+                pane_bg,
+                dropdown,
+            );
+        }
+    }
 }
 
 /// Hosts the inline-rename input over its tab button, delegating
@@ -2337,6 +2693,110 @@ mod tests {
         assert_eq!(plus.horizontal.width, plus.vertical.height);
         assert_eq!(plus.horizontal.height, plus.vertical.width);
         assert!(plus.horizontal.height < plus.horizontal.width);
+    }
+
+    // The profile dropdown: row model, bounds, and the dismissal
+    // classification — all pure, space-agnostic (a rect and a point
+    // in one space).
+
+    fn profile(name: &str) -> crate::profile::Profile {
+        crate::profile::Profile {
+            name: name.to_string(),
+            command: "htop".to_string(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn dropdown_rows_is_empty_without_profiles() {
+        // Zero profiles: no dropdown at all — the `+` stays a plain
+        // new-tab button (the context menu's flat-menu ruling).
+        assert!(dropdown_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn dropdown_rows_lead_with_the_plain_row_then_profiles_in_order() {
+        // OQ-1's standing composition: row 0 is the plain New Tab —
+        // the default spawn — then one row per profile in config
+        // order (the context-menu submenu's composition).
+        let profiles = [profile("ssh-web"), profile("htop")];
+        let rows = dropdown_rows(&profiles);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].label, "New Tab");
+        assert_eq!(rows[0].profile, None);
+        assert_eq!(rows[1].label, "ssh-web");
+        assert_eq!(rows[1].profile, Some(0));
+        assert_eq!(rows[2].label, "htop");
+        assert_eq!(rows[2].profile, Some(1));
+    }
+
+    #[test]
+    fn dropdown_bounds_pin_the_right_edge_and_grow_leftward() {
+        // The tooltip rule: the right edge is the strip's corner
+        // whatever the widest label, growth entirely leftward — the
+        // dropdown can never overflow the surface's right edge.
+        let narrow = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Below);
+        let wide = dropdown_bounds(1000.0, 200.0, 3, &M, TooltipSide::Below);
+        assert_eq!(narrow.x + narrow.width, 1000.0);
+        assert_eq!(wide.x + wide.width, 1000.0);
+        assert_eq!(narrow.width, 60.0 + DROPDOWN_PADDING_X * 2.0);
+        assert!(wide.x < narrow.x);
+    }
+
+    #[test]
+    fn dropdown_bounds_stack_rows_on_the_row_height() {
+        let bounds = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Below);
+        assert_eq!(bounds.height, 3.0 * DROPDOWN_ROW_HEIGHT);
+    }
+
+    #[test]
+    fn dropdown_bounds_clear_the_strip_toward_the_terminal_side() {
+        // Below: the dropdown starts one gap under the strip; Above:
+        // it ends one gap over it — never over the strip itself.
+        let below = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Below);
+        assert_eq!(below.y, M.bar_height + DROPDOWN_GAP);
+        let above = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Above);
+        assert_eq!(above.y + above.height, -DROPDOWN_GAP);
+        assert_eq!(above.width, below.width);
+    }
+
+    #[test]
+    fn dropdown_row_at_lands_on_each_row_in_turn() {
+        let dropdown = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Below);
+        for index in 0..3 {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "index < 3, so usize -> f32 is exact"
+            )]
+            let point = Point::new(
+                dropdown.x + 5.0,
+                dropdown.y + DROPDOWN_ROW_HEIGHT * index as f32 + 5.0,
+            );
+            assert_eq!(dropdown_row_at(dropdown, point), Some(index));
+        }
+    }
+
+    #[test]
+    fn dropdown_row_at_classifies_the_dismissal_presses() {
+        // Away-press classification: outside the rect — below the
+        // last row, beside the dropdown, above it — closes.
+        let dropdown = dropdown_bounds(1000.0, 60.0, 3, &M, TooltipSide::Below);
+        let beyond_last = Point::new(
+            dropdown.x + 5.0,
+            dropdown.y + dropdown.height + DROPDOWN_GAP,
+        );
+        assert_eq!(dropdown_row_at(dropdown, beyond_last), None);
+        assert_eq!(
+            dropdown_row_at(dropdown, Point::new(dropdown.x - 5.0, dropdown.y + 5.0)),
+            None
+        );
+        assert_eq!(
+            dropdown_row_at(dropdown, Point::new(dropdown.x + 5.0, dropdown.y - 5.0)),
+            None
+        );
+        // A point exactly at the bottom edge is outside (half-open).
+        let bottom_edge = Point::new(dropdown.x + 5.0, dropdown.y + dropdown.height);
+        assert_eq!(dropdown_row_at(dropdown, bottom_edge), None);
     }
 
     #[test]
