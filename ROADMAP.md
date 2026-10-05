@@ -32,6 +32,7 @@ High-level feature list.
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] Context menu in tab
 - [x] Rename tab - shortcut key and context menu (`Ctrl+Shift+R` and the "Rename Tab" row, both starting the inline rename on the active tab; below two tabs it is a swallowed no-op)
+- [x] Duplicate tab - shortcut key and context menu (`Ctrl+Shift+D` and the "Duplicate Tab" row, the same verb as the remote `duplicate-tab`: a fresh shell in the active tab's cwd right after it, carrying the source's rename pin; the running command and `default_profile` never apply)
 - [ ] Settings in sidebar instead of separate modal
 - [x] CLI actions (`new-tab [--cwd] [--cmd]`, `close-tab`/`rename-tab`/`duplicate-tab` with `[--tab-index]`, and strict `select-tab N`, over the single-instance D-Bus seam; indices 1-based; `--is-visible` queries the read-only `Visible` property on the `…CosmicExtDropterm.V1` state interface)
 
