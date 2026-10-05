@@ -206,11 +206,6 @@ pub enum PlannedWrite {
     /// reset back to the built-in default. Floors at
     /// [`DRAWER_MIN_WIDTH`] in `clamped`; the surface-relative cap
     /// is render-time (`drawer_width`).
-    // `allow`, not `expect`: the variant is bin-dead until T2's
-    // drag events construct it, but the test target already
-    // constructs it — an expect would be unfulfilled there under
-    // `--all-targets`. Delete this attribute in T2.
-    #[allow(dead_code)]
     SettingsDrawerWidth(Option<u16>),
 }
 
@@ -1369,6 +1364,16 @@ pub enum SettingsEvent {
     DeleteProfile(usize),
     /// A row's reorder press: move that profile one slot.
     ReorderProfile(usize, ReorderDirection),
+    /// The drawer's resize handle is dragging: the pointer's
+    /// window-absolute x (drawer-resize spec criterion 2).
+    /// Display-only until release — nothing writes mid-drag.
+    DrawerResize(f32),
+    /// The handle's press ended: commit the live width if the drag
+    /// changed it (criterion 3).
+    DrawerResizeReleased,
+    /// The handle was double-clicked: reset to the built-in
+    /// default width and clear the stored value (criterion 5).
+    DrawerReset,
 }
 
 /// The write a toggle flip commits. `None` for keys without a toggle.
@@ -1467,8 +1472,68 @@ pub const WIDTH_CAP_FRACTION: f32 = 0.5;
 /// this pure seam never sees.
 pub fn drawer_width(preferred: Option<u16>, surface_width: f32) -> f32 {
     let preferred = preferred.map_or(f32::from(DEFAULT_DRAWER_WIDTH), f32::from);
+    drawer_width_clamp(preferred, surface_width)
+}
+
+/// The band every width passes through — render's stored/default
+/// path and the drag's live path share it, so a live drag can never
+/// leave the band render would clamp back into anyway.
+fn drawer_width_clamp(preferred: f32, surface_width: f32) -> f32 {
     let cap = (surface_width * WIDTH_CAP_FRACTION).max(f32::from(DRAWER_MIN_WIDTH));
     preferred.clamp(f32::from(DRAWER_MIN_WIDTH), cap)
+}
+
+/// The drawer drag's live width from the pointer's window-absolute
+/// x (spec criterion 2): the pane is pinned to the surface's right
+/// edge, so its width is the pointer's distance from that edge —
+/// rounded to whole px and clamped through the shared band. The
+/// `surface_width - x` target can be negative on a fling past the
+/// edge; the band floors it, never a panic.
+pub fn drawer_drag_px(pointer_x: f32, surface_width: f32) -> u16 {
+    px_u16(drawer_width_clamp(surface_width - pointer_x, surface_width))
+}
+
+/// Round a banded px value into the `u16` domain the live state and
+/// the config field share. Safe by construction: callers clamp
+/// below `u16::MAX` first (the band's cap is half a surface width).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded and clamped into the u16 band before the cast"
+)]
+fn px_u16(px: f32) -> u16 {
+    px.round() as u16
+}
+
+/// The write a drag release commits (spec criterion 3): only a real
+/// drag writes — `None` (a plain click armed no live value) and a
+/// drag that lands back on the stored px both commit nothing, so
+/// the file never churns without a change.
+pub fn drawer_release_write(live: Option<u16>, stored: Option<u16>) -> Option<PlannedWrite> {
+    live.filter(|&px| Some(px) != stored)
+        .map(|px| PlannedWrite::SettingsDrawerWidth(Some(px)))
+}
+
+/// Wrap a drawer page with the resize handle (spec criterion 2):
+/// the handle leads the page in a row, full height, so the drag
+/// edge sits at the pane's leading side for whichever page is
+/// showing. The handle emits [`SettingsEvent::DrawerResize`] &
+/// kin directly — the events ride the page's existing
+/// `Message::Settings` funnel, so both pages share one drag path.
+pub fn drawer_with_handle(
+    content: Element<'static, SettingsEvent>,
+) -> Element<'static, SettingsEvent> {
+    widget::row![
+        crate::drawer_handle::DrawerHandle::new(
+            SettingsEvent::DrawerResize,
+            || SettingsEvent::DrawerResizeReleased,
+            || SettingsEvent::DrawerReset,
+        ),
+        content,
+    ]
+    .width(cosmic::iced::Length::Fill)
+    .height(cosmic::iced::Length::Fill)
+    .into()
 }
 
 /// The settings drawer's content: the instant-apply sections as
@@ -1956,6 +2021,49 @@ mod tests {
         assert_eq!(
             PlannedWrite::SettingsDrawerWidth(None).clamped(),
             PlannedWrite::SettingsDrawerWidth(None)
+        );
+    }
+
+    #[test]
+    fn drawer_drag_targets_the_pointer_absolutely() {
+        // Criterion 2: the pane is pinned to the surface's right
+        // edge, so the drag's width is the pointer's window-absolute
+        // distance from that edge — rounded to whole px, clamped
+        // through the same policy as render, so a live drag can
+        // never leave the band either.
+        assert_eq!(drawer_drag_px(1440.0, 2000.0), 560);
+        // Sub-px motion rounds, it doesn't tear.
+        assert_eq!(drawer_drag_px(1440.4, 2000.0), 560);
+        assert_eq!(drawer_drag_px(1439.6, 2000.0), 560);
+        // Beyond the cap (width 1100 > 1000) and below the floor
+        // (width 100) clamp exactly like render.
+        assert_eq!(drawer_drag_px(900.0, 2000.0), 1000);
+        assert_eq!(drawer_drag_px(1900.0, 2000.0), 344);
+        // A fling past the surface's right edge saturates low and
+        // floors — never negative, never a panic.
+        assert_eq!(drawer_drag_px(2100.0, 2000.0), 344);
+    }
+
+    #[test]
+    fn drawer_release_commits_only_real_drags() {
+        // Criterion 3: one write per drag release — and no write at
+        // all without one. A plain click on the handle arms no live
+        // value; a drag that lands back on the stored px rewrites
+        // nothing (no file churn); only a real change persists.
+        assert_eq!(drawer_release_write(None, None), None);
+        assert_eq!(drawer_release_write(None, Some(480)), None);
+        assert_eq!(
+            drawer_release_write(Some(600), Some(600)),
+            None,
+            "dragged back to the stored width — no write"
+        );
+        assert_eq!(
+            drawer_release_write(Some(600), None),
+            Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
+        );
+        assert_eq!(
+            drawer_release_write(Some(600), Some(500)),
+            Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
         );
     }
 

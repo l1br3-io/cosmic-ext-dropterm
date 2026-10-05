@@ -466,6 +466,13 @@ pub struct DropTerm {
     /// slider state, cleared on an explicit drawer close so a
     /// reopened drawer renders purely from config (spec criterion 8).
     settings_buffer: settings::SettingsBuffer,
+    /// The settings drawer's live drag width in px (drawer-resize
+    /// spec criterion 2): the buffer-draft pattern — display-only
+    /// while the handle's press is held, winning over the stored
+    /// preference at render through the same clamp. One write lands
+    /// at release (criterion 3); the double-click reset and drawer
+    /// close clear it.
+    drawer_drag: Option<u16>,
     /// Whether the terminal's context menu is open: the `TerminalBox`
     /// press handler's latch, read by the view through
     /// `context_menu::open_trees` and fed back to the box so any
@@ -1056,6 +1063,22 @@ impl DropTerm {
             ));
         }
         None
+    }
+
+    /// The surface's current width in px: the value both the drawer
+    /// width policy (render + drag) and the height drag target
+    /// against. 480 while no output has reported a size — the same
+    /// fallback the drawer's first frame renders at.
+    fn current_surface_width(&self) -> f32 {
+        self.output_size.map_or(480.0, |(width, _)| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "output px are < 2^24, exact in f32"
+            )]
+            {
+                geometry::surface_width(width as f32, self.config.width_percent) as f32
+            }
+        })
     }
 
     /// The one path every config write goes through: the drag release
@@ -3640,6 +3663,7 @@ impl Application for DropTerm {
             profile_selection: None,
             profile_draft: None,
             settings_buffer: settings::SettingsBuffer::default(),
+            drawer_drag: None,
             context_menu_open: false,
             dbus_conn: None,
             dbus_shared: Arc::new(Mutex::new(dbus_state::State {
@@ -4000,20 +4024,12 @@ impl Application for DropTerm {
             return content;
         }
         // The drawer pane's width comes from the drawer-resize width
-        // policy (spec criterion 4): the stored preference — `None`
-        // until the user first drags — against the live surface
-        // width, clamped to [344px, 50% of surface]. Computed once
-        // here; the drag interaction (T2) feeds a live value through
-        // the same pure clamp.
-        let surface_width = self.output_size.map_or(480.0, |(width, _)| {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "output px are < 2^24, exact in f32"
-            )]
-            {
-                geometry::surface_width(width as f32, self.config.width_percent) as f32
-            }
-        });
+        // policy (spec criterion 4): a live drag value (criterion 2)
+        // wins while the handle's press is held, else the stored
+        // preference — `None` until the user first drags — against
+        // the live surface width, clamped to [344px, 50% of
+        // surface].
+        let surface_width = self.current_surface_width();
         // The drawer hosts two pages (profile-settings criterion 1):
         // the five-section Settings page and the Profiles page its
         // entry row flips to. The flip is this switch — title plus
@@ -4042,8 +4058,11 @@ impl Application for DropTerm {
             None,
             Message::Action(Action::Settings),
             content,
-            drawer_content.map(Message::Settings),
-            settings::drawer_width(self.config.settings_drawer_width, surface_width),
+            settings::drawer_with_handle(drawer_content).map(Message::Settings),
+            settings::drawer_width(
+                self.drawer_drag.or(self.config.settings_drawer_width),
+                surface_width,
+            ),
         )
         .into()
     }
@@ -4927,6 +4946,39 @@ impl DropTerm {
                                 }
                             }
                         }
+                    }
+                    settings::SettingsEvent::DrawerResize(pointer_x) => {
+                        // Live width (criterion 2): display-only while
+                        // the press is held — the same band render
+                        // clamps through, so the drag can never leave
+                        // it. Nothing writes mid-drag.
+                        self.drawer_drag = Some(settings::drawer_drag_px(
+                            pointer_x,
+                            self.current_surface_width(),
+                        ));
+                    }
+                    settings::SettingsEvent::DrawerResizeReleased => {
+                        // One write per drag (criterion 3), and only a
+                        // real one: a plain click armed no live value,
+                        // and a drag landing back on the stored px
+                        // rewrites nothing.
+                        let write = settings::drawer_release_write(
+                            self.drawer_drag,
+                            self.config.settings_drawer_width,
+                        );
+                        self.drawer_drag = None;
+                        if let Some(write) = write {
+                            self.write_config(settings::WriteKind::Bare, &write);
+                        }
+                    }
+                    settings::SettingsEvent::DrawerReset => {
+                        // Double-click (criterion 5): back to the
+                        // built-in default, stored value cleared.
+                        self.drawer_drag = None;
+                        self.write_config(
+                            settings::WriteKind::Bare,
+                            &settings::PlannedWrite::SettingsDrawerWidth(None),
+                        );
                     }
                 }
             }
