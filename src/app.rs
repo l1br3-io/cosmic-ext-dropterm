@@ -760,6 +760,10 @@ impl DropTerm {
             // the list is empty by construction, so both positions
             // coincide — `true` just names the shipped default.
             self.active_tab = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
+            // The spawn title through the live mode (the
+            // `open_new_tab` precedent): the cwd modes read the
+            // preset cwd a default profile seeded, if any.
+            self.retitle_tab(self.active_tab);
         }
     }
 
@@ -1337,6 +1341,9 @@ impl DropTerm {
         };
         if let Some(tab) = self.spawn_shell(&command, spawn_cwd) {
             let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);
+            // The spawn title through the live mode, exactly like the
+            // keybind funnel's shared tail (see `open_new_tab`).
+            self.retitle_tab(at);
             let switch = self.set_active_tab(at);
             return Task::batch([switch, self.mark_session_dirty()]);
         }
@@ -1910,6 +1917,13 @@ impl DropTerm {
                 self.config.new_tab_after_current,
                 tab,
             );
+            // The spawn title: `Tab::new` parks at `Terminal N`, but
+            // `spawn_shell` already seeded the cwd cache with the
+            // spawn directory — resolving through the live mode here
+            // means the cwd modes never show the default number
+            // while the directory is known (the `plan_respawn`
+            // precedent; Shell and Numbered land right back on it).
+            self.retitle_tab(at);
             let switch = self.set_active_tab(at);
             Task::batch([switch, self.mark_session_dirty()])
         } else {
@@ -1957,6 +1971,11 @@ impl DropTerm {
             // landing: `new_tab_after_current` moves new tabs, never
             // duplicates.
             let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
+            // The spawn title through the live mode: a renamed
+            // duplicate keeps its pin (`title_override` wins the
+            // resolution), an unrenamed one resolves from the cwd it
+            // duplicated into — before its own shell reports.
+            self.retitle_tab(at);
             let switch = self.set_active_tab(at);
             return Task::batch([switch, self.mark_session_dirty()]);
         }
@@ -2162,10 +2181,11 @@ impl DropTerm {
 
     /// Re-resolves one tab's displayed title from its stored state —
     /// the shared tail of every title apply point: a report arriving
-    /// or resetting, a rename clearing, and the mode-flip retitle
-    /// loop. The cwd comes from the `tab_cwds` cache, seeded at spawn
-    /// and refreshed by [`Self::check_tab_cwd`] — which is why the
-    /// report handlers sample the cwd *before* resolving.
+    /// or resetting, a rename clearing, the mode-flip retitle loop,
+    /// and a fresh tab's spawn (before any report exists). The cwd
+    /// comes from the `tab_cwds` cache, seeded at spawn and refreshed
+    /// by [`Self::check_tab_cwd`] — which is why the report handlers
+    /// sample the cwd *before* resolving.
     fn retitle_tab(&mut self, tab_index: usize) {
         let mode = self.config.tab_title_mode;
         if let Some(tab) = self.tabs.get_mut(tab_index) {

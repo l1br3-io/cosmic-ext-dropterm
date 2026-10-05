@@ -395,10 +395,17 @@ fn last_cwd_segment(cwd: &Path) -> Option<String> {
 
 /// Guake's Abbreviated Path reshape: the first cwd spelling the
 /// report ends with gets abbreviated; a report with no directory
-/// suffix — or no readable cwd — stays verbatim.
+/// suffix — or no readable cwd — stays verbatim. With no report at
+/// all — a fresh spawn before the shell's first title, or a shell
+/// that never titles — the mode abbreviates the cwd itself
+/// (preferring its `~` spelling), so it still shows a path; only a
+/// missing cwd too falls back to the `Terminal N` default.
 fn abbreviated_report(shell_title: Option<&str>, cwd: Option<&Path>, id: TabId) -> String {
     let Some(report) = shell_title else {
-        return next_default_title(id);
+        return match cwd.map(abbreviated_cwd_display) {
+            Some(display) => display,
+            None => next_default_title(id),
+        };
     };
     let Some(cwd) = cwd else {
         return report.to_owned();
@@ -409,6 +416,20 @@ fn abbreviated_report(shell_title: Option<&str>, cwd: Option<&Path>, id: TabId) 
         }
     }
     report.to_owned()
+}
+
+/// The no-report Abbreviated Path title: the cwd's own spelling,
+/// cut Guake-style — the `~` form when the cwd lies under `$HOME`
+/// (the shorter, conventional display), the absolute form otherwise.
+fn abbreviated_cwd_display(cwd: &Path) -> String {
+    // `cwd_spellings` always yields the absolute spelling first and
+    // appends the `~` form only when it exists, so the last entry is
+    // the preferred one.
+    let spellings = cwd_spellings(cwd);
+    let preferred = spellings
+        .last()
+        .expect("the absolute spelling always exists");
+    abbreviate_suffix(preferred, preferred)
 }
 
 /// The spellings of a cwd a shell title may end with: the absolute
@@ -954,11 +975,31 @@ mod tests {
             TabId(0),
             None,
         );
+        // The no-report spawn form prefers the same `~` spelling: a
+        // fresh tab — or a shell that never titles — shows the
+        // abbreviated cwd itself, never the default number, while
+        // the cwd is known.
+        let spawned = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            None,
+            Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            TabId(0),
+            None,
+        );
+        let spawned_home = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            None,
+            Some(Path::new("/home/jpt")),
+            TabId(0),
+            None,
+        );
         match &saved_home {
             Some(home) => unsafe { std::env::set_var("HOME", home) },
             None => unsafe { std::env::remove_var("HOME") },
         }
         assert_eq!(title, "jpt@box:~/s/o/l/ced");
+        assert_eq!(spawned, "~/s/o/l/ced");
+        assert_eq!(spawned_home, "~");
     }
 
     #[test]
@@ -1000,14 +1041,23 @@ mod tests {
     }
 
     #[test]
-    fn abbreviated_path_without_a_report_shows_the_default_number() {
+    fn abbreviated_path_without_a_report_abbreviates_the_cwd_itself() {
+        // HOME-independent: `/tmp` is no test's HOME, so only the
+        // absolute spelling exists and the outcome cannot drift with
+        // the environment.
         let title = resolve_title(
             TabTitleMode::AbbreviatedPath,
             None,
-            Some(Path::new("/home/jpt/src")),
-            TabId(2),
+            Some(Path::new("/tmp/a/bc/de")),
+            TabId(0),
             None,
         );
+        assert_eq!(title, "/t/a/b/de");
+    }
+
+    #[test]
+    fn abbreviated_path_without_a_report_or_cwd_shows_the_default_number() {
+        let title = resolve_title(TabTitleMode::AbbreviatedPath, None, None, TabId(2), None);
         assert_eq!(title, "Terminal 3");
     }
 
@@ -1048,6 +1098,21 @@ mod tests {
             None,
         );
         assert_eq!(title, "jpt@box:~/src");
+    }
+
+    #[test]
+    fn last_segment_at_spawn_shows_the_spawn_cwd_before_any_report() {
+        // The form a fresh tab opens with: no shell report exists
+        // yet, and the mode must not wait for one — the spawn cwd
+        // (seeded in the app's cache at spawn) is already known.
+        let title = resolve_title(
+            TabTitleMode::LastSegment,
+            None,
+            Some(Path::new("/home/jpt")),
+            TabId(4),
+            None,
+        );
+        assert_eq!(title, "jpt");
     }
 
     #[test]
@@ -1171,18 +1236,20 @@ mod tests {
     }
 
     #[test]
-    fn plan_respawn_in_abbreviated_mode_falls_back_to_the_fresh_number() {
+    fn plan_respawn_in_abbreviated_mode_titles_from_the_seeded_cwd() {
         // The OSC tracker resets with the new PTY, so AbbreviatedPath
         // has no report to shorten until the new shell emits one; the
-        // seeded cwd is what those future reports resolve against.
+        // seeded cwd itself is abbreviated meanwhile — HOME-
+        // independent: `/tmp` is no test's HOME, so only the absolute
+        // spelling exists.
         let plan = plan_respawn(
             TabTitleMode::AbbreviatedPath,
             TabId(6),
-            Some(Path::new("/home/jpt/src/ced")),
+            Some(Path::new("/tmp/src/ced")),
             None,
             "htop",
         );
-        assert_eq!(plan.title, "Terminal 7");
+        assert_eq!(plan.title, "/t/s/ced");
     }
 
     #[test]

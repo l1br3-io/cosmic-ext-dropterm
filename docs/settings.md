@@ -41,7 +41,7 @@ These Behavior toggles default to `true`, which is exactly the pre-settings beha
 
 - `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
 - `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
-- `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
+- `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H` (the home-directory new tab), the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
 
 ## Input ranges and limitations
 

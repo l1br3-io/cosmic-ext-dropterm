@@ -41,7 +41,7 @@ High-level feature list.
 ## Later
 - [ ] Pin tab
 - [ ] test profile and add improvements
-- [x] Configurable new-tab placement (`new_tab_after_current`, default after the active tab, Behavior-card toggle; the keybind, tab-bar `+`, and remote `new-tab` follow it, `duplicate-tab` stays after-active, session restore keeps saved order)
+- [x] Configurable new-tab placement (`new_tab_after_current`, default after the active tab, Behavior-card toggle; the keybinds (`Ctrl+Shift+T`, `Ctrl+Shift+H`), tab-bar `+`, and remote `new-tab` follow it, `duplicate-tab` stays after-active, session restore keeps saved order)
 - [ ] Session restore on login
 - [ ] Clean up unnecessary comments
 - [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
