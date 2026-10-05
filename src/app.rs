@@ -3398,6 +3398,10 @@ impl Application for DropTerm {
             // The same handler the context menu's `Settings…` row
             // uses: one click away in every tab state.
             .on_settings(|| Message::Action(Action::Settings))
+            // The same handler `Ctrl+Shift+T` uses: the click rides
+            // the default-profile/cwd-inheritance/placement funnel
+            // unchanged.
+            .on_new_tab(|| Message::Action(Action::NewTab))
             .tooltip_side(tooltip_side);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)

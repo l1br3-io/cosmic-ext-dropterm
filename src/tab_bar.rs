@@ -2,8 +2,8 @@
 
 //! The tab bar strip: one button per tab — title plus a close `×` —
 //! with the buttons shown only while more than one tab exists. The
-//! strip itself is always present, carrying the settings button at
-//! its right corner in every tab state.
+//! strip itself is always present, carrying the new-tab `+` and the
+//! settings gear at its right corner in every tab state.
 //!
 //! The button layout and hit-testing are pure functions over plain
 //! geometry (like the list operations in [`crate::tabs`]), so which
@@ -218,6 +218,24 @@ pub const BAR_HEIGHT: f32 = METRICS.bar_height;
 /// Title text size in logical pixels.
 const TITLE_FONT_SIZE: f32 = 14.0;
 
+/// One constant tooltip label's [`Text`] layout — the title
+/// paragraphs' settings (see [`TabBar::refresh_paragraphs`]) for the
+/// strip's two fixed tips.
+fn label_text(content: &str, font: cosmic::iced::Font) -> Text<&str> {
+    Text {
+        content,
+        bounds: Size::INFINITE,
+        size: Pixels(TITLE_FONT_SIZE),
+        line_height: LineHeight::default(),
+        font,
+        align_x: cosmic::iced::core::text::Alignment::Left,
+        align_y: alignment::Vertical::Center,
+        shaping: Shaping::Advanced,
+        wrapping: Wrapping::default(),
+        ellipsize: Ellipsize::None,
+    }
+}
+
 /// How far the cursor must travel horizontally from the press before a
 /// held press on a tab body counts as a drag rather than a click.
 /// Matches the movement threshold of iced's own click classification
@@ -249,7 +267,11 @@ const GEAR_TEETH: usize = 8;
 
 /// The settings tooltip's label: the same text as the context menu's
 /// item, ellipsis included (U+2026).
-const TOOLTIP_LABEL: &str = "Settings\u{2026}";
+const SETTINGS_LABEL: &str = "Settings\u{2026}";
+
+/// The new-tab button's tooltip label — and the profile dropdown's
+/// plain row 0 when it opens (the context-menu submenu's wording).
+const NEW_TAB_LABEL: &str = "New Tab";
 
 /// Tooltip geometry, logical pixels: tip height, label padding on each
 /// side, and the gap left between the strip and the popped tip.
@@ -292,20 +314,33 @@ fn settings_target(bar_width: f32, metrics: &BarMetrics) -> Rectangle {
     )
 }
 
-/// The strip's right-hand zone the tab row must keep clear of:
-/// inset + settings target + one inter-button gap, so the row ends a
-/// button-gap left of the target.
-fn settings_zone(metrics: &BarMetrics) -> f32 {
-    metrics.button_padding_x + metrics.close_size + metrics.button_gap
+/// The new-tab button's target: a square the size of a close target,
+/// anchored one gap left of the settings target — beside the gear at
+/// the strip's right corner in both edge configs. Takes no tab count
+/// (like [`settings_target`]): the identical rect whether the strip
+/// carries the corner buttons alone or a full tab row.
+fn newtab_target(bar_width: f32, metrics: &BarMetrics) -> Rectangle {
+    let gear = settings_target(bar_width, metrics);
+    Rectangle::new(
+        Point::new(gear.x - metrics.button_gap - metrics.close_size, gear.y),
+        Size::new(metrics.close_size, metrics.close_size),
+    )
 }
 
-/// The width the tab row may occupy: the bar minus the settings zone.
+/// The strip's right-hand zone the tab row must keep clear of:
+/// inset + `+` + gap + gear + gap — both corner targets and the gaps
+/// around them, so the row ends a button-gap left of the `+`.
+fn corner_zone(metrics: &BarMetrics) -> f32 {
+    metrics.button_padding_x + metrics.close_size * 2.0 + metrics.button_gap * 2.0
+}
+
+/// The width the tab row may occupy: the bar minus the corner zone.
 /// [`TabBar::button_geometry`] feeds this to [`layout_buttons`] — the
 /// one seam the drag clamp, drop indicator, rename overlay, and hit
 /// tests already share, so every consumer stays clear of the zone
 /// with no math of their own to edit.
 fn row_budget(bar_width: f32, metrics: &BarMetrics) -> f32 {
-    (bar_width - settings_zone(metrics)).max(0.0)
+    (bar_width - corner_zone(metrics)).max(0.0)
 }
 
 /// Whether the tab row renders its buttons: the strip is always
@@ -381,13 +416,47 @@ fn gear_glyph(target: Rectangle) -> GearGlyph {
     }
 }
 
+/// The `+` glyph's two bars (see [`plus_glyph`]).
+#[derive(Debug)]
+struct PlusGlyph {
+    /// The horizontal bar.
+    horizontal: Rectangle,
+    /// The vertical bar.
+    vertical: Rectangle,
+}
+
+/// The `+` glyph: two axis-aligned crossing bars sharing the target's
+/// center, with thickness and arm length scaled from the target
+/// exactly like the close mark's `×` (see [`draw_close_mark`]).
+/// Pure geometry: both bars are contained in `target` and cross at
+/// its center.
+fn plus_glyph(target: Rectangle) -> PlusGlyph {
+    let side = target.width.min(target.height);
+    let thickness = (side / 9.0).max(2.0);
+    let arm = side / 2.0 - side / 4.5;
+    let center = target.center();
+    let horizontal = Rectangle::new(
+        Point::new(center.x - arm, center.y - thickness / 2.0),
+        Size::new(arm * 2.0, thickness),
+    );
+    let vertical = Rectangle::new(
+        Point::new(center.x - thickness / 2.0, center.y - arm),
+        Size::new(thickness, arm * 2.0),
+    );
+    PlusGlyph {
+        horizontal,
+        vertical,
+    }
+}
+
 /// The settings tooltip's rect, bar-local: the right edge pinned at
-/// the strip's right corner whatever the label's width — growth is
-/// entirely leftward, so the tip can never overflow the right corner
-/// — and vertically clearing the strip toward `side` (the terminal's
-/// side).
+/// `right_edge` whatever the label's width — growth is entirely
+/// leftward, so the tip can never overflow the edge it anchors to —
+/// and vertically clearing the strip toward `side` (the terminal's
+/// side). The gear passes the strip's width as `right_edge`; the `+`
+/// passes its own target's right edge, inboard of the corner.
 fn tooltip_bounds(
-    bar_width: f32,
+    right_edge: f32,
     label_width: f32,
     metrics: &BarMetrics,
     side: TooltipSide,
@@ -398,7 +467,7 @@ fn tooltip_bounds(
         TooltipSide::Above => -TOOLTIP_HEIGHT - TOOLTIP_GAP,
     };
     Rectangle::new(
-        Point::new(bar_width - width, y),
+        Point::new(right_edge - width, y),
         Size::new(width, TOOLTIP_HEIGHT),
     )
 }
@@ -490,26 +559,33 @@ fn hit_test(buttons: &[ButtonGeometry], point: Point) -> Option<(usize, HitTarge
     })
 }
 
-/// What a press on the strip landed on: the settings target, or a
-/// part of a tab button.
+/// What a press on the strip landed on: one of the corner targets,
+/// or a part of a tab button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PressTarget {
     /// The settings button's target.
     Settings,
+    /// The new-tab button's target.
+    NewTab,
     /// A tab button's body or close mark.
     Tab(usize, HitTarget),
 }
 
-/// Classifies a bar-local `point` for pressing: the settings target is
-/// checked ahead of the tab row, so it wins over any floor-overflow
-/// button fragment that geometrically reaches under it.
+/// Classifies a bar-local `point` for pressing: the gear, then the
+/// `+`, then the tab row — a fixed order for determinism, so either
+/// corner target wins over any floor-overflow button fragment that
+/// geometrically reaches under it (the three rects cannot overlap).
 fn press_target(
     buttons: &[ButtonGeometry],
     settings: Rectangle,
+    newtab: Rectangle,
     point: Point,
 ) -> Option<PressTarget> {
     if settings.contains(point) {
         return Some(PressTarget::Settings);
+    }
+    if newtab.contains(point) {
+        return Some(PressTarget::NewTab);
     }
     hit_test(buttons, point).map(|(index, target)| PressTarget::Tab(index, target))
 }
@@ -666,9 +742,12 @@ impl SlotAnimation {
 #[derive(Default)]
 struct State {
     paragraphs: HashMap<TabId, TitleParagraph>,
-    /// The tooltip's label paragraph: one constant label, cached and
-    /// measured like the titles.
+    /// The settings tooltip's label paragraph: one constant label,
+    /// cached and measured like the titles.
     tooltip: TitleParagraph,
+    /// The new-tab button's tooltip label paragraph, cached the same
+    /// way (one constant label).
+    newtab_tooltip: TitleParagraph,
     click: Option<click::Click>,
     drag: Option<Drag>,
     slots: HashMap<TabId, SlotAnimation>,
@@ -719,6 +798,10 @@ pub struct TabBar<'a, Message> {
     /// onto the same `Action::Settings` path the context menu's
     /// `Settings…` row uses, so the button opens the identical window.
     on_settings: Option<Box<dyn Fn() -> Message + 'a>>,
+    /// Reports a left press on the new-tab target: the app maps it
+    /// onto the same `Action::NewTab` path as the `Ctrl+Shift+T`
+    /// keybind, so the click is byte-identical to the keypress.
+    on_new_tab: Option<Box<dyn Fn() -> Message + 'a>>,
     /// The active inline rename: which tab is being renamed and the
     /// text input overlaying its button. Built by the app, positioned
     /// by the bar.
@@ -743,6 +826,7 @@ where
             on_rename: None,
             on_rename_end: None,
             on_settings: None,
+            on_new_tab: None,
             rename: None,
             tooltip_side: TooltipSide::default(),
         }
@@ -787,6 +871,13 @@ where
     /// left-pressed.
     pub fn on_settings(mut self, on_settings: impl Fn() -> Message + 'a) -> Self {
         self.on_settings = Some(Box::new(on_settings));
+        self
+    }
+
+    /// Sets the message published when the new-tab target is
+    /// left-pressed.
+    pub fn on_new_tab(mut self, on_new_tab: impl Fn() -> Message + 'a) -> Self {
+        self.on_new_tab = Some(Box::new(on_new_tab));
         self
     }
 
@@ -839,18 +930,8 @@ where
             };
             state.paragraphs.entry(tab.id).or_default().update(text);
         }
-        state.tooltip.update(Text {
-            content: TOOLTIP_LABEL,
-            bounds: Size::INFINITE,
-            size: Pixels(TITLE_FONT_SIZE),
-            line_height: LineHeight::default(),
-            font,
-            align_x: cosmic::iced::core::text::Alignment::Left,
-            align_y: alignment::Vertical::Center,
-            shaping: Shaping::Advanced,
-            wrapping: Wrapping::default(),
-            ellipsize: Ellipsize::None,
-        });
+        state.tooltip.update(label_text(SETTINGS_LABEL, font));
+        state.newtab_tooltip.update(label_text(NEW_TAB_LABEL, font));
     }
 
     /// The current button geometry, bar-local (origin at the bar's
@@ -1131,6 +1212,7 @@ where
             press_target(
                 &self.button_geometry(state, bounds),
                 settings_target(bounds.width, &METRICS),
+                newtab_target(bounds.width, &METRICS),
                 point,
             )
             .is_some()
@@ -1256,6 +1338,7 @@ where
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         let settings_rect = settings_target(bounds.width, &METRICS);
+        let newtab_rect = newtab_target(bounds.width, &METRICS);
         let point = cursor_position.position_in(bounds);
         let buttons = self.button_geometry(state, bounds);
 
@@ -1290,6 +1373,22 @@ where
         if settings_rect.contains(point) {
             if button == Button::Left
                 && let Some(message) = self.on_settings.as_ref().map(|on_settings| on_settings())
+            {
+                shell.publish(message);
+                shell.capture_event();
+            }
+            return;
+        }
+        // The `+` target, next in the fixed routing order: a left
+        // press spawns through the app's handler — the existing
+        // `Ctrl+Shift+T` funnel, byte-identical semantics — while a
+        // middle press does nothing and no drag is armed (the drag
+        // arming lives in the tab-row branch below, never reached from
+        // a corner target). A press here during a rename already ended
+        // it above.
+        if newtab_rect.contains(point) {
+            if button == Button::Left
+                && let Some(message) = self.on_new_tab.as_ref().map(|on_new_tab| on_new_tab())
             {
                 shell.publish(message);
                 shell.capture_event();
@@ -1540,18 +1639,48 @@ where
             },
         );
 
-        // The settings button: the gear glyph — quads only, font-free
-        // like the close `×` — over the same hover treatment the close
-        // button gets, shown the moment the cursor enters the target
-        // (no delay). The tooltip itself rides the overlay pass (see
-        // `TooltipOverlay`).
+        // The corner buttons — the new-tab `+` and the settings gear —
+        // are quads only, font-free like the close `×`, over the
+        // shared hover treatment, shown the moment the cursor enters
+        // either target (no delay). Their tooltips ride the overlay
+        // pass (see `TooltipOverlay`).
+        let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
+
+        // The new-tab `+`: two crossing bars in the pane foreground,
+        // one gap left of the gear.
+        let newtab = newtab_target(bounds.width, &METRICS);
+        let newtab = Rectangle::new(
+            Point::new(origin.x + newtab.x, origin.y + newtab.y),
+            newtab.size(),
+        );
+        if hover_point.is_some_and(|point| newtab.contains(point)) {
+            fill_disc(renderer, newtab, hover_bg);
+        }
+        let plus = plus_glyph(newtab);
+        for bar in [plus.horizontal, plus.vertical] {
+            renderer.fill_quad(
+                Quad {
+                    bounds: bar,
+                    border: Border {
+                        radius: 0.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                pane_fg,
+            );
+        }
+
+        // The settings gear: a ring punched by a strip-colored disc,
+        // plus teeth, over the same hover treatment.
         let target = settings_target(bounds.width, &METRICS);
         let target = Rectangle::new(
             Point::new(origin.x + target.x, origin.y + target.y),
             target.size(),
         );
         let settings_hovered = hover_point.is_some_and(|point| target.contains(point));
-        let hover_bg: Color = cosmic_theme.palette.neutral_5.with_alpha(0.35).into();
         // The punched hole must show whatever the strip shows under
         // the glyph — the hover tint when the disc is up, the plain
         // strip otherwise — composited exactly, so the ring reads
@@ -1571,17 +1700,19 @@ where
     }
 }
 
-/// The settings tooltip, hosted on the overlay pass (the
+/// The corner buttons' tooltips, hosted on the overlay pass (the
 /// rename-input precedent). A tip painted in the bar's own `draw`
 /// would be overpainted in the Bottom-edge stacking, where the
 /// column draws the terminal after the bar; overlays draw after the
 /// whole tree, so the tip stays visible clearing the strip on both
 /// edge placements. Visibility is decided per frame from the live
-/// cursor — no hover delay.
+/// cursor — no hover delay — with the gear's tip anchored at the
+/// strip's right corner and the `+`'s at its own target's right
+/// edge.
 struct TooltipOverlay<'a> {
-    /// The bar's state, carrying the tooltip's cached label paragraph.
+    /// The bar's state, carrying the tips' cached label paragraphs.
     state: &'a State,
-    /// Which vertical side of the strip the tip pops to.
+    /// Which vertical side of the strip the tips pop to.
     side: TooltipSide,
     /// The bar's absolute bounds (translation applied).
     bounds: Rectangle,
@@ -1589,6 +1720,8 @@ struct TooltipOverlay<'a> {
 
 impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> {
     fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        // Laid out for the gear tip (see `draw` for how the `+` tip
+        // gets its rect): pinned at the strip's right corner.
         let tip = tooltip_bounds(
             self.bounds.width,
             self.state.tooltip.min_width(),
@@ -1599,11 +1732,6 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> 
         layout::Node::new(tip.size()).move_to(position)
     }
 
-    // See the Widget draw impl for why this expect sits at the fn.
-    #[expect(
-        clippy::similar_names,
-        reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
-    )]
     fn draw(
         &self,
         renderer: &mut Renderer,
@@ -1613,38 +1741,68 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> 
         cursor_position: mouse::Cursor,
     ) {
         let origin = self.bounds.position();
-        let target = settings_target(self.bounds.width, &METRICS);
-        let target = Rectangle::new(origin + Vector::new(target.x, target.y), target.size());
-        if cursor_position.position_in(target).is_none() {
+        let gear = settings_target(self.bounds.width, &METRICS);
+        let gear = Rectangle::new(origin + Vector::new(gear.x, gear.y), gear.size());
+        if cursor_position.position_in(gear).is_some() {
+            paint_tip(renderer, theme, layout.bounds(), &self.state.tooltip);
             return;
         }
-        let tip = layout.bounds();
-        let (pane_bg, pane_fg) = pane_colors();
-        // The pane pair swapped: a foreground-colored bubble carrying
-        // the strip's color as its text stays readable on light and
-        // dark panes alike.
-        renderer.fill_quad(
-            Quad {
-                bounds: tip,
-                border: Border {
-                    radius: theme.cosmic().radius_s().into(),
-                    width: 0.0,
-                    color: Color::TRANSPARENT,
-                },
-                snap: true,
-                ..Default::default()
-            },
-            pane_fg,
-        );
-        let paragraph = &self.state.tooltip;
-        let text_y = tip.y + (tip.height - paragraph.min_height()) / 2.0;
-        renderer.fill_paragraph(
-            paragraph.raw(),
-            Point::new(tip.x + TOOLTIP_PADDING_X, text_y),
-            pane_bg,
-            tip,
-        );
+        // The `+` tip. Overlay layout carries no cursor, so the node
+        // was laid out for the gear tip; this tip's rect is recomputed
+        // here from the live cursor — the tips are dressing with no
+        // hit-testing, so the node only ever matters as the paint
+        // rect.
+        let newtab = newtab_target(self.bounds.width, &METRICS);
+        let newtab = Rectangle::new(origin + Vector::new(newtab.x, newtab.y), newtab.size());
+        if cursor_position.position_in(newtab).is_some() {
+            let right_edge = newtab.x + newtab.width;
+            let bar_local = tooltip_bounds(
+                right_edge,
+                self.state.newtab_tooltip.min_width(),
+                &METRICS,
+                self.side,
+            );
+            let tip = Rectangle::new(
+                origin + Vector::new(bar_local.x, bar_local.y),
+                bar_local.size(),
+            );
+            paint_tip(renderer, theme, tip, &self.state.newtab_tooltip);
+        }
     }
+}
+
+/// Paints one tooltip bubble at `tip`: the pane color pair swapped —
+/// a foreground-colored bubble carrying the strip's color as its text
+/// — so the label stays readable on light and dark panes alike.
+// The pane_bg/pane_fg names match the PaintContext field vocabulary;
+// `similar_names` resolves its level at the fn, so the expect rides
+// here rather than on the binding.
+#[expect(
+    clippy::similar_names,
+    reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
+)]
+fn paint_tip(renderer: &mut Renderer, theme: &Theme, tip: Rectangle, paragraph: &TitleParagraph) {
+    let (pane_bg, pane_fg) = pane_colors();
+    renderer.fill_quad(
+        Quad {
+            bounds: tip,
+            border: Border {
+                radius: theme.cosmic().radius_s().into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            snap: true,
+            ..Default::default()
+        },
+        pane_fg,
+    );
+    let text_y = tip.y + (tip.height - paragraph.min_height()) / 2.0;
+    renderer.fill_paragraph(
+        paragraph.raw(),
+        Point::new(tip.x + TOOLTIP_PADDING_X, text_y),
+        pane_bg,
+        tip,
+    );
 }
 
 /// Hosts the inline-rename input over its tab button, delegating
@@ -1952,12 +2110,46 @@ mod tests {
     }
 
     #[test]
-    fn settings_zone_spans_inset_target_and_gap() {
+    fn corner_zone_spans_inset_targets_and_gaps() {
+        // The zone reserves inset + `+` + gap + gear + gap: both corner
+        // targets and the gaps around them.
         assert_eq!(
-            settings_zone(&M),
-            M.button_padding_x + M.close_size + M.button_gap
+            corner_zone(&M),
+            M.button_padding_x + M.close_size * 2.0 + M.button_gap * 2.0
         );
-        assert_eq!(row_budget(1000.0, &M), 1000.0 - settings_zone(&M));
+        assert_eq!(row_budget(1000.0, &M), 1000.0 - corner_zone(&M));
+    }
+
+    #[test]
+    fn newtab_target_anchors_one_gap_left_of_the_settings_target() {
+        // Like the settings target, the `+` takes no tab count: the
+        // identical right-corner rect in every tab state — the 1-tab
+        // strip carries `+` and gear alone.
+        for bar_width in [1000.0, 400.0] {
+            let gear = settings_target(bar_width, &M);
+            let plus = newtab_target(bar_width, &M);
+            assert_eq!(plus.width, M.close_size, "width at {bar_width}");
+            assert_eq!(plus.height, M.close_size, "height at {bar_width}");
+            assert_eq!(
+                plus.x + plus.width,
+                gear.x - M.button_gap,
+                "one gap left of the gear at {bar_width}"
+            );
+            assert_eq!(plus.y, gear.y, "vertically centered like the gear");
+            assert_eq!(plus.y * 2.0 + plus.height, M.bar_height);
+        }
+    }
+
+    #[test]
+    fn row_budget_clears_both_corner_targets() {
+        // A row inside the budget ends at least one gap left of the `+`
+        // target, so it can never underlap the `+` or the gear.
+        let bar_width = 1000.0;
+        let plus = newtab_target(bar_width, &M);
+        let budget = row_budget(bar_width, &M);
+        assert!(budget <= plus.x - M.button_gap);
+        let gear = settings_target(bar_width, &M);
+        assert!(plus.x + plus.width < gear.x);
     }
 
     #[test]
@@ -1968,8 +2160,8 @@ mod tests {
     #[test]
     fn squeezed_rows_end_exactly_at_the_row_budget() {
         // A bar whose budget leaves 158 px of row: the squeezed row
-        // ends exactly at the budget, left of the settings zone.
-        let bar_width = 158.0 + settings_zone(&M);
+        // ends exactly at the budget, left of both corner targets.
+        let bar_width = 158.0 + corner_zone(&M);
         let buttons = layout_buttons(row_budget(bar_width, &M), &[50.0, 50.0, 50.0], &M);
         let last = buttons.last().unwrap();
         assert_eq!(last.bounds.x + last.bounds.width, 158.0);
@@ -1978,43 +2170,67 @@ mod tests {
     #[test]
     fn floor_overflow_still_routes_the_settings_target_first() {
         // Five at-48 floor buttons geometrically overflow a tiny budget
-        // and reach under the settings target; routing checks the
-        // target ahead of the row, so a press inside it is Settings.
-        let bar_width = 100.0 + settings_zone(&M);
+        // and reach under both corner targets; routing checks the gear
+        // ahead of the `+` and the row, so a press inside it is
+        // Settings.
+        let bar_width = 100.0 + corner_zone(&M);
         let buttons = layout_buttons(row_budget(bar_width, &M), &[50.0; 5], &M);
-        let target = settings_target(bar_width, &M);
+        let gear = settings_target(bar_width, &M);
+        let plus = newtab_target(bar_width, &M);
         let last = buttons.last().unwrap();
-        assert!(last.bounds.x + last.bounds.width > target.x);
+        assert!(last.bounds.x + last.bounds.width > gear.x);
         assert_eq!(
-            press_target(&buttons, target, center_of(&target)),
+            press_target(&buttons, gear, plus, center_of(&gear)),
             Some(PressTarget::Settings)
         );
     }
 
     #[test]
-    fn press_target_routes_settings_tab_and_close() {
+    fn floor_overflow_routes_the_newtab_target_ahead_of_the_row() {
+        // The same floor-overflow row reaching under the `+`: routing
+        // checks the gear, then the `+`, then the row.
+        let bar_width = 100.0 + corner_zone(&M);
+        let buttons = layout_buttons(row_budget(bar_width, &M), &[50.0; 5], &M);
+        let gear = settings_target(bar_width, &M);
+        let plus = newtab_target(bar_width, &M);
+        let last = buttons.last().unwrap();
+        assert!(last.bounds.x + last.bounds.width > plus.x);
+        assert_eq!(
+            press_target(&buttons, gear, plus, center_of(&plus)),
+            Some(PressTarget::NewTab)
+        );
+    }
+
+    #[test]
+    fn press_target_routes_settings_newtab_tab_and_close() {
         let bar_width = 1000.0;
         let buttons = layout_buttons(row_budget(bar_width, &M), &[40.0, 60.0], &M);
-        let target = settings_target(bar_width, &M);
+        let gear = settings_target(bar_width, &M);
+        let plus = newtab_target(bar_width, &M);
         assert_eq!(
-            press_target(&buttons, target, center_of(&target)),
+            press_target(&buttons, gear, plus, center_of(&gear)),
             Some(PressTarget::Settings)
+        );
+        assert_eq!(
+            press_target(&buttons, gear, plus, center_of(&plus)),
+            Some(PressTarget::NewTab)
         );
         assert_eq!(
             press_target(
                 &buttons,
-                target,
+                gear,
+                plus,
                 Point::new(buttons[0].bounds.x + 5.0, 10.0)
             ),
             Some(PressTarget::Tab(0, HitTarget::Tab))
         );
         assert_eq!(
-            press_target(&buttons, target, center_of(&buttons[1].close)),
+            press_target(&buttons, gear, plus, center_of(&buttons[1].close)),
             Some(PressTarget::Tab(1, HitTarget::Close))
         );
-        // The zone's gap, left of the target, hits nothing.
+        // The zone's gap, now left of the `+` target, hits nothing.
         assert_eq!(
-            press_target(&buttons, target, Point::new(target.x - 2.0, 10.0)),
+            press_target(&buttons, gear, plus, Point::new(plus.x - 2.0, 10.0)),
             None
         );
     }
@@ -2097,16 +2313,60 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_bounds_anchor_the_right_corner_and_grow_leftward() {
+    fn plus_glyph_crosses_at_the_targets_center_and_stays_inside() {
+        let target = newtab_target(1000.0, &M);
+        let plus = plus_glyph(target);
+        let center = target.center();
+
+        // Containment: both bars stay inside the target.
+        for (name, bar) in [("horizontal", plus.horizontal), ("vertical", plus.vertical)] {
+            assert!(
+                target.contains(bar.position())
+                    && target.contains(Point::new(bar.x + bar.width, bar.y + bar.height)),
+                "{name} bar escapes the target: {bar:?}"
+            );
+        }
+
+        // Symmetry: both bars cross exactly at the target's center,
+        // with equal arm lengths and a shared thickness.
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(plus.horizontal.center_x(), center.x));
+        assert!(close(plus.horizontal.center_y(), center.y));
+        assert!(close(plus.vertical.center_x(), center.x));
+        assert!(close(plus.vertical.center_y(), center.y));
+        assert_eq!(plus.horizontal.width, plus.vertical.height);
+        assert_eq!(plus.horizontal.height, plus.vertical.width);
+        assert!(plus.horizontal.height < plus.horizontal.width);
+    }
+
+    #[test]
+    fn tooltip_bounds_anchor_the_right_edge_and_grow_leftward() {
+        // The gear tip anchors at the strip's right corner whatever
+        // the label's width — growth is entirely leftward, so the tip
+        // can never overflow the corner it anchors to.
         let narrow = tooltip_bounds(1000.0, 60.0, &M, TooltipSide::Below);
         let wide = tooltip_bounds(1000.0, 200.0, &M, TooltipSide::Below);
-        // The right edge is the strip's right corner, label-independent.
         assert_eq!(narrow.x + narrow.width, 1000.0);
         assert_eq!(wide.x + wide.width, 1000.0);
         assert_eq!(narrow.width, 60.0 + TOOLTIP_PADDING_X * 2.0);
-        // Growth is entirely leftward.
         assert!(wide.x < narrow.x);
         assert_eq!(wide.x, 1000.0 - wide.width);
+    }
+
+    #[test]
+    fn tooltip_bounds_anchor_the_newtab_tip_at_its_targets_right_edge() {
+        // The `+` tip anchors at the `+` target's right edge — inboard
+        // of the strip's corner, growth entirely leftward so it can
+        // never run under the gear.
+        let bar_width = 1000.0;
+        let plus = newtab_target(bar_width, &M);
+        let right_edge = plus.x + plus.width;
+        let tip = tooltip_bounds(right_edge, 60.0, &M, TooltipSide::Below);
+        assert_eq!(tip.x + tip.width, right_edge);
+        assert!(tip.x + tip.width < bar_width);
+        let wide = tooltip_bounds(right_edge, 200.0, &M, TooltipSide::Below);
+        assert!(wide.x < tip.x);
+        assert_eq!(wide.x + wide.width, right_edge);
     }
 
     #[test]
