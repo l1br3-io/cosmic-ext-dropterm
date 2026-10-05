@@ -8,7 +8,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 |-------|------|
 | Skills | `.agents/skills/<name>/SKILL.md` |
 | Shared checklists | `.agents/references/*.md` |
-| Slash commands | `.opencode/commands/*.md` |
+| Slash commands | `.opencode/commands/*.md`, mirrored to `.zcode/commands/*.md` for ZCode |
 | Personas (subagents) | `.opencode/agents/*.md` |
 
 ## Core rules
@@ -34,7 +34,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 ## Slash commands
 
-`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/webperf`. Run `/ship` before merge for a parallel fan-out review.
+`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/webperf`. Run `/ship` before merge for a parallel fan-out review. In ZCode the planning command is `/planning` — `/plan` is a reserved built-in there, so its mirror is renamed to `planning.md`; opencode keeps `/plan`.
 
 ## Personas
 
@@ -58,6 +58,6 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - Before implementing: read `SPEC.md` for orientation, then load the
   module's `SPEC-<id>.md` and `tasks/<id>.md` chunk. Never implement a
   module whose spec is not approved or whose chunk is not written.
-- `/build` consumes the chunk files; see `.opencode/commands/build.md`.
+- `/build` consumes the chunk files; see `.opencode/commands/build.md` (mirrored at `.zcode/commands/build.md`).
 - PRs must copy the module's success criteria into the PR body, since
   reviewers cannot see the local spec files.
