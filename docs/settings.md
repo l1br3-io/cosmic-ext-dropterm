@@ -10,6 +10,14 @@ Every setting is editable in-app: press `Ctrl+Shift+I` while the terminal has ke
 
 The drawer shows five sections - Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), Terminal, and Advanced (`respect_panel`, `layer`, `keyboard_mode`) - and applies instantly: every control writes its key the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
 
+## Profiles page
+
+The drawer has a second page: the Profiles entry row on the Settings page (it carries the profile count) flips the drawer to it, a back affordance returns, and the drawer title follows the open page. Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from either page.
+
+The page holds the profile list, the edit form, and the default-profile picker. The list shows one row per profile in config order - the exact order the tab bar `+`'s dropdown and the context menu's submenu use - each row with the profile's name and a command preview. The selected row's three fields (`name`, `command`, `cwd`) edit in the form below it; Add and Clone open a draft form instead, Clone seeding a copy under a unique `name (copy)` name. Every write follows the drawer's instant rule: each field commits on Enter (an invalid Enter shows an inline error and writes nothing), while picker picks, row deletes, and up/down reorders write the moment you make them. Deleting the profile the default names clears the default in the same interaction, and renaming that profile moves the default along, so the picker never shows a name the list lacks.
+
+A profile draft is page-local: a focus-loss hide preserves it with the drawer (see above), while leaving the page - back or close - clears it, so a reopened page starts from the config.
+
 ## While the drawer is open
 
 While the drawer is open, terminal input is inert - keyboard and pointer never reach the shell; the drawer's own inputs type normally. Escape closes the drawer (only the drawer: the surface stays), as does the drawer's Close button and a repeat `Ctrl+Shift+I`. Focus loss keeps working as configured: with `hide_on_focus_loss` the surface hides with the drawer preserved exactly as it was - open, drafts and all - and the next show uncovers it; explicitly closing the drawer clears any in-flight drafts, so a reopen starts fresh from the config file.
@@ -26,6 +34,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
+| `profiles`, `default_profile` | next spawn - a page write applies to future spawns only; a running tab is never re-launched |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
 
 These Behavior toggles default to `true`, which is exactly the pre-settings behavior:

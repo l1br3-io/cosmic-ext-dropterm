@@ -238,8 +238,7 @@ pub struct DropTermConfig {
     /// system flips keep driving the app.
     pub theme_preference: ThemePreference,
     /// Named spawn presets (the `profile` module). Defaults to
-    /// empty — profiles are hand-edited into the config files until
-    /// the settings page ships.
+    /// empty — managed on the settings drawer's Profiles page.
     pub profiles: Vec<Profile>,
     /// Name of the profile plain new tabs launch. `None` (the
     /// default) keeps the configured shell; a name the `profiles`
