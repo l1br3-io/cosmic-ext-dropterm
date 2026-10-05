@@ -159,13 +159,6 @@ pub fn matched_action(
 /// cosmic's own [`Modifier`] is not serializable, so the config shape
 /// spells its own four and converts at the boundary
 /// ([`Binding::to_key_bind`]). Ported from cosmic-term.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "part of the persisted Binding shape; keybinds-editor KE-2"
-    )
-)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ModifierName {
     Ctrl,
@@ -175,13 +168,6 @@ pub enum ModifierName {
 }
 
 impl ModifierName {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "part of the persisted Binding shape; keybinds-editor KE-2"
-        )
-    )]
     fn to_modifier(self) -> Modifier {
         match self {
             Self::Ctrl => Modifier::Ctrl,
@@ -195,13 +181,6 @@ impl ModifierName {
 /// A persisted key binding: modifier names plus a key name string
 /// (`"C"`, `"Tab"`, `"PageUp"`, `"Space"`, …) — the config file's
 /// shape, converted to a runtime [`KeyBind`] by [`to_key_bind`].
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by keybinds-editor KE-2 (the config field)"
-    )
-)]
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Binding {
     pub modifiers: Vec<ModifierName>,
@@ -211,13 +190,6 @@ pub struct Binding {
 impl Binding {
     /// The runtime matching shape, or `None` when the key name does
     /// not parse (a hand-edited config can hold one).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the overlay resolution; keybinds-editor KE-3"
-        )
-    )]
     pub fn to_key_bind(&self) -> Option<KeyBind> {
         let key = key_from_string(&self.key)?;
         let mut modifiers = Vec::new();
@@ -551,13 +523,6 @@ pub fn binding_from_key(modifiers: Modifiers, key: &Key) -> Option<Binding> {
 
 /// The [`Key`] a persisted key name parses back to. Ported from
 /// cosmic-term — the names it accepts are the format's vocabulary.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed via Binding::to_key_bind; keybinds-editor KE-3"
-    )
-)]
 fn key_from_string(value: &str) -> Option<Key> {
     match value {
         "Backspace" => Some(Key::Named(Named::Backspace)),

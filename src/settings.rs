@@ -1353,6 +1353,30 @@ impl ProfileWrite {
     }
 }
 
+/// The Keybindings tab's whole-map write: the complete
+/// `custom_key_binds` map, persisted in one `set` — the
+/// [`ProfileWrite`] precedent for a map-shaped key. A rebind and a
+/// revert (entry removal) are the same whole-map write, and the
+/// scalar [`PlannedWrite`]/[`ConfigKey`] surface stays untouched —
+/// the 23 exposed keys never grow a 24th.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds::Binding>);
+
+impl KeybindsWrite {
+    /// Persist through the config backend — [`ProfileWrite::persist`]'s
+    /// discipline verbatim. The failure is the caller's to log.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumed by keybinds-editor KE-3/KE-5 write wiring"
+        )
+    )]
+    pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
+        handler.set("custom_key_binds", self.0.clone())
+    }
+}
+
 // --- the default-profile picker ---
 
 /// The picker's row 0 label: the cleared key, plain shell.

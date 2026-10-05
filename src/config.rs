@@ -4,9 +4,12 @@
 //! persists one key per file, its setting enums, and the clamping
 //! that guards stale or hand-edited values.
 
+use std::collections::BTreeMap;
+
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
+use crate::keybinds::Binding;
 use crate::profile::Profile;
 
 /// Version of the on-disk config format.
@@ -245,6 +248,15 @@ pub struct DropTermConfig {
     /// list no longer carries also resolves to the plain shell —
     /// loading never rewrites the config to drop it.
     pub default_profile: Option<String>,
+    /// Custom key bindings, one per action, keyed by the stable action
+    /// id (`keybinds::action_id` — the id set is this field's
+    /// vocabulary, the field name its spelling; both are file-format
+    /// contract, pinned by test). A binding replaces *all* of that
+    /// action's default chords; removing the entry reverts to the
+    /// defaults. Absent (the default) means all defaults. Entries
+    /// with stale ids or unparsable keys skip at load with a warn —
+    /// never fatal (`keybinds::effective_key_binds`).
+    pub custom_key_binds: BTreeMap<String, Binding>,
 }
 
 impl Default for DropTermConfig {
@@ -276,6 +288,7 @@ impl Default for DropTermConfig {
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
+            custom_key_binds: BTreeMap::new(),
         }
     }
 }
@@ -504,6 +517,134 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert_eq!(loaded, stored);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn custom_key_binds_round_trip_through_the_config_store() {
+        // Two entries — an ordinary rebind with modifiers and a
+        // numbered activate row without — survive a write→load cycle
+        // with equality. The key file's name is the field's
+        // file-format spelling; the Binding shape is the rest of the
+        // contract.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-keybinds-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            custom_key_binds: BTreeMap::from([
+                (
+                    "copy".to_string(),
+                    crate::keybinds::Binding {
+                        modifiers: vec![
+                            crate::keybinds::ModifierName::Ctrl,
+                            crate::keybinds::ModifierName::Shift,
+                        ],
+                        key: "C".to_string(),
+                    },
+                ),
+                (
+                    "activate_tab_3".to_string(),
+                    crate::keybinds::Binding {
+                        modifiers: Vec::new(),
+                        key: "F2".to_string(),
+                    },
+                ),
+            ]),
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        assert!(
+            version_dir.join("custom_key_binds").is_file(),
+            "the key file's name is the field's on-disk spelling"
+        );
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_custom_key_binds_loads_as_the_empty_map() {
+        // A config directory from a version that did not yet write
+        // `custom_key_binds` loads as "all defaults" — the same
+        // default-entry leniency as every additive key before it.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-keybinds-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        std::fs::remove_file(version_dir.join("custom_key_binds"))
+            .expect("remove custom_key_binds key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("keybinds-less v1 config loads clean");
+        assert!(loaded.custom_key_binds.is_empty());
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keybinds_write_persists_the_whole_map_through_the_store() {
+        // The settings module's whole-map write lands as one `set` of
+        // the `custom_key_binds` key — the ProfileWrite precedent —
+        // and the next load reads exactly the written map back.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-keybinds-write-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let write = crate::settings::KeybindsWrite(BTreeMap::from([(
+            "copy".to_string(),
+            crate::keybinds::Binding {
+                modifiers: vec![crate::keybinds::ModifierName::Alt],
+                key: "C".to_string(),
+            },
+        )]));
+        write.persist(&config).expect("persist the whole map");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded.custom_key_binds, write.0);
 
         let _ = std::fs::remove_dir_all(&root);
     }
