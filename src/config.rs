@@ -236,6 +236,15 @@ pub struct DropTermConfig {
     /// remote `new-tab`; `duplicate-tab` always lands after the active
     /// tab regardless, and session restore keeps saved order.
     pub new_tab_after_current: bool,
+    /// Whether closing a tab whose terminal runs a foreground process
+    /// asks first through an in-surface modal (close-confirm spec).
+    /// Defaults to `true` — the guardrail ships on for fresh and
+    /// pre-existing configs alike (criterion 1); `false` restores
+    /// instant, unconfirmed closes. Shell exits never confirm
+    /// regardless of this key (`TermEvent::Exit` closes are never
+    /// gated), and the decision reads this key at request time, so a
+    /// mid-session flip applies to the very next close.
+    pub close_confirmation_enabled: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
@@ -293,6 +302,7 @@ impl Default for DropTermConfig {
             slide_animation_enabled: true,
             bell_notification_enabled: true,
             new_tab_after_current: true,
+            close_confirmation_enabled: true,
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
@@ -445,6 +455,90 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert!(!loaded.new_tab_after_current);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn close_confirmation_defaults_to_on() {
+        // Close-confirm criterion 1: the guardrail ships enabled — a
+        // fresh config never lets a close misfire kill a foreground
+        // vim/ssh/pipeline unasked. The Behavior toggle turns it off.
+        assert!(DropTermConfig::default().close_confirmation_enabled);
+    }
+
+    #[test]
+    fn missing_close_confirmation_key_loads_as_true() {
+        // A config directory from a version that did not yet write
+        // `close_confirmation_enabled` loads as `true` through the
+        // same default-entry leniency pinned for
+        // `new_tab_after_current` — existing users get the guardrail
+        // on (criterion 1); the key list is additive,
+        // `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-closeconfirm-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`close_confirmation_enabled` version by
+        // deleting the one key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("close_confirmation_enabled"),
+        )
+        .expect("remove close_confirmation_enabled key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert!(loaded.close_confirmation_enabled);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn close_confirmation_key_on_disk_is_honored() {
+        // Control for `missing_close_confirmation_key_loads_as_true`:
+        // the same read path honors a key that does exist (the toggle
+        // off persists), so the leniency result above cannot be a
+        // vacuous pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-closeconfirm-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            close_confirmation_enabled: false,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert!(!loaded.close_confirmation_enabled);
 
         let _ = std::fs::remove_dir_all(&root);
     }

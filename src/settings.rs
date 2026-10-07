@@ -99,6 +99,7 @@ impl Section {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::CloseConfirmationEnabled,
             ],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -119,7 +120,7 @@ impl Section {
 /// unreachable from the UI — plus `SettingsDrawerWidth`, which is
 /// written by the drawer's drag handle (drawer-resize spec), not by
 /// any settings control: no `Section` lists it, so the exposed-key
-/// exactly-once pin above stays at the section-hosted count (23).
+/// exactly-once pin above stays at the section-hosted count (24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -136,6 +137,7 @@ pub enum ConfigKey {
     BellNotificationEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
+    CloseConfirmationEnabled,
     Shell,
     Args,
     ScrollbackLines,
@@ -269,6 +271,7 @@ impl ConfigKey {
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
+            ConfigKey::CloseConfirmationEnabled => "close_confirmation_enabled",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
             ConfigKey::ScrollbackLines => "scrollback_lines",
@@ -305,6 +308,7 @@ pub enum PlannedWrite {
     BellNotificationEnabled(bool),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
+    CloseConfirmationEnabled(bool),
     Shell(String),
     Args(Vec<String>),
     ScrollbackLines(u32),
@@ -340,6 +344,7 @@ impl PlannedWrite {
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
+            PlannedWrite::CloseConfirmationEnabled(_) => ConfigKey::CloseConfirmationEnabled,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
             PlannedWrite::ScrollbackLines(_) => ConfigKey::ScrollbackLines,
@@ -411,6 +416,9 @@ impl PlannedWrite {
             }
             PlannedWrite::NewTabAfterCurrent(value) => {
                 handler.set(ConfigKey::NewTabAfterCurrent.key_name(), *value)
+            }
+            PlannedWrite::CloseConfirmationEnabled(value) => {
+                handler.set(ConfigKey::CloseConfirmationEnabled.key_name(), *value)
             }
             PlannedWrite::Shell(value) => handler.set(ConfigKey::Shell.key_name(), value),
             PlannedWrite::Args(value) => handler.set(ConfigKey::Args.key_name(), value),
@@ -580,7 +588,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
         | ConfigKey::BellNotificationEnabled
-        | ConfigKey::NewTabAfterCurrent => ApplyTiming::NextTrigger,
+        | ConfigKey::NewTabAfterCurrent
+        | ConfigKey::CloseConfirmationEnabled => ApplyTiming::NextTrigger,
     }
 }
 
@@ -1529,6 +1538,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
+        ConfigKey::CloseConfirmationEnabled => {
+            Some(PlannedWrite::CloseConfirmationEnabled(checked))
+        }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         _ => None,
     }
@@ -1566,6 +1578,7 @@ impl ConfigKey {
             ConfigKey::BellNotificationEnabled => "Bell notifications",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
+            ConfigKey::CloseConfirmationEnabled => "Confirm closing a tab with a running process",
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
@@ -2186,6 +2199,7 @@ fn toggle_control(
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
+        ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::RespectPanel => config.respect_panel,
         _ => return None,
     };
@@ -2579,6 +2593,7 @@ mod tests {
             PlannedWrite::BellNotificationEnabled(true),
             PlannedWrite::TabTitleMode(TabTitleMode::Shell),
             PlannedWrite::NewTabAfterCurrent(true),
+            PlannedWrite::CloseConfirmationEnabled(true),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
             PlannedWrite::ScrollbackLines(10_000),
@@ -2629,6 +2644,10 @@ mod tests {
                 "bell_notification_enabled",
             ),
             (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
+            (
+                ConfigKey::CloseConfirmationEnabled,
+                "close_confirmation_enabled",
+            ),
             (ConfigKey::Shell, "shell"),
             (ConfigKey::Args, "args"),
             (ConfigKey::ScrollbackLines, "scrollback_lines"),
@@ -2893,6 +2912,7 @@ mod tests {
             ConfigKey::SessionPersistenceEnabled,
             ConfigKey::SlideAnimationEnabled,
             ConfigKey::NewTabAfterCurrent,
+            ConfigKey::CloseConfirmationEnabled,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::NextTrigger, "{key:?}");
         }
@@ -3009,6 +3029,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::CloseConfirmationEnabled,
             ]
         );
         assert_eq!(
@@ -3018,6 +3039,49 @@ mod tests {
         assert_eq!(
             toggle_write(ConfigKey::NewTabAfterCurrent, false),
             Some(PlannedWrite::NewTabAfterCurrent(false))
+        );
+    }
+
+    #[test]
+    fn close_confirmation_sits_in_behavior_after_new_tab_after_current() {
+        // Close-confirm criterion 1's toggle home: the "Confirm
+        // closing a tab with a running process" row lands last in the
+        // Behavior card; its flip commits the config bool through the
+        // single PlannedWrite path, under the field's exact file
+        // spelling — the exposed-key exactly-once pin's 24th key.
+        assert_eq!(
+            Section::Behavior.keys(),
+            &[
+                ConfigKey::HideOnFocusLoss,
+                ConfigKey::SessionPersistenceEnabled,
+                ConfigKey::SlideAnimationEnabled,
+                ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabTitleMode,
+                ConfigKey::NewTabAfterCurrent,
+                ConfigKey::CloseConfirmationEnabled,
+            ]
+        );
+        assert_eq!(
+            ConfigKey::CloseConfirmationEnabled.label(),
+            "Confirm closing a tab with a running process"
+        );
+        assert_eq!(
+            ConfigKey::CloseConfirmationEnabled.key_name(),
+            "close_confirmation_enabled"
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::CloseConfirmationEnabled, true),
+            Some(PlannedWrite::CloseConfirmationEnabled(true))
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::CloseConfirmationEnabled, false),
+            Some(PlannedWrite::CloseConfirmationEnabled(false))
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::CloseConfirmationEnabled, true)
+                .expect("a toggle key always plans a write")
+                .key(),
+            ConfigKey::CloseConfirmationEnabled
         );
     }
 
@@ -3167,9 +3231,9 @@ mod tests {
     #[test]
     fn tab_title_mode_sits_in_behavior_after_bell_notifications() {
         // The "Tab titles" row lands after "Bell notifications" (with
-        // only the "New tabs after current tab" row after it) in the
-        // Behavior card, and the mode flip applies live through the
-        // retitle loop.
+        // the "New tabs after current tab" and close-confirmation rows
+        // after it) in the Behavior card, and the mode flip applies
+        // live through the retitle loop.
         assert_eq!(
             Section::Behavior.keys(),
             &[
@@ -3179,6 +3243,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::CloseConfirmationEnabled,
             ]
         );
         assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");
