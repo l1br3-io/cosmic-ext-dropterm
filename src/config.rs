@@ -245,6 +245,15 @@ pub struct DropTermConfig {
     /// gated), and the decision reads this key at request time, so a
     /// mid-session flip applies to the very next close.
     pub close_confirmation_enabled: bool,
+    /// Whether a left-click in the terminal's bounds dismisses an
+    /// open settings drawer (drawer-click-close spec). Defaults to
+    /// `true` — the natural "click away to get back to work" gesture
+    /// ships on for fresh and pre-existing configs alike (criterion
+    /// 5); `false` leaves the click inert, exactly the pre-module
+    /// behavior. The dismiss click is consumed (never reaches the
+    /// pty) and rides the explicit-close path, so drafts clear and
+    /// focus returns exactly as on Escape.
+    pub settings_drawer_click_close: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
@@ -303,6 +312,7 @@ impl Default for DropTermConfig {
             bell_notification_enabled: true,
             new_tab_after_current: true,
             close_confirmation_enabled: true,
+            settings_drawer_click_close: true,
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
@@ -539,6 +549,91 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert!(!loaded.close_confirmation_enabled);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drawer_click_close_defaults_to_on() {
+        // Drawer-click-close criterion 5: the gesture ships enabled —
+        // a fresh config dismisses the drawer on a terminal click
+        // without any opt-in. The Behavior toggle turns it off.
+        assert!(DropTermConfig::default().settings_drawer_click_close);
+    }
+
+    #[test]
+    fn missing_settings_drawer_click_close_key_loads_as_true() {
+        // A config directory from a version that did not yet write
+        // `settings_drawer_click_close` loads as `true` through the
+        // same default-entry leniency pinned for
+        // `close_confirmation_enabled` — existing users get the
+        // gesture on (criterion 5); the key list is additive,
+        // `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-drawerclick-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`settings_drawer_click_close` version by
+        // deleting the one key it never wrote.
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("settings_drawer_click_close"),
+        )
+        .expect("remove settings_drawer_click_close key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert!(loaded.settings_drawer_click_close);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_drawer_click_close_key_on_disk_is_honored() {
+        // Control for
+        // `missing_settings_drawer_click_close_key_loads_as_true`: the
+        // same read path honors a key that does exist (the toggle off
+        // persists), so the leniency result above cannot be a vacuous
+        // pass.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-present-drawerclick-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            settings_drawer_click_close: false,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert!(!loaded.settings_drawer_click_close);
 
         let _ = std::fs::remove_dir_all(&root);
     }
