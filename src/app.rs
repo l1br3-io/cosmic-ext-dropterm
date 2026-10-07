@@ -44,7 +44,7 @@ pub(crate) mod remote;
 mod spawn;
 mod tab_actions;
 
-use self::remote::{ToggleAction, startup_action};
+use self::remote::{Flags, ToggleAction, startup_action};
 use self::spawn::{SpawnCommand, default_spawn_command, live_preset_cwd};
 use self::tab_actions::{RenameEdit, open_trees};
 
@@ -1629,7 +1629,15 @@ fn clipboard_anchor_settings() -> window::Settings {
     }
 }
 
+// The test module sits mid-file by long-standing layout; whether this
+// lint fires depends on which item happens to follow it (a
+// derive-marked struct passed, an impl trips it). Moving ~770 lines
+// of tests to the file tail is churn the carve refuses.
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "tests sit mid-file by layout"
+)]
 mod tests {
     use super::*;
 
@@ -2360,140 +2368,6 @@ mod tests {
             bar_tooltip_side(effective_bar_at_bottom(Edge::Bottom, TabPosition::Bottom)),
             TooltipSide::Above
         );
-    }
-
-    // --- the profile flag's forward encoding ---
-
-    #[test]
-    fn forward_words_encodes_the_profile_flag() {
-        // The forwarded words must carry `--profile NAME`, or the
-        // receiving instance would re-parse a plain new-tab.
-        let action = ToggleAction::NewTab {
-            cwd: None,
-            cmd: None,
-            profile: Some("ssh-web".to_string()),
-        };
-        assert_eq!(
-            forward_words(&action),
-            vec!["--profile".to_string(), "ssh-web".to_string()]
-        );
-    }
-
-    #[test]
-    fn forward_words_composes_cwd_and_profile() {
-        // --cwd + --profile compose on the wire (OQ-2): both flags
-        // survive the forward, the explicit --cwd winning at spawn.
-        let action = ToggleAction::NewTab {
-            cwd: Some(PathBuf::from("/tmp")),
-            cmd: None,
-            profile: Some("ssh-web".to_string()),
-        };
-        assert_eq!(
-            forward_words(&action),
-            vec![
-                "--cwd".to_string(),
-                "/tmp".to_string(),
-                "--profile".to_string(),
-                "ssh-web".to_string(),
-            ]
-        );
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Flags {
-    pub action: ToggleAction,
-    /// The words the action forwards alongside its Display name,
-    /// pre-encoded by [`Flags::new`]: `CosmicFlags::args` returns
-    /// `&str`s borrowed from `self`, which cannot hand out a formatted
-    /// `--tab-index 3` — so the encoding runs once per launch instead
-    /// of leaking per call, with [`forward_words`] as the single
-    /// encoder the D-Bus forward path and the round-trip test both
-    /// ride.
-    forwarded: Vec<String>,
-}
-
-/// Encodes the arguments a second launch forwards alongside the action's
-/// Display name: everything the receiving instance needs to
-/// reconstruct the exact action through `parse_forwarded_action`.
-/// Actions without payloads forward nothing.
-fn forward_words(action: &ToggleAction) -> Vec<String> {
-    let mut forwarded = Vec::new();
-    match action {
-        ToggleAction::NewTab { cwd, cmd, profile } => {
-            // A non-UTF-8 path cannot cross this borrowed-str
-            // boundary: the forwarded action then simply carries no
-            // --cwd, and the receiving instance opens the tab in the
-            // inherited directory.
-            if let Some(dir) = cwd.as_deref().and_then(std::path::Path::to_str) {
-                forwarded.push("--cwd".to_string());
-                forwarded.push(dir.to_string());
-            }
-            if let Some(cmd) = cmd {
-                forwarded.push("--cmd".to_string());
-                forwarded.push(cmd.clone());
-            }
-            if let Some(name) = profile {
-                forwarded.push("--profile".to_string());
-                forwarded.push(name.clone());
-            }
-        }
-        ToggleAction::CloseTab {
-            tab_index: Some(index),
-        }
-        | ToggleAction::DuplicateTab {
-            tab_index: Some(index),
-        } => {
-            forwarded.push("--tab-index".to_string());
-            forwarded.push(index.to_string());
-        }
-        ToggleAction::SelectTab { index } => {
-            forwarded.push(index.to_string());
-        }
-        ToggleAction::RenameTab { title, tab_index } => {
-            forwarded.push(title.clone());
-            if let Some(index) = tab_index {
-                forwarded.push("--tab-index".to_string());
-                forwarded.push(index.to_string());
-            }
-        }
-        ToggleAction::SwitchProfileTab { profile, tab_index } => {
-            forwarded.push("--profile".to_string());
-            forwarded.push(profile.clone());
-            if let Some(index) = tab_index {
-                forwarded.push("--tab-index".to_string());
-                forwarded.push(index.to_string());
-            }
-        }
-        _ => {}
-    }
-    forwarded
-}
-
-impl Flags {
-    /// Wraps `action` for launch, pre-encoding the words it forwards
-    /// to the running instance (see [`Flags::forwarded`]).
-    pub(crate) fn new(action: ToggleAction) -> Self {
-        let forwarded = forward_words(&action);
-        Self { action, forwarded }
-    }
-}
-
-impl cosmic::app::CosmicFlags for Flags {
-    type SubCommand = ToggleAction;
-    type Args = Vec<String>;
-
-    fn action(&self) -> Option<&ToggleAction> {
-        Some(&self.action)
-    }
-
-    /// The arguments forwarded alongside the action name: a
-    /// `new-tab` request carries its `--cwd`/`--cmd`, a `close-tab`
-    /// or `rename-tab` its 1-based `--tab-index`, a `select-tab` its
-    /// 1-based index, a `rename-tab` its TITLE word — everything else
-    /// forwards no args.
-    fn args(&self) -> Vec<&str> {
-        self.forwarded.iter().map(String::as_str).collect()
     }
 }
 
