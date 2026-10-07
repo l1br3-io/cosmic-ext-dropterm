@@ -40,6 +40,12 @@ indexmap = "2"
 # `init`. Version-matched to the 0.7.12 line libcosmic already pulls
 # in, so no new code enters the build.
 enumflags2 = "0.7"
+
+# `tcgetpgrp`/`getpgid` for foreground-process detection (close-confirm
+# spec) — no safe std API exists for either. Version-matched to the
+# 0.2.189 line alacritty_terminal already pulls in, so no new code
+# enters the build (the enumflags2/zbus version-match precedent).
+libc = "0.2"
 log = "0.4"
 open = "5.3.2"
 ron = "0.12"

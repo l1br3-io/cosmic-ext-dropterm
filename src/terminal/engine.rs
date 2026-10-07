@@ -234,6 +234,36 @@ fn convert_color(colors: &Colors, color: Color) -> cosmic_text::Color {
     cosmic_text::Color::rgb(rgb.r, rgb.g, rgb.b)
 }
 
+/// Whether a process group other than the shell's holds this
+/// terminal's foreground — kitty's check (close-confirm criterion 2):
+/// `tcgetpgrp` on a dup of the PTY master against the shell's own
+/// process group. `None` inputs and any syscall failure read as
+/// `false` — the check fails open, never trapping a tab behind its
+/// own confirmation (criterion 7). Non-Linux reads `false` too: the
+/// master handle is only captured there.
+pub fn foreground_child_running(master: Option<&std::fs::File>, shell_pid: Option<u32>) -> bool {
+    let (Some(master), Some(shell_pid)) = (master, shell_pid) else {
+        return false;
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: both calls read kernel pty/process state only;
+        // neither touches caller memory.
+        let fg = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        let shell_pgrp = i32::try_from(shell_pid).map_or(-1, |pid| unsafe { libc::getpgid(pid) });
+        fg > 0 && shell_pgrp > 0 && fg != shell_pgrp
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (master, shell_pid);
+        false
+    }
+}
+
 /// Per-cell rendering metadata (background, underline color, cell
 /// flags), interned in the terminal's [`Terminal::metadata_set`] so
 /// cosmic-text attrs can reference it by index.
@@ -280,6 +310,7 @@ pub struct Terminal {
     bold_font_weight: Weight,
     buffer: Arc<Buffer>,
     is_focused: bool,
+    master_fd: Option<fs::File>,
     colors: Colors,
     default_attrs: Attrs<'static>,
     dim_font_weight: Weight,
@@ -373,6 +404,17 @@ impl Terminal {
         #[cfg(windows)]
         let shell_pid = pty.child_watcher().pid().map(|pid| pid.get());
 
+        // The dup'd master handle foreground-process detection reads
+        // (close-confirm criterion 2): cloned before `pty` moves into
+        // the EventLoop, the same construction-time window that
+        // captures `shell_pid`. Non-Linux keeps `None` — the check
+        // fails open there. A clone failure also reads as "no
+        // process".
+        #[cfg(target_os = "linux")]
+        let master_fd = pty.file().try_clone().ok();
+        #[cfg(not(target_os = "linux"))]
+        let master_fd = None;
+
         let pty_event_loop = EventLoop::new(
             term.clone(),
             event_proxy,
@@ -405,6 +447,7 @@ impl Terminal {
             use_bright_bold,
             zoom_adj: Default::default(),
             is_focused: true,
+            master_fd,
         })
     }
 
@@ -494,6 +537,15 @@ impl Terminal {
         {
             None
         }
+    }
+
+    /// Whether a process group other than this terminal's shell holds
+    /// the PTY foreground (close-confirm criterion 2) — the "a process
+    /// is running" signal, read lazily off the dup'd master handle and
+    /// the recorded shell pid. Fails open (criterion 7): a missing
+    /// handle or unreadable state reads as "no process".
+    pub fn foreground_child_running(&self) -> bool {
+        foreground_child_running(self.master_fd.as_ref(), self.shell_pid)
     }
 
     pub fn input_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
@@ -1381,5 +1433,89 @@ mod tests {
         let (tab_id, event) = rx.try_recv().expect("tagged event should arrive");
         assert_eq!(tab_id, TabId(7));
         assert!(matches!(event, Event::Wakeup));
+    }
+
+    #[test]
+    fn foreground_check_reads_false_without_a_master_handle() {
+        // Fail-open pin (criterion 7): no dup'd fd → the check can
+        // never trap a tab behind its own confirmation.
+        assert!(!foreground_child_running(None, Some(1234)));
+    }
+
+    #[test]
+    fn foreground_check_reads_false_without_a_shell_pid() {
+        // Fail-open pin (criterion 7): nothing to compare the
+        // foreground pgrp against reads as "no process".
+        let master = fs::File::open("/dev/null").expect("open a non-pty fd");
+        assert!(!foreground_child_running(Some(&master), None));
+    }
+
+    #[test]
+    fn foreground_check_reads_false_without_either_input() {
+        assert!(!foreground_child_running(None, None));
+    }
+
+    #[test]
+    fn foreground_check_tracks_a_live_pty_from_idle_to_child_and_back() {
+        // The heaviest test in this module — the second in the
+        // codebase to construct a real Terminal (a real /bin/sh PTY) —
+        // because the point under test is exactly the kernel pty
+        // state the dup'd master fd observes: an idle shell holds the
+        // foreground itself (criterion 2), a foreground child takes
+        // it, and both SIGINT and the shell's own exit hand it back
+        // or take it away (detection must agree with the never-gated
+        // TermEvent::Exit close).
+        use alacritty_terminal::tty::Shell as PtyShell;
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+
+        // Idle at the prompt: the shell's own pgrp holds the foreground.
+        assert!(!terminal.foreground_child_running());
+
+        // A foreground child (interactive dash job-controls it into
+        // its own pgrp) takes the tty's foreground.
+        terminal.input_no_scroll(&b"sleep 30\r"[..]);
+        poll_until_foreground(&terminal, true, "foreground child takes the foreground");
+
+        // SIGINT returns the foreground to the shell.
+        terminal.input_no_scroll(&b"\x03"[..]);
+        poll_until_foreground(
+            &terminal,
+            false,
+            "SIGINT returns the foreground to the shell",
+        );
+
+        // The shell's own exit leaves nothing to confirm.
+        terminal.input_no_scroll(&b"exit\r"[..]);
+        poll_until_foreground(&terminal, false, "shell exit reads as no process");
+    }
+
+    /// Poll a live terminal's foreground check until it reads `want`,
+    /// bounded at 10s (the chunk's flake guard).
+    fn poll_until_foreground(terminal: &Terminal, want: bool, what: &str) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if terminal.foreground_child_running() == want {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for detection to read {want}: {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }

@@ -1094,6 +1094,7 @@ dependencies = [
  "enumflags2",
  "env_logger",
  "indexmap",
+ "libc",
  "libcosmic",
  "log",
  "notify-rust",
