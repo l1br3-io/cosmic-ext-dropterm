@@ -2704,6 +2704,7 @@ mod tests {
             name: name.to_string(),
             command: "htop".to_string(),
             cwd: None,
+            color_scheme: None,
         }
     }
 

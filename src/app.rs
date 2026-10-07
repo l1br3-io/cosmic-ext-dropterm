@@ -31,6 +31,7 @@ use crate::dbus_state;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds;
+use crate::profile;
 use crate::session;
 use crate::settings::{self, SettingsTab};
 use crate::slide::{self, SlideBox};
@@ -378,6 +379,10 @@ impl DropTerm {
         }
     }
 
+    /// The global color pick, unchanged by the profile-appearance
+    /// chain: plain tabs' colors, every profile tab's fallback (see
+    /// [`colors_for`]), and the resolution behind the window
+    /// background when no tab exists.
     fn active_colors(&self) -> aterm::color::Colors {
         // The config preference is the source of truth:
         // `effective_is_dark`, not a direct global read, decides the
@@ -399,23 +404,44 @@ impl DropTerm {
     }
 
     /// Applies the current config and theme to every tab's terminal.
-    /// Colors resolve once, before the window-background refresh, so
-    /// the global and the tabs can never disagree on which scheme is
-    /// active.
+    /// Colors resolve per tab through the [`colors_for`] chain — a
+    /// profile tab runs its profile's scheme, every other tab the
+    /// global pick — so one pass can paint a mixed pair differently;
+    /// the window background then follows the active tab's
+    /// resolution, keeping chrome and unset-bg cells in step with
+    /// whichever tab is on screen.
     fn apply_config_to_tabs(&mut self) {
         let options = self.terminal_options();
-        let colors = self.active_colors();
-        Self::refresh_window_bg_color(&colors);
+        let global = self.active_colors();
         for tab in &self.tabs {
+            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
             tab.terminal.lock().unwrap().set_config(&options, &colors);
         }
+        self.refresh_active_window_bg();
+    }
+
+    /// Refreshes the process-global window background from the
+    /// ACTIVE tab's resolved colors (the profile-appearance ruling):
+    /// the fallback background is one value, so it must belong to
+    /// the tab actually on screen — every `active_tab` assignment
+    /// and every config pass funnels through here. No tabs
+    /// (startup, or momentarily mid-close) resolves the global
+    /// pick, the pre-initiative behavior.
+    fn refresh_active_window_bg(&self) {
+        let global = self.active_colors();
+        let colors = colors_for(
+            &self.config,
+            &global,
+            self.active().and_then(|tab| tab.profile.as_deref()),
+        );
+        Self::refresh_window_bg_color(&colors);
     }
 
     /// Mirrors cosmic-term's own `update_config`: the effective window
     /// background color is a process-global (`terminal::WINDOW_BG_COLOR`)
     /// used as a fallback wherever a color scheme leaves "background"
-    /// unset, so it must be refreshed whenever the active scheme or
-    /// COSMIC theme changes.
+    /// unset, so it must be refreshed whenever the active tab's
+    /// resolution, the global scheme, or the COSMIC theme changes.
     fn refresh_window_bg_color(colors: &aterm::color::Colors) {
         let theme = cosmic::theme::active();
         let color = cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base);
@@ -1303,6 +1329,36 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
+/// The per-tab terminal-color resolution — the one seam both
+/// application points (spawn and the live config-apply pass)
+/// consume: the tab's recorded profile id → [`profile::find`] → the
+/// profile's `color_scheme` → [`theme_source::by_name`]. Every miss
+/// — no recorded id, a dangling id, no scheme, an unknown scheme
+/// name — resolves the injected `global` pick (itself the
+/// [`DropTerm::active_colors`] result, this chain's fallback the way
+/// the COSMIC pair is that one's): the chain never errors, and the
+/// store is never rewritten to "fix" a stored name. Only the unknown
+/// name warns — the `live_preset_cwd` precedent.
+fn colors_for(
+    config: &DropTermConfig,
+    global: &aterm::color::Colors,
+    profile_name: Option<&str>,
+) -> aterm::color::Colors {
+    let Some(profile) = profile_name.and_then(|name| profile::find(&config.profiles, name)) else {
+        return *global;
+    };
+    let Some(scheme) = profile.color_scheme.as_deref() else {
+        return *global;
+    };
+    theme_source::by_name(scheme).unwrap_or_else(|| {
+        log::warn!(
+            "ignoring profile {} color scheme {scheme:?}: not a built-in scheme name",
+            profile.name
+        );
+        *global
+    })
+}
+
 /// Whether the app resolves colors for dark mode right now. The
 /// config preference is the source of truth; the global theme (what
 /// widgets read) follows via the `set_theme` task, so color
@@ -1946,6 +2002,126 @@ mod tests {
         assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
     }
 
+    // --- the per-tab color resolution chain ---
+    //
+    // `colors_for` is the one seam both application points consume
+    // (spawn and the config-apply pass): the tab's recorded profile
+    // id → the profile's scheme name → the built-in registry. Every
+    // miss falls back to the injected global pick; the chain never
+    // errors. Nord plays the global below — its slots differ from
+    // Dracula's everywhere asserted, so a silent fallback to the
+    // scheme (or a scheme leaking into a fallback) cannot pass.
+
+    /// Decode a packed `0xRRGGBB` literal into an `Rgb` (mirrors
+    /// `theme_source`'s test helper).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "low-byte extraction is the 0xRRGGBB decode contract"
+    )]
+    fn rgb(data: u32) -> alacritty_terminal::vte::ansi::Rgb {
+        alacritty_terminal::vte::ansi::Rgb {
+            r: (data >> 16) as u8,
+            g: (data >> 8) as u8,
+            b: data as u8,
+        }
+    }
+
+    fn chain_profile(name: &str, scheme: Option<&str>) -> crate::profile::Profile {
+        crate::profile::Profile {
+            name: name.to_string(),
+            command: "ssh host".to_string(),
+            cwd: None,
+            color_scheme: scheme.map(str::to_owned),
+        }
+    }
+
+    fn chain_config(profiles: &[crate::profile::Profile]) -> DropTermConfig {
+        DropTermConfig {
+            profiles: profiles.to_vec(),
+            ..DropTermConfig::default()
+        }
+    }
+
+    #[test]
+    fn colors_for_resolves_a_known_scheme_name() {
+        let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
+        let colors = colors_for(
+            &config,
+            &theme_source::by_name("Nord").unwrap(),
+            Some("ssh-prod"),
+        );
+        // Dracula owns bg #282a36 and red #ff5555 (alacritty-theme).
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_5555)));
+    }
+
+    #[test]
+    fn colors_for_falls_back_to_global_for_a_plain_tab() {
+        // No recorded id — plain shell tabs, and the degraded preset
+        // arm whose blank command line records none (the shared
+        // `profile_id = None` rule): the global pick, unchanged.
+        let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
+        let colors = colors_for(&config, &theme_source::by_name("Nord").unwrap(), None);
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+    }
+
+    #[test]
+    fn colors_for_falls_back_to_global_on_a_dangling_profile_id() {
+        // The tab records a profile the config no longer carries
+        // (deleted mid-run): the global pick, never an error.
+        let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
+        let colors = colors_for(
+            &config,
+            &theme_source::by_name("Nord").unwrap(),
+            Some("ghost"),
+        );
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+    }
+
+    #[test]
+    fn colors_for_falls_back_to_global_when_the_profile_sets_no_scheme() {
+        // A profile without a scheme is today's profile: its tabs
+        // follow the global pick.
+        let config = chain_config(&[chain_profile("ssh-prod", None)]);
+        let colors = colors_for(
+            &config,
+            &theme_source::by_name("Nord").unwrap(),
+            Some("ssh-prod"),
+        );
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+    }
+
+    #[test]
+    fn colors_for_falls_back_to_global_on_an_unknown_scheme_name() {
+        // A hand-edited config can name a scheme the registry does
+        // not ship ("Catppuccin Frappe" is a real upstream variant):
+        // warn and resolve global — never an error, never a rewrite.
+        let config = chain_config(&[chain_profile("ssh-prod", Some("Catppuccin Frappe"))]);
+        let colors = colors_for(
+            &config,
+            &theme_source::by_name("Nord").unwrap(),
+            Some("ssh-prod"),
+        );
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+    }
+
+    #[test]
+    fn one_config_pass_resolves_mixed_tabs_to_different_colors() {
+        // The apply criterion's headless pin: one config, one global
+        // pick, two recorded ids (a profile tab and a plain tab) —
+        // the per-tab resolutions differ, so one `apply_config_to_tabs`
+        // pass paints them differently.
+        let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
+        let global = theme_source::by_name("Nord").unwrap();
+        let profile_tab = colors_for(&config, &global, Some("ssh-prod"));
+        let plain_tab = colors_for(&config, &global, None);
+        assert_ne!(
+            profile_tab[NamedColor::Background],
+            plain_tab[NamedColor::Background]
+        );
+        assert_ne!(profile_tab[NamedColor::Red], plain_tab[NamedColor::Red]);
+    }
+
     // --- the clipboard anchor ---
     //
     // libcosmic binds its single runtime Clipboard to the first
@@ -2305,8 +2481,10 @@ impl Application for DropTerm {
                 tab_count: 0,
             },
         };
-        let colors = app.active_colors();
-        DropTerm::refresh_window_bg_color(&colors);
+        // No tabs exist yet, so this resolves the global pick — same
+        // value the pre-initiative init computed inline; every later
+        // refresh follows the active tab's resolution.
+        app.refresh_active_window_bg();
 
         // A second launch never reaches this: `run_single_instance` forwards
         // its action over D-Bus to the already-running instance instead
@@ -3110,6 +3288,10 @@ impl DropTerm {
                 // focus handoff is needed.
                 if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
                     self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+                    // The active tab's identity survives a reorder; the
+                    // refresh is the uniform every-assignment rule, cheap
+                    // and idempotent here.
+                    self.refresh_active_window_bg();
                     // The saved tab order is tab-bar order, so a
                     // reorder is a save trigger.
                     return self.mark_session_dirty();

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
-use super::DropTerm;
+use super::{DropTerm, colors_for};
 use crate::config::DropTermConfig;
 use crate::profile;
 use crate::session;
@@ -262,13 +262,20 @@ impl DropTerm {
         let tab_id = TabId(self.next_tab_id);
         self.next_tab_id += 1;
 
+        // The spawn's own color resolution — the same [`colors_for`]
+        // chain the config-apply pass runs per tab: the Profile arm's
+        // recorded id, the global pick for every other arm (including
+        // the degraded blank-line branch above, whose
+        // `profile_id = None` rule this shares).
+        let colors = colors_for(&self.config, &self.active_colors(), profile_id.as_deref());
+
         match Terminal::new(
             tab_id,
             tx,
             term_config,
             &pty_options,
             &self.terminal_options(),
-            &self.active_colors(),
+            &colors,
         ) {
             Ok(terminal) => Some(SpawnedTerminal {
                 tab_id,
@@ -313,6 +320,10 @@ impl DropTerm {
                 session::restore_outcome(plan.active, spawned)
             {
                 self.active_tab = active;
+                // The restored active tab's scheme owns the window
+                // background from the first paint (the every-assignment
+                // rule; spawn resolved each tab's own cells already).
+                self.refresh_active_window_bg();
                 return;
             }
             // Every spawn failed: fall through to the
@@ -323,6 +334,7 @@ impl DropTerm {
             // the list is empty by construction, so both positions
             // coincide — `true` just names the shipped default.
             self.active_tab = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
+            self.refresh_active_window_bg();
             // The spawn title through the live mode (the
             // `open_new_tab` precedent): the cwd modes read the
             // preset cwd a default profile seeded, if any.
@@ -351,6 +363,7 @@ mod tests {
             name: name.to_owned(),
             command: command.to_owned(),
             cwd,
+            color_scheme: None,
         }
     }
 

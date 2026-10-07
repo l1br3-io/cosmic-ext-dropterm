@@ -516,11 +516,13 @@ mod tests {
                     name: "web-prod".to_string(),
                     command: "ssh web-prod".to_string(),
                     cwd: Some(std::path::PathBuf::from("/srv/web")),
+                    color_scheme: None,
                 },
                 Profile {
                     name: "top".to_string(),
                     command: "htop".to_string(),
                     cwd: None,
+                    color_scheme: None,
                 },
             ],
             default_profile: Some("web-prod".to_string()),
@@ -530,6 +532,98 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert_eq!(loaded, stored);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_color_scheme_round_trips_through_the_config_store() {
+        // A set scheme and an unset one — the two shapes a mixed
+        // profile list writes — survive a write→load cycle with
+        // equality, riding the existing `profiles` key unchanged.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-profile-scheme-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            profiles: vec![
+                Profile {
+                    name: "web-prod".to_string(),
+                    command: "ssh web-prod".to_string(),
+                    cwd: None,
+                    color_scheme: Some("Dracula".to_string()),
+                },
+                Profile {
+                    name: "top".to_string(),
+                    command: "htop".to_string(),
+                    cwd: None,
+                    color_scheme: None,
+                },
+            ],
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pre_initiative_profiles_file_loads_with_the_scheme_unset() {
+        // The version that shipped before `color_scheme` existed
+        // wrote profile entries without the field. Seeding exactly
+        // that shape and loading must succeed with the scheme unset
+        // — and must leave the file byte-identical: the store is
+        // never rewritten to "fix" an older format.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-pre-initiative-profiles-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig::default()
+            .write_entry(&config)
+            .expect("write config keys");
+
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        let profiles_key = version_dir.join("profiles");
+        // The pre-initiative shape: a plain Vec<Profile> with no
+        // `color_scheme` field anywhere (cwd spelled out so nothing
+        // rides serde defaults but the new field itself).
+        let pre_initiative = "[\n    (\n        name: \"ssh\",\n        command: \"ssh web\",\n        cwd: None,\n    ),\n]";
+        std::fs::write(&profiles_key, pre_initiative)
+            .expect("seed pre-initiative profiles key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("pre-initiative profiles file loads");
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].name, "ssh");
+        assert_eq!(loaded.profiles[0].color_scheme, None);
+
+        // Byte-stable: the load rewrote nothing.
+        assert_eq!(
+            std::fs::read_to_string(&profiles_key).expect("profiles key still on disk"),
+            pre_initiative
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

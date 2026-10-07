@@ -1225,6 +1225,7 @@ pub fn plan_profile_commit(
                 name: name.to_string(),
                 command: command.to_string(),
                 cwd: parse_cwd(cwd_raw),
+                color_scheme: None,
             };
             ProfileCommitPlan::Write {
                 profiles: add_profile(profiles, added),
@@ -3394,6 +3395,7 @@ mod tests {
             name: name.to_string(),
             command: command.to_string(),
             cwd: None,
+            color_scheme: None,
         }
     }
 
@@ -3680,6 +3682,7 @@ mod tests {
             name: "web-prod".to_string(),
             command: "ssh web-prod".to_string(),
             cwd: Some(PathBuf::from("/srv/web")),
+            color_scheme: None,
         }
     }
 

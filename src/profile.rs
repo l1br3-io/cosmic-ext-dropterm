@@ -28,6 +28,17 @@ pub struct Profile {
     /// cwd. Not existence-checked: a profile may be written before
     /// its directory exists; spawn-time fallback is `profile-launch`'s.
     pub cwd: Option<PathBuf>,
+    /// Color scheme the profile's tabs run: a built-in registry name
+    /// ([`crate::terminal::theme_source::scheme_names`]'s vocabulary,
+    /// the same one the global pickers offer), applied per tab at
+    /// spawn and in the live config-apply pass. `None` (the default)
+    /// follows the global scheme pick. One name, mode-independent —
+    /// a profile is a deliberate environment, not a theme follower.
+    /// An unknown name degrades to the global look at resolve time;
+    /// the chain never errors and the store is never rewritten to
+    /// strip it.
+    #[serde(default)]
+    pub color_scheme: Option<String>,
 }
 
 impl Profile {
@@ -75,6 +86,7 @@ mod tests {
             name: name.to_string(),
             command: command.to_string(),
             cwd: None,
+            color_scheme: None,
         }
     }
 
@@ -170,5 +182,32 @@ mod tests {
         // path never rewrites the config to "fix" it.
         let profiles = [profile("ssh", "ssh web-prod")];
         assert_eq!(effective_default(&profiles, Some("ghost")), None);
+    }
+
+    // --- the color-scheme field's serde shape ---
+
+    #[test]
+    fn a_pre_initiative_profile_loads_with_the_scheme_unset() {
+        // The pre-initiative on-disk shape — no `color_scheme` key at
+        // all — loads as "follow the global pick", never an error:
+        // reading tolerates the older format the same way it tolerates
+        // every other additive field.
+        let loaded: Profile =
+            ron::from_str(r#"(name: "ssh", command: "ssh web")"#).expect("old shape loads");
+        assert_eq!(loaded.color_scheme, None);
+    }
+
+    #[test]
+    fn a_profile_with_a_scheme_round_trips_through_ron() {
+        // The field's serde shape is the store's: a set name survives
+        // a serialize→deserialize cycle unchanged (config.rs's store
+        // round-trip exercises the same path through the real store).
+        let stored = Profile {
+            color_scheme: Some("Dracula".to_string()),
+            ..profile("ssh-prod", "ssh web-prod")
+        };
+        let text = ron::to_string(&stored).expect("serialize");
+        let back: Profile = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, stored);
     }
 }
