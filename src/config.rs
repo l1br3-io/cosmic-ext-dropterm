@@ -257,6 +257,14 @@ pub struct DropTermConfig {
     /// with stale ids or unparsable keys skip at load with a warn —
     /// never fatal (`keybinds::effective_key_binds`).
     pub custom_key_binds: BTreeMap<String, Binding>,
+    /// The settings drawer pane's width in px, as the user last
+    /// dragged it. `None` (the default) renders the built-in
+    /// default width; a stored value clamps at render into
+    /// [344px, 50% of surface width] — the render-time clamp is the
+    /// policy, so any stale or hand-edited value loads safe.
+    /// Written once per drag release; double-clicking the drawer's
+    /// drag handle resets it to `None`.
+    pub settings_drawer_width: Option<u16>,
 }
 
 impl Default for DropTermConfig {
@@ -289,6 +297,7 @@ impl Default for DropTermConfig {
             profiles: Vec::new(),
             default_profile: None,
             custom_key_binds: BTreeMap::new(),
+            settings_drawer_width: None,
         }
     }
 }
@@ -336,6 +345,10 @@ mod tests {
         assert_eq!(config.opacity, 100);
         assert!(config.hide_on_focus_loss);
         assert!(!config.respect_panel);
+        // Never dragged: the drawer renders its built-in default
+        // width (drawer-resize spec criterion 1) until the first
+        // drag release stores a px value.
+        assert!(config.settings_drawer_width.is_none());
     }
 
     #[test]
