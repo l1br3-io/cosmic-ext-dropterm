@@ -4,16 +4,15 @@
 //! the row list, labels, and the item→[`terminal::Action`] mapping.
 //! Item picks land in the same `perform_action` path the keybind map
 //! uses, so the menu routes to existing actions rather than
-//! re-implementing them; `app.rs` builds the libcosmic menu from
-//! [`trees`]. Order follows cosmic-term, with `DropTerm`'s Rename Tab
+//! re-implementing them; `app`'s `tab_actions` module builds the
+//! libcosmic menu from [`items`]. Order follows cosmic-term, with
+//! `DropTerm`'s Rename Tab
 //! clustering after New Tab, and Settings… last behind the divider
 //! (GNOME HIG). Right-click opens the menu only in default mode; in
 //! mouse-reporting mode it reaches the child process.
 
-use cosmic::widget::menu::{self, action::MenuAction};
+use cosmic::widget::menu;
 
-use crate::app;
-use crate::keybinds;
 use crate::profile::Profile;
 use crate::terminal::Action;
 
@@ -104,17 +103,6 @@ impl Item {
     }
 }
 
-/// Turns a menu pick into the app message that carries it: the same
-/// entry the keybind path uses, so menu behavior cannot fork from
-/// keybind behavior.
-impl MenuAction for Action {
-    type Message = app::Message;
-
-    fn message(&self) -> Self::Message {
-        app::Message::Action(*self)
-    }
-}
-
 /// The rows for the current profile list: exactly [`ROWS`] when no
 /// profile is configured — today's byte-identical flat menu, the
 /// empty-list pin — else the New Tab slot becomes the submenu slot
@@ -135,7 +123,7 @@ pub fn rows(profiles: &[Profile]) -> Vec<Row> {
 /// [`rows(profiles)`]; the submenu slot assembles its children here —
 /// the plain New Tab child first, then one button per profile in
 /// config order, each carrying its index for pick-time resolution.
-fn items(profiles: &[Profile]) -> Vec<menu::Item<Action, String>> {
+pub fn items(profiles: &[Profile]) -> Vec<menu::Item<Action, String>> {
     rows(profiles)
         .into_iter()
         .map(|row| match row {
@@ -156,24 +144,6 @@ fn items(profiles: &[Profile]) -> Vec<menu::Item<Action, String>> {
             Row::Divider => menu::Item::Divider,
         })
         .collect()
-}
-
-/// The menu as libcosmic trees, one per row of [`rows(profiles)`],
-/// each item rendered with its keybind as a hint (every static action
-/// is bound in `default_key_binds`; profile rows carry none — the
-/// lookup tolerates unbound actions with an empty hint). Called by
-/// the view only while the menu is open.
-pub fn trees(profiles: &[Profile]) -> Vec<menu::Tree<app::Message>> {
-    menu::items(&keybinds::default_key_binds(), items(profiles))
-}
-
-/// The trees the view hands `widget::context_menu` for the current
-/// open state: `None` while closed — the wrapper is then a plain
-/// pass-through of the terminal — and the full row trees while open,
-/// which arms the wrapper's right-release trigger. Holding the
-/// open-state decision here keeps the view wiring free of menu logic.
-pub fn open_trees(menu_open: bool, profiles: &[Profile]) -> Option<Vec<menu::Tree<app::Message>>> {
-    menu_open.then(|| trees(profiles))
 }
 
 #[cfg(test)]
@@ -271,25 +241,6 @@ mod tests {
         for (item, action) in expected {
             assert_eq!(item.action(), action, "{item:?} maps to the wrong action");
         }
-    }
-
-    #[test]
-    fn trees_yield_one_tree_per_row_with_no_profiles() {
-        assert_eq!(trees(&[]).len(), ROWS.len());
-    }
-
-    #[test]
-    fn open_trees_is_none_while_the_menu_is_closed() {
-        // A closed menu supplies no trees, so `widget::context_menu`
-        // renders and passes events through as a plain wrapper — the
-        // pixel-identical closed view.
-        assert!(open_trees(false, &[]).is_none());
-    }
-
-    #[test]
-    fn open_trees_carries_every_row_while_the_menu_is_open() {
-        let trees = open_trees(true, &[]).expect("the open menu supplies its trees");
-        assert_eq!(trees.len(), ROWS.len());
     }
 
     // --- the profiles submenu (ruling 2) ---
@@ -393,16 +344,5 @@ mod tests {
         };
         assert_eq!(label, "Copy");
         assert_eq!(*action, Action::Copy);
-    }
-
-    #[test]
-    fn open_trees_stays_none_while_closed_even_with_profiles() {
-        assert!(open_trees(false, &[profile("ssh-web")]).is_none());
-    }
-
-    #[test]
-    fn trees_carry_one_tree_per_row_with_profiles() {
-        let profiles = [profile("ssh-web"), profile("htop")];
-        assert_eq!(trees(&profiles).len(), rows(&profiles).len());
     }
 }

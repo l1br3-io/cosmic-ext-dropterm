@@ -27,7 +27,6 @@ use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, TabPosition, ThemePreference};
-use crate::context_menu;
 use crate::dbus_state;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
@@ -43,10 +42,12 @@ use crate::tabs::{self, Tab, TabId};
 use crate::terminal::{self, Action, TerminalBox, TerminalOptions, theme_source};
 
 mod spawn;
+mod tab_actions;
 
 use self::spawn::{
     SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, profile_pick,
 };
+use self::tab_actions::open_trees;
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -469,7 +470,7 @@ pub struct DropTerm {
     drawer_drag: Option<u16>,
     /// Whether the terminal's context menu is open: the `TerminalBox`
     /// press handler's latch, read by the view through
-    /// `context_menu::open_trees` and fed back to the box so any
+    /// `open_trees` and fed back to the box so any
     /// press while open toggle-closes it. Cleared by `hide()` — the
     /// popup dies with the surface and `on_close` never fires there.
     context_menu_open: bool,
@@ -3748,7 +3749,7 @@ impl Application for DropTerm {
         // The context menu wraps ONLY the terminal element — the
         // wrapper triggers anywhere over its bounds, so the tab bar
         // and grab bar must stay outside it. Trees are supplied only
-        // while open (`context_menu::open_trees`): closed, the
+        // while open (`open_trees`): closed, the
         // wrapper is a plain pass-through with a pixel-identical
         // view. The popup plumbing is the cosmic-term pattern:
         // `on_surface_action` is mandatory — `create_popup` is a
@@ -3757,7 +3758,7 @@ impl Application for DropTerm {
         // window's.
         let terminal: Element<'_, Message> = widget::context_menu(
             terminal,
-            context_menu::open_trees(self.context_menu_open, &self.config.profiles),
+            open_trees(self.context_menu_open, &self.config.profiles),
         )
         .on_close(Message::ContextMenu(false))
         .on_surface_action(Message::Surface)
@@ -4405,7 +4406,7 @@ impl DropTerm {
             Message::ContextMenu(open) => {
                 // The open-state latch: the press handler arms it,
                 // every close path clears it, and the view reads it
-                // through `context_menu::open_trees`.
+                // through `open_trees`.
                 self.context_menu_open = open;
             }
             Message::Surface(action) => {
