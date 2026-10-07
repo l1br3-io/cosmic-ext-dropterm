@@ -1450,6 +1450,16 @@ pub enum SettingsEvent {
     /// The Keybindings tab's search box changed — display only; the
     /// view re-filters its rows.
     KeybindSearchChanged(String),
+    /// A Keybindings row's binding was pressed: arm the capture for
+    /// that action — from here the app's capture routing owns every
+    /// press until the chord commits, Escape or Cancel ends it, or
+    /// the page turns away.
+    CaptureStart(crate::terminal::Action),
+    /// The capture hint's Cancel affordance: disarm without changes.
+    CaptureCancel,
+    /// A row's revert affordance: drop the action's custom entry; its
+    /// defaults come back on the next key press.
+    RevertKeybind(crate::terminal::Action),
     /// A profile row was pressed: make it the selection driving the
     /// edit form.
     SelectProfile(usize),
@@ -1577,14 +1587,21 @@ pub fn advanced_view(
 /// card per group of [`crate::keybinds::action_groups`] — every
 /// bindable action exactly once, each row the action's label with
 /// its effective binding text ([`crate::keybinds::action_binding_display`]:
-/// the custom binding, or the joined defaults, or "None"). The search
-/// filters rows case-insensitively by label; a group whose rows all
-/// fell away drops out, and a query nothing matches renders the
-/// empty state. Nothing here applies anything itself — the row
-/// affordances join in keybinds-editor KE-5.
+/// the custom binding, or the joined defaults, or "None") as the
+/// arm-capture affordance, plus the revert affordance while a custom
+/// entry exists. The armed capture shows its hint row under the
+/// action's row; a conflict shows the inline error naming the holder
+/// (the `danger_text_style` precedent) — never a dialog, which
+/// cannot stack above the layer surface. The search filters rows
+/// case-insensitively by label; a group whose rows all fell away
+/// drops out, and a query nothing matches renders the empty state.
+/// Nothing here applies anything itself — commits and reverts land
+/// through the app's write path and the `ConfigChanged` echo.
 pub fn keybindings_view(
     custom: &std::collections::BTreeMap<String, crate::keybinds::Binding>,
     search: &str,
+    capture: Option<crate::terminal::Action>,
+    conflict: Option<(crate::terminal::Action, crate::terminal::Action)>,
 ) -> Element<'static, SettingsEvent> {
     let mut cards: Vec<Element<'static, SettingsEvent>> = vec![
         widget::text_input::search_input("Search", search.to_string())
@@ -1599,11 +1616,66 @@ pub fn keybindings_view(
                 continue;
             }
             found = true;
+            let armed = capture == Some(action);
+            let customized =
+                crate::keybinds::action_id(action).is_some_and(|id| custom.contains_key(id));
+            // The binding text is the arm affordance — press it, then
+            // press the chord; the app's capture routing owns every
+            // press from there. The revert affordance rides beside it
+            // only while a custom entry exists.
+            let mut control = widget::row![
+                widget::button::custom(widget::text(crate::keybinds::action_binding_display(
+                    action, custom
+                )))
+                .on_press(SettingsEvent::CaptureStart(action)),
+            ]
+            .spacing(4);
+            if customized {
+                control = control.push(widget::tooltip(
+                    widget::button::custom(
+                        widget::icon(
+                            widget::icon::from_name("edit-undo-symbolic")
+                                .size(16)
+                                .handle(),
+                        )
+                        .size(16),
+                    )
+                    .on_press(SettingsEvent::RevertKeybind(action)),
+                    widget::text::body("Reset to default"),
+                    widget::tooltip::Position::Top,
+                ));
+            }
             list = list.add(
-                widget::settings::item::builder(crate::keybinds::action_label(action)).control(
-                    widget::text(crate::keybinds::action_binding_display(action, custom)),
-                ),
+                widget::settings::item::builder(crate::keybinds::action_label(action))
+                    .control(control),
             );
+            if armed {
+                // The capture-state rule made visible: while armed,
+                // capture consumes every press — the terminal never
+                // sees it. Escape cancels; so does the Cancel button.
+                list = list.add(
+                    widget::settings::item_row(vec![
+                        widget::text::body("Press keys to bind — Escape cancels")
+                            .width(cosmic::iced::Length::Fill)
+                            .into(),
+                        widget::button::text("Cancel")
+                            .on_press(SettingsEvent::CaptureCancel)
+                            .into(),
+                    ])
+                    .spacing(4),
+                );
+            }
+            if let Some((_, holder)) = conflict.filter(|(conflicted, _)| *conflicted == action) {
+                list = list.add(widget::settings::item_row(vec![
+                    widget::text::body(format!(
+                        "Already bound to “{}”",
+                        crate::keybinds::action_label(holder)
+                    ))
+                    .width(cosmic::iced::Length::Fill)
+                    .class(cosmic::theme::Text::Custom(danger_text_style))
+                    .into(),
+                ]));
+            }
         }
         if found {
             cards.push(
@@ -2177,22 +2249,32 @@ mod tests {
 
     #[test]
     fn the_keybindings_tab_builds_with_and_without_matches() {
-        // The third tab's static view (keybinds-editor criterion 1):
+        // The third tab's view (keybinds-editor criterion 1):
         // construction smoke — every group renders with the empty
-        // query, and a query nothing matches still builds (the
-        // empty-result state). Row inventory and filtering are pinned
-        // in `keybinds` (the groups and search tests).
-        let _unfiltered = keybindings_view(&BTreeMap::new(), "");
-        let _no_matches = keybindings_view(&BTreeMap::new(), "xyzzy-no-action-has-this");
-        let _filtered = keybindings_view(
-            &BTreeMap::from([(
-                "copy".to_string(),
-                crate::keybinds::Binding {
-                    modifiers: vec![crate::keybinds::ModifierName::Alt],
-                    key: "C".to_string(),
-                },
-            )]),
-            "copy",
+        // query, a query nothing matches still builds (the
+        // empty-result state), and the armed-capture and conflict
+        // states build too. Row inventory and filtering are pinned in
+        // `keybinds` (the groups and search tests).
+        let _unfiltered = keybindings_view(&BTreeMap::new(), "", None, None);
+        let _no_matches =
+            keybindings_view(&BTreeMap::new(), "xyzzy-no-action-has-this", None, None);
+        let custom = BTreeMap::from([(
+            "copy".to_string(),
+            crate::keybinds::Binding {
+                modifiers: vec![crate::keybinds::ModifierName::Alt],
+                key: "C".to_string(),
+            },
+        )]);
+        let _filtered = keybindings_view(&custom, "copy", None, None);
+        let _armed = keybindings_view(&custom, "", Some(crate::terminal::Action::Copy), None);
+        let _conflict = keybindings_view(
+            &custom,
+            "",
+            None,
+            Some((
+                crate::terminal::Action::Copy,
+                crate::terminal::Action::Paste,
+            )),
         );
     }
 

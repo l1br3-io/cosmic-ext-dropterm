@@ -447,6 +447,11 @@ pub struct DropTerm {
     /// display-only filter state following the drawer's buffer rule —
     /// an explicit close clears it, a focus-loss hide preserves it.
     keybind_search: String,
+    /// A capture that ended in a conflict (keybinds-editor): the
+    /// action whose row was captured and the action already holding
+    /// the chord — the inline error row's payload. Cleared by the
+    /// next arm, commit, revert, page turn, or close.
+    keybind_conflict: Option<(Action, Action)>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -1665,9 +1670,12 @@ impl DropTerm {
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
         self.leave_profiles_page();
-        // The Keybindings tab's search is drawer buffer state: cleared
-        // on the explicit close, preserved across focus-loss hides.
+        // The Keybindings tab's search and capture state are drawer
+        // buffer state: cleared on the explicit close, preserved
+        // across focus-loss hides.
         self.keybind_search.clear();
+        self.keybind_capture = None;
+        self.keybind_conflict = None;
         self.settings_buffer
             .apply_drawer_transition(settings::DrawerTransition::ExplicitClose);
         widget::text_input::focus(self.terminal_id.clone())
@@ -1695,6 +1703,17 @@ impl DropTerm {
     /// and its back, the explicit close's reset. The rows themselves
     /// never change.
     fn sync_settings_tab_strip(&mut self) {
+        // A page turn away from the Keybindings tab disarms any armed
+        // capture and clears its conflict — an invisible capture must
+        // never eat presses on another page (the view can't show its
+        // hint row there).
+        if !matches!(
+            self.settings_page,
+            SettingsPage::Tab(SettingsTab::Keybindings)
+        ) {
+            self.keybind_capture = None;
+            self.keybind_conflict = None;
+        }
         settings::activate_tab_row(
             &mut self.settings_tab_model,
             strip_selection(self.settings_page),
@@ -3876,6 +3895,7 @@ impl Application for DropTerm {
             key_binds,
             keybind_capture: None,
             keybind_search: String::new(),
+            keybind_conflict: None,
             last_toggle: None,
             slide: None,
             settings_open: false,
@@ -4271,7 +4291,12 @@ impl Application for DropTerm {
             ),
             SettingsPage::Tab(SettingsTab::Keybindings) => (
                 "Settings",
-                settings::keybindings_view(&self.config.custom_key_binds, &self.keybind_search),
+                settings::keybindings_view(
+                    &self.config.custom_key_binds,
+                    &self.keybind_search,
+                    self.keybind_capture,
+                    self.keybind_conflict,
+                ),
             ),
             SettingsPage::Profiles => (
                 "Profiles",
@@ -4687,12 +4712,34 @@ impl DropTerm {
                                 .keybind_capture
                                 .expect("the gate only fires on an armed capture");
                             self.keybind_capture = None;
-                            let write = settings::KeybindsWrite(keybinds::with_custom_binding(
-                                &self.config.custom_key_binds,
+                            // The conflict guard before any write
+                            // (keybinds-editor criterion 4): only a
+                            // free chord persists; the action's own
+                            // chord disarms silently, a held chord
+                            // shows the inline error and writes
+                            // nothing.
+                            match keybinds::commit_verdict(
                                 action,
-                                binding,
-                            ));
-                            self.write_keybinds_config(&write);
+                                &binding,
+                                &self.config.custom_key_binds,
+                            ) {
+                                keybinds::CommitVerdict::Commit => {
+                                    let write =
+                                        settings::KeybindsWrite(keybinds::with_custom_binding(
+                                            &self.config.custom_key_binds,
+                                            action,
+                                            binding,
+                                        ));
+                                    self.write_keybinds_config(&write);
+                                }
+                                keybinds::CommitVerdict::Own => {}
+                                keybinds::CommitVerdict::Conflict(holder) => {
+                                    self.keybind_conflict = Some((action, holder));
+                                }
+                                keybinds::CommitVerdict::Unsupported => {
+                                    log::warn!("captured chord cannot be stored; dropping capture");
+                                }
+                            }
                         }
                     }
                     return Task::none();
@@ -5066,6 +5113,27 @@ impl DropTerm {
                         // Display only: the next view build re-filters
                         // the Keybindings tab's rows.
                         self.keybind_search = text;
+                    }
+                    settings::SettingsEvent::CaptureStart(action) => {
+                        // Arm the capture: from here the KeyPressed
+                        // arm's first gate owns every press. A fresh
+                        // arm clears any standing conflict error.
+                        self.keybind_capture = Some(action);
+                        self.keybind_conflict = None;
+                    }
+                    settings::SettingsEvent::CaptureCancel => {
+                        self.keybind_capture = None;
+                    }
+                    settings::SettingsEvent::RevertKeybind(action) => {
+                        // Revert: drop the action's custom entry — its
+                        // defaults come back when the echo rebuilds the
+                        // live map, effective on the next key press.
+                        self.keybind_conflict = None;
+                        let write = settings::KeybindsWrite(keybinds::without_custom_binding(
+                            &self.config.custom_key_binds,
+                            action,
+                        ));
+                        self.write_keybinds_config(&write);
                     }
                     settings::SettingsEvent::BackFromProfiles => {
                         self.leave_profiles_page();

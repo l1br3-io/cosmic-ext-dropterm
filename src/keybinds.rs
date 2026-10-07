@@ -538,6 +538,59 @@ pub fn action_matches_search(action: Action, query: &str) -> bool {
         .contains(&query.to_lowercase())
 }
 
+/// What committing a captured chord would do — the pure half of the
+/// capture-commit path (keybinds-editor criterion 4). The app writes
+/// only on [`CommitVerdict::Commit`]; every other outcome is a disarm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitVerdict {
+    /// The chord is free: commit it as the action's custom binding.
+    Commit,
+    /// The chord is already the action's effective binding: a silent
+    /// disarm, nothing written (the spec's open-question-2 ruling).
+    Own,
+    /// Another action holds the chord effectively: nothing writes; the
+    /// holder names it in the inline error row.
+    Conflict(Action),
+    /// The chord cannot round-trip into a runtime [`KeyBind`] (an
+    /// empty key name — only a hand-edited config can hold one):
+    /// disarm with a warn, never persist an entry resolution would
+    /// skip.
+    Unsupported,
+}
+
+/// The commit verdict for `action` capturing `binding`, given the
+/// current custom map — resolved against the *effective* map, so a
+/// default chord retired by someone's custom is free again and a
+/// custom chord is as owned as a default.
+pub fn commit_verdict(
+    action: Action,
+    binding: &Binding,
+    custom: &BTreeMap<String, Binding>,
+) -> CommitVerdict {
+    let Some(key_bind) = binding.to_key_bind() else {
+        return CommitVerdict::Unsupported;
+    };
+    match effective_key_binds(custom).get(&key_bind) {
+        Some(holder) if *holder == action => CommitVerdict::Own,
+        Some(holder) => CommitVerdict::Conflict(*holder),
+        None => CommitVerdict::Commit,
+    }
+}
+
+/// The custom map with `action`'s entry removed — the revert planner:
+/// the action's defaults come back on the next rebuild (whole map in,
+/// whole map out, like every write here).
+pub fn without_custom_binding(
+    custom: &BTreeMap<String, Binding>,
+    action: Action,
+) -> BTreeMap<String, Binding> {
+    let mut updated = custom.clone();
+    if let Some(id) = action_id(action) {
+        updated.remove(id);
+    }
+    updated
+}
+
 /// The [`Key`] a persisted key name parses back to. Ported from
 /// cosmic-term — the names it accepts are the format's vocabulary.
 fn key_from_string(value: &str) -> Option<Key> {
@@ -1380,5 +1433,146 @@ mod tests {
         assert!(action_matches_search(Action::ZoomIn, "zoom"));
         assert!(action_matches_search(Action::ActivateTab(0), "tab 1"));
         assert!(!action_matches_search(Action::Copy, "xyzzy"));
+    }
+
+    // --- the capture-commit verdict and revert (keybinds-editor KE-5) ---
+
+    #[test]
+    fn a_free_chord_commits() {
+        let verdict = commit_verdict(
+            Action::Copy,
+            &Binding {
+                modifiers: vec![ModifierName::Ctrl, ModifierName::Alt],
+                key: "Q".to_string(),
+            },
+            &BTreeMap::new(),
+        );
+        assert_eq!(verdict, CommitVerdict::Commit);
+    }
+
+    #[test]
+    fn the_action_s_own_effective_chord_disarms_silently() {
+        // Spec open-question 2's ruling: re-capturing the chord the
+        // action already holds writes nothing — capture just ends.
+        // Both flavors: the default chord with no custom, and the
+        // custom chord itself.
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
+                    key: "C".to_string(),
+                },
+                &BTreeMap::new(),
+            ),
+            CommitVerdict::Own
+        );
+        let custom = custom(&[("copy", &[ModifierName::Alt], "Q")]);
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![ModifierName::Alt],
+                    key: "Q".to_string(),
+                },
+                &custom,
+            ),
+            CommitVerdict::Own
+        );
+    }
+
+    #[test]
+    fn a_chord_another_action_holds_is_a_conflict_naming_the_holder() {
+        // Default holder: Paste owns Ctrl+Shift+V by default; capturing
+        // it for Copy is a Conflict(Paste) — never a write.
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
+                    key: "V".to_string(),
+                },
+                &BTreeMap::new(),
+            ),
+            CommitVerdict::Conflict(Action::Paste)
+        );
+        // Custom holder: ZoomOut's custom chord is just as owned.
+        let custom = custom(&[("zoom_out", &[ModifierName::Alt], "Q")]);
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![ModifierName::Alt],
+                    key: "Q".to_string(),
+                },
+                &custom,
+            ),
+            CommitVerdict::Conflict(Action::ZoomOut)
+        );
+    }
+
+    #[test]
+    fn a_retired_default_chord_is_free_again_for_its_owner() {
+        // ZoomIn customized to Alt+Q retires its Ctrl+= / Ctrl+Plus
+        // defaults; re-capturing Ctrl+= for ZoomIn is a fresh Commit
+        // (it becomes the custom), not Own — the effective binding is
+        // Alt+Q, and a Commit here is what restores "=" as the custom.
+        let custom = custom(&[("zoom_in", &[ModifierName::Alt], "Q")]);
+        assert_eq!(
+            commit_verdict(
+                Action::ZoomIn,
+                &Binding {
+                    modifiers: vec![ModifierName::Ctrl],
+                    key: "=".to_string(),
+                },
+                &custom,
+            ),
+            CommitVerdict::Commit
+        );
+        // ...and for anyone else, Ctrl+= is free too (ZoomIn retired
+        // it) — the overlay's replace semantics keep no spare claims.
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![ModifierName::Ctrl],
+                    key: "=".to_string(),
+                },
+                &custom,
+            ),
+            CommitVerdict::Commit
+        );
+    }
+
+    #[test]
+    fn an_unparsable_chord_is_unsupported() {
+        // Only a hand-edited config can hold one: capture never
+        // produces an empty key, and every non-empty name parses
+        // (cosmic-term's Character fallthrough — a stored "KanaMode"
+        // becomes an unmatchable Character key, dead but harmless).
+        assert_eq!(
+            commit_verdict(
+                Action::Copy,
+                &Binding {
+                    modifiers: vec![],
+                    key: String::new(),
+                },
+                &BTreeMap::new(),
+            ),
+            CommitVerdict::Unsupported
+        );
+    }
+
+    #[test]
+    fn revert_removes_only_its_own_entry() {
+        let map = custom(&[("copy", &[], "F2"), ("zoom_out", &[], "F3")]);
+        assert_eq!(
+            without_custom_binding(&map, Action::Copy),
+            custom(&[("zoom_out", &[], "F3")])
+        );
+        // Reverting an action with no entry is the same map.
+        assert_eq!(without_custom_binding(&map, Action::Paste), map);
+        // Unkeybindable actions never had an entry either.
+        assert_eq!(without_custom_binding(&map, Action::NewProfileTab(0)), map);
     }
 }
