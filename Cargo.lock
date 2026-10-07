@@ -1091,6 +1091,7 @@ dependencies = [
  "alacritty_terminal",
  "clap",
  "cosmic-text",
+ "enumflags2",
  "env_logger",
  "indexmap",
  "libcosmic",

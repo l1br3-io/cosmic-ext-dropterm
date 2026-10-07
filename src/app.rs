@@ -24,6 +24,7 @@ use cosmic::iced::{Event, Subscription, clipboard, window};
 use cosmic::surface::Action as SurfaceAction;
 use cosmic::widget;
 use cosmic::{Application, Element};
+use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
 use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, TabPosition, ThemePreference};
@@ -3829,7 +3830,21 @@ impl Application for DropTerm {
         &mut self.core
     }
 
-    fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(mut core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
+        // This app owns its translucency: the `opacity` setting is the
+        // single dial, applied by the terminal's own background quad.
+        // libcosmic's frosted-glass machinery is a second, hidden dial:
+        // when the COSMIC dark theme enables frosted glass, a
+        // settings-time `set_theme` (the Application theme flip) makes
+        // the runtime mark the global theme `transparent` and restyle
+        // every container onto the theme's translucent slot — the
+        // chrome turns see-through and blurred while the startup path
+        // (which races the compositor's late blur-support event) stays
+        // opaque, so the app looks inconsistent until restart. Opting
+        // out of auto-blur pins `frosted()` false everywhere in the
+        // runtime, making the appearance independent of the user's
+        // frosted-glass preference in both paths.
+        core.set_auto_blur(BitFlags::default());
         let (config_handler, config) =
             match cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION) {
                 Ok(handler) => {
