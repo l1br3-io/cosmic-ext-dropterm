@@ -100,6 +100,15 @@ pub enum Message {
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
+    /// The pending close-confirmation modal was dismissed: cancel —
+    /// the tab, its process, and its selection state stay untouched
+    /// (close-confirm criterion 4).
+    CloseConfirmCancel,
+    /// The pending close-confirmation modal's Close Tab was pressed:
+    /// the tab id the modal armed with — resolved against the live
+    /// list at apply time, no-op on a gone tab (criterion 4's stale
+    /// guard).
+    CloseConfirmProceed(TabId),
     /// Switch a live tab's profile in place: the tab id (the bar's
     /// stable handle, like every tab message) and the config profile
     /// index — resolved at apply time, the `NewProfileTab`
@@ -253,6 +262,13 @@ pub struct DropTerm {
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
     rename: Option<RenameEdit>,
+    /// The single-slot pending close confirmation (close-confirm
+    /// spec): the tab a user-initiated close is waiting on, armed
+    /// only when the toggle is on and the tab runs a foreground
+    /// child. While `Some`, the modal owns the surface; a new
+    /// request replaces the slot, any removal of the tab clears it,
+    /// and it survives hide/show like the drawer does.
+    pending_close: Option<TabId>,
     /// An in-progress grab-bar height drag, if any: the absolute
     /// anchor every target recomputes from, plus the runtime state of
     /// the apply cadence (see `Drag`).
@@ -1001,6 +1017,60 @@ impl DropTerm {
         widget::text_input::focus(self.terminal_id.clone())
     }
 
+    /// Cancels the pending close confirmation (close-confirm
+    /// criterion 4): the slot clears and keyboard focus returns to
+    /// the terminal the modal had borrowed — the tab, its process,
+    /// and its selection state stay untouched. Escape and the scrim's
+    /// press-cancels meet here, the `RenameCancelled` refocus shape.
+    fn cancel_pending_close(&mut self) -> Task<Message> {
+        self.pending_close = None;
+        widget::text_input::focus(self.terminal_id.clone())
+    }
+
+    /// Composes the pending close-confirmation modal over `content`
+    /// (close-confirm criterion 4), outermost — above the settings
+    /// drawer when both exist, surviving hide/show with the surface —
+    /// and armed-only: with no pending close the content passes
+    /// through byte-identically. The scrim is a full-surface
+    /// `mouse_area` whose press cancels (the card's buttons capture
+    /// their own presses first, so the dialog stays clickable)
+    /// carrying a centered `widget::dialog` card naming the tab by
+    /// its title only — never the process name.
+    fn close_confirm_modal<'a>(&self, content: Element<'a, Message>) -> Element<'a, Message> {
+        let Some(pending) = self.pending_close else {
+            return content;
+        };
+        let title = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == pending)
+            .map(|tab| tab.title.clone())
+            .unwrap_or_default();
+        let card = widget::dialog()
+            .title("Close tab?")
+            .body(format!("“{title}” is running a process. Close it anyway?"))
+            .secondary_action(
+                widget::button::standard("Cancel").on_press(Message::CloseConfirmCancel),
+            )
+            .primary_action(
+                widget::button::destructive("Close Tab")
+                    .on_press(Message::CloseConfirmProceed(pending)),
+            );
+        let scrim = widget::mouse_area(
+            widget::container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(cosmic::iced::alignment::Horizontal::Center)
+                .align_y(cosmic::iced::alignment::Vertical::Center)
+                .class(cosmic::theme::Container::custom(scrim_style)),
+        )
+        .on_press(Message::CloseConfirmCancel);
+        cosmic::iced::widget::Stack::with_children([content, scrim.into()])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
     /// Leaves the Profiles page (back affordance, or the drawer's
     /// explicit close): page state — selection, the form draft —
     /// drops so a reopened page starts from config, the page resets
@@ -1239,6 +1309,57 @@ fn drawer_escape_routing(settings_open: bool, key: &Key) -> DrawerKeyRouting {
         DrawerKeyRouting::CloseDrawer
     } else {
         DrawerKeyRouting::FallThrough
+    }
+}
+
+/// The close-gate decision (close-confirm criterion 3): confirm only
+/// when the toggle is on AND a foreground child is running — either
+/// input false closes immediately, exactly today's behavior
+/// (criterion 5). Pure so the truth table is headless-testable.
+fn confirm_needed(enabled: bool, foreground_running: bool) -> bool {
+    enabled && foreground_running
+}
+
+/// What the app does with a key press while a close confirmation is
+/// pending (close-confirm criterion 4): Escape cancels the modal —
+/// with precedence over the settings drawer's own Escape handling,
+/// which sees a later press only after the slot clears — and every
+/// other press is swallowed while the decision waits. Transparent
+/// with no pending close: routing is exactly as before. Pure so the
+/// rule is headless-testable, the `drawer_escape_routing` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalKeyRouting {
+    /// A close confirmation is pending and this Escape cancels it:
+    /// swallow the press here.
+    Cancel,
+    /// A close confirmation is pending; any other press is consumed
+    /// by the modal, never the terminal or a bind.
+    Swallow,
+    /// No pending close: the press takes the normal routing.
+    FallThrough,
+}
+
+fn modal_key_routing(pending_close: bool, key: &Key) -> ModalKeyRouting {
+    if !pending_close {
+        return ModalKeyRouting::FallThrough;
+    }
+    if matches!(key, Key::Named(Named::Escape)) {
+        ModalKeyRouting::Cancel
+    } else {
+        ModalKeyRouting::Swallow
+    }
+}
+
+/// The confirmation modal's scrim style: a translucent black wash
+/// over the whole surface (50%), the standard modal dim — the
+/// `danger_text_style` hand-composed precedent for theme styles this
+/// drawer-less layer surface cannot get from a preset.
+fn scrim_style(_theme: &cosmic::theme::Theme) -> cosmic::iced::widget::container::Style {
+    cosmic::iced::widget::container::Style {
+        background: Some(cosmic::iced::Background::Color(
+            cosmic::iced::Color::from_rgba8(0, 0, 0, 0.5),
+        )),
+        ..Default::default()
     }
 }
 
@@ -1782,6 +1903,66 @@ mod tests {
         }
     }
 
+    // --- the close-confirmation gate and modal key routing
+    // (close-confirm T3) ---
+
+    #[test]
+    fn confirm_needed_requires_both_the_toggle_and_a_running_child() {
+        // Criterion 3's truth table as one pin: either input false →
+        // immediate close. The toggle-off row is criterion 5
+        // (byte-identical to today); the idle-shell row is criterion
+        // 2 (a tab at its prompt never confirms).
+        assert!(!confirm_needed(false, false));
+        assert!(!confirm_needed(false, true));
+        assert!(!confirm_needed(true, false));
+        assert!(confirm_needed(true, true));
+    }
+
+    #[test]
+    fn escape_while_a_close_confirms_cancels_the_modal_not_the_drawer() {
+        // Criterion 4's precedence: the modal's routing sits ahead of
+        // `drawer_escape_routing`, so Escape with both the drawer and
+        // a pending close cancels the modal only — the drawer stays
+        // open beneath (a second Escape, unpending now, closes it as
+        // today).
+        assert_eq!(
+            modal_key_routing(true, &Key::Named(Named::Escape)),
+            ModalKeyRouting::Cancel
+        );
+    }
+
+    #[test]
+    fn every_other_key_is_swallowed_while_a_close_confirms() {
+        // While the decision waits, the modal owns the keyboard:
+        // binds never fire and nothing reaches the terminal (pointer
+        // blocking comes free from the scrim).
+        for key in [
+            Key::Character("w".into()),
+            Key::Named(Named::Enter),
+            Key::Named(Named::Tab),
+        ] {
+            assert_eq!(
+                modal_key_routing(true, &key),
+                ModalKeyRouting::Swallow,
+                "{key:?} must be swallowed while a close confirms"
+            );
+        }
+    }
+
+    #[test]
+    fn modal_key_routing_is_transparent_without_a_pending_close() {
+        // No pending close: every key — Escape included — keeps
+        // today's routing; the rule never fires.
+        assert_eq!(
+            modal_key_routing(false, &Key::Named(Named::Escape)),
+            ModalKeyRouting::FallThrough
+        );
+        assert_eq!(
+            modal_key_routing(false, &Key::Character("w".into())),
+            ModalKeyRouting::FallThrough
+        );
+    }
+
     // --- the armed capture's key routing (keybinds-editor KE-3) ---
 
     #[test]
@@ -2271,6 +2452,7 @@ impl Application for DropTerm {
             session_save: session::SessionSave::default(),
             tab_cwds: HashMap::new(),
             rename: None,
+            pending_close: None,
             drag: None,
             write_back: geometry::WriteBack::default(),
             last_written: None,
@@ -2495,11 +2677,13 @@ impl Application for DropTerm {
             .opacity(opacity)
             .show_headerbar(false)
             // Inert while the settings drawer is open (spec
-            // criterion 4): cosmic-term's discipline — the drawer
-            // overlay already captures pointer events over its
-            // bounds, and `disabled` keeps keyboard (and the rest of
-            // the pointer stream) away from the pty.
-            .disabled(self.settings_open)
+            // criterion 4) or a close confirmation is pending
+            // (close-confirm criterion 4): cosmic-term's discipline —
+            // the overlays already capture pointer events, and
+            // `disabled` keeps keyboard (raw key events reach widgets
+            // whatever the app-level routing swallows) away from the
+            // pty.
+            .disabled(self.settings_open || self.pending_close.is_some())
             .on_middle_click(|| Message::MiddleClick)
             .on_open_hyperlink(Some(Box::new(Message::OpenHyperlink)))
             .on_window_focused(|| Message::WindowFocused)
@@ -2650,8 +2834,10 @@ impl Application for DropTerm {
         // hook cannot reach it (spike decision, settings-drawer
         // Task 0). The Close button routes through the same
         // `Action::Settings` toggle as the keybind (criterion 7).
+        // The pending-close modal composes over whichever of the two
+        // trees is showing — outermost (close-confirm criterion 4).
         if !self.settings_open {
-            return content;
+            return self.close_confirm_modal(content);
         }
         // The drawer pane's width comes from the drawer-resize width
         // policy (spec criterion 4): a live drag value (criterion 2)
@@ -2709,7 +2895,7 @@ impl Application for DropTerm {
         let tab_strip = widget::tab_bar::horizontal(&self.settings_tab_model)
             .button_height(32)
             .on_activate(Message::PickSettingsTab);
-        widget::context_drawer(
+        let drawer: Element<'_, Message> = widget::context_drawer(
             Some(title.into()),
             None,
             Some(tab_strip.into()),
@@ -2722,7 +2908,8 @@ impl Application for DropTerm {
                 surface_width,
             ),
         )
-        .into()
+        .into();
+        self.close_confirm_modal(drawer)
     }
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
@@ -3029,6 +3216,19 @@ impl DropTerm {
                 if self.rename.is_some() {
                     return Task::none();
                 }
+                // The pending close confirmation owns the keyboard
+                // ahead of the drawer's Escape rule (close-confirm
+                // criterion 4): Escape cancels the modal — only it,
+                // the drawer beneath stays open — and every other
+                // press is swallowed while the decision waits
+                // (pointer blocking comes free from the scrim).
+                match modal_key_routing(self.pending_close.is_some(), &key) {
+                    ModalKeyRouting::Cancel => {
+                        return self.cancel_pending_close();
+                    }
+                    ModalKeyRouting::Swallow => return Task::none(),
+                    ModalKeyRouting::FallThrough => {}
+                }
                 // The drawer-first Escape rule (spec criterion 6):
                 // with the drawer open, Escape closes it — only
                 // that. The press never reaches the terminal and the
@@ -3082,6 +3282,25 @@ impl DropTerm {
                 }
             }
             Message::TabClosed(id) => {
+                // The tab-bar `×` and bar middle-click ride the
+                // gated front door like every user-initiated close
+                // (close-confirm criterion 3); `TermEvent::Exit`
+                // keeps calling `close_tab_at` directly and never
+                // confirms.
+                if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                    return self.request_close_tab(index);
+                }
+            }
+            Message::CloseConfirmCancel => {
+                return self.cancel_pending_close();
+            }
+            Message::CloseConfirmProceed(id) => {
+                // Stale guard (criterion 4): the modal can outlive
+                // its tab — the shell exited on its own, a faster
+                // close landed — so resolve by id and no-op on a
+                // gone tab. A live id closes through today's
+                // unchanged path.
+                self.pending_close = None;
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
                     return self.close_tab_at(index);
                 }

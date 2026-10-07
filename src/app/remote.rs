@@ -353,17 +353,20 @@ impl DropTerm {
 
     /// Applies a remote `close-tab`: the 1-based `--tab-index`
     /// resolves through [`tabs::remote_target_index`] — absent means
-    /// the active tab — and the close rides the shared
-    /// [`Self::close_tab_at`], inheriting successor activation,
-    /// respawn-when-last, attention retirement, the session-dirty
-    /// mark, and the rename-session prune. An unresolvable target —
-    /// no tabs, out of range — warns and no-ops: the fire-and-forget
-    /// D-Bus call has no reply to carry the failure, so degradation
-    /// is quiet.
+    /// the active tab — and the close rides the gated front door
+    /// [`Self::request_close_tab`] (the remote verb is
+    /// user-initiated like any other, close-confirm ruling 2: the
+    /// modal appears on the surface and the close waits for the
+    /// decision), falling through to [`Self::close_tab_at`]'s
+    /// unchanged contract — successor activation, respawn-when-last,
+    /// attention retirement, the session-dirty mark, and the
+    /// rename-session prune. An unresolvable target — no tabs, out
+    /// of range — warns and no-ops: the fire-and-forget D-Bus call
+    /// has no reply to carry the failure, so degradation is quiet.
     pub(super) fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
         if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
         {
-            self.close_tab_at(index)
+            self.request_close_tab(index)
         } else {
             log::warn!(
                 "close-tab: no tab at --tab-index {tab_index:?} ({} open)",

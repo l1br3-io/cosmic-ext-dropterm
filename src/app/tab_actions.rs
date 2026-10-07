@@ -14,6 +14,7 @@ use super::DropTerm;
 use super::Message;
 use super::SurfaceState;
 use super::ToggleAction;
+use super::confirm_needed;
 use super::spawn::{
     SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, profile_pick,
 };
@@ -383,7 +384,7 @@ impl DropTerm {
                     self.config.profiles.len()
                 );
             }
-            Action::CloseTab => return self.close_tab_at(self.active_tab),
+            Action::CloseTab => return self.request_close_tab(self.active_tab),
             Action::DuplicateTab => {
                 // Duplicate the active tab: capture its cwd and rename
                 // pin before the helper's `&mut self` call — `active()`
@@ -525,6 +526,34 @@ impl DropTerm {
         Task::none()
     }
 
+    /// The front door every user-initiated close rides (close-confirm
+    /// criterion 3): the keybind and context-menu row
+    /// ([`Action::CloseTab`]), the tab-bar `×` and bar middle-click
+    /// ([`Message::TabClosed`]), and the remote `close-tab` verb —
+    /// with the toggle on and a foreground child running (criterion
+    /// 2's detection), the single-slot pending close arms and the
+    /// in-surface modal waits for a human decision; otherwise the
+    /// close proceeds now through [`Self::close_tab_at`],
+    /// byte-identical to today (criterion 5). Shell exits
+    /// (`TermEvent::Exit`) never route here — the process already
+    /// ended. The decision reads config at request time, so a
+    /// mid-session toggle flip applies to the very next close.
+    pub(super) fn request_close_tab(&mut self, index: usize) -> Task<Message> {
+        let Some(tab) = self.tabs.get(index) else {
+            return Task::none();
+        };
+        let id = tab.id;
+        let running = tab.terminal.lock().unwrap().foreground_child_running();
+        if confirm_needed(self.config.close_confirmation_enabled, running) {
+            // Single-slot (criterion 4): a new request replaces
+            // whatever the slot held.
+            self.pending_close = Some(id);
+            Task::none()
+        } else {
+            self.close_tab_at(index)
+        }
+    }
+
     /// Closes the tab at `index` and activates its successor (or, when
     /// it closed last, its predecessor). A close that took the final
     /// tab immediately spawns a fresh one — the overlay is never left
@@ -533,6 +562,16 @@ impl DropTerm {
     /// so refocusing a tab that already had focus is a no-op.
     pub(super) fn close_tab_at(&mut self, index: usize) -> Task<Message> {
         let closed = self.tabs.get(index).map(|tab| tab.id);
+        // Stale guard (close-confirm criterion 4): every removal rider
+        // passes through here — keybind, bar `×`, middle-click,
+        // remote, and the never-gated `TermEvent::Exit` — so one hook
+        // retires a pending confirmation whose tab just left; no later
+        // Proceed may act on it.
+        if let Some(id) = closed
+            && self.pending_close == Some(id)
+        {
+            self.pending_close = None;
+        }
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
             // The tab activation a close implies also retires the
