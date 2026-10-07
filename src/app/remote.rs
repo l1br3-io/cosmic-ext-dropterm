@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use cosmic::app::Task;
+
+use super::DropTerm;
+use super::Message;
+use super::spawn::{SpawnCommand, default_spawn_command, live_preset_cwd};
+use crate::profile;
+use crate::tabs;
+
 /// What the running instance should do on startup, mirrored by a second
 /// launch's D-Bus activation (see `main.rs`).
 // `pub`, not the spec's `pub(crate)`: rustc's E0446 forbids a
@@ -229,6 +237,227 @@ impl cosmic::app::CosmicFlags for Flags {
     /// forwards no args.
     fn args(&self) -> Vec<&str> {
         self.forwarded.iter().map(String::as_str).collect()
+    }
+}
+
+impl DropTerm {
+    /// Opens the tab a remote `new-tab` asked for, placing it per
+    /// `after_current` (the `new_tab_after_current` config). At first
+    /// launch the terminal event channel may not exist yet — the
+    /// spawn defers, the request stashes, and the channel's arrival
+    /// applies it right after the session restore (re-reading the
+    /// config then, so a flipped toggle still applies to the stash).
+    pub(super) fn open_remote_tab(
+        &mut self,
+        action: ToggleAction,
+        after_current: bool,
+    ) -> Task<Message> {
+        let ToggleAction::NewTab { .. } = action else {
+            return Task::none();
+        };
+        if self.term_event_tx.is_none() {
+            self.pending_remote_tab = Some(action);
+            return Task::none();
+        }
+        self.spawn_remote_tab(action, after_current)
+    }
+
+    /// Spawns the requested remote tab: an explicit live `--cwd` wins,
+    /// then the active tab's cwd, then the pty default; a `--cmd` runs
+    /// as the tab's program instead of the shell; a `--profile`
+    /// resolves against the config and runs under its id. The tab
+    /// lands at the position `after_current` picks — after the active
+    /// one, or at the end — becomes active, and — being a layout
+    /// change — marks the session dirty.
+    pub(super) fn spawn_remote_tab(
+        &mut self,
+        action: ToggleAction,
+        after_current: bool,
+    ) -> Task<Message> {
+        let ToggleAction::NewTab { cwd, cmd, profile } = action else {
+            return Task::none();
+        };
+        self.ensure_tabs();
+        // Flag presence, not live-ness: an explicit --cwd guards the
+        // plain-shell branch below even when the directory turns out
+        // dead (the user asked for an override; a dead one warns and
+        // degrades within that override, it does not fall back to the
+        // default profile).
+        let explicit_cwd = cwd.is_some();
+        // A nonexistent --cwd degrades to the inherited/default cwd
+        // with a warning, never an error surface.
+        let explicit = cwd.filter(|dir| {
+            let live = dir.is_dir();
+            if !live {
+                log::warn!("ignoring --cwd {}: not a directory", dir.display());
+            }
+            live
+        });
+        let inherited = self
+            .active()
+            .and_then(|tab| tab.terminal.lock().unwrap().working_directory());
+        // `--cmd` wins its arm outright (the clap conflict keeps a
+        // --cmd/--profile pairing off the wire); a profile resolves
+        // against the live config before spawn — a name that no
+        // longer exists warns and spawns the plain shell (ruling 3:
+        // the fire-and-forget forward has no reply surface). An
+        // explicit --cwd keeps the spawn a plain shell even with a
+        // default profile set: the user overrode the preset
+        // wholesale, and duplicate-tab rides exactly here (a fresh
+        // shell in the target's cwd, never the default — ruling 1).
+        // The bare remainder is the one branch the configured default
+        // owns.
+        let command = match (cmd, profile) {
+            (Some(line), _) => SpawnCommand::CommandLine(line),
+            (None, Some(name)) => {
+                if let Some(profile) = profile::find(&self.config.profiles, &name) {
+                    SpawnCommand::Profile {
+                        name: profile.name.clone(),
+                        command: profile.command.clone(),
+                        cwd: profile.cwd.clone(),
+                    }
+                } else {
+                    log::warn!("no profile named {name}; spawning the shell instead");
+                    SpawnCommand::Shell(self.config.resolved_shell())
+                }
+            }
+            (None, None) if explicit_cwd => SpawnCommand::Shell(self.config.resolved_shell()),
+            (None, None) => default_spawn_command(&self.config),
+        };
+        // A profile tab's directory — by name or by default: the
+        // explicit --cwd over the preset's live cwd over inheritance,
+        // the preset degrading the way --cwd does (warn when dead,
+        // then the inherited/default directory applies). Every other
+        // arm resolves exactly as before.
+        let spawn_cwd = match &command {
+            SpawnCommand::Profile {
+                name, cwd: preset, ..
+            } => explicit
+                .clone()
+                .or_else(|| live_preset_cwd(name, preset.as_ref()))
+                .or(inherited.clone()),
+            _ => tabs::resolve_new_tab_cwd(explicit, inherited),
+        };
+        if let Some(tab) = self.spawn_shell(&command, spawn_cwd) {
+            let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);
+            // The spawn title through the live mode, exactly like the
+            // keybind funnel's shared tail (see `open_new_tab`).
+            self.retitle_tab(at);
+            let switch = self.set_active_tab(at);
+            return Task::batch([switch, self.mark_session_dirty()]);
+        }
+        Task::none()
+    }
+
+    /// Applies a remote `close-tab`: the 1-based `--tab-index`
+    /// resolves through [`tabs::remote_target_index`] — absent means
+    /// the active tab — and the close rides the shared
+    /// [`Self::close_tab_at`], inheriting successor activation,
+    /// respawn-when-last, attention retirement, the session-dirty
+    /// mark, and the rename-session prune. An unresolvable target —
+    /// no tabs, out of range — warns and no-ops: the fire-and-forget
+    /// D-Bus call has no reply to carry the failure, so degradation
+    /// is quiet.
+    pub(super) fn close_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
+        {
+            self.close_tab_at(index)
+        } else {
+            log::warn!(
+                "close-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                self.tabs.len()
+            );
+            Task::none()
+        }
+    }
+
+    /// Applies a remote `select-tab`: the strict 1-based `N` resolves
+    /// through [`tabs::select_tab_target`] — the wire's 1-based
+    /// indices converted once, at this boundary — and the activation
+    /// rides the shared [`Self::set_active_tab`], inheriting attention
+    /// retirement, the session-dirty mark, and the already-active
+    /// no-op. An unresolvable target — no tabs, out of range — warns
+    /// and no-ops: the fire-and-forget D-Bus call has no reply to
+    /// carry the failure, so degradation is quiet. The `None` return
+    /// tells the caller to skip the surface half too.
+    pub(super) fn select_remote_tab(&mut self, one_based: usize) -> Option<Task<Message>> {
+        if let Some(index) = tabs::select_tab_target(self.tabs.len(), one_based) {
+            Some(self.set_active_tab(index))
+        } else {
+            log::warn!(
+                "select-tab: no tab at index {one_based} ({} open)",
+                self.tabs.len()
+            );
+            None
+        }
+    }
+
+    /// Applies a remote `rename-tab`: the target resolves like
+    /// close-tab's — absent means the active tab — through
+    /// [`tabs::remote_target_index`]. Any inline rename session on
+    /// that tab ends first with its draft discarded — a pending draft
+    /// must not commit over the remote title — then
+    /// [`tabs::commit_rename`] applies the payload: a non-empty TITLE
+    /// sets the sticky override shell OSC titles never clobber, the
+    /// empty TITLE clears it so shell titles resume. Quiet like
+    /// close-tab, and the session-dirty mark persists titles. An
+    /// unresolvable target warns and no-ops.
+    pub(super) fn rename_remote_tab(
+        &mut self,
+        title: &str,
+        tab_index: Option<usize>,
+    ) -> Task<Message> {
+        if let Some(index) = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab)
+        {
+            let refocus = self.end_rename_on(index);
+            self.commit_rename_on(index, title);
+            Task::batch([refocus, self.mark_session_dirty()])
+        } else {
+            log::warn!(
+                "rename-tab: no tab at --tab-index {tab_index:?} ({} open)",
+                self.tabs.len()
+            );
+            Task::none()
+        }
+    }
+
+    /// Applies a remote `duplicate-tab`: the target — absent means the
+    /// active tab — resolves through [`tabs::remote_target_index`],
+    /// and a fresh shell tab opens in that tab's cwd; the running
+    /// command is never copied, and the source's rename pin carries
+    /// (ruling 2 — the keybind, menu, and CLI cannot fork). An
+    /// explicit but unresolvable `--tab-index` warns, and the source
+    /// degrades to the active tab — the same tab the warning names —
+    /// so its cwd and pin are read, not the pty default's. The spawn
+    /// rides [`Self::open_duplicate_tab`] end to end: the
+    /// channel-bootstrap deferral, after-active landing, activation,
+    /// and the session-dirty mark are all inherited. The overlay half
+    /// is the caller's.
+    pub(super) fn duplicate_remote_tab(&mut self, tab_index: Option<usize>) -> Task<Message> {
+        let target = tabs::remote_target_index(self.tabs.len(), tab_index, self.active_tab);
+        if target.is_none() && tab_index.is_some() {
+            log::warn!(
+                "duplicate-tab: no tab at --tab-index {tab_index:?} ({} open); duplicating the active tab instead",
+                self.tabs.len()
+            );
+        }
+        // The degraded path keeps the warning's promise — "duplicating
+        // the active tab instead" — by reading cwd and pin from the
+        // active tab, the same source the bare verb resolves to.
+        // Capture both before the helper's `&mut self` call.
+        let source = target
+            .or(Some(self.active_tab))
+            .filter(|&index| index < self.tabs.len());
+        let (cwd, title_override) =
+            source
+                .and_then(|index| self.tabs.get(index))
+                .map_or((None, None), |tab| {
+                    (
+                        tab.terminal.lock().unwrap().working_directory(),
+                        tab.title_override.clone(),
+                    )
+                });
+        self.open_duplicate_tab(cwd, title_override)
     }
 }
 
