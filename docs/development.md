@@ -137,6 +137,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Slide animation: showing slides the content column in from the anchored edge over ~130 ms (ease-out) and hiding slides it back out (ease-in), removing the surface only after the slide completes - on both `edge = top` and `edge = bottom`, with horizontal placement never animating
 - [ ] During the slide the surface's size and position never change (no visible resize or jump), and the content's opacity never fades
 - [ ] Keyboard focus is grabbed the instant the surface shows, and returns to the previously focused window the moment a hide *starts* - not when the surface disappears
+- [ ] A focus-reporting program (fish; or vim/tmux in any shell) never repaints per toggle: hotkey hide/show leaves its display untouched, while a real focus loss and regain (click another window, then the overlay) still reports - the dropdown's own toggle is not a focus event
 - [ ] `Ctrl+Shift+Q` and click-away (focus loss) hides animate exactly like the hotkey hide
 - [ ] A background job (`sleep 100 &`) survives a hide/show cycle toggled mid-animation (toggle again within the 130 ms)
 - [ ] Rapid-toggle spam (10+ toggles inside 1 s): the surface always ends in the state the last toggle implies - no teleports between endpoints, no stuck or half-animated surfaces, focus correct at rest - and a toggle arriving mid-hide visibly reverses the slide on the same surface

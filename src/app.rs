@@ -529,9 +529,12 @@ impl DropTerm {
         // cleanup is idempotent for `Leave`: any live grab-bar drag
         // is moot, the terminal pin's debounce state starts over so
         // the next show's first granted size adopts immediately, and
-        // the active terminal reports the focus loss now — its PTY
-        // keeps running regardless, because PTYs live in tabs, not
-        // the window.
+        // the active terminal keeps its reported focus — the
+        // dropdown's own visibility toggle is not a focus event for
+        // the PTY (a focus-reporting program — fish, vim, tmux —
+        // would repaint its prompt per toggle), and the PTY keeps
+        // running regardless, because PTYs live in tabs, not the
+        // window.
         self.drag = None;
         self.pending_height = None;
         self.pin_applied = None;
@@ -540,9 +543,6 @@ impl DropTerm {
         // show's first right-click would be consumed as a
         // toggle-close of a menu that is not there.
         self.context_menu_open = false;
-        if let Some(tab) = self.active() {
-            tab.terminal.lock().unwrap().set_focused(false);
-        }
         Task::batch([commit, task])
     }
 
@@ -551,10 +551,11 @@ impl DropTerm {
     /// `geometry` module's guarantee) — the slide re-targets `In`
     /// from the current offset (`slide::reverse`: no teleport, a
     /// fresh fixed 130 ms), keyboard interactivity is re-grabbed per
-    /// config, the terminal reports back the focus it lost at hide
-    /// start, and `surface_focused` resets to `false` pending the
-    /// `LayerFocused` the re-grab synthesizes. PTYs never noticed the
-    /// hide and keep running throughout.
+    /// config, and `surface_focused` resets to `false` pending the
+    /// `LayerFocused` the re-grab synthesizes. No focus report
+    /// returns here — none left at hide start (the toggle is not a
+    /// focus event), so the PTY never noticed the hide and keeps
+    /// running throughout.
     fn reverse_show(&mut self, id: window::Id) -> Task<Message> {
         self.surface = SurfaceState::Shown(id);
         self.surface_focused = false;
@@ -578,13 +579,10 @@ impl DropTerm {
             };
             self.slide = Some(reversed);
         }
-        // The mirror of hide's focus bookkeeping: report the terminal
-        // focused again — `set_focused` only reports real changes, so
-        // the `LayerFocused` this re-grab synthesizes can repeat it
-        // harmlessly.
-        if let Some(tab) = self.active() {
-            tab.terminal.lock().unwrap().set_focused(true);
-        }
+        // The mirror of hide's focus bookkeeping: none — hide reports
+        // nothing, so nothing returns here; the `LayerFocused` this
+        // re-grab synthesizes repeats the terminal's standing focus
+        // harmlessly (`set_focused` reports only real changes).
         Task::batch([
             set_keyboard_interactivity(
                 id,
@@ -627,7 +625,13 @@ impl DropTerm {
         // Losing keyboard focus commits a rename: the input's own
         // unfocus signal only covers Escape and Tab, which cancel.
         let commit = self.commit_pending_rename();
-        if let Some(tab) = self.active() {
+        // Only a shown surface's focus loss reaches the PTY: unfocus
+        // events trailing our own hide (`Hiding`/`Hidden` by the time
+        // they arrive) must not report, or a focus-reporting program
+        // repaints its prompt per toggle.
+        if matches!(self.surface, SurfaceState::Shown(_))
+            && let Some(tab) = self.active()
+        {
             tab.terminal.lock().unwrap().set_focused(false);
         }
         if focus_loss_hides(self.config.hide_on_focus_loss) && self.surface_focused {
