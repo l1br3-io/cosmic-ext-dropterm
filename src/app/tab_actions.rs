@@ -6,7 +6,16 @@ use super::Message;
 use crate::context_menu::items;
 use crate::keybinds;
 use crate::profile::Profile;
+use crate::tabs::TabId;
 use crate::terminal::Action;
+
+/// An in-flight inline tab rename: the tab being renamed and the
+/// current draft. The input itself is an overlay the tab bar hosts
+/// over the renamed tab's button.
+pub(super) struct RenameEdit {
+    pub(super) tab: TabId,
+    pub(super) draft: String,
+}
 
 /// Turns a menu pick into the app message that carries it: the same
 /// entry the keybind path uses, so menu behavior cannot fork from
@@ -26,6 +35,15 @@ impl MenuAction for Action {
 /// the view only while the menu is open.
 pub(super) fn trees(profiles: &[Profile]) -> Vec<menu::Tree<Message>> {
     menu::items(&keybinds::default_key_binds(), items(profiles))
+}
+
+/// Whether a tab button exists to host the inline-rename input: the
+/// bar hides its buttons below two tabs (its own visibility rule, the
+/// same one `prune_rename_session` enforces), and the input overlays a
+/// button — so a rename can only start, or keep running, with one to
+/// sit on.
+pub(super) fn rename_overlay_hosted(tab_count: usize) -> bool {
+    tab_count > 1
 }
 
 /// The trees the view hands `widget::context_menu` for the current
@@ -81,5 +99,17 @@ mod tests {
     fn trees_carry_one_tree_per_row_with_profiles() {
         let profiles = [profile("ssh-web"), profile("htop")];
         assert_eq!(trees(&profiles).len(), rows(&profiles).len());
+    }
+
+    #[test]
+    fn rename_overlay_needs_a_hosted_tab_button() {
+        // The rename input overlays a tab button, and buttons show
+        // only with two or more tabs (the bar's own visibility rule,
+        // see `prune_rename_session`): below that there is nothing to
+        // host the input, so the rename bind is a swallowed no-op.
+        assert!(!rename_overlay_hosted(0));
+        assert!(!rename_overlay_hosted(1));
+        assert!(rename_overlay_hosted(2));
+        assert!(rename_overlay_hosted(5));
     }
 }

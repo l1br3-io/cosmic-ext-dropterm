@@ -47,7 +47,7 @@ mod tab_actions;
 use self::spawn::{
     SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, profile_pick,
 };
-use self::tab_actions::open_trees;
+use self::tab_actions::{RenameEdit, open_trees, rename_overlay_hosted};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -302,14 +302,6 @@ pub enum Message {
     /// popups are created and destroyed by the runtime, never by the
     /// app (as in cosmic-term).
     Surface(SurfaceAction<Message>),
-}
-
-/// An in-flight inline tab rename: the tab being renamed and the
-/// current draft. The input itself is an overlay the tab bar hosts
-/// over the renamed tab's button.
-struct RenameEdit {
-    tab: TabId,
-    draft: String,
 }
 
 /// An in-progress grab-bar drag's runtime state: the pure anchor
@@ -2453,15 +2445,6 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
     }
 }
 
-/// Whether a tab button exists to host the inline-rename input: the
-/// bar hides its buttons below two tabs (its own visibility rule, the
-/// same one `prune_rename_session` enforces), and the input overlays a
-/// button — so a rename can only start, or keep running, with one to
-/// sit on.
-fn rename_overlay_hosted(tab_count: usize) -> bool {
-    tab_count > 1
-}
-
 /// Settings for the clipboard-anchor window.
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
@@ -3255,18 +3238,6 @@ mod tests {
             bar_tooltip_side(effective_bar_at_bottom(Edge::Bottom, TabPosition::Bottom)),
             TooltipSide::Above
         );
-    }
-
-    #[test]
-    fn rename_overlay_needs_a_hosted_tab_button() {
-        // The rename input overlays a tab button, and buttons show
-        // only with two or more tabs (the bar's own visibility rule,
-        // see `prune_rename_session`): below that there is nothing to
-        // host the input, so the rename bind is a swallowed no-op.
-        assert!(!rename_overlay_hosted(0));
-        assert!(!rename_overlay_hosted(1));
-        assert!(rename_overlay_hosted(2));
-        assert!(rename_overlay_hosted(5));
     }
 
     // --- the profile flag's forward encoding ---
