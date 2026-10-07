@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use clap::Parser;
 use cosmic::app::Task;
 
 use super::DropTerm;
 use super::Message;
 use super::spawn::{SpawnCommand, default_spawn_command, live_preset_cwd};
+use crate::Args;
 use crate::profile;
 use crate::tabs;
 
@@ -461,9 +463,21 @@ impl DropTerm {
     }
 }
 
+/// Parses a forwarded action — the action name plus any arguments the
+/// second launch sent along — back into a [`ToggleAction`], reusing the
+/// clap definitions above as the single source of truth for the CLI
+/// surface. `None` when the words do not form a valid action.
+pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<ToggleAction> {
+    let argv: Vec<String> = std::iter::once("cosmic-ext-dropterm".to_string())
+        .chain(words.iter().cloned())
+        .collect();
+    Args::try_parse_from(argv).ok()?.action
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmic::app::CosmicFlags;
     use std::path::PathBuf;
 
     // --- the first-launch degradation ---
@@ -539,5 +553,93 @@ mod tests {
                 "ssh-web".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn a_malformed_forward_degrades_to_none() {
+        // Words clap rejects yield None, which dbus_activation turns
+        // into a plain toggle — never an error surface (here, a bad
+        // --tab-index).
+        let words: Vec<String> = ["close-tab", "--tab-index", "0"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(parse_forwarded_action(&words), None);
+    }
+
+    #[test]
+    fn forwarded_actions_survive_the_dbus_round_trip() {
+        // The second launch serializes the action as its Display name
+        // plus flags.args(); the primary reconstructs it through
+        // parse_forwarded_action. Every action must survive exactly,
+        // serialized by the real encoder — no hand-rolled words.
+        let actions = [
+            ToggleAction::Toggle,
+            ToggleAction::Show,
+            ToggleAction::Hide,
+            ToggleAction::NewTab {
+                cwd: None,
+                cmd: None,
+                profile: None,
+            },
+            ToggleAction::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: None,
+                profile: None,
+            },
+            ToggleAction::NewTab {
+                cwd: None,
+                cmd: Some("htop".to_string()),
+                profile: None,
+            },
+            ToggleAction::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: Some("htop -u root".to_string()),
+                profile: None,
+            },
+            ToggleAction::NewTab {
+                cwd: None,
+                cmd: None,
+                profile: Some("ssh-web".to_string()),
+            },
+            ToggleAction::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: None,
+                profile: Some("ssh-web".to_string()),
+            },
+            ToggleAction::CloseTab { tab_index: None },
+            ToggleAction::CloseTab { tab_index: Some(2) },
+            ToggleAction::SelectTab { index: 1 },
+            ToggleAction::SelectTab { index: 3 },
+            ToggleAction::RenameTab {
+                title: "work".to_string(),
+                tab_index: None,
+            },
+            ToggleAction::RenameTab {
+                title: String::new(),
+                tab_index: None,
+            },
+            ToggleAction::RenameTab {
+                title: "logs".to_string(),
+                tab_index: Some(3),
+            },
+            ToggleAction::DuplicateTab { tab_index: None },
+            ToggleAction::DuplicateTab { tab_index: Some(2) },
+            ToggleAction::SwitchProfileTab {
+                profile: "htop".to_string(),
+                tab_index: None,
+            },
+            ToggleAction::SwitchProfileTab {
+                profile: "ssh-web".to_string(),
+                tab_index: Some(2),
+            },
+        ];
+        for action in actions {
+            let flags = Flags::new(action.clone());
+            let words = std::iter::once(action.to_string())
+                .chain(flags.args().into_iter().map(str::to_string))
+                .collect::<Vec<String>>();
+            assert_eq!(parse_forwarded_action(&words), Some(action));
+        }
     }
 }

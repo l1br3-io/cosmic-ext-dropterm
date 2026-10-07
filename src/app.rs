@@ -43,7 +43,7 @@ pub(crate) mod remote;
 mod spawn;
 mod tab_actions;
 
-use self::remote::{Flags, ToggleAction, startup_action};
+use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
 use self::tab_actions::{RenameEdit, open_trees};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
@@ -2734,7 +2734,7 @@ impl Application for DropTerm {
                 // a plain toggle, never an error surface.
                 let mut words = vec![action];
                 words.extend(args);
-                let parsed = crate::parse_forwarded_action(&words).unwrap_or_default();
+                let parsed = parse_forwarded_action(&words).unwrap_or_default();
                 Task::done(cosmic::Action::App(Message::ToggleAction(parsed)))
             }
             Details::Open { .. } => Task::none(),
