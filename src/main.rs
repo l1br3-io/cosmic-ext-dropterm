@@ -38,7 +38,8 @@ use cosmic_ext_dropterm::dbus_state;
 
 use clap::Parser;
 
-use app::{DropTerm, Flags, ToggleAction};
+use app::remote::ToggleAction;
+use app::{DropTerm, Flags};
 
 /// A native, Yakuake/Guake-style drop-down terminal for the COSMIC desktop.
 ///
