@@ -8,11 +8,19 @@ Every setting is editable in-app: press `Ctrl+Shift+I` while the terminal has ke
 
 ## Tabs, sections, and commit points
 
-The drawer's pages sit behind a two-tab strip - General and Advanced - pinned under the drawer title, so the tabs stay put while a page scrolls beneath them. General carries the everyday sections: Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), and Terminal, plus the Profiles entry row. Advanced carries the power controls: `respect_panel`, `layer`, and `keyboard_mode`. Every exposed control appears exactly once across the two tabs - none lost, none duplicated.
+The drawer's pages sit behind a three-tab strip - General, Keybindings, and Advanced - pinned under the drawer title, so the tabs stay put while a page scrolls beneath them. General carries the everyday sections: Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), and Terminal, plus the Profiles entry row. Keybindings carries the shortcut editor (its own section below). Advanced carries the power controls: `respect_panel`, `layer`, and `keyboard_mode`. Every exposed control appears exactly once across the tabs - none lost, none duplicated.
 
 Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives on its tab (start typing in a field, flip tabs, flip back - the text is still there). The drawer title stays "Settings" on both tabs; the strip disambiguates. Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab, and an explicit close resets the drawer to General for the next open, while a focus-loss hide preserves the open tab and its drafts exactly as they were.
 
 Every edit applies the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter.
+
+## Keybindings tab
+
+The third tab is the shortcut editor: a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other), each row showing its effective binding - the custom binding if one is set, otherwise every default chord joined (`Ctrl + Plus / Ctrl + Equal` for zoom-in), or `None` for actions that ship unbound (copy-primary - middle-click paste covers it). One binding per action: setting a new chord replaces the action's previous bindings entirely, and the row's undo affordance (visible only while a custom exists) reverts to the defaults. The numbered tab-activation rows are one row per digit, 1 through 8, with 9 as its own "Activate last tab" row; the per-profile new-tab action is deliberately not keybindable.
+
+Rebinding is a two-press interaction: press the row's binding to arm the capture (a hint row appears under it), then press the chord. While armed, the capture owns every key press - nothing reaches the terminal or any other binding. Escape (or the hint's Cancel button) ends the capture without changes; a later Escape closes the drawer as usual. Capturing a chord another action already holds shows an inline error naming the holder and writes nothing; capturing the action's own current chord just ends the capture.
+
+A committed rebind applies instantly - the very next key press uses the new chord, no restart - and persists to the config file, so it survives a restart. Editing the config file by hand while the app runs has the same effect (the file is watched); entries with unknown action ids or unparseable keys are skipped with a warning, never fatal. The on-disk shape is one `custom_key_binds` entry per action, keyed by the action's id and spelling the binding as modifier names plus a key name (see [configuration](configuration.md#keybindings)).
 
 ## Profiles page
 
@@ -37,6 +45,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title and cwd the moment the pick lands |
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
+| `custom_key_binds` | instant - the very next key press uses the new chord, in the same session |
 | `shell`, `args`, `scrollback_lines` | new tabs only |
 | `profiles`, `default_profile` | next spawn - a page write applies to future spawns only; a running tab is never re-launched |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |

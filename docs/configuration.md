@@ -60,3 +60,17 @@ Profiles - named presets of what a tab runs - are managed in-app on the [setting
 ```
 
 `default_profile` (default unset) names the profile plain new tabs launch: with it set, `Ctrl+Shift+T`, the tab bar's `+` (its plain click), the context menu's plain "New Tab" row, a bare `new-tab`, and the fresh-startup tab all run it as full profile tabs (a `duplicate-tab` still spawns a fresh shell - the running command is never copied - and carries the source's rename pin). A name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. Launching under a profile is live four ways: that default application, `new-tab --profile NAME` (above), the tab context menu - "New Tab" becomes a submenu exactly when the list is non-empty, its first child the plain New Tab, then one row per profile in config order - and the tab bar `+`'s right-click dropdown, the same composition opening beside the gear exactly when the list is non-empty. Config edits apply to future spawns only; a running tab is never re-launched mid-run. Managing profiles - creating, editing, deleting, reordering, cloning, and picking the default - all happens on the Profiles page of the [settings drawer](settings.md), with the same instant write-through as every other setting.
+
+## Keybindings
+
+Keybindings are customized in-app on the [settings drawer](settings.md)'s Keybindings tab; the config file can also be hand-edited in the same shape. `custom_key_binds` (default empty - all defaults) maps one action id to one binding: modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key name (single letters are case-insensitive; named keys spell their names - `Tab`, `PageUp`, `F1`, `Space`, `Insert`). The action ids are the file-format vocabulary - `copy`, `paste`, `paste_primary`, `select_all`, `zoom_in`/`zoom_out`/`zoom_reset`, `hide`, `settings`, `new_tab`, `new_tab_home`, `close_tab`, `duplicate_tab`, `rename_tab`, `next_tab`, `prev_tab`, `move_tab_left`, `move_tab_right`, `activate_tab_1` through `activate_tab_8`, `activate_last_tab`, `clear_scrollback`, `copy_primary`:
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/custom_key_binds
+{
+    "copy": (modifiers: [Ctrl, Alt], key: "C"),
+    "activate_tab_3": (modifiers: [], key: "F2"),
+}
+```
+
+A custom binding replaces *all* of that action's default chords; removing the entry reverts to the defaults. Entries with unknown ids or an empty key are skipped at load with a warning - never fatal. A chord two actions claim resolves deterministically to the later id. The live map follows the file while the app runs: the very next key press after a write - from the editor or a hand edit - uses the new bindings.
