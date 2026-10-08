@@ -460,22 +460,38 @@ impl DropTerm {
     /// resolution, keeping chrome and unset-bg cells in step with
     /// whichever tab is on screen.
     fn apply_config_to_tabs(&mut self) {
-        let options = self.terminal_options();
-        let global = self.active_colors();
-        for tab in &self.tabs {
-            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
-            tab.terminal.lock().unwrap().set_config(&options, &colors);
-        }
+        // The window background must move BEFORE any tab's rewalk:
+        // `set_config`'s rebuild snapshots the window-bg fallback per
+        // cell (`convert_color` reads the process-global live), so the
+        // refresh-then-rewalk order inside [`Self::refresh_active_window_bg`]
+        // is what makes a theme flip land in one frame. The old
+        // refresh-after order left every default-background cell — and
+        // the full-surface default quad — wearing the previous theme's
+        // background, healed only where later grid damage rewalked a
+        // line: the grayish cover over the editor on an Application
+        // theme flip, receding on focus and leaving one-line fragments
+        // (hardware walk 2026-10-08).
         self.refresh_active_window_bg();
     }
 
     /// Refreshes the process-global window background from the
     /// ACTIVE tab's resolved colors (the profile-appearance ruling):
-    /// the fallback background is one value, so it must belong to
-    /// the tab actually on screen — every `active_tab` assignment
+    /// the fallback background is one value, so it must belong to the
+    /// tab actually on screen — every `active_tab` assignment
     /// and every config pass funnels through here. No tabs
     /// (startup, or momentarily mid-close) resolves the global
     /// pick, the pre-initiative behavior.
+    ///
+    /// A moved window background also invalidates every tab whose
+    /// scheme defers it (the COSMIC pair), whose cell snapshots and
+    /// default quad resolved the old value at their last rewalk — so
+    /// the store is followed by one `set_config` pass over all tabs.
+    /// The engine's `update_default_colors` reads the global live and
+    /// only rewalks when a tab's default metadata actually moved:
+    /// scheme-owning tabs compare equal and update nothing, and the
+    /// pass is what heals a plain tab switched in under a different
+    /// window background (the tab-switch door into the same stale
+    /// snapshot as the theme flip).
     fn refresh_active_window_bg(&self) {
         let global = self.active_colors();
         let colors = colors_for(
@@ -484,6 +500,11 @@ impl DropTerm {
             self.active().and_then(|tab| tab.profile.as_deref()),
         );
         Self::refresh_window_bg_color(&colors);
+        let options = self.terminal_options();
+        for tab in &self.tabs {
+            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
+            tab.terminal.lock().unwrap().set_config(&options, &colors);
+        }
     }
 
     /// Mirrors cosmic-term's own `update_config`: the effective window
