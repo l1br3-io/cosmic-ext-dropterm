@@ -1039,7 +1039,7 @@ impl DropTerm {
 /// The tab the drawer resets to on an explicit close, so a reopened
 /// drawer always starts on the everyday controls.
 const fn home_settings_page() -> SettingsTab {
-    SettingsTab::General
+    SettingsTab::Appearance
 }
 
 /// Whether a page turn from `from` to `to` leaves the Profiles tab —
@@ -1838,7 +1838,8 @@ mod tests {
         // turn ever had a draft to clear. Focus-loss hides never
         // route here (preservation is their rule).
         for to in [
-            SettingsTab::General,
+            SettingsTab::Appearance,
+            SettingsTab::Behavior,
             SettingsTab::Keybindings,
             SettingsTab::Advanced,
         ] {
@@ -1849,21 +1850,21 @@ mod tests {
             SettingsTab::Profiles
         ));
         assert!(!leaves_profiles_tab(
-            SettingsTab::General,
+            SettingsTab::Appearance,
             SettingsTab::Profiles
         ));
         assert!(!leaves_profiles_tab(
             SettingsTab::Advanced,
-            SettingsTab::General
+            SettingsTab::Appearance
         ));
     }
 
     #[test]
-    fn the_explicit_close_resets_to_the_general_tab() {
+    fn the_explicit_close_resets_to_the_appearance_tab() {
         // The landing rule: an explicit close lands on the first
         // tab, so a reopened drawer always starts on the everyday
         // controls.
-        assert_eq!(home_settings_page(), SettingsTab::General);
+        assert_eq!(home_settings_page(), SettingsTab::Appearance);
     }
 
     // --- the window-background source decision ---
@@ -2610,7 +2611,10 @@ impl Application for DropTerm {
         // The title stays "Settings" on every page — the strip
         // disambiguates.
         let drawer_content = match self.settings_page {
-            SettingsTab::General => settings::general_view(&self.config, &self.settings_buffer),
+            SettingsTab::Appearance => {
+                settings::appearance_view(&self.config, &self.settings_buffer)
+            }
+            SettingsTab::Behavior => settings::behavior_view(&self.config, &self.settings_buffer),
             SettingsTab::Profiles => settings::profiles_view(
                 &self.config,
                 self.profile_selection,
