@@ -21,7 +21,7 @@ use super::spawn::{
 use crate::context_menu::items;
 use crate::keybinds;
 use crate::notify;
-use crate::profile::Profile;
+use crate::profile::{self, Profile};
 use crate::session;
 use crate::tabs::{self, TabId};
 use crate::terminal::Action;
@@ -796,15 +796,27 @@ impl DropTerm {
     /// and a fresh tab's spawn (before any report exists). The cwd
     /// comes from the `tab_cwds` cache, seeded at spawn and refreshed
     /// by [`Self::check_tab_cwd`] — which is why the report handlers
-    /// sample the cwd *before* resolving.
+    /// sample the cwd *before* resolving. The tab's profile id
+    /// resolves to its current name here — at retitle time, not
+    /// spawn — so a profile renamed or deleted under a running tab
+    /// reflects on this very retitle: a dangling id yields no name
+    /// and Profile mode renders the Shell fallback, never a stale
+    /// name.
     pub(super) fn retitle_tab(&mut self, tab_index: usize) {
         let mode = self.config.tab_title_mode;
+        let profile_name = self
+            .tabs
+            .get(tab_index)
+            .and_then(|tab| tab.profile.as_deref())
+            .and_then(|id| profile::find(&self.config.profiles, id))
+            .map(|preset| preset.name.as_str());
         if let Some(tab) = self.tabs.get_mut(tab_index) {
             let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
             tab.title = tabs::resolve_title(
                 mode,
                 tab.shell_title.as_deref(),
                 cwd,
+                profile_name,
                 tab.id,
                 tab.title_override.as_deref(),
             );
@@ -825,15 +837,25 @@ impl DropTerm {
     /// Applies a rename commit on one tab — both rename callers, the
     /// tab-bar inline rename and the remote `rename-tab`, meet here:
     /// the override is set or cleared and the displayed title
-    /// re-resolves per the live mode (see [`tabs::commit_rename`]).
+    /// re-resolves per the live mode (see [`tabs::commit_rename`]);
+    /// the profile name resolves at commit time exactly as
+    /// [`Self::retitle_tab`]'s does, so a cleared rename on a profile
+    /// tab in Profile mode shows the profile's current name.
     pub(super) fn commit_rename_on(&mut self, tab_index: usize, new_title: &str) {
         let mode = self.config.tab_title_mode;
+        let profile_name = self
+            .tabs
+            .get(tab_index)
+            .and_then(|tab| tab.profile.as_deref())
+            .and_then(|id| profile::find(&self.config.profiles, id))
+            .map(|preset| preset.name.as_str());
         if let Some(tab) = self.tabs.get_mut(tab_index) {
             let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
             tabs::commit_rename(
                 mode,
                 tab.shell_title.as_deref(),
                 cwd,
+                profile_name,
                 tab.id,
                 &mut tab.title,
                 &mut tab.title_override,

@@ -139,6 +139,13 @@ pub enum TabTitleMode {
     LastSegment,
     /// Reports never land; the title parks at `Terminal N`.
     Numbered,
+    /// The name of the profile the tab runs — the id-resolved name at
+    /// retitle time, so renames and deletes reflect immediately. A
+    /// user rename still wins (as in every mode); a tab running no
+    /// profile — or whose profile id dangles — falls back to exactly
+    /// [`TabTitleMode::Shell`]'s behavior: the raw report, else
+    /// `Terminal N`.
+    Profile,
 }
 
 impl std::fmt::Display for TabTitleMode {
@@ -148,6 +155,7 @@ impl std::fmt::Display for TabTitleMode {
             Self::AbbreviatedPath => write!(f, "abbreviated_path"),
             Self::LastSegment => write!(f, "last_segment"),
             Self::Numbered => write!(f, "numbered"),
+            Self::Profile => write!(f, "profile"),
         }
     }
 }
@@ -1357,6 +1365,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             TabTitleMode::LastSegment,
             TabTitleMode::Numbered,
+            TabTitleMode::Profile,
         ] {
             let serialized = ron::to_string(&variant).expect("serialize TabTitleMode");
             let deserialized: TabTitleMode =

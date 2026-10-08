@@ -335,10 +335,11 @@ pub fn next_default_title(id: TabId) -> String {
 
 /// Resolves the title a tab's button displays, from the inputs every
 /// apply point shares: the configured mode, the last raw OSC 0/2
-/// report, the tab's cwd, and its id (the `Terminal N` fallback). A
-/// user rename wins in every mode — the stickiness Guake's
-/// `custom_label_set`, kitty's `name or title`, and Yakuake's
-/// interactive-rename flag all implement. With no rename:
+/// report, the tab's cwd, the tab's id-resolved profile name, and its
+/// id (the `Terminal N` fallback). A user rename wins in every mode —
+/// the stickiness Guake's `custom_label_set`, kitty's `name or
+/// title`, and Yakuake's interactive-rename flag all implement. With
+/// no rename:
 ///
 /// - `Shell` shows the raw report — today's behavior — `Terminal N`
 ///   until the first report;
@@ -355,11 +356,17 @@ pub fn next_default_title(id: TabId) -> String {
 ///   `/`, Guake verbatim — falling back to the raw report when no
 ///   cwd is readable (Guake's `OSError` fallback);
 /// - `Numbered` parks at `Terminal N`: reports never land (Guake
-///   `use-vte-titles=false`).
+///   `use-vte-titles=false`);
+/// - `Profile` shows the tab's profile name — the id resolved by the
+///   call site at retitle time (ruling 2: a dangling id passes
+///   `None`, never a stale name), so profile renames and deletes
+///   reflect on the next retitle. No name — a plain tab or a dangling
+///   id — falls back to exactly `Shell`'s behavior.
 pub fn resolve_title(
     mode: TabTitleMode,
     shell_title: Option<&str>,
     cwd: Option<&Path>,
+    profile_name: Option<&str>,
     id: TabId,
     title_override: Option<&str>,
 ) -> String {
@@ -373,6 +380,9 @@ pub fn resolve_title(
             .and_then(last_cwd_segment)
             .unwrap_or_else(|| raw_report_or_default(shell_title, id)),
         TabTitleMode::AbbreviatedPath => abbreviated_report(shell_title, cwd, id),
+        TabTitleMode::Profile => {
+            profile_name.map_or_else(|| raw_report_or_default(shell_title, id), str::to_owned)
+        }
     }
 }
 
@@ -479,10 +489,19 @@ fn abbreviate_suffix(report: &str, suffix: &str) -> String {
 /// title re-resolves through [`resolve_title`]: a clear shows what
 /// the live mode dictates right away instead of parking on the
 /// cleared text until the next shell report.
+// The argument list mirrors [`resolve_title`]'s inputs plus the
+// two mutable title fields and the commit — the policy stays one
+// pure fn over the tab's whole title state, so regrouping into a
+// params struct would just rename eight locals.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fn is the rename policy over the tab's full title state; a params struct would only rename its inputs"
+)]
 pub fn commit_rename(
     mode: TabTitleMode,
     shell_title: Option<&str>,
     cwd: Option<&Path>,
+    profile_name: Option<&str>,
     id: TabId,
     title: &mut String,
     title_override: &mut Option<String>,
@@ -493,7 +512,15 @@ pub fn commit_rename(
     } else {
         *title_override = Some(new_title.to_owned());
     }
-    resolve_title(mode, shell_title, cwd, id, title_override.as_deref()).clone_into(title);
+    resolve_title(
+        mode,
+        shell_title,
+        cwd,
+        profile_name,
+        id,
+        title_override.as_deref(),
+    )
+    .clone_into(title);
 }
 
 /// The plain-data half of an in-place respawn: what every
@@ -517,7 +544,8 @@ pub struct RespawnFields {
 /// from the live mode with no report yet — a rename wins, the cwd
 /// modes read `cwd` (the spawn directory the app seeds), `Shell` and
 /// `Numbered` fall back to the fresh `Terminal N` default of the new
-/// id. The tab becomes a persistent profile tab (`ephemeral = false`,
+/// id, and `Profile` reads the respawn's own profile name. The tab
+/// becomes a persistent profile tab (`ephemeral = false`,
 /// id recorded) whatever it was before — the pair `spawn_shell` sets
 /// for a profile launch.
 pub fn plan_respawn(
@@ -528,7 +556,7 @@ pub fn plan_respawn(
     profile_name: &str,
 ) -> RespawnFields {
     RespawnFields {
-        title: resolve_title(mode, None, cwd, id, old_override),
+        title: resolve_title(mode, None, cwd, Some(profile_name), id, old_override),
         shell_title: None,
         title_override: old_override.map(str::to_owned),
         attention: Attention::None,
@@ -912,6 +940,7 @@ mod tests {
             TabTitleMode::Shell,
             Some("vim — src/main.rs"),
             None,
+            None,
             TabId(0),
             None,
         );
@@ -922,7 +951,7 @@ mod tests {
     fn a_missing_report_shows_the_default_number() {
         // Also the RIS story: a reset clears the stored report and
         // the default comes back.
-        let title = resolve_title(TabTitleMode::Shell, None, None, TabId(4), None);
+        let title = resolve_title(TabTitleMode::Shell, None, None, None, TabId(4), None);
         assert_eq!(title, "Terminal 5");
     }
 
@@ -933,18 +962,117 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             TabTitleMode::LastSegment,
             TabTitleMode::Numbered,
+            TabTitleMode::Profile,
         ] {
             assert_eq!(
                 resolve_title(
                     mode,
                     Some("jpt@box:~/src"),
                     Some(Path::new("/home/jpt/src")),
+                    None,
                     TabId(0),
                     Some("work")
                 ),
                 "work"
             );
         }
+    }
+
+    // --- the Profile arm (profile-title) ---
+
+    #[test]
+    fn profile_mode_shows_the_tab_recorded_profile_name() {
+        // The mode's whole point: the tab says `ssh-prod` no matter
+        // what the shell's OSC title reports underneath.
+        assert_eq!(
+            resolve_title(
+                TabTitleMode::Profile,
+                Some("user@host: ~"),
+                None,
+                Some("ssh-prod"),
+                TabId(0),
+                None
+            ),
+            "ssh-prod"
+        );
+    }
+
+    #[test]
+    fn profile_mode_shows_the_name_before_any_report() {
+        // The name needs nothing from the shell: a fresh profile tab
+        // is labeled from its first paint.
+        assert_eq!(
+            resolve_title(
+                TabTitleMode::Profile,
+                None,
+                None,
+                Some("top"),
+                TabId(0),
+                None
+            ),
+            "top"
+        );
+    }
+
+    #[test]
+    fn profile_mode_rename_pin_wins_over_the_name() {
+        // The rename pin is the last word in every mode — Profile is
+        // no exception.
+        assert_eq!(
+            resolve_title(
+                TabTitleMode::Profile,
+                Some("user@host"),
+                None,
+                Some("ssh-prod"),
+                TabId(0),
+                Some("prod box")
+            ),
+            "prod box"
+        );
+    }
+
+    #[test]
+    fn profile_mode_falls_back_to_shell_behavior_without_a_profile() {
+        // A plain tab looks exactly as it does in Shell mode: the raw
+        // report when one exists...
+        assert_eq!(
+            resolve_title(
+                TabTitleMode::Profile,
+                Some("zsh"),
+                None,
+                None,
+                TabId(0),
+                None
+            ),
+            "zsh"
+        );
+        // ...and the `Terminal N` default when none does.
+        assert_eq!(
+            resolve_title(TabTitleMode::Profile, None, None, None, TabId(2), None),
+            "Terminal 3"
+        );
+    }
+
+    #[test]
+    fn profile_mode_dangling_id_renders_the_shell_fallback() {
+        // Ruling 2: the call site resolves the id at retitle time; a
+        // profile deleted under a running tab yields no name, and the
+        // mode degrades to Shell behavior — never a stale name.
+        assert_eq!(
+            resolve_title(
+                TabTitleMode::Profile,
+                Some("zsh"),
+                None,
+                None,
+                TabId(0),
+                None
+            ),
+            "zsh"
+        );
+        assert_eq!(
+            resolve_title(TabTitleMode::Profile, None, None, None, TabId(4), None),
+            "Terminal 5"
+        );
     }
 
     #[test]
@@ -955,6 +1083,7 @@ mod tests {
             TabTitleMode::Numbered,
             Some("jpt@box:~/src"),
             Some(Path::new("/home/jpt/src")),
+            None,
             TabId(0),
             None,
         );
@@ -972,6 +1101,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             Some("jpt@box:~/src/oss/l1br3/ced"),
             Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            None,
             TabId(0),
             None,
         );
@@ -983,6 +1113,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             None,
             Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            None,
             TabId(0),
             None,
         );
@@ -990,6 +1121,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             None,
             Some(Path::new("/home/jpt")),
+            None,
             TabId(0),
             None,
         );
@@ -1010,6 +1142,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             Some("jpt@box:/home/jpt/src/oss/l1br3/ced"),
             Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            None,
             TabId(0),
             None,
         );
@@ -1022,6 +1155,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             Some("vim — src/main.rs"),
             Some(Path::new("/home/jpt/src")),
+            None,
             TabId(0),
             None,
         );
@@ -1033,6 +1167,7 @@ mod tests {
         let title = resolve_title(
             TabTitleMode::AbbreviatedPath,
             Some("jpt@box:~/src"),
+            None,
             None,
             TabId(0),
             None,
@@ -1049,6 +1184,7 @@ mod tests {
             TabTitleMode::AbbreviatedPath,
             None,
             Some(Path::new("/tmp/a/bc/de")),
+            None,
             TabId(0),
             None,
         );
@@ -1057,7 +1193,14 @@ mod tests {
 
     #[test]
     fn abbreviated_path_without_a_report_or_cwd_shows_the_default_number() {
-        let title = resolve_title(TabTitleMode::AbbreviatedPath, None, None, TabId(2), None);
+        let title = resolve_title(
+            TabTitleMode::AbbreviatedPath,
+            None,
+            None,
+            None,
+            TabId(2),
+            None,
+        );
         assert_eq!(title, "Terminal 3");
     }
 
@@ -1067,6 +1210,7 @@ mod tests {
             TabTitleMode::LastSegment,
             Some("jpt@box:~/src/oss/l1br3/ced"),
             Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
+            None,
             TabId(0),
             None,
         );
@@ -1080,6 +1224,7 @@ mod tests {
             TabTitleMode::LastSegment,
             Some("jpt@box:/"),
             Some(Path::new("/")),
+            None,
             TabId(0),
             None,
         );
@@ -1093,6 +1238,7 @@ mod tests {
         let title = resolve_title(
             TabTitleMode::LastSegment,
             Some("jpt@box:~/src"),
+            None,
             None,
             TabId(0),
             None,
@@ -1109,6 +1255,7 @@ mod tests {
             TabTitleMode::LastSegment,
             None,
             Some(Path::new("/home/jpt")),
+            None,
             TabId(4),
             None,
         );
@@ -1117,7 +1264,7 @@ mod tests {
 
     #[test]
     fn last_segment_with_neither_report_nor_cwd_shows_the_default_number() {
-        let title = resolve_title(TabTitleMode::LastSegment, None, None, TabId(0), None);
+        let title = resolve_title(TabTitleMode::LastSegment, None, None, None, TabId(0), None);
         assert_eq!(title, "Terminal 1");
     }
 
@@ -1128,6 +1275,7 @@ mod tests {
         commit_rename(
             TabTitleMode::Shell,
             Some("vim — src/main.rs"),
+            None,
             None,
             TabId(1),
             &mut title,
@@ -1146,6 +1294,7 @@ mod tests {
             TabTitleMode::Shell,
             None,
             None,
+            None,
             TabId(0),
             &mut title,
             &mut title_override,
@@ -1155,6 +1304,7 @@ mod tests {
         let resolved = resolve_title(
             TabTitleMode::Shell,
             Some("vim — src/main.rs"),
+            None,
             None,
             TabId(0),
             title_override.as_deref(),
@@ -1172,6 +1322,7 @@ mod tests {
             TabTitleMode::Shell,
             Some("vim — src/main.rs"),
             None,
+            None,
             TabId(1),
             &mut title,
             &mut title_override,
@@ -1188,6 +1339,7 @@ mod tests {
         commit_rename(
             TabTitleMode::Numbered,
             Some("jpt@box:~"),
+            None,
             None,
             TabId(2),
             &mut title,

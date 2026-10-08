@@ -618,6 +618,7 @@ const TAB_TITLE_MODE_OPTIONS: &[(TabTitleMode, &str)] = &[
     (TabTitleMode::AbbreviatedPath, "Abbreviated path"),
     (TabTitleMode::LastSegment, "Last segment"),
     (TabTitleMode::Numbered, "Terminal number"),
+    (TabTitleMode::Profile, "Profile name"),
 ];
 const LAYER_OPTIONS: &[(Layer, &str)] = &[(Layer::Overlay, "Overlay"), (Layer::Top, "Top")];
 const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
@@ -3618,7 +3619,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_title_mode_options_are_exactly_the_four_modes() {
+    fn tab_title_mode_options_are_exactly_the_five_modes() {
         // Shell title first, so the default config's selection is
         // index 0 (the Follow system pattern).
         assert_eq!(
@@ -3628,6 +3629,7 @@ mod tests {
                 (TabTitleMode::AbbreviatedPath, "Abbreviated path"),
                 (TabTitleMode::LastSegment, "Last segment"),
                 (TabTitleMode::Numbered, "Terminal number"),
+                (TabTitleMode::Profile, "Profile name"),
             ]
         );
     }
@@ -3653,7 +3655,11 @@ mod tests {
             dropdown_write(ConfigKey::TabTitleMode, 3),
             Some(PlannedWrite::TabTitleMode(TabTitleMode::Numbered))
         );
-        assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 4), None);
+        assert_eq!(
+            dropdown_write(ConfigKey::TabTitleMode, 4),
+            Some(PlannedWrite::TabTitleMode(TabTitleMode::Profile))
+        );
+        assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 5), None);
         assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 99), None);
         // The write targets exactly its own key, nothing else.
         assert_eq!(

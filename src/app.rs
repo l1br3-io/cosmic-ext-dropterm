@@ -26,7 +26,9 @@ use cosmic::{Application, Element};
 use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
-use crate::config::{CONFIG_VERSION, DropTermConfig, Edge, TabPosition, ThemePreference};
+use crate::config::{
+    CONFIG_VERSION, DropTermConfig, Edge, TabPosition, TabTitleMode, ThemePreference,
+};
 use crate::dbus_state;
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
@@ -1539,6 +1541,23 @@ fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOve
     }
 }
 
+/// Whether a config echo must retitle every live tab: a title-mode
+/// flip always does (every mode reads different inputs), and while
+/// the (new) mode is `Profile` a profiles-list change does too — a
+/// profile renamed or deleted under live tabs is a stale name the
+/// moment it happens, not a future concern. The guard is anti-churn:
+/// an echo that moves neither — an opacity slide, a keybind, our own
+/// write's echo — retitles nothing. Pure beside
+/// [`theme_override`], its neighbor in the config-echo decisions.
+fn echo_retitles_tabs(
+    old_mode: TabTitleMode,
+    new_mode: TabTitleMode,
+    old_profiles: &[crate::profile::Profile],
+    new_profiles: &[crate::profile::Profile],
+) -> bool {
+    old_mode != new_mode || (new_mode == TabTitleMode::Profile && old_profiles != new_profiles)
+}
+
 /// The impure shell over [`theme_override`]: builds the override
 /// theme from the user's own system palettes — never libcosmic's
 /// built-in constants — marks it through `ThemeType::prefer_dark`
@@ -2387,6 +2406,90 @@ mod tests {
     }
 
     #[test]
+    fn echo_retitles_on_a_title_mode_flip_regardless_of_profiles() {
+        // The mode-flip guard's standing rule: every mode reads
+        // different inputs, so a flip always re-resolves every live
+        // tab — even when the profiles list did not move.
+        assert!(echo_retitles_tabs(
+            TabTitleMode::Shell,
+            TabTitleMode::Profile,
+            &[],
+            &[]
+        ));
+        assert!(echo_retitles_tabs(
+            TabTitleMode::Profile,
+            TabTitleMode::Shell,
+            &[chain_profile("ssh", None)],
+            &[chain_profile("ssh", None)]
+        ));
+    }
+
+    #[test]
+    fn echo_retitles_on_a_profiles_change_only_in_profile_mode() {
+        // Ruling 1: a profile renamed or deleted under live tabs is a
+        // stale name the moment it happens — while the (new) mode is
+        // Profile, a profiles-list change retitles. In every other
+        // mode the titles read no profile name, so the same change
+        // retitles nothing.
+        let old = vec![chain_profile("ssh", None)];
+        let renamed = vec![chain_profile("server", None)];
+        assert!(echo_retitles_tabs(
+            TabTitleMode::Profile,
+            TabTitleMode::Profile,
+            &old,
+            &renamed
+        ));
+        assert!(!echo_retitles_tabs(
+            TabTitleMode::Shell,
+            TabTitleMode::Shell,
+            &old,
+            &renamed
+        ));
+        assert!(!echo_retitles_tabs(
+            TabTitleMode::LastSegment,
+            TabTitleMode::LastSegment,
+            &old,
+            &renamed
+        ));
+    }
+
+    #[test]
+    fn echo_never_retitles_on_an_unrelated_change() {
+        // The anti-churn pin: an echo that moves neither the mode nor
+        // (in Profile mode) the profiles list — an opacity slide, a
+        // keybind, our own profile write's echo before and after —
+        // retitles nothing.
+        let profiles = vec![chain_profile("ssh", None)];
+        assert!(!echo_retitles_tabs(
+            TabTitleMode::Shell,
+            TabTitleMode::Shell,
+            &profiles,
+            &profiles.clone()
+        ));
+        assert!(!echo_retitles_tabs(
+            TabTitleMode::Profile,
+            TabTitleMode::Profile,
+            &profiles,
+            &profiles.clone()
+        ));
+        // The empty list is a value like any other: a config that
+        // gains its first profile retitles in Profile mode...
+        assert!(echo_retitles_tabs(
+            TabTitleMode::Profile,
+            TabTitleMode::Profile,
+            &[],
+            &profiles
+        ));
+        // ...and loses its last without one.
+        assert!(echo_retitles_tabs(
+            TabTitleMode::Profile,
+            TabTitleMode::Profile,
+            &profiles,
+            &[]
+        ));
+    }
+
+    #[test]
     fn theme_override_is_none_when_preference_is_unchanged() {
         // Steady state issues nothing: a default `System` config
         // never calls `set_theme`, and unrelated config echoes —
@@ -3206,6 +3309,7 @@ impl DropTerm {
                 let new_geom = Geometry::from_config(&config);
                 let old_preference = self.config.theme_preference;
                 let old_title_mode = self.config.tab_title_mode;
+                let old_profiles = self.config.profiles.clone();
                 self.config = config;
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
@@ -3214,9 +3318,17 @@ impl DropTerm {
                 self.key_binds = keybinds::effective_key_binds(&self.config.custom_key_binds);
                 self.apply_config_to_tabs();
                 // A tab-title-mode flip retitles every live tab from
-                // stored state, renamed ones excepted; the delta guard
-                // keeps unrelated config echoes from churning titles.
-                if old_title_mode != self.config.tab_title_mode {
+                // stored state, renamed ones excepted; while in
+                // Profile mode a profiles-list change does too (a
+                // stale name after a rename is a bug, not a nicety).
+                // The delta guard keeps every unrelated echo — our
+                // own writes included — from churning titles.
+                if echo_retitles_tabs(
+                    old_title_mode,
+                    self.config.tab_title_mode,
+                    &old_profiles,
+                    &self.config.profiles,
+                ) {
                     self.retitle_all_tabs();
                 }
                 // A changed theme preference overrides (or restores)
