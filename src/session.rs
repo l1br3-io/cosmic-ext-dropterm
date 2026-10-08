@@ -839,6 +839,7 @@ mod tests {
             name: name.to_owned(),
             command: command.to_owned(),
             cwd,
+            color_scheme: None,
         }
     }
 

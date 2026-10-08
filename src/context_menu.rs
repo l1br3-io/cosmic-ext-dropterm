@@ -250,6 +250,7 @@ mod tests {
             name: name.to_owned(),
             command: format!("run {name}"),
             cwd: None,
+            color_scheme: None,
         }
     }
 

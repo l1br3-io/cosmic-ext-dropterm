@@ -433,6 +433,9 @@ impl DropTerm {
                 };
                 if let Some(to) = tabs::move_target(self.active_tab, self.tabs.len(), direction) {
                     self.active_tab = tabs::move_tab(&mut self.tabs, self.active_tab, to);
+                    // The moved tab stays active, so the refresh is the
+                    // uniform every-assignment rule — idempotent here.
+                    self.refresh_active_window_bg();
                     return self.mark_session_dirty();
                 }
             }
@@ -574,6 +577,10 @@ impl DropTerm {
         }
         if let Some(decision) = tabs::close_tab(&mut self.tabs, index, self.active_tab) {
             self.active_tab = decision.next_active;
+            // The window background follows the newly active tab's
+            // resolution — closing a profile tab can hand the screen
+            // to a plain one (and vice versa).
+            self.refresh_active_window_bg();
             // The tab activation a close implies also retires the
             // newly active tab's attention marker, exactly like a
             // click or a numbered-switch bind would.
@@ -602,9 +609,11 @@ impl DropTerm {
 
     /// Switches the active tab to `index`, reporting the focus change to
     /// both shells (`FOCUS_OUT` to the outgoing one, `FOCUS_IN` to the
-    /// incoming one), the same way a window focus change does. A real
-    /// switch marks the session dirty — the focused index is saved
-    /// state; the index-unchanged early return never marks.
+    /// incoming one), the same way a window focus change does, and
+    /// moving the window background to the incoming tab's color
+    /// resolution. A real switch marks the session dirty — the focused
+    /// index is saved state; the index-unchanged early return never
+    /// marks.
     pub(super) fn set_active_tab(&mut self, index: usize) -> Task<Message> {
         // Cycling with a single tab is a no-op; refocusing it anyway would
         // send the shell a spurious FOCUS_OUT/FOCUS_IN pair.
@@ -615,6 +624,9 @@ impl DropTerm {
             old.terminal.lock().unwrap().set_focused(false);
         }
         self.active_tab = index;
+        // The window background follows the switch: the incoming tab's
+        // resolution replaces the outgoing one's.
+        self.refresh_active_window_bg();
         // Activation retires whatever attention marker the tab wore:
         // the user is now looking at it.
         if let Some(tab) = self.tabs.get_mut(index) {
@@ -973,6 +985,7 @@ mod tests {
             name: name.to_owned(),
             command: format!("run {name}"),
             cwd: None,
+            color_scheme: None,
         }
     }
 

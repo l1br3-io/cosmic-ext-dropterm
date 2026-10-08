@@ -29,6 +29,9 @@ High-level feature list.
 ## V3 
 - [x] increase sidebar width size, draggable
 - [x] Settings sidebar as tabs - General, Keybindings, Advance
+- [ ] close confirmation setting flag when tab has process in progress - on by default
+- [ ] close setting flag when clicking on terminal editor - clicking the editor will close the setting sidebar when its on. On by default
+- [ ] default shell should be editable similar to new profiles - like which default directory, "shell" wether zsh, bash, fish
 - [ ] Per-tab profiles (e.g. SSH)
 - [ ] Context menu in tab
 - [x] Panel applet to toggle and show status
