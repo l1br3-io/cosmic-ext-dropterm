@@ -4091,6 +4091,30 @@ impl DropTerm {
                             }
                         }
                     }
+                    settings::SettingsEvent::AddProfileEnvRow => {
+                        // A buffered list edit, not a write: the row
+                        // joins the draft (an Enter in any env input
+                        // writes the whole map); any stale error
+                        // clears — the row list it described is gone.
+                        if let Some(draft) = self.profile_draft.as_mut() {
+                            draft.env_rows.push(settings::ProfileEnvRow::default());
+                            draft.error = None;
+                        }
+                    }
+                    settings::SettingsEvent::RemoveProfileEnvRow(index) => {
+                        // Same buffering rule: the row leaves the
+                        // draft, the write rides the next env Enter.
+                        // A stale index (the row already gone) is a
+                        // no-op; the error always clears — removal
+                        // shifts row indices, so an error pointing
+                        // into the old list can no longer be trusted.
+                        if let Some(draft) = self.profile_draft.as_mut()
+                            && index < draft.env_rows.len()
+                        {
+                            draft.env_rows.remove(index);
+                            draft.error = None;
+                        }
+                    }
                     settings::SettingsEvent::DrawerResize(pointer_x) => {
                         // Live width (criterion 2): display-only while
                         // the press is held — the same band render

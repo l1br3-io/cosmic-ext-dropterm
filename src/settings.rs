@@ -11,7 +11,7 @@
 //! it, so the write contract and commit rules are
 //! headless-testable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use cosmic::Element;
@@ -978,7 +978,8 @@ pub fn draft_valid(
 
 // --- the profile form: draft, per-field commits, lifecycle ---
 
-/// One of the form's three text inputs.
+/// One of the form's text inputs: the three whole-profile fields,
+/// plus the env rows' key and value inputs at their row index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileField {
     /// The profile's name — also its id.
@@ -987,6 +988,12 @@ pub enum ProfileField {
     Command,
     /// The optional working directory (raw path text).
     Cwd,
+    /// Env row `index`'s key input. Also where a rejected env
+    /// commit's inline error renders — the key is the row's name, so
+    /// the error belongs under it whichever input committed.
+    EnvKey(usize),
+    /// Env row `index`'s value input.
+    EnvValue(usize),
 }
 
 /// Why a form commit rejected, for the inline error under the field.
@@ -998,6 +1005,11 @@ pub enum ProfileFieldError {
     DuplicateName,
     /// The command line has no program to run.
     BlankCommand,
+    /// An env row carries a value but no key.
+    BlankEnvKey,
+    /// An env row's key contains `=` — a character environ entry
+    /// names cannot carry; splitting a pair is the shell's job.
+    EnvKeyEquals,
 }
 
 impl ProfileFieldError {
@@ -1007,8 +1019,79 @@ impl ProfileFieldError {
             Self::BlankName => "Name is required",
             Self::DuplicateName => "That name is already taken",
             Self::BlankCommand => "Command needs a program to run",
+            Self::BlankEnvKey => "Variable needs a key",
+            Self::EnvKeyEquals => "Keys can't contain '='",
         }
     }
+}
+
+/// One env row's buffered text: the key input and the value input.
+/// Rows commit as one map — an Enter in either input writes the
+/// whole list through [`env_map_from_rows`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProfileEnvRow {
+    /// The key input's buffered text.
+    pub key: String,
+    /// The value input's buffered text.
+    pub value: String,
+}
+
+/// The draft rows a stored map seeds: one row per entry, in the
+/// map's `BTree` order — the same profile opens the same form every
+/// time. `None` (no variables) seeds no rows.
+pub fn env_rows_from_map(map: Option<&BTreeMap<String, String>>) -> Vec<ProfileEnvRow> {
+    map.map(|entries| {
+        entries
+            .iter()
+            .map(|(key, value)| ProfileEnvRow {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The env map a write lands from the draft's rows. Wholly blank
+/// rows drop silently (an abandoned row holds nothing); keys and
+/// values trim (the form's uniform write rule — interior characters
+/// are verbatim, `=` in a value included); a repeated key keeps its
+/// last row (`BTreeMap` insert — the editor offers discrete rows, so
+/// duplicates are a non-concern, ruling 1). Rows whose trimmed key is
+/// empty or `=`-bearing also drop: [`env_row_invalid`] rejects them
+/// at the commit for the user, and this floor keeps any path that
+/// somehow skips the gate from landing a broken environ entry in the
+/// store. An empty result is `None` — "no variables" is the field's
+/// unset shape, never an empty map.
+pub fn env_map_from_rows(rows: &[ProfileEnvRow]) -> Option<BTreeMap<String, String>> {
+    let map: BTreeMap<String, String> = rows
+        .iter()
+        .filter(|row| {
+            let key = row.key.trim();
+            !key.is_empty() && !key.contains('=')
+        })
+        .map(|row| (row.key.trim().to_string(), row.value.trim().to_string()))
+        .collect();
+    (!map.is_empty()).then_some(map)
+}
+
+/// The row gate every env-writing commit runs: the first row that
+/// could not enter a map — a value without its key, a key carrying
+/// `=` — as that row's index and error, for the inline error under
+/// the row's key input. Wholly blank rows never reject (the
+/// transform drops them without a word); an empty value is
+/// legitimate (`FOO=` is a real variable).
+pub fn env_row_invalid(rows: &[ProfileEnvRow]) -> Option<(usize, ProfileFieldError)> {
+    rows.iter().enumerate().find_map(|(index, row)| {
+        let key = row.key.trim();
+        if key.is_empty() {
+            (!row.value.trim().is_empty()).then_some((index, ProfileFieldError::BlankEnvKey))
+        } else if key.contains('=') {
+            Some((index, ProfileFieldError::EnvKeyEquals))
+        } else {
+            None
+        }
+    })
 }
 
 /// What the draft is committing as: a fresh profile (Add), a copy of
@@ -1023,11 +1106,11 @@ pub enum ProfileDraftMode {
     Edit { index: usize },
 }
 
-/// The form's one-at-a-time draft: the three raw text fields plus the
-/// per-field error state of the last rejected commit. Not a
-/// [`SettingsBuffer`] extension — the page owns its lifecycle
-/// (see [`ProfileDraftTransition`]), and [`TextField`]'s four arms
-/// stay pinned to the Settings page's keys.
+/// The form's one-at-a-time draft: the three raw text fields, the
+/// scheme pick, the env rows, plus the per-field error state of the
+/// last rejected commit. Not a [`SettingsBuffer`] extension — the
+/// page owns its lifecycle (see [`ProfileDraftTransition`]), and
+/// [`TextField`]'s four arms stay pinned to the Settings page's keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileDraft {
     /// What a commit writes this draft as.
@@ -1043,6 +1126,12 @@ pub struct ProfileDraft {
     /// valid commit; an Edit draft writes it through the moment it
     /// is picked (the dropdown commit-on-change rule).
     pub scheme: Option<String>,
+    /// The env rows' buffered text ([`env_rows_from_map`] seeds them
+    /// from the profile). An Enter in any row input commits the
+    /// whole map ([`env_map_from_rows`]); add/remove are buffered
+    /// list edits, not writes — the form has no gesture but Enter
+    /// that writes.
+    pub env_rows: Vec<ProfileEnvRow>,
     /// The last rejected commit's field and error, if any.
     pub error: Option<(ProfileField, ProfileFieldError)>,
 }
@@ -1056,6 +1145,7 @@ impl ProfileDraft {
             command: String::new(),
             cwd: String::new(),
             scheme: None,
+            env_rows: Vec::new(),
             error: None,
         }
     }
@@ -1071,6 +1161,7 @@ impl ProfileDraft {
             command: source.command.clone(),
             cwd: cwd_text(source),
             scheme: source.color_scheme.clone(),
+            env_rows: env_rows_from_map(source.env.as_ref()),
             error: None,
         }
     }
@@ -1084,6 +1175,7 @@ impl ProfileDraft {
             command: profile.command.clone(),
             cwd: cwd_text(profile),
             scheme: profile.color_scheme.clone(),
+            env_rows: env_rows_from_map(profile.env.as_ref()),
             error: None,
         }
     }
@@ -1096,6 +1188,16 @@ impl ProfileDraft {
             ProfileField::Name => self.name = text,
             ProfileField::Command => self.command = text,
             ProfileField::Cwd => self.cwd = text,
+            ProfileField::EnvKey(index) => {
+                if let Some(row) = self.env_rows.get_mut(index) {
+                    row.key = text;
+                }
+            }
+            ProfileField::EnvValue(index) => {
+                if let Some(row) = self.env_rows.get_mut(index) {
+                    row.value = text;
+                }
+            }
         }
     }
 
@@ -1109,6 +1211,12 @@ impl ProfileDraft {
             ProfileField::Name => self.name.clone_from(&written.name),
             ProfileField::Command => self.command.clone_from(&written.command),
             ProfileField::Cwd => self.cwd = cwd_text(written),
+            // Either env input's Enter wrote the whole map: the rows
+            // re-seed from it — the write's dropped blanks disappear
+            // from the form too (the echo rule, row edition).
+            ProfileField::EnvKey(_) | ProfileField::EnvValue(_) => {
+                self.env_rows = env_rows_from_map(written.env.as_ref());
+            }
         }
     }
 }
@@ -1197,6 +1305,31 @@ pub fn plan_profile_commit(
                     edited.command = command.to_string();
                 }
                 ProfileField::Cwd => edited.cwd = parse_cwd(raw),
+                ProfileField::EnvKey(row) | ProfileField::EnvValue(row) => {
+                    // The committed input's raw text lands in its row
+                    // (the `raw` rule), then the whole row list gates
+                    // and writes as one map — an env Enter is the
+                    // form's commit gesture for every row at once. A
+                    // row index past the list means the draft moved
+                    // under the Enter: the same staleness a vanished
+                    // profile reports.
+                    let mut rows = draft.env_rows.clone();
+                    let Some(target) = rows.get_mut(row) else {
+                        return ProfileCommitPlan::StaleEdit;
+                    };
+                    match field {
+                        ProfileField::EnvKey(_) => target.key = raw.to_string(),
+                        ProfileField::EnvValue(_) => target.value = raw.to_string(),
+                        _ => unreachable!("the match pinned an env field"),
+                    }
+                    if let Some((at, error)) = env_row_invalid(&rows) {
+                        return ProfileCommitPlan::Invalid {
+                            field: ProfileField::EnvKey(at),
+                            error,
+                        };
+                    }
+                    edited.env = env_map_from_rows(&rows);
+                }
             }
             // The cascade: only a real rename of the default-named
             // profile re-points the key (a same-name re-commit is not
@@ -1247,20 +1380,28 @@ pub fn plan_profile_commit(
                     error: ProfileFieldError::BlankCommand,
                 };
             }
+            // The first commit writes the env map too (the scheme
+            // pick's ride-along rule), so the row gate rides the
+            // whole-triple gate: a row that could not enter a map
+            // blocks the profile's entry until fixed — never
+            // corrupts it.
+            if let Some((at, error)) = env_row_invalid(&draft.env_rows) {
+                return ProfileCommitPlan::Invalid {
+                    field: ProfileField::EnvKey(at),
+                    error,
+                };
+            }
             let added = Profile {
                 name: name.to_string(),
                 command: command.to_string(),
                 cwd: parse_cwd(cwd_raw),
                 // The dropdown's buffered pick rides the first valid
-                // commit, like the buffered cwd text does.
+                // commit, like the buffered cwd text does; so do the
+                // buffered rows — a Clone's rows seed from the
+                // source, an Add's start empty, and the first commit
+                // writes whatever they hold now.
                 color_scheme: draft.scheme.clone(),
-                // Only name, command, and cwd are re-seeded on a
-                // clone: the source's env map rides along wholesale,
-                // while a fresh add starts with none.
-                env: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.env.clone(),
-                    _ => None,
-                },
+                env: env_map_from_rows(&draft.env_rows),
             };
             ProfileCommitPlan::Write {
                 profiles: add_profile(profiles, added),
@@ -1603,6 +1744,14 @@ pub enum SettingsEvent {
     /// through immediately (the dropdown commit-on-change rule); an
     /// Add/Clone draft buffers the pick for its first valid commit.
     PickProfileScheme(usize),
+    /// The env rows editor's add affordance: buffer one blank row.
+    /// Display-only like a keystroke — the form writes nothing until
+    /// an env input's Enter.
+    AddProfileEnvRow,
+    /// The env rows editor's remove affordance: drop the buffered
+    /// row at `index`. Display-only — the write rides the next env
+    /// Enter, exactly like buffered text.
+    RemoveProfileEnvRow(usize),
     /// A row's Delete action: immediate, no dialog (OQ-1's standing
     /// ruling).
     DeleteProfile(usize),
@@ -2090,6 +2239,62 @@ fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
                 SettingsEvent::PickProfileScheme,
             )),
         )
+        .add(env_rows_item(draft))
+        .into()
+}
+
+/// The env rows editor: one key + value input pair per buffered row
+/// with its remove affordance, an add affordance beneath, and a
+/// rejected commit's inline error under the offending row's key
+/// input. Rows commit on Enter like every other field (the Enter
+/// writes the whole map from the row list); add/remove are buffered
+/// list edits, not writes — no gesture but Enter writes.
+fn env_rows_item(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
+    let mut rows = widget::column(Vec::<Element<'static, SettingsEvent>>::new()).spacing(4);
+    for (index, row) in draft.env_rows.iter().enumerate() {
+        let key_input = widget::text_input("KEY", row.key.clone())
+            .on_input(move |text| {
+                SettingsEvent::DraftProfileField(ProfileField::EnvKey(index), text)
+            })
+            .on_submit(move |text| {
+                SettingsEvent::CommitProfileField(ProfileField::EnvKey(index), text)
+            });
+        let value_input = widget::text_input("value", row.value.clone())
+            .on_input(move |text| {
+                SettingsEvent::DraftProfileField(ProfileField::EnvValue(index), text)
+            })
+            .on_submit(move |text| {
+                SettingsEvent::CommitProfileField(ProfileField::EnvValue(index), text)
+            });
+        let inputs = widget::row!(key_input, value_input, remove_row_button(index)).spacing(8);
+        // A rejected env commit's error renders under the offending
+        // row's key input — the row's name — whichever input
+        // committed (the `form_field` rule, row edition).
+        let pair = match draft.error {
+            Some((ProfileField::EnvKey(at), error)) if at == index => widget::column![
+                inputs,
+                widget::text(error.message())
+                    .size(12)
+                    .class(cosmic::theme::Text::Custom(danger_text_style)),
+            ]
+            .spacing(4),
+            _ => widget::column![inputs].spacing(4),
+        };
+        rows = rows.push(pair);
+    }
+    rows =
+        rows.push(widget::button::text("Add variable").on_press(SettingsEvent::AddProfileEnvRow));
+    let control: Element<'static, SettingsEvent> = rows.into();
+    widget::settings::item::builder("Environment variables")
+        .control(control)
+        .into()
+}
+
+/// One env row's remove affordance (the reorder cluster's plain-text
+/// button idiom).
+fn remove_row_button(index: usize) -> Element<'static, SettingsEvent> {
+    widget::button::text("✕")
+        .on_press(SettingsEvent::RemoveProfileEnvRow(index))
         .into()
 }
 
@@ -4005,6 +4210,377 @@ mod tests {
             Some("Dracula".to_string())
         );
         assert_eq!(ProfileDraft::add().scheme, None);
+    }
+
+    // --- the profile form's env rows (profile-env) ---
+
+    fn env_row(key: &str, value: &str) -> ProfileEnvRow {
+        ProfileEnvRow {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn sourced_env_profile() -> Profile {
+        Profile {
+            env: Some(BTreeMap::from([
+                ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+            ])),
+            ..sourced_profile()
+        }
+    }
+
+    #[test]
+    fn env_map_from_rows_drops_wholly_blank_rows() {
+        // An abandoned row (nothing typed in either input) holds
+        // nothing: it drops at the write without a word — never an
+        // error, never an empty-string variable.
+        assert_eq!(
+            env_map_from_rows(&[
+                env_row("", ""),
+                env_row("DROPTERM_PROFILE", "prod"),
+                env_row("   ", "   "),
+            ]),
+            Some(BTreeMap::from([(
+                "DROPTERM_PROFILE".to_string(),
+                "prod".to_string()
+            )]))
+        );
+    }
+
+    #[test]
+    fn env_map_from_rows_trims_keys_and_values() {
+        // The form's uniform write rule (the name/command precedent):
+        // surrounding whitespace is input debris, never part of the
+        // variable. Interior characters — including `=` in a value —
+        // are verbatim (ruling 2).
+        assert_eq!(
+            env_map_from_rows(&[env_row("  KEY  ", "  a=b  ")]),
+            Some(BTreeMap::from([("KEY".to_string(), "a=b".to_string())]))
+        );
+    }
+
+    #[test]
+    fn env_map_from_rows_is_none_when_nothing_survives() {
+        // "No variables" is the field's unset shape (`None`), never
+        // an empty map the store would carry as a set field.
+        assert_eq!(env_map_from_rows(&[]), None);
+        assert_eq!(env_map_from_rows(&[env_row("", "")]), None);
+    }
+
+    #[test]
+    fn env_map_from_rows_keeps_the_last_row_on_a_repeated_key() {
+        // Ruling 1: discrete rows make duplicates a non-concern; if
+        // the buffer holds one anyway, the last row wins (BTreeMap
+        // insert order) — never an error surface.
+        assert_eq!(
+            env_map_from_rows(&[env_row("KEY", "first"), env_row("KEY", "second")]),
+            Some(BTreeMap::from([("KEY".to_string(), "second".to_string())]))
+        );
+    }
+
+    #[test]
+    fn env_map_from_rows_never_emits_an_invalid_key() {
+        // The airtight floor under the gate: rows the editor rejects
+        // (a value without its key, an `=`-bearing key — a name POSIX
+        // environ entries cannot carry) also drop here, so no path —
+        // however it reaches the transform — can land a broken entry
+        // in the store.
+        assert_eq!(
+            env_map_from_rows(&[
+                env_row("", "orphan"),
+                env_row("A=B", "v"),
+                env_row("KEY", "v")
+            ]),
+            Some(BTreeMap::from([("KEY".to_string(), "v".to_string())]))
+        );
+    }
+
+    #[test]
+    fn env_row_invalid_flags_a_value_without_its_key() {
+        // A value-only row is a variable half-defined: reject at its
+        // row, so the inline error points where the key belongs.
+        assert_eq!(
+            env_row_invalid(&[env_row("KEY", "v"), env_row("", "orphan")]),
+            Some((1, ProfileFieldError::BlankEnvKey))
+        );
+    }
+
+    #[test]
+    fn env_row_invalid_flags_an_equals_bearing_key() {
+        assert_eq!(
+            env_row_invalid(&[env_row("A=B", "v"), env_row("KEY", "v")]),
+            Some((0, ProfileFieldError::EnvKeyEquals))
+        );
+    }
+
+    #[test]
+    fn env_row_invalid_passes_blank_and_wholesome_rows() {
+        // A wholly blank row is an abandoned row, not a violation
+        // (the transform drops it); an empty value is legitimate —
+        // `FOO=` is a real variable.
+        assert_eq!(
+            env_row_invalid(&[env_row("", ""), env_row("KEY", "v"), env_row("EMPTY", "")]),
+            None
+        );
+    }
+
+    #[test]
+    fn env_rows_seed_from_the_stored_map_in_btree_order() {
+        // Clone and Edit seed one row per entry in the map's BTree
+        // order — the same profile opens the same form every time;
+        // an Add draft starts with no rows.
+        let source = sourced_env_profile();
+        let seeded = vec![
+            env_row("DROPTERM_PROFILE", "ssh-prod"),
+            env_row("TERM_PROGRAM", "dropterm-ssh"),
+        ];
+        assert_eq!(
+            ProfileDraft::clone_of(&source, std::slice::from_ref(&source)).env_rows,
+            seeded
+        );
+        assert_eq!(ProfileDraft::edit(0, &source).env_rows, seeded);
+        assert!(ProfileDraft::add().env_rows.is_empty());
+    }
+
+    #[test]
+    fn an_edit_env_commit_writes_the_map_from_the_rows() {
+        // Enter in any env input commits the whole map from the row
+        // list — the row inputs' Enter is the form's commit gesture,
+        // exactly like the name input's. The committed row's raw
+        // text lands in its row first (the `raw` rule), blank rows
+        // drop, everything else lands trimmed.
+        let profiles = [sourced_env_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.env_rows.push(env_row("  EXTRA  ", " 1 "));
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::EnvKey(2), "EXTRA", &profiles, None)
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(
+            written[0].env,
+            Some(BTreeMap::from([
+                ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+                ("EXTRA".to_string(), "1".to_string()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn an_edit_env_commit_rejects_an_equals_key_at_its_row() {
+        // The gate is the whole row list, not the committed row: the
+        // first invalid row rejects the commit with its own inline
+        // error (a value Enter can catch a bad key buffered rows
+        // away).
+        let profiles = [sourced_env_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.env_rows.push(env_row("A=B", "v"));
+        assert_eq!(
+            plan_profile_commit(
+                &draft,
+                ProfileField::EnvValue(0),
+                "ssh-prod",
+                &profiles,
+                None
+            ),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::EnvKey(2),
+                error: ProfileFieldError::EnvKeyEquals,
+            }
+        );
+    }
+
+    #[test]
+    fn an_edit_env_commit_rejects_a_value_without_its_key() {
+        let profiles = [sourced_env_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.env_rows.push(env_row("", "orphan"));
+        assert_eq!(
+            plan_profile_commit(
+                &draft,
+                ProfileField::EnvKey(0),
+                "DROPTERM_PROFILE",
+                &profiles,
+                None
+            ),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::EnvKey(2),
+                error: ProfileFieldError::BlankEnvKey,
+            }
+        );
+    }
+
+    #[test]
+    fn an_edit_name_commit_never_touches_the_env_map() {
+        // Per-field isolation (the form's standing rule): the rows
+        // are the env inputs' buffer; another field's Enter writes
+        // `base.env` untouched — buffered rows ride along nowhere.
+        let profiles = [sourced_env_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.env_rows.clear();
+        draft.env_rows.push(env_row("BUFFERED", "never-committed"));
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "ssh-renamed", &profiles, None)
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(written[0].name, "ssh-renamed");
+        assert_eq!(written[0].env, sourced_env_profile().env);
+    }
+
+    #[test]
+    fn an_add_drafts_env_rows_ride_the_first_valid_commit() {
+        // The scheme pick's rule: the rows buffer in an Add/Clone
+        // draft — no profile exists to write until the triple
+        // commits — then the transformed map lands with it.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.name = "monitor".to_string();
+        draft.command = "btop".to_string();
+        draft.env_rows = vec![env_row("DROPTERM_PROFILE", "monitor"), env_row("", "")];
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None)
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(
+            written[1].env,
+            Some(BTreeMap::from([(
+                "DROPTERM_PROFILE".to_string(),
+                "monitor".to_string()
+            )]))
+        );
+    }
+
+    #[test]
+    fn an_add_drafts_invalid_row_gates_the_first_commit() {
+        // The first commit writes the env map too, so the row gate
+        // rides the whole-triple gate: a bad row blocks the profile's
+        // entry until fixed, never corrupts it.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.name = "monitor".to_string();
+        draft.command = "btop".to_string();
+        draft.env_rows = vec![env_row("A=B", "v")];
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None),
+            ProfileCommitPlan::Invalid {
+                field: ProfileField::EnvKey(0),
+                error: ProfileFieldError::EnvKeyEquals,
+            }
+        );
+    }
+
+    #[test]
+    fn a_clone_commit_writes_the_rows_not_the_source_map() {
+        // The rows — not the source's stored map — are what a clone
+        // writes: buffer edits between seeding and the first commit
+        // land with the clone.
+        let source = sourced_env_profile();
+        let mut draft = ProfileDraft::clone_of(&source, std::slice::from_ref(&source));
+        draft.env_rows[1].value = "edited".to_string();
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(
+            &draft,
+            ProfileField::Name,
+            draft.name.as_str(),
+            std::slice::from_ref(&source),
+            None,
+        )
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(
+            written[1].env,
+            Some(BTreeMap::from([
+                ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                ("TERM_PROGRAM".to_string(), "edited".to_string()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn an_env_commit_reseeds_the_rows_from_the_written_profile() {
+        // `field_committed`'s echo rule for the row list: the written
+        // map is the rows' new truth (rows the write dropped — the
+        // blank ones — disappear from the form too).
+        let written = sourced_env_profile();
+        let mut draft = ProfileDraft::edit(0, &written);
+        draft.env_rows.push(env_row("", ""));
+        draft.field_committed(ProfileField::EnvKey(0), &written);
+        assert_eq!(
+            draft.env_rows,
+            vec![
+                env_row("DROPTERM_PROFILE", "ssh-prod"),
+                env_row("TERM_PROGRAM", "dropterm-ssh"),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_rows_round_trip_through_apply_edit_and_reseeding() {
+        // The store's shape and the form's shape meet twice — the
+        // write (plan → apply_edit) and the reseed (`ProfileDraft::
+        // edit` off the written list) — and the rows come back
+        // identical, in the map's `BTree` order.
+        let profiles = [sourced_env_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.env_rows.push(env_row("EXTRA", "1"));
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(
+            &draft,
+            ProfileField::EnvValue(1),
+            "dropterm-ssh",
+            &profiles,
+            None,
+        )
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(
+            ProfileDraft::edit(0, &written[0]).env_rows,
+            vec![
+                env_row("DROPTERM_PROFILE", "ssh-prod"),
+                env_row("EXTRA", "1"),
+                env_row("TERM_PROGRAM", "dropterm-ssh"),
+            ]
+        );
+    }
+
+    #[test]
+    fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
+        // The keystroke rule, row edition: the input buffers into its
+        // row and any stale error clears — it described text that no
+        // longer exists.
+        let mut draft = ProfileDraft::edit(0, &sourced_env_profile());
+        draft.error = Some((ProfileField::EnvKey(1), ProfileFieldError::EnvKeyEquals));
+        draft.set_field_text(ProfileField::EnvKey(1), "TERM".to_string());
+        assert_eq!(draft.env_rows[1].key, "TERM");
+        assert_eq!(draft.error, None);
+        draft.set_field_text(ProfileField::EnvValue(0), "prod".to_string());
+        assert_eq!(draft.env_rows[0].value, "prod");
+    }
+
+    #[test]
+    fn an_env_enter_for_a_row_that_no_longer_exists_plans_a_drop() {
+        // Unreachable in practice (row removal and the Enter are
+        // ordered events on one channel), but a stale index must
+        // never panic — it reports the same staleness a vanished
+        // profile does.
+        let profiles = [sourced_env_profile()];
+        let draft = ProfileDraft::edit(0, &profiles[0]);
+        assert_eq!(
+            plan_profile_commit(&draft, ProfileField::EnvKey(9), "KEY", &profiles, None),
+            ProfileCommitPlan::StaleEdit
+        );
     }
 
     // --- the profile form: drafts, commits, lifecycle (T3) ---
