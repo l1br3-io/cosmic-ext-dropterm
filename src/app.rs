@@ -1090,7 +1090,9 @@ impl DropTerm {
                 .height(Length::Fill)
                 .align_x(cosmic::iced::alignment::Horizontal::Center)
                 .align_y(cosmic::iced::alignment::Vertical::Center)
-                .class(cosmic::theme::Container::custom(scrim_style)),
+                .class(cosmic::theme::Container::custom(scrim_style(
+                    MODAL_SCRIM_ALPHA,
+                ))),
         )
         .on_press(Message::CloseConfirmCancel);
         cosmic::iced::widget::Stack::with_children([content, scrim.into()])
@@ -1382,13 +1384,50 @@ fn modal_key_routing(pending_close: bool, key: &Key) -> ModalKeyRouting {
 /// over the whole surface (50%), the standard modal dim — the
 /// `danger_text_style` hand-composed precedent for theme styles this
 /// drawer-less layer surface cannot get from a preset.
-fn scrim_style(_theme: &cosmic::theme::Theme) -> cosmic::iced::widget::container::Style {
-    cosmic::iced::widget::container::Style {
+fn scrim_style(
+    alpha: f32,
+) -> impl Fn(&cosmic::theme::Theme) -> cosmic::iced::widget::container::Style {
+    move |_theme| cosmic::iced::widget::container::Style {
         background: Some(cosmic::iced::Background::Color(
-            cosmic::iced::Color::from_rgba8(0, 0, 0, 0.5),
+            cosmic::iced::Color::from_rgba8(0, 0, 0, alpha),
         )),
         ..Default::default()
     }
+}
+
+/// How hard each scrim dims: the close-confirm modal owns the
+/// surface for a moment's decision, while the settings drawer stays
+/// open for reading — its backdrop recedes the content beneath
+/// without blacking it out.
+const MODAL_SCRIM_ALPHA: f32 = 0.5;
+const DRAWER_SCRIM_ALPHA: f32 = 0.4;
+
+/// Composes the settings drawer's backdrop scrim over `content`
+/// (drawer-scrim criterion 1): the whole base tree — terminal, tab
+/// strip, grab bar — under one dim veil, so the drawer's opaque pane
+/// reads as the surface's one live layer. Paint-only by design: the
+/// open drawer's `context_drawer` overlay captures every surface
+/// mouse event before the base tree updates (the parked
+/// drawer-click-close finding), so the veil carries no `mouse_area`
+/// — nothing base-tree-side can observe a press anyway. The
+/// close-confirm scrim's Stack pattern at the lighter alpha,
+/// composed at the single drawer-open site so the closed-drawer
+/// path stays byte-identical.
+fn drawer_backdrop(content: Element<'_, Message>) -> Element<'_, Message> {
+    let veil = widget::container(
+        cosmic::iced::widget::Space::new()
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .class(cosmic::theme::Container::custom(scrim_style(
+        DRAWER_SCRIM_ALPHA,
+    )));
+    cosmic::iced::widget::Stack::with_children([content, veil.into()])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 /// The `KeyPressed` arm's first gate (keybinds-editor criterion 3):
@@ -2997,8 +3036,10 @@ impl Application for DropTerm {
         // may sit here — while the drawer is open, its overlay
         // (`widget::context_drawer`) captures every mouse event over
         // the whole surface before this base tree ever updates, so a
-        // base-tree mouse_area cannot observe a press. The
-        // drawer-click-close module parked on exactly that finding
+        // base-tree mouse_area cannot observe a press. (A base-tree
+        // scrim can still *paint* — `drawer_backdrop` does exactly
+        // that — it just never sees events.) The drawer-click-close
+        // module parked on the input half of this finding
         // (2026-10-08); see SPEC-drawer-click-close.md's fallback
         // clause for the revisit options.
 
@@ -3130,6 +3171,11 @@ impl Application for DropTerm {
         if !self.settings_open {
             return self.close_confirm_modal(content);
         }
+        // The backdrop goes on here, outside the SlideBox and inside
+        // the drawer: at surface coordinates like the pane itself
+        // (which the slide does not move either), veiling the whole
+        // base tree while the drawer is open.
+        let content = drawer_backdrop(content);
         // The drawer pane's width comes from the drawer-resize width
         // policy (spec criterion 4): a live drag value (criterion 2)
         // wins while the handle's press is held, else the stored
