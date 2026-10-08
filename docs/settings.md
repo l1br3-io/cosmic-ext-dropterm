@@ -42,7 +42,7 @@ Each control states next to it when its edit takes effect, and because the termi
 |---|---|
 | `height_percent`, `width_percent`, `h_align`, `edge` | live - reshapes a shown surface in place (deferred mid-drag and mid-slide) |
 | `tab_position` | live - pure relayout, no reshape: the strip reorders immediately and nothing resizes |
-| `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title and cwd the moment the pick lands |
+| `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title, cwd, and (in Profile name mode) profile name the moment the pick lands |
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `custom_key_binds` | instant - the very next key press uses the new chord, in the same session |
