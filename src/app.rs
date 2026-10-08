@@ -10,9 +10,17 @@ use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
+use cosmic::iced::core::Shell;
+use cosmic::iced::core::clipboard::Clipboard;
+use cosmic::iced::core::layout::{self, Layout};
+use cosmic::iced::core::overlay;
+use cosmic::iced::core::renderer::{self, Quad, Renderer as _};
+use cosmic::iced::core::widget::{Operation, Tree, Widget, tree};
+use cosmic::iced::core::{Border, Color, Rectangle, Size, Vector};
 use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
+use cosmic::iced::mouse;
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
     KeyboardInteractivity, destroy_layer_surface, get_layer_surface, set_exclusive_zone,
     set_keyboard_interactivity, set_layer,
@@ -21,8 +29,9 @@ use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, clipboard, window};
 use cosmic::surface::Action as SurfaceAction;
+use cosmic::theme::Theme;
 use cosmic::widget;
-use cosmic::{Application, Element};
+use cosmic::{Application, Element, Renderer};
 use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
@@ -446,22 +455,38 @@ impl DropTerm {
     /// resolution, keeping chrome and unset-bg cells in step with
     /// whichever tab is on screen.
     fn apply_config_to_tabs(&mut self) {
-        let options = self.terminal_options();
-        let global = self.active_colors();
-        for tab in &self.tabs {
-            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
-            tab.terminal.lock().unwrap().set_config(&options, &colors);
-        }
+        // The window background must move BEFORE any tab's rewalk:
+        // `set_config`'s rebuild snapshots the window-bg fallback per
+        // cell (`convert_color` reads the process-global live), so the
+        // refresh-then-rewalk order inside [`Self::refresh_active_window_bg`]
+        // is what makes a theme flip land in one frame. The old
+        // refresh-after order left every default-background cell — and
+        // the full-surface default quad — wearing the previous theme's
+        // background, healed only where later grid damage rewalked a
+        // line: the grayish cover over the editor on an Application
+        // theme flip, receding on focus and leaving one-line fragments
+        // (hardware walk 2026-10-08).
         self.refresh_active_window_bg();
     }
 
     /// Refreshes the process-global window background from the
     /// ACTIVE tab's resolved colors (the profile-appearance ruling):
-    /// the fallback background is one value, so it must belong to
-    /// the tab actually on screen — every `active_tab` assignment
+    /// the fallback background is one value, so it must belong to the
+    /// tab actually on screen — every `active_tab` assignment
     /// and every config pass funnels through here. No tabs
     /// (startup, or momentarily mid-close) resolves the global
     /// pick, the pre-initiative behavior.
+    ///
+    /// A moved window background also invalidates every tab whose
+    /// scheme defers it (the COSMIC pair), whose cell snapshots and
+    /// default quad resolved the old value at their last rewalk — so
+    /// the store is followed by one `set_config` pass over all tabs.
+    /// The engine's `update_default_colors` reads the global live and
+    /// only rewalks when a tab's default metadata actually moved:
+    /// scheme-owning tabs compare equal and update nothing, and the
+    /// pass is what heals a plain tab switched in under a different
+    /// window background (the tab-switch door into the same stale
+    /// snapshot as the theme flip).
     fn refresh_active_window_bg(&self) {
         let global = self.active_colors();
         let colors = colors_for(
@@ -470,6 +495,11 @@ impl DropTerm {
             self.active().and_then(|tab| tab.profile.as_deref()),
         );
         Self::refresh_window_bg_color(&colors);
+        let options = self.terminal_options();
+        for tab in &self.tabs {
+            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
+            tab.terminal.lock().unwrap().set_config(&options, &colors);
+        }
     }
 
     /// Mirrors cosmic-term's own `update_config`: the effective window
@@ -1426,25 +1456,165 @@ const DRAWER_SCRIM_ALPHA: f32 = 0.4;
 /// open drawer's `context_drawer` overlay captures every surface
 /// mouse event before the base tree updates (the parked
 /// drawer-click-close finding), so the veil carries no `mouse_area`
-/// — nothing base-tree-side can observe a press anyway. The
-/// close-confirm scrim's Stack pattern at the lighter alpha,
-/// composed at the single drawer-open site so the closed-drawer
-/// path stays byte-identical.
+/// — nothing base-tree-side can observe a press anyway. The veil is
+/// a plain quad painted after the child in the base render layer —
+/// deliberately NOT a `Stack` overlay child: iced draws those inside
+/// a dedicated `with_layer(viewport)` clip group, and on a
+/// translucent surface (terminal `opacity` < 100) that extra layer
+/// composited as a light washed-out smear over the tab bar and
+/// terminal while the resize drag re-laid-out the pane every frame
+/// (drawer-resize hardware walk, 2026-10-08 — gone at opacity 100,
+/// gone without the veil, present only mid-drag). The close-confirm
+/// scrim keeps its Stack: it never animates, so the moving-layer
+/// interplay cannot arise there.
 fn drawer_backdrop(content: Element<'_, Message>) -> Element<'_, Message> {
-    let veil = widget::container(
-        cosmic::iced::widget::Space::new()
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .class(cosmic::theme::Container::custom(scrim_style(
-        DRAWER_SCRIM_ALPHA,
-    )));
-    cosmic::iced::widget::Stack::with_children([content, veil.into()])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    Backdrop::new(content, Color::from_rgba8(0, 0, 0, DRAWER_SCRIM_ALPHA)).into()
+}
+
+/// A passthrough wrapper that paints one translucent quad over its
+/// child's bounds after the child draws — the veil half of
+/// [`drawer_backdrop`]. Transparent in the state tree and in layout
+/// (the `SlideBox` forwarding pattern): the wrapper adds nothing but
+/// the quad, so the child renders exactly as it would unwrapped and
+/// the veil lands in the same render layer, above the child, below
+/// the drawer pane's overlay.
+struct Backdrop<'a, Message> {
+    child: Element<'a, Message>,
+    color: Color,
+}
+
+impl<'a, Message> Backdrop<'a, Message> {
+    fn new(child: Element<'a, Message>, color: Color) -> Self {
+        Self { child, color }
+    }
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for Backdrop<'_, Message>
+where
+    Message: Clone,
+{
+    fn tag(&self) -> tree::Tag {
+        self.child.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.child.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.child.as_widget().children()
+    }
+
+    fn diff(&mut self, tree: &mut Tree) {
+        self.child.as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.child.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.child.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.child
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.child.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.child
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        // The child first, then the veil quad in the same layer: the
+        // veil sits above the base tree without introducing the clip
+        // group a `Stack` overlay child would.
+        self.child
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        renderer.fill_quad(
+            Quad {
+                bounds: layout.bounds(),
+                border: Border {
+                    radius: 0.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            self.color,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.child
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message> From<Backdrop<'a, Message>> for Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    fn from(backdrop: Backdrop<'a, Message>) -> Self {
+        Self::new(backdrop)
+    }
 }
 
 /// The `KeyPressed` arm's first gate (keybinds-editor criterion 3):

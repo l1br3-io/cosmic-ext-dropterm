@@ -214,6 +214,7 @@ Runtime behavior can only be exercised on real COSMIC hardware. After building, 
 - [ ] Application theme: the Appearance section's dropdown lists exactly Follow system / Dark / Light after the scheme rows, and the selection mirrors the config value (default config → Follow system)
 - [ ] Pin independence: pin Dark while the system is Light, and Light while it is Dark - scheme, cells, chrome, and the settings drawer all wear the pinned mode
 - [ ] Frosted-glass independence: with the COSMIC dark theme's frosted glass enabled (COSMIC Settings → Appearance), changing the Application theme to Dark mid-session keeps the chrome opaque - no see-through/blurred restyle, matching the look a cold start with the same pin produces; the Opacity slider stays the only translucency dial
+- [ ] Theme-flip repaint lands whole: flip the Application theme back and forth (Dark ↔ Light, plus Follow system) while tabs run — the terminal recolors in one frame with no stale cover: no grayish wash over the editor after choosing Dark, nothing left healing line-by-line on focus (the window-bg fallback must rewalk with the flip, not snapshot the previous theme), and switching between a scheme tab and a plain tab recolors both directions cleanly
 - [ ] System mode flips both ways under a pin leave the terminal unchanged (still the pinned mode)
 - [ ] Accent-color edit while pinned with the matching system mode applies to the terminal
 - [ ] Restore: switching back to Follow system picks the current system mode on the spot, and system flips resume driving the terminal
