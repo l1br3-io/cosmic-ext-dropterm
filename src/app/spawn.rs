@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use alacritty_terminal::term::Config as TermConfig;
@@ -25,13 +26,15 @@ pub(super) enum SpawnCommand {
     Shell(String),
     CommandLine(String),
     /// The resolved preset: the id (recorded on the tab, saved by the
-    /// session) plus the command line and cwd the id resolves to at
-    /// spawn time. Handed to [`DropTerm::spawn_shell`] already
-    /// resolved — spawn applies a profile, it never looks one up.
+    /// session) plus the command line, cwd, and env map the id
+    /// resolves to at spawn time. Handed to [`DropTerm::spawn_shell`]
+    /// already resolved — spawn applies a profile, it never looks one
+    /// up.
     Profile {
         name: String,
         command: String,
         cwd: Option<PathBuf>,
+        env: Option<BTreeMap<String, String>>,
     },
 }
 
@@ -66,6 +69,7 @@ pub(super) fn default_spawn_command(config: &DropTermConfig) -> SpawnCommand {
             name: profile.name.clone(),
             command: profile.command.clone(),
             cwd: profile.cwd.clone(),
+            env: profile.env.clone(),
         },
         None => SpawnCommand::Shell(config.resolved_shell()),
     }
@@ -84,6 +88,7 @@ pub(super) fn profile_pick(config: &DropTermConfig, index: usize) -> Option<Spaw
             name: profile.name.clone(),
             command: profile.command.clone(),
             cwd: profile.cwd.clone(),
+            env: profile.env.clone(),
         })
 }
 
@@ -101,6 +106,24 @@ pub(super) fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathB
         }
         live
     })
+}
+
+/// The pty env a profile spawn applies: the preset's map in
+/// `PtyOptions::env`'s shape, or empty when the preset carries none.
+/// Called only from the runnable-preset branch of the Profile arm
+/// below — the degraded blank-command-line branch records no
+/// `profile_id` and applies no profile env either: a degraded tab
+/// must not carry half a profile's identity. The merge over the
+/// inherited environment is alacritty's own (the pty builder applies
+/// each entry with `Command::env` at exec).
+fn preset_env(map: Option<&BTreeMap<String, String>>) -> HashMap<String, String> {
+    map.map(|entries| {
+        entries
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 impl DropTerm {
@@ -127,14 +150,15 @@ impl DropTerm {
         };
         if let Some(profile) = &spec.profile {
             // The id re-resolved at plan time: the current definition
-            // runs, and `spec.cwd` — the ruled chain result — already
-            // is the spawn directory, so the arm mirrors it and spawn
-            // re-derives nothing.
+            // runs — command and env included — and `spec.cwd` — the
+            // ruled chain result — already is the spawn directory, so
+            // the arm mirrors it and spawn re-derives nothing.
             self.spawn_shell(
                 &SpawnCommand::Profile {
                     name: profile.name.clone(),
                     command: profile.command.clone(),
                     cwd: spec.cwd.clone(),
+                    env: profile.env.clone(),
                 },
                 spec.cwd.clone(),
             )
@@ -210,6 +234,12 @@ impl DropTerm {
         // never is.
         let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
         let mut profile_id: Option<String> = None;
+        // The preset's extra environment, applied exactly where
+        // `profile_id` is: only a spawn that actually runs the
+        // preset's command line carries it — the degraded branch
+        // leaves this empty, so a degraded tab is a plain-shell tab
+        // in full (no id, no env — never half a profile's identity).
+        let mut pty_env: HashMap<String, String> = HashMap::new();
         let (shell, args) = match command {
             SpawnCommand::Shell(shell) => (shell.clone(), self.config.args.clone()),
             SpawnCommand::CommandLine(line) => {
@@ -222,13 +252,16 @@ impl DropTerm {
                     None => (self.config.resolved_shell(), self.config.args.clone()),
                 }
             }
-            SpawnCommand::Profile { name, command, .. } => {
+            SpawnCommand::Profile {
+                name, command, env, ..
+            } => {
                 if let Some((program, trailing)) = tabs::command_line_parts(command) {
                     // The id is recorded only when the spawn actually
                     // runs the preset: the degraded line below spawns
                     // a plain-shell tab, which must not save an id
                     // restore would keep re-degrading.
                     profile_id = Some(name.clone());
+                    pty_env = preset_env(env.as_ref());
                     (program, trailing)
                 } else {
                     // A hand-edited config can store a blank command
@@ -253,10 +286,13 @@ impl DropTerm {
             // process's cwd on failure, so only a re-validated
             // directory ever reaches here (dead cwd → `$HOME` → unset
             // — see `plan_restore`; a new tab passes either an
-            // inherited- or explicitly-requested live cwd).
+            // inherited- or explicitly-requested live cwd). The env
+            // map rides the same builder: each entry is applied with
+            // `Command::env` at exec, merging over the inherited
+            // environment (empty = inherit untouched).
             working_directory: cwd.map(Path::to_owned),
             drain_on_exit: true,
-            ..PtyOptions::default()
+            env: pty_env,
         };
 
         let tab_id = TabId(self.next_tab_id);
@@ -364,6 +400,7 @@ mod tests {
             command: command.to_owned(),
             cwd,
             color_scheme: None,
+            env: None,
         }
     }
 
@@ -397,6 +434,7 @@ mod tests {
                 name: "top".to_string(),
                 command: "htop".to_string(),
                 cwd: None,
+                env: None,
             }
         );
     }
@@ -430,6 +468,7 @@ mod tests {
                 name: "top".to_string(),
                 command: "htop".to_string(),
                 cwd: None,
+                env: None,
             })
         );
         assert_eq!(
@@ -438,6 +477,7 @@ mod tests {
                 name: "ssh".to_string(),
                 command: "ssh web".to_string(),
                 cwd: Some(PathBuf::from("/srv")),
+                env: None,
             })
         );
     }
@@ -450,5 +490,96 @@ mod tests {
         let config = test_config(&[named_profile("ssh", "ssh web", None)], None);
         assert_eq!(profile_pick(&config, 1), None);
         assert_eq!(profile_pick(&config, usize::MAX), None);
+    }
+
+    // --- the preset-env application policy ---
+
+    fn env_map() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+            ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+        ])
+    }
+
+    #[test]
+    fn preset_env_is_empty_when_the_preset_carries_no_map() {
+        // `None` — every pre-initiative profile, every profile without
+        // extra env — is a no-op: the pty inherits this process's
+        // environment untouched, exactly the pre-module spawn.
+        assert!(preset_env(None).is_empty());
+    }
+
+    #[test]
+    fn preset_env_clones_a_set_map_into_the_pty_shape() {
+        // A set map lands in `PtyOptions::env` verbatim, key for key
+        // and value for value; alacritty's pty builder merges it over
+        // the inherited environment at exec.
+        assert_eq!(
+            preset_env(Some(&env_map())),
+            HashMap::from([
+                ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn default_spawn_command_carries_the_preset_env() {
+        // The resolved default hands spawn the preset's env map with
+        // the rest of the preset — spawn applies a profile, it never
+        // looks one up. The runnable-vs-degraded split stays
+        // `spawn_terminal`'s (below), exactly as for `profile_id`.
+        let config = test_config(
+            &[profile::Profile {
+                env: Some(env_map()),
+                ..named_profile("ssh", "ssh web", None)
+            }],
+            Some("ssh"),
+        );
+        assert_eq!(
+            default_spawn_command(&config),
+            SpawnCommand::Profile {
+                name: "ssh".to_string(),
+                command: "ssh web".to_string(),
+                cwd: None,
+                env: Some(env_map()),
+            }
+        );
+    }
+
+    #[test]
+    fn profile_pick_carries_the_preset_env() {
+        // The menu pick resolves the whole preset, env included; the
+        // call site composes the live-cwd filter on top as always.
+        let config = test_config(
+            &[
+                profile::Profile {
+                    env: Some(env_map()),
+                    ..named_profile("ssh", "ssh web", None)
+                },
+                named_profile("top", "htop", None),
+            ],
+            None,
+        );
+        assert_eq!(
+            profile_pick(&config, 0),
+            Some(SpawnCommand::Profile {
+                name: "ssh".to_string(),
+                command: "ssh web".to_string(),
+                cwd: None,
+                env: Some(env_map()),
+            })
+        );
+        // A preset without a map rides along as None — never an empty
+        // map the pty arm would treat differently.
+        assert_eq!(
+            profile_pick(&config, 1),
+            Some(SpawnCommand::Profile {
+                name: "top".to_string(),
+                command: "htop".to_string(),
+                cwd: None,
+                env: None,
+            })
+        );
     }
 }

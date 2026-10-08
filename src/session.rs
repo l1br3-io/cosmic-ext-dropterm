@@ -840,6 +840,7 @@ mod tests {
             command: command.to_owned(),
             cwd,
             color_scheme: None,
+            env: None,
         }
     }
 

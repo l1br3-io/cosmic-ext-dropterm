@@ -706,12 +706,14 @@ mod tests {
                     command: "ssh web-prod".to_string(),
                     cwd: Some(std::path::PathBuf::from("/srv/web")),
                     color_scheme: None,
+                    env: None,
                 },
                 Profile {
                     name: "top".to_string(),
                     command: "htop".to_string(),
                     cwd: None,
                     color_scheme: None,
+                    env: None,
                 },
             ],
             default_profile: Some("web-prod".to_string()),
@@ -749,12 +751,14 @@ mod tests {
                     command: "ssh web-prod".to_string(),
                     cwd: None,
                     color_scheme: Some("Dracula".to_string()),
+                    env: None,
                 },
                 Profile {
                     name: "top".to_string(),
                     command: "htop".to_string(),
                     cwd: None,
                     color_scheme: None,
+                    env: None,
                 },
             ],
             ..DropTermConfig::default()
@@ -763,6 +767,67 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert_eq!(loaded, stored);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_env_round_trips_through_the_config_store() {
+        // A set env map and an unset one — the two shapes a mixed
+        // profile list writes — survive a write→load cycle with
+        // equality, riding the existing `profiles` key unchanged.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-profile-env-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            profiles: vec![
+                Profile {
+                    name: "ssh-prod".to_string(),
+                    command: "ssh web-prod".to_string(),
+                    cwd: None,
+                    color_scheme: None,
+                    env: Some(BTreeMap::from([
+                        ("DROPTERM_PROFILE".to_string(), "prod".to_string()),
+                        ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+                    ])),
+                },
+                Profile {
+                    name: "top".to_string(),
+                    command: "htop".to_string(),
+                    cwd: None,
+                    color_scheme: None,
+                    env: None,
+                },
+            ],
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
+
+        // The map serializes in BTree order — the deterministic-
+        // round-trip property that made the field a BTreeMap (the
+        // `custom_key_binds` precedent): the same profile always
+        // writes the same bytes, so the store never churns.
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        let text = std::fs::read_to_string(version_dir.join("profiles"))
+            .expect("profiles key still on disk");
+        let first = text.find("DROPTERM_PROFILE").expect("first key present");
+        let second = text.find("TERM_PROGRAM").expect("second key present");
+        assert!(first < second, "env keys serialize in BTree order: {text}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -807,6 +872,9 @@ mod tests {
         assert_eq!(loaded.profiles.len(), 1);
         assert_eq!(loaded.profiles[0].name, "ssh");
         assert_eq!(loaded.profiles[0].color_scheme, None);
+        // The same leniency covers every later additive field: `env`
+        // loads unset when the key never existed.
+        assert_eq!(loaded.profiles[0].env, None);
 
         // Byte-stable: the load rewrote nothing.
         assert_eq!(

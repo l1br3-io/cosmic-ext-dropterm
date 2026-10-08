@@ -317,6 +317,7 @@ impl DropTerm {
                         name: profile.name.clone(),
                         command: profile.command.clone(),
                         cwd: profile.cwd.clone(),
+                        env: profile.env.clone(),
                     }
                 } else {
                     log::warn!("no profile named {name}; spawning the shell instead");

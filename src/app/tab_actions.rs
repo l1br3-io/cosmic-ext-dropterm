@@ -986,6 +986,7 @@ mod tests {
             command: format!("run {name}"),
             cwd: None,
             color_scheme: None,
+            env: None,
         }
     }
 

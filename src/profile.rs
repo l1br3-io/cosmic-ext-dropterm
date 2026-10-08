@@ -6,6 +6,7 @@
 //! spawn side effects, no UI, no app wiring; behavior changes begin
 //! in `profile-launch`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,21 @@ pub struct Profile {
     /// strip it.
     #[serde(default)]
     pub color_scheme: Option<String>,
+    /// Extra environment variables the profile's tabs carry, merged
+    /// over the inherited environment at pty spawn (alacritty's
+    /// `PtyOptions::env`). Spawn-time only by nature — a running
+    /// process's environment never changes, so an edit affects the
+    /// next spawn, never a live tab. Applied only when the spawn
+    /// actually runs the preset's command line; the degraded
+    /// blank-line spawn is a plain-shell tab and carries none of the
+    /// profile's identity (the Profile arm of the spawn path).
+    /// `None` (the default) inherits untouched.
+    /// `BTreeMap`, so the RON store round-trips in stable key order.
+    /// Values are verbatim — no expansion, ever; keys are validated
+    /// only at the editor's write time, load tolerates anything
+    /// valid UTF-8.
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
 }
 
 impl Profile {
@@ -87,6 +103,7 @@ mod tests {
             command: command.to_string(),
             cwd: None,
             color_scheme: None,
+            env: None,
         }
     }
 
@@ -204,6 +221,37 @@ mod tests {
         // round-trip exercises the same path through the real store).
         let stored = Profile {
             color_scheme: Some("Dracula".to_string()),
+            ..profile("ssh-prod", "ssh web-prod")
+        };
+        let text = ron::to_string(&stored).expect("serialize");
+        let back: Profile = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, stored);
+    }
+
+    // --- the env field's serde shape ---
+
+    #[test]
+    fn a_pre_initiative_profile_loads_with_env_unset() {
+        // The pre-initiative on-disk shape — no `env` key at all —
+        // loads as "carries no extra environment", never an error:
+        // the same additive-field leniency as every other Profile
+        // field.
+        let loaded: Profile =
+            ron::from_str(r#"(name: "ssh", command: "ssh web")"#).expect("old shape loads");
+        assert_eq!(loaded.env, None);
+    }
+
+    #[test]
+    fn a_profile_with_an_env_map_round_trips_through_ron() {
+        // The field's serde shape is the store's, and BTreeMap keeps
+        // it deterministic: the same map serializes to the same bytes
+        // every time (the `custom_key_binds` precedent), so the store
+        // never churns on a write→load→write cycle.
+        let stored = Profile {
+            env: Some(BTreeMap::from([
+                ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+            ])),
             ..profile("ssh-prod", "ssh web-prod")
         };
         let text = ron::to_string(&stored).expect("serialize");

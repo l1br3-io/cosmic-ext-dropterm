@@ -1254,6 +1254,13 @@ pub fn plan_profile_commit(
                 // The dropdown's buffered pick rides the first valid
                 // commit, like the buffered cwd text does.
                 color_scheme: draft.scheme.clone(),
+                // Only name, command, and cwd are re-seeded on a
+                // clone: the source's env map rides along wholesale,
+                // while a fresh add starts with none.
+                env: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.env.clone(),
+                    _ => None,
+                },
             };
             ProfileCommitPlan::Write {
                 profiles: add_profile(profiles, added),
@@ -3614,6 +3621,7 @@ mod tests {
             command: command.to_string(),
             cwd: None,
             color_scheme: None,
+            env: None,
         }
     }
 
@@ -4007,6 +4015,7 @@ mod tests {
             command: "ssh web-prod".to_string(),
             cwd: Some(PathBuf::from("/srv/web")),
             color_scheme: None,
+            env: None,
         }
     }
 

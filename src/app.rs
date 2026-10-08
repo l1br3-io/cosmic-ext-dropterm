@@ -2246,6 +2246,7 @@ mod tests {
             command: "ssh host".to_string(),
             cwd: None,
             color_scheme: scheme.map(str::to_owned),
+            env: None,
         }
     }
 

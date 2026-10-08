@@ -2705,6 +2705,7 @@ mod tests {
             command: "htop".to_string(),
             cwd: None,
             color_scheme: None,
+            env: None,
         }
     }
 
