@@ -100,7 +100,6 @@ impl Section {
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::CloseConfirmationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
             ],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -120,8 +119,13 @@ impl Section {
 /// `DropTermConfig` except `output`, which is dead at runtime and
 /// unreachable from the UI — plus `SettingsDrawerWidth`, which is
 /// written by the drawer's drag handle (drawer-resize spec), not by
-/// any settings control: no `Section` lists it, so the exposed-key
-/// exactly-once pin above stays at the section-hosted count (25).
+/// any settings control, and `SettingsDrawerClickClose`, whose row is
+/// hidden while the drawer-click-close module is parked (the
+/// `context_drawer` overlay captures every surface mouse event while
+/// open, so no base-tree wrapper can observe a press — see that
+/// spec's fallback clause): no `Section` lists either, so the
+/// exposed-key exactly-once pin above stays at the section-hosted
+/// count (24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -2694,7 +2698,6 @@ mod tests {
             PlannedWrite::TabTitleMode(TabTitleMode::Shell),
             PlannedWrite::NewTabAfterCurrent(true),
             PlannedWrite::CloseConfirmationEnabled(true),
-            PlannedWrite::SettingsDrawerClickClose(true),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
             PlannedWrite::ScrollbackLines(10_000),
@@ -3018,7 +3021,6 @@ mod tests {
             ConfigKey::SlideAnimationEnabled,
             ConfigKey::NewTabAfterCurrent,
             ConfigKey::CloseConfirmationEnabled,
-            ConfigKey::SettingsDrawerClickClose,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::NextTrigger, "{key:?}");
         }
@@ -3136,7 +3138,6 @@ mod tests {
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::CloseConfirmationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
             ]
         );
         assert_eq!(
@@ -3146,50 +3147,6 @@ mod tests {
         assert_eq!(
             toggle_write(ConfigKey::NewTabAfterCurrent, false),
             Some(PlannedWrite::NewTabAfterCurrent(false))
-        );
-    }
-
-    #[test]
-    fn settings_drawer_click_close_sits_in_behavior_after_close_confirmation() {
-        // Drawer-click-close criterion 1's toggle home: the "Close the
-        // settings drawer by clicking the terminal" row lands last in
-        // the Behavior card; its flip commits the config bool through
-        // the single PlannedWrite path, under the field's exact file
-        // spelling — the exposed-key exactly-once pin's 25th key.
-        assert_eq!(
-            Section::Behavior.keys(),
-            &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SessionPersistenceEnabled,
-                ConfigKey::SlideAnimationEnabled,
-                ConfigKey::BellNotificationEnabled,
-                ConfigKey::TabTitleMode,
-                ConfigKey::NewTabAfterCurrent,
-                ConfigKey::CloseConfirmationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
-            ]
-        );
-        assert_eq!(
-            ConfigKey::SettingsDrawerClickClose.label(),
-            "Close the settings drawer by clicking the terminal"
-        );
-        assert_eq!(
-            ConfigKey::SettingsDrawerClickClose.key_name(),
-            "settings_drawer_click_close"
-        );
-        assert_eq!(
-            toggle_write(ConfigKey::SettingsDrawerClickClose, false),
-            Some(PlannedWrite::SettingsDrawerClickClose(false))
-        );
-        assert_eq!(
-            toggle_write(ConfigKey::SettingsDrawerClickClose, true),
-            Some(PlannedWrite::SettingsDrawerClickClose(true))
-        );
-        assert_eq!(
-            toggle_write(ConfigKey::SettingsDrawerClickClose, false)
-                .expect("a toggle key always plans a write")
-                .key(),
-            ConfigKey::SettingsDrawerClickClose
         );
     }
 
@@ -3211,7 +3168,6 @@ mod tests {
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::CloseConfirmationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
             ]
         );
         assert_eq!(
@@ -3397,7 +3353,6 @@ mod tests {
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::CloseConfirmationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
             ]
         );
         assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");

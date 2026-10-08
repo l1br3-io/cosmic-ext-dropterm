@@ -246,13 +246,14 @@ pub struct DropTermConfig {
     /// mid-session flip applies to the very next close.
     pub close_confirmation_enabled: bool,
     /// Whether a left-click in the terminal's bounds dismisses an
-    /// open settings drawer (drawer-click-close spec). Defaults to
-    /// `true` — the natural "click away to get back to work" gesture
-    /// ships on for fresh and pre-existing configs alike (criterion
-    /// 5); `false` leaves the click inert, exactly the pre-module
-    /// behavior. The dismiss click is consumed (never reaches the
-    /// pty) and rides the explicit-close path, so drafts clear and
-    /// focus returns exactly as on Escape.
+    /// open settings drawer (drawer-click-close spec). **Parked**
+    /// (2026-10-08): the behavior does not ship — the drawer's
+    /// `context_drawer` overlay captures every mouse event over the
+    /// surface while it is open, so a dismiss press can never be
+    /// observed from the base tree (see that spec's fallback clause)
+    /// — and the settings row is hidden. The key keeps loading
+    /// (default `true`) and persisting for the day a capture
+    /// mechanism exists; a hand-edited value is inert.
     pub settings_drawer_click_close: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
