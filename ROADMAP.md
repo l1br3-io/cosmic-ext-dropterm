@@ -32,7 +32,7 @@ High-level feature list.
 - [ ] close confirmation setting flag when tab has process in progress - on by default
 - [ ] close setting flag when clicking on terminal editor - clicking the editor will close the setting sidebar when its on. On by default
 - [ ] default shell should be editable similar to new profiles - like which default directory, "shell" wether zsh, bash, fish
-- [ ] Per-tab profiles (e.g. SSH)
+- [x] Per-tab profiles (e.g. SSH) (a profile carries its command, `cwd`, an optional built-in color scheme, and an optional environment-variable map; tabs record the profile id they run under, so colors resolve per tab, env applies at spawn, the `Profile` title mode labels tabs by name, restore re-resolves by id, and the Switch Profile folder respawns the active tab in place - the `switch-profile-tab` verb)
 - [ ] Context menu in tab
 - [x] Panel applet to toggle and show status
 
