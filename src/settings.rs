@@ -1020,6 +1020,11 @@ pub struct ProfileDraft {
     pub command: String,
     /// The cwd input's buffered raw path text.
     pub cwd: String,
+    /// The scheme dropdown's buffered pick: `None` = follow the
+    /// global scheme. Add/Clone drafts carry it into their first
+    /// valid commit; an Edit draft writes it through the moment it
+    /// is picked (the dropdown commit-on-change rule).
+    pub scheme: Option<String>,
     /// The last rejected commit's field and error, if any.
     pub error: Option<(ProfileField, ProfileFieldError)>,
 }
@@ -1032,6 +1037,7 @@ impl ProfileDraft {
             name: String::new(),
             command: String::new(),
             cwd: String::new(),
+            scheme: None,
             error: None,
         }
     }
@@ -1046,6 +1052,7 @@ impl ProfileDraft {
             name: clone_name(profiles, source),
             command: source.command.clone(),
             cwd: cwd_text(source),
+            scheme: source.color_scheme.clone(),
             error: None,
         }
     }
@@ -1058,6 +1065,7 @@ impl ProfileDraft {
             name: profile.name.clone(),
             command: profile.command.clone(),
             cwd: cwd_text(profile),
+            scheme: profile.color_scheme.clone(),
             error: None,
         }
     }
@@ -1225,7 +1233,9 @@ pub fn plan_profile_commit(
                 name: name.to_string(),
                 command: command.to_string(),
                 cwd: parse_cwd(cwd_raw),
-                color_scheme: None,
+                // The dropdown's buffered pick rides the first valid
+                // commit, like the buffered cwd text does.
+                color_scheme: draft.scheme.clone(),
             };
             ProfileCommitPlan::Write {
                 profiles: add_profile(profiles, added),
@@ -1448,6 +1458,66 @@ pub fn default_picker_write(profiles: &[Profile], index: usize) -> Option<Profil
     }
 }
 
+// --- the profile form's scheme dropdown ---
+
+/// The form's scheme dropdown row 0 label: the unset field, following
+/// the global scheme pick.
+pub const PROFILE_SCHEME_NONE_ROW: &str = "None — follow global setting";
+
+/// The form's scheme dropdown rows: [`PROFILE_SCHEME_NONE_ROW`] first,
+/// then every built-in registry name in registry order — derived from
+/// the same [`scheme_names`] the global pickers feed from, so the form
+/// can never offer a name `by_name` would reject.
+pub fn profile_scheme_options() -> Vec<&'static str> {
+    std::iter::once(PROFILE_SCHEME_NONE_ROW)
+        .chain(scheme_names())
+        .collect()
+}
+
+/// The dropdown's selection row for a draft's scheme: row 0 when
+/// unset — or when the stored name is unknown (a hand-edited config;
+/// the control shows the fallback the resolution chain is already
+/// serving, never a value it invents) — and the name's option row
+/// when set. Mirrors [`default_picker_selected`].
+pub fn profile_scheme_selected(scheme: Option<&str>) -> usize {
+    scheme
+        .and_then(|name| scheme_index(name).map(|position| position + 1))
+        .unwrap_or(0)
+}
+
+/// What a scheme-dropdown row resolves to: the cleared field, a
+/// registry name, or nothing for an out-of-range row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileSchemePick {
+    /// Row 0: unset the field — follow the global scheme.
+    None,
+    /// A registry row: the name to set.
+    Scheme(String),
+}
+
+impl ProfileSchemePick {
+    /// The `color_scheme` field value the pick writes.
+    pub fn field_value(self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Scheme(name) => Some(name),
+        }
+    }
+}
+
+/// The field value a dropdown row commits: row 0 clears to `None`
+/// (follow the global pick), a registry row sets its name. Any other
+/// index is stale and rejects — no write, never an invented value (the
+/// [`dropdown_write`] rule).
+pub fn profile_scheme_write(index: usize) -> Option<ProfileSchemePick> {
+    if index == 0 {
+        return Some(ProfileSchemePick::None);
+    }
+    scheme_names()
+        .get(index - 1)
+        .map(|name| ProfileSchemePick::Scheme((*name).to_string()))
+}
+
 /// An event from the settings view. Events carry inputs, never
 /// [`PlannedWrite`]s: the view stays dumb about validity, and the
 /// app resolves each event through the pure planners
@@ -1503,6 +1573,10 @@ pub enum SettingsEvent {
     /// A form field was submitted (Enter): validate that field, write
     /// the whole list if it commits.
     CommitProfileField(ProfileField, String),
+    /// The form's scheme dropdown was picked: an Edit draft writes
+    /// through immediately (the dropdown commit-on-change rule); an
+    /// Add/Clone draft buffers the pick for its first valid commit.
+    PickProfileScheme(usize),
     /// A row's Delete action: immediate, no dialog (OQ-1's standing
     /// ruling).
     DeleteProfile(usize),
@@ -1943,7 +2017,8 @@ pub fn profiles_view(
 
 /// The form section: the draft's three text inputs (commit on Enter,
 /// the house text-input rule) with the last rejection's inline error
-/// under its field.
+/// under its field, plus the scheme dropdown (commit on change — the
+/// house dropdown rule).
 fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
     let title = match &draft.mode {
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile",
@@ -1972,6 +2047,13 @@ fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
             "optional",
             draft,
         ))
+        .add(
+            widget::settings::item::builder("Color scheme").control(widget::dropdown(
+                profile_scheme_options(),
+                Some(profile_scheme_selected(draft.scheme.as_deref())),
+                SettingsEvent::PickProfileScheme,
+            )),
+        )
         .into()
 }
 
@@ -3673,6 +3755,112 @@ mod tests {
             Some(ProfileWrite::DefaultProfile(None))
         );
         assert_eq!(default_picker_write(&[], 1), None);
+    }
+
+    // --- the profile form's scheme dropdown (profile-appearance) ---
+
+    fn registry_row(name: &str) -> usize {
+        scheme_names()
+            .iter()
+            .position(|option| *option == name)
+            .expect("a registry name")
+    }
+
+    #[test]
+    fn profile_scheme_options_are_the_none_row_then_the_registry() {
+        // Row 0 is the None row; the built-in registry follows in its
+        // own order — the same vocabulary the global pickers feed
+        // from, so the form can never offer a name `by_name` would
+        // reject.
+        let options = profile_scheme_options();
+        assert_eq!(options[0], "None — follow global setting");
+        assert_eq!(&options[1..], scheme_names().as_slice());
+    }
+
+    #[test]
+    fn profile_scheme_selection_maps_unset_and_unknown_to_the_none_row() {
+        // Unset → row 0; a set, known name → its option row; a name
+        // the registry lacks (hand-edited) falls back to row 0 — the
+        // control shows the fallback the resolution chain is already
+        // serving, never a value it would invent.
+        assert_eq!(profile_scheme_selected(None), 0);
+        assert_eq!(
+            profile_scheme_selected(Some("Dracula")),
+            registry_row("Dracula") + 1
+        );
+        assert_eq!(profile_scheme_selected(Some("Catppuccin Frappe")), 0);
+    }
+
+    #[test]
+    fn profile_scheme_picks_resolve_to_the_field_value_or_reject() {
+        // Row 0 commits the cleared field (follow the global pick); a
+        // registry row commits its name; anything else is stale and
+        // rejects — a pick can never invent a value (the
+        // `dropdown_write` rule).
+        assert_eq!(profile_scheme_write(0), Some(ProfileSchemePick::None));
+        assert_eq!(
+            profile_scheme_write(registry_row("Nord") + 1),
+            Some(ProfileSchemePick::Scheme("Nord".to_string()))
+        );
+        assert_eq!(profile_scheme_write(profile_scheme_options().len()), None);
+    }
+
+    #[test]
+    fn a_scheme_pick_round_trips_through_apply_edit() {
+        // The Edit-mode write the pick commits: the base profile with
+        // only `color_scheme` replaced — pick a scheme, write, pick
+        // None, write back, and the field returns to its start.
+        let profiles = [sourced_profile()];
+        let mut edited = profiles[0].clone();
+        edited.color_scheme = profile_scheme_write(registry_row("Dracula") + 1)
+            .expect("a registry row")
+            .field_value();
+        let written = apply_edit(&profiles, 0, edited);
+        assert_eq!(written[0].color_scheme, Some("Dracula".to_string()));
+
+        let mut cleared = written[0].clone();
+        cleared.color_scheme = profile_scheme_write(0).expect("the None row").field_value();
+        let restored = apply_edit(&written, 0, cleared);
+        assert_eq!(restored[0].color_scheme, None);
+    }
+
+    #[test]
+    fn an_add_drafts_scheme_pick_rides_the_first_valid_commit() {
+        // Gated identically to its siblings: the pick buffers in an
+        // Add/Clone draft — no write until the triple commits — then
+        // lands with the added profile.
+        let profiles = [profile("ssh", "ssh web-prod")];
+        let mut draft = ProfileDraft::add();
+        draft.name = "monitor".to_string();
+        draft.command = "btop".to_string();
+        draft.scheme = profile_scheme_write(1)
+            .expect("row 1 is the first registry name")
+            .field_value();
+        let ProfileCommitPlan::Write {
+            profiles: written, ..
+        } = plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None)
+        else {
+            panic!("expected a write plan");
+        };
+        assert_eq!(written[1].color_scheme, Some(scheme_names()[0].to_string()));
+    }
+
+    #[test]
+    fn draft_seeding_carries_the_scheme_into_clone_and_edit_forms() {
+        // A Clone draft copies the source's scheme verbatim (the
+        // name is what re-seeds unique); an Edit draft seeds from the
+        // profile; an Add draft starts unset.
+        let mut source = sourced_profile();
+        source.color_scheme = Some("Dracula".to_string());
+        assert_eq!(
+            ProfileDraft::clone_of(&source, &[source.clone()]).scheme,
+            Some("Dracula".to_string())
+        );
+        assert_eq!(
+            ProfileDraft::edit(0, &source).scheme,
+            Some("Dracula".to_string())
+        );
+        assert_eq!(ProfileDraft::add().scheme, None);
     }
 
     // --- the profile form: drafts, commits, lifecycle (T3) ---

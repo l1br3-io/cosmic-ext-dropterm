@@ -3769,6 +3769,44 @@ impl DropTerm {
                             }
                         }
                     }
+                    settings::SettingsEvent::PickProfileScheme(pick) => {
+                        // Dropdowns commit on change (the `Picked`
+                        // rule): an Edit draft's pick writes the base
+                        // profile with only the scheme replaced — the
+                        // one field a pick can never reject — while
+                        // Add/Clone drafts only buffer it (no profile
+                        // exists to write until the first valid triple
+                        // commit carries it). An out-of-range pick is
+                        // ignored — the options are the only writable
+                        // vocabulary, never an invented name; a stale
+                        // edit index drops the draft (`StaleEdit`'s
+                        // rule).
+                        if let Some(draft) = self.profile_draft.clone()
+                            && let Some(pick) = settings::profile_scheme_write(pick)
+                        {
+                            let scheme = pick.field_value();
+                            if let settings::ProfileDraftMode::Edit { index } = draft.mode
+                                && self.config.profiles.get(index).is_none()
+                            {
+                                self.profile_selection = None;
+                                self.profile_draft = None;
+                            } else {
+                                if let settings::ProfileDraftMode::Edit { index } = draft.mode
+                                    && let Some(base) = self.config.profiles.get(index)
+                                {
+                                    let mut edited = base.clone();
+                                    edited.color_scheme.clone_from(&scheme);
+                                    self.write_profile_config(&settings::ProfileWrite::Profiles(
+                                        settings::apply_edit(&self.config.profiles, index, edited),
+                                    ));
+                                }
+                                if let Some(open) = self.profile_draft.as_mut() {
+                                    open.scheme = scheme;
+                                    open.error = None;
+                                }
+                            }
+                        }
+                    }
                     settings::SettingsEvent::DrawerResize(pointer_x) => {
                         // Live width (criterion 2): display-only while
                         // the press is held — the same band render

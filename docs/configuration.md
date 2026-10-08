@@ -49,15 +49,17 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
 
 ## Profiles
 
-Profiles - named presets of what a tab runs - are managed in-app on the [settings drawer](settings.md)'s Profiles page; the config file can also be hand-edited in the same shape. A profile is its `name` (also its id, matched exactly and case-sensitively), a `command` line (split on whitespace, like `args`), and an optional `cwd` that is not checked to exist until the tab spawns:
+Profiles - named presets of what a tab runs - are managed in-app on the [settings drawer](settings.md)'s Profiles page; the config file can also be hand-edited in the same shape. A profile is its `name` (also its id, matched exactly and case-sensitively), a `command` line (split on whitespace, like `args`), an optional `cwd` that is not checked to exist until the tab spawns, and an optional `color_scheme`:
 
 ```ron
 // ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/profiles
 (
-    {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web")},
+    {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web"), "color_scheme": Some("Dracula")},
     {"name": "top", "command": "htop"},
 )
 ```
+
+`color_scheme` (default unset) is a built-in scheme name - the same registry the global scheme pickers offer ([themeing](theming.md)) - that the profile's tabs run instead of the global pick: resolved per tab from its recorded profile id at spawn, restore, and switch, and re-resolved on every config pass, so editing a profile's scheme recolors its running tabs without a respawn. One name, independent of the light/dark mode - a profile is a deliberate environment ("this is prod"), not a theme follower; the global dark/light pair keeps driving every tab without one. Every miss degrades quietly: an unset scheme, a name the registry does not ship (a `warn` at resolve; the config is never rewritten to strip it), or a profile deleted while its tabs run all fall back to the global pick. The window background follows the active tab's resolution, so the fallback background moves with a switch between a scheme-carrying tab and a plain one.
 
 `default_profile` (default unset) names the profile plain new tabs launch: with it set, `Ctrl+Shift+T`, the tab bar's `+` (its plain click), the context menu's plain "New Tab" row, a bare `new-tab`, and the fresh-startup tab all run it as full profile tabs (a `duplicate-tab` still spawns a fresh shell - the running command is never copied - and carries the source's rename pin). A name the list no longer carries quietly falls back to the plain shell, and the config is never rewritten to drop it. Launching under a profile is live four ways: that default application, `new-tab --profile NAME` (above), the tab context menu - "New Tab" becomes a submenu exactly when the list is non-empty, its first child the plain New Tab, then one row per profile in config order - and the tab bar `+`'s right-click dropdown, the same composition opening beside the gear exactly when the list is non-empty. Config edits apply to future spawns only; a running tab is never re-launched mid-run. Managing profiles - creating, editing, deleting, reordering, cloning, and picking the default - all happens on the Profiles page of the [settings drawer](settings.md), with the same instant write-through as every other setting.
 
