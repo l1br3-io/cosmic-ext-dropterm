@@ -184,13 +184,6 @@ pub enum Message {
     /// to its `SettingsTab` through the model before applying the
     /// page-turn rule.
     PickSettingsTab(cosmic::widget::segmented_button::Entity),
-    /// A left press over the terminal dismissed the open settings
-    /// drawer (drawer-click-close criterion 1) — the armed
-    /// `mouse_area`'s press, routing through the explicit-close
-    /// family (Escape, the Close button): drafts clear, the page
-    /// resets, focus returns to the terminal. The press itself is
-    /// consumed by the wrapper; nothing reaches the pty.
-    TerminalDismissedDrawer,
     /// A context-menu item was picked: the item's
     /// [`terminal::Action`], dispatched through `perform_action` —
     /// the same entry point the keybind map uses, so menu and keybind
@@ -1385,16 +1378,6 @@ fn modal_key_routing(pending_close: bool, key: &Key) -> ModalKeyRouting {
     }
 }
 
-/// Whether a left-press over the terminal should dismiss the
-/// settings drawer (drawer-click-close criterion 1): armed only
-/// while the drawer is open AND the toggle is on — any other
-/// combination composes the unwrapped terminal tree, so flag-off
-/// behavior is byte-identical to today's (criterion 2). Pure so the
-/// arm decision is headless-testable.
-fn click_dismiss_armed(settings_open: bool, flag: bool) -> bool {
-    settings_open && flag
-}
-
 /// The confirmation modal's scrim style: a translucent black wash
 /// over the whole surface (50%), the standard modal dim — the
 /// `danger_text_style` hand-composed precedent for theme styles this
@@ -2053,22 +2036,6 @@ mod tests {
             modal_key_routing(false, &Key::Character("w".into())),
             ModalKeyRouting::FallThrough
         );
-    }
-
-    // --- the drawer-click dismissal arm decision
-    // (drawer-click-close T1) ---
-
-    #[test]
-    fn click_dismiss_arms_only_with_the_drawer_open_and_the_flag_on() {
-        // Drawer-click-close criterion 1's arm decision as one pin:
-        // every other combination composes the unwrapped terminal
-        // tree — the drawer-closed rows never fire (the gesture
-        // exists only while the drawer is open), and the flag-off
-        // row is criterion 2 (byte-identical to today).
-        assert!(!click_dismiss_armed(false, false));
-        assert!(!click_dismiss_armed(false, true));
-        assert!(!click_dismiss_armed(true, false));
-        assert!(click_dismiss_armed(true, true));
     }
 
     // --- the armed capture's key routing (keybinds-editor KE-3) ---
@@ -3026,26 +2993,14 @@ impl Application for DropTerm {
         .window_id(id)
         .into();
 
-        // The drawer-click dismissal wrap (drawer-click-close
-        // criterion 1): while armed — drawer open AND the toggle on,
-        // [`click_dismiss_armed`] — a `mouse_area` over the
-        // context-menu-wrapped terminal consumes a left press and
-        // closes the drawer through the explicit-close path.
-        // Constructed only while armed (the `open_trees` pattern, no
-        // else-branch second copy): an unarmed frame composes the
-        // byte-identical tree, so flag-off behavior cannot drift
-        // (criterion 2). Scope holds by construction (criterion 3):
-        // the wrap covers the terminal element only — the drawer
-        // pane, tab strip, and grab bar sit outside it — and carries
-        // no right/middle handler.
-        let terminal: Element<'_, Message> =
-            if click_dismiss_armed(self.settings_open, self.config.settings_drawer_click_close) {
-                widget::mouse_area(terminal)
-                    .on_press(Message::TerminalDismissedDrawer)
-                    .into()
-            } else {
-                terminal
-            };
+        // NOTE: no pointer-input wrapper for the open settings drawer
+        // may sit here — while the drawer is open, its overlay
+        // (`widget::context_drawer`) captures every mouse event over
+        // the whole surface before this base tree ever updates, so a
+        // base-tree mouse_area cannot observe a press. The
+        // drawer-click-close module parked on exactly that finding
+        // (2026-10-08); see SPEC-drawer-click-close.md's fallback
+        // clause for the revisit options.
 
         // Stacking from the screen edge: content, tab strip, grab
         // bar on the free edge. Both bars take their strips out of
@@ -3901,16 +3856,6 @@ impl DropTerm {
                     self.settings_page = page_after_tab_pick(self.settings_page, *tab);
                     self.sync_settings_tab_strip();
                 }
-            }
-            Message::TerminalDismissedDrawer => {
-                // The click-dismiss rides the one explicit-close path
-                // (drawer-click-close criterion 4): it clears exactly
-                // what Escape and the Close button clear — drafts,
-                // the Profiles drill-down, the page reset — and
-                // returns focus to the terminal. The press itself was
-                // consumed by the armed wrapper; nothing reached the
-                // pty beneath (criterion 1).
-                return self.close_settings_drawer();
             }
             Message::Settings(event) => {
                 // The settings drawer's commit path: every event
