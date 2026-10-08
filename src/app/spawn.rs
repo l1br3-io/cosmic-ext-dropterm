@@ -148,7 +148,7 @@ impl DropTerm {
             };
             return self.spawn_shell(&command, cwd);
         };
-        if let Some(profile) = &spec.profile {
+        let mut tab = if let Some(profile) = &spec.profile {
             // The id re-resolved at plan time: the current definition
             // runs — command and env included — and `spec.cwd` — the
             // ruled chain result — already is the spawn directory, so
@@ -166,7 +166,12 @@ impl DropTerm {
             let shell = spec.shell.clone();
             let cwd = spec.cwd.clone();
             self.spawn_shell(&SpawnCommand::Shell(shell), cwd)
-        }
+        }?;
+        // The saved pin replays onto the restored tab: `Tab::new`
+        // seeds unpinned, and only a restore carries a pin — a new
+        // tab never spawns pinned.
+        tab.pinned = spec.pinned;
+        Some(tab)
     }
 
     /// Spawns one terminal tab running `command` in `cwd` — the common

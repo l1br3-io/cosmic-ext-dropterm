@@ -557,6 +557,10 @@ pub enum TabMenuPick {
     /// --tab-index` semantics: cwd and rename pin read from it,
     /// after-active landing, the duplicate activated.
     Duplicate,
+    /// Flip the clicked tab's pin — the row's label names the action
+    /// in store ("Pin Tab" loose, "Unpin Tab" pinned). Menu-only by
+    /// ruling: no keybind, no terminal-menu row.
+    Pin,
     /// Respawn the clicked tab under the profile at this config index
     /// — the Switch Profile folder's row, apply-time resolved (the
     /// `NewProfileTab` stale-index contract).
@@ -616,21 +620,34 @@ fn header_row(label: &str) -> TabMenuRow {
 }
 
 /// The per-tab context menu's rows for the tab at `tab_index` of
-/// `tab_count` — the consolidation surface: every row rides an
-/// existing funnel, scoped to the clicked tab rather than the active
-/// one. New Tab leads (every peer's tab menu opens with it); the
-/// clicked-tab cluster follows; the profile section renders exactly
+/// `tab_count`, `pinned` naming that tab's pin state — the
+/// consolidation surface: every row rides an existing funnel, scoped
+/// to the clicked tab rather than the active one. New Tab leads
+/// (every peer's tab menu opens with it); the clicked-tab cluster
+/// follows, Pin/Unpin in it after Duplicate Tab with the label
+/// naming the flip in store; the profile section renders exactly
 /// while ≥1 profile exists (the context menu's zero-profiles flat
 /// ruling), profiles surfacing here exactly once; moves mute at the
 /// edges they clamp at; the close cluster closes, with Close Tabs to
 /// the Right omitted at the rightmost tab (Firefox's hide rule — the
 /// row would always no-op there).
-fn tab_menu_rows(profiles: &[Profile], tab_count: usize, tab_index: usize) -> Vec<TabMenuRow> {
+fn tab_menu_rows(
+    profiles: &[Profile],
+    tab_count: usize,
+    tab_index: usize,
+    pinned: bool,
+) -> Vec<TabMenuRow> {
     let mut rows = vec![pick_row(NEW_TAB_LABEL, TabMenuPick::NewTab, true, false)];
     rows.push(pick_row("Rename Tab", TabMenuPick::Rename, true, true));
     rows.push(pick_row(
         "Duplicate Tab",
         TabMenuPick::Duplicate,
+        true,
+        false,
+    ));
+    rows.push(pick_row(
+        if pinned { "Unpin Tab" } else { "Pin Tab" },
+        TabMenuPick::Pin,
         true,
         false,
     ));
@@ -1298,7 +1315,12 @@ where
         if let Some(menu_tab) = state.tab_menu
             && let Some(index) = self.tabs.iter().position(|tab| tab.id == menu_tab)
         {
-            let rows = tab_menu_rows(self.profiles, self.tabs.len(), index);
+            let rows = tab_menu_rows(
+                self.profiles,
+                self.tabs.len(),
+                index,
+                self.tabs[index].pinned,
+            );
             let labels_match = state
                 .tab_menu_paragraphs
                 .iter()
@@ -2473,7 +2495,14 @@ impl<Message> TabMenuOverlay<'_, '_, Message> {
     fn rows(&self, menu_tab: Option<TabId>) -> Vec<TabMenuRow> {
         menu_tab
             .and_then(|tab| self.tabs.iter().position(|candidate| candidate.id == tab))
-            .map(|index| tab_menu_rows(self.profiles, self.tabs.len(), index))
+            .map(|index| {
+                tab_menu_rows(
+                    self.profiles,
+                    self.tabs.len(),
+                    index,
+                    self.tabs[index].pinned,
+                )
+            })
             .unwrap_or_default()
     }
 }
@@ -3526,7 +3555,7 @@ mod tests {
     /// The rows for a middle tab of five, no profiles: the flat
     /// composition every positional test derives from.
     fn flat_rows() -> Vec<TabMenuRow> {
-        tab_menu_rows(&[], 5, 2)
+        tab_menu_rows(&[], 5, 2, false)
     }
 
     fn labels(rows: &[TabMenuRow]) -> Vec<&str> {
@@ -3536,13 +3565,14 @@ mod tests {
     #[test]
     fn tab_menu_rows_lead_with_new_tab_then_the_tab_cluster() {
         // New Tab first (every peer's tab menu opens with it), then
-        // Rename and Duplicate — the clicked-tab cluster.
+        // the clicked-tab cluster: Rename, Duplicate, Pin/Unpin.
         assert_eq!(
             labels(&flat_rows()),
             vec![
                 "New Tab",
                 "Rename Tab",
                 "Duplicate Tab",
+                "Pin Tab",
                 "Move Tab Left",
                 "Move Tab Right",
                 "Close Tab",
@@ -3558,6 +3588,7 @@ mod tests {
             ("New Tab", TabMenuPick::NewTab),
             ("Rename Tab", TabMenuPick::Rename),
             ("Duplicate Tab", TabMenuPick::Duplicate),
+            ("Pin Tab", TabMenuPick::Pin),
             ("Move Tab Left", TabMenuPick::Move(MoveDirection::Left)),
             ("Move Tab Right", TabMenuPick::Move(MoveDirection::Right)),
             ("Close Tab", TabMenuPick::Close),
@@ -3580,9 +3611,9 @@ mod tests {
         // The first tab cannot move left; the last cannot move right;
         // a middle tab can move both ways — the binds' `move_target`
         // rule rendered as muting, never a clickable no-op.
-        let first = tab_menu_rows(&[], 3, 0);
-        let last = tab_menu_rows(&[], 3, 2);
-        let middle = tab_menu_rows(&[], 3, 1);
+        let first = tab_menu_rows(&[], 3, 0, false);
+        let last = tab_menu_rows(&[], 3, 2, false);
+        let middle = tab_menu_rows(&[], 3, 1, false);
         let by_label = |rows: &[TabMenuRow], label: &str| {
             rows.iter()
                 .find(|row| row.label == label)
@@ -3602,10 +3633,10 @@ mod tests {
         // Firefox's hide rule: with no right neighbors the row would
         // always no-op, so it is omitted outright — Close Other Tabs
         // stays (the menu needs ≥2 tabs to open, others always exist).
-        let last = tab_menu_rows(&[], 4, 3);
+        let last = tab_menu_rows(&[], 4, 3, false);
         assert!(!labels(&last).contains(&"Close Tabs to the Right"));
         assert!(labels(&last).contains(&"Close Other Tabs"));
-        let inner = tab_menu_rows(&[], 4, 2);
+        let inner = tab_menu_rows(&[], 4, 2, false);
         assert!(labels(&inner).contains(&"Close Tabs to the Right"));
     }
 
@@ -3625,6 +3656,7 @@ mod tests {
         };
         assert!(by_label("Rename Tab"));
         assert!(!by_label("Duplicate Tab"));
+        assert!(!by_label("Pin Tab"));
         assert!(by_label("Move Tab Left"));
         assert!(!by_label("Move Tab Right"));
         assert!(by_label("Close Tab"));
@@ -3633,26 +3665,46 @@ mod tests {
     }
 
     #[test]
+    fn tab_menu_rows_gain_a_pin_row_after_duplicate_whose_label_flips_with_state() {
+        // Ruling 1: the menu-only pin verb slots in after Duplicate Tab
+        // inside the clicked-tab cluster, and the label names the
+        // action the pick will perform — "Pin Tab" on a loose tab,
+        // "Unpin Tab" on a pinned one.
+        let unpinned = tab_menu_rows(&[], 5, 2, false);
+        let duplicate = unpinned
+            .iter()
+            .position(|row| row.label == "Duplicate Tab")
+            .expect("Duplicate Tab stays");
+        assert_eq!(unpinned[duplicate + 1].label, "Pin Tab");
+        assert_eq!(unpinned[duplicate + 1].pick, Some(TabMenuPick::Pin));
+        assert!(unpinned[duplicate + 1].enabled);
+        assert!(!unpinned[duplicate + 1].separated);
+        let pinned = tab_menu_rows(&[], 5, 2, true);
+        assert_eq!(pinned[duplicate + 1].label, "Unpin Tab");
+        assert_eq!(pinned[duplicate + 1].pick, Some(TabMenuPick::Pin));
+    }
+
+    #[test]
     fn tab_menu_rows_gain_the_switch_profile_section_only_with_profiles() {
         // Zero profiles: exactly the flat composition (the context
         // menu's zero-profiles flat ruling). With profiles: the
-        // section slots in after Duplicate Tab — a non-clickable
+        // section slots in after the Pin row — a non-clickable
         // header, then one enabled row per profile in config order,
         // index-picked for apply-time resolution.
         let flat = flat_rows().len();
         let profiles = [menu_profile("ssh-web"), menu_profile("htop")];
-        let with = tab_menu_rows(&profiles, 5, 2);
+        let with = tab_menu_rows(&profiles, 5, 2, false);
         assert_eq!(with.len(), flat + 3, "one header plus two profile rows");
-        let duplicate = with
+        let pin = with
             .iter()
-            .position(|row| row.label == "Duplicate Tab")
-            .expect("Duplicate Tab stays");
-        let header = &with[duplicate + 1];
+            .position(|row| row.pick == Some(TabMenuPick::Pin))
+            .expect("the pin row stays");
+        let header = &with[pin + 1];
         assert_eq!(header.label, "Switch Profile");
         assert_eq!(header.pick, None, "the header is not clickable");
         assert!(!header.enabled);
         assert!(header.separated, "the section separates from the cluster");
-        let profile_rows = &with[duplicate + 2..duplicate + 2 + profiles.len()];
+        let profile_rows = &with[pin + 2..pin + 2 + profiles.len()];
         assert_eq!(profile_rows.len(), profiles.len());
         for (index, row) in profile_rows.iter().enumerate() {
             assert_eq!(row.label, profiles[index].name);

@@ -146,6 +146,11 @@ pub enum Message {
     /// on that tab (cwd and rename pin read from it, after-active
     /// landing, the duplicate activated).
     DuplicateTab(TabId),
+    /// The per-tab context menu's Pin/Unpin row: flip the pin of the
+    /// tab with this id, resolved against the live list at apply
+    /// time. A pinned tab refuses user-initiated closes and moves,
+    /// and the pin persists through save/restore.
+    PinToggled(TabId),
     /// The per-tab context menu's Move rows: nudge the tab with this
     /// id one slot toward the direction, clamping at the edge — the
     /// move binds' move with the clicked tab in place of the active
@@ -3261,6 +3266,7 @@ impl Application for DropTerm {
                 TabMenuPick::NewTab => Message::Action(Action::NewTab),
                 TabMenuPick::Rename => Message::RenameStarted(tab),
                 TabMenuPick::Duplicate => Message::DuplicateTab(tab),
+                TabMenuPick::Pin => Message::PinToggled(tab),
                 TabMenuPick::SwitchProfile(index) => Message::SwitchTabProfile(tab, index),
                 TabMenuPick::Move(direction) => Message::TabMove(tab, direction),
                 TabMenuPick::Close => Message::TabClosed(tab),
@@ -3869,6 +3875,9 @@ impl DropTerm {
                 // read; an unresolvable id — a tab closed between open
                 // and pick — is a quiet no-op (the TabSelected rule).
                 return self.duplicate_tab(id);
+            }
+            Message::PinToggled(id) => {
+                return self.toggle_pin(id);
             }
             Message::TabMove(id, direction) => {
                 return self.move_tab_by(id, direction);

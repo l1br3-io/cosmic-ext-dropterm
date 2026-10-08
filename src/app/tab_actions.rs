@@ -575,6 +575,20 @@ impl DropTerm {
         }
     }
 
+    /// Flips the pin of the tab with `id` — the per-tab menu's
+    /// Pin/Unpin row, the one surface that arms a pin (a restore
+    /// replaying a saved pin is the other path in). The flip marks
+    /// the session dirty so the pin persists; an unresolvable id — a
+    /// tab closed between the menu's open and the pick — is a quiet
+    /// no-op (the `TabSelected` rule).
+    pub(super) fn toggle_pin(&mut self, id: TabId) -> Task<Message> {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.pinned = !tab.pinned;
+            return self.mark_session_dirty();
+        }
+        Task::none()
+    }
+
     /// Nudges the tab with `id` one slot toward `direction`, clamping
     /// at the edge — the per-tab menu's Move rows, the move binds'
     /// move with the clicked tab in place of the active one. The
@@ -858,6 +872,7 @@ impl DropTerm {
                 cwd: cwd.as_deref(),
                 ephemeral: tab.ephemeral,
                 profile: tab.profile.as_deref(),
+                pinned: tab.pinned,
             })
             .collect();
         let state = session::capture(&snapshots, self.active_tab);

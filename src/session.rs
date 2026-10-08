@@ -51,6 +51,12 @@ pub struct SessionTab {
     /// in files written before profiles existed; plain-shell and
     /// `--cmd` tabs save `None`.
     pub profile: Option<String>,
+    /// Whether this tab was pinned at save time. Absent in files
+    /// written before pins existed — `serde(default)` loads them
+    /// unpinned — and an old build ignores the field in a new file
+    /// (the `profile` field's additive precedent).
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A borrowed view of one live tab at save time. `cwd` is the raw
@@ -70,6 +76,9 @@ pub struct TabSnapshot<'a> {
     /// by [`capture`]; restore re-resolves it against the live
     /// profile list.
     pub profile: Option<&'a str>,
+    /// Whether the tab is pinned — saved verbatim by [`capture`] and
+    /// replayed onto the restored tab by the plan.
+    pub pinned: bool,
 }
 
 /// Builds the saved state from per-tab snapshots, keeping each `cwd`
@@ -94,6 +103,7 @@ pub fn capture(snapshots: &[TabSnapshot<'_>], active: usize) -> SessionState {
             shell: snap.shell.to_owned(),
             cwd: snap.cwd.filter(|cwd| cwd.is_dir()).map(Path::to_owned),
             profile: snap.profile.map(str::to_owned),
+            pinned: snap.pinned,
         });
     }
     SessionState {
@@ -118,6 +128,9 @@ pub struct SpawnSpec {
     /// no longer resolves, which spawns the plain shell with no
     /// chaining through any default profile.
     pub profile: Option<Profile>,
+    /// The saved pin, replayed onto the restored tab: a pinned tab
+    /// comes back pinned.
+    pub pinned: bool,
 }
 
 /// A valid restore plan: one [`SpawnSpec`] per saved tab, in order, plus
@@ -158,6 +171,7 @@ pub fn plan_restore(
                 title: tab.title.clone(),
                 title_override: tab.title_override.clone(),
                 shell: tab.shell.clone(),
+                pinned: tab.pinned,
                 // The familiar place: the saved cwd while still a
                 // directory, else the (current) profile's cwd while
                 // still a directory, else `$HOME`, else `None`.
@@ -524,6 +538,7 @@ mod tests {
                 shell: "/bin/sh".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
                 profile: None,
+                pinned: false,
             }],
         }
     }
@@ -539,6 +554,7 @@ mod tests {
                 shell: "/bin/zsh".to_owned(),
                 cwd: Some(PathBuf::from("/home/jpt/src")),
                 profile: None,
+                pinned: false,
             }],
         };
         let text = ron::to_string(&state).expect("serialize");
@@ -557,11 +573,115 @@ mod tests {
                 shell: "ssh".to_owned(),
                 cwd: Some(PathBuf::from("/srv/web")),
                 profile: Some("web-prod".to_owned()),
+                pinned: false,
             }],
         };
         let text = ron::to_string(&state).expect("serialize");
         let back: SessionState = ron::from_str(&text).expect("deserialize");
         assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_pinned_tab_round_trips_through_ron() {
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![SessionTab {
+                title: "vim".to_owned(),
+                title_override: None,
+                shell: "/bin/sh".to_owned(),
+                cwd: None,
+                profile: None,
+                pinned: true,
+            }],
+        };
+        let text = ron::to_string(&state).expect("serialize");
+        let back: SessionState = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_pre_pin_session_file_loads_with_pins_unset_and_no_quarantine() {
+        // Files written before pins existed lack the `pinned` field
+        // entirely; they must load as unpinned tabs — the
+        // additive-field compatibility pin (the `profile` precedent),
+        // with the version still 1 so nothing quarantines.
+        let dir = TempDir::new("load-pre-pin");
+        let path = session_file(&dir);
+        write_session(
+            &path,
+            r#"(
+                version: 1,
+                active: Some(0),
+                tabs: [
+                    (title: "vim", title_override: None, shell: "/bin/sh", cwd: None, profile: None),
+                ],
+            )"#,
+        );
+        let state = load(&path).expect("a pre-pin session file still loads");
+        assert_eq!(state.tabs.len(), 1);
+        assert!(!state.tabs[0].pinned);
+        assert!(!backup_of(&path).exists(), "version 1 never quarantines");
+    }
+
+    #[test]
+    fn capture_maps_the_pin_verbatim() {
+        // The pin is saved state, not derived: whatever the live tab
+        // carried at save time is what the session records.
+        let snapshots = [
+            TabSnapshot {
+                title: "pinned",
+                title_override: None,
+                shell: "/bin/sh",
+                cwd: None,
+                ephemeral: false,
+                profile: None,
+                pinned: true,
+            },
+            TabSnapshot {
+                title: "loose",
+                title_override: None,
+                shell: "/bin/sh",
+                cwd: None,
+                ephemeral: false,
+                profile: None,
+                pinned: false,
+            },
+        ];
+        let state = capture(&snapshots, 0);
+        assert!(state.tabs[0].pinned);
+        assert!(!state.tabs[1].pinned);
+    }
+
+    #[test]
+    fn plan_restore_replays_the_saved_pin() {
+        // The pin chain's plan half: a saved pin reaches the restore
+        // plan's spawn spec, an unset one stays unset.
+        let state = SessionState {
+            version: SESSION_VERSION,
+            active: Some(0),
+            tabs: vec![
+                SessionTab {
+                    title: "pinned".to_owned(),
+                    title_override: None,
+                    shell: "/bin/sh".to_owned(),
+                    cwd: None,
+                    profile: None,
+                    pinned: true,
+                },
+                SessionTab {
+                    title: "loose".to_owned(),
+                    title_override: None,
+                    shell: "/bin/sh".to_owned(),
+                    cwd: None,
+                    profile: None,
+                    pinned: false,
+                },
+            ],
+        };
+        let plan = plan_restore(&state, None, &[]).expect("valid plan");
+        assert!(plan.tabs[0].pinned);
+        assert!(!plan.tabs[1].pinned);
     }
 
     #[test]
@@ -594,6 +714,7 @@ mod tests {
                 cwd: None,
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
             TabSnapshot {
                 title: "htop",
@@ -602,6 +723,7 @@ mod tests {
                 cwd: None,
                 ephemeral: true,
                 profile: None,
+                pinned: false,
             },
             TabSnapshot {
                 title: "src",
@@ -610,6 +732,7 @@ mod tests {
                 cwd: None,
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
         ];
         let state = capture(&snapshots, 2);
@@ -629,6 +752,7 @@ mod tests {
             cwd: None,
             ephemeral: true,
             profile: None,
+            pinned: false,
         }];
         let state = capture(&snapshots, 0);
         assert!(state.tabs.is_empty());
@@ -647,6 +771,7 @@ mod tests {
                 cwd: Some(&live),
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
             TabSnapshot {
                 title: "dead",
@@ -655,6 +780,7 @@ mod tests {
                 cwd: Some(&dead_path()),
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
             TabSnapshot {
                 title: "unset",
@@ -663,6 +789,7 @@ mod tests {
                 cwd: None,
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
         ];
         let state = capture(&items, 2);
@@ -682,6 +809,7 @@ mod tests {
             cwd: None,
             ephemeral: false,
             profile: None,
+            pinned: false,
         }];
         let state = capture(&items, 0);
         assert_eq!(state.tabs[0].title, "vim");
@@ -702,6 +830,7 @@ mod tests {
                 cwd: None,
                 ephemeral: false,
                 profile: None,
+                pinned: false,
             },
             TabSnapshot {
                 title: "web",
@@ -710,6 +839,7 @@ mod tests {
                 cwd: None,
                 ephemeral: false,
                 profile: Some("web-prod"),
+                pinned: false,
             },
             TabSnapshot {
                 title: "gone",
@@ -718,6 +848,7 @@ mod tests {
                 cwd: None,
                 ephemeral: true,
                 profile: Some("web-prod"),
+                pinned: false,
             },
         ];
         let state = capture(&snapshots, 1);
@@ -746,6 +877,7 @@ mod tests {
                     shell: "/bin/sh".to_owned(),
                     cwd: Some(live.clone()),
                     profile: None,
+                    pinned: false,
                 },
                 SessionTab {
                     title: "dead".to_owned(),
@@ -753,6 +885,7 @@ mod tests {
                     shell: "/bin/zsh".to_owned(),
                     cwd: Some(dead_path()),
                     profile: None,
+                    pinned: false,
                 },
             ],
         };
@@ -775,6 +908,7 @@ mod tests {
                 shell: "/bin/sh".to_owned(),
                 cwd: Some(dead_path()),
                 profile: None,
+                pinned: false,
             }],
         };
         let plan = plan_restore(&state, None, &[]).expect("valid plan");
@@ -793,6 +927,7 @@ mod tests {
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
                     profile: None,
+                    pinned: false,
                 },
                 SessionTab {
                     title: "b".to_owned(),
@@ -800,6 +935,7 @@ mod tests {
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
                     profile: None,
+                    pinned: false,
                 },
             ],
         };
@@ -818,6 +954,7 @@ mod tests {
                 shell: "/bin/sh".to_owned(),
                 cwd: None,
                 profile: None,
+                pinned: false,
             }],
         };
         let plan = plan_restore(&state, None, &[]).expect("valid plan");
@@ -858,6 +995,7 @@ mod tests {
                 shell: "ssh".to_owned(),
                 cwd: None,
                 profile: Some("web-prod".to_owned()),
+                pinned: false,
             }],
         };
         let profiles = [test_profile("web-prod", "ssh edited-host", None)];
@@ -889,6 +1027,7 @@ mod tests {
                 shell: "/bin/sh".to_owned(),
                 cwd: Some(live.clone()),
                 profile: Some("ghost".to_owned()),
+                pinned: false,
             }],
         };
         let profiles = [test_profile("other", "ssh other-host", Some(decoy))];
@@ -916,6 +1055,7 @@ mod tests {
                 shell: "ssh".to_owned(),
                 cwd: Some(saved.clone()),
                 profile: Some("web-prod".to_owned()),
+                pinned: false,
             }],
         };
         let profiles = [test_profile("web-prod", "ssh web-prod", Some(preset))];
@@ -943,6 +1083,7 @@ mod tests {
                     shell: "ssh".to_owned(),
                     cwd: Some(dead_path()),
                     profile: Some("live-preset".to_owned()),
+                    pinned: false,
                 },
                 SessionTab {
                     title: "home".to_owned(),
@@ -950,6 +1091,7 @@ mod tests {
                     shell: "ssh".to_owned(),
                     cwd: Some(dead_path()),
                     profile: Some("dead-preset".to_owned()),
+                    pinned: false,
                 },
             ],
         };
@@ -1081,6 +1223,7 @@ mod tests {
                 shell: "/bin/sh".to_owned(),
                 cwd: None,
                 profile: None,
+                pinned: false,
             }],
         }
     }
@@ -1097,6 +1240,7 @@ mod tests {
                     shell: "/bin/sh".to_owned(),
                     cwd: None,
                     profile: None,
+                    pinned: false,
                 }],
                 active: 0,
             })

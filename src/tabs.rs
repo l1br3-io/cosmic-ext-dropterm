@@ -115,6 +115,13 @@ pub struct Tab {
     /// tabs — profiles are the explicit opt-in that makes a command
     /// tab persistent.
     pub profile: Option<String>,
+    /// Whether this tab is pinned: a pinned tab refuses
+    /// user-initiated closes, is skipped by the close sweeps, and
+    /// cannot be dragged or menu-moved — only its own shell exit
+    /// closes it. Set by the per-tab menu's Pin/Unpin row and
+    /// persisted through the session; a profile respawn keeps it,
+    /// since the respawn plan resets terminal-life state only.
+    pub pinned: bool,
     /// Whether this tab already posted a bell notification during the
     /// current hide period: armed when a
     /// notification is posted, cleared for every tab when the surface
@@ -138,6 +145,7 @@ impl Tab {
             attention: Attention::None,
             ephemeral: false,
             profile: None,
+            pinned: false,
             bell_notified: false,
             terminal: Mutex::new(terminal),
         }
@@ -1465,5 +1473,8 @@ mod tests {
         .expect("spawn a /bin/sh test terminal");
         let tab = Tab::new(TabId(3), "/bin/bash".to_owned(), terminal);
         assert_eq!(tab.shell, "/bin/bash");
+        // A fresh tab is never pinned: only the menu verb — or a
+        // restore replaying a saved pin — sets the flag.
+        assert!(!tab.pinned);
     }
 }
