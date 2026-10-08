@@ -23,7 +23,7 @@ use crate::keybinds;
 use crate::notify;
 use crate::profile::{self, Profile};
 use crate::session;
-use crate::tabs::{self, TabId};
+use crate::tabs::{self, CloseSweep, TabId};
 use crate::terminal::Action;
 
 /// An in-flight inline tab rename: the tab being renamed and the
@@ -32,14 +32,6 @@ use crate::terminal::Action;
 pub(super) struct RenameEdit {
     pub(super) tab: TabId,
     pub(super) draft: String,
-}
-
-/// Which neighbors the per-tab menu's bulk close sweeps: every tab but
-/// the anchor, or only those right of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CloseSweep {
-    Others,
-    Right,
 }
 
 /// Turns a menu pick into the app message that carries it: the same
@@ -594,21 +586,27 @@ impl DropTerm {
     /// move with the clicked tab in place of the active one. The
     /// active tab stays active whichever tab moved (`reorder_tabs`'s
     /// identity rule); like every layout change the move marks the
-    /// session dirty. An unresolvable id or an edge clamp is a quiet
-    /// no-op.
+    /// session dirty. A pinned tab refuses the move — it stays put
+    /// (ruling 4), other tabs reorder around it freely. An
+    /// unresolvable id or an edge clamp is a quiet no-op.
     pub(super) fn move_tab_by(
         &mut self,
         id: TabId,
         direction: tabs::MoveDirection,
     ) -> Task<Message> {
-        if let Some(from) = self.tabs.iter().position(|tab| tab.id == id)
-            && let Some(to) = tabs::move_target(from, self.tabs.len(), direction)
-        {
-            self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
-            // The moved tab may be the active one or shift it by one;
-            // the refresh is the uniform every-assignment rule.
-            self.refresh_active_window_bg();
-            return self.mark_session_dirty();
+        if let Some(from) = self.tabs.iter().position(|tab| tab.id == id) {
+            if self.tabs[from].pinned {
+                log::warn!("refusing to move pinned tab {id:?}; unpin it to reorder");
+                return Task::none();
+            }
+            if let Some(to) = tabs::move_target(from, self.tabs.len(), direction) {
+                self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+                // The moved tab may be the active one or shift it by
+                // one; the refresh is the uniform every-assignment
+                // rule.
+                self.refresh_active_window_bg();
+                return self.mark_session_dirty();
+            }
         }
         Task::none()
     }
@@ -621,18 +619,17 @@ impl DropTerm {
     /// once, while the running ones prompt one at a time — the
     /// single-slot confirmation ends up armed for the leftmost of
     /// them, the last the descending sweep arms, and the rest stay
-    /// open until re-invoked. Descending order also keeps earlier
-    /// indices valid as the list shrinks. An unresolvable anchor or
-    /// an empty sweep is a quiet no-op.
+    /// open until re-invoked. Pinned tabs are skipped by the target
+    /// list itself ([`tabs::sweep_targets`]) — and would refuse the
+    /// front door anyway, so a pin armed between list and apply still
+    /// holds. Descending order also keeps earlier indices valid as
+    /// the list shrinks. An unresolvable anchor or an empty sweep is
+    /// a quiet no-op.
     pub(super) fn close_tabs_sweep(&mut self, id: TabId, sweep: CloseSweep) -> Task<Message> {
         let Some(anchor) = self.tabs.iter().position(|tab| tab.id == id) else {
             return Task::none();
         };
-        let len = self.tabs.len();
-        let targets: Vec<usize> = match sweep {
-            CloseSweep::Others => (0..anchor).chain(anchor + 1..len).collect(),
-            CloseSweep::Right => (anchor + 1..len).collect(),
-        };
+        let targets = tabs::sweep_targets(&self.tabs, anchor, sweep, |tab| tab.pinned);
         let mut tasks = Vec::new();
         for index in targets.into_iter().rev() {
             tasks.push(self.request_close_tab(index));
@@ -648,15 +645,21 @@ impl DropTerm {
     /// 2's detection), the single-slot pending close arms and the
     /// in-surface modal waits for a human decision; otherwise the
     /// close proceeds now through [`Self::close_tab_at`],
-    /// byte-identical to today (criterion 5). Shell exits
-    /// (`TermEvent::Exit`) never route here — the process already
-    /// ended. The decision reads config at request time, so a
+    /// byte-identical to today (criterion 5). A pinned tab refuses
+    /// every one of these paths — warn and no-op, no dialog (ruling
+    /// 2); unpin first. Shell exits (`TermEvent::Exit`) never route
+    /// here — the process already ended — so a dead pinned tab still
+    /// clears. The decision reads config at request time, so a
     /// mid-session toggle flip applies to the very next close.
     pub(super) fn request_close_tab(&mut self, index: usize) -> Task<Message> {
         let Some(tab) = self.tabs.get(index) else {
             return Task::none();
         };
         let id = tab.id;
+        if tab.pinned {
+            log::warn!("refusing to close pinned tab {id:?}; unpin it first");
+            return Task::none();
+        }
         let running = tab.terminal.lock().unwrap().foreground_child_running();
         if confirm_needed(self.config.close_confirmation_enabled, running) {
             // Single-slot (criterion 4): a new request replaces

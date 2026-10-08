@@ -65,7 +65,7 @@ use cosmic::{Element, Renderer, cosmic_theme::palette::WithAlpha};
 use crate::terminal::WINDOW_BG_COLOR;
 
 use crate::profile::Profile;
-use crate::tabs::{MoveDirection, Tab, TabId};
+use crate::tabs::{MoveDirection, Tab, TabId, title_prefix};
 
 /// The bar's background and a text color readable on it.
 ///
@@ -1263,13 +1263,16 @@ where
 
         let font = renderer.default_font();
         for tab in self.tabs {
+            // The pin indicator prefixes everything — pin, then any
+            // attention marker, then the title (ruling 3) — so a pin
+            // re-lays the paragraph exactly like a marker change.
+            let prefix = title_prefix(tab.pinned, tab.attention);
             let combined;
-            let content = match tab.attention.marker() {
-                Some(marker) => {
-                    combined = format!("{marker}{}", tab.title);
-                    combined.as_str()
-                }
-                None => tab.title.as_str(),
+            let content = if prefix.is_empty() {
+                tab.title.as_str()
+            } else {
+                combined = format!("{prefix}{}", tab.title);
+                combined.as_str()
             };
             let text = Text {
                 content,
@@ -1840,8 +1843,10 @@ where
         // the press selects now, and crossing [`DRAG_THRESHOLD`] while
         // held turns it into a reorder — the native tab bar split between
         // click and drag. The grab offset is kept so the button can
-        // follow the cursor at the point it was caught.
-        if !on_close {
+        // follow the cursor at the point it was caught. A pinned tab
+        // never arms — it stays put (ruling 4) — while the press still
+        // selects below, so the tab behaves like any other until moved.
+        if !on_close && !tab.pinned {
             let Some(pressed) = buttons.get(index) else {
                 return;
             };

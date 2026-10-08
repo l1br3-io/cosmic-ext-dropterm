@@ -1,3 +1,4 @@
 /target
 SPEC*.md
 /tasks
+.zcode/plans

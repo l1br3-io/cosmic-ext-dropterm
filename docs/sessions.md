@@ -6,13 +6,15 @@ DropTerm reopens your tab layout on every launch: one fresh shell per saved tab,
 
 What is saved - deliberately the same scope Guake and Yakuake settle on:
 
-- The tab list in tab-bar order: per-tab `title`, a user rename (`title_override`) if any, the `shell` recorded when the tab was spawned, the tab's `cwd` at save time, and the `profile` id a tab launched under (if any)
+- The tab list in tab-bar order: per-tab `title`, a user rename (`title_override`) if any, the `shell` recorded when the tab was spawned, the tab's `cwd` at save time, the `profile` id a tab launched under (if any), and whether the tab is pinned (`pinned`)
 - The focused tab
 - A schema `version`
 
-That is all - eight schema fields (`version`, `active`, `tabs`, and per tab `title`, `title_override`, `shell`, `cwd`, `profile`). Scrollback, environment, and running processes are deliberately *not* saved: a restored tab is a fresh spawn - your shell, or a profile's command - in a familiar place, never a resumed program. And because each tab's shell is recorded at spawn, changing the configured `shell` mid-run only affects newly opened tabs.
+That is all - nine schema fields (`version`, `active`, `tabs`, and per tab `title`, `title_override`, `shell`, `cwd`, `profile`, `pinned`). Scrollback, environment, and running processes are deliberately *not* saved: a restored tab is a fresh spawn - your shell, or a profile's command - in a familiar place, never a resumed program. And because each tab's shell is recorded at spawn, changing the configured `shell` mid-run only affects newly opened tabs.
 
 Profile tabs are the explicit opt-in that makes a command tab persistent where a raw `--cmd` tab deliberately is not: the session saves the id beside the cwd, and restore re-resolves it against the *current* config, so a profile edited between save and relaunch launches the edited command. A saved id the list no longer carries falls back to a plain shell in the re-validated saved cwd - it never chains through `default_profile`.
+
+A pinned tab restores pinned (the per-tab context menu's Pin/Unpin row): after the restart it refuses user closes and stays put exactly as before, in its saved order. The `pinned` field rides the same additive rule as `profile` - a session file written before pins existed loads with every tab unpinned, and the schema version is unchanged.
 
 Saving happens on every layout change (open, close, reorder, rename, tab switch, or a shell's `cd`), debounced to one write within half a second; continuous changes coalesce into one write per interval. Each write is atomic - serialize to a temp file next to the target, fsync, rename over the old file - so a crash mid-write leaves the previous session intact. The trade-off for debouncing: a hard kill can lose the last ~500 ms of layout changes.
 

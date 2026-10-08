@@ -74,6 +74,56 @@ impl Attention {
     }
 }
 
+/// The pin indicator a pinned tab's title prefixes: 📌 plus a leading
+/// space, exactly the attention markers' shape.
+pub const PIN_MARKER: &str = "\u{1f4cc} ";
+
+/// The prefix a tab's title paragraph composes ahead of its title:
+/// the pin indicator first, then any attention marker (ruling 3 — pin,
+/// then marker, then title). Empty when the tab is neither pinned nor
+/// marked, so the paragraph composes the bare title.
+pub fn title_prefix(pinned: bool, attention: Attention) -> String {
+    let mut prefix = String::new();
+    if pinned {
+        prefix.push_str(PIN_MARKER);
+    }
+    if let Some(marker) = attention.marker() {
+        prefix.push_str(marker);
+    }
+    prefix
+}
+
+/// Which neighbors a bulk close sweep covers: every tab but the
+/// anchor, or only those right of it (the per-tab menu's Close Other
+/// Tabs and Close Tabs to the Right rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseSweep {
+    Others,
+    Right,
+}
+
+/// Resolves a close sweep's target indices — every tab but `anchor`
+/// ([`CloseSweep::Others`]) or only the tabs right of it
+/// ([`CloseSweep::Right`]) — with pinned tabs skipped: a pin refuses
+/// the sweeps as surely as a direct close, so they never aim at one.
+/// `anchor` is a valid index (the callers resolve it via `position`).
+/// Pure over the tab payload — the app funnels every target through
+/// the gated close front door.
+pub fn sweep_targets<T>(
+    tabs: &[T],
+    anchor: usize,
+    sweep: CloseSweep,
+    is_pinned: impl Fn(&T) -> bool,
+) -> Vec<usize> {
+    let len = tabs.len();
+    let mut targets: Vec<usize> = match sweep {
+        CloseSweep::Others => (0..anchor).chain(anchor + 1..len).collect(),
+        CloseSweep::Right => (anchor + 1..len).collect(),
+    };
+    targets.retain(|index| !is_pinned(&tabs[*index]));
+    targets
+}
+
 /// One terminal inside the overlay surface.
 ///
 /// `shell_title` is the last raw OSC 0/2 report and `title` the
@@ -836,6 +886,55 @@ mod tests {
         assert_eq!(Attention::None.marker(), None);
         assert_eq!(Attention::Activity.marker(), Some("• "));
         assert_eq!(Attention::Bell.marker(), Some("\u{1f514} "));
+    }
+
+    #[test]
+    fn a_pin_prefixes_the_title_ahead_of_any_attention_marker() {
+        // Ruling 3: pin, then marker, then title — the pin indicator
+        // composes ahead of everything, exactly the attention markers'
+        // shape (glyph plus a leading space).
+        assert_eq!(title_prefix(true, Attention::None), "\u{1f4cc} ");
+        assert_eq!(title_prefix(true, Attention::Activity), "\u{1f4cc} • ");
+        assert_eq!(title_prefix(true, Attention::Bell), "\u{1f4cc} \u{1f514} ");
+    }
+
+    #[test]
+    fn an_unpinned_tab_prefixes_the_attention_marker_alone() {
+        assert_eq!(title_prefix(false, Attention::None), "");
+        assert_eq!(title_prefix(false, Attention::Activity), "• ");
+        assert_eq!(title_prefix(false, Attention::Bell), "\u{1f514} ");
+    }
+
+    #[test]
+    fn sweep_targets_cover_the_sweep_neighborhood() {
+        // Today's shape with every tab loose: Others hits every tab
+        // but the anchor on both sides, Right only the tabs after it.
+        let loose = [false; 5];
+        let is_pinned = |pinned: &bool| *pinned;
+        assert_eq!(
+            sweep_targets(&loose, 1, CloseSweep::Others, is_pinned),
+            vec![0, 2, 3, 4]
+        );
+        assert_eq!(
+            sweep_targets(&loose, 1, CloseSweep::Right, is_pinned),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn sweep_targets_skip_pinned_tabs() {
+        // A pin refuses the sweeps as surely as a direct close: pinned
+        // tabs drop out of the target list while loose neighbors close.
+        let flags = [false, false, true, false, true];
+        let is_pinned = |pinned: &bool| *pinned;
+        assert_eq!(
+            sweep_targets(&flags, 1, CloseSweep::Others, is_pinned),
+            vec![0, 3]
+        );
+        assert_eq!(
+            sweep_targets(&flags, 1, CloseSweep::Right, is_pinned),
+            vec![3]
+        );
     }
 
     #[test]

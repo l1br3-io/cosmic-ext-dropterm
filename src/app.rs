@@ -56,7 +56,7 @@ mod spawn;
 mod tab_actions;
 
 use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
-use self::tab_actions::{CloseSweep, RenameEdit, open_trees};
+use self::tab_actions::{RenameEdit, open_trees};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -3883,10 +3883,10 @@ impl DropTerm {
                 return self.move_tab_by(id, direction);
             }
             Message::CloseOtherTabs(id) => {
-                return self.close_tabs_sweep(id, CloseSweep::Others);
+                return self.close_tabs_sweep(id, tabs::CloseSweep::Others);
             }
             Message::CloseTabsRight(id) => {
-                return self.close_tabs_sweep(id, CloseSweep::Right);
+                return self.close_tabs_sweep(id, tabs::CloseSweep::Right);
             }
             Message::GrabBarDragged(pointer_y) => {
                 // The drag handlers (`GrabBarDragged`, `DragApplyDue`,
