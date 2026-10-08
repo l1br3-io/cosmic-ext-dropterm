@@ -247,6 +247,19 @@ impl DropTerm {
                     return self.start_rename(id);
                 }
             }
+            // The Switch Profile folder's pick rides the remote
+            // verb's seam verbatim: the active tab's id resolved at
+            // dispatch, `Message::SwitchTabProfile` carrying it — the
+            // same construction the CLI builder uses. The respawn's
+            // whole behavior (cwd composition, session-dirty marking,
+            // the stale-index warn+no-op) lives inside
+            // `switch_tab_profile`; this arm adds routing only.
+            Action::SwitchProfileTab(index) => {
+                let id = tab.id;
+                return cosmic::task::message(cosmic::Action::App(Message::SwitchTabProfile(
+                    id, index,
+                )));
+            }
             Action::Copy => {
                 let selected = tab
                     .terminal

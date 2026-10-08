@@ -97,6 +97,12 @@ pub enum Action {
     /// time; deliberately not keybindable (indices are not a stable
     /// user surface). An out-of-range index at apply warns and no-ops.
     NewProfileTab(usize),
+    /// Respawn the active tab under the profile at this index — the
+    /// context menu's Switch Profile folder pick, resolved at apply
+    /// time; deliberately not keybindable (indices are not a stable
+    /// user surface, the [`NewProfileTab`] contract). An out-of-range
+    /// index at apply warns and no-ops.
+    SwitchProfileTab(usize),
     CloseTab,
     NextTab,
     PrevTab,

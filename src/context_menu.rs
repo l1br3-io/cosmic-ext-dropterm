@@ -28,6 +28,13 @@ pub enum Row {
     /// profile in config order (ruling 2 — zero profiles keep
     /// today's flat menu).
     ProfilesFolder,
+    /// The Switch Profile slot while ≥1 profile exists: a submenu of
+    /// one row per profile in config order, each respawning the
+    /// active tab under that profile. Rides the same non-empty
+    /// ruling as the New Tab slot (zero profiles keep today's flat
+    /// menu) and slots in after `DuplicateTab` — it acts on the active
+    /// tab like the tab cluster it joins.
+    SwitchProfileFolder,
     /// A horizontal separator.
     Divider,
 }
@@ -111,12 +118,20 @@ pub fn rows(profiles: &[Profile]) -> Vec<Row> {
     if profiles.is_empty() {
         return ROWS.to_vec();
     }
-    ROWS.iter()
-        .map(|row| match row {
-            Row::Item(Item::NewTab) => Row::ProfilesFolder,
-            row => *row,
-        })
-        .collect()
+    let mut with_profiles = Vec::with_capacity(ROWS.len() + 1);
+    for row in ROWS {
+        match row {
+            Row::Item(Item::NewTab) => with_profiles.push(Row::ProfilesFolder),
+            // The switch folder slots in after DuplicateTab, before
+            // the clipboard cluster begins at Copy.
+            Row::Item(Item::DuplicateTab) => {
+                with_profiles.push(*row);
+                with_profiles.push(Row::SwitchProfileFolder);
+            }
+            row => with_profiles.push(*row),
+        }
+    }
+    with_profiles
 }
 
 /// The menu's item list, pre-keybind: one item per row of
@@ -141,6 +156,25 @@ pub fn items(profiles: &[Profile]) -> Vec<menu::Item<Action, String>> {
                 }));
                 menu::Item::Folder(Item::NewTab.label().to_owned(), children)
             }
+            Row::SwitchProfileFolder => menu::Item::Folder(
+                // One button per profile in config order,
+                // index-actioned — the New Tab folder's pattern: the
+                // index resolves at pick time, so a config edited
+                // while the menu was open degrades to the warn+no-op
+                // rather than switching to the wrong profile.
+                "Switch Profile".to_owned(),
+                profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, profile)| {
+                        menu::Item::Button(
+                            profile.name.clone(),
+                            None,
+                            Action::SwitchProfileTab(index),
+                        )
+                    })
+                    .collect(),
+            ),
             Row::Divider => menu::Item::Divider,
         })
         .collect()
@@ -264,11 +298,15 @@ mod tests {
 
     #[test]
     fn rows_with_profiles_swap_the_new_tab_slot_for_the_submenu() {
+        // One row beyond the static list: the New Tab slot swaps for
+        // the submenu and the Switch Profile folder adds its own —
+        // the placement test below pins the full sequence.
         let profiles = [profile("ssh-web")];
         let with_profiles = rows(&profiles);
-        assert_eq!(with_profiles.len(), ROWS.len());
+        assert_eq!(with_profiles.len(), ROWS.len() + 1);
         assert_eq!(with_profiles[0], Row::ProfilesFolder);
-        assert_eq!(&with_profiles[1..], &ROWS[1..]);
+        assert_eq!(with_profiles[1], Row::Item(Item::RenameTab));
+        assert_eq!(with_profiles[2], Row::Item(Item::DuplicateTab));
     }
 
     #[test]
@@ -280,6 +318,55 @@ mod tests {
         let with_profiles = rows(&profiles);
         assert_eq!(with_profiles[1], Row::Item(Item::RenameTab));
         assert_eq!(with_profiles[2], Row::Item(Item::DuplicateTab));
+    }
+
+    #[test]
+    fn rows_with_profiles_gain_the_switch_folder_after_duplicate_tab() {
+        // Ruling 1: the Switch Profile folder slots in after
+        // DuplicateTab — it acts on the active tab like the cluster
+        // it joins — and before Copy; the pin is the full sequence,
+        // not just the neighbors.
+        let profiles = [profile("ssh-web")];
+        let with = rows(&profiles);
+        assert_eq!(with.len(), ROWS.len() + 1, "the switch folder adds one row");
+        let duplicate = with
+            .iter()
+            .position(|row| *row == Row::Item(Item::DuplicateTab))
+            .expect("Duplicate Tab stays in the list");
+        assert_eq!(with[duplicate + 1], Row::SwitchProfileFolder);
+        assert_eq!(with[duplicate + 2], Row::Item(Item::Copy));
+        let mut expected = ROWS.to_vec();
+        expected[0] = Row::ProfilesFolder;
+        expected.insert(3, Row::SwitchProfileFolder);
+        assert_eq!(with, expected);
+    }
+
+    #[test]
+    fn items_with_profiles_fold_switch_profile_into_its_own_folder() {
+        // The folder's children: one button per profile in config
+        // order, index-actioned — the New Tab folder's pattern; the
+        // plain New Tab folder beside it is unaffected.
+        let profiles = [profile("ssh-web"), profile("htop")];
+        let list = items(&profiles);
+        assert_eq!(list.len(), ROWS.len() + 1, "one folder row added");
+        let menu::Item::Folder(label, children) = &list[3] else {
+            panic!("the slot after Duplicate Tab is the Switch Profile folder");
+        };
+        assert_eq!(label, "Switch Profile");
+        assert_eq!(children.len(), 2, "one row per profile, no plain child");
+        for (index, child) in children.iter().enumerate() {
+            let menu::Item::Button(label, _, action) = child else {
+                panic!("profile rows are buttons");
+            };
+            assert_eq!(label, profiles[index].name.as_str());
+            assert_eq!(*action, Action::SwitchProfileTab(index));
+        }
+        // The New Tab folder keeps its own shape: the plain child
+        // plus one row per profile.
+        let menu::Item::Folder(_, new_tab_children) = &list[0] else {
+            panic!("the New Tab slot stays the submenu");
+        };
+        assert_eq!(new_tab_children.len(), 3);
     }
 
     #[test]
@@ -300,8 +387,8 @@ mod tests {
         let list = items(&profiles);
         assert_eq!(
             list.len(),
-            ROWS.len(),
-            "the folder replaces the slot, it does not add a row"
+            ROWS.len() + 1,
+            "the New Tab folder replaces its slot; the extra row is the Switch Profile folder"
         );
         let menu::Item::Folder(label, children) = &list[0] else {
             panic!("the New Tab slot must become the submenu");
@@ -338,10 +425,22 @@ mod tests {
         };
         assert_eq!(label, "Copy");
         assert_eq!(*action, Action::NewProfileTab(0));
-        // The static Copy row is untouched by the collision (one row
-        // past the tab cluster, which precedes the clipboard
-        // cluster).
-        let menu::Item::Button(label, _, action) = &list[3] else {
+        // The same profile names a row under the Switch Profile
+        // folder too — the collision is tolerated at every level:
+        // distinct folders, distinct actions.
+        let menu::Item::Folder(switch_label, switch_children) = &list[3] else {
+            panic!("the Switch Profile slot is a folder");
+        };
+        assert_eq!(switch_label, "Switch Profile");
+        let menu::Item::Button(label, _, action) = &switch_children[0] else {
+            panic!("the switch row is a button");
+        };
+        assert_eq!(label, "Copy");
+        assert_eq!(*action, Action::SwitchProfileTab(0));
+        // The static Copy row is untouched by the collision (past the
+        // tab cluster and the switch folder, which precede the
+        // clipboard cluster).
+        let menu::Item::Button(label, _, action) = &list[4] else {
             panic!("the static Copy row is a button");
         };
         assert_eq!(label, "Copy");

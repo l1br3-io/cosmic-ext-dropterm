@@ -242,7 +242,9 @@ pub fn action_id(action: Action) -> Option<&'static str> {
         Action::Hide => "hide",
         Action::NewTab => "new_tab",
         Action::NewTabHome => "new_tab_home",
-        Action::NewProfileTab(_) => return None,
+        // The two index-actioned menu picks share the exclusion: a
+        // config-list index is not a stable user-facing id.
+        Action::NewProfileTab(_) | Action::SwitchProfileTab(_) => return None,
         Action::CloseTab => "close_tab",
         Action::NextTab => "next_tab",
         Action::PrevTab => "prev_tab",
@@ -412,6 +414,7 @@ pub fn action_label(action: Action) -> &'static str {
         Action::NewTab => "New tab",
         Action::NewTabHome => "New tab (home directory)",
         Action::NewProfileTab(_) => "New profile tab",
+        Action::SwitchProfileTab(_) => "Switch profile tab",
         Action::CloseTab => "Close tab",
         Action::NextTab => "Next tab",
         Action::PrevTab => "Previous tab",
@@ -1195,6 +1198,14 @@ mod tests {
     }
 
     #[test]
+    fn switch_profile_tab_is_deliberately_not_keybindable() {
+        // The NewProfileTab contract verbatim: a binding over a
+        // config-list index is a binding over an unstable id — the
+        // menu pick is the only surface.
+        assert_eq!(action_id(Action::SwitchProfileTab(0)), None);
+    }
+
+    #[test]
     fn ids_are_the_pinned_file_format_literals() {
         // These strings are the config file's contract — spelled here
         // once so a rename cannot slip through silently.
@@ -1239,6 +1250,10 @@ mod tests {
         assert_eq!(action_label(Action::ActivateTab(0)), "Activate tab 1");
         assert_eq!(action_label(Action::ActivateLastTab), "Activate last tab");
         assert_eq!(action_label(Action::Settings), "Open settings");
+        assert_eq!(
+            action_label(Action::SwitchProfileTab(0)),
+            "Switch profile tab"
+        );
     }
 
     #[test]
