@@ -448,22 +448,11 @@ impl DropTerm {
             );
         }
         // The degraded path keeps the warning's promise — "duplicating
-        // the active tab instead" — by reading cwd and pin from the
-        // active tab, the same source the bare verb resolves to.
-        // Capture both before the helper's `&mut self` call.
-        let source = target
-            .or(Some(self.active_tab))
-            .filter(|&index| index < self.tabs.len());
-        let (cwd, title_override) =
-            source
-                .and_then(|index| self.tabs.get(index))
-                .map_or((None, None), |tab| {
-                    (
-                        tab.terminal.lock().unwrap().working_directory(),
-                        tab.title_override.clone(),
-                    )
-                });
-        self.open_duplicate_tab(cwd, title_override)
+        // the active tab instead" — by resolving to the active tab,
+        // the same source the bare verb resolves to; the source read
+        // itself is the shared `duplicate_tab_at` body (a missing
+        // source spawns the pty default, today's behavior).
+        self.duplicate_tab_at(target.or(Some(self.active_tab)))
     }
 }
 

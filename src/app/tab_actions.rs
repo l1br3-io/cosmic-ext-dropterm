@@ -34,6 +34,14 @@ pub(super) struct RenameEdit {
     pub(super) draft: String,
 }
 
+/// Which neighbors the per-tab menu's bulk close sweeps: every tab but
+/// the anchor, or only those right of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CloseSweep {
+    Others,
+    Right,
+}
+
 /// Turns a menu pick into the app message that carries it: the same
 /// entry the keybind path uses, so menu behavior cannot fork from
 /// keybind behavior.
@@ -399,20 +407,12 @@ impl DropTerm {
             }
             Action::CloseTab => return self.request_close_tab(self.active_tab),
             Action::DuplicateTab => {
-                // Duplicate the active tab: capture its cwd and rename
-                // pin before the helper's `&mut self` call — `active()`
-                // borrows the list the helper inserts into (the
-                // `commit_rename_on` precedent). Unlike rename there is
-                // no bar-visibility gate: duplicating a single tab is
-                // meaningful, and the fresh bar it implies shows.
-                let source = self.active().map(|tab| {
-                    (
-                        tab.terminal.lock().unwrap().working_directory(),
-                        tab.title_override.clone(),
-                    )
-                });
-                let (cwd, title_override) = source.unwrap_or((None, None));
-                return self.open_duplicate_tab(cwd, title_override);
+                // Duplicate the active tab — the shared source read
+                // (`duplicate_tab_at`), active-tab scoped: unlike
+                // rename there is no bar-visibility gate, since
+                // duplicating a single tab is meaningful and the fresh
+                // bar it implies shows.
+                return self.duplicate_tab_at(Some(self.active_tab));
             }
             Action::NextTab => {
                 return self.set_active_tab(tabs::cycle_next(&self.tabs, self.active_tab));
@@ -540,6 +540,90 @@ impl DropTerm {
             return Task::batch([switch, self.mark_session_dirty()]);
         }
         Task::none()
+    }
+
+    /// Reads the source tab at `index` — its cwd and rename pin — and
+    /// opens its duplicate: the one duplicate source-read every
+    /// surface funnels into (the keybind and terminal-menu row via the
+    /// active index, the remote `--tab-index` verb through its
+    /// resolved target, the per-tab menu's row through the clicked
+    /// tab). A `None` or out-of-range source reads as no source:
+    /// `open_duplicate_tab` then spawns the pty-default fresh tab
+    /// (the keybind's empty-list behavior).
+    pub(super) fn duplicate_tab_at(&mut self, source: Option<usize>) -> Task<Message> {
+        let (cwd, title_override) =
+            source
+                .and_then(|index| self.tabs.get(index))
+                .map_or((None, None), |tab| {
+                    (
+                        tab.terminal.lock().unwrap().working_directory(),
+                        tab.title_override.clone(),
+                    )
+                });
+        self.open_duplicate_tab(cwd, title_override)
+    }
+
+    /// Duplicates the tab with `id` — the per-tab context menu's
+    /// Duplicate Tab row. The id resolves against the live list at
+    /// apply time (the `TabSelected` rule): a tab closed between the
+    /// menu's open and the pick is a quiet no-op, never a duplicate of
+    /// whatever took its slot.
+    pub(super) fn duplicate_tab(&mut self, id: TabId) -> Task<Message> {
+        match self.tabs.iter().position(|tab| tab.id == id) {
+            Some(index) => self.duplicate_tab_at(Some(index)),
+            None => Task::none(),
+        }
+    }
+
+    /// Nudges the tab with `id` one slot toward `direction`, clamping
+    /// at the edge — the per-tab menu's Move rows, the move binds'
+    /// move with the clicked tab in place of the active one. The
+    /// active tab stays active whichever tab moved (`reorder_tabs`'s
+    /// identity rule); like every layout change the move marks the
+    /// session dirty. An unresolvable id or an edge clamp is a quiet
+    /// no-op.
+    pub(super) fn move_tab_by(
+        &mut self,
+        id: TabId,
+        direction: tabs::MoveDirection,
+    ) -> Task<Message> {
+        if let Some(from) = self.tabs.iter().position(|tab| tab.id == id)
+            && let Some(to) = tabs::move_target(from, self.tabs.len(), direction)
+        {
+            self.active_tab = tabs::reorder_tabs(&mut self.tabs, self.active_tab, from, to);
+            // The moved tab may be the active one or shift it by one;
+            // the refresh is the uniform every-assignment rule.
+            self.refresh_active_window_bg();
+            return self.mark_session_dirty();
+        }
+        Task::none()
+    }
+
+    /// Closes the `sweep` neighbors of the tab with `id` — the
+    /// per-tab menu's Close Other Tabs and Close Tabs to the Right
+    /// rows — every one through the gated front door
+    /// ([`Self::request_close_tab`]), so the close confirmation holds
+    /// per running tab: tabs without a foreground child close at
+    /// once, while the running ones prompt one at a time — the
+    /// single-slot confirmation ends up armed for the leftmost of
+    /// them, the last the descending sweep arms, and the rest stay
+    /// open until re-invoked. Descending order also keeps earlier
+    /// indices valid as the list shrinks. An unresolvable anchor or
+    /// an empty sweep is a quiet no-op.
+    pub(super) fn close_tabs_sweep(&mut self, id: TabId, sweep: CloseSweep) -> Task<Message> {
+        let Some(anchor) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return Task::none();
+        };
+        let len = self.tabs.len();
+        let targets: Vec<usize> = match sweep {
+            CloseSweep::Others => (0..anchor).chain(anchor + 1..len).collect(),
+            CloseSweep::Right => (anchor + 1..len).collect(),
+        };
+        let mut tasks = Vec::new();
+        for index in targets.into_iter().rev() {
+            tasks.push(self.request_close_tab(index));
+        }
+        Task::batch(tasks)
     }
 
     /// The front door every user-initiated close rides (close-confirm

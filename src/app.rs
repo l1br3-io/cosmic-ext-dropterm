@@ -38,7 +38,7 @@ use crate::session;
 use crate::settings::{self, SettingsTab};
 use crate::slide::{self, SlideBox};
 use crate::surface;
-use crate::tab_bar::{TabBar, TooltipSide};
+use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
 use crate::terminal::{self, Action, TerminalBox, TerminalOptions, theme_source};
 
@@ -47,7 +47,7 @@ mod spawn;
 mod tab_actions;
 
 use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
-use self::tab_actions::{RenameEdit, open_trees};
+use self::tab_actions::{CloseSweep, RenameEdit, open_trees};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -132,6 +132,23 @@ pub enum Message {
     /// A tab was dragged to a new position in the bar: the dragged
     /// tab's id and the index it was dropped at.
     TabMoved(TabId, usize),
+    /// The per-tab context menu's Duplicate Tab row: duplicate the
+    /// tab with this id — the remote `duplicate-tab --tab-index` verb
+    /// on that tab (cwd and rename pin read from it, after-active
+    /// landing, the duplicate activated).
+    DuplicateTab(TabId),
+    /// The per-tab context menu's Move rows: nudge the tab with this
+    /// id one slot toward the direction, clamping at the edge — the
+    /// move binds' move with the clicked tab in place of the active
+    /// one, resolved against the live list at apply time.
+    TabMove(TabId, tabs::MoveDirection),
+    /// The per-tab context menu's Close Other Tabs row: every tab but
+    /// this one through the gated close front door, one confirmation
+    /// at a time for the running ones.
+    CloseOtherTabs(TabId),
+    /// The per-tab context menu's Close Tabs to the Right row: every
+    /// tab right of this one through the same gated front door.
+    CloseTabsRight(TabId),
     /// The grab bar was dragged: the pointer's surface-local y
     /// (window-absolute, not a delta and not bar-local) while a press
     /// is held. Targets recompute absolutely from it, so the moving
@@ -3087,6 +3104,20 @@ impl Application for DropTerm {
             // apply-time-resolved `NewProfileTab` pick.
             .profiles(&self.config.profiles)
             .on_profile_pick(|index| Message::Action(Action::NewProfileTab(index)))
+            // The per-tab menu's picks ride the existing funnels —
+            // spawn, rename, profile switch, close — with the clicked
+            // tab's id in place of "active"; the four id-addressed
+            // verbs that had no message gain theirs here.
+            .on_tab_menu_pick(|tab, pick| match pick {
+                TabMenuPick::NewTab => Message::Action(Action::NewTab),
+                TabMenuPick::Rename => Message::RenameStarted(tab),
+                TabMenuPick::Duplicate => Message::DuplicateTab(tab),
+                TabMenuPick::SwitchProfile(index) => Message::SwitchTabProfile(tab, index),
+                TabMenuPick::Move(direction) => Message::TabMove(tab, direction),
+                TabMenuPick::Close => Message::TabClosed(tab),
+                TabMenuPick::CloseOthers => Message::CloseOtherTabs(tab),
+                TabMenuPick::CloseRight => Message::CloseTabsRight(tab),
+            })
             .tooltip_side(tooltip_side);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)
@@ -3683,6 +3714,21 @@ impl DropTerm {
                     // reorder is a save trigger.
                     return self.mark_session_dirty();
                 }
+            }
+            Message::DuplicateTab(id) => {
+                // The per-tab menu's duplicate rides the shared source
+                // read; an unresolvable id — a tab closed between open
+                // and pick — is a quiet no-op (the TabSelected rule).
+                return self.duplicate_tab(id);
+            }
+            Message::TabMove(id, direction) => {
+                return self.move_tab_by(id, direction);
+            }
+            Message::CloseOtherTabs(id) => {
+                return self.close_tabs_sweep(id, CloseSweep::Others);
+            }
+            Message::CloseTabsRight(id) => {
+                return self.close_tabs_sweep(id, CloseSweep::Right);
             }
             Message::GrabBarDragged(pointer_y) => {
                 // The drag handlers (`GrabBarDragged`, `DragApplyDue`,

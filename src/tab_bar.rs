@@ -65,7 +65,7 @@ use cosmic::{Element, Renderer, cosmic_theme::palette::WithAlpha};
 use crate::terminal::WINDOW_BG_COLOR;
 
 use crate::profile::Profile;
-use crate::tabs::{Tab, TabId};
+use crate::tabs::{MoveDirection, Tab, TabId};
 
 /// The bar's background and a text color readable on it.
 ///
@@ -538,6 +538,173 @@ fn dropdown_row_at(dropdown: Rectangle, point: Point) -> Option<usize> {
     Some(((point.y - dropdown.y) / DROPDOWN_ROW_HEIGHT) as usize)
 }
 
+/// One pick the per-tab context menu can publish: the verb a row
+/// carries, published with the right-pressed tab's id. Every variant
+/// routes to an existing funnel (see [`tab_menu_rows`]) — the menu
+/// introduces no behavior of its own, the `context_menu::Item`
+/// contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMenuPick {
+    /// The default spawn — the `+`'s left click and `Ctrl+Shift+T`
+    /// funnel: default profile command, cwd inheritance,
+    /// `new_tab_after_current` placement.
+    NewTab,
+    /// Inline rename of the clicked tab — the double-click and
+    /// `Ctrl+Shift+R` path, id-addressed; no activation side effect
+    /// (the remote `rename-tab` precedent).
+    Rename,
+    /// Duplicate the clicked tab — the remote `duplicate-tab
+    /// --tab-index` semantics: cwd and rename pin read from it,
+    /// after-active landing, the duplicate activated.
+    Duplicate,
+    /// Respawn the clicked tab under the profile at this config index
+    /// — the Switch Profile folder's row, apply-time resolved (the
+    /// `NewProfileTab` stale-index contract).
+    SwitchProfile(usize),
+    /// Nudge the clicked tab one slot toward the direction, clamping
+    /// at the edge — the move binds' move with the clicked tab in
+    /// place of the active one.
+    Move(MoveDirection),
+    /// Close the clicked tab through the gated front door — the
+    /// confirmation holds like every user-initiated close.
+    Close,
+    /// Close every tab but the clicked one, through the same gate.
+    CloseOthers,
+    /// Close every tab right of the clicked one, through the same
+    /// gate.
+    CloseRight,
+}
+
+/// One rendered row of the per-tab context menu: its label, the pick a
+/// left press publishes (`None` for the Switch Profile section
+/// header), whether it renders active — edge-clamped moves and the
+/// header render muted, the GNOME disabled-row rule — and whether a
+/// separator line renders above it. Plain data beside
+/// [`dropdown_rows`], so the composition is unit-testable without a
+/// renderer.
+struct TabMenuRow {
+    /// Label drawn in the row.
+    label: String,
+    /// The pick a left press publishes, `None` for the section header
+    /// (dismissed, never published).
+    pick: Option<TabMenuPick>,
+    /// Whether the row renders active and publishes its pick.
+    enabled: bool,
+    /// Whether a separator line renders above the row.
+    separated: bool,
+}
+
+/// An interactive row.
+fn pick_row(label: &str, pick: TabMenuPick, enabled: bool, separated: bool) -> TabMenuRow {
+    TabMenuRow {
+        label: label.to_owned(),
+        pick: Some(pick),
+        enabled,
+        separated,
+    }
+}
+
+/// The Switch Profile section header: muted, non-clickable, separated
+/// from the rows above it.
+fn header_row(label: &str) -> TabMenuRow {
+    TabMenuRow {
+        label: label.to_owned(),
+        pick: None,
+        enabled: false,
+        separated: true,
+    }
+}
+
+/// The per-tab context menu's rows for the tab at `tab_index` of
+/// `tab_count` — the consolidation surface: every row rides an
+/// existing funnel, scoped to the clicked tab rather than the active
+/// one. New Tab leads (every peer's tab menu opens with it); the
+/// clicked-tab cluster follows; the profile section renders exactly
+/// while ≥1 profile exists (the context menu's zero-profiles flat
+/// ruling), profiles surfacing here exactly once; moves mute at the
+/// edges they clamp at; the close cluster closes, with Close Tabs to
+/// the Right omitted at the rightmost tab (Firefox's hide rule — the
+/// row would always no-op there).
+fn tab_menu_rows(profiles: &[Profile], tab_count: usize, tab_index: usize) -> Vec<TabMenuRow> {
+    let mut rows = vec![pick_row(NEW_TAB_LABEL, TabMenuPick::NewTab, true, false)];
+    rows.push(pick_row("Rename Tab", TabMenuPick::Rename, true, true));
+    rows.push(pick_row(
+        "Duplicate Tab",
+        TabMenuPick::Duplicate,
+        true,
+        false,
+    ));
+    if !profiles.is_empty() {
+        rows.push(header_row("Switch Profile"));
+        rows.extend(profiles.iter().enumerate().map(|(index, profile)| {
+            pick_row(
+                &profile.name,
+                TabMenuPick::SwitchProfile(index),
+                true,
+                false,
+            )
+        }));
+    }
+    // Moves clamp at the edges (the binds' `move_target` rule); the
+    // out-of-room direction renders muted.
+    rows.push(pick_row(
+        "Move Tab Left",
+        TabMenuPick::Move(MoveDirection::Left),
+        tab_index > 0,
+        true,
+    ));
+    rows.push(pick_row(
+        "Move Tab Right",
+        TabMenuPick::Move(MoveDirection::Right),
+        tab_index + 1 < tab_count,
+        false,
+    ));
+    rows.push(pick_row("Close Tab", TabMenuPick::Close, true, true));
+    rows.push(pick_row(
+        "Close Other Tabs",
+        TabMenuPick::CloseOthers,
+        true,
+        false,
+    ));
+    if tab_index + 1 < tab_count {
+        rows.push(pick_row(
+            "Close Tabs to the Right",
+            TabMenuPick::CloseRight,
+            true,
+            false,
+        ));
+    }
+    rows
+}
+
+/// The per-tab menu's rect, bar-local: popping to the terminal's side
+/// of the strip at the clicked button — left edge at the button's,
+/// clamped so the bubble never overflows either end of the strip (the
+/// dropdown's right-edge rule, both edges) — width from the widest row
+/// label plus padding, rows stacked on [`DROPDOWN_ROW_HEIGHT`] (the
+/// dropdown's metrics, OQ-2).
+fn tab_menu_bounds(
+    bar_width: f32,
+    anchor_x: f32,
+    widest_label: f32,
+    row_count: usize,
+    metrics: &BarMetrics,
+    side: TooltipSide,
+) -> Rectangle {
+    let width = widest_label + DROPDOWN_PADDING_X * 2.0;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "row count is far below 2^24, so usize -> f32 is exact"
+    )]
+    let height = row_count as f32 * DROPDOWN_ROW_HEIGHT;
+    let x = anchor_x.clamp(0.0, (bar_width - width).max(0.0));
+    let y = match side {
+        TooltipSide::Below => metrics.bar_height + DROPDOWN_GAP,
+        TooltipSide::Above => -height - DROPDOWN_GAP,
+    };
+    Rectangle::new(Point::new(x, y), Size::new(width, height))
+}
+
 /// The settings tooltip's rect, bar-local: the right edge pinned at
 /// `right_edge` whatever the label's width — growth is entirely
 /// leftward, so the tip can never overflow the edge it anchors to —
@@ -847,6 +1014,15 @@ struct State {
     /// destroys that tree with it — an open dropdown can never
     /// survive a hide/show cycle (STOP-confirmed).
     dropdown_open: bool,
+    /// The open per-tab context menu: the right-pressed tab's id.
+    /// Bar-local by the dropdown's rule — the open state dies with
+    /// the strip's tree on hide/show.
+    tab_menu: Option<TabId>,
+    /// The tab menu's row label paragraphs, cached and synced like the
+    /// dropdown's — rebuilt whenever the open composition's labels
+    /// change (a different tab right-clicked, a profile edited, a
+    /// right neighbor appearing or leaving).
+    tab_menu_paragraphs: Vec<(String, TitleParagraph)>,
     click: Option<click::Click>,
     drag: Option<Drag>,
     slots: HashMap<TabId, SlotAnimation>,
@@ -869,6 +1045,27 @@ impl State {
         self.slots
             .retain(|id, _| tabs.iter().any(|tab| tab.id == *id));
     }
+}
+
+/// The tab row's button geometry for `tabs` inside a strip `bounds`
+/// wide — [`TabBar::button_geometry`] delegates here so the per-tab
+/// menu's overlay can resolve its anchor per frame without the bar:
+/// the anchor must follow its button through any tab-list change
+/// while the menu is open.
+fn row_button_geometry(tabs: &[Tab], state: &State, bounds: Rectangle) -> Vec<ButtonGeometry> {
+    if !shows_tab_buttons(tabs.len()) {
+        return Vec::new();
+    }
+    let widths: Vec<f32> = tabs
+        .iter()
+        .map(|tab| {
+            state
+                .paragraphs
+                .get(&tab.id)
+                .map_or(0.0, TitleParagraph::min_width)
+        })
+        .collect();
+    layout_buttons(row_budget(bounds.width, &METRICS), &widths, &METRICS)
 }
 
 /// The tab bar strip: always mounted by the app, carrying the settings
@@ -906,6 +1103,12 @@ pub struct TabBar<'a, Message> {
     /// context-menu submenu uses (index into the same profile list,
     /// resolved — and stale-warned — at apply time).
     on_profile_pick: Option<Box<dyn Fn(usize) -> Message + 'a>>,
+    /// Reports a row pick from the per-tab context menu: the
+    /// right-pressed tab's id and the row's [`TabMenuPick`], which the
+    /// app maps onto the existing funnels with the clicked tab in
+    /// place of "active" (id resolved against the live list at apply
+    /// time, the `TabSelected` rule).
+    on_tab_menu_pick: Option<Box<dyn Fn(TabId, TabMenuPick) -> Message + 'a>>,
     /// The configured profiles the dropdown lists. The app passes
     /// the same `config.profiles` slice the context menu reads, so
     /// both surfaces agree on order and membership.
@@ -936,6 +1139,7 @@ where
             on_settings: None,
             on_new_tab: None,
             on_profile_pick: None,
+            on_tab_menu_pick: None,
             profiles: &[],
             rename: None,
             tooltip_side: TooltipSide::default(),
@@ -995,6 +1199,17 @@ where
     /// the dropdown: the row's index into [`TabBar::profiles`].
     pub fn on_profile_pick(mut self, on_profile_pick: impl Fn(usize) -> Message + 'a) -> Self {
         self.on_profile_pick = Some(Box::new(on_profile_pick));
+        self
+    }
+
+    /// Sets the message published when an enabled row of the per-tab
+    /// context menu is picked: the right-pressed tab's id and the
+    /// row's pick.
+    pub fn on_tab_menu_pick(
+        mut self,
+        on_tab_menu_pick: impl Fn(TabId, TabMenuPick) -> Message + 'a,
+    ) -> Self {
+        self.on_tab_menu_pick = Some(Box::new(on_tab_menu_pick));
         self
     }
 
@@ -1074,6 +1289,31 @@ where
         for (label, paragraph) in &mut state.dropdown_paragraphs {
             paragraph.update(label_text(label, font));
         }
+
+        // The tab menu's rows, synced the same way — but only the
+        // composition currently open: the clicked tab's position and
+        // the live tab count decide the shape (the Close-Right row,
+        // muting), so the labels are recomputed for that tab alone
+        // while its menu is open.
+        if let Some(menu_tab) = state.tab_menu
+            && let Some(index) = self.tabs.iter().position(|tab| tab.id == menu_tab)
+        {
+            let rows = tab_menu_rows(self.profiles, self.tabs.len(), index);
+            let labels_match = state
+                .tab_menu_paragraphs
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .eq(rows.iter().map(|row| row.label.as_str()));
+            if !labels_match {
+                state.tab_menu_paragraphs = rows
+                    .iter()
+                    .map(|row| (row.label.clone(), TitleParagraph::default()))
+                    .collect();
+            }
+            for (label, paragraph) in &mut state.tab_menu_paragraphs {
+                paragraph.update(label_text(label, font));
+            }
+        }
     }
 
     /// The current button geometry, bar-local (origin at the bar's
@@ -1081,20 +1321,7 @@ where
     /// otherwise laid out inside the row budget the settings zone
     /// leaves.
     fn button_geometry(&self, state: &State, bounds: Rectangle) -> Vec<ButtonGeometry> {
-        if !shows_tab_buttons(self.tabs.len()) {
-            return Vec::new();
-        }
-        let widths: Vec<f32> = self
-            .tabs
-            .iter()
-            .map(|tab| {
-                state
-                    .paragraphs
-                    .get(&tab.id)
-                    .map_or(0.0, TitleParagraph::min_width)
-            })
-            .collect();
-        layout_buttons(row_budget(bounds.width, &METRICS), &widths, &METRICS)
+        row_button_geometry(self.tabs, state, bounds)
     }
 
     /// Retargets every non-dragged button's slot animation to the slot
@@ -1512,10 +1739,21 @@ where
         // flat-menu ruling). Toggle-close never runs here: while the
         // dropdown is open, its overlay sees and captures every press
         // first (see `DropdownOverlay::update`), so this branch only
-        // ever handles the closed-side press.
+        // ever handles the closed-side press. A right-press on a tab
+        // button — body or close mark, both scope to the tab — opens
+        // the per-tab context menu scoped to that tab, except over
+        // the rename input's host: that button belongs to the input
+        // while it overlays it.
         if button == Button::Right {
             if newtab_rect.contains(point) && !self.profiles.is_empty() {
                 state.dropdown_open = true;
+                shell.capture_event();
+                shell.request_redraw();
+            } else if let Some((index, _)) = hit_test(&buttons, point)
+                && let Some(tab) = self.tabs.get(index)
+                && self.rename.as_ref().is_none_or(|edit| edit.0 != tab.id)
+            {
+                state.tab_menu = Some(tab.id);
                 shell.capture_event();
                 shell.request_redraw();
             }
@@ -1642,6 +1880,42 @@ where
 
         let bounds = layout.bounds();
         let absolute = Rectangle::new(bounds.position() + translation, bounds.size());
+
+        // The per-tab context menu, when open: like the dropdown it
+        // must be an overlay (its rect hangs over the terminal), and
+        // it outranks the dropdown and the tooltips — only one strip
+        // surface can be open at once anyway, since whichever is open
+        // captures the press that would open the other. The anchor
+        // resolves live per frame from the clicked tab's button, so
+        // the bubble follows its button through any tab-list change —
+        // and a target that left the row (its tab exited) closes the
+        // menu with it.
+        if let Some(menu_tab) = tree.state.downcast_ref::<State>().tab_menu {
+            let state = tree.state.downcast_ref::<State>();
+            let anchored = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == menu_tab)
+                .and_then(|index| {
+                    row_button_geometry(self.tabs, state, bounds)
+                        .get(index)
+                        .map(|button| button.bounds)
+                });
+            match anchored {
+                Some(anchor) => {
+                    return Some(overlay::Element::new(Box::new(TabMenuOverlay {
+                        state: tree.state.downcast_mut::<State>(),
+                        tabs: self.tabs,
+                        profiles: self.profiles,
+                        on_tab_menu_pick: &self.on_tab_menu_pick,
+                        side: self.tooltip_side,
+                        bar: absolute,
+                        anchor,
+                    })));
+                }
+                None => tree.state.downcast_mut::<State>().tab_menu = None,
+            }
+        }
 
         // While the dropdown is open it outranks the tooltip — the
         // dropdown is the stronger affordance at that corner, so the
@@ -2156,6 +2430,239 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for DropdownOverlay<'_,
                 Point::new(row_bounds.x + DROPDOWN_PADDING_X, text_y),
                 pane_bg,
                 dropdown,
+            );
+        }
+    }
+}
+
+/// The per-tab context menu, hand-drawn on the overlay pass (the
+/// dropdown's pattern — no hosted menu machinery): a pane-inverted
+/// bubble of [`tab_menu_rows`] rows popping at the clicked tab's
+/// button on the terminal's side of the strip. While open it owns
+/// every press, the dropdown's contract: any press closes it, a left
+/// press on an enabled row first publishing its pick — carried with
+/// the clicked tab's id — and every press captured so nothing under
+/// the menu acts on it.
+struct TabMenuOverlay<'a, 'b, Message> {
+    /// The bar's state: the clicked tab (cleared on any press) and the
+    /// cached row label paragraphs.
+    state: &'a mut State,
+    /// The tabs the rows compose for — the bar's slice for this frame.
+    tabs: &'a [Tab],
+    /// The profile list the Switch Profile section lists — the bar's
+    /// slice, the dropdown's rule.
+    profiles: &'a [Profile],
+    /// The pick publisher — the app maps (tab, pick) onto the
+    /// existing funnels.
+    on_tab_menu_pick: &'a Option<Box<dyn Fn(TabId, TabMenuPick) -> Message + 'b>>,
+    /// Which vertical side of the strip the menu pops to.
+    side: TooltipSide,
+    /// The bar's absolute bounds (translation applied).
+    bar: Rectangle,
+    /// The clicked button's bar-local rect — the anchor the bubble
+    /// pops at.
+    anchor: Rectangle,
+}
+
+impl<Message> TabMenuOverlay<'_, '_, Message> {
+    /// The rows for the menu's current target — the composition the
+    /// clicked tab's position dictates (muted moves, the conditional
+    /// Close-Right row). Empty once the target left the list; the
+    /// overlay's caller then drops the menu, so this is the draw-side
+    /// guard only.
+    fn rows(&self, menu_tab: Option<TabId>) -> Vec<TabMenuRow> {
+        menu_tab
+            .and_then(|tab| self.tabs.iter().position(|candidate| candidate.id == tab))
+            .map(|index| tab_menu_rows(self.profiles, self.tabs.len(), index))
+            .unwrap_or_default()
+    }
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for TabMenuOverlay<'_, '_, Message> {
+    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        let Some(menu_tab) = self.state.tab_menu else {
+            return layout::Node::new(Size::ZERO);
+        };
+        let rows = self.rows(Some(menu_tab));
+        let widest = self
+            .state
+            .tab_menu_paragraphs
+            .iter()
+            .map(|(_, paragraph)| paragraph.min_width())
+            .fold(0.0, f32::max);
+        let bar_local = tab_menu_bounds(
+            self.bar.width,
+            self.anchor.x,
+            widest,
+            rows.len(),
+            &METRICS,
+            self.side,
+        );
+        let position = self.bar.position() + Vector::new(bar_local.x, bar_local.y);
+        layout::Node::new(bar_local.size()).move_to(position)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        // The dropdown's dismissal contract, unchanged: every press
+        // closes, a left press on an enabled row first publishes its
+        // pick (the clicked tab's id captured before the clear), and
+        // every press is captured so nothing under the menu — the
+        // strip, a tab button, the terminal below — acts on it. Motion
+        // and keyboard pass through.
+        let Event::Mouse(MouseEvent::ButtonPressed(button)) = event else {
+            return;
+        };
+        let menu_tab = self.state.tab_menu;
+        let rows = self.rows(menu_tab);
+        let pick = cursor
+            .position()
+            .and_then(|point| dropdown_row_at(layout.bounds(), point))
+            .and_then(|index| rows.get(index))
+            .filter(|row| row.enabled)
+            .and_then(|row| row.pick);
+        if *button == Button::Left
+            && let Some((tab, pick)) = menu_tab.zip(pick)
+            && let Some(message) = self
+                .on_tab_menu_pick
+                .as_ref()
+                .map(|on_tab_menu_pick| on_tab_menu_pick(tab, pick))
+        {
+            shell.publish(message);
+        }
+        self.state.tab_menu = None;
+        shell.capture_event();
+        shell.request_redraw();
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        // Pointer over the bubble only: elsewhere the interaction
+        // falls back to whatever the strip itself reports (the
+        // dropdown's rule — the header and muted rows keep the
+        // pointer shape, honest at a glance).
+        let over_menu = cursor
+            .position()
+            .is_some_and(|point| layout.bounds().contains(point));
+        if over_menu {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::None
+        }
+    }
+
+    // The pane_bg/pane_fg names match the PaintContext field
+    // vocabulary; `similar_names` resolves its level at the fn, so the
+    // expect rides here rather than on the binding.
+    #[expect(
+        clippy::similar_names,
+        reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
+    )]
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+    ) {
+        let menu = layout.bounds();
+        let (pane_bg, pane_fg) = pane_colors();
+        // The pane pair swapped, the dropdown's rule: a
+        // foreground-colored bubble carrying the strip's color as its
+        // text stays readable on light and dark panes alike.
+        renderer.fill_quad(
+            Quad {
+                bounds: menu,
+                border: Border {
+                    radius: theme.cosmic().radius_s().into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            pane_fg,
+        );
+
+        let rows = self.rows(self.state.tab_menu);
+        let hovered = cursor_position
+            .position()
+            .and_then(|point| dropdown_row_at(menu, point));
+        for (index, (_, paragraph)) in self.state.tab_menu_paragraphs.iter().enumerate() {
+            let Some(row) = rows.get(index) else {
+                break;
+            };
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "row count is far below 2^24, so usize -> f32 is exact"
+            )]
+            let row_bounds = Rectangle::new(
+                Point::new(menu.x, menu.y + index as f32 * DROPDOWN_ROW_HEIGHT),
+                Size::new(menu.width, DROPDOWN_ROW_HEIGHT),
+            );
+            // A hairline separator above the section-leading rows,
+            // drawn in the text color at low alpha.
+            if row.separated {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: Rectangle::new(
+                            row_bounds.position(),
+                            Size::new(row_bounds.width, 1.0),
+                        ),
+                        border: Border {
+                            radius: 0.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.3, ..pane_bg },
+                );
+            }
+            // Rows highlight on hover like the dropdown's, clickable
+            // ones only — the header and muted rows are not targets.
+            if hovered == Some(index) && row.enabled && row.pick.is_some() {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: row_bounds,
+                        border: Border {
+                            radius: theme.cosmic().radius_s().into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.15, ..pane_bg },
+                );
+            }
+            // Muted rows — the section header, an edge-clamped move —
+            // draw their label at half alpha; enabled rows full.
+            let active = row.enabled && row.pick.is_some();
+            let text_color = if active {
+                pane_bg
+            } else {
+                Color { a: 0.5, ..pane_bg }
+            };
+            let text_y = row_bounds.y + (row_bounds.height - paragraph.min_height()) / 2.0;
+            renderer.fill_paragraph(
+                paragraph.raw(),
+                Point::new(row_bounds.x + DROPDOWN_PADDING_X, text_y),
+                text_color,
+                menu,
             );
         }
     }
@@ -3001,6 +3508,185 @@ mod tests {
         assert!(
             current > 0.0 && current < 100.0,
             "retarget should start mid-slide, got {current}"
+        );
+    }
+
+    // --- the per-tab context menu's rows (the consolidation surface) ---
+
+    fn menu_profile(name: &str) -> Profile {
+        Profile {
+            name: name.to_owned(),
+            command: format!("run {name}"),
+            cwd: None,
+            color_scheme: None,
+            env: None,
+        }
+    }
+
+    /// The rows for a middle tab of five, no profiles: the flat
+    /// composition every positional test derives from.
+    fn flat_rows() -> Vec<TabMenuRow> {
+        tab_menu_rows(&[], 5, 2)
+    }
+
+    fn labels(rows: &[TabMenuRow]) -> Vec<&str> {
+        rows.iter().map(|row| row.label.as_str()).collect()
+    }
+
+    #[test]
+    fn tab_menu_rows_lead_with_new_tab_then_the_tab_cluster() {
+        // New Tab first (every peer's tab menu opens with it), then
+        // Rename and Duplicate — the clicked-tab cluster.
+        assert_eq!(
+            labels(&flat_rows()),
+            vec![
+                "New Tab",
+                "Rename Tab",
+                "Duplicate Tab",
+                "Move Tab Left",
+                "Move Tab Right",
+                "Close Tab",
+                "Close Other Tabs",
+                "Close Tabs to the Right",
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_menu_rows_route_every_enabled_row_to_its_pick() {
+        let expected = [
+            ("New Tab", TabMenuPick::NewTab),
+            ("Rename Tab", TabMenuPick::Rename),
+            ("Duplicate Tab", TabMenuPick::Duplicate),
+            ("Move Tab Left", TabMenuPick::Move(MoveDirection::Left)),
+            ("Move Tab Right", TabMenuPick::Move(MoveDirection::Right)),
+            ("Close Tab", TabMenuPick::Close),
+            ("Close Other Tabs", TabMenuPick::CloseOthers),
+            ("Close Tabs to the Right", TabMenuPick::CloseRight),
+        ];
+        let rows = flat_rows();
+        for (label, pick) in expected {
+            let row = rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} missing from the rows"));
+            assert_eq!(row.pick, Some(pick), "{label} carries the wrong pick");
+            assert!(row.enabled, "{label} must be enabled for a middle tab");
+        }
+    }
+
+    #[test]
+    fn tab_menu_rows_mute_the_moves_at_the_edges_they_clamp_at() {
+        // The first tab cannot move left; the last cannot move right;
+        // a middle tab can move both ways — the binds' `move_target`
+        // rule rendered as muting, never a clickable no-op.
+        let first = tab_menu_rows(&[], 3, 0);
+        let last = tab_menu_rows(&[], 3, 2);
+        let middle = tab_menu_rows(&[], 3, 1);
+        let by_label = |rows: &[TabMenuRow], label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} missing"))
+                .enabled
+        };
+        assert!(!by_label(&first, "Move Tab Left"));
+        assert!(by_label(&first, "Move Tab Right"));
+        assert!(by_label(&last, "Move Tab Left"));
+        assert!(!by_label(&last, "Move Tab Right"));
+        assert!(by_label(&middle, "Move Tab Left"));
+        assert!(by_label(&middle, "Move Tab Right"));
+    }
+
+    #[test]
+    fn tab_menu_rows_hide_close_right_at_the_rightmost_tab() {
+        // Firefox's hide rule: with no right neighbors the row would
+        // always no-op, so it is omitted outright — Close Other Tabs
+        // stays (the menu needs ≥2 tabs to open, others always exist).
+        let last = tab_menu_rows(&[], 4, 3);
+        assert!(!labels(&last).contains(&"Close Tabs to the Right"));
+        assert!(labels(&last).contains(&"Close Other Tabs"));
+        let inner = tab_menu_rows(&[], 4, 2);
+        assert!(labels(&inner).contains(&"Close Tabs to the Right"));
+    }
+
+    #[test]
+    fn tab_menu_rows_separate_the_sections() {
+        // The first row carries no separator; Rename leads the
+        // clicked-tab cluster, Move the reorder section, Close the
+        // close cluster — the profile section's separation is pinned
+        // by its own test below.
+        let rows = flat_rows();
+        assert!(!rows[0].separated, "New Tab leads without a separator");
+        let by_label = |label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} missing"))
+                .separated
+        };
+        assert!(by_label("Rename Tab"));
+        assert!(!by_label("Duplicate Tab"));
+        assert!(by_label("Move Tab Left"));
+        assert!(!by_label("Move Tab Right"));
+        assert!(by_label("Close Tab"));
+        assert!(!by_label("Close Other Tabs"));
+        assert!(!by_label("Close Tabs to the Right"));
+    }
+
+    #[test]
+    fn tab_menu_rows_gain_the_switch_profile_section_only_with_profiles() {
+        // Zero profiles: exactly the flat composition (the context
+        // menu's zero-profiles flat ruling). With profiles: the
+        // section slots in after Duplicate Tab — a non-clickable
+        // header, then one enabled row per profile in config order,
+        // index-picked for apply-time resolution.
+        let flat = flat_rows().len();
+        let profiles = [menu_profile("ssh-web"), menu_profile("htop")];
+        let with = tab_menu_rows(&profiles, 5, 2);
+        assert_eq!(with.len(), flat + 3, "one header plus two profile rows");
+        let duplicate = with
+            .iter()
+            .position(|row| row.label == "Duplicate Tab")
+            .expect("Duplicate Tab stays");
+        let header = &with[duplicate + 1];
+        assert_eq!(header.label, "Switch Profile");
+        assert_eq!(header.pick, None, "the header is not clickable");
+        assert!(!header.enabled);
+        assert!(header.separated, "the section separates from the cluster");
+        let profile_rows = &with[duplicate + 2..duplicate + 2 + profiles.len()];
+        assert_eq!(profile_rows.len(), profiles.len());
+        for (index, row) in profile_rows.iter().enumerate() {
+            assert_eq!(row.label, profiles[index].name);
+            assert_eq!(row.pick, Some(TabMenuPick::SwitchProfile(index)));
+            assert!(row.enabled);
+            assert!(!row.separated);
+        }
+    }
+
+    #[test]
+    fn tab_menu_bounds_anchors_at_the_button_and_clamps_to_the_strip() {
+        // The bubble pops below the strip (the terminal side) with
+        // its left edge at the button's — unless that would overflow
+        // the strip's right end, where it shifts left to fit (the
+        // dropdown's rule, both edges).
+        let metrics = &METRICS;
+        let beside = tab_menu_bounds(1000.0, 120.0, 80.0, 8, metrics, TooltipSide::Below);
+        assert_eq!(beside.x, 120.0);
+        assert_eq!(
+            beside.y,
+            metrics.bar_height + DROPDOWN_GAP,
+            "the terminal side of a top strip is below it"
+        );
+        let above = tab_menu_bounds(1000.0, 120.0, 80.0, 8, metrics, TooltipSide::Above);
+        assert_eq!(
+            above.y + above.height,
+            -DROPDOWN_GAP,
+            "an above bubble clears the strip upward"
+        );
+        let clamped = tab_menu_bounds(300.0, 280.0, 80.0, 8, metrics, TooltipSide::Below);
+        assert_eq!(
+            clamped.x + clamped.width,
+            300.0,
+            "an anchored-too-far-right bubble ends at the strip's right edge"
         );
     }
 }
