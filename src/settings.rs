@@ -44,8 +44,9 @@ pub enum WriteKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Appearance,
-    Geometry,
-    Behavior,
+    Window,
+    Tabs,
+    Dropdown,
     Terminal,
     Advanced,
 }
@@ -64,10 +65,11 @@ impl Section {
             reason = "the tests' registry pin; runtime iterates tab_sections"
         )
     )]
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
         Section::Appearance,
-        Section::Geometry,
-        Section::Behavior,
+        Section::Window,
+        Section::Tabs,
+        Section::Dropdown,
         Section::Terminal,
         Section::Advanced,
     ];
@@ -85,28 +87,27 @@ impl Section {
                 ConfigKey::ColorSchemeLight,
                 ConfigKey::ThemePreference,
             ],
-            Section::Geometry => &[
+            Section::Window => &[
                 ConfigKey::HeightPercent,
                 ConfigKey::WidthPercent,
                 ConfigKey::HAlign,
                 ConfigKey::Edge,
-                ConfigKey::TabPosition,
             ],
-            Section::Behavior => &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SessionPersistenceEnabled,
-                ConfigKey::SlideAnimationEnabled,
-                ConfigKey::BellNotificationEnabled,
+            Section::Tabs => &[
+                ConfigKey::TabPosition,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
+                ConfigKey::SessionPersistenceEnabled,
             ],
+            Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
                 ConfigKey::Shell,
                 ConfigKey::Args,
                 ConfigKey::DefaultCwd,
                 ConfigKey::ScrollbackLines,
+                ConfigKey::BellNotificationEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::RespectPanel,
@@ -164,32 +165,37 @@ pub enum ConfigKey {
 /// sections into the everyday controls and the power controls —
 /// never a second copy of the registry ([`Section::keys`], the
 /// control→key map, is untouched by the grouping) — plus the
-/// Keybindings editor's tab, which hosts no `Section` card at all
-/// (its page is [`keybindings_view`]).
+/// Profiles manager's and the Keybindings editor's tabs, which host
+/// no `Section` card at all (their pages are [`profiles_view`] and
+/// [`keybindings_view`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
-    General,
-    Advanced,
+    /// How the terminal looks: the look card and the window's shape.
+    Appearance,
+    /// How `DropTerm` acts: the tabs, dropdown mechanics, and
+    /// terminal cards.
+    Behavior,
+    /// The profile manager ([`profiles_view`]) — no sections, so it
+    /// never perturbs the section partition.
+    Profiles,
     /// The keybinding editor ([`keybindings_view`]) — no sections, so
     /// it never perturbs the section partition.
     Keybindings,
+    Advanced,
 }
 
 /// The sections a tab's page hosts, in display order. Every
 /// [`Section`] appears in exactly one tab and the union is
 /// [`Section::ALL`] — pinned by test, so regrouping can never drop
-/// or duplicate a card. The Keybindings tab hosts none: its page is
-/// the editor, not section cards.
+/// or duplicate a card. The Profiles and Keybindings tabs host
+/// none: their pages are the manager and the editor, not section
+/// cards.
 pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
     match tab {
-        SettingsTab::General => &[
-            Section::Appearance,
-            Section::Geometry,
-            Section::Behavior,
-            Section::Terminal,
-        ],
+        SettingsTab::Appearance => &[Section::Appearance, Section::Window],
+        SettingsTab::Behavior => &[Section::Tabs, Section::Dropdown, Section::Terminal],
+        SettingsTab::Profiles | SettingsTab::Keybindings => &[],
         SettingsTab::Advanced => &[Section::Advanced],
-        SettingsTab::Keybindings => &[],
     }
 }
 
@@ -197,28 +203,24 @@ pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
 /// this drawer.
 pub const fn tab_header(tab: SettingsTab) -> &'static str {
     match tab {
-        SettingsTab::General => "General",
-        SettingsTab::Advanced => "Advanced",
+        SettingsTab::Appearance => "Appearance",
+        SettingsTab::Behavior => "Behavior",
+        SettingsTab::Profiles => "Profiles",
         SettingsTab::Keybindings => "Keybindings",
+        SettingsTab::Advanced => "Advanced",
     }
-}
-
-/// Whether a tab's page carries the Profiles entry row. The
-/// drill-down's only door lives on General, so the Back affordance
-/// always has one page to return to; no other tab shows a second
-/// door — pinned by test.
-pub const fn tab_has_profiles_entry(tab: SettingsTab) -> bool {
-    matches!(tab, SettingsTab::General)
 }
 
 impl SettingsTab {
     /// Every tab, in strip order — the strip's rows come from this
     /// list and nothing else, so no row can exist without a page to
     /// serve it.
-    pub const ALL: [SettingsTab; 3] = [
-        SettingsTab::General,
-        SettingsTab::Advanced,
+    pub const ALL: [SettingsTab; 5] = [
+        SettingsTab::Appearance,
+        SettingsTab::Behavior,
+        SettingsTab::Profiles,
         SettingsTab::Keybindings,
+        SettingsTab::Advanced,
     ];
 }
 
@@ -1848,12 +1850,6 @@ pub enum SettingsEvent {
     Picked(ConfigKey, usize),
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
-    /// The Settings page's Profiles entry row: flip the drawer to the
-    /// Profiles page.
-    OpenProfiles,
-    /// The Profiles page's back affordance: return to the Settings
-    /// page (a page turn, never a drawer close).
-    BackFromProfiles,
     /// The Keybindings tab's search box changed — display only; the
     /// view re-filters its rows.
     KeybindSearchChanged(String),
@@ -1937,8 +1933,9 @@ impl Section {
     pub const fn title(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
-            Section::Geometry => "Geometry",
-            Section::Behavior => "Behavior",
+            Section::Window => "Window",
+            Section::Tabs => "Tabs",
+            Section::Dropdown => "Dropdown",
             Section::Terminal => "Terminal",
             Section::Advanced => "Advanced",
         }
@@ -2083,17 +2080,29 @@ pub fn drawer_with_handle(
     .into()
 }
 
-/// The General tab's page: the everyday sections in [`tab_sections`]
-/// display order plus the Profiles entry row — the drill-down's only
-/// door. Every control renders from `config` with a buffered draft
-/// winning while one exists and emits [`SettingsEvent`]s — nothing
-/// here applies anything itself; commits land through the app's
-/// write path and the `ConfigChanged` echo.
-pub fn general_view(
+/// The Appearance tab's page: how the terminal looks — the look
+/// card (font, size, opacity, schemes, theme) and the Window card
+/// (the surface's shape). Every control renders from `config` with
+/// a buffered draft winning while one exists and emits
+/// [`SettingsEvent`]s — nothing here applies anything itself;
+/// commits land through the app's write path and the
+/// `ConfigChanged` echo.
+pub fn appearance_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::General, config, buffer)
+    tab_page(SettingsTab::Appearance, config, buffer)
+}
+
+/// The Behavior tab's page: how `DropTerm` acts — the Tabs card (the
+/// tab strip's settings), the Dropdown card (the drop-down's own
+/// mechanics), and the Terminal card (the global shell defaults and
+/// the bell).
+pub fn behavior_view(
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    tab_page(SettingsTab::Behavior, config, buffer)
 }
 
 /// The Advanced tab's page: exactly the Advanced card as it hosted
@@ -2222,68 +2231,34 @@ pub fn keybindings_view(
 /// A tab's page: one `widget::settings` card per section the tab
 /// hosts, one labeled item per exposed key with its apply timing as
 /// the description, in one column the framework drawer pane already
-/// wraps in a scrollable — plus the Profiles entry row where the tab
-/// carries it. The `drawer_section`/`drawer_item`/`drawer_control`
-/// chain is reused verbatim from the one-column drawer.
+/// wraps in a scrollable. The `drawer_section`/`drawer_item`/
+/// `drawer_control` chain is reused verbatim from the one-column
+/// drawer.
 fn tab_page(
     tab: SettingsTab,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    let mut cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
+    let cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
         .iter()
         .map(|section| drawer_section(*section, config, buffer))
         .collect();
-    if tab_has_profiles_entry(tab) {
-        // The Profiles entry card — the one row on these pages that
-        // writes no key itself.
-        cards.push(profiles_entry(&config.profiles));
-    }
     widget::settings::view_column(cards).into()
 }
 
-/// The Settings page's Profiles entry card (OQ-2's drafted
-/// composition, ratified at the hardware STOP): the profile count as
-/// the row's description, a `Manage…` button as the flip affordance.
-/// No key is written from here — the row's whole job is the page
-/// turn.
-fn profiles_entry(profiles: &[Profile]) -> Element<'static, SettingsEvent> {
-    widget::settings::section()
-        .title("Profiles")
-        .add(
-            widget::settings::item::builder("Profile presets")
-                .description(profiles_entry_description(profiles.len()))
-                .control(widget::button::standard("Manage…").on_press(SettingsEvent::OpenProfiles)),
-        )
-        .into()
-}
-
-/// The entry card's count copy — pure so the wording is pinned.
-fn profiles_entry_description(count: usize) -> String {
-    match count {
-        0 => "No profiles".to_string(),
-        1 => "1 profile".to_string(),
-        n => format!("{n} profiles"),
-    }
-}
-
-/// The Profiles page: the read-only list — one row per profile in
-/// config order (the `+` dropdown / context-menu order), name plus a
-/// command preview, selection driving the edit form — with a back
-/// affordance above it. An empty list shows the empty state with the
-/// add affordance placed but inert until the form ships. Read-only by
-/// construction: the rows emit selection events only; every mutation
-/// control joins in the later tasks.
+/// The Profiles tab's page: the read-only list — one row per
+/// profile in config order (the `+` dropdown / context-menu order),
+/// name plus a command preview, selection driving the edit form. An
+/// empty list shows the empty state with the add affordance placed
+/// but inert until the form ships. Read-only by construction: the
+/// rows emit selection events only; every mutation control joins in
+/// the later tasks.
 pub fn profiles_view(
     config: &DropTermConfig,
     selection: Option<usize>,
     draft: Option<&ProfileDraft>,
 ) -> Element<'static, SettingsEvent> {
-    let mut cards: Vec<Element<'static, SettingsEvent>> = vec![
-        widget::button::text("Back")
-            .on_press(SettingsEvent::BackFromProfiles)
-            .into(),
-    ];
+    let mut cards: Vec<Element<'static, SettingsEvent>> = Vec::new();
     // The default picker: commit-on-change, the drawer's dropdown
     // rule. Selection mirrors `effective_default`, so it never opens
     // on a name the list lacks.
@@ -2872,16 +2847,16 @@ mod tests {
     // --- the drawer's migrated content (settings-drawer Task 1) ---
 
     #[test]
-    fn both_tab_pages_build_with_drafts_and_from_config() {
-        // ST-2 reorganizes the one five-section column into the two
-        // per-tab pages. Construction is the assertion: the item
-        // builder's `expect` totality panics if a key resolves to no
-        // control, and the widget builders must tolerate the states
-        // the file can be in — buffered drafts winning over file
-        // values (including a scrollback draft that does not parse —
-        // the draft simply renders; rejection is the update path's
-        // job) — and the plain default config. Exactly-once across
-        // the two pages is tab_sections' partition, pinned above.
+    fn every_section_page_builds_with_drafts_and_from_config() {
+        // The section-hosted pages (Appearance, Behavior, Advanced)
+        // over the six-card map. Construction is the assertion: the
+        // item builder's `expect` totality panics if a key resolves
+        // to no control, and the widget builders must tolerate the
+        // states the file can be in — buffered drafts winning over
+        // file values (including a scrollback draft that does not
+        // parse — the draft simply renders; rejection is the update
+        // path's job) — and the plain default config. Exactly-once
+        // across the pages is tab_sections' partition, pinned below.
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
         buffer.set_text(TextField::FontName, "Draft Font".to_string());
@@ -2890,21 +2865,22 @@ mod tests {
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
         buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
-        let _ = general_view(&config, &buffer);
+        let _ = appearance_view(&config, &buffer);
+        let _ = behavior_view(&config, &buffer);
         let _ = advanced_view(&config, &buffer);
-        let _ = general_view(&config, &SettingsBuffer::default());
+        let _ = appearance_view(&config, &SettingsBuffer::default());
+        let _ = behavior_view(&config, &SettingsBuffer::default());
         let _ = advanced_view(&config, &SettingsBuffer::default());
     }
 
     #[test]
-    fn every_section_item_builds_a_control_for_all_21_keys() {
+    fn every_section_item_builds_a_control_for_every_key() {
         // Criterion 3's construction side: every key of every section
         // resolves to exactly one item control — the builder's
-        // `expect` totality panics otherwise — including the toggle
-        // keys Tasks 1's chain did not yet resolve, and with every
-        // text field holding a draft (the buffer's display-wins rule)
-        // and a scrollback draft that does not parse (the draft
-        // simply renders; rejection is the update path's job).
+        // `expect` totality panics otherwise — with every text field
+        // holding a draft (the buffer's display-wins rule) and a
+        // scrollback draft that does not parse (the draft simply
+        // renders; rejection is the update path's job).
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
         buffer.set_text(TextField::FontName, "Draft Font".to_string());
@@ -2926,18 +2902,19 @@ mod tests {
         // Section appears in exactly one tab, the union is
         // Section::ALL, and each tab's display order is pinned so
         // the page composition cannot silently reshuffle. The
-        // Keybindings tab hosts the editor, never a Section card.
+        // Profiles and Keybindings tabs host no Section card — their
+        // pages are the manager and the editor.
         assert_eq!(
-            tab_sections(SettingsTab::General),
-            &[
-                Section::Appearance,
-                Section::Geometry,
-                Section::Behavior,
-                Section::Terminal,
-            ]
+            tab_sections(SettingsTab::Appearance),
+            &[Section::Appearance, Section::Window]
         );
-        assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
+        assert_eq!(
+            tab_sections(SettingsTab::Behavior),
+            &[Section::Tabs, Section::Dropdown, Section::Terminal,]
+        );
+        assert_eq!(tab_sections(SettingsTab::Profiles), &[]);
         assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
+        assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
         let across_tabs: Vec<Section> = SettingsTab::ALL
             .iter()
             .flat_map(|tab| tab_sections(*tab).iter().copied())
@@ -2956,21 +2933,14 @@ mod tests {
     }
 
     #[test]
-    fn the_profiles_entry_row_lives_on_general_only() {
-        // The drill-down's only door lives on General (criterion 2),
-        // so the Back affordance can always return to it; Advanced
-        // never grows a second door.
-        assert!(tab_has_profiles_entry(SettingsTab::General));
-        assert!(!tab_has_profiles_entry(SettingsTab::Advanced));
-    }
-
-    #[test]
     fn tab_headers_are_the_strip_labels() {
         // Hardcoded English like every label in this drawer — no
         // fluent/i18n in this repo.
-        assert_eq!(tab_header(SettingsTab::General), "General");
-        assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+        assert_eq!(tab_header(SettingsTab::Appearance), "Appearance");
+        assert_eq!(tab_header(SettingsTab::Behavior), "Behavior");
+        assert_eq!(tab_header(SettingsTab::Profiles), "Profiles");
         assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
+        assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
     }
 
     #[test]
@@ -3009,16 +2979,15 @@ mod tests {
     #[test]
     fn the_strip_model_carries_one_row_per_tab_in_order() {
         // Criterion 7's entity↔tab lockstep, construction side:
-        // exactly the two tabs of `SettingsTab::ALL` in order (no
-        // dead Keybindings row — that variant belongs to
-        // keybinds-editor), each row labeled with its `tab_header`
-        // and carrying its `SettingsTab` as data — the payload the
-        // activation handler resolves.
+        // exactly the five tabs of `SettingsTab::ALL` in strip
+        // order, each row labeled with its `tab_header` and carrying
+        // its `SettingsTab` as data — the payload the activation
+        // handler resolves.
         let mut model = tab_strip_model();
         assert_eq!(model.iter().count(), SettingsTab::ALL.len());
         for (position, tab) in SettingsTab::ALL.iter().enumerate() {
             let entity = model
-                .entity_at(u16::try_from(position).expect("three tabs, position 0-2"))
+                .entity_at(u16::try_from(position).expect("five tabs, position 0-4"))
                 .expect("one row per tab, in ALL order");
             assert_eq!(model.data::<SettingsTab>(entity), Some(tab));
             assert_eq!(model.text(entity), Some(tab_header(*tab)));
@@ -3030,7 +2999,7 @@ mod tests {
         // Criterion 7's lockstep, selection side: `activate_tab_row`
         // moves the single selection to the row carrying the tab —
         // the sync every page mutation applies after assigning
-        // `settings_page` (pick, Profiles back, explicit close).
+        // `settings_page` (pick, explicit close).
         let mut model = tab_strip_model();
         // The strip's selection only ever moves through
         // `activate_tab_row`: a fresh model selects nothing.
@@ -3040,10 +3009,10 @@ mod tests {
             model.active_data::<SettingsTab>(),
             Some(&SettingsTab::Advanced)
         );
-        activate_tab_row(&mut model, SettingsTab::General);
+        activate_tab_row(&mut model, SettingsTab::Appearance);
         assert_eq!(
             model.active_data::<SettingsTab>(),
-            Some(&SettingsTab::General)
+            Some(&SettingsTab::Appearance)
         );
     }
 
@@ -3650,55 +3619,44 @@ mod tests {
     }
 
     #[test]
-    fn new_tab_after_current_sits_in_behavior_after_bell_notifications() {
-        // The "New tabs after current tab" row lands after "Bell
-        // notifications" (and the "Tab titles" row) in the Behavior
-        // card; its flip commits the config bool through the single
-        // PlannedWrite path.
+    fn the_terminal_card_joins_the_bell_after_scrollback() {
+        // The Terminal card: the global shell defaults every profile
+        // falls back to — shell, arguments, and the plain spawn's
+        // default directory (default-spawn DS-1) — with the bell,
+        // terminal behavior, last.
         assert_eq!(
-            Section::Behavior.keys(),
+            Section::Terminal.keys(),
             &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SessionPersistenceEnabled,
-                ConfigKey::SlideAnimationEnabled,
+                ConfigKey::Shell,
+                ConfigKey::Args,
+                ConfigKey::DefaultCwd,
+                ConfigKey::ScrollbackLines,
                 ConfigKey::BellNotificationEnabled,
-                ConfigKey::TabTitleMode,
-                ConfigKey::NewTabAfterCurrent,
-                ConfigKey::NewTabCwd,
-                ConfigKey::CloseConfirmationEnabled,
             ]
         );
         assert_eq!(
-            ConfigKey::NewTabAfterCurrent.label(),
-            "New tabs after current tab"
-        );
-        assert_eq!(
-            toggle_write(ConfigKey::NewTabAfterCurrent, false),
-            Some(PlannedWrite::NewTabAfterCurrent(false))
+            toggle_write(ConfigKey::BellNotificationEnabled, false),
+            Some(PlannedWrite::BellNotificationEnabled(false))
         );
     }
 
     #[test]
-    fn close_confirmation_sits_in_behavior_after_new_tab_after_current() {
-        // Close-confirm criterion 1's toggle home: the "Confirm
-        // closing a tab with a running process" row lands after "New
-        // tabs after current tab" in the Behavior card; its flip
-        // commits the config bool through the single PlannedWrite
-        // path, under the field's exact file spelling — the
-        // exposed-key exactly-once pin's 24th key.
+    fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
+        // The Dropdown card: the drop-down's own mechanics — the
+        // focus-loss hide and the slide — and nothing else.
         assert_eq!(
-            Section::Behavior.keys(),
-            &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SessionPersistenceEnabled,
-                ConfigKey::SlideAnimationEnabled,
-                ConfigKey::BellNotificationEnabled,
-                ConfigKey::TabTitleMode,
-                ConfigKey::NewTabAfterCurrent,
-                ConfigKey::NewTabCwd,
-                ConfigKey::CloseConfirmationEnabled,
-            ]
+            Section::Dropdown.keys(),
+            &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled,]
         );
+    }
+
+    #[test]
+    fn close_confirmation_joins_the_tabs_card() {
+        // Close-confirm criterion 1's toggle home: the "Confirm
+        // closing a tab with a running process" row sits in the Tabs
+        // card (its full key list pinned by the Tabs-card test
+        // above); its flip commits the config bool through the single
+        // PlannedWrite path, under the field's exact file spelling.
         assert_eq!(
             ConfigKey::CloseConfirmationEnabled.label(),
             "Confirm closing a tab with a running process"
@@ -3726,10 +3684,11 @@ mod tests {
     // --- the new-tab-directory dropdown (default-spawn DS-1) ---
 
     #[test]
-    fn new_tab_cwd_sits_in_behavior_after_new_tab_after_current() {
+    fn new_tab_cwd_lands_after_new_tab_after_current_in_the_tabs_card() {
         // The "New tab directory" row lands directly after "New tabs
-        // after current tab" in the Behavior card, under the field's
-        // exact file spelling.
+        // after current tab" in the Tabs card (the full key list
+        // pinned by the Tabs-card test), under the field's exact file
+        // spelling.
         assert_eq!(ConfigKey::NewTabCwd.label(), "New tab directory");
         assert_eq!(ConfigKey::NewTabCwd.key_name(), "new_tab_cwd");
         assert_eq!(apply_timing(ConfigKey::NewTabCwd), ApplyTiming::NewTab);
@@ -3783,19 +3742,11 @@ mod tests {
     // --- the Terminal default-directory row (default-spawn DS-1) ---
 
     #[test]
-    fn default_directory_sits_in_terminal_between_args_and_scrollback() {
+    fn default_directory_lands_after_arguments_in_the_terminal_card() {
         // The "Default directory" row lands after Arguments in the
-        // Terminal card, under the field's exact file spelling, with
-        // the same new-tabs-only timing as the shell trio it joins.
-        assert_eq!(
-            Section::Terminal.keys(),
-            &[
-                ConfigKey::Shell,
-                ConfigKey::Args,
-                ConfigKey::DefaultCwd,
-                ConfigKey::ScrollbackLines,
-            ]
-        );
+        // Terminal card (the full key list pinned by the Terminal-card
+        // test above), under the field's exact file spelling, with the
+        // same new-tabs-only timing as the shell trio it joins.
         assert_eq!(ConfigKey::DefaultCwd.label(), "Default directory");
         assert_eq!(ConfigKey::DefaultCwd.key_name(), "default_cwd");
         assert_eq!(apply_timing(ConfigKey::DefaultCwd), ApplyTiming::NewTab);
@@ -3915,20 +3866,19 @@ mod tests {
     // --- the Geometry tab-position dropdown ---
 
     #[test]
-    fn tab_position_sits_in_geometry_after_edge() {
-        // The "Tab bar position" row lands directly after Edge in the
-        // Geometry card.
+    fn the_window_card_carries_the_geometry_four() {
+        // The Window card: the four keys describing the window's
+        // shape, formerly the Geometry card minus the tab-bar
+        // position (which leads the Tabs card below).
         assert_eq!(
-            Section::Geometry.keys(),
+            Section::Window.keys(),
             &[
                 ConfigKey::HeightPercent,
                 ConfigKey::WidthPercent,
                 ConfigKey::HAlign,
                 ConfigKey::Edge,
-                ConfigKey::TabPosition,
             ]
         );
-        assert_eq!(ConfigKey::TabPosition.label(), "Tab bar position");
     }
 
     #[test]
@@ -3981,27 +3931,35 @@ mod tests {
     // --- the Behavior tab-titles dropdown ---
 
     #[test]
-    fn tab_title_mode_sits_in_behavior_after_bell_notifications() {
-        // The "Tab titles" row lands after "Bell notifications" (with
-        // the "New tabs after current tab" and close-confirmation rows
-        // after it) in the Behavior card, and the mode flip applies
-        // live through the retitle loop.
+    fn the_tabs_card_groups_the_tab_strip_keys() {
+        // The Tabs card: everything about the tab strip on one card —
+        // position, titles, new-tab placement and its default
+        // directory (default-spawn DS-1), close confirmation, and
+        // session persistence (restoring *tabs*). The title mode's
+        // flip applies live through the retitle loop.
         assert_eq!(
-            Section::Behavior.keys(),
+            Section::Tabs.keys(),
             &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SessionPersistenceEnabled,
-                ConfigKey::SlideAnimationEnabled,
-                ConfigKey::BellNotificationEnabled,
+                ConfigKey::TabPosition,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
+                ConfigKey::SessionPersistenceEnabled,
             ]
         );
+        assert_eq!(ConfigKey::TabPosition.label(), "Tab bar position");
         assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");
+        assert_eq!(
+            ConfigKey::NewTabAfterCurrent.label(),
+            "New tabs after current tab"
+        );
         assert_eq!(ConfigKey::TabTitleMode.key_name(), "tab_title_mode");
         assert_eq!(apply_timing(ConfigKey::TabTitleMode), ApplyTiming::Live);
+        assert_eq!(
+            toggle_write(ConfigKey::NewTabAfterCurrent, false),
+            Some(PlannedWrite::NewTabAfterCurrent(false))
+        );
     }
 
     #[test]
@@ -4407,14 +4365,6 @@ mod tests {
     // --- the Profiles page's view (construction, profile-settings T1) ---
 
     #[test]
-    fn the_settings_entry_card_reports_the_profile_count() {
-        // OQ-2's drafted composition: count as the row description.
-        assert_eq!(profiles_entry_description(0), "No profiles");
-        assert_eq!(profiles_entry_description(1), "1 profile");
-        assert_eq!(profiles_entry_description(2), "2 profiles");
-    }
-
-    #[test]
     fn the_profiles_page_builds_in_every_read_state() {
         // Construction is the assertion: empty list (the empty state
         // with its add affordance), a populated list, a stale
@@ -4435,10 +4385,6 @@ mod tests {
         let _ = profiles_view(&config, Some(0), Some(&cloning));
         let editing = ProfileDraft::edit(0, &config.profiles[0]);
         let _ = profiles_view(&config, Some(0), Some(&editing));
-        // And General carries the entry card whatever the list
-        // state; Advanced never does.
-        let _ = general_view(&config, &SettingsBuffer::default());
-        let _ = advanced_view(&config, &SettingsBuffer::default());
     }
 
     // --- the default-profile picker (profile-settings T2) ---
@@ -5238,10 +5184,10 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_close_or_page_leave_clears_the_profile_draft() {
+    fn an_explicit_close_or_leaving_the_profiles_tab_clears_the_draft() {
         // One transition, two call sites (the drawer's explicit
-        // close, the page's back affordance): both drop the draft —
-        // a reopened page starts from config.
+        // close, a tab turn away from the Profiles page): both drop
+        // the draft — a reopened Profiles page starts from config.
         let mut draft = Some(ProfileDraft::add());
         apply_profile_draft_transition(&mut draft, ProfileDraftTransition::Clear);
         assert!(draft.is_none());
