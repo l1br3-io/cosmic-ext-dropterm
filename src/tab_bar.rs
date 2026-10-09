@@ -2355,8 +2355,14 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for DropdownOverlay<'_,
         // launch, and every press is captured so nothing under the
         // dropdown — the `+` itself (toggle), the strip, the terminal
         // — acts on it. Motion and keyboard pass through: the bar
-        // handles no keyboard, and row hover rides the cursor's own
-        // frames.
+        // handles no keyboard. A motion event also asks for a frame:
+        // the runtime draws only on request, and nothing under an
+        // open dropdown churns on its own, so without this the row
+        // hover would stick on whatever row a chance frame caught.
+        if matches!(event, Event::Mouse(MouseEvent::CursorMoved { .. })) {
+            shell.request_redraw();
+            return;
+        }
         let Event::Mouse(MouseEvent::ButtonPressed(button)) = event else {
             return;
         };
@@ -2569,7 +2575,15 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TabMenuOverlay<'_, 
         // pick (the clicked tab's id captured before the clear), and
         // every press is captured so nothing under the menu — the
         // strip, a tab button, the terminal below — acts on it. Motion
-        // and keyboard pass through.
+        // and keyboard pass through. A motion event also asks for a
+        // frame: the runtime draws only on request, and nothing under
+        // an open menu churns on its own, so without this the row
+        // hover would stick on whatever row a chance frame caught
+        // (the first hover, then nothing until an unrelated repaint).
+        if matches!(event, Event::Mouse(MouseEvent::CursorMoved { .. })) {
+            shell.request_redraw();
+            return;
+        }
         let Event::Mouse(MouseEvent::ButtonPressed(button)) = event else {
             return;
         };
