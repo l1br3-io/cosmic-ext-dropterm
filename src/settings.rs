@@ -22,7 +22,7 @@ use cosmic::cosmic_config::{self, ConfigSet as _};
 
 use crate::config::{
     DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
-    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, TabPosition, TabTitleMode, ThemePreference,
+    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::profile::Profile;
 use crate::tabs::command_line_parts;
@@ -99,11 +99,13 @@ impl Section {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
             ],
             Section::Terminal => &[
                 ConfigKey::Shell,
                 ConfigKey::Args,
+                ConfigKey::DefaultCwd,
                 ConfigKey::ScrollbackLines,
             ],
             Section::Advanced => &[
@@ -125,7 +127,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (24).
+/// count (26 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -142,10 +144,12 @@ pub enum ConfigKey {
     BellNotificationEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
+    NewTabCwd,
     CloseConfirmationEnabled,
     SettingsDrawerClickClose,
     Shell,
     Args,
+    DefaultCwd,
     ScrollbackLines,
     Layer,
     KeyboardMode,
@@ -277,10 +281,12 @@ impl ConfigKey {
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
+            ConfigKey::NewTabCwd => "new_tab_cwd",
             ConfigKey::CloseConfirmationEnabled => "close_confirmation_enabled",
             ConfigKey::SettingsDrawerClickClose => "settings_drawer_click_close",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
+            ConfigKey::DefaultCwd => "default_cwd",
             ConfigKey::ScrollbackLines => "scrollback_lines",
             ConfigKey::Layer => "layer",
             ConfigKey::KeyboardMode => "keyboard_mode",
@@ -315,10 +321,16 @@ pub enum PlannedWrite {
     BellNotificationEnabled(bool),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
+    NewTabCwd(NewTabCwd),
     CloseConfirmationEnabled(bool),
     SettingsDrawerClickClose(bool),
     Shell(String),
     Args(Vec<String>),
+    /// The default directory `new_tab_cwd: Default` opens plain new
+    /// tabs in (`None` clears the key back to the pty default) — the
+    /// profile form's `parse_cwd` shape, `Option` on the wire like
+    /// `default_profile`'s.
+    DefaultCwd(Option<PathBuf>),
     ScrollbackLines(u32),
     Layer(Layer),
     KeyboardMode(KeyboardMode),
@@ -352,10 +364,12 @@ impl PlannedWrite {
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
+            PlannedWrite::NewTabCwd(_) => ConfigKey::NewTabCwd,
             PlannedWrite::CloseConfirmationEnabled(_) => ConfigKey::CloseConfirmationEnabled,
             PlannedWrite::SettingsDrawerClickClose(_) => ConfigKey::SettingsDrawerClickClose,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
+            PlannedWrite::DefaultCwd(_) => ConfigKey::DefaultCwd,
             PlannedWrite::ScrollbackLines(_) => ConfigKey::ScrollbackLines,
             PlannedWrite::Layer(_) => ConfigKey::Layer,
             PlannedWrite::KeyboardMode(_) => ConfigKey::KeyboardMode,
@@ -426,6 +440,7 @@ impl PlannedWrite {
             PlannedWrite::NewTabAfterCurrent(value) => {
                 handler.set(ConfigKey::NewTabAfterCurrent.key_name(), *value)
             }
+            PlannedWrite::NewTabCwd(value) => handler.set(ConfigKey::NewTabCwd.key_name(), value),
             PlannedWrite::CloseConfirmationEnabled(value) => {
                 handler.set(ConfigKey::CloseConfirmationEnabled.key_name(), *value)
             }
@@ -434,6 +449,10 @@ impl PlannedWrite {
             }
             PlannedWrite::Shell(value) => handler.set(ConfigKey::Shell.key_name(), value),
             PlannedWrite::Args(value) => handler.set(ConfigKey::Args.key_name(), value),
+            // `Option<PathBuf>` serializes like `default_profile`'s
+            // `Option<String>` — absent/None merges cleanly with a
+            // hand-edited file.
+            PlannedWrite::DefaultCwd(value) => handler.set(ConfigKey::DefaultCwd.key_name(), value),
             PlannedWrite::ScrollbackLines(value) => {
                 handler.set(ConfigKey::ScrollbackLines.key_name(), *value)
             }
@@ -500,6 +519,7 @@ pub enum TextField {
     Shell,
     Args,
     ScrollbackLines,
+    DefaultCwd,
 }
 
 /// Split an `args` draft into config tokens: whitespace-separated, no
@@ -544,6 +564,10 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
         TextField::Shell => Some(PlannedWrite::Shell(raw.trim().to_string())),
         TextField::Args => Some(PlannedWrite::Args(parse_args(raw))),
         TextField::ScrollbackLines => parse_scrollback(raw).map(PlannedWrite::ScrollbackLines),
+        // The profile form's `parse_cwd` rule: empty clears to `None`
+        // (the pty default), any other path lands verbatim — a cwd can
+        // never reject.
+        TextField::DefaultCwd => Some(PlannedWrite::DefaultCwd(parse_cwd(raw))),
     }
 }
 
@@ -595,7 +619,11 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
-        ConfigKey::Shell | ConfigKey::Args | ConfigKey::ScrollbackLines => ApplyTiming::NewTab,
+        ConfigKey::Shell
+        | ConfigKey::Args
+        | ConfigKey::ScrollbackLines
+        | ConfigKey::NewTabCwd
+        | ConfigKey::DefaultCwd => ApplyTiming::NewTab,
         ConfigKey::HideOnFocusLoss
         | ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
@@ -623,6 +651,10 @@ const TAB_TITLE_MODE_OPTIONS: &[(TabTitleMode, &str)] = &[
     (TabTitleMode::LastSegment, "Last segment"),
     (TabTitleMode::Numbered, "Terminal number"),
     (TabTitleMode::Profile, "Profile name"),
+];
+const NEW_TAB_CWD_OPTIONS: &[(NewTabCwd, &str)] = &[
+    (NewTabCwd::Inherit, "Inherit active tab"),
+    (NewTabCwd::Default, "Default directory"),
 ];
 const LAYER_OPTIONS: &[(Layer, &str)] = &[(Layer::Overlay, "Overlay"), (Layer::Top, "Top")];
 const KEYBOARD_MODE_OPTIONS: &[(KeyboardMode, &str)] = &[
@@ -660,6 +692,9 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
         ConfigKey::TabTitleMode => TAB_TITLE_MODE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.tab_title_mode),
+        ConfigKey::NewTabCwd => NEW_TAB_CWD_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.new_tab_cwd),
         ConfigKey::Layer => LAYER_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.layer),
@@ -692,6 +727,9 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::TabTitleMode => TAB_TITLE_MODE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::TabTitleMode(*value)),
+        ConfigKey::NewTabCwd => NEW_TAB_CWD_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::NewTabCwd(*value)),
         ConfigKey::Layer => LAYER_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::Layer(*value)),
@@ -777,6 +815,12 @@ impl SettingsBuffer {
             TextField::Shell => config.shell.clone().unwrap_or_default(),
             TextField::Args => config.args.join(" "),
             TextField::ScrollbackLines => config.scrollback_lines.to_string(),
+            // The profile form's `cwd_text` shape: the path verbatim,
+            // empty for `None`.
+            TextField::DefaultCwd => config
+                .default_cwd
+                .as_ref()
+                .map_or_else(String::new, |path| path.display().to_string()),
         }
     }
 
@@ -1577,7 +1621,8 @@ impl ProfileWrite {
 /// revert (entry removal) are the same whole-map write, and the
 /// scalar [`PlannedWrite`]/[`ConfigKey`] surface stays untouched —
 /// the 23 exposed keys never grow a 24th — close-confirm and
-/// drawer-click-close since grew the count to 25.
+/// drawer-click-close since grew the count to 25, default-spawn's
+/// two rows to 27.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds::Binding>);
 
@@ -1827,6 +1872,7 @@ impl ConfigKey {
             ConfigKey::BellNotificationEnabled => "Bell notifications",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
+            ConfigKey::NewTabCwd => "New tab directory",
             ConfigKey::CloseConfirmationEnabled => "Confirm closing a tab with a running process",
             ConfigKey::SettingsDrawerClickClose => {
                 "Close the settings drawer by clicking the terminal"
@@ -1834,6 +1880,7 @@ impl ConfigKey {
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
+            ConfigKey::DefaultCwd => "Default directory",
             ConfigKey::ScrollbackLines => "Scrollback lines",
             ConfigKey::Layer => "Layer",
             ConfigKey::KeyboardMode => "Keyboard mode",
@@ -2481,6 +2528,10 @@ fn dropdown_control(
             .iter()
             .map(|(_, label)| *label)
             .collect(),
+        ConfigKey::NewTabCwd => NEW_TAB_CWD_OPTIONS
+            .iter()
+            .map(|(_, label)| *label)
+            .collect(),
         ConfigKey::Layer => LAYER_OPTIONS.iter().map(|(_, label)| *label).collect(),
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .iter()
@@ -2542,11 +2593,13 @@ fn text_control(
         ConfigKey::Shell => TextField::Shell,
         ConfigKey::Args => TextField::Args,
         ConfigKey::ScrollbackLines => TextField::ScrollbackLines,
+        ConfigKey::DefaultCwd => TextField::DefaultCwd,
         _ => return None,
     };
     let placeholder = match field {
         TextField::Shell => config.resolved_shell(),
         TextField::ScrollbackLines => "10000".to_string(),
+        TextField::DefaultCwd => "optional".to_string(),
         _ => String::new(),
     };
     Some(
@@ -2695,6 +2748,7 @@ mod tests {
         buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
         buffer.set_text(TextField::Args, "-l -i".to_string());
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
+        buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
         let _ = general_view(&config, &buffer);
         let _ = advanced_view(&config, &buffer);
@@ -2910,7 +2964,9 @@ mod tests {
             PlannedWrite::BellNotificationEnabled(true),
             PlannedWrite::TabTitleMode(TabTitleMode::Shell),
             PlannedWrite::NewTabAfterCurrent(true),
+            PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
             PlannedWrite::CloseConfirmationEnabled(true),
+            PlannedWrite::DefaultCwd(None),
             PlannedWrite::Shell(String::new()),
             PlannedWrite::Args(Vec::new()),
             PlannedWrite::ScrollbackLines(10_000),
@@ -2961,6 +3017,8 @@ mod tests {
                 "bell_notification_enabled",
             ),
             (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
+            (ConfigKey::NewTabCwd, "new_tab_cwd"),
+            (ConfigKey::DefaultCwd, "default_cwd"),
             (
                 ConfigKey::CloseConfirmationEnabled,
                 "close_confirmation_enabled",
@@ -3225,6 +3283,8 @@ mod tests {
             ConfigKey::Shell,
             ConfigKey::Args,
             ConfigKey::ScrollbackLines,
+            ConfigKey::NewTabCwd,
+            ConfigKey::DefaultCwd,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::NewTab, "{key:?}");
         }
@@ -3269,6 +3329,7 @@ mod tests {
             ConfigKey::ColorSchemeDark,
             ConfigKey::ColorSchemeLight,
             ConfigKey::ThemePreference,
+            ConfigKey::NewTabCwd,
         ] {
             let selected = dropdown_selected(key, &config)
                 .unwrap_or_else(|| panic!("{key:?} has no selection"));
@@ -3350,6 +3411,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
             ]
         );
@@ -3380,6 +3442,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
             ]
         );
@@ -3405,6 +3468,120 @@ mod tests {
                 .key(),
             ConfigKey::CloseConfirmationEnabled
         );
+    }
+
+    // --- the new-tab-directory dropdown (default-spawn DS-1) ---
+
+    #[test]
+    fn new_tab_cwd_sits_in_behavior_after_new_tab_after_current() {
+        // The "New tab directory" row lands directly after "New tabs
+        // after current tab" in the Behavior card, under the field's
+        // exact file spelling.
+        assert_eq!(ConfigKey::NewTabCwd.label(), "New tab directory");
+        assert_eq!(ConfigKey::NewTabCwd.key_name(), "new_tab_cwd");
+        assert_eq!(apply_timing(ConfigKey::NewTabCwd), ApplyTiming::NewTab);
+    }
+
+    #[test]
+    fn new_tab_cwd_options_are_exactly_inherit_default() {
+        // Inherit first, so the default config's selection is index 0
+        // (the Follow system pattern).
+        assert_eq!(
+            NEW_TAB_CWD_OPTIONS,
+            &[
+                (NewTabCwd::Inherit, "Inherit active tab"),
+                (NewTabCwd::Default, "Default directory"),
+            ]
+        );
+    }
+
+    #[test]
+    fn new_tab_cwd_picks_round_trip_and_out_of_range_rejects() {
+        // A pick commits exactly its variant — the control can never
+        // invent a value; indices past the table (including exactly
+        // len) reject instead of panicking.
+        assert_eq!(
+            dropdown_write(ConfigKey::NewTabCwd, 0),
+            Some(PlannedWrite::NewTabCwd(NewTabCwd::Inherit))
+        );
+        assert_eq!(
+            dropdown_write(ConfigKey::NewTabCwd, 1),
+            Some(PlannedWrite::NewTabCwd(NewTabCwd::Default))
+        );
+        assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 2), None);
+        assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 99), None);
+        assert_eq!(
+            PlannedWrite::NewTabCwd(NewTabCwd::Default).key(),
+            ConfigKey::NewTabCwd
+        );
+    }
+
+    #[test]
+    fn new_tab_cwd_selection_mirrors_the_config_value() {
+        // Default config → Inherit → Some(0); the committed variant
+        // re-selects its own position, so the dropdown opens on the
+        // file's current value.
+        let mut config = DropTermConfig::default();
+        assert_eq!(dropdown_selected(ConfigKey::NewTabCwd, &config), Some(0));
+        config.new_tab_cwd = NewTabCwd::Default;
+        assert_eq!(dropdown_selected(ConfigKey::NewTabCwd, &config), Some(1));
+    }
+
+    // --- the Terminal default-directory row (default-spawn DS-1) ---
+
+    #[test]
+    fn default_directory_sits_in_terminal_between_args_and_scrollback() {
+        // The "Default directory" row lands after Arguments in the
+        // Terminal card, under the field's exact file spelling, with
+        // the same new-tabs-only timing as the shell trio it joins.
+        assert_eq!(
+            Section::Terminal.keys(),
+            &[
+                ConfigKey::Shell,
+                ConfigKey::Args,
+                ConfigKey::DefaultCwd,
+                ConfigKey::ScrollbackLines,
+            ]
+        );
+        assert_eq!(ConfigKey::DefaultCwd.label(), "Default directory");
+        assert_eq!(ConfigKey::DefaultCwd.key_name(), "default_cwd");
+        assert_eq!(apply_timing(ConfigKey::DefaultCwd), ApplyTiming::NewTab);
+    }
+
+    #[test]
+    fn submitted_default_directory_text_parses_through_parse_cwd() {
+        // The profile form's `parse_cwd` precedent: empty text clears
+        // the key (`None` = the pty's default directory), any other
+        // path lands verbatim — existence is never checked at write
+        // time; spawn-time fallback is the live check.
+        assert_eq!(
+            submit_write(TextField::DefaultCwd, "/srv/work"),
+            Some(PlannedWrite::DefaultCwd(Some(PathBuf::from("/srv/work"))))
+        );
+        assert_eq!(
+            submit_write(TextField::DefaultCwd, "   "),
+            Some(PlannedWrite::DefaultCwd(None))
+        );
+    }
+
+    #[test]
+    fn buffer_default_directory_text_falls_back_to_the_config_path() {
+        // The input shows the stored path (empty for unset — the
+        // placeholder carries the hint), and a draft wins until
+        // cleared.
+        let mut config = DropTermConfig::default();
+        assert_eq!(
+            SettingsBuffer::default().text(TextField::DefaultCwd, &config),
+            ""
+        );
+        config.default_cwd = Some(PathBuf::from("/srv/work"));
+        assert_eq!(
+            SettingsBuffer::default().text(TextField::DefaultCwd, &config),
+            "/srv/work"
+        );
+        let mut buffer = SettingsBuffer::default();
+        buffer.set_text(TextField::DefaultCwd, "/tmp".to_string());
+        assert_eq!(buffer.text(TextField::DefaultCwd, &config), "/tmp");
     }
 
     // --- the Appearance theme dropdown ---
@@ -3565,6 +3742,7 @@ mod tests {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::TabTitleMode,
                 ConfigKey::NewTabAfterCurrent,
+                ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
             ]
         );

@@ -5,7 +5,7 @@ use cosmic::app::Task;
 
 use super::DropTerm;
 use super::Message;
-use super::spawn::{SpawnCommand, default_spawn_command, live_preset_cwd};
+use super::spawn::{SpawnCommand, default_spawn_command, live_preset_cwd, plain_spawn_cwd};
 use crate::Args;
 use crate::profile;
 use crate::tabs;
@@ -330,8 +330,12 @@ impl DropTerm {
         // A profile tab's directory — by name or by default: the
         // explicit --cwd over the preset's live cwd over inheritance,
         // the preset degrading the way --cwd does (warn when dead,
-        // then the inherited/default directory applies). Every other
-        // arm resolves exactly as before.
+        // then the inherited/default directory applies). A `--cmd` tab
+        // keeps today's chain — it is not the bare plain spawn the
+        // `new_tab_cwd` mode scopes, and duplicates ride the explicit
+        // leg unaffected by construction — while the bare/explicit
+        // plain arm threads the mode: `Default` replaces the inherited
+        // leg with the live-checked `default_cwd`.
         let spawn_cwd = match &command {
             SpawnCommand::Profile {
                 name, cwd: preset, ..
@@ -339,7 +343,8 @@ impl DropTerm {
                 .clone()
                 .or_else(|| live_preset_cwd(name, preset.as_ref()))
                 .or(inherited.clone()),
-            _ => tabs::resolve_new_tab_cwd(explicit, inherited),
+            SpawnCommand::CommandLine(_) => tabs::resolve_new_tab_cwd(explicit, inherited),
+            SpawnCommand::Shell(_) => plain_spawn_cwd(&self.config, explicit, inherited),
         };
         if let Some(tab) = self.spawn_shell(&command, spawn_cwd) {
             let at = tabs::insert_new_tab(&mut self.tabs, self.active_tab, after_current, tab);

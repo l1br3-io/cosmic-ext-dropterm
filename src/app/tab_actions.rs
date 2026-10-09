@@ -16,7 +16,8 @@ use super::SurfaceState;
 use super::ToggleAction;
 use super::confirm_needed;
 use super::spawn::{
-    SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, profile_pick,
+    SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, plain_spawn_cwd,
+    profile_pick,
 };
 use crate::context_menu::items;
 use crate::keybinds;
@@ -341,13 +342,16 @@ impl DropTerm {
                 // is a full profile tab — id recorded, session-
                 // persisted — in the inherited directory unless the
                 // preset's own live cwd applies. No effective default:
-                // exactly today's shell spawn.
+                // the shell spawn threads the `new_tab_cwd` mode —
+                // `Inherit` exactly today's chain, `Default` replacing
+                // the inherited leg with the live-checked
+                // `default_cwd`.
                 let command = default_spawn_command(&self.config);
                 let spawn_cwd = match &command {
                     SpawnCommand::Profile {
                         name, cwd: preset, ..
                     } => live_preset_cwd(name, preset.as_ref()).or(inherited),
-                    _ => tabs::resolve_new_tab_cwd(None, inherited),
+                    _ => plain_spawn_cwd(&self.config, None, inherited),
                 };
                 return self.open_new_tab(&command, spawn_cwd);
             }

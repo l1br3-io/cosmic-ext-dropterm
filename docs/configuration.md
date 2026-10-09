@@ -10,7 +10,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -32,6 +32,19 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 ## Tab titles
 
 `tab_title_mode` (`Shell`, `AbbreviatedPath`, `LastSegment`, `Numbered`, or `Profile`; default `Shell`): how a tab's name is generated - Guake's "Use VTE titles" checkbox and "Display as tab names" dropdown collapsed into one key. `Shell` shows the shell's OSC 0/2 title verbatim (the pre-setting behavior); `AbbreviatedPath` shortens a trailing-cwd suffix, so `jpt@box:~/src/l1br3/ced` renders `jpt@box:~/s/o/l/ced` and an absolute-path suffix abbreviates identically - and with no report yet (a fresh tab, or a shell that never titles) it abbreviates the cwd itself, `~`-spelling preferred, so a new tab opens as e.g. `~/s/o/l/ced`; `LastSegment` shows the cwd's final component (`ced`, and `(root)` at `/`), including at spawn before any report; `Numbered` parks every tab at `Terminal N` and shell reports never land; `Profile` shows the name of the profile a tab runs - the id resolved at retitle time, so an SSH tab reads `ssh-prod` no matter what its shell reports underneath - and a tab running no profile, or whose profile was deleted while it ran (a dangling id never renders a stale name), falls back to exactly `Shell`'s behavior: the raw report, else `Terminal N`. A user rename wins in every mode, a title with no directory suffix is left alone, and an unreadable cwd falls back to the raw title (the default number when no title exists either). Changing the key re-titles every live tab immediately, renamed ones excepted; while in `Profile` mode, a profiles-list change retitles live tabs the same way (rename a profile in settings and its running tabs pick the new name up at once). An older binary reading a `Profile`-valued key it does not know falls back through the store's tolerant load to the `Shell` default - the mode degrades, never errors. Pick it in the Behavior section of the [settings drawer](settings.md).
+
+## Shell, arguments, and the new tab directory
+
+`shell` (default unset) is the binary plain new tabs run: unset falls back to `$SHELL`, then `/bin/sh` - the Terminal section's free-text row keeps the resolved value as its placeholder. A set value is used verbatim, so it must be a path (`/usr/bin/fish`), not a bare name. `args` (default empty) is extra arguments for that shell, split on whitespace with no quoting (the same limitation as a `--cmd` line): `--login --noprofile` arrives as two arguments. Both apply to the next spawn only - a running tab is never re-launched.
+
+`new_tab_cwd` (`Inherit` or `Default`; default `Inherit`) decides where a plain new tab opens: `Inherit` keeps the exact default-spawn chain - an explicit `--cwd`, else the active tab's working directory, else the pty's default directory - while `Default` *replaces* the inherited leg with the `default_cwd` directory. The mode applies to the plain spawns: `Ctrl+Shift+T`, the tab bar `+`, both context menus' plain New Tab row, a bare remote `new-tab`, and the never-empty startup/last-close fresh tab. It never applies to `Ctrl+Shift+H` (home is that bind's contract), duplicates (the source tab's cwd is theirs), profile launches (a preset's own live `cwd`), or session restore (saved cwds re-validate as always). An explicit `--cwd` wins in both modes.
+
+`default_cwd` (default unset) is the directory `Default` mode opens plain tabs in. It is not checked to exist until the spawn: a dead path logs a `warn` once and the tab opens in the pty's default directory - never an error surface, and the config is never rewritten to drop it. With a `default_profile` set, the profile still owns command, cwd, env, and colors outright - the mode and `default_cwd` govern only the no-default path. Pick both on the General tab (Behavior's "New tab directory" dropdown, the Terminal section's "Default directory" row) or write them directly:
+
+```sh
+echo 'Default' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/new_tab_cwd
+echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/default_cwd
+```
 
 ## Hide on focus loss
 

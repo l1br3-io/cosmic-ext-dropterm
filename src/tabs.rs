@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::config::TabTitleMode;
+use crate::config::{NewTabCwd, TabTitleMode};
 use crate::terminal::Terminal;
 
 /// Unique identifier for a tab, monotonically increasing and never reused
@@ -291,6 +291,28 @@ pub fn resolve_new_tab_cwd(
     inherited: Option<PathBuf>,
 ) -> Option<PathBuf> {
     explicit.or(inherited)
+}
+
+/// Resolves the working directory a *plain* new tab spawns in, the
+/// `new_tab_cwd` mode threaded through (the default-spawn module):
+/// `Inherit` — the default — is exactly [`resolve_new_tab_cwd`], the
+/// default leg never consulted, so the mode's chain is byte-identical
+/// to today's. `Default` *replaces* the inherited leg with
+/// `default_cwd` — the live-checked value the app passes, an unset or
+/// degraded-dead key already collapsed to `None` upstream — so a
+/// missing default leg means the pty's default directory, never the
+/// active tab's cwd: inheritance is replaced, not supplemented. An
+/// explicit request (the CLI's `--cwd`) wins in both modes.
+pub fn resolve_plain_spawn_cwd(
+    mode: NewTabCwd,
+    explicit: Option<PathBuf>,
+    inherited: Option<PathBuf>,
+    default_cwd: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match mode {
+        NewTabCwd::Inherit => resolve_new_tab_cwd(explicit, inherited),
+        NewTabCwd::Default => explicit.or(default_cwd),
+    }
 }
 
 /// Resolves a strict numbered activation (`Ctrl+Shift+1..8`) to the index
@@ -768,6 +790,74 @@ mod tests {
         let inherited = PathBuf::from("/home/jpt/src");
         assert_eq!(
             resolve_new_tab_cwd(Some(explicit.clone()), Some(inherited)),
+            Some(explicit)
+        );
+    }
+
+    // --- the mode-threaded plain-spawn cwd (default-spawn DS-1) ---
+
+    #[test]
+    fn inherit_mode_is_today_exact_chain_and_never_consults_the_default() {
+        // Ruling 2: `Inherit` byte-identical — the default leg drops
+        // out entirely, set or not, so a dead `default_cwd` can never
+        // move (or warn about) an inherit-mode spawn.
+        let inherited = PathBuf::from("/home/jpt/src");
+        let default = PathBuf::from("/srv");
+        assert_eq!(
+            resolve_plain_spawn_cwd(
+                NewTabCwd::Inherit,
+                None,
+                Some(inherited.clone()),
+                Some(default.clone())
+            ),
+            Some(inherited)
+        );
+        assert_eq!(
+            resolve_plain_spawn_cwd(NewTabCwd::Inherit, None, None, Some(default)),
+            None
+        );
+    }
+
+    #[test]
+    fn default_mode_replaces_the_inherited_leg() {
+        // Ruling 2: `Default` *replaces* inheritance — the configured
+        // directory wins over the active tab's cwd, not under it.
+        let inherited = PathBuf::from("/home/jpt/src");
+        let default = PathBuf::from("/srv");
+        assert_eq!(
+            resolve_plain_spawn_cwd(
+                NewTabCwd::Default,
+                None,
+                Some(inherited),
+                Some(default.clone())
+            ),
+            Some(default)
+        );
+    }
+
+    #[test]
+    fn default_mode_without_a_default_leg_spawns_in_the_pty_default() {
+        // The inherited leg is replaced, never kept as a fallback: an
+        // unset — or upstream-degraded dead — `default_cwd` means the
+        // pty's default directory, not the active tab's cwd.
+        let inherited = PathBuf::from("/home/jpt/src");
+        assert_eq!(
+            resolve_plain_spawn_cwd(NewTabCwd::Default, None, Some(inherited), None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_explicit_request_wins_in_default_mode_too() {
+        // Explicit `--cwd` wins in both modes — ruling 2's constant.
+        let explicit = PathBuf::from("/tmp");
+        assert_eq!(
+            resolve_plain_spawn_cwd(
+                NewTabCwd::Default,
+                Some(explicit.clone()),
+                Some(PathBuf::from("/home/jpt/src")),
+                Some(PathBuf::from("/srv"))
+            ),
             Some(explicit)
         );
     }

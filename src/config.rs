@@ -160,6 +160,28 @@ impl std::fmt::Display for TabTitleMode {
     }
 }
 
+/// Where a plain new tab's working directory comes from (the
+/// `new_tab_cwd` Behavior dropdown): `Inherit` — the default — keeps
+/// today's exact chain (explicit `--cwd` → the active tab's cwd → the
+/// pty's default directory), while `Default` *replaces* the inherited
+/// leg with the live-checked `default_cwd` (dead or unset → the pty
+/// default). An explicit `--cwd` wins in both modes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NewTabCwd {
+    #[default]
+    Inherit,
+    Default,
+}
+
+impl std::fmt::Display for NewTabCwd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inherit => write!(f, "inherit"),
+            Self::Default => write!(f, "default"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 #[expect(
@@ -275,6 +297,18 @@ pub struct DropTermConfig {
     /// list no longer carries also resolves to the plain shell —
     /// loading never rewrites the config to drop it.
     pub default_profile: Option<String>,
+    /// Where a plain new tab's working directory comes from (see
+    /// [`NewTabCwd`]). Defaults to `Inherit` — today's chain
+    /// byte-identical. Applies only to the no-`default_profile`
+    /// plain spawns: a set, existing default profile still owns the
+    /// cwd outright.
+    pub new_tab_cwd: NewTabCwd,
+    /// The directory [`NewTabCwd::Default`] opens plain new tabs in.
+    /// `None` (the default) leaves the pty's default directory. The
+    /// path is live-checked at spawn — a dead value warns once and
+    /// degrades to the pty default, never an error surface, and the
+    /// store is never rewritten to drop it.
+    pub default_cwd: Option<std::path::PathBuf>,
     /// Custom key bindings, one per action, keyed by the stable action
     /// id (`keybinds::action_id` — the id set is this field's
     /// vocabulary, the field name its spelling; both are file-format
@@ -325,6 +359,8 @@ impl Default for DropTermConfig {
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
+            new_tab_cwd: NewTabCwd::default(),
+            default_cwd: None,
             custom_key_binds: BTreeMap::new(),
             settings_drawer_width: None,
         }
@@ -837,6 +873,100 @@ mod tests {
         let first = text.find("DROPTERM_PROFILE").expect("first key present");
         let second = text.find("TERM_PROGRAM").expect("second key present");
         assert!(first < second, "env keys serialize in BTree order: {text}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn new_tab_cwd_defaults_to_inherit_with_no_default_directory() {
+        // Default-spawn ruling 2: `Inherit` is today's chain
+        // byte-identical, and no default directory is configured — a
+        // fresh config never moves a new tab's cwd.
+        assert_eq!(DropTermConfig::default().new_tab_cwd, NewTabCwd::Inherit);
+        assert_eq!(DropTermConfig::default().default_cwd, None);
+    }
+
+    #[test]
+    fn new_tab_cwd_serde_round_trips_all_variants() {
+        // The enum must survive the serde path cosmic-config uses for
+        // key values; every variant, not just the default.
+        for variant in [NewTabCwd::Inherit, NewTabCwd::Default] {
+            let serialized = ron::to_string(&variant).expect("serialize NewTabCwd");
+            let deserialized: NewTabCwd =
+                ron::from_str(&serialized).expect("deserialize NewTabCwd");
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn missing_default_spawn_keys_load_as_inherit_and_unset() {
+        // A config directory from a version that did not yet write
+        // `new_tab_cwd` or `default_cwd` loads as "inherit, unset" —
+        // byte-identical to today's plain-spawn chain — through the
+        // same default-entry leniency pinned for the profile keys;
+        // the key list is additive, `CONFIG_VERSION` stays 1.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-default-spawn-keys-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        // Simulate the pre-`default-spawn` version by deleting the
+        // two keys it never wrote.
+        let version_dir = root
+            .join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"));
+        std::fs::remove_file(version_dir.join("new_tab_cwd")).expect("remove new_tab_cwd key file");
+        std::fs::remove_file(version_dir.join("default_cwd")).expect("remove default_cwd key file");
+
+        let loaded = DropTermConfig::get_entry(&config)
+            .expect("default-spawn-less v1 config loads without error");
+        assert_eq!(loaded.new_tab_cwd, NewTabCwd::Inherit);
+        assert_eq!(loaded.default_cwd, None);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_spawn_keys_round_trip_through_the_config_store() {
+        // Default mode plus a set directory survive a write→load cycle
+        // with equality — the `default_profile` precedent.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-default-spawn-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            new_tab_cwd: NewTabCwd::Default,
+            default_cwd: Some(std::path::PathBuf::from("/srv/work")),
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
 
         let _ = std::fs::remove_dir_all(&root);
     }

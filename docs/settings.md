@@ -8,7 +8,7 @@ Every setting is editable in-app: press `Ctrl+Shift+I` while the terminal has ke
 
 ## Tabs, sections, and commit points
 
-The drawer's pages sit behind a three-tab strip - General, Keybindings, and Advanced - pinned under the drawer title, so the tabs stay put while a page scrolls beneath them. General carries the everyday sections: Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement), and Terminal, plus the Profiles entry row. Keybindings carries the shortcut editor (its own section below). Advanced carries the power controls: `respect_panel`, `layer`, and `keyboard_mode`. Every exposed control appears exactly once across the tabs - none lost, none duplicated.
+The drawer's pages sit behind a three-tab strip - General, Keybindings, and Advanced - pinned under the drawer title, so the tabs stay put while a page scrolls beneath them. General carries the everyday sections: Appearance (font, size, opacity, the two color scheme dropdowns, and the Application theme dropdown), Geometry, Behavior (hide on focus loss, session persistence, slide animation, bell notifications, new-tab placement, the new-tab-directory dropdown), and Terminal (shell, arguments, default directory, scrollback), plus the Profiles entry row. Keybindings carries the shortcut editor (its own section below). Advanced carries the power controls: `respect_panel`, `layer`, and `keyboard_mode`. Every exposed control appears exactly once across the tabs - none lost, none duplicated.
 
 Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives on its tab (start typing in a field, flip tabs, flip back - the text is still there). The drawer title stays "Settings" on both tabs; the strip disambiguates. Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab, and an explicit close resets the drawer to General for the next open, while a focus-loss hide preserves the open tab and its drafts exactly as they were.
 
@@ -46,7 +46,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, on every tab, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `custom_key_binds` | instant - the very next key press uses the new chord, in the same session |
-| `shell`, `args`, `scrollback_lines` | new tabs only |
+| `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
 | `profiles`, `default_profile` | next spawn - a page write applies to future spawns only; a running tab is never re-launched |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
 

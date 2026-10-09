@@ -7,7 +7,7 @@ use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
 use super::{DropTerm, colors_for};
-use crate::config::DropTermConfig;
+use crate::config::{DropTermConfig, NewTabCwd};
 use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
@@ -92,20 +92,52 @@ pub(super) fn profile_pick(config: &DropTermConfig, index: usize) -> Option<Spaw
         })
 }
 
-/// The live-directory filter a profile preset's cwd passes at spawn:
-/// dead → warn and `None` — the `--cwd` degradation, never an error
-/// surface — so the inherited/default directory applies instead.
-pub(super) fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
+/// The live-directory filter a configured cwd passes at spawn: dead →
+/// warn and `None` — the `--cwd` degradation, never an error surface —
+/// so the next leg of the composition applies instead. `what` names
+/// the owning key in the warning (`"profile ssh"`, `default_cwd`).
+pub(super) fn live_dir(what: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
     cwd.cloned().filter(|dir| {
         let live = dir.is_dir();
         if !live {
-            log::warn!(
-                "ignoring profile {name} cwd {}: not a directory",
-                dir.display()
-            );
+            log::warn!("ignoring {what} cwd {}: not a directory", dir.display());
         }
         live
     })
+}
+
+/// The preset-cwd case of [`live_dir`] — the profile spawn sites'
+/// spelling of the shared warn-and-degrade rule.
+pub(super) fn live_preset_cwd(name: &str, cwd: Option<&PathBuf>) -> Option<PathBuf> {
+    live_dir(&format!("profile {name}"), cwd)
+}
+
+/// The plain-arm cwd composition the plain spawn sites share — the
+/// new-tab keybind, the bare remote `new-tab`, and the
+/// startup/respawn fresh tab: [`tabs::resolve_plain_spawn_cwd`] over
+/// the live-checked `default_cwd`. The check runs only when the leg
+/// is actually consulted — `Inherit` never reads the key (a dead
+/// default cannot warn from a mode that ignores it), and an explicit
+/// request wins in both modes before the default leg matters (an
+/// overridden spawn never warns about a key it did not use). Profile
+/// spawns never route here: a set, existing `default_profile` still
+/// owns the cwd outright (ruling 4).
+pub(super) fn plain_spawn_cwd(
+    config: &DropTermConfig,
+    explicit: Option<PathBuf>,
+    inherited: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match (config.new_tab_cwd, explicit.as_ref()) {
+        (NewTabCwd::Inherit, _) | (NewTabCwd::Default, Some(_)) => {
+            tabs::resolve_plain_spawn_cwd(config.new_tab_cwd, explicit, inherited, None)
+        }
+        (NewTabCwd::Default, None) => tabs::resolve_plain_spawn_cwd(
+            NewTabCwd::Default,
+            None,
+            inherited,
+            live_dir("default_cwd", config.default_cwd.as_ref()),
+        ),
+    }
 }
 
 /// The pty env a profile spawn applies: the preset's map in
@@ -136,15 +168,17 @@ impl DropTerm {
         let Some(spec) = spec else {
             // The plain startup/respawn spawns ride the configured
             // default (ruling 1 — the never-empty respawn is the same
-            // no-user-context plain spawn). Nothing to inherit here:
-            // a default preset's dead cwd warns and degrades to the
-            // pty's default directory.
+            // no-user-context plain spawn) and the mode-threaded cwd
+            // composition: `Default` opens the fresh tab in the
+            // live-checked `default_cwd`, `Inherit` keeps the pty's
+            // default directory exactly as before. A default preset's
+            // dead cwd warns and degrades the same way.
             let command = default_spawn_command(&self.config);
             let cwd = match &command {
                 SpawnCommand::Profile {
                     name, cwd: preset, ..
                 } => live_preset_cwd(name, preset.as_ref()),
-                _ => None,
+                _ => plain_spawn_cwd(&self.config, None, None),
             };
             return self.spawn_shell(&command, cwd);
         };
@@ -585,6 +619,75 @@ mod tests {
                 cwd: None,
                 env: None,
             })
+        );
+    }
+
+    // --- the plain-arm cwd composition (default-spawn DS-1) ---
+
+    /// A path no test creates — deterministically not a directory.
+    fn dead_dir() -> PathBuf {
+        PathBuf::from("/dropterm-default-spawn-not-a-real-directory")
+    }
+
+    #[test]
+    fn plain_spawn_cwd_inherit_mode_never_consults_the_key() {
+        // Ruling 2: `Inherit` is byte-identical to today — the chain
+        // is explicit → inherited → pty default, and a set (even dead)
+        // `default_cwd` can neither move the spawn nor warn about
+        // itself from a mode that ignores it.
+        let mut config = test_config(&[], None);
+        config.new_tab_cwd = NewTabCwd::Inherit;
+        config.default_cwd = Some(dead_dir());
+        assert_eq!(
+            plain_spawn_cwd(&config, None, Some(PathBuf::from("/home/jpt/src"))),
+            Some(PathBuf::from("/home/jpt/src"))
+        );
+        assert_eq!(plain_spawn_cwd(&config, None, None), None);
+    }
+
+    #[test]
+    fn plain_spawn_cwd_default_mode_opens_in_the_live_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "dropterm-default-spawn-live-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("make a live test directory");
+        let mut config = test_config(&[], None);
+        config.new_tab_cwd = NewTabCwd::Default;
+        config.default_cwd = Some(dir.clone());
+        // The default leg replaces inheritance — ruling 2 — and lands
+        // set-and-live exactly like a preset cwd.
+        assert_eq!(
+            plain_spawn_cwd(&config, None, Some(PathBuf::from("/home/jpt/src"))),
+            Some(dir.clone())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_spawn_cwd_default_mode_degrades_a_dead_directory_to_the_pty_default() {
+        // The `live_preset_cwd` rule generalized to the key's own
+        // name: warn once, then the pty's default directory — the
+        // inherited cwd is replaced, never kept as the fallback.
+        let mut config = test_config(&[], None);
+        config.new_tab_cwd = NewTabCwd::Default;
+        config.default_cwd = Some(dead_dir());
+        assert_eq!(
+            plain_spawn_cwd(&config, None, Some(PathBuf::from("/home/jpt/src"))),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_spawn_cwd_keeps_an_explicit_request_winning_in_default_mode() {
+        // An explicit `--cwd` wins in both modes — and never warns
+        // about the default key it overrides.
+        let mut config = test_config(&[], None);
+        config.new_tab_cwd = NewTabCwd::Default;
+        config.default_cwd = Some(dead_dir());
+        assert_eq!(
+            plain_spawn_cwd(&config, Some(PathBuf::from("/tmp")), None),
+            Some(PathBuf::from("/tmp"))
         );
     }
 }
