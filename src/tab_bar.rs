@@ -1777,7 +1777,16 @@ where
         // button — body or close mark, both scope to the tab — opens
         // the per-tab context menu scoped to that tab, except over
         // the rename input's host: that button belongs to the input
-        // while it overlays it.
+        // while it overlays it. The menu's open also invalidates
+        // layout: its bubble sizes from the row-paragraph cache,
+        // which `refresh_paragraphs` fills only during a root layout
+        // and only while the menu is open — without the invalidation
+        // that layout never re-runs after this state-only flip (no
+        // message, no view rebuild), and the overlay lays out against
+        // an empty cache as a padding-only sliver (the combo-box
+        // overlay's own open invalidates for the same reason; the
+        // dropdown needs no such nudge, its cache syncing on every
+        // root layout).
         if button == Button::Right {
             if newtab_rect.contains(point) && !self.profiles.is_empty() {
                 state.dropdown_open = true;
@@ -1788,6 +1797,7 @@ where
                 && self.rename.as_ref().is_none_or(|edit| edit.0 != tab.id)
             {
                 state.tab_menu = Some(tab.id);
+                shell.invalidate_layout();
                 shell.capture_event();
                 shell.request_redraw();
             }
