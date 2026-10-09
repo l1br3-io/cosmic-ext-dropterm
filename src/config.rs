@@ -752,6 +752,8 @@ mod tests {
                     cwd: Some(std::path::PathBuf::from("/srv/web")),
                     color_scheme: None,
                     env: None,
+                    font_size: None,
+                    scrollback_lines: None,
                 },
                 Profile {
                     name: "top".to_string(),
@@ -759,6 +761,8 @@ mod tests {
                     cwd: None,
                     color_scheme: None,
                     env: None,
+                    font_size: None,
+                    scrollback_lines: None,
                 },
             ],
             default_profile: Some("web-prod".to_string()),
@@ -797,6 +801,8 @@ mod tests {
                     cwd: None,
                     color_scheme: Some("Dracula".to_string()),
                     env: None,
+                    font_size: None,
+                    scrollback_lines: None,
                 },
                 Profile {
                     name: "top".to_string(),
@@ -804,6 +810,8 @@ mod tests {
                     cwd: None,
                     color_scheme: None,
                     env: None,
+                    font_size: None,
+                    scrollback_lines: None,
                 },
             ],
             ..DropTermConfig::default()
@@ -844,6 +852,8 @@ mod tests {
                         ("DROPTERM_PROFILE".to_string(), "prod".to_string()),
                         ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
                     ])),
+                    font_size: None,
+                    scrollback_lines: None,
                 },
                 Profile {
                     name: "top".to_string(),
@@ -851,6 +861,8 @@ mod tests {
                     cwd: None,
                     color_scheme: None,
                     env: None,
+                    font_size: None,
+                    scrollback_lines: None,
                 },
             ],
             ..DropTermConfig::default()

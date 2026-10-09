@@ -12,10 +12,11 @@
 // extras, each with its source and license recorded on the const
 // below; the COSMIC pair keeps its hand-tuned tables.
 
-use alacritty_terminal::{
-    term::color::Colors,
-    vte::ansi::{NamedColor, Rgb},
-};
+use alacritty_terminal::{term::color::Colors, vte::ansi::NamedColor};
+
+// Re-exported because [`SchemePreview`]'s slots name it — the chip
+// renderers beyond this module must be able to spell it.
+pub use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::config::{COSMIC_THEME_DARK, COSMIC_THEME_LIGHT};
 
@@ -729,6 +730,71 @@ pub fn scheme_names() -> Vec<&'static str> {
     SCHEMES.iter().map(|entry| entry.name).collect()
 }
 
+/// The ANSI slots a preview chip strip renders, in strip order:
+/// normal 0–7 then bright 8–15 — the sixteen colors every scheme
+/// fully defines, everything the terminal ever shows beyond
+/// background and foreground.
+const PREVIEW_ANSI: [NamedColor; 16] = [
+    NamedColor::Black,
+    NamedColor::Red,
+    NamedColor::Green,
+    NamedColor::Yellow,
+    NamedColor::Blue,
+    NamedColor::Magenta,
+    NamedColor::Cyan,
+    NamedColor::White,
+    NamedColor::BrightBlack,
+    NamedColor::BrightRed,
+    NamedColor::BrightGreen,
+    NamedColor::BrightYellow,
+    NamedColor::BrightBlue,
+    NamedColor::BrightMagenta,
+    NamedColor::BrightCyan,
+    NamedColor::BrightWhite,
+];
+
+/// One scheme's preview palette: the resolved background,
+/// foreground, and ANSI 0–15 the terminal renders with — through the
+/// same `From<&ColorScheme>` conversion `by_name` serves, so a chip
+/// can never disagree with the real scheme (pinned by test). The
+/// background is `Option` with teeth: the COSMIC pair ships none
+/// (the window follows the system theme), so its chip previews
+/// exactly that — the view draws a `None` background from the live
+/// theme, the honest "what the terminal shows" color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemePreview {
+    /// The scheme's background, or `None` where the terminal falls
+    /// back to the system theme.
+    pub background: Option<Rgb>,
+    /// The scheme's foreground.
+    pub foreground: Option<Rgb>,
+    /// Normal 0–7 then bright 8–15, strip order.
+    pub ansi: [Option<Rgb>; 16],
+}
+
+/// The preview palette of every registry scheme, registry order —
+/// one definition site with [`scheme_names`] (entry-for-entry, pinned
+/// by test). The scheme picker's rows and the closed control's mini
+/// strip both render from this; the settings drawer is its first
+/// consumer and the profile scheme field (`profile-manager`) reuses
+/// it without new swatch code.
+pub fn scheme_previews() -> Vec<(&'static str, SchemePreview)> {
+    SCHEMES
+        .iter()
+        .map(|entry| {
+            let colors = Colors::from(&entry.scheme);
+            (
+                entry.name,
+                SchemePreview {
+                    background: colors[NamedColor::Background],
+                    foreground: colors[NamedColor::Foreground],
+                    ansi: std::array::from_fn(|slot| colors[PREVIEW_ANSI[slot]]),
+                },
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,5 +1159,88 @@ mod tests {
         assert_eq!(colors[NamedColor::Background], Some(rgb(0xEF_F1F5)));
         assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x4C_4F69)));
         assert_eq!(colors[NamedColor::Red], Some(rgb(0xD2_0F39)));
+    }
+
+    // --- the preview accessor (scheme-picker T1) ---
+
+    #[test]
+    fn scheme_previews_names_match_the_registry_entry_for_entry() {
+        // The single-definition pin: the preview list is the registry
+        // list — same length, same order, same names — so a second
+        // name list can never drift from `scheme_names`.
+        let names = scheme_names();
+        let previews = scheme_previews();
+        assert_eq!(previews.len(), names.len());
+        for ((preview_name, _), registry_name) in previews.iter().zip(names.iter()) {
+            assert_eq!(preview_name, registry_name);
+        }
+    }
+
+    #[test]
+    fn every_registry_scheme_resolves_a_complete_preview() {
+        // Every entry previews foreground plus all sixteen ANSI
+        // slots. The background is the one honest exception: the
+        // COSMIC pair ships no background (the window follows the
+        // system theme), so its chip previews exactly that — `None`,
+        // which the view renders from the live theme.
+        let previews = scheme_previews();
+        assert_eq!(previews.len(), 12);
+        for (name, preview) in previews {
+            assert!(
+                preview.foreground.is_some(),
+                "{name} must preview a foreground"
+            );
+            assert!(
+                preview.ansi.iter().all(Option::is_some),
+                "{name} must preview all sixteen ANSI colors"
+            );
+            if name == "COSMIC Dark" || name == "COSMIC Light" {
+                assert_eq!(preview.background, None, "{name} follows the system theme");
+            } else {
+                assert!(
+                    preview.background.is_some(),
+                    "{name} must preview a background"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scheme_previews_resolve_through_the_same_conversion_as_by_name() {
+        // The chip-can't-disagree pin: every preview slot equals the
+        // slot `by_name` serves the live terminal for that scheme —
+        // the same `From<&ColorScheme>` path, not a parallel
+        // transcription.
+        for (name, preview) in scheme_previews() {
+            let colors = by_name(name).expect("every preview name resolves");
+            assert_eq!(preview.background, colors[NamedColor::Background], "{name}");
+            assert_eq!(preview.foreground, colors[NamedColor::Foreground], "{name}");
+            for (slot, color) in preview.ansi.iter().enumerate() {
+                assert_eq!(
+                    *color, colors[PREVIEW_ANSI[slot]],
+                    "{name} ANSI slot {slot}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preview_spot_hexes_pin_the_transcription() {
+        // A palette transcription regression lands here: known hexes
+        // straight off the pinned tables above.
+        let previews: Vec<_> = scheme_previews();
+        let (_, cosmic_dark) = previews[0];
+        assert_eq!(cosmic_dark.background, None);
+        assert_eq!(cosmic_dark.foreground, Some(rgb(0xC4_C4C4)));
+        assert_eq!(cosmic_dark.ansi[0], Some(rgb(0x1B_1B1B)));
+        assert_eq!(cosmic_dark.ansi[8], Some(rgb(0x80_8080)));
+
+        let dracula = previews
+            .iter()
+            .find(|(name, _)| *name == "Dracula")
+            .expect("Dracula registered");
+        assert_eq!(dracula.1.background, Some(rgb(0x28_2A36)));
+        assert_eq!(dracula.1.foreground, Some(rgb(0xF8_F8F2)));
+        assert_eq!(dracula.1.ansi[4], Some(rgb(0xBD_93F9)));
     }
 }
