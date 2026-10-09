@@ -12,7 +12,7 @@
 //! headless-testable.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cosmic::Element;
 use cosmic::theme;
@@ -1735,6 +1735,98 @@ pub fn profile_scheme_write(index: usize) -> Option<ProfileSchemePick> {
         .map(|name| ProfileSchemePick::Scheme((*name).to_string()))
 }
 
+/// The fallback rows offered when `/etc/shells` cannot be read (or
+/// parses to nothing): the conventional quartet, static by ruling 1 —
+/// a picker is always offered, whatever the file's state.
+const SHELL_FALLBACK: &[&str] = &["/bin/bash", "/bin/zsh", "/bin/fish", "/bin/sh"];
+
+/// A picker row's label: the path's basename (`zsh`), the whole path
+/// when it has no final component. Basenames only, no suffixes —
+/// OQ-1's default ruling.
+pub fn shell_label(path: &str) -> String {
+    Path::new(path).file_name().map_or_else(
+        || path.to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// The shell picker's options from `/etc/shells` content (`None` =
+/// unreadable): one path per non-comment line, deduped by basename
+/// (first occurrence wins — `/bin/sh` keeps its file-order priority
+/// over `/usr/bin/sh`), then filtered to entries that exist on this
+/// system. Unreadable or barren content degrades to the static
+/// fallback quartet — never an empty dropdown. Pure over the content
+/// string; the existence check is the one machine-dependent leg.
+pub fn shell_picker_options(content: Option<&str>) -> Vec<String> {
+    let Some(content) = content else {
+        return SHELL_FALLBACK
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+    };
+    let mut basenames: Vec<String> = Vec::new();
+    let mut options: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let basename = shell_label(line);
+        if basenames.contains(&basename) {
+            continue;
+        }
+        if !Path::new(line).exists() {
+            continue;
+        }
+        basenames.push(basename);
+        options.push(line.to_string());
+    }
+    if options.is_empty() {
+        return SHELL_FALLBACK
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+    }
+    options
+}
+
+/// The write a shell-dropdown pick commits: the option's full path
+/// under the existing `shell` key. An index past the list (the file
+/// changed under the open dropdown) rejects — the `dropdown_write`
+/// rule, dynamic-table edition.
+pub fn shell_dropdown_write(options: &[String], index: usize) -> Option<PlannedWrite> {
+    options
+        .get(index)
+        .map(|path| PlannedWrite::Shell(path.clone()))
+}
+
+/// The stored shell's dropdown row: the option carrying the exact
+/// path. `None` for an off-list value — unset, a custom path, a stale
+/// name — so the free-text row remains its editor and the control
+/// never invents a selection.
+pub fn shell_dropdown_selected(options: &[String], stored: Option<&str>) -> Option<usize> {
+    stored.and_then(|path| options.iter().position(|option| option == path))
+}
+
+/// `/etc/shells` content, `None` when the file cannot be read — the
+/// picker's fallback trigger. Options are built per view (ruling 1),
+/// so the view and the pick handler each read it fresh.
+fn etc_shells_content() -> Option<String> {
+    std::fs::read_to_string("/etc/shells").ok()
+}
+
+/// The update-path half of a shell-picker pick: rebuild the per-view
+/// options from `/etc/shells` and map the row through
+/// [`shell_dropdown_write`]. The rebuild is the point — a stale index
+/// against a changed file rejects instead of writing the wrong
+/// shell.
+pub fn shell_pick_write(index: usize) -> Option<PlannedWrite> {
+    shell_dropdown_write(
+        &shell_picker_options(etc_shells_content().as_deref()),
+        index,
+    )
+}
+
 /// An event from the settings view. Events carry inputs, never
 /// [`PlannedWrite`]s: the view stays dumb about validity, and the
 /// app resolves each event through the pure planners
@@ -2444,6 +2536,21 @@ fn drawer_section(
     built.into()
 }
 
+/// The item description a key renders: its apply-timing label, with
+/// the three plain-spawn rows carrying the `default_profile` note
+/// (ruling 4) — a set, existing default still owns command, cwd, env,
+/// and colors outright; the picker and `default_cwd` govern only the
+/// no-default path.
+fn drawer_description(key: ConfigKey) -> String {
+    match key {
+        ConfigKey::Shell | ConfigKey::NewTabCwd | ConfigKey::DefaultCwd => format!(
+            "{} — a default profile still owns plain spawns",
+            apply_timing(key).label()
+        ),
+        _ => apply_timing(key).label().to_string(),
+    }
+}
+
 /// One drawer item: the key's label with its apply timing as the
 /// item description (the honesty rule carried into the drawer), and
 /// the key's control on the drawer's natural widths — the window's
@@ -2456,7 +2563,7 @@ fn drawer_item(
     let control = drawer_control(key, config, buffer)
         .expect("every exposed key has exactly one control (section map)");
     widget::settings::item::builder(key.label())
-        .description(apply_timing(key).label())
+        .description(drawer_description(key))
         .control(control)
         .into()
 }
@@ -2471,10 +2578,43 @@ fn drawer_control(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Option<Element<'static, SettingsEvent>> {
+    // The Shell item is the one two-control setting (default-spawn
+    // DS-2): the detected-shells dropdown with the custom-path text
+    // input beneath, claimed ahead of the single-control chain.
+    if key == ConfigKey::Shell {
+        return Some(shell_control(config, buffer));
+    }
     slider_control(key, config, buffer)
         .or_else(|| dropdown_control(key, config))
         .or_else(|| toggle_control(key, config))
         .or_else(|| text_control(key, config, buffer))
+}
+
+/// The Shell item's control (default-spawn DS-2): the detected-shells
+/// dropdown — options built per view from `/etc/shells`, basename
+/// labels, full-path writes under the existing `shell` key — with the
+/// free-text input beneath as the custom path's editor (placeholder
+/// still `resolved_shell()`; an off-list stored value selects no
+/// dropdown row and shows here, as always).
+fn shell_control(
+    config: &DropTermConfig,
+    buffer: &SettingsBuffer,
+) -> Element<'static, SettingsEvent> {
+    let options = shell_picker_options(etc_shells_content().as_deref());
+    let labels: Vec<String> = options.iter().map(|path| shell_label(path)).collect();
+    let field = TextField::Shell;
+    widget::column![
+        widget::dropdown(
+            labels,
+            shell_dropdown_selected(&options, config.shell.as_deref()),
+            move |index| SettingsEvent::Picked(ConfigKey::Shell, index),
+        ),
+        widget::text_input(config.resolved_shell(), buffer.text(field, config))
+            .on_input(move |text| SettingsEvent::Draft(field, text))
+            .on_submit(move |text| SettingsEvent::Submitted(field, text)),
+    ]
+    .spacing(4)
+    .into()
 }
 
 /// A slider control (commit on release). `on_change` only buffers
@@ -3364,9 +3504,122 @@ mod tests {
 
     #[test]
     fn dropdown_writes_reject_keys_without_dropdowns() {
-        assert!(dropdown_write(ConfigKey::Shell, 0).is_none());
+        // Shell's dropdown is dynamic — the `/etc/shells` picker with
+        // its own planner — so it is no longer among the static-table
+        // rejections; the other text and slider keys stay off the
+        // dropdown paths entirely.
+        assert!(dropdown_write(ConfigKey::FontName, 0).is_none());
         assert!(dropdown_write(ConfigKey::Opacity, 0).is_none());
-        assert!(dropdown_selected(ConfigKey::Shell, &DropTermConfig::default()).is_none());
+        assert!(dropdown_selected(ConfigKey::FontName, &DropTermConfig::default()).is_none());
+    }
+
+    // --- the shell picker (default-spawn DS-2) ---
+
+    #[test]
+    fn etc_shells_parses_into_unique_existing_paths_in_file_order() {
+        // Ruling 1's pipeline: comments and blanks skip, duplicates
+        // collapse by basename (first occurrence wins — `/bin/sh`
+        // keeps its file-order priority over `/usr/bin/sh`), and
+        // entries that do not exist on this system drop quietly.
+        // `/bin/sh`, `/bin/bash`, and `/usr/bin/env` are guaranteed on
+        // this target; `/usr/bin/bash` collapses into `/bin/bash`.
+        let content = "\
+# /etc/shells: valid login shells
+/bin/sh
+/bin/bash
+/usr/bin/bash
+/nonsense/dropterm-stale-shell
+
+/usr/bin/env
+";
+        assert_eq!(
+            shell_picker_options(Some(content)),
+            vec![
+                "/bin/sh".to_string(),
+                "/bin/bash".to_string(),
+                "/usr/bin/env".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unreadable_or_barren_etc_shells_falls_back_to_the_static_quartet() {
+        // `None` = unreadable file; readable-but-empty content (and
+        // nothing surviving the parse) degrades the same way — never
+        // an empty dropdown.
+        let fallback: Vec<String> = ["/bin/bash", "/bin/zsh", "/bin/fish", "/bin/sh"]
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+        assert_eq!(shell_picker_options(None), fallback);
+        assert_eq!(shell_picker_options(Some("")), fallback);
+        assert_eq!(shell_picker_options(Some("# only a comment\n\n")), fallback);
+    }
+
+    #[test]
+    fn shell_dropdown_picks_write_full_paths_and_reject_stale_indices() {
+        // A pick commits the option's full path under the existing
+        // `shell` key — basename labels display, paths persist; an
+        // index past the list (the file changed under the open
+        // dropdown) rejects instead of panicking.
+        let options = vec!["/bin/sh".to_string(), "/bin/bash".to_string()];
+        assert_eq!(
+            shell_dropdown_write(&options, 0),
+            Some(PlannedWrite::Shell("/bin/sh".to_string()))
+        );
+        assert_eq!(
+            shell_dropdown_write(&options, 1),
+            Some(PlannedWrite::Shell("/bin/bash".to_string()))
+        );
+        assert_eq!(shell_dropdown_write(&options, 2), None);
+        assert_eq!(shell_dropdown_write(&options, 99), None);
+    }
+
+    #[test]
+    fn shell_dropdown_selection_mirrors_the_stored_path_and_off_list_selects_none() {
+        // The stored value selects its exact row; an unset key, a
+        // custom path, or a stale value selects nothing — the
+        // free-text row still shows it, and the control never invents
+        // a selection.
+        let options = vec!["/bin/sh".to_string(), "/bin/bash".to_string()];
+        assert_eq!(
+            shell_dropdown_selected(&options, Some("/bin/bash")),
+            Some(1)
+        );
+        assert_eq!(shell_dropdown_selected(&options, Some("/bin/sh")), Some(0));
+        assert_eq!(shell_dropdown_selected(&options, None), None);
+        assert_eq!(shell_dropdown_selected(&options, Some("/opt/mysh")), None);
+    }
+
+    #[test]
+    fn shell_labels_are_bare_basenames() {
+        // OQ-1's default ruling: basename labels, no suffixes — the
+        // picker says `zsh`, never `zsh (current)`.
+        assert_eq!(shell_label("/usr/bin/zsh"), "zsh");
+        assert_eq!(shell_label("/bin/sh"), "sh");
+        // A path with no final component falls back to itself rather
+        // than emptying the row.
+        assert_eq!(shell_label("/"), "/");
+    }
+
+    #[test]
+    fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
+        // Ruling 4: the picker, the mode dropdown, and the default
+        // directory each say on their row that a set `default_profile`
+        // still owns plain spawns outright.
+        for key in [
+            ConfigKey::Shell,
+            ConfigKey::NewTabCwd,
+            ConfigKey::DefaultCwd,
+        ] {
+            assert_eq!(
+                drawer_description(key),
+                "new tabs only — a default profile still owns plain spawns",
+                "{key:?}"
+            );
+        }
+        // Every other row keeps the plain timing label.
+        assert_eq!(drawer_description(ConfigKey::Args), "new tabs only");
     }
 
     // --- registry-fed scheme dropdowns ---

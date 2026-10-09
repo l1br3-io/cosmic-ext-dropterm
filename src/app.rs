@@ -4163,7 +4163,17 @@ impl DropTerm {
                         }
                     }
                     settings::SettingsEvent::Picked(key, index) => {
-                        if let Some(write) = settings::dropdown_write(key, index) {
+                        // Shell's dropdown is dynamic — its options are
+                        // built per view from `/etc/shells` — so the
+                        // pick resolves through the dynamic planner,
+                        // which rebuilds the list rather than trusting
+                        // the open dropdown's snapshot.
+                        let write = if key == settings::ConfigKey::Shell {
+                            settings::shell_pick_write(index)
+                        } else {
+                            settings::dropdown_write(key, index)
+                        };
+                        if let Some(write) = write {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
