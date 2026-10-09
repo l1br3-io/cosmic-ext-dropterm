@@ -2685,8 +2685,13 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TabMenuOverlay<'_, 
                     Color { a: 0.3, ..pane_bg },
                 );
             }
-            // Rows highlight on hover like the dropdown's, clickable
-            // ones only — the header and muted rows are not targets.
+            // Rows highlight on hover, clickable ones only — the
+            // header and muted rows are not targets. The tint is
+            // deliberately stronger than the dropdown's 0.15: the
+            // menu is the keyboardless verb surface, so the hovered
+            // row must read unmistakably as the press's target on
+            // both light and dark panes (pane_bg over the inverted
+            // bubble at low contrast reads as no hover at all).
             if hovered == Some(index) && row.enabled && row.pick.is_some() {
                 renderer.fill_quad(
                     Quad {
@@ -2699,7 +2704,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TabMenuOverlay<'_, 
                         snap: true,
                         ..Default::default()
                     },
-                    Color { a: 0.15, ..pane_bg },
+                    Color { a: 0.3, ..pane_bg },
                 );
             }
             // Muted rows — the section header, an edge-clamped move —
