@@ -14,9 +14,26 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use cosmic::Element;
-use cosmic::theme;
-use cosmic::widget;
+use cosmic::iced::core::alignment;
+use cosmic::iced::core::overlay;
+use cosmic::iced::core::text::{LineHeight, Shaping, paragraph};
+use cosmic::iced::core::{
+    Border, Shell, Text,
+    clipboard::Clipboard,
+    layout::{self, Layout},
+    renderer::{self, Quad, Renderer as _},
+    text::Renderer as _,
+    widget::{Tree, Widget, tree},
+};
+use cosmic::iced::widget::Space;
+use cosmic::iced::{
+    Color, Length, Pixels, Point, Rectangle, Size, Vector,
+    event::Event,
+    keyboard,
+    mouse::{self, Button, Event as MouseEvent},
+};
+use cosmic::theme::Theme;
+use cosmic::{Element, Renderer, theme, widget};
 
 use cosmic::cosmic_config::{self, ConfigSet as _};
 
@@ -26,7 +43,7 @@ use crate::config::{
 };
 use crate::profile::Profile;
 use crate::tabs::command_line_parts;
-use crate::terminal::theme_source::scheme_names;
+use crate::terminal::theme_source::{SchemePreview, scheme_names, scheme_previews};
 
 /// The write kind a config change came from, deciding echo handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1860,6 +1877,14 @@ pub enum SettingsEvent {
     SliderReleased(ConfigKey),
     /// A dropdown option was picked: commit on change.
     Picked(ConfigKey, usize),
+    /// A scheme picker's closed control was pressed: flip that
+    /// picker's popover open state (the app owns the flag; one
+    /// picker is open at most).
+    ToggleSchemePicker(ConfigKey),
+    /// The open scheme picker should close without picking — Escape
+    /// or a press outside its bubble (the dropdown's dismissal
+    /// contract).
+    CloseSchemePicker,
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
     /// The Keybindings tab's search box changed — display only; the
@@ -2093,17 +2118,19 @@ pub fn drawer_with_handle(
 }
 
 /// The Appearance tab's page: how the terminal looks — the look
-/// card (font, size, opacity, schemes, theme) and the Window card
-/// (the surface's shape). Every control renders from `config` with
-/// a buffered draft winning while one exists and emits
-/// [`SettingsEvent`]s — nothing here applies anything itself;
-/// commits land through the app's write path and the
-/// `ConfigChanged` echo.
+/// card (font, size, opacity, the two scheme pickers, theme) and the
+/// Window card (the surface's shape). `scheme_picker` names the
+/// scheme control whose popover is open (view state the app owns).
+/// Every control renders from `config` with a buffered draft winning
+/// while one exists and emits [`SettingsEvent`]s — nothing here
+/// applies anything itself; commits land through the app's write
+/// path and the `ConfigChanged` echo.
 pub fn appearance_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
+    scheme_picker: Option<ConfigKey>,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Appearance, config, buffer)
+    tab_page(SettingsTab::Appearance, config, buffer, scheme_picker)
 }
 
 /// The Behavior tab's page: how `DropTerm` acts — the Tabs card (the
@@ -2114,7 +2141,7 @@ pub fn behavior_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Behavior, config, buffer)
+    tab_page(SettingsTab::Behavior, config, buffer, None)
 }
 
 /// The Advanced tab's page: exactly the Advanced card as it hosted
@@ -2123,7 +2150,7 @@ pub fn advanced_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Advanced, config, buffer)
+    tab_page(SettingsTab::Advanced, config, buffer, None)
 }
 
 /// The Keybindings tab's page: the search input on top, then one
@@ -2250,10 +2277,11 @@ fn tab_page(
     tab: SettingsTab,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
+    scheme_picker: Option<ConfigKey>,
 ) -> Element<'static, SettingsEvent> {
     let cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
         .iter()
-        .map(|section| drawer_section(*section, config, buffer))
+        .map(|section| drawer_section(*section, config, buffer, scheme_picker))
         .collect();
     widget::settings::view_column(cards).into()
 }
@@ -2515,10 +2543,11 @@ fn drawer_section(
     section: Section,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
+    scheme_picker: Option<ConfigKey>,
 ) -> Element<'static, SettingsEvent> {
     let mut built = widget::settings::section().title(section.title());
     for key in section.keys() {
-        built = built.add(drawer_item(*key, config, buffer));
+        built = built.add(drawer_item(*key, config, buffer, scheme_picker));
     }
     built.into()
 }
@@ -2546,8 +2575,9 @@ fn drawer_item(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
+    scheme_picker: Option<ConfigKey>,
 ) -> Element<'static, SettingsEvent> {
-    let control = drawer_control(key, config, buffer)
+    let control = drawer_control(key, config, buffer, scheme_picker)
         .expect("every exposed key has exactly one control (section map)");
     widget::settings::item::builder(key.label())
         .description(drawer_description(key))
@@ -2555,16 +2585,29 @@ fn drawer_item(
         .into()
 }
 
-/// The key's control widget: sliders (the buffered readout above),
-/// then dropdowns, then toggles, then text inputs. Each builder
-/// claims only its own keys; the `expect` in [`drawer_item`] is
-/// totality — every exposed key has exactly one control, pinned by
-/// the section-map test.
+/// The key's control widget: the scheme pickers, then sliders (the
+/// buffered readout above), then dropdowns, then toggles, then text
+/// inputs. Each builder claims only its own keys; the `expect` in
+/// [`drawer_item`] is totality — every exposed key has exactly one
+/// control, pinned by the section-map test.
 fn drawer_control(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
+    scheme_picker: Option<ConfigKey>,
 ) -> Option<Element<'static, SettingsEvent>> {
+    // The two scheme controls are pickers, not stock dropdowns: the
+    // palette is the preview (see the scheme-picker section).
+    if matches!(
+        key,
+        ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight
+    ) {
+        return Some(scheme_picker_control(
+            key,
+            config,
+            scheme_picker == Some(key),
+        ));
+    }
     // The Shell item is the one two-control setting (default-spawn
     // DS-2): the detected-shells dropdown with the custom-path text
     // input beneath, claimed ahead of the single-control chain.
@@ -2664,9 +2707,6 @@ fn dropdown_control(
             .iter()
             .map(|(_, label)| *label)
             .collect(),
-        // The scheme rows offer the registry itself — names in
-        // registry order, not a local table.
-        ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight => scheme_names(),
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .iter()
             .map(|(_, label)| *label)
@@ -2679,6 +2719,536 @@ fn dropdown_control(
         })
         .into(),
     )
+}
+
+// --- the scheme pickers: the palette is the preview (scheme-picker) ---
+//
+// The two scheme controls are not stock dropdowns: every scheme row
+// shows the scheme itself — a background chip, a foreground chip,
+// then the sixteen ANSI colors the terminal actually renders with,
+// resolved through [`scheme_previews`] (the same conversion the
+// terminal serves, pinned). The closed control shows the configured
+// scheme's name plus a mini chip strip; a press opens a popover that
+// lists the whole registry, anchored like the stock dropdown's menu
+// (the overlay resolves its position per frame against the anchor's
+// translated bounds, so it tracks the control through the drawer's
+// scrollable). A row pick emits the *same*
+// [`SettingsEvent::Picked`] with the *same* registry-order index the
+// stock dropdown emitted — planners and writes untouched.
+
+/// One popover row's height in px.
+const SCHEME_ROW_HEIGHT: f32 = 32.0;
+/// One popover chip's edge in px — 2px-radius squares, a nod to
+/// terminal cells (the OQ-2 recommendation, hardware-confirmed
+/// pending).
+const SCHEME_CHIP: f32 = 10.0;
+/// The gap between chips in px.
+const SCHEME_CHIP_GAP: f32 = 2.0;
+/// The closed control's mini-strip chip edge in px — small enough
+/// that all eighteen fit the item's control column.
+const SCHEME_CHIP_MINI: f32 = 5.0;
+/// The popover's inner horizontal padding in px.
+const SCHEME_POPOVER_PAD_X: f32 = 8.0;
+
+/// The picker's cached name paragraph — registry names are
+/// compile-time, so the cache is built once and only the count is
+/// guarded.
+type SchemeNameParagraph =
+    paragraph::Plain<<Renderer as cosmic::iced::core::text::Renderer>::Paragraph>;
+
+/// The scheme picker host's tree state: one name paragraph per
+/// registry scheme, in registry order.
+struct SchemePickerState {
+    names: Vec<SchemeNameParagraph>,
+}
+
+impl SchemePickerState {
+    fn new() -> Self {
+        let names = scheme_names()
+            .into_iter()
+            .map(|name| {
+                let mut paragraph = SchemeNameParagraph::default();
+                paragraph.update(Text {
+                    content: name,
+                    bounds: Size::INFINITE,
+                    size: Pixels(14.0),
+                    line_height: LineHeight::default(),
+                    font: cosmic::font::default(),
+                    align_x: cosmic::iced::core::text::Alignment::Left,
+                    align_y: alignment::Vertical::Center,
+                    shaping: Shaping::Advanced,
+                    wrapping: cosmic::iced::core::text::Wrapping::default(),
+                    ellipsize: cosmic::iced::core::text::Ellipsize::None,
+                });
+                paragraph
+            })
+            .collect();
+        Self { names }
+    }
+}
+
+/// One chip of the closed control's mini strip: a solid rounded
+/// square in the previewed color. A `None` color (the COSMIC pair's
+/// background) previews the honest thing — the theme surface the
+/// terminal falls back to, read live so the chip follows the theme.
+fn mini_chip(size: f32, color: Option<cosmic::iced::Color>) -> Element<'static, SettingsEvent> {
+    widget::container(Space::new().width(size).height(size))
+        .width(size)
+        .height(size)
+        .class(theme::Container::custom(move |theme| {
+            let color = color.unwrap_or_else(|| {
+                cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base)
+            });
+            cosmic::iced::widget::container::Style {
+                background: Some(color.into()),
+                border: Border {
+                    radius: 2.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }))
+        .into()
+}
+
+/// The scheme's mini chip strip: background, foreground, then the
+/// sixteen ANSI colors — the shared preview seam. The closed scheme
+/// controls render it; the profile form's scheme feedback
+/// (`profile-manager`) reuses it with zero new chip code.
+pub fn scheme_chip_strip(preview: SchemePreview) -> Element<'static, SettingsEvent> {
+    let rgb_color = |rgb: crate::terminal::theme_source::Rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b);
+    let chips = std::iter::once(preview.background.map(rgb_color))
+        .chain(std::iter::once(preview.foreground.map(rgb_color)))
+        .chain(preview.ansi.iter().map(|slot| slot.map(rgb_color)))
+        .map(|color| mini_chip(SCHEME_CHIP_MINI, color));
+    widget::row(chips.collect::<Vec<_>>()).spacing(1.5).into()
+}
+
+/// The scheme picker's closed control: the configured scheme's name
+/// over its mini chip strip, the whole button opening the popover.
+/// The name is the stored value verbatim — a resolvable name is the
+/// registry's own spelling, an unknown one stays honest about what
+/// the file says (and marks no popover row: `dropdown_selected` is
+/// the single index source for both the strip and the marker).
+#[must_use]
+pub fn scheme_picker_control(
+    key: ConfigKey,
+    config: &DropTermConfig,
+    open: bool,
+) -> Element<'static, SettingsEvent> {
+    let selected = dropdown_selected(key, config);
+    let stored = match key {
+        ConfigKey::ColorSchemeDark => config.color_scheme_dark.clone(),
+        ConfigKey::ColorSchemeLight => config.color_scheme_light.clone(),
+        _ => String::new(),
+    };
+    let preview =
+        selected.and_then(|index| scheme_previews().get(index).map(|(_, preview)| *preview));
+    let mut content = widget::column![widget::text(stored)].spacing(4);
+    if let Some(preview) = preview {
+        content = content.push(scheme_chip_strip(preview));
+    }
+    let control: Element<'static, SettingsEvent> = widget::button::custom(content)
+        .on_press(SettingsEvent::ToggleSchemePicker(key))
+        .into();
+    Element::new(SchemePicker {
+        key,
+        selected,
+        open,
+        control,
+    })
+}
+
+/// The scheme picker host: lays out, updates, and draws exactly its
+/// closed control (the delegation pattern of libcosmic's `Tooltip`),
+/// and — while the app holds the picker open — hosts the popover as
+/// its overlay, anchored to the control's translated bounds so it
+/// tracks the control inside the drawer's scrollable.
+struct SchemePicker<'a> {
+    key: ConfigKey,
+    selected: Option<usize>,
+    open: bool,
+    control: Element<'a, SettingsEvent>,
+}
+
+impl Widget<SettingsEvent, Theme, Renderer> for SchemePicker<'_> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<SchemePickerState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(SchemePickerState::new())
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.control)]
+    }
+
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut [self.control.as_widget_mut()]);
+        debug_assert_eq!(
+            tree.state.downcast_ref::<SchemePickerState>().names.len(),
+            scheme_names().len(),
+            "the registry is compile-time; the paragraph cache cannot drift"
+        );
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.control.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.control
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, SettingsEvent>,
+        viewport: &Rectangle,
+    ) {
+        self.control.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.control.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.control.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, SettingsEvent, Theme, Renderer>> {
+        if let Some(child) = self.control.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        ) {
+            return Some(child);
+        }
+        if !self.open {
+            return None;
+        }
+        let bounds = layout.bounds();
+        Some(overlay::Element::new(Box::new(SchemePopover {
+            state: tree.state.downcast_mut::<SchemePickerState>(),
+            key: self.key,
+            selected: self.selected,
+            anchor: Rectangle::new(bounds.position() + translation, bounds.size()),
+        })))
+    }
+}
+
+/// The open scheme picker's popover: one row per registry scheme —
+/// name plus its resolved eighteen colors — in a dropdown-styled
+/// bubble anchored below the control (above it when the space below
+/// runs out, the stock menu's rule). Dismissal is the dropdown's own
+/// contract: a left press on a row picks it and closes, any other
+/// press closes without picking, every press is captured, and Escape
+/// closes. The marker is the stock menu's selected treatment: the
+/// picked row fills and its name carries the accent.
+struct SchemePopover<'a> {
+    state: &'a mut SchemePickerState,
+    key: ConfigKey,
+    selected: Option<usize>,
+    /// The control's absolute bounds (translation applied).
+    anchor: Rectangle,
+}
+
+impl SchemePopover<'_> {
+    /// The row under the point, if any.
+    fn row_at(bounds: Rectangle, point: Point) -> Option<usize> {
+        if !bounds.contains(point) {
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "row indices are far below 2^24, so the f32 floor is exact and non-negative inside the bounds"
+        )]
+        Some(((point.y - bounds.y) / SCHEME_ROW_HEIGHT) as usize)
+    }
+
+    /// The chip strip's total width: eighteen chips and their gaps.
+    fn strip_width() -> f32 {
+        18.0 * SCHEME_CHIP + 17.0 * SCHEME_CHIP_GAP
+    }
+}
+
+impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
+    fn layout(&mut self, _renderer: &Renderer, bounds: Size) -> layout::Node {
+        let widest = self
+            .state
+            .names
+            .iter()
+            .map(SchemeNameParagraph::min_width)
+            .fold(0.0, f32::max);
+        let content = SCHEME_POPOVER_PAD_X * 2.0 + 24.0 + widest + 8.0 + Self::strip_width();
+        let width = content
+            .max(self.anchor.width)
+            .min((bounds.width - self.anchor.x).max(0.0));
+        let space_below = bounds.height - (self.anchor.y + self.anchor.height);
+        let space_above = self.anchor.y;
+        let below = space_below >= space_above;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "row count is far below 2^24, so usize -> f32 is exact"
+        )]
+        let height = (scheme_previews().len() as f32 * SCHEME_ROW_HEIGHT).min(if below {
+            space_below
+        } else {
+            space_above
+        });
+        let position = if below {
+            Point::new(self.anchor.x, self.anchor.y + self.anchor.height)
+        } else {
+            Point::new(self.anchor.x, self.anchor.y - height)
+        };
+        layout::Node::new(Size::new(width, height)).move_to(position)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, SettingsEvent>,
+    ) {
+        match event {
+            // The dropdown's dismissal contract, unchanged from the
+            // tab-bar menus: a left press on a row first publishes
+            // its pick — the identical event, the identical
+            // registry-order index the stock dropdown emitted — then
+            // everything closes, and the press is captured so nothing
+            // under the bubble acts on it.
+            Event::Mouse(MouseEvent::ButtonPressed(button)) => {
+                if *button == Button::Left
+                    && let Some(index) = cursor
+                        .position()
+                        .and_then(|point| Self::row_at(layout.bounds(), point))
+                    && index < scheme_previews().len()
+                {
+                    shell.publish(SettingsEvent::Picked(self.key, index));
+                }
+                shell.publish(SettingsEvent::CloseSchemePicker);
+                shell.capture_event();
+                shell.request_redraw();
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => {
+                shell.publish(SettingsEvent::CloseSchemePicker);
+                shell.capture_event();
+            }
+            _ => {}
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        if cursor
+            .position()
+            .is_some_and(|point| layout.bounds().contains(point))
+        {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::None
+        }
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        let cosmic = theme.cosmic();
+        let accent: Color = cosmic.accent.base.into();
+        let menu = layout.bounds();
+        // The stock dropdown container's own surface: component
+        // background, hairline divider, small radius — cohesion with
+        // every other dropdown in the drawer.
+        renderer.fill_quad(
+            Quad {
+                bounds: menu,
+                border: Border {
+                    width: 1.0,
+                    color: cosmic.bg_component_divider().into(),
+                    radius: cosmic.radius_s().into(),
+                },
+                snap: true,
+                ..Default::default()
+            },
+            cosmic.bg_component_color(),
+        );
+
+        let hovered = cursor
+            .position()
+            .and_then(|point| Self::row_at(menu, point));
+        let chip_y = menu.y + (SCHEME_ROW_HEIGHT - SCHEME_CHIP) / 2.0;
+        let strip_x = menu.x + menu.width - SCHEME_POPOVER_PAD_X - Self::strip_width();
+        for (index, (_, preview)) in scheme_previews().iter().enumerate() {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "row count is far below 2^24, so usize -> f32 is exact"
+            )]
+            let row_y = menu.y + index as f32 * SCHEME_ROW_HEIGHT;
+            let row = Rectangle::new(
+                Point::new(menu.x, row_y),
+                Size::new(menu.width, SCHEME_ROW_HEIGHT),
+            );
+            // The marker: the picked row fills and its name carries
+            // the accent — the stock menu's selected treatment. The
+            // hover fill is the same treatment at whisper alpha, the
+            // tab-bar menus' rule.
+            if self.selected == Some(index) {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: row,
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.25, ..accent },
+                );
+            } else if hovered == Some(index) {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: row,
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.12, ..accent },
+                );
+            }
+
+            // The chip strip: background, foreground, then the ANSI
+            // sixteen — the palette is the preview. The background
+            // chip carries a hairline divider border, the one chip
+            // that can otherwise vanish against the bubble's own
+            // surface (OQ-2's rule).
+            let text_color = if self.selected == Some(index) {
+                accent
+            } else {
+                style.text_color
+            };
+            for (chip_index, color) in std::iter::once(preview.background)
+                .chain(std::iter::once(preview.foreground))
+                .chain(preview.ansi.iter().copied())
+                .enumerate()
+            {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "chip count is far below 2^24, so usize -> f32 is exact"
+                )]
+                let chip_x = strip_x + chip_index as f32 * (SCHEME_CHIP + SCHEME_CHIP_GAP);
+                let bounds = Rectangle::new(
+                    Point::new(chip_x, chip_y),
+                    Size::new(SCHEME_CHIP, SCHEME_CHIP),
+                );
+                let color = color.map_or(Color::from(cosmic.bg_component_color()), |rgb| {
+                    Color::from_rgb8(rgb.r, rgb.g, rgb.b)
+                });
+                renderer.fill_quad(
+                    Quad {
+                        bounds,
+                        border: if chip_index == 0 {
+                            Border {
+                                width: 1.0,
+                                color: cosmic.bg_component_divider().into(),
+                                radius: 2.0.into(),
+                            }
+                        } else {
+                            Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            }
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    color,
+                );
+            }
+
+            let paragraph = &self.state.names[index];
+            let text_y = row.y + (row.height - paragraph.min_height()) / 2.0;
+            renderer.fill_paragraph(
+                paragraph.raw(),
+                Point::new(row.x + SCHEME_POPOVER_PAD_X, text_y),
+                text_color,
+                menu,
+            );
+        }
+    }
 }
 
 /// A toggle control (commit on change). The flip resolves through
@@ -2877,10 +3447,10 @@ mod tests {
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
         buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
-        let _ = appearance_view(&config, &buffer);
+        let _ = appearance_view(&config, &buffer, None);
         let _ = behavior_view(&config, &buffer);
         let _ = advanced_view(&config, &buffer);
-        let _ = appearance_view(&config, &SettingsBuffer::default());
+        let _ = appearance_view(&config, &SettingsBuffer::default(), None);
         let _ = behavior_view(&config, &SettingsBuffer::default());
         let _ = advanced_view(&config, &SettingsBuffer::default());
     }
@@ -2901,7 +3471,7 @@ mod tests {
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
         for section in Section::ALL {
             for key in section.keys() {
-                let _ = drawer_item(*key, &config, &buffer);
+                let _ = drawer_item(*key, &config, &buffer, None);
             }
         }
     }
@@ -2953,6 +3523,37 @@ mod tests {
         assert_eq!(tab_header(SettingsTab::Profiles), "Profiles");
         assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
         assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+    }
+
+    // --- the scheme pickers (scheme-picker T2) ---
+
+    #[test]
+    fn the_scheme_picker_control_builds_in_every_config_state() {
+        // Construction is the assertion for both halves: the closed
+        // control (name + mini chip strip) and the popover host it
+        // becomes while open — both keys, open and closed, over a
+        // default, set, and unknown stored scheme name.
+        let mut config = DropTermConfig::default();
+        for open in [false, true] {
+            let _ = scheme_picker_control(ConfigKey::ColorSchemeDark, &config, open);
+            let _ = scheme_picker_control(ConfigKey::ColorSchemeLight, &config, open);
+        }
+        config.color_scheme_dark = "Dracula".to_string();
+        config.color_scheme_light = "Not A Scheme".to_string();
+        for open in [false, true] {
+            let _ = scheme_picker_control(ConfigKey::ColorSchemeDark, &config, open);
+            let _ = scheme_picker_control(ConfigKey::ColorSchemeLight, &config, open);
+        }
+    }
+
+    #[test]
+    fn the_appearance_page_builds_with_a_picker_open_and_closed() {
+        // The open flag is view state threaded through the page
+        // builder; the page must construct in both states.
+        let config = DropTermConfig::default();
+        let buffer = SettingsBuffer::default();
+        let _ = appearance_view(&config, &buffer, Some(ConfigKey::ColorSchemeDark));
+        let _ = appearance_view(&config, &buffer, None);
     }
 
     #[test]

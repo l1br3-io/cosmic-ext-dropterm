@@ -12,10 +12,11 @@
 // extras, each with its source and license recorded on the const
 // below; the COSMIC pair keeps its hand-tuned tables.
 
-use alacritty_terminal::{
-    term::color::Colors,
-    vte::ansi::{NamedColor, Rgb},
-};
+use alacritty_terminal::{term::color::Colors, vte::ansi::NamedColor};
+
+// Re-exported because [`SchemePreview`]'s slots name it — the chip
+// renderers beyond this module must be able to spell it.
+pub use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::config::{COSMIC_THEME_DARK, COSMIC_THEME_LIGHT};
 
@@ -733,13 +734,6 @@ pub fn scheme_names() -> Vec<&'static str> {
 /// normal 0–7 then bright 8–15 — the sixteen colors every scheme
 /// fully defines, everything the terminal ever shows beyond
 /// background and foreground.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by scheme_previews, whose view consumer arrives with scheme-picker's next task"
-    )
-)]
 const PREVIEW_ANSI: [NamedColor; 16] = [
     NamedColor::Black,
     NamedColor::Red,
@@ -767,13 +761,6 @@ const PREVIEW_ANSI: [NamedColor; 16] = [
 /// (the window follows the system theme), so its chip previews
 /// exactly that — the view draws a `None` background from the live
 /// theme, the honest "what the terminal shows" color.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "constructed by scheme_previews; the view consumer arrives with scheme-picker's next task"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SchemePreview {
     /// The scheme's background, or `None` where the terminal falls
@@ -791,13 +778,6 @@ pub struct SchemePreview {
 /// strip both render from this; the settings drawer is its first
 /// consumer and the profile scheme field (`profile-manager`) reuses
 /// it without new swatch code.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned here first; the view consumer arrives with scheme-picker's next task"
-    )
-)]
 pub fn scheme_previews() -> Vec<(&'static str, SchemePreview)> {
     SCHEMES
         .iter()

@@ -350,6 +350,12 @@ pub struct DropTerm {
     /// the chord — the inline error row's payload. Cleared by the
     /// next arm, commit, revert, page turn, or close.
     keybind_conflict: Option<(Action, Action)>,
+    /// The scheme picker whose popover is open (scheme-picker):
+    /// `None` = closed. One at most — the flag is transient view
+    /// state the drawer's rules clear (an explicit close, a page
+    /// turn off Appearance); focus-loss hides preserve it with the
+    /// drawer.
+    scheme_picker: Option<settings::ConfigKey>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -1071,6 +1077,11 @@ impl DropTerm {
     /// page it closed on.
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
+        // The scheme popover dies with the drawer: the explicit close
+        // clears transient UI state (the keybind search and capture
+        // rule below); the landing turn stays on Appearance, so the
+        // page-turn clear would not catch it.
+        self.scheme_picker = None;
         self.turn_settings_page(home_settings_page());
         // The Keybindings tab's search and capture state are drawer
         // buffer state: cleared on the explicit close, preserved
@@ -1152,6 +1163,12 @@ impl DropTerm {
                 &mut self.profile_draft,
                 settings::ProfileDraftTransition::Clear,
             );
+        }
+        // A turn off Appearance closes the scheme popover with its
+        // anchor — a stale open flag must not resurrect it on return
+        // (the keybind-capture page-turn rule).
+        if tab != SettingsTab::Appearance {
+            self.scheme_picker = None;
         }
         self.settings_page = tab;
         self.sync_settings_tab_strip();
@@ -2961,6 +2978,7 @@ impl Application for DropTerm {
             key_binds,
             keybind_capture: None,
             keybind_search: String::new(),
+            scheme_picker: None,
             keybind_conflict: None,
             last_toggle: None,
             slide: None,
@@ -3384,7 +3402,7 @@ impl Application for DropTerm {
         // disambiguates.
         let drawer_content = match self.settings_page {
             SettingsTab::Appearance => {
-                settings::appearance_view(&self.config, &self.settings_buffer)
+                settings::appearance_view(&self.config, &self.settings_buffer, self.scheme_picker)
             }
             SettingsTab::Behavior => settings::behavior_view(&self.config, &self.settings_buffer),
             SettingsTab::Profiles => settings::profiles_view(
@@ -3759,9 +3777,13 @@ impl DropTerm {
                 // that. The press never reaches the terminal and the
                 // surface does not hide; with the drawer closed the
                 // pure rule returns `FallThrough` and the bind match
-                // below runs exactly as today.
-                if drawer_escape_routing(self.settings_open, &key) == DrawerKeyRouting::CloseDrawer
-                {
+                // below runs exactly as today. An open scheme picker
+                // owns the first Escape (the keybind-capture rule):
+                // its overlay publishes the close, and this routing
+                // must not also close the drawer — a later Escape
+                // does.
+                let drawer_escapable = self.settings_open && self.scheme_picker.is_none();
+                if drawer_escape_routing(drawer_escapable, &key) == DrawerKeyRouting::CloseDrawer {
                     return self.close_settings_drawer();
                 }
                 if let Some(action) =
@@ -4147,6 +4169,24 @@ impl DropTerm {
                         if let Some(write) = write {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
+                        // A scheme pick closes its picker: the
+                        // popover's dismissal contract, applied where
+                        // the pick lands.
+                        if matches!(
+                            key,
+                            settings::ConfigKey::ColorSchemeDark
+                                | settings::ConfigKey::ColorSchemeLight
+                        ) {
+                            self.scheme_picker = None;
+                        }
+                    }
+                    settings::SettingsEvent::ToggleSchemePicker(key) => {
+                        // One picker at most: pressing the other scheme
+                        // control swaps, pressing the open one closes.
+                        self.scheme_picker = (self.scheme_picker != Some(key)).then_some(key);
+                    }
+                    settings::SettingsEvent::CloseSchemePicker => {
+                        self.scheme_picker = None;
                     }
                     settings::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
