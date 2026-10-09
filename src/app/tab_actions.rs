@@ -183,6 +183,11 @@ impl DropTerm {
         // shell's first OSC title report reads as unchanged.
         self.tab_cwds.remove(&tab);
         self.tab_cwds.insert(tab_id, respawn_cwd);
+        // The respawned tab is the focused one: its (possibly new)
+        // scheme owns the window background from the first paint of
+        // the fresh terminal — the every-assignment rule, the restore
+        // precedent in `ensure_tabs`.
+        self.refresh_active_window_bg();
         Task::batch([refocus, self.mark_session_dirty()])
     }
 

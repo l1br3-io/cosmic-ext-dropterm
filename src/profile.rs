@@ -116,13 +116,6 @@ pub fn effective_default<'a>(
 /// ignored — global resolution, exactly as
 /// [`theme_source::by_name`] falls back for unknown global names;
 /// never an error surface, never a store rewrite.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
-    )
-)]
 pub fn effective_scheme_name<'a>(
     profile: Option<&'a Profile>,
     global_dark: &'a str,
@@ -139,13 +132,6 @@ pub fn effective_scheme_name<'a>(
 /// The font size a tab under `profile` renders at: the profile's
 /// override, else the global pick. Applied at spawn and in the live
 /// config-apply pass, like [`effective_scheme_name`].
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
-    )
-)]
 pub fn effective_font_size(profile: Option<&Profile>, global: u16) -> u16 {
     profile
         .and_then(|profile| profile.font_size)
@@ -155,13 +141,6 @@ pub fn effective_font_size(profile: Option<&Profile>, global: u16) -> u16 {
 /// The scrollback capacity a terminal under `profile` starts with:
 /// the profile's override, else the global pick. Terminal-creation
 /// only — the same timing the global key itself carries.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
-    )
-)]
 pub fn effective_scrollback(profile: Option<&Profile>, global: u32) -> u32 {
     profile
         .and_then(|profile| profile.scrollback_lines)

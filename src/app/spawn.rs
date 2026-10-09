@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
-use super::{DropTerm, colors_for};
+use super::{DropTerm, effective_colors, effective_is_dark, resolved_profile};
 use crate::config::{DropTermConfig, NewTabCwd};
 use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
-use crate::terminal::Terminal;
+use crate::terminal::{Terminal, TerminalOptions};
 
 /// What a new tab runs: the user's shell — config-resolved or per-tab
 /// recorded — paired with the config's shell arguments, an explicit
@@ -315,8 +315,25 @@ impl DropTerm {
             }
         };
 
+        // The spawn's own appearance resolution — the same
+        // [`resolved_profile`]/seam chain the config-apply pass runs
+        // per tab: the spawning profile's effective values (global
+        // for every non-Profile arm and the degraded blank-line
+        // branch, whose `profile_id = None` rule this shares).
+        // Resolved into primitives here — the profile reference
+        // borrows `self.config`, and the id allocation below needs
+        // `&mut self`.
+        let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
+        let (font_size, scrollback, colors) = {
+            let profile = resolved_profile(&self.config, profile_id.as_deref());
+            (
+                profile::effective_font_size(profile, self.config.font_size),
+                profile::effective_scrollback(profile, self.config.scrollback_lines),
+                effective_colors(&self.config, profile, is_dark),
+            )
+        };
         let term_config = TermConfig {
-            scrolling_history: self.config.scrollback_lines as usize,
+            scrolling_history: scrollback as usize,
             ..TermConfig::default()
         };
         let pty_options = PtyOptions {
@@ -337,19 +354,15 @@ impl DropTerm {
         let tab_id = TabId(self.next_tab_id);
         self.next_tab_id += 1;
 
-        // The spawn's own color resolution — the same [`colors_for`]
-        // chain the config-apply pass runs per tab: the Profile arm's
-        // recorded id, the global pick for every other arm (including
-        // the degraded blank-line branch above, whose
-        // `profile_id = None` rule this shares).
-        let colors = colors_for(&self.config, &self.active_colors(), profile_id.as_deref());
-
         match Terminal::new(
             tab_id,
             tx,
             term_config,
             &pty_options,
-            &self.terminal_options(),
+            &TerminalOptions {
+                font_size,
+                ..TerminalOptions::default()
+            },
             &colors,
         ) {
             Ok(terminal) => Some(SpawnedTerminal {

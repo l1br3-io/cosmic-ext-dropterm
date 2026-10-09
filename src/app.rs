@@ -421,41 +421,23 @@ impl DropTerm {
         self.tabs.get(self.active_tab)
     }
 
-    fn terminal_options(&self) -> TerminalOptions {
+    /// The terminal options a tab under `profile` renders with: the
+    /// profile's font override, else the global pick —
+    /// [`profile::effective_font_size`], the `profile ?? global`
+    /// rule's font arm. `None` (plain tabs, dangling ids) is the
+    /// pure global resolution.
+    fn terminal_options_for(&self, profile: Option<&profile::Profile>) -> TerminalOptions {
         TerminalOptions {
-            font_size: self.config.font_size,
+            font_size: profile::effective_font_size(profile, self.config.font_size),
             ..TerminalOptions::default()
         }
     }
 
-    /// The global color pick, unchanged by the profile-appearance
-    /// chain: plain tabs' colors, every profile tab's fallback (see
-    /// [`colors_for`]), and the resolution behind the window
-    /// background when no tab exists.
-    fn active_colors(&self) -> aterm::color::Colors {
-        // The config preference is the source of truth:
-        // `effective_is_dark`, not a direct global read, decides the
-        // mode, so a pick applies colors in this same pass — before
-        // the async `set_theme` task lands and moves the global.
-        let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
-        let scheme_name = if is_dark {
-            &self.config.color_scheme_dark
-        } else {
-            &self.config.color_scheme_light
-        };
-        theme_source::by_name(scheme_name).unwrap_or_else(|| {
-            if is_dark {
-                theme_source::cosmic_dark()
-            } else {
-                theme_source::cosmic_light()
-            }
-        })
-    }
-
     /// Applies the current config and theme to every tab's terminal.
-    /// Colors resolve per tab through the [`colors_for`] chain — a
-    /// profile tab runs its profile's scheme, every other tab the
-    /// global pick — so one pass can paint a mixed pair differently;
+    /// Colors and font resolve per tab through the
+    /// [`resolved_profile`]/[`effective_colors`] chain — a profile
+    /// tab runs its profile's scheme and font, every other tab the
+    /// global picks — so one pass can paint a mixed pair differently;
     /// the window background then follows the active tab's
     /// resolution, keeping chrome and unset-bg cells in step with
     /// whichever tab is on screen.
@@ -493,16 +475,20 @@ impl DropTerm {
     /// window background (the tab-switch door into the same stale
     /// snapshot as the theme flip).
     fn refresh_active_window_bg(&self) {
-        let global = self.active_colors();
-        let colors = colors_for(
+        // The config preference is the source of truth:
+        // `effective_is_dark`, not a direct global read, decides the
+        // mode, so a pick applies colors in this same pass — before
+        // the async `set_theme` task lands and moves the global.
+        let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
+        let active_profile = resolved_profile(
             &self.config,
-            &global,
             self.active().and_then(|tab| tab.profile.as_deref()),
         );
-        Self::refresh_window_bg_color(&colors);
-        let options = self.terminal_options();
+        Self::refresh_window_bg_color(&effective_colors(&self.config, active_profile, is_dark));
         for tab in &self.tabs {
-            let colors = colors_for(&self.config, &global, tab.profile.as_deref());
+            let profile = resolved_profile(&self.config, tab.profile.as_deref());
+            let options = self.terminal_options_for(profile);
+            let colors = effective_colors(&self.config, profile, is_dark);
             tab.terminal.lock().unwrap().set_config(&options, &colors);
         }
     }
@@ -1648,33 +1634,45 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
     }
 }
 
-/// The per-tab terminal-color resolution — the one seam both
-/// application points (spawn and the live config-apply pass)
-/// consume: the tab's recorded profile id → [`profile::find`] → the
-/// profile's `color_scheme` → [`theme_source::by_name`]. Every miss
-/// — no recorded id, a dangling id, no scheme, an unknown scheme
-/// name — resolves the injected `global` pick (itself the
-/// [`DropTerm::active_colors`] result, this chain's fallback the way
-/// the COSMIC pair is that one's): the chain never errors, and the
-/// store is never rewritten to "fix" a stored name. Only the unknown
-/// name warns — the `live_preset_cwd` precedent.
-fn colors_for(
+/// The profile a recorded tab id resolves to right now — `None` for
+/// plain tabs and dangling ids (a deleted profile, a hand-edited
+/// config): the lookup every per-tab appearance resolution (colors,
+/// font, scrollback) shares. Free over the config so the chain is
+/// headless-pinnable (constructing `DropTerm` needs a live `Core`).
+fn resolved_profile<'a>(
+    config: &'a DropTermConfig,
+    name: Option<&str>,
+) -> Option<&'a profile::Profile> {
+    name.and_then(|name| profile::find(&config.profiles, name))
+}
+
+/// The colors a tab under `profile` renders with — the color arm of
+/// the per-tab resolution both application points (spawn and the
+/// live config-apply pass) consume:
+/// [`profile::effective_scheme_name`] resolves the scheme name (the
+/// profile's explicit pick in both system modes, else the global
+/// pair for `is_dark`), and the registry lookup falls back to the
+/// COSMIC pair for the mode on any miss — unknown profile names and
+/// unknown global names alike, exactly as the global pick itself
+/// always has. The chain never errors, and the store is never
+/// rewritten to "fix" a stored name.
+fn effective_colors(
     config: &DropTermConfig,
-    global: &aterm::color::Colors,
-    profile_name: Option<&str>,
+    profile: Option<&profile::Profile>,
+    is_dark: bool,
 ) -> aterm::color::Colors {
-    let Some(profile) = profile_name.and_then(|name| profile::find(&config.profiles, name)) else {
-        return *global;
-    };
-    let Some(scheme) = profile.color_scheme.as_deref() else {
-        return *global;
-    };
-    theme_source::by_name(scheme).unwrap_or_else(|| {
-        log::warn!(
-            "ignoring profile {} color scheme {scheme:?}: not a built-in scheme name",
-            profile.name
-        );
-        *global
+    let name = profile::effective_scheme_name(
+        profile,
+        &config.color_scheme_dark,
+        &config.color_scheme_light,
+        is_dark,
+    );
+    theme_source::by_name(name).unwrap_or_else(|| {
+        if is_dark {
+            theme_source::cosmic_dark()
+        } else {
+            theme_source::cosmic_light()
+        }
     })
 }
 
@@ -2378,15 +2376,16 @@ mod tests {
         assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
     }
 
-    // --- the per-tab color resolution chain ---
+    // --- the per-tab appearance resolution chain ---
     //
-    // `colors_for` is the one seam both application points consume
-    // (spawn and the config-apply pass): the tab's recorded profile
-    // id → the profile's scheme name → the built-in registry. Every
-    // miss falls back to the injected global pick; the chain never
-    // errors. Nord plays the global below — its slots differ from
-    // Dracula's everywhere asserted, so a silent fallback to the
-    // scheme (or a scheme leaking into a fallback) cannot pass.
+    // `resolved_profile` + `effective_colors` is the one chain both
+    // application points consume (spawn and the config-apply pass):
+    // the tab's recorded profile id → the profile → the seams → the
+    // built-in registry. Every miss falls back to the global pick;
+    // the chain never errors. Nord plays the global below — its
+    // slots differ from Dracula's everywhere asserted, so a silent
+    // fallback to the scheme (or a scheme leaking into a fallback)
+    // cannot pass.
 
     /// Decode a packed `0xRRGGBB` literal into an `Rgb` (mirrors
     /// `theme_source`'s test helper).
@@ -2415,72 +2414,67 @@ mod tests {
     }
 
     fn chain_config(profiles: &[crate::profile::Profile]) -> DropTermConfig {
+        // Nord as the global pair — a real registry scheme whose
+        // slots differ from Dracula's everywhere asserted below.
         DropTermConfig {
             profiles: profiles.to_vec(),
+            color_scheme_dark: "Nord".to_string(),
+            color_scheme_light: "Nord".to_string(),
             ..DropTermConfig::default()
         }
     }
 
     #[test]
-    fn colors_for_resolves_a_known_scheme_name() {
+    fn effective_colors_resolves_a_known_scheme_name() {
         let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-        let colors = colors_for(
-            &config,
-            &theme_source::by_name("Nord").unwrap(),
-            Some("ssh-prod"),
-        );
+        let profile = resolved_profile(&config, Some("ssh-prod"));
+        let colors = effective_colors(&config, profile, true);
         // Dracula owns bg #282a36 and red #ff5555 (alacritty-theme).
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
         assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_5555)));
     }
 
     #[test]
-    fn colors_for_falls_back_to_global_for_a_plain_tab() {
+    fn effective_colors_falls_back_to_global_for_a_plain_tab() {
         // No recorded id — plain shell tabs, and the degraded preset
         // arm whose blank command line records none (the shared
         // `profile_id = None` rule): the global pick, unchanged.
         let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-        let colors = colors_for(&config, &theme_source::by_name("Nord").unwrap(), None);
+        let colors = effective_colors(&config, resolved_profile(&config, None), true);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
     #[test]
-    fn colors_for_falls_back_to_global_on_a_dangling_profile_id() {
+    fn effective_colors_falls_back_to_global_on_a_dangling_profile_id() {
         // The tab records a profile the config no longer carries
-        // (deleted mid-run): the global pick, never an error.
+        // (deleted mid-run): the lookup is `None`, the global pick —
+        // never an error, never a rewrite.
         let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-        let colors = colors_for(
-            &config,
-            &theme_source::by_name("Nord").unwrap(),
-            Some("ghost"),
-        );
+        assert_eq!(resolved_profile(&config, Some("ghost")), None);
+        let colors = effective_colors(&config, resolved_profile(&config, Some("ghost")), true);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
     #[test]
-    fn colors_for_falls_back_to_global_when_the_profile_sets_no_scheme() {
-        // A profile without a scheme is today's profile: its tabs
-        // follow the global pick.
+    fn effective_colors_falls_back_to_global_when_the_profile_sets_no_scheme() {
+        // A profile without a scheme override: its tabs follow the
+        // global pick.
         let config = chain_config(&[chain_profile("ssh-prod", None)]);
-        let colors = colors_for(
-            &config,
-            &theme_source::by_name("Nord").unwrap(),
-            Some("ssh-prod"),
-        );
+        let profile = resolved_profile(&config, Some("ssh-prod"));
+        let colors = effective_colors(&config, profile, true);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
     #[test]
-    fn colors_for_falls_back_to_global_on_an_unknown_scheme_name() {
+    fn effective_colors_falls_back_to_global_on_an_unknown_scheme_name() {
         // A hand-edited config can name a scheme the registry does
         // not ship ("Catppuccin Frappe" is a real upstream variant):
-        // warn and resolve global — never an error, never a rewrite.
+        // resolve global, silently — exactly how an unknown global
+        // name falls to the COSMIC pair — never an error, never a
+        // rewrite.
         let config = chain_config(&[chain_profile("ssh-prod", Some("Catppuccin Frappe"))]);
-        let colors = colors_for(
-            &config,
-            &theme_source::by_name("Nord").unwrap(),
-            Some("ssh-prod"),
-        );
+        let profile = resolved_profile(&config, Some("ssh-prod"));
+        let colors = effective_colors(&config, profile, true);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
@@ -2491,14 +2485,60 @@ mod tests {
         // the per-tab resolutions differ, so one `apply_config_to_tabs`
         // pass paints them differently.
         let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-        let global = theme_source::by_name("Nord").unwrap();
-        let profile_tab = colors_for(&config, &global, Some("ssh-prod"));
-        let plain_tab = colors_for(&config, &global, None);
+        let profile_tab =
+            effective_colors(&config, resolved_profile(&config, Some("ssh-prod")), true);
+        let plain_tab = effective_colors(&config, resolved_profile(&config, None), true);
         assert_ne!(
             profile_tab[NamedColor::Background],
             plain_tab[NamedColor::Background]
         );
         assert_ne!(profile_tab[NamedColor::Red], plain_tab[NamedColor::Red]);
+    }
+
+    #[test]
+    fn a_respawn_starts_from_the_new_profile_s_effective_values() {
+        // The composition `switch_tab_profile` respawns through (the
+        // same spawn internals every spawn path uses): the new
+        // profile's id resolves, and every appearance value the
+        // fresh terminal starts from — colors at creation, font,
+        // scrollback capacity — comes from that resolution. A
+        // respawn onto a no-override profile starts global instead:
+        // the rule is per field, never per profile.
+        let overridden = crate::profile::Profile {
+            color_scheme: Some("Dracula".to_string()),
+            font_size: Some(11),
+            scrollback_lines: Some(50_000),
+            ..chain_profile("web-prod", None)
+        };
+        let config = chain_config(&[overridden, chain_profile("plain", None)]);
+
+        let web = resolved_profile(&config, Some("web-prod"));
+        assert_eq!(
+            effective_colors(&config, web, true)[NamedColor::Background],
+            Some(rgb(0x28_2A36))
+        );
+        assert_eq!(
+            crate::profile::effective_font_size(web, config.font_size),
+            11
+        );
+        assert_eq!(
+            crate::profile::effective_scrollback(web, config.scrollback_lines),
+            50_000
+        );
+
+        let plain = resolved_profile(&config, Some("plain"));
+        assert_eq!(
+            effective_colors(&config, plain, true)[NamedColor::Background],
+            Some(rgb(0x2E_3440))
+        );
+        assert_eq!(
+            crate::profile::effective_font_size(plain, config.font_size),
+            config.font_size
+        );
+        assert_eq!(
+            crate::profile::effective_scrollback(plain, config.scrollback_lines),
+            config.scrollback_lines
+        );
     }
 
     // --- the clipboard anchor ---
