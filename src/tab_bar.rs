@@ -3285,6 +3285,8 @@ mod tests {
             cwd: None,
             color_scheme: None,
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 
@@ -3592,6 +3594,8 @@ mod tests {
             cwd: None,
             color_scheme: None,
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 

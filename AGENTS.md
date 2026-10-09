@@ -61,3 +61,23 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - `/build` consumes the chunk files; see `.opencode/commands/build.md` (mirrored at `.zcode/commands/build.md`).
 - PRs must copy the module's success criteria into the PR body, since
   reviewers cannot see the local spec files.
+
+
+## File creation
+Bias toward fewer, larger, cohesive files.
+
+Extract a new file or subdirectory ONLY when all of these are true:
+- You find yourself touching unrelated sections of the same file
+  while working on a single feature
+- The new unit maps to one clear concept you can name in a word or short
+  phrase (e.g. `stringset`, `auth` — never `util`, `common`, `misc`)
+- Its contents change together and don't need what you're extracting from
+- The name works as a meaningful prefix for everything inside it
+
+Do NOT split because a file is long or has many items. Size is a lagging
+indicator, not a leading one — it confirms a boundary you already noticed,
+it never creates one on its own.
+
+This guidance assumes module/namespace-oriented languages (Rust, Go,
+JavaScript/TypeScript). It does not apply to frameworks that enforce
+one-class-per-file patterns.
