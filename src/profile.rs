@@ -55,6 +55,18 @@ pub struct Profile {
     /// valid UTF-8.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
+    /// Terminal font size in points the profile's tabs render at —
+    /// applied per tab at spawn and in the live config-apply pass.
+    /// `None` (the default) follows the global font size.
+    #[serde(default)]
+    pub font_size: Option<u16>,
+    /// Scrollback capacity the profile's terminals start with.
+    /// Terminal-creation only (the global key's own timing): a
+    /// running terminal's capacity never changes, so an edit affects
+    /// the next spawn or respawn, never a live tab. `None` (the
+    /// default) follows the global `scrollback_lines`.
+    #[serde(default)]
+    pub scrollback_lines: Option<u32>,
 }
 
 impl Profile {
@@ -93,6 +105,69 @@ pub fn effective_default<'a>(
     find(profiles, default_profile?)
 }
 
+// --- the appearance resolution seams: `profile.override ?? global`,
+// per field — the one rule every appearance consumer (spawn, the live
+// config-apply pass) resolves through, so it can never fork ---
+
+/// The scheme name a tab under `profile` renders with: the profile's
+/// explicit choice in **both** system modes (a profile is a
+/// deliberate environment, not a theme follower), else the global
+/// pair resolved for `is_dark`. An unknown profile scheme name is
+/// ignored — global resolution, exactly as
+/// [`theme_source::by_name`] falls back for unknown global names;
+/// never an error surface, never a store rewrite.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
+    )
+)]
+pub fn effective_scheme_name<'a>(
+    profile: Option<&'a Profile>,
+    global_dark: &'a str,
+    global_light: &'a str,
+    is_dark: bool,
+) -> &'a str {
+    let global = if is_dark { global_dark } else { global_light };
+    profile
+        .and_then(|profile| profile.color_scheme.as_deref())
+        .filter(|name| crate::terminal::theme_source::by_name(name).is_some())
+        .unwrap_or(global)
+}
+
+/// The font size a tab under `profile` renders at: the profile's
+/// override, else the global pick. Applied at spawn and in the live
+/// config-apply pass, like [`effective_scheme_name`].
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
+    )
+)]
+pub fn effective_font_size(profile: Option<&Profile>, global: u16) -> u16 {
+    profile
+        .and_then(|profile| profile.font_size)
+        .unwrap_or(global)
+}
+
+/// The scrollback capacity a terminal under `profile` starts with:
+/// the profile's override, else the global pick. Terminal-creation
+/// only — the same timing the global key itself carries.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned here first; the consumers arrive with profile-appearance's next task"
+    )
+)]
+pub fn effective_scrollback(profile: Option<&Profile>, global: u32) -> u32 {
+    profile
+        .and_then(|profile| profile.scrollback_lines)
+        .unwrap_or(global)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +179,8 @@ mod tests {
             cwd: None,
             color_scheme: None,
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 
@@ -257,5 +334,127 @@ mod tests {
         let text = ron::to_string(&stored).expect("serialize");
         let back: Profile = ron::from_str(&text).expect("deserialize");
         assert_eq!(back, stored);
+    }
+
+    // --- the font/scrollback fields' serde shape (profile-appearance T1) ---
+
+    #[test]
+    fn a_pre_initiative_profile_loads_with_font_and_scrollback_unset() {
+        // The pre-initiative on-disk shape — neither key present —
+        // loads as "follow the global picks", never an error: the
+        // same additive-field leniency as every other Profile field.
+        let loaded: Profile =
+            ron::from_str(r#"(name: "ssh", command: "ssh web")"#).expect("old shape loads");
+        assert_eq!(loaded.font_size, None);
+        assert_eq!(loaded.scrollback_lines, None);
+    }
+
+    #[test]
+    fn a_profile_with_font_and_scrollback_overrides_round_trips_through_ron() {
+        let stored = Profile {
+            font_size: Some(11),
+            scrollback_lines: Some(50_000),
+            ..profile("ssh-prod", "ssh web-prod")
+        };
+        let text = ron::to_string(&stored).expect("serialize");
+        let back: Profile = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, stored);
+    }
+
+    // --- the appearance resolution seams ---
+
+    #[test]
+    fn no_profile_resolves_every_field_global() {
+        // The None arm of every seam: a plain tab, or a recorded id
+        // the list no longer carries — the caller resolves those to
+        // `None` alike, so a dangling profile id is all-global.
+        assert_eq!(
+            effective_scheme_name(None, "Global Dark", "Global Light", true),
+            "Global Dark"
+        );
+        assert_eq!(
+            effective_scheme_name(None, "Global Dark", "Global Light", false),
+            "Global Light"
+        );
+        assert_eq!(effective_font_size(None, 14), 14);
+        assert_eq!(effective_scrollback(None, 10_000), 10_000);
+    }
+
+    #[test]
+    fn none_overrides_inherit_the_global_values() {
+        // The rule's `None` half, per field: an unset override on the
+        // resolved profile is exactly the global value.
+        let inheritor = profile("ssh", "ssh web-prod");
+        assert_eq!(
+            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", true),
+            "Global Dark"
+        );
+        assert_eq!(
+            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", false),
+            "Global Light"
+        );
+        assert_eq!(effective_font_size(Some(&inheritor), 14), 14);
+        assert_eq!(effective_scrollback(Some(&inheritor), 10_000), 10_000);
+    }
+
+    #[test]
+    fn a_profile_scheme_wins_in_both_system_modes() {
+        // The scheme rule's other half: one explicit name, applied
+        // whatever the system mode — a profile is a deliberate
+        // environment, not a theme follower.
+        let schemed = Profile {
+            color_scheme: Some("Dracula".to_string()),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(
+            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", true),
+            "Dracula"
+        );
+        assert_eq!(
+            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", false),
+            "Dracula"
+        );
+    }
+
+    #[test]
+    fn an_unknown_scheme_name_falls_through_to_global_resolution() {
+        // Read-time leniency mirroring the global pick's own: an
+        // unknown name is ignored — the global pair resolves for the
+        // mode — never an error surface, never a store rewrite.
+        let mistyped = Profile {
+            color_scheme: Some("Dracul".to_string()),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(
+            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", true),
+            "Global Dark"
+        );
+        assert_eq!(
+            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", false),
+            "Global Light"
+        );
+    }
+
+    #[test]
+    fn each_field_resolves_independently() {
+        // The rule is per field, not per profile: an override on one
+        // field never drags the others off their global values.
+        let only_font = Profile {
+            font_size: Some(9),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(
+            effective_scheme_name(Some(&only_font), "Global Dark", "Global Light", true),
+            "Global Dark"
+        );
+        assert_eq!(effective_font_size(Some(&only_font), 14), 9);
+        assert_eq!(effective_scrollback(Some(&only_font), 10_000), 10_000);
+
+        let only_scrollback = Profile {
+            scrollback_lines: Some(2_000),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(effective_font_size(Some(&only_scrollback), 14), 14);
+        assert_eq!(effective_scrollback(Some(&only_scrollback), 10_000), 2_000);
     }
 }

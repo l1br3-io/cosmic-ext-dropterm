@@ -2409,6 +2409,8 @@ mod tests {
             cwd: None,
             color_scheme: scheme.map(str::to_owned),
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 

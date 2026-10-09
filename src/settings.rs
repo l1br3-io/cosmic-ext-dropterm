@@ -1453,6 +1453,18 @@ pub fn plan_profile_commit(
                 // writes whatever they hold now.
                 color_scheme: draft.scheme.clone(),
                 env: env_map_from_rows(&draft.env_rows),
+                // The font/scrollback overrides the form exposes no
+                // fields for yet (profile-manager's scope): a Clone
+                // copies the source's, an Add starts unset — an edit
+                // of anything else never resets them.
+                font_size: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.font_size,
+                    _ => None,
+                },
+                scrollback_lines: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.scrollback_lines,
+                    _ => None,
+                },
             };
             ProfileCommitPlan::Write {
                 profiles: add_profile(profiles, added),
@@ -4177,6 +4189,8 @@ mod tests {
             cwd: None,
             color_scheme: None,
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 
@@ -4930,6 +4944,8 @@ mod tests {
             cwd: Some(PathBuf::from("/srv/web")),
             color_scheme: None,
             env: None,
+            font_size: None,
+            scrollback_lines: None,
         }
     }
 
@@ -4940,6 +4956,59 @@ mod tests {
         assert_eq!(draft.command, "");
         assert_eq!(draft.cwd, "");
         assert_eq!(draft.error, None);
+    }
+
+    #[test]
+    fn commits_never_reset_the_overrides_the_form_does_not_expose() {
+        // The form has no font/scrollback fields yet (profile-manager's
+        // scope), so no commit gesture may reset them either: an Edit's
+        // base clone carries them by construction, a Clone copies the
+        // source's, and only an Add starts unset.
+        let overridden = Profile {
+            font_size: Some(11),
+            scrollback_lines: Some(50_000),
+            ..sourced_profile()
+        };
+        let profiles = [overridden.clone()];
+
+        let edit = ProfileDraft::edit(0, &profiles[0]);
+        let ProfileCommitPlan::Write {
+            profiles: edited, ..
+        } = plan_profile_commit(&edit, ProfileField::Name, "renamed", &profiles, None)
+        else {
+            panic!("a valid edit commits");
+        };
+        assert_eq!(edited[0].font_size, Some(11));
+        assert_eq!(edited[0].scrollback_lines, Some(50_000));
+
+        let clone = ProfileDraft::clone_of(&profiles[0], &profiles);
+        let ProfileCommitPlan::Write {
+            profiles: cloned, ..
+        } = plan_profile_commit(
+            &clone,
+            ProfileField::Command,
+            "ssh web-prod",
+            &profiles,
+            None,
+        )
+        else {
+            panic!("a valid clone commits");
+        };
+        assert_eq!(cloned[1].font_size, Some(11));
+        assert_eq!(cloned[1].scrollback_lines, Some(50_000));
+
+        let add = ProfileDraft::add();
+        let mut typed = add;
+        typed.name = "fresh".to_string();
+        typed.command = "htop".to_string();
+        let ProfileCommitPlan::Write {
+            profiles: added, ..
+        } = plan_profile_commit(&typed, ProfileField::Name, "fresh", &[], None)
+        else {
+            panic!("a valid add commits");
+        };
+        assert_eq!(added[0].font_size, None);
+        assert_eq!(added[0].scrollback_lines, None);
     }
 
     #[test]
