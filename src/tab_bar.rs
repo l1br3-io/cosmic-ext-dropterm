@@ -628,9 +628,11 @@ fn header_row(label: &str) -> TabMenuRow {
 /// naming the flip in store; the profile section renders exactly
 /// while ≥1 profile exists (the context menu's zero-profiles flat
 /// ruling), profiles surfacing here exactly once; moves mute at the
-/// edges they clamp at; the close cluster closes, with Close Tabs to
-/// the Right omitted at the rightmost tab (Firefox's hide rule — the
-/// row would always no-op there).
+/// edges they clamp at and — a pinned tab staying put (ruling 4) —
+/// for a pinned target, whose own Close Tab row mutes with them (the
+/// close front door's refusal, rendered); the close cluster closes,
+/// with Close Tabs to the Right omitted at the rightmost tab
+/// (Firefox's hide rule — the row would always no-op there).
 fn tab_menu_rows(
     profiles: &[Profile],
     tab_count: usize,
@@ -663,20 +665,27 @@ fn tab_menu_rows(
         }));
     }
     // Moves clamp at the edges (the binds' `move_target` rule); the
-    // out-of-room direction renders muted.
+    // out-of-room direction renders muted. A pinned tab refuses moves
+    // outright (ruling 4), so both directions mute for it — a pick
+    // `move_tab_by` would refuse is never a clickable row.
     rows.push(pick_row(
         "Move Tab Left",
         TabMenuPick::Move(MoveDirection::Left),
-        tab_index > 0,
+        !pinned && tab_index > 0,
         true,
     ));
     rows.push(pick_row(
         "Move Tab Right",
         TabMenuPick::Move(MoveDirection::Right),
-        tab_index + 1 < tab_count,
+        !pinned && tab_index + 1 < tab_count,
         false,
     ));
-    rows.push(pick_row("Close Tab", TabMenuPick::Close, true, true));
+    // The anchor's own close rides the gated front door, which refuses
+    // a pinned tab (ruling 2): muted here rather than a clickable
+    // no-op, with Unpin Tab in arm's reach above it. The sweeps aim at
+    // the *other* tabs and stay live — pinned neighbors drop out of
+    // their target lists silently (the OQ-2 default).
+    rows.push(pick_row("Close Tab", TabMenuPick::Close, !pinned, true));
     rows.push(pick_row(
         "Close Other Tabs",
         TabMenuPick::CloseOthers,
@@ -3631,6 +3640,49 @@ mod tests {
         assert!(!by_label(&last, "Move Tab Right"));
         assert!(by_label(&middle, "Move Tab Left"));
         assert!(by_label(&middle, "Move Tab Right"));
+    }
+
+    #[test]
+    fn tab_menu_rows_mute_both_moves_for_a_pinned_tab() {
+        // Ruling 4's menu half: a pinned tab stays put, so both Move
+        // rows render muted whatever the position — `move_tab_by`
+        // refuses the pick, and a row that always no-ops never renders
+        // clickable (the edge-muting rule, `pinned` consulted before
+        // the edge). A loose middle tab keeps both enabled.
+        let pinned = tab_menu_rows(&[], 5, 2, true);
+        let loose = tab_menu_rows(&[], 5, 2, false);
+        let by_label = |rows: &[TabMenuRow], label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} missing"))
+                .enabled
+        };
+        assert!(!by_label(&pinned, "Move Tab Left"));
+        assert!(!by_label(&pinned, "Move Tab Right"));
+        assert!(by_label(&loose, "Move Tab Left"));
+        assert!(by_label(&loose, "Move Tab Right"));
+    }
+
+    #[test]
+    fn tab_menu_rows_mute_close_tab_for_a_pinned_tab() {
+        // The close refusal rendered, not just logged: a pinned tab's
+        // Close Tab row mutes — the ×'s refusal has no row to mute,
+        // the menu's does, with Unpin Tab in arm's reach above it —
+        // while the sweep rows stay live: they aim at the *other*
+        // tabs, and pinned neighbors drop out of their target lists
+        // silently (the OQ-2 default).
+        let pinned = tab_menu_rows(&[], 5, 2, true);
+        let loose = tab_menu_rows(&[], 5, 2, false);
+        let by_label = |rows: &[TabMenuRow], label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} missing"))
+                .enabled
+        };
+        assert!(!by_label(&pinned, "Close Tab"));
+        assert!(by_label(&pinned, "Close Other Tabs"));
+        assert!(by_label(&pinned, "Close Tabs to the Right"));
+        assert!(by_label(&loose, "Close Tab"));
     }
 
     #[test]
