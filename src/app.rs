@@ -2790,10 +2790,19 @@ mod tests {
             else {
                 panic!("first delivered message must be the theme override for {kind:?}");
             };
-            let cosmic::theme::ThemeType::System { prefer_dark, .. } = &theme.theme_type else {
-                panic!("override theme must be System-typed for {kind:?}");
-            };
-            assert_eq!(*prefer_dark, expected_prefer, "marker for {kind:?}");
+            // The pins construct their System theme outright, so they
+            // must always be System-typed with the exact marker.
+            // FollowSystem re-reads the system mode, and on a host
+            // with no theme-mode source (headless CI)
+            // `system_preference()` falls back to a plain
+            // `Theme::dark()` — no System typing, no marker to clear.
+            match (&theme.theme_type, expected_prefer) {
+                (cosmic::theme::ThemeType::System { prefer_dark, .. }, _) => {
+                    assert_eq!(*prefer_dark, expected_prefer, "marker for {kind:?}");
+                }
+                (_, None) => {}
+                _ => panic!("override theme must be System-typed for {kind:?}"),
+            }
             assert!(
                 matches!(&outputs[1], cosmic::Action::App(Message::ReapplyColors)),
                 "second delivered message must be the ReapplyColors echo for {kind:?}"
