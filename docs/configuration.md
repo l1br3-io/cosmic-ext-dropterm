@@ -10,7 +10,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`, `status_bar_enabled`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`, `status_bar_enabled`, `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -31,13 +31,19 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 
 ## Status bar
 
-`status_bar_enabled` (default `true`) shows or hides the status band: a 28 px strip at the surface's free edge, beside the grab bar, narrating the **active terminal**. From the left: a state disc - filled while a foreground process runs, a hollow ring over the idle shell - with the foreground process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed. From the right, dimmed: the tab's profile name (when it runs one), then the zoom delta (`+200%`) whenever the font is not at its base size. The band's colors derive from the active color scheme, it is typed in the terminal's own configured font at 12 px, and it sits adjacent to the grab bar in every `edge` × `tab_position` stacking. The process name is sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame. Toggle it with `Ctrl+Shift+B` or on the Behavior tab of the [settings drawer](settings.md), or write it directly:
+`status_bar_enabled` (default `true`) shows or hides the status band: a 28 px strip at the surface's free edge, beside the grab bar, narrating the **active terminal**. From the left: a state disc - filled while a foreground process runs, a hollow ring over the idle shell - with the foreground process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories). From the right, dimmed: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, and the wall clock (`HH:MM`, local time, ticking on the minute). The band's colors derive from the active color scheme, it is typed in the terminal's own configured font at 12 px, and it sits adjacent to the grab bar in every `edge` × `tab_position` stacking. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame; the grid follows the terminal's live size and the clock its own minute-aligned tick. **Every rendered segment is click-to-copy**: a press writes the segment's full value to the clipboard - a squeezed path still copies whole - flashes a `✓`, and the cursor points over each segment while the gaps stay idle. Toggle the band with `Ctrl+Shift+B` or on the Behavior tab of the [settings drawer](settings.md), or write it directly:
 
 ```sh
 echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar_enabled
 ```
 
 A flip applies the moment it lands: the band leaves or joins the column and the terminal's pinned height reclaims or cedes its 28 px the same frame.
+
+Each segment is individually showable with its own key - `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock` (all default `true`). A hidden segment is never computed: hiding the branch stops the `.git` reads, hiding the clock stops its tick. The rows live on the Behavior tab's Status bar card and apply live; hand-edits echo the same frame:
+
+```sh
+echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar_show_clock
+```
 
 ## Tab titles
 
