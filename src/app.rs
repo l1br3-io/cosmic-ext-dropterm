@@ -481,15 +481,20 @@ impl DropTerm {
         let zoom_step = self
             .terminal_options_for(resolved)
             .font_size_zoom_step_mul_100;
-        status_bar::resolve_segments(
-            home.as_deref(),
+        let inputs = status_bar::StatusInputs {
+            home: home.as_deref(),
             cwd,
-            &tab.shell,
-            resolved.map(|preset| preset.name.as_str()),
+            shell: &tab.shell,
+            profile_name: resolved.map(|preset| preset.name.as_str()),
             zoom_adj,
-            zoom_step,
-            self.active_process_name.as_deref(),
-        )
+            zoom_step_mul_100: zoom_step,
+            foreground: self.active_process_name.as_deref(),
+            branch: None,
+            grid: None,
+            tab_position: None,
+            clock: None,
+        };
+        status_bar::resolve_segments(&inputs, status_bar::StatusToggles::all())
     }
 
     /// Applies the current config and theme to every tab's terminal.

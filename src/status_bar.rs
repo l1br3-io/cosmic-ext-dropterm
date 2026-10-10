@@ -16,6 +16,12 @@
 //! separated by gaps, never punctuation. The one live element is the
 //! process-state disc: filled while a foreground child runs, a hollow
 //! ring over the idle shell.
+//!
+//! The set is eight — process, path, branch in the left cluster;
+//! profile, grid, tab position, zoom, clock in the right — each
+//! individually toggleable (a hidden segment is never computed) and
+//! click-copyable through [`copy_text`]: the full value, never the
+//! elided display.
 
 use std::path::Path;
 
@@ -89,6 +95,106 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
     }
 }
 
+/// Which band region a segment owns — the shared id for cluster
+/// order, visibility, hit-testing, and copy payloads.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the widget consumes it when the rendering task lands"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentId {
+    /// The state disc + the process name (one click target).
+    Process,
+    /// The `~`-collapsed cwd.
+    Path,
+    /// The cwd's git branch (or detached sha).
+    Branch,
+    /// The id-resolved profile name.
+    Profile,
+    /// The terminal's cell dimensions.
+    Grid,
+    /// The active tab's position.
+    Tab,
+    /// The signed zoom percent.
+    Zoom,
+    /// The pre-formatted wall clock.
+    Clock,
+}
+
+/// The left cluster's segments in draw order — full alpha.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the widget consumes it when the rendering task lands"
+    )
+)]
+pub const LEFT_CLUSTER: [SegmentId; 3] = [SegmentId::Process, SegmentId::Path, SegmentId::Branch];
+
+/// The right cluster's segments in draw order — the dimmed alpha,
+/// the clock rightmost (the tmux seat).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the widget consumes it when the rendering task lands"
+    )
+)]
+pub const RIGHT_CLUSTER: [SegmentId; 5] = [
+    SegmentId::Profile,
+    SegmentId::Grid,
+    SegmentId::Tab,
+    SegmentId::Zoom,
+    SegmentId::Clock,
+];
+
+/// The per-segment visibility switches, folded from the config's
+/// eight `status_bar_show_*` bools. A hidden segment is absent
+/// downstream — and its costly inputs are never gathered.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "eight independent visibility switches — one per config key, by design"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusToggles {
+    /// The state disc + process name.
+    pub process: bool,
+    /// The `~`-collapsed cwd.
+    pub path: bool,
+    /// The git branch of the cwd.
+    pub branch: bool,
+    /// The profile name.
+    pub profile: bool,
+    /// The terminal's cell dimensions.
+    pub grid: bool,
+    /// The tab position.
+    pub tab: bool,
+    /// The zoom percent.
+    pub zoom: bool,
+    /// The wall clock.
+    pub clock: bool,
+}
+
+impl StatusToggles {
+    /// Every segment shown — the all-on default the config's eight
+    /// `true` keys fold into.
+    pub const fn all() -> Self {
+        Self {
+            process: true,
+            path: true,
+            branch: true,
+            profile: true,
+            grid: true,
+            tab: true,
+            zoom: true,
+            clock: true,
+        }
+    }
+}
+
 /// The resolved segments of the active tab's status band, left
 /// cluster then right, values without labels — a path reads as a
 /// path. The disc's fill state rides `running`; the process name is
@@ -100,7 +206,7 @@ pub struct StatusSegments {
     /// Whether a foreground child runs — the disc fills.
     pub running: bool,
     /// The foreground process's name, or the shell's basename when
-    /// idle/unreadable.
+    /// idle/unreadable. Empty only when the toggle hides the segment.
     pub process: String,
     /// The `~`-collapsed cwd, absent when the tab has none.
     pub path: Option<String>,
@@ -109,30 +215,90 @@ pub struct StatusSegments {
     pub profile: Option<String>,
     /// The signed zoom percent (`zoom_adj × step`), absent at zero.
     pub zoom_percent: Option<i16>,
+    /// The cwd's git branch — a ref name, or a detached sha's first
+    /// 7 characters — absent outside repos, when hidden, and when
+    /// the reads fail (never a wrong name).
+    pub branch: Option<String>,
+    /// The terminal's cell dimensions (cols, rows).
+    pub grid: Option<(u16, u16)>,
+    /// The active tab's position (index, total).
+    pub tab_position: Option<(u16, u16)>,
+    /// The pre-formatted wall clock (`HH:MM`) — the widget never
+    /// formats time; the app's tick stores the string.
+    pub clock: Option<String>,
 }
 
-/// Assemble the active tab's segments from the app's existing state
-/// plus the process-name snapshot. Every input is plain data — the
-/// resolver is pure and headless-testable; the app feeds it
-/// `tab_cwds`, the recorded shell, the id-resolved profile name, the
-/// zoom adjustment and step, and the comm snapshot. `home` is the
-/// `~`-collapse base; `None` (an unset `HOME` — never in a real
-/// desktop session) keeps paths verbatim.
-pub fn resolve_segments(
-    home: Option<&Path>,
-    cwd: Option<&Path>,
-    shell: &str,
-    profile_name: Option<&str>,
-    zoom_adj: i8,
-    zoom_step_mul_100: u16,
-    foreground: Option<&str>,
-) -> StatusSegments {
+/// The app-side inputs to [`resolve_segments`] — plain data only, so
+/// the resolver stays pure and headless-testable. The app feeds it
+/// the `~`-collapse base, the cwd, the recorded shell, the
+/// id-resolved profile name, the zoom adjustment and step, the
+/// process-name and branch snapshots, the grid and tab position, and
+/// the stored clock string.
+pub struct StatusInputs<'a> {
+    /// The `~`-collapse base; `None` (an unset `HOME` — never in a
+    /// real desktop session) keeps paths verbatim.
+    pub home: Option<&'a Path>,
+    /// The active tab's cwd.
+    pub cwd: Option<&'a Path>,
+    /// The shell the tab's spawn recorded.
+    pub shell: &'a str,
+    /// The id-resolved profile name.
+    pub profile_name: Option<&'a str>,
+    /// The terminal's live zoom adjustment.
+    pub zoom_adj: i8,
+    /// The zoom step the tab's terminal actually zooms by.
+    pub zoom_step_mul_100: u16,
+    /// The foreground-process snapshot (the app-side comm read).
+    pub foreground: Option<&'a str>,
+    /// The git-branch snapshot (the app-side `.git` read).
+    pub branch: Option<&'a str>,
+    /// The terminal's cell dimensions (cols, rows).
+    pub grid: Option<(u16, u16)>,
+    /// The active tab's position (index, total).
+    pub tab_position: Option<(u16, u16)>,
+    /// The stored wall-clock string.
+    pub clock: Option<&'a str>,
+}
+
+/// Assemble the active tab's segments from the inputs, hidden
+/// segments dropped — hidden and absent are indistinguishable
+/// downstream, which is what lets the app skip gathering a hidden
+/// segment's inputs entirely.
+pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> StatusSegments {
     StatusSegments {
-        running: foreground.is_some(),
-        process: foreground.map_or_else(|| shell_basename(shell), str::to_string),
-        path: cwd.map(|cwd| collapse_home(cwd, home)),
-        profile: profile_name.map(str::to_string),
-        zoom_percent: zoom_percent(zoom_adj, zoom_step_mul_100),
+        running: inputs.foreground.is_some(),
+        process: if toggles.process {
+            inputs
+                .foreground
+                .map_or_else(|| shell_basename(inputs.shell), str::to_string)
+        } else {
+            String::new()
+        },
+        path: toggles
+            .path
+            .then(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+            .flatten(),
+        branch: toggles
+            .branch
+            .then_some(inputs.branch)
+            .flatten()
+            .map(str::to_string),
+        profile: toggles
+            .profile
+            .then_some(inputs.profile_name)
+            .flatten()
+            .map(str::to_string),
+        grid: toggles.grid.then_some(inputs.grid).flatten(),
+        tab_position: toggles.tab.then_some(inputs.tab_position).flatten(),
+        zoom_percent: toggles
+            .zoom
+            .then(|| zoom_percent(inputs.zoom_adj, inputs.zoom_step_mul_100))
+            .flatten(),
+        clock: toggles
+            .clock
+            .then_some(inputs.clock)
+            .flatten()
+            .map(str::to_string),
     }
 }
 
@@ -187,6 +353,143 @@ pub fn shell_basename(shell: &str) -> String {
         || shell.to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
+}
+
+/// The full value a segment's click copies — the un-elided,
+/// un-decorated string; a path the band would squeeze to `…/ced2`
+/// still copies whole. An absent segment copies nothing (hit-testing
+/// only yields rendered segments, so this is defensive).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the widget's click path consumes it when the rendering task lands"
+    )
+)]
+pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
+    match id {
+        SegmentId::Process => segments.process.clone(),
+        SegmentId::Path => segments.path.clone().unwrap_or_default(),
+        SegmentId::Branch => segments.branch.clone().unwrap_or_default(),
+        SegmentId::Profile => segments.profile.clone().unwrap_or_default(),
+        SegmentId::Grid => segments
+            .grid
+            .map(|(cols, rows)| format!("{cols}×{rows}"))
+            .unwrap_or_default(),
+        SegmentId::Tab => segments
+            .tab_position
+            .map(|(index, total)| format!("{index}/{total}"))
+            .unwrap_or_default(),
+        SegmentId::Zoom => segments
+            .zoom_percent
+            .map(|percent| format!("{percent:+}%"))
+            .unwrap_or_default(),
+        SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
+    }
+}
+
+/// The segment whose rect contains `point`, if any — the pure half
+/// of the band's hit-testing; the widget supplies the laid-out
+/// rects. Gaps and everything outside the row belong to no segment.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the widget's hit-testing consumes it when the rendering task lands"
+    )
+)]
+pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<SegmentId> {
+    rects
+        .iter()
+        .find(|(_, rect)| rect.contains(point))
+        .map(|(id, _)| *id)
+}
+
+/// The band's wall-clock text: 24-hour `HH:MM`, local zone.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the app's clock tick consumes it when the clock task lands"
+    )
+)]
+pub fn clock_text(now: &jiff::Zoned) -> String {
+    now.strftime("%H:%M").to_string()
+}
+
+/// The duration from `now` to the next minute boundary — the tick's
+/// alignment; an on-boundary `now` waits a full minute.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the app's clock tick consumes it when the clock task lands"
+    )
+)]
+pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
+    // Civil seconds are 0..=59 and the subsecond part is strictly
+    // below a second, so the difference is always positive and at
+    // most a minute.
+    let remaining =
+        (60 - i64::from(now.second())) * 1_000_000_000 - i64::from(now.subsec_nanosecond());
+    std::time::Duration::from_nanos(
+        remaining
+            .try_into()
+            .expect("a minute-boundary delay is 0..=60 s of nanoseconds"),
+    )
+}
+
+/// The cwd's git branch — bounded file reads, never a subprocess.
+/// `<cwd>/.git` a directory reads its `HEAD`; a file (worktrees,
+/// submodules) follows its one `gitdir:` indirection — absolute, or
+/// relative to the cwd — and reads that `HEAD`. A `ref:
+/// refs/heads/<name>` names the branch; anything else is a detached
+/// sha whose first 7 hex characters stand in. Unreadable or
+/// malformed input resolves `None` — never a wrong name.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the app's snapshot refresh consumes it when the rendering task lands"
+    )
+)]
+pub fn git_branch(cwd: Option<&Path>) -> Option<String> {
+    let cwd = cwd?;
+    let dot = cwd.join(".git");
+    let head_path = if dot.is_dir() {
+        dot.join("HEAD")
+    } else {
+        let gitdir = std::fs::read_to_string(&dot).ok()?;
+        let location = gitdir.trim().strip_prefix("gitdir: ")?;
+        let dir = Path::new(location);
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            &*cwd.join(dir)
+        };
+        dir.join("HEAD")
+    };
+    parse_head(&std::fs::read_to_string(head_path).ok()?)
+}
+
+/// One `HEAD` file's branch: a `ref:` line names the branch after
+/// `refs/heads/`; anything else must be a detached sha (hex, at
+/// least 7 characters) and shortens to its first 7.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the app's snapshot refresh consumes it when the rendering task lands"
+    )
+)]
+fn parse_head(head: &str) -> Option<String> {
+    let head = head.trim_end();
+    if let Some(name) = head.strip_prefix("ref: refs/heads/") {
+        (!name.is_empty()).then(|| name.to_string())
+    } else {
+        let sha: String = head.chars().take(7).collect();
+        (sha.len() == 7 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+    }
 }
 
 // --- the widget: the band itself, per the tab_bar.rs pattern ---
@@ -507,11 +810,39 @@ mod tests {
         std::path::PathBuf::from("/home/jpt")
     }
 
+    /// The v1 positional shape over the grown resolver — the grown
+    /// inputs stay absent, exactly how they arrive until the app
+    /// wires them.
+    fn resolve(
+        home: Option<&Path>,
+        cwd: Option<&Path>,
+        shell: &str,
+        profile_name: Option<&str>,
+        zoom_adj: i8,
+        zoom_step_mul_100: u16,
+        foreground: Option<&str>,
+    ) -> StatusSegments {
+        let inputs = StatusInputs {
+            home,
+            cwd,
+            shell,
+            profile_name,
+            zoom_adj,
+            zoom_step_mul_100,
+            foreground,
+            branch: None,
+            grid: None,
+            tab_position: None,
+            clock: None,
+        };
+        resolve_segments(&inputs, StatusToggles::all())
+    }
+
     // --- segment assembly (running/idle × profile × zoom × cwd) ---
 
     #[test]
     fn a_running_child_names_the_process_and_fills_the_disc() {
-        let segments = resolve_segments(
+        let segments = resolve(
             Some(&home()),
             Some(Path::new("/home/jpt/src/oss/l1br3/ced2")),
             "/usr/bin/fish",
@@ -529,7 +860,7 @@ mod tests {
 
     #[test]
     fn an_idle_tab_falls_back_to_the_shell_basename_and_a_hollow_disc() {
-        let segments = resolve_segments(
+        let segments = resolve(
             Some(&home()),
             Some(Path::new("/home/jpt")),
             "/usr/bin/fish",
@@ -549,7 +880,7 @@ mod tests {
     fn an_unreadable_comm_falls_back_like_idle() {
         // A failed /proc read is indistinguishable from idle in its
         // inputs — the band stays honest either way.
-        let segments = resolve_segments(
+        let segments = resolve(
             Some(&home()),
             Some(Path::new("/srv")),
             "/bin/bash",
@@ -565,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_missing_cwd_drops_only_the_path_segment() {
-        let segments = resolve_segments(
+        let segments = resolve(
             Some(&home()),
             None,
             "/usr/bin/zsh",
@@ -585,7 +916,7 @@ mod tests {
     fn a_dangling_profile_id_hides_the_segment() {
         // The app resolves the id before feeding the resolver; a
         // missing profile arrives as `None`, never a stale name.
-        let segments = resolve_segments(Some(&home()), None, "/usr/bin/zsh", None, 0, 100, None);
+        let segments = resolve(Some(&home()), None, "/usr/bin/zsh", None, 0, 100, None);
         assert_eq!(segments.profile, None);
         assert_eq!(segments.zoom_percent, None);
     }
@@ -781,6 +1112,284 @@ mod tests {
         assert_eq!(shell_basename("zsh"), "zsh");
     }
 
+    // --- the grown contract (status-segments) ---
+
+    fn resolve_full(toggles: StatusToggles) -> StatusSegments {
+        let home = home();
+        let cwd = std::path::PathBuf::from("/home/jpt/src/oss/l1br3/ced2");
+        let inputs = StatusInputs {
+            home: Some(&home),
+            cwd: Some(&cwd),
+            shell: "/usr/bin/fish",
+            profile_name: Some("dev"),
+            zoom_adj: 2,
+            zoom_step_mul_100: 100,
+            foreground: Some("cargo"),
+            branch: Some("ced2"),
+            grid: Some((80, 24)),
+            tab_position: Some((2, 5)),
+            clock: Some("14:32"),
+        };
+        resolve_segments(&inputs, toggles)
+    }
+
+    fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
+        match id {
+            SegmentId::Process => !segments.process.is_empty(),
+            SegmentId::Path => segments.path.is_some(),
+            SegmentId::Branch => segments.branch.is_some(),
+            SegmentId::Profile => segments.profile.is_some(),
+            SegmentId::Grid => segments.grid.is_some(),
+            SegmentId::Tab => segments.tab_position.is_some(),
+            SegmentId::Zoom => segments.zoom_percent.is_some(),
+            SegmentId::Clock => segments.clock.is_some(),
+        }
+    }
+
+    fn hide(toggles: &mut StatusToggles, id: SegmentId) {
+        let field = match id {
+            SegmentId::Process => &mut toggles.process,
+            SegmentId::Path => &mut toggles.path,
+            SegmentId::Branch => &mut toggles.branch,
+            SegmentId::Profile => &mut toggles.profile,
+            SegmentId::Grid => &mut toggles.grid,
+            SegmentId::Tab => &mut toggles.tab,
+            SegmentId::Zoom => &mut toggles.zoom,
+            SegmentId::Clock => &mut toggles.clock,
+        };
+        *field = false;
+    }
+
+    #[test]
+    fn the_clusters_pin_the_eight_segments_order() {
+        assert_eq!(
+            LEFT_CLUSTER,
+            [SegmentId::Process, SegmentId::Path, SegmentId::Branch]
+        );
+        assert_eq!(
+            RIGHT_CLUSTER,
+            [
+                SegmentId::Profile,
+                SegmentId::Grid,
+                SegmentId::Tab,
+                SegmentId::Zoom,
+                SegmentId::Clock
+            ]
+        );
+    }
+
+    #[test]
+    fn each_toggle_hides_exactly_its_segment() {
+        let every: Vec<SegmentId> = LEFT_CLUSTER
+            .iter()
+            .chain(RIGHT_CLUSTER.iter())
+            .copied()
+            .collect();
+        for hidden in &every {
+            let mut toggles = StatusToggles::all();
+            hide(&mut toggles, *hidden);
+            let segments = resolve_full(toggles);
+            assert!(
+                !segment_present(&segments, *hidden),
+                "{hidden:?} must hide behind its toggle"
+            );
+            for shown in every.iter().filter(|id| **id != *hidden) {
+                assert!(
+                    segment_present(&segments, *shown),
+                    "{shown:?} must survive {hidden:?}'s toggle"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn toggles_compose() {
+        let mut toggles = StatusToggles::all();
+        hide(&mut toggles, SegmentId::Branch);
+        hide(&mut toggles, SegmentId::Clock);
+        let segments = resolve_full(toggles);
+        assert_eq!(segments.branch, None);
+        assert_eq!(segments.clock, None);
+        assert!(segment_present(&segments, SegmentId::Path));
+        assert!(segment_present(&segments, SegmentId::Grid));
+    }
+
+    #[test]
+    fn the_new_segments_resolve_from_their_inputs() {
+        let segments = resolve_full(StatusToggles::all());
+        assert_eq!(segments.branch.as_deref(), Some("ced2"));
+        assert_eq!(segments.grid, Some((80, 24)));
+        assert_eq!(segments.tab_position, Some((2, 5)));
+        assert_eq!(segments.clock.as_deref(), Some("14:32"));
+    }
+
+    #[test]
+    fn copy_text_carries_each_segments_full_value() {
+        // Copy pays no attention to display: the payload is the
+        // segment's whole value — the path whole even where the band
+        // would elide it (hit-testing feeds ids; elision never
+        // reaches the payload).
+        let segments = resolve_full(StatusToggles::all());
+        assert_eq!(copy_text(SegmentId::Process, &segments), "cargo");
+        assert_eq!(
+            copy_text(SegmentId::Path, &segments),
+            "~/src/oss/l1br3/ced2"
+        );
+        assert_eq!(copy_text(SegmentId::Branch, &segments), "ced2");
+        assert_eq!(copy_text(SegmentId::Profile, &segments), "dev");
+        assert_eq!(copy_text(SegmentId::Grid, &segments), "80×24");
+        assert_eq!(copy_text(SegmentId::Tab, &segments), "2/5");
+        assert_eq!(copy_text(SegmentId::Zoom, &segments), "+200%");
+        assert_eq!(copy_text(SegmentId::Clock, &segments), "14:32");
+    }
+
+    #[test]
+    fn copy_text_of_an_absent_segment_is_empty() {
+        let empty = StatusSegments::default();
+        for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
+            assert_eq!(copy_text(*id, &empty), String::new());
+        }
+    }
+
+    #[test]
+    fn segment_at_hits_only_the_rect_containing_the_point() {
+        let rects = [
+            (
+                SegmentId::Process,
+                Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+            ),
+            (
+                SegmentId::Path,
+                Rectangle::new(Point::new(72.0, 0.0), Size::new(90.0, BAND_HEIGHT)),
+            ),
+        ];
+        assert_eq!(
+            segment_at(&rects, Point::new(10.0, 14.0)),
+            Some(SegmentId::Process)
+        );
+        assert_eq!(
+            segment_at(&rects, Point::new(100.0, 27.9)),
+            Some(SegmentId::Path)
+        );
+        // The gap between segments — and everything outside the row
+        // (the bottom edge included; `contains` is half-open) —
+        // belongs to no segment.
+        assert_eq!(segment_at(&rects, Point::new(65.0, 14.0)), None);
+        assert_eq!(segment_at(&rects, Point::new(-1.0, 14.0)), None);
+        assert_eq!(segment_at(&rects, Point::new(10.0, BAND_HEIGHT)), None);
+    }
+
+    // --- the clock helpers ---
+
+    fn zoned(at: &str) -> jiff::Zoned {
+        at.parse().expect("fixed zoned fixture")
+    }
+
+    #[test]
+    fn clock_text_formats_twenty_four_hour_minutes() {
+        assert_eq!(
+            clock_text(&zoned("2026-10-10T14:32:00+00:00[UTC]")),
+            "14:32"
+        );
+        assert_eq!(
+            clock_text(&zoned("2026-10-10T09:05:59+00:00[UTC]")),
+            "09:05"
+        );
+    }
+
+    #[test]
+    fn next_tick_delay_lands_on_the_minute_boundary() {
+        assert_eq!(
+            next_tick_delay(&zoned("2026-10-10T14:32:00+00:00[UTC]")),
+            std::time::Duration::from_mins(1)
+        );
+        assert_eq!(
+            next_tick_delay(&zoned("2026-10-10T14:32:30.500+00:00[UTC]")),
+            std::time::Duration::from_millis(29_500)
+        );
+    }
+
+    // --- the git branch (real fixture trees under temp) ---
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-status-git-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp repo root");
+        root
+    }
+
+    fn write_fixture(path: &std::path::Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("fixture parent");
+        }
+        std::fs::write(path, content).expect("fixture write");
+    }
+
+    #[test]
+    fn a_ref_head_names_the_branch() {
+        let root = temp_root("ref");
+        write_fixture(&root.join(".git/HEAD"), "ref: refs/heads/main\n");
+        assert_eq!(git_branch(Some(&root)), Some("main".to_string()));
+    }
+
+    #[test]
+    fn a_detached_head_shortens_to_seven_hex_characters() {
+        let root = temp_root("detached");
+        write_fixture(
+            &root.join(".git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        );
+        assert_eq!(git_branch(Some(&root)), Some("0123456".to_string()));
+    }
+
+    #[test]
+    fn a_gitdir_file_indirection_resolves_the_worktree_head() {
+        let root = temp_root("indirect");
+        write_fixture(
+            &root.join("wt/.git"),
+            &format!("gitdir: {}\n", root.join("real.git").display()),
+        );
+        write_fixture(&root.join("real.git/HEAD"), "ref: refs/heads/ced2\n");
+        assert_eq!(git_branch(Some(&root.join("wt"))), Some("ced2".to_string()));
+    }
+
+    #[test]
+    fn a_relative_gitdir_resolves_against_the_cwd() {
+        // Submodule-style gitdir files are relative to the working
+        // copy's directory, not the process cwd.
+        let root = temp_root("relative");
+        write_fixture(&root.join("work/.git"), "gitdir: ../real.git\n");
+        write_fixture(&root.join("real.git/HEAD"), "ref: refs/heads/main\n");
+        assert_eq!(
+            git_branch(Some(&root.join("work"))),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn outside_a_repo_or_without_a_cwd_there_is_no_branch() {
+        let root = temp_root("bare");
+        assert_eq!(git_branch(Some(&root)), None);
+        assert_eq!(git_branch(None), None);
+    }
+
+    #[test]
+    fn malformed_heads_resolve_to_none() {
+        let root = temp_root("malformed");
+        for (label, head) in [
+            ("empty", ""),
+            ("ref-without-a-name", "ref: refs/heads/\n"),
+            ("short-garbage", "abc\n"),
+            ("non-hex-garbage", "not-a-sha!!\n"),
+        ] {
+            write_fixture(&root.join(".git/HEAD"), head);
+            assert_eq!(git_branch(Some(&root)), None, "{label} must not parse");
+        }
+    }
+
     // --- the widget's construction pin (Task 2) ---
 
     #[test]
@@ -796,6 +1405,10 @@ mod tests {
             path: Some("~/src".to_string()),
             profile: Some("dev".to_string()),
             zoom_percent: Some(20),
+            branch: None,
+            grid: None,
+            tab_position: None,
+            clock: None,
         };
         let band: StatusBar<()> = StatusBar::new(segments.clone(), cosmic::iced::Font::default());
         assert_eq!(band.segments, segments);
