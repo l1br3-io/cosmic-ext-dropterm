@@ -42,6 +42,11 @@ env_logger = "0.11"
 notify-rust = "4.18"
 indexmap = "2"
 
+# The status band's clock: `HH:MM` formatting and minute-boundary
+# arithmetic. Version-matched to the 0.2.37 line libcosmic and
+# env_logger already pull in, so no new code enters the build.
+jiff = "0.2"
+
 # Just `BitFlags::default()` — the empty `set_auto_blur` opt-out in
 # `init`. Version-matched to the 0.7.12 line libcosmic already pulls
 # in, so no new code enters the build.

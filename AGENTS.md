@@ -64,19 +64,34 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 
 ## File creation
-Bias toward fewer, larger, cohesive files.
 
-Extract a new file or subdirectory ONLY when all of these are true:
-- You find yourself touching unrelated sections of the same file
-  while working on a single feature
-- The new unit maps to one clear concept you can name in a word or short
-  phrase (e.g. `stringset`, `auth` — never `util`, `common`, `misc`)
-- Its contents change together and don't need what you're extracting from
-- The name works as a meaningful prefix for everything inside it
+Default to fewer, larger, cohesive files. File boundaries should follow
+what changes together, not how much there is.
 
-Do NOT split because a file is long or has many items. Size is a lagging
-indicator, not a leading one — it confirms a boundary you already noticed,
-it never creates one on its own.
+Extract a new file or subdirectory only when **all** of these are true:
+
+- **The trigger has fired** — during a single feature or task, you keep
+  editing unrelated sections of the same file.
+- **One concept, one name** — the new unit maps to a concept you can name
+  in a word or short phrase (`stringset`, `auth` — never `util`,
+  `common`, `misc`), and the name works as a meaningful prefix for
+  everything inside it.
+- **It stands on its own** — its contents change together and don't need
+  what they're being extracted from.
+
+Before extracting, try in-file structure first: grouping related items
+together, section comments, or narrowing scope often resolves the
+discomfort without a new file.
+
+Length alone is never a reason to split. Size is a lagging indicator —
+it confirms a boundary you already noticed, it never creates one. The
+typical failure mode: a long file becomes `utils`, `helpers`, and
+`types` — same content, names that describe nothing, and every future
+edit spans three files. When in doubt, don't extract; a long file is
+cheaper to live with than a wrong boundary.
+
+The bias runs in reverse too: sibling files that always change together
+are merge candidates.
 
 This guidance assumes module/namespace-oriented languages (Rust, Go,
 JavaScript/TypeScript). It does not apply to frameworks that enforce

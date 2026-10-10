@@ -64,6 +64,9 @@ pub enum Section {
     Appearance,
     Window,
     Tabs,
+    /// The status band's one-toggle card (status-bar spec): sits on
+    /// the Behavior page right after Tabs.
+    StatusBar,
     Dropdown,
     Terminal,
     Advanced,
@@ -83,10 +86,11 @@ impl Section {
             reason = "the tests' registry pin; runtime iterates tab_sections"
         )
     )]
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Appearance,
         Section::Window,
         Section::Tabs,
+        Section::StatusBar,
         Section::Dropdown,
         Section::Terminal,
         Section::Advanced,
@@ -119,6 +123,17 @@ impl Section {
                 ConfigKey::CloseConfirmationEnabled,
                 ConfigKey::SessionPersistenceEnabled,
             ],
+            Section::StatusBar => &[
+                ConfigKey::StatusBarEnabled,
+                ConfigKey::StatusBarShowProcess,
+                ConfigKey::StatusBarShowPath,
+                ConfigKey::StatusBarShowBranch,
+                ConfigKey::StatusBarShowProfile,
+                ConfigKey::StatusBarShowGrid,
+                ConfigKey::StatusBarShowTab,
+                ConfigKey::StatusBarShowZoom,
+                ConfigKey::StatusBarShowClock,
+            ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -146,7 +161,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (26 — default-spawn's two rows included).
+/// count (27 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -177,6 +192,18 @@ pub enum ConfigKey {
     ColorSchemeLight,
     ThemePreference,
     SettingsDrawerWidth,
+    StatusBarEnabled,
+    /// Show the state disc + process name — one per band segment, in
+    /// band order (status-segments spec); the resolver drops a
+    /// hidden segment, and the app never gathers its inputs.
+    StatusBarShowProcess,
+    StatusBarShowPath,
+    StatusBarShowBranch,
+    StatusBarShowProfile,
+    StatusBarShowGrid,
+    StatusBarShowTab,
+    StatusBarShowZoom,
+    StatusBarShowClock,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -211,7 +238,12 @@ pub enum SettingsTab {
 pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
     match tab {
         SettingsTab::Appearance => &[Section::Appearance, Section::Window],
-        SettingsTab::Behavior => &[Section::Tabs, Section::Dropdown, Section::Terminal],
+        SettingsTab::Behavior => &[
+            Section::Tabs,
+            Section::StatusBar,
+            Section::Dropdown,
+            Section::Terminal,
+        ],
         SettingsTab::Profiles | SettingsTab::Keybindings => &[],
         SettingsTab::Advanced => &[Section::Advanced],
     }
@@ -315,6 +347,15 @@ impl ConfigKey {
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
             ConfigKey::SettingsDrawerWidth => "settings_drawer_width",
+            ConfigKey::StatusBarEnabled => "status_bar_enabled",
+            ConfigKey::StatusBarShowProcess => "status_bar_show_process",
+            ConfigKey::StatusBarShowPath => "status_bar_show_path",
+            ConfigKey::StatusBarShowBranch => "status_bar_show_branch",
+            ConfigKey::StatusBarShowProfile => "status_bar_show_profile",
+            ConfigKey::StatusBarShowGrid => "status_bar_show_grid",
+            ConfigKey::StatusBarShowTab => "status_bar_show_tab",
+            ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
+            ConfigKey::StatusBarShowClock => "status_bar_show_clock",
         }
     }
 }
@@ -364,6 +405,22 @@ pub enum PlannedWrite {
     /// [`DRAWER_MIN_WIDTH`] in `clamped`; the surface-relative cap
     /// is render-time (`drawer_width`).
     SettingsDrawerWidth(Option<u16>),
+    /// Whether the status band renders (status-bar spec): the band
+    /// leaves the column and the terminal's pinned height reclaims
+    /// its strip on the config echo.
+    StatusBarEnabled(bool),
+    /// The per-segment "Show …" rows (status-segments spec): the
+    /// hidden segment is absent from the next render and its inputs
+    /// are never gathered — the branch read and the clock tick stop
+    /// at the gate.
+    StatusBarShowProcess(bool),
+    StatusBarShowPath(bool),
+    StatusBarShowBranch(bool),
+    StatusBarShowProfile(bool),
+    StatusBarShowGrid(bool),
+    StatusBarShowTab(bool),
+    StatusBarShowZoom(bool),
+    StatusBarShowClock(bool),
 }
 
 impl PlannedWrite {
@@ -398,6 +455,15 @@ impl PlannedWrite {
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
             PlannedWrite::SettingsDrawerWidth(_) => ConfigKey::SettingsDrawerWidth,
+            PlannedWrite::StatusBarEnabled(_) => ConfigKey::StatusBarEnabled,
+            PlannedWrite::StatusBarShowProcess(_) => ConfigKey::StatusBarShowProcess,
+            PlannedWrite::StatusBarShowPath(_) => ConfigKey::StatusBarShowPath,
+            PlannedWrite::StatusBarShowBranch(_) => ConfigKey::StatusBarShowBranch,
+            PlannedWrite::StatusBarShowProfile(_) => ConfigKey::StatusBarShowProfile,
+            PlannedWrite::StatusBarShowGrid(_) => ConfigKey::StatusBarShowGrid,
+            PlannedWrite::StatusBarShowTab(_) => ConfigKey::StatusBarShowTab,
+            PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
+            PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
         }
     }
 
@@ -496,7 +562,34 @@ impl PlannedWrite {
             // `Option<String>` — absent/None merges cleanly with a
             // hand-edited file.
             PlannedWrite::SettingsDrawerWidth(value) => {
-                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), *value)
+                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), value)
+            }
+            PlannedWrite::StatusBarEnabled(value) => {
+                handler.set(ConfigKey::StatusBarEnabled.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowProcess(value) => {
+                handler.set(ConfigKey::StatusBarShowProcess.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowPath(value) => {
+                handler.set(ConfigKey::StatusBarShowPath.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowBranch(value) => {
+                handler.set(ConfigKey::StatusBarShowBranch.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowProfile(value) => {
+                handler.set(ConfigKey::StatusBarShowProfile.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowGrid(value) => {
+                handler.set(ConfigKey::StatusBarShowGrid.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowTab(value) => {
+                handler.set(ConfigKey::StatusBarShowTab.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowZoom(value) => {
+                handler.set(ConfigKey::StatusBarShowZoom.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowClock(value) => {
+                handler.set(ConfigKey::StatusBarShowClock.key_name(), *value)
             }
         }
     }
@@ -633,8 +726,22 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::ColorSchemeLight
         // The drag handle's key — not a settings control, but its
         // echo re-renders the pane immediately: live by
-        // construction.
+        // construction. The status band's keys join it: the band
+        // leaves or joins the column on the config echo (the
+        // terminal's pinned height follows the same frame), and the
+        // eight "Show …" rows drop or restore their segment on the
+        // next render — with the hidden segment's inputs never
+        // gathered.
         | ConfigKey::SettingsDrawerWidth
+        | ConfigKey::StatusBarEnabled
+        | ConfigKey::StatusBarShowProcess
+        | ConfigKey::StatusBarShowPath
+        | ConfigKey::StatusBarShowBranch
+        | ConfigKey::StatusBarShowProfile
+        | ConfigKey::StatusBarShowGrid
+        | ConfigKey::StatusBarShowTab
+        | ConfigKey::StatusBarShowZoom
+        | ConfigKey::StatusBarShowClock
         | ConfigKey::ThemePreference => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
@@ -1654,7 +1761,7 @@ impl ProfileWrite {
 /// scalar [`PlannedWrite`]/[`ConfigKey`] surface stays untouched —
 /// the 23 exposed keys never grow a 24th — close-confirm and
 /// drawer-click-close since grew the count to 25, default-spawn's
-/// two rows to 27.
+/// two rows to 27, the band's per-segment Show rows to 35.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds::Binding>);
 
@@ -1970,6 +2077,15 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SettingsDrawerClickClose(checked))
         }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
+        ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
+        ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
+        ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
+        ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),
+        ConfigKey::StatusBarShowProfile => Some(PlannedWrite::StatusBarShowProfile(checked)),
+        ConfigKey::StatusBarShowGrid => Some(PlannedWrite::StatusBarShowGrid(checked)),
+        ConfigKey::StatusBarShowTab => Some(PlannedWrite::StatusBarShowTab(checked)),
+        ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
+        ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
         _ => None,
     }
 }
@@ -1981,6 +2097,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Window => "Window",
             Section::Tabs => "Tabs",
+            Section::StatusBar => "Status bar",
             Section::Dropdown => "Dropdown",
             Section::Terminal => "Terminal",
             Section::Advanced => "Advanced",
@@ -2026,6 +2143,15 @@ impl ConfigKey {
             // key); the arm keeps the match exhaustive for the
             // drag-only writer.
             ConfigKey::SettingsDrawerWidth => "Drawer width",
+            ConfigKey::StatusBarEnabled => "Show the status band",
+            ConfigKey::StatusBarShowProcess => "Show the process name",
+            ConfigKey::StatusBarShowPath => "Show the working directory",
+            ConfigKey::StatusBarShowBranch => "Show the git branch",
+            ConfigKey::StatusBarShowProfile => "Show the profile",
+            ConfigKey::StatusBarShowGrid => "Show the terminal size",
+            ConfigKey::StatusBarShowTab => "Show the tab position",
+            ConfigKey::StatusBarShowZoom => "Show the zoom level",
+            ConfigKey::StatusBarShowClock => "Show the clock",
         }
     }
 }
@@ -3461,6 +3587,15 @@ fn toggle_control(
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
+        ConfigKey::StatusBarEnabled => config.status_bar_enabled,
+        ConfigKey::StatusBarShowProcess => config.status_bar_show_process,
+        ConfigKey::StatusBarShowPath => config.status_bar_show_path,
+        ConfigKey::StatusBarShowBranch => config.status_bar_show_branch,
+        ConfigKey::StatusBarShowProfile => config.status_bar_show_profile,
+        ConfigKey::StatusBarShowGrid => config.status_bar_show_grid,
+        ConfigKey::StatusBarShowTab => config.status_bar_show_tab,
+        ConfigKey::StatusBarShowZoom => config.status_bar_show_zoom,
+        ConfigKey::StatusBarShowClock => config.status_bar_show_clock,
         _ => return None,
     };
     Some(
@@ -3687,7 +3822,12 @@ mod tests {
         );
         assert_eq!(
             tab_sections(SettingsTab::Behavior),
-            &[Section::Tabs, Section::Dropdown, Section::Terminal,]
+            &[
+                Section::Tabs,
+                Section::StatusBar,
+                Section::Dropdown,
+                Section::Terminal,
+            ]
         );
         assert_eq!(tab_sections(SettingsTab::Profiles), &[]);
         assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
@@ -3893,6 +4033,15 @@ mod tests {
             PlannedWrite::ColorSchemeDark(String::new()),
             PlannedWrite::ColorSchemeLight(String::new()),
             PlannedWrite::ThemePreference(ThemePreference::System),
+            PlannedWrite::StatusBarEnabled(true),
+            PlannedWrite::StatusBarShowProcess(true),
+            PlannedWrite::StatusBarShowPath(true),
+            PlannedWrite::StatusBarShowBranch(true),
+            PlannedWrite::StatusBarShowProfile(true),
+            PlannedWrite::StatusBarShowGrid(true),
+            PlannedWrite::StatusBarShowTab(true),
+            PlannedWrite::StatusBarShowZoom(true),
+            PlannedWrite::StatusBarShowClock(true),
         ];
         let keys = section_keys();
         assert_eq!(keys.len(), writers.len());
@@ -4186,6 +4335,15 @@ mod tests {
             ConfigKey::ColorSchemeDark,
             ConfigKey::ColorSchemeLight,
             ConfigKey::ThemePreference,
+            ConfigKey::StatusBarEnabled,
+            ConfigKey::StatusBarShowProcess,
+            ConfigKey::StatusBarShowPath,
+            ConfigKey::StatusBarShowBranch,
+            ConfigKey::StatusBarShowProfile,
+            ConfigKey::StatusBarShowGrid,
+            ConfigKey::StatusBarShowTab,
+            ConfigKey::StatusBarShowZoom,
+            ConfigKey::StatusBarShowClock,
         ] {
             assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
         }
@@ -4455,6 +4613,81 @@ mod tests {
         assert_eq!(
             Section::Dropdown.keys(),
             &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled,]
+        );
+    }
+
+    #[test]
+    fn the_status_bar_card_hosts_the_master_toggle_plus_eight_show_rows() {
+        // status-segments Task 3: the Status bar card grows from one
+        // row to nine, in band order — the master toggle, then one
+        // "Show …" row per segment — each under its exact file
+        // spelling, each flipping through the single planned-write
+        // path, all Live.
+        assert_eq!(
+            SettingsTab::Behavior,
+            SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
+        );
+        assert_eq!(
+            tab_sections(SettingsTab::Behavior)
+                .iter()
+                .position(|section| matches!(section, Section::StatusBar)),
+            Some(1),
+            "the Status bar card sits directly after Tabs on Behavior"
+        );
+        assert_eq!(
+            Section::StatusBar.keys(),
+            &[
+                ConfigKey::StatusBarEnabled,
+                ConfigKey::StatusBarShowProcess,
+                ConfigKey::StatusBarShowPath,
+                ConfigKey::StatusBarShowBranch,
+                ConfigKey::StatusBarShowProfile,
+                ConfigKey::StatusBarShowGrid,
+                ConfigKey::StatusBarShowTab,
+                ConfigKey::StatusBarShowZoom,
+                ConfigKey::StatusBarShowClock,
+            ]
+        );
+        assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
+        assert_eq!(
+            ConfigKey::StatusBarShowProcess.key_name(),
+            "status_bar_show_process"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowPath.key_name(),
+            "status_bar_show_path"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowBranch.key_name(),
+            "status_bar_show_branch"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowProfile.key_name(),
+            "status_bar_show_profile"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowGrid.key_name(),
+            "status_bar_show_grid"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowTab.key_name(),
+            "status_bar_show_tab"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowZoom.key_name(),
+            "status_bar_show_zoom"
+        );
+        assert_eq!(
+            ConfigKey::StatusBarShowClock.key_name(),
+            "status_bar_show_clock"
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::StatusBarShowBranch, false),
+            Some(PlannedWrite::StatusBarShowBranch(false))
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::StatusBarShowBranch, true),
+            Some(PlannedWrite::StatusBarShowBranch(true))
         );
     }
 

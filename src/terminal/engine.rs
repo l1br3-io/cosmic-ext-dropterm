@@ -264,6 +264,51 @@ pub fn foreground_child_running(master: Option<&std::fs::File>, shell_pid: Optio
     }
 }
 
+/// The foreground process group's name — `/proc/<fg-pgid>/comm`,
+/// trimmed — for the status band's process segment (status-bar
+/// spec). `None` whenever the shell itself owns the foreground
+/// (idle), the inputs are missing, or the read fails (a group
+/// leader that already exited, a non-Linux target): the band's
+/// honest fallback is the recorded shell's basename, never a blank
+/// or stale name.
+pub fn foreground_process_name(
+    master: Option<&std::fs::File>,
+    shell_pid: Option<u32>,
+) -> Option<String> {
+    let (Some(master), Some(shell_pid)) = (master, shell_pid) else {
+        return None;
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: both calls read kernel pty/process state only;
+        // neither touches caller memory.
+        let fg = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        let shell_pgrp = i32::try_from(shell_pid).map_or(-1, |pid| unsafe { libc::getpgid(pid) });
+        (fg > 0 && shell_pgrp > 0 && fg != shell_pgrp)
+            .then(|| read_comm(fg))
+            .flatten()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (master, shell_pid);
+        None
+    }
+}
+
+/// `/proc/<pid>/comm`, trimmed — the kernel's own name for the
+/// process (15 chars at most by construction). An unreadable or
+/// empty entry reads `None`: the band's fallback, never a guess.
+#[cfg(target_os = "linux")]
+fn read_comm(pid: i32) -> Option<String> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Per-cell rendering metadata (background, underline color, cell
 /// flags), interned in the terminal's [`Terminal::metadata_set`] so
 /// cosmic-text attrs can reference it by index.
@@ -490,6 +535,20 @@ impl Terminal {
         self.size
     }
 
+    /// The terminal's cell dimensions (cols, rows) — an in-memory
+    /// derivation from the live [`Size`], read at view assembly
+    /// under the same lock as [`Self::zoom_adj`], so the status
+    /// band's grid segment tracks resizes without any snapshot or
+    /// syscall discipline of its own.
+    pub fn grid(&self) -> (u16, u16) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "cell counts fit u16 by construction — a screen beyond 65k cells does not exist"
+        )]
+        let (cols, rows) = (self.size.columns() as u16, self.size.screen_lines() as u16);
+        (cols, rows)
+    }
+
     pub fn zoom_adj(&self) -> i8 {
         self.zoom_adj
     }
@@ -546,6 +605,14 @@ impl Terminal {
     /// handle or unreadable state reads as "no process".
     pub fn foreground_child_running(&self) -> bool {
         foreground_child_running(self.master_fd.as_ref(), self.shell_pid)
+    }
+
+    /// The foreground process group's name for the status band:
+    /// [`foreground_process_name`] over this terminal's dup'd master
+    /// and recorded shell pid — `None` reads idle/unreadable, and the
+    /// band falls back to the recorded shell's basename.
+    pub fn foreground_process_name(&self) -> Option<String> {
+        foreground_process_name(self.master_fd.as_ref(), self.shell_pid)
     }
 
     pub fn input_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
@@ -1503,6 +1570,46 @@ mod tests {
         poll_until_foreground(&terminal, false, "shell exit reads as no process");
     }
 
+    #[test]
+    fn grid_floors_the_live_pixel_size_into_cells() {
+        use alacritty_terminal::tty::Shell as PtyShell;
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+
+        // The constructor sizes the default grid at 80x24 cells.
+        assert_eq!(terminal.grid(), (80, 24));
+
+        // Non-whole cells floor: ten columns' worth of pixels plus
+        // nine-tenths of a column is still ten columns.
+        let cell = terminal.size().cell_width;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "px under a u32 ceiling, far below u32::MAX"
+        )]
+        let width = (cell * 10.9).ceil() as u32;
+        terminal.resize(width, terminal.size().height);
+        assert_eq!(terminal.grid().0, 10);
+
+        // The one-cell minimum holds: a zero resize clamps before
+        // the floor-division ever sees a sub-cell size.
+        terminal.resize(0, 0);
+        assert_eq!(terminal.grid(), (1, 1));
+    }
+
     /// Poll a live terminal's foreground check until it reads `want`,
     /// bounded at 10s (the chunk's flake guard).
     fn poll_until_foreground(terminal: &Terminal, want: bool, what: &str) {
@@ -1514,6 +1621,70 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "timed out waiting for detection to read {want}: {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn process_name_reads_none_without_inputs() {
+        // The fail-open shape, mirrored from the bool check: missing
+        // inputs read as "nothing to name" — never a fake process.
+        assert_eq!(foreground_process_name(None, Some(1234)), None);
+        let master = fs::File::open("/dev/null").expect("open a non-pty fd");
+        assert_eq!(foreground_process_name(Some(&master), None), None);
+    }
+
+    #[test]
+    fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
+        // The name variant of the bool check's live-pty pin: an idle
+        // shell has nothing to name, a foreground child is named by
+        // its own comm (the kernel's name for `sleep` is "sleep"),
+        // and SIGINT hands the foreground back.
+        use alacritty_terminal::tty::Shell as PtyShell;
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+
+        assert_eq!(terminal.foreground_process_name(), None);
+
+        terminal.input_no_scroll(&b"sleep 30\r"[..]);
+        poll_until_process_name(&terminal, Some("sleep"), "the child's comm names it");
+
+        terminal.input_no_scroll(&b"\x03"[..]);
+        poll_until_process_name(
+            &terminal,
+            None,
+            "SIGINT returns the foreground to the shell",
+        );
+
+        terminal.input_no_scroll(&b"exit\r"[..]);
+        poll_until_process_name(&terminal, None, "shell exit reads as no process");
+    }
+
+    /// Poll a live terminal's process name until it reads `want`,
+    /// bounded at 10s (the bool check's own flake guard).
+    fn poll_until_process_name(terminal: &Terminal, want: Option<&str>, what: &str) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if terminal.foreground_process_name().as_deref() == want {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the name to read {want:?}: {what}"
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }

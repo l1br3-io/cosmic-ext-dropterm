@@ -130,6 +130,9 @@ pub enum Action {
     /// single tab: duplicating one tab is meaningful without the bar.
     DuplicateTab,
     Settings,
+    /// Toggle the status band's visibility (`Ctrl+Shift+B` and the
+    /// Behavior card's toggle — one funnel, the settings write path).
+    ToggleStatusBar,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);
