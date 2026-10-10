@@ -186,8 +186,10 @@ impl DropTerm {
         // The respawned tab is the focused one: its (possibly new)
         // scheme owns the window background from the first paint of
         // the fresh terminal — the every-assignment rule, the restore
-        // precedent in `ensure_tabs`.
+        // precedent in `ensure_tabs` — and its fresh shell owns the
+        // status band's process snapshot from the first event.
         self.refresh_active_window_bg();
+        self.refresh_active_process_name();
         Task::batch([refocus, self.mark_session_dirty()])
     }
 
@@ -311,14 +313,20 @@ impl DropTerm {
                     .clear_history();
             }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
-                let mut terminal = tab.terminal.lock().unwrap();
-                let adj = match action {
-                    Action::ZoomIn => terminal.zoom_adj().saturating_add(1),
-                    Action::ZoomOut => terminal.zoom_adj().saturating_sub(1),
-                    _ => 0,
-                };
-                terminal.set_zoom_adj(adj);
-                terminal.update_cell_size();
+                {
+                    let mut terminal = tab.terminal.lock().unwrap();
+                    let adj = match action {
+                        Action::ZoomIn => terminal.zoom_adj().saturating_add(1),
+                        Action::ZoomOut => terminal.zoom_adj().saturating_sub(1),
+                        _ => 0,
+                    };
+                    terminal.set_zoom_adj(adj);
+                    terminal.update_cell_size();
+                }
+                // The zoom segment re-renders from the live
+                // adjustment; the process snapshot refresh rides the
+                // same listed piggyback point (status-bar criterion 5).
+                self.refresh_active_process_name();
             }
         }
         Task::none()
@@ -702,8 +710,10 @@ impl DropTerm {
             self.active_tab = decision.next_active;
             // The window background follows the newly active tab's
             // resolution — closing a profile tab can hand the screen
-            // to a plain one (and vice versa).
+            // to a plain one (and vice versa) — and the status band's
+            // snapshot follows the newly active tab's foreground.
             self.refresh_active_window_bg();
+            self.refresh_active_process_name();
             // The tab activation a close implies also retires the
             // newly active tab's attention marker, exactly like a
             // click or a numbered-switch bind would.
@@ -748,8 +758,10 @@ impl DropTerm {
         }
         self.active_tab = index;
         // The window background follows the switch: the incoming tab's
-        // resolution replaces the outgoing one's.
+        // resolution replaces the outgoing one's. The status band's
+        // snapshot follows the same piggyback point (criterion 5).
         self.refresh_active_window_bg();
+        self.refresh_active_process_name();
         // Activation retires whatever attention marker the tab wore:
         // the user is now looking at it.
         if let Some(tab) = self.tabs.get_mut(index) {
@@ -1066,6 +1078,12 @@ impl DropTerm {
                 // not a save trigger — churn alone writes nothing.
                 let cwd_task = self.check_tab_cwd(tab_index);
                 self.retitle_tab(tab_index);
+                // A report from the active tab is one of the status
+                // band's snapshot piggyback points (criterion 5) —
+                // the foreground process often changed to report.
+                if tab_index == self.active_tab {
+                    self.refresh_active_process_name();
+                }
                 return cwd_task;
             }
             TermEvent::ResetTitle => {
@@ -1075,13 +1093,21 @@ impl DropTerm {
                 self.tabs[tab_index].shell_title = None;
                 let cwd_task = self.check_tab_cwd(tab_index);
                 self.retitle_tab(tab_index);
+                if tab_index == self.active_tab {
+                    self.refresh_active_process_name();
+                }
                 return cwd_task;
             }
             TermEvent::Wakeup => {
                 // Output arrived: an inactive tab accrues an
                 // activity marker; the active tab shows the output
-                // itself, so nothing to signal.
-                if tab_index != self.active_tab {
+                // itself, so nothing to signal — but its wakeup is
+                // the band's finest piggyback point: a process that
+                // just produced output is exactly when the name
+                // should be fresh (criterion 5).
+                if tab_index == self.active_tab {
+                    self.refresh_active_process_name();
+                } else {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_activity();
                 }
