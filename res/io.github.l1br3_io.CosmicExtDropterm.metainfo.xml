@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.l1br3_io.CosmicExtDropterm</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>DropTerm</name>
+  <summary>Drop-down terminal for COSMIC</summary>
+  <description>
+    <p>DropTerm is a drop-down terminal for the COSMIC™ desktop in the Yakuake and Guake tradition: one keypress slides a full terminal overlay down from the top of the screen, the same keypress hides it again, and the shell session keeps running in between.</p>
+    <p>It supports multiple tabs with per-tab titles, launch profiles, theming that follows the COSMIC accent colors, a bell that surfaces as a desktop notification, and remote control over D-Bus — so a keyboard shortcut, a command, or the companion panel applet can all toggle the terminal.</p>
+  </description>
+  <launchable type="desktop-id">io.github.l1br3_io.CosmicExtDropterm.desktop</launchable>
+  <developer id="io.github.l1br3_io">
+    <name>l1br3-io</name>
+  </developer>
+  <url type="homepage">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
+  <url type="bugtracker">https://github.com/l1br3-io/cosmic-ext-dropterm/issues</url>
+  <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-10">
+      <description>
+        <p>First release: drop-down terminal overlay, tabs and launch profiles, theming, bell notifications, D-Bus remote control, and the companion panel applet.</p>
+      </description>
+    </release>
+  </releases>
+</component>

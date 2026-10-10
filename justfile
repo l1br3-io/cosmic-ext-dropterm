@@ -30,6 +30,10 @@ desktop := appid + '.desktop'
 desktop-src := 'res' / desktop
 desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
 
+metainfo := appid + '.metainfo.xml'
+metainfo-src := 'res' / metainfo
+metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / metainfo
+
 icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 
@@ -171,6 +175,7 @@ clean:
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
+    install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
     install -Dm0644 {{icon-src}} {{icon-dst}}
     install -Dm0755 {{applet-bin-src}} {{applet-bin-dst}}
     install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
@@ -178,5 +183,5 @@ install:
 
 # Uninstalls installed files
 uninstall:
-    rm -f {{bin-dst}} {{desktop-dst}} {{icon-dst}}
+    rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
     rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}}

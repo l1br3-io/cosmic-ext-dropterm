@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=DropTerm
 GenericName=Drop-down Terminal
-Comment=A Yakuake-style drop-down terminal for COSMIC
+Comment=A Yakuake-style drop-down terminal for the COSMIC™ desktop
 Exec=cosmic-ext-dropterm
 Icon=io.github.l1br3_io.CosmicExtDropterm
 Terminal=false
@@ -9,3 +9,5 @@ Type=Application
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;quake;yakuake;dropdown;
 NoDisplay=true
+StartupNotify=true
+StartupWMClass=cosmic-ext-dropterm
