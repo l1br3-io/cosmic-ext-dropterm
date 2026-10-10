@@ -1060,6 +1060,7 @@ dependencies = [
  "enumflags2",
  "env_logger",
  "indexmap",
+ "jiff",
  "libc",
  "libcosmic",
  "log",

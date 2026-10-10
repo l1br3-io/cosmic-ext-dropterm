@@ -113,6 +113,14 @@ pub enum Message {
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
+    /// A status-band segment was click-copied — the widget already
+    /// wrote the clipboard; the app flashes the segment's `✓`.
+    StatusSegmentCopied(status_bar::SegmentId),
+    /// The copy flash elapsed: the `✓` yields back to the value.
+    StatusCopyFlashLapse,
+    /// The status band's minute tick fired: refresh the stored clock
+    /// and re-arm while the gate holds.
+    StatusClockTick,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -256,6 +264,9 @@ struct Drag {
     applied: Option<(std::time::Instant, u32)>,
 }
 
+// App-wide UI state: each bool is an independent, named fact of the
+// interface (focus, drawer, clock arming), not a state machine.
+#[expect(clippy::struct_excessive_bools)]
 pub struct DropTerm {
     core: Core,
     /// Config backend, consumed by the drag-resize write-back:
@@ -301,6 +312,24 @@ pub struct DropTerm {
     /// resolved data. `None` reads idle or unreadable, and the band
     /// falls back to the recorded shell's basename.
     active_process_name: Option<String>,
+    /// The active tab's git branch for the band's branch segment —
+    /// the same snapshot discipline as the process name: the lone
+    /// `.git` read, refreshed at the same piggyback points, gated on
+    /// the band's master toggle. `None` reads outside a repo,
+    /// unreadable, or hidden.
+    active_branch: Option<String>,
+    /// The band segment currently flashing its `✓` after a
+    /// click-to-copy — set on the copied message, cleared by the
+    /// flash-lapse task (`status_bar::COPY_FLASH`).
+    copied_segment: Option<status_bar::SegmentId>,
+    /// The formatted wall clock (`HH:MM`) for the band's clock
+    /// segment — set at init, refreshed by the minute-aligned tick,
+    /// and cleared with the gate: hidden means no tick at all.
+    status_clock: Option<String>,
+    /// Whether a minute tick sleeps in the task queue — the arm
+    /// guard that keeps repeated config echoes from stacking tick
+    /// loops (each fired tick clears it before re-syncing).
+    clock_armed: bool,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -448,15 +477,56 @@ impl DropTerm {
         }
     }
 
-    /// Refreshes the active tab's foreground-process snapshot for the
-    /// status band — the lone caller of the engine's comm read (the
+    /// Refreshes the active tab's status snapshot — the foreground
+    /// process name and the cwd's git branch — the lone caller of
+    /// the engine's comm read and of the `.git` walk (the
     /// construction pin: [`status_bar::StatusBar`] takes plain
-    /// resolved data and cannot read `/proc` itself, so the render
-    /// path performs zero process reads by construction).
-    fn refresh_active_process_name(&mut self) {
-        self.active_process_name = self
-            .active()
-            .and_then(|tab| tab.terminal.lock().unwrap().foreground_process_name());
+    /// resolved data and cannot read `/proc` or `.git` itself, so
+    /// the render path performs zero filesystem reads by
+    /// construction). The branch read stops before the filesystem
+    /// while the band's master toggle is off.
+    fn refresh_status_snapshot(&mut self) {
+        let Some(tab) = self.active() else {
+            self.active_process_name = None;
+            self.active_branch = None;
+            return;
+        };
+        let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
+        let process = tab.terminal.lock().unwrap().foreground_process_name();
+        // Hidden means never gathered: the `.git` walk stops at the
+        // gate, before the filesystem.
+        let branch = (self.config.status_bar_enabled && self.config.status_bar_show_branch)
+            .then(|| status_bar::git_branch(cwd))
+            .flatten();
+        self.active_process_name = process;
+        self.active_branch = branch;
+    }
+
+    /// Sync the stored clock to the gate: set the text and arm the
+    /// minute-aligned tick when the gate turns on (once — arming
+    /// again while a tick sleeps would stack loops), stand down when
+    /// it turns off. A fired tick clears the arm and re-syncs: the
+    /// loop survives while the gate holds and dies within one minute
+    /// of it dropping.
+    fn sync_status_clock(&mut self) -> Task<Message> {
+        if !status_bar::clock_due(
+            self.config.status_bar_enabled,
+            self.config.status_bar_show_clock,
+        ) {
+            self.status_clock = None;
+            self.clock_armed = false;
+            return Task::none();
+        }
+        let now = jiff::Zoned::now();
+        self.status_clock = Some(status_bar::clock_text(&now));
+        if self.clock_armed {
+            return Task::none();
+        }
+        self.clock_armed = true;
+        Task::perform(
+            tokio::time::sleep(status_bar::next_tick_delay(&now)),
+            |()| cosmic::Action::App(Message::StatusClockTick),
+        )
     }
 
     /// The active tab's resolved status-band segments: pure assembly
@@ -475,21 +545,44 @@ impl DropTerm {
             .profile
             .as_deref()
             .and_then(|id| profile::find(&self.config.profiles, id));
-        let zoom_adj = tab.terminal.lock().unwrap().zoom_adj();
+        // The grid rides the same in-memory lock as the zoom —
+        // resize-fresh by construction, no snapshot of its own.
+        let (zoom_adj, grid) = {
+            let terminal = tab.terminal.lock().unwrap();
+            (terminal.zoom_adj(), terminal.grid())
+        };
         // The step the tab's terminal actually zooms by: the same
         // options construction every spawn builds from.
         let zoom_step = self
             .terminal_options_for(resolved)
             .font_size_zoom_step_mul_100;
-        status_bar::resolve_segments(
-            home.as_deref(),
+        let inputs = status_bar::StatusInputs {
+            home: home.as_deref(),
             cwd,
-            &tab.shell,
-            resolved.map(|preset| preset.name.as_str()),
+            shell: &tab.shell,
+            profile_name: resolved.map(|preset| preset.name.as_str()),
             zoom_adj,
-            zoom_step,
-            self.active_process_name.as_deref(),
-        )
+            zoom_step_mul_100: zoom_step,
+            foreground: self.active_process_name.as_deref(),
+            branch: self.active_branch.as_deref(),
+            grid: Some(grid),
+            tab_position: self.active_tab_position(),
+            clock: self.status_clock.as_deref(),
+        };
+        status_bar::resolve_segments(&inputs, self.config.status_toggles())
+    }
+
+    /// The active tab's (index, total) for the band's tab segment —
+    /// saturated into `u16`; a session beyond 65k tabs has larger
+    /// problems than the band's arithmetic.
+    fn active_tab_position(&self) -> Option<(u16, u16)> {
+        let total = self.tabs.len();
+        (total > 0).then(|| {
+            (
+                u16::try_from(self.active_tab + 1).unwrap_or(u16::MAX),
+                u16::try_from(total).unwrap_or(u16::MAX),
+            )
+        })
     }
 
     /// Applies the current config and theme to every tab's terminal.
@@ -3033,6 +3126,10 @@ impl Application for DropTerm {
             session_save: session::SessionSave::default(),
             tab_cwds: HashMap::new(),
             active_process_name: None,
+            active_branch: None,
+            copied_segment: None,
+            status_clock: None,
+            clock_armed: false,
             rename: None,
             pending_close: None,
             drag: None,
@@ -3107,6 +3204,9 @@ impl Application for DropTerm {
             open_anchor.then(|_| Task::none()),
             app.debounced_toggle(startup),
             theme_task,
+            // The clock starts with the config's gate — armed here,
+            // kept alive or stood down at every gate re-evaluation.
+            app.sync_status_clock(),
         ]);
         (app, task)
     }
@@ -3402,6 +3502,8 @@ impl Application for DropTerm {
                 )),
                 ..cosmic::iced::Font::default()
             },
+            self.copied_segment,
+            Message::StatusSegmentCopied,
         )
         .into();
 
@@ -3611,7 +3713,11 @@ impl DropTerm {
                 // The config echo is the last listed piggyback point
                 // for the band's process snapshot (criterion 5) — the
                 // band's own visibility/font ride this same echo.
-                self.refresh_active_process_name();
+                self.refresh_status_snapshot();
+                // The clock's gate can flip on any echo; sync (arm or
+                // stand down) before the echo's own exits, chaining
+                // the task onto whichever return it takes.
+                let clock_task = self.sync_status_clock();
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -3637,7 +3743,7 @@ impl DropTerm {
                 // for the one global-reading consumer, the
                 // window-background derivation.
                 if let Some(kind) = theme_override(old_preference, self.config.theme_preference) {
-                    return theme_override_task(kind);
+                    return theme_override_task(kind).chain(clock_task);
                 }
                 // Our own write's echo: geometry matching the last
                 // write is absorbed — the in-memory config already
@@ -3649,7 +3755,7 @@ impl DropTerm {
                     && geometry::is_own_write(written, new_geom)
                 {
                     self.last_written = None;
-                    return Task::none();
+                    return clock_task;
                 }
                 // Geometry edits reshape a shown surface in place —
                 // no destroy/recreate; a hidden surface just opens
@@ -3675,8 +3781,9 @@ impl DropTerm {
                 ) && let (SurfaceState::Shown(id), Some(output)) =
                     (&self.surface, self.output_size)
                 {
-                    return geometry::apply_geometry(*id, new_geom, output);
+                    return geometry::apply_geometry(*id, new_geom, output).chain(clock_task);
                 }
+                return clock_task;
             }
             Message::ReapplyColors => {
                 // The theme override landed: re-run the idempotent
@@ -3934,6 +4041,24 @@ impl DropTerm {
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
                     return self.request_close_tab(index);
                 }
+            }
+            Message::StatusSegmentCopied(id) => {
+                // The widget already wrote the clipboard; the app owns
+                // the flash's life — show the check, clear on lapse.
+                self.copied_segment = Some(id);
+                return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                    cosmic::Action::App(Message::StatusCopyFlashLapse)
+                });
+            }
+            Message::StatusCopyFlashLapse => {
+                self.copied_segment = None;
+            }
+            Message::StatusClockTick => {
+                // The fired tick consumed its sleep; the re-sync arms
+                // the next minute while the gate holds and lets the
+                // loop die within one minute of it dropping.
+                self.clock_armed = false;
+                return self.sync_status_clock();
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();
