@@ -479,9 +479,9 @@ impl DropTerm {
         };
         let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
         let process = tab.terminal.lock().unwrap().foreground_process_name();
-        let branch = self
-            .config
-            .status_bar_enabled
+        // Hidden means never gathered: the `.git` walk stops at the
+        // gate, before the filesystem.
+        let branch = (self.config.status_bar_enabled && self.config.status_bar_show_branch)
             .then(|| status_bar::git_branch(cwd))
             .flatten();
         self.active_process_name = process;
@@ -528,7 +528,7 @@ impl DropTerm {
             tab_position: self.active_tab_position(),
             clock: None,
         };
-        status_bar::resolve_segments(&inputs, status_bar::StatusToggles::all())
+        status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
 
     /// The active tab's (index, total) for the band's tab segment —
