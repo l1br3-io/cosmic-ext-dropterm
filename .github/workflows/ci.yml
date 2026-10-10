@@ -9,6 +9,31 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils appstream
+
+      # The pop-os validate-desktop-files shape (desktop-file-validate
+      # on every .desktop) plus the Flathub bar for the metainfo:
+      # zero errors AND zero warnings. --no-net skips URL liveness —
+      # the repo's own URLs are the project homepage, not something a
+      # validator should gate on.
+      - name: Validate desktop files
+        run: |
+          desktop-file-validate res/io.github.l1br3_io.CosmicExtDropterm.desktop
+          desktop-file-validate res/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop
+
+      - name: Validate AppStream metainfo
+        run: |
+          appstreamcli validate --no-net res/io.github.l1br3_io.CosmicExtDropterm.metainfo.xml
+
   check:
     runs-on: ubuntu-24.04
     steps:
