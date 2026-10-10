@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Assemble the full artifact set without publishing a release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # vendor.tar for downstream offline rebuilders, plus the offline
+  # proof: network-present CI extracts the tar and builds both
+  # packages --frozen --offline from it (the path a distro build and
+  # the AUR-style consumer takes).
+  vendor:
+    name: vendor.tar + offline proof
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            just libxkbcommon-dev libwayland-dev libfontconfig-dev \
+            libfreetype-dev libexpat1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Vendor dependencies
+        run: just vendor
+
+      - name: Offline build proof
+        run: just build-vendored
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor-tar
+          path: vendor.tar
+          if-no-files-found: error
+
+  # Per-arch release tarballs: per-package release builds (never a
+  # unified workspace build — feature unification would hand the
+  # applet the wgpu renderer), staged via `just rootdir=… install`,
+  # tarred as the usr/ tree AUR/deb consumers expect.
+  build:
+    name: build ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            just libxkbcommon-dev libwayland-dev libfontconfig-dev \
+            libfreetype-dev libexpat1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build both packages (per-package, locked)
+        run: |
+          just build-release --locked
+          just build-applet --locked
+
+      - name: Stage install tree and tarball
+        run: |
+          just rootdir=stage install
+          ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          arch="$(uname -m)"
+          tar -C stage -czf "cosmic-ext-dropterm-${ver}-${arch}.tar.gz" usr
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.runs-on }}
+          path: cosmic-ext-dropterm-*.tar.gz
+          if-no-files-found: error
+
+  # Assemble the artifact set and checksums always (dry-run proves the
+  # whole pipeline without publishing); publish only on a tag push,
+  # after the tag ↔ Cargo.toml version guard.
+  release:
+    name: assemble + publish
+    needs: [vendor, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tag events only: a dispatch runs from a branch, whose ref name
+      # is not a version and must not trip the guard.
+      - name: Tag ↔ Cargo.toml version guard
+        if: github.event_name == 'push'
+        run: |
+          ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          tag="${GITHUB_REF_NAME}"
+          if [ "v$ver" != "$tag" ]; then
+            echo "::error::tag '${tag}' does not match Cargo.toml version '${ver}'"
+            exit 1
+          fi
+          echo "guard passed: v${ver} == ${tag}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Assemble artifact set + sha256sums
+        run: |
+          set -eu
+          mkdir -p out
+          find dist -type f -exec cp {} out/ \;
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            # The auto-generated source archive is a release asset too
+            # (AUR consumes exactly this tarball) — cover it in the
+            # checksums under its download filename.
+            curl -fsSL -o "out/${tag}.tar.gz" \
+              "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          fi
+          cd out
+          sha256sum -- * > sha256sums
+          echo "Artifact set:"
+          ls -lh
+          echo
+          cat sha256sums
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" out/* \
+            --title "DropTerm ${GITHUB_REF_NAME}" \
+            --generate-notes
