@@ -64,6 +64,12 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "i"),
         Action::Settings,
     );
+    // The status band's toggle (status-bar OQ-3, ruled 2026-10-10).
+    // Bare Ctrl+B must stay unbound: readline's cursor-back byte.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "b"),
+        Action::ToggleStatusBar,
+    );
     map.insert(
         bind(&[Modifier::Ctrl, Modifier::Shift], "t"),
         Action::NewTab,
@@ -255,6 +261,7 @@ pub fn action_id(action: Action) -> Option<&'static str> {
         Action::RenameTab => "rename_tab",
         Action::DuplicateTab => "duplicate_tab",
         Action::Settings => "settings",
+        Action::ToggleStatusBar => "toggle_status_bar",
     };
     Some(id)
 }
@@ -295,6 +302,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "rename_tab" => Action::RenameTab,
         "duplicate_tab" => Action::DuplicateTab,
         "settings" => Action::Settings,
+        "toggle_status_bar" => Action::ToggleStatusBar,
         _ => return None,
     };
     Some(action)
@@ -378,7 +386,12 @@ pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
         },
         ActionGroup {
             title: "Other",
-            actions: vec![Action::ClearScrollback, Action::Hide, Action::Settings],
+            actions: vec![
+                Action::ClearScrollback,
+                Action::Hide,
+                Action::Settings,
+                Action::ToggleStatusBar,
+            ],
         },
     ]
     .into_iter()
@@ -428,6 +441,7 @@ pub fn action_label(action: Action) -> &'static str {
         Action::RenameTab => "Rename tab",
         Action::DuplicateTab => "Duplicate tab",
         Action::Settings => "Open settings",
+        Action::ToggleStatusBar => "Toggle the status bar",
     }
 }
 
@@ -766,12 +780,57 @@ mod tests {
                 &binds,
                 Modifiers::empty(),
                 &Key::Character("i".into()),
-                None
+                None,
             ),
             None
         );
         assert_eq!(
             matched_action(&binds, Modifiers::CTRL, &Key::Character("i".into()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_b_toggles_the_status_bar_alone() {
+        // OQ-3's ruling: the one action on the chord is the band's
+        // toggle, and the toggle's only default chord is this one —
+        // no collision in either direction (status-bar Task 3 pin).
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                &Key::Character("b".into()),
+                None,
+            ),
+            Some(Action::ToggleStatusBar)
+        );
+        assert_eq!(
+            binds
+                .values()
+                .filter(|action| **action == Action::ToggleStatusBar)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn bare_and_ctrl_b_stay_free_for_the_terminal() {
+        // Ctrl+B is readline's cursor-back byte — swallowing it would
+        // break shell line editing — and a bare `b` is ordinary
+        // typing: only the full Ctrl+Shift+B combo is the toggle.
+        let binds = default_key_binds();
+        assert_eq!(
+            matched_action(
+                &binds,
+                Modifiers::empty(),
+                &Key::Character("b".into()),
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            matched_action(&binds, Modifiers::CTRL, &Key::Character("b".into()), None),
             None
         );
     }
@@ -1236,9 +1295,9 @@ mod tests {
             "the section titles are part of the tab's shape"
         );
         let rows: Vec<Action> = groups.into_iter().flat_map(|group| group.actions).collect();
-        // 21 payload-free variants plus the eight numbered activate
+        // 22 payload-free variants plus the eight numbered activate
         // rows — NewProfileTab is the one deliberate exclusion.
-        assert_eq!(rows.len(), 29);
+        assert_eq!(rows.len(), 30);
         let unique: std::collections::HashSet<Action> = rows.iter().copied().collect();
         assert_eq!(unique.len(), rows.len(), "no action appears twice");
         assert!(rows.iter().all(|action| action_id(*action).is_some()));

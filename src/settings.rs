@@ -64,6 +64,9 @@ pub enum Section {
     Appearance,
     Window,
     Tabs,
+    /// The status band's one-toggle card (status-bar spec): sits on
+    /// the Behavior page right after Tabs.
+    StatusBar,
     Dropdown,
     Terminal,
     Advanced,
@@ -83,10 +86,11 @@ impl Section {
             reason = "the tests' registry pin; runtime iterates tab_sections"
         )
     )]
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Appearance,
         Section::Window,
         Section::Tabs,
+        Section::StatusBar,
         Section::Dropdown,
         Section::Terminal,
         Section::Advanced,
@@ -119,6 +123,7 @@ impl Section {
                 ConfigKey::CloseConfirmationEnabled,
                 ConfigKey::SessionPersistenceEnabled,
             ],
+            Section::StatusBar => &[ConfigKey::StatusBarEnabled],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
                 ConfigKey::Shell,
@@ -146,7 +151,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (26 — default-spawn's two rows included).
+/// count (27 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -177,6 +182,7 @@ pub enum ConfigKey {
     ColorSchemeLight,
     ThemePreference,
     SettingsDrawerWidth,
+    StatusBarEnabled,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -211,7 +217,12 @@ pub enum SettingsTab {
 pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
     match tab {
         SettingsTab::Appearance => &[Section::Appearance, Section::Window],
-        SettingsTab::Behavior => &[Section::Tabs, Section::Dropdown, Section::Terminal],
+        SettingsTab::Behavior => &[
+            Section::Tabs,
+            Section::StatusBar,
+            Section::Dropdown,
+            Section::Terminal,
+        ],
         SettingsTab::Profiles | SettingsTab::Keybindings => &[],
         SettingsTab::Advanced => &[Section::Advanced],
     }
@@ -315,6 +326,7 @@ impl ConfigKey {
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
             ConfigKey::SettingsDrawerWidth => "settings_drawer_width",
+            ConfigKey::StatusBarEnabled => "status_bar_enabled",
         }
     }
 }
@@ -364,6 +376,10 @@ pub enum PlannedWrite {
     /// [`DRAWER_MIN_WIDTH`] in `clamped`; the surface-relative cap
     /// is render-time (`drawer_width`).
     SettingsDrawerWidth(Option<u16>),
+    /// Whether the status band renders (status-bar spec): the band
+    /// leaves the column and the terminal's pinned height reclaims
+    /// its strip on the config echo.
+    StatusBarEnabled(bool),
 }
 
 impl PlannedWrite {
@@ -398,6 +414,7 @@ impl PlannedWrite {
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
             PlannedWrite::SettingsDrawerWidth(_) => ConfigKey::SettingsDrawerWidth,
+            PlannedWrite::StatusBarEnabled(_) => ConfigKey::StatusBarEnabled,
         }
     }
 
@@ -496,7 +513,10 @@ impl PlannedWrite {
             // `Option<String>` — absent/None merges cleanly with a
             // hand-edited file.
             PlannedWrite::SettingsDrawerWidth(value) => {
-                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), *value)
+                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), value)
+            }
+            PlannedWrite::StatusBarEnabled(value) => {
+                handler.set(ConfigKey::StatusBarEnabled.key_name(), *value)
             }
         }
     }
@@ -633,8 +653,11 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::ColorSchemeLight
         // The drag handle's key — not a settings control, but its
         // echo re-renders the pane immediately: live by
-        // construction.
+        // construction. The status band's toggle joins it: the band
+        // leaves or joins the column on the config echo, and the
+        // terminal's pinned height follows the same frame.
         | ConfigKey::SettingsDrawerWidth
+        | ConfigKey::StatusBarEnabled
         | ConfigKey::ThemePreference => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
@@ -1970,6 +1993,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SettingsDrawerClickClose(checked))
         }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
+        ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         _ => None,
     }
 }
@@ -1981,6 +2005,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Window => "Window",
             Section::Tabs => "Tabs",
+            Section::StatusBar => "Status bar",
             Section::Dropdown => "Dropdown",
             Section::Terminal => "Terminal",
             Section::Advanced => "Advanced",
@@ -2026,6 +2051,7 @@ impl ConfigKey {
             // key); the arm keeps the match exhaustive for the
             // drag-only writer.
             ConfigKey::SettingsDrawerWidth => "Drawer width",
+            ConfigKey::StatusBarEnabled => "Show the status band",
         }
     }
 }
@@ -3461,6 +3487,7 @@ fn toggle_control(
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
+        ConfigKey::StatusBarEnabled => config.status_bar_enabled,
         _ => return None,
     };
     Some(
@@ -3687,7 +3714,12 @@ mod tests {
         );
         assert_eq!(
             tab_sections(SettingsTab::Behavior),
-            &[Section::Tabs, Section::Dropdown, Section::Terminal,]
+            &[
+                Section::Tabs,
+                Section::StatusBar,
+                Section::Dropdown,
+                Section::Terminal,
+            ]
         );
         assert_eq!(tab_sections(SettingsTab::Profiles), &[]);
         assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
@@ -3893,6 +3925,7 @@ mod tests {
             PlannedWrite::ColorSchemeDark(String::new()),
             PlannedWrite::ColorSchemeLight(String::new()),
             PlannedWrite::ThemePreference(ThemePreference::System),
+            PlannedWrite::StatusBarEnabled(true),
         ];
         let keys = section_keys();
         assert_eq!(keys.len(), writers.len());
@@ -4455,6 +4488,35 @@ mod tests {
         assert_eq!(
             Section::Dropdown.keys(),
             &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled,]
+        );
+    }
+
+    #[test]
+    fn the_status_bar_card_hosts_the_one_toggle_after_tabs() {
+        // Status-bar Task 3: the Behavior page carries a one-toggle
+        // Status bar card right after Tabs — the key's exact file
+        // spelling and the flip's single planned write pinned like
+        // every other toggle row.
+        assert_eq!(
+            SettingsTab::Behavior,
+            SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
+        );
+        assert_eq!(
+            tab_sections(SettingsTab::Behavior)
+                .iter()
+                .position(|section| matches!(section, Section::StatusBar)),
+            Some(1),
+            "the Status bar card sits directly after Tabs on Behavior"
+        );
+        assert_eq!(Section::StatusBar.keys(), &[ConfigKey::StatusBarEnabled]);
+        assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
+        assert_eq!(
+            toggle_write(ConfigKey::StatusBarEnabled, false),
+            Some(PlannedWrite::StatusBarEnabled(false))
+        );
+        assert_eq!(
+            toggle_write(ConfigKey::StatusBarEnabled, true),
+            Some(PlannedWrite::StatusBarEnabled(true))
         );
     }
 

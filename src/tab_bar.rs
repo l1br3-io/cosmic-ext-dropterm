@@ -76,7 +76,7 @@ use crate::tabs::{MoveDirection, Tab, TabId, title_prefix};
 /// strip that users read as window chrome rather than tabs. Text picks
 /// near-black or near-white by the background's luminance so labels and
 /// close glyphs stay readable in either scheme.
-fn pane_colors() -> (Color, Color) {
+pub(crate) fn pane_colors() -> (Color, Color) {
     let packed = WINDOW_BG_COLOR.load(std::sync::atomic::Ordering::SeqCst);
     let background = Color::from_rgba8(
         ((packed >> 16) & 0xFF) as u8,
@@ -116,8 +116,9 @@ fn readable_foreground(background: Color) -> Color {
 }
 
 /// Fills `bounds` as a disc — a quad rounded by half its smaller side —
-/// the shared shape of the gear's parts and the settings hover disc.
-fn fill_disc(renderer: &mut Renderer, bounds: Rectangle, color: Color) {
+/// the shared shape of the gear's parts, the settings hover disc, and
+/// the status band's filled process-state disc (status-bar spec).
+pub(crate) fn fill_disc(renderer: &mut Renderer, bounds: Rectangle, color: Color) {
     renderer.fill_quad(
         Quad {
             bounds,

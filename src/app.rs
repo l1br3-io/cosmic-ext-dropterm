@@ -46,6 +46,7 @@ use crate::profile;
 use crate::session;
 use crate::settings::{self, SettingsTab};
 use crate::slide::{self, SlideBox};
+use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
@@ -292,6 +293,14 @@ pub struct DropTerm {
     /// this cache so only a real cwd change — not title churn — marks
     /// the session dirty.
     tab_cwds: HashMap<TabId, Option<PathBuf>>,
+    /// The active tab's foreground-process name for the status band's
+    /// disc-and-name segment (status-bar criterion 5): a snapshot
+    /// refreshed only at event piggyback points — title reports,
+    /// terminal wakeups, tab switches, spawns/respawns, zoom,
+    /// config echo — never per frame; the band widget renders plain
+    /// resolved data. `None` reads idle or unreadable, and the band
+    /// falls back to the recorded shell's basename.
+    active_process_name: Option<String>,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -437,6 +446,50 @@ impl DropTerm {
             font_size: profile::effective_font_size(profile, self.config.font_size),
             ..TerminalOptions::default()
         }
+    }
+
+    /// Refreshes the active tab's foreground-process snapshot for the
+    /// status band — the lone caller of the engine's comm read (the
+    /// construction pin: [`status_bar::StatusBar`] takes plain
+    /// resolved data and cannot read `/proc` itself, so the render
+    /// path performs zero process reads by construction).
+    fn refresh_active_process_name(&mut self) {
+        self.active_process_name = self
+            .active()
+            .and_then(|tab| tab.terminal.lock().unwrap().foreground_process_name());
+    }
+
+    /// The active tab's resolved status-band segments: pure assembly
+    /// over existing in-app state — the cwd cache, the recorded
+    /// shell, the id-resolved profile, the live zoom adjustment —
+    /// plus the process snapshot (see
+    /// [`status_bar::resolve_segments`]). No tabs (startup, or
+    /// momentarily mid-close) resolves the empty default.
+    fn active_status_segments(&self) -> status_bar::StatusSegments {
+        let Some(tab) = self.active() else {
+            return status_bar::StatusSegments::default();
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
+        let resolved = tab
+            .profile
+            .as_deref()
+            .and_then(|id| profile::find(&self.config.profiles, id));
+        let zoom_adj = tab.terminal.lock().unwrap().zoom_adj();
+        // The step the tab's terminal actually zooms by: the same
+        // options construction every spawn builds from.
+        let zoom_step = self
+            .terminal_options_for(resolved)
+            .font_size_zoom_step_mul_100;
+        status_bar::resolve_segments(
+            home.as_deref(),
+            cwd,
+            &tab.shell,
+            resolved.map(|preset| preset.name.as_str()),
+            zoom_adj,
+            zoom_step,
+            self.active_process_name.as_deref(),
+        )
     }
 
     /// Applies the current config and theme to every tab's terminal.
@@ -1807,6 +1860,22 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
     }
 }
 
+/// The config's font family as the `&'static str` iced's `Font`
+/// requires — interned per distinct name, libcosmic's own
+/// `FontConfig → Font` conversion leaks-and-caches the same way, so
+/// config echo's constant re-renders never grow the intern set.
+fn interned_font_family(name: &str) -> &'static str {
+    static FAMILY_MAP: std::sync::LazyLock<
+        std::sync::RwLock<std::collections::BTreeSet<&'static str>>,
+    > = std::sync::LazyLock::new(std::sync::RwLock::default);
+    if let Some(name) = FAMILY_MAP.read().unwrap().get(name) {
+        return name;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    FAMILY_MAP.write().unwrap().insert(leaked);
+    leaked
+}
+
 /// Settings for the clipboard-anchor window.
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
@@ -2963,6 +3032,7 @@ impl Application for DropTerm {
             pending_remote_tab: None,
             session_save: session::SessionSave::default(),
             tab_cwds: HashMap::new(),
+            active_process_name: None,
             rename: None,
             pending_close: None,
             drag: None,
@@ -3184,7 +3254,10 @@ impl Application for DropTerm {
         // strips — both always reserved, so the 1↔2 tab crossing never
         // resizes the terminal (see `surface::terminal_view_height`).
         let terminal_height = self.window_height.map_or(Length::Fill, |h| {
-            Length::Fixed(surface::terminal_view_height(h))
+            Length::Fixed(surface::terminal_view_height(
+                h,
+                self.config.status_bar_enabled,
+            ))
         });
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
@@ -3313,37 +3386,57 @@ impl Application for DropTerm {
                     .on_unfocus(Message::RenameCancelled),
             );
         }
-        // Stacking: the grab bar is fixed at the leading edge —
-        // opposite the screen edge, where all of `geometry.rs`'s
-        // drag/anchor math expects it — the terminal fills the
-        // middle, and the tab strip takes whichever side
-        // `effective_bar_at_bottom` picks. Both bars take their
-        // strips out of the terminal's pinned height (see
-        // `surface::terminal_view_height` — subtracted
-        // order-agnostically), so neither layout changes the
-        // terminal's pixel height. Fill dimensions keep iced's flex
-        // from deferring the bars past the terminal's allocation: a
-        // Shrink cross-axis makes a fixed-height, fill-width bar a
-        // fourth-pass child, so the Fill terminal would take the
-        // whole surface and push the bars below its bottom edge.
-        let column: Element<'_, Message> = match (self.config.edge, bar_at_bottom) {
-            (Edge::Top, false) => widget::column![bar, terminal, grab_bar]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
-            (Edge::Top, true) => widget::column![terminal, bar, grab_bar]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
-            (Edge::Bottom, false) => widget::column![grab_bar, bar, terminal]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
-            (Edge::Bottom, true) => widget::column![grab_bar, terminal, bar]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
+        // The status band (status-bar spec): the free-edge-most strip,
+        // adjacent to the grab bar, narrating the active terminal in
+        // its own configured font at 12 px (OQ-2 — the sanctioned
+        // fallback if the family does not resolve at the hardware
+        // pass is the default UI font with every other token
+        // standing). Constructed from the resolved segments only —
+        // the process name comes from the app-side snapshot, never a
+        // render-path `/proc` read.
+        let band: Element<'_, Message> = StatusBar::new(
+            self.active_status_segments(),
+            cosmic::iced::Font {
+                family: cosmic::iced::font::Family::Name(interned_font_family(
+                    &self.config.font_name,
+                )),
+                ..cosmic::iced::Font::default()
+            },
+        )
+        .into();
+
+        // Stacking: `status_bar::column_stacking` owns the orders —
+        // the grab bar fixed at the free edge (opposite the screen
+        // edge, where all of `geometry.rs`'s drag/anchor math expects
+        // it), the status band beside it, the terminal filling the
+        // middle, the tab strip wherever `effective_bar_at_bottom`
+        // picks. All three strips take theirs out of the terminal's
+        // pinned height (see `surface::terminal_view_height` —
+        // subtracted order-agnostically), so no layout changes the
+        // terminal's pixel height; a disabled band simply drops out
+        // of the column and the pin reclaims its strip. Fill
+        // dimensions keep iced's flex from deferring the strips past
+        // the terminal's allocation: a Shrink cross-axis makes a
+        // fixed-height, fill-width strip a fourth-pass child, so the
+        // Fill terminal would take the whole surface and push the
+        // strips below its edge.
+        let stacking = status_bar::column_stacking(self.config.edge, self.config.tab_position);
+        let slot_of = |strip: Strip| {
+            stacking
+                .iter()
+                .position(|candidate| *candidate == strip)
+                .expect("every strip stacks exactly once (pinned)")
         };
+        let mut strips: Vec<Option<Element<'_, Message>>> = (0..4).map(|_| None).collect();
+        strips[slot_of(Strip::Tabs)] = Some(bar.into());
+        strips[slot_of(Strip::StatusBand)] = self.config.status_bar_enabled.then_some(band);
+        strips[slot_of(Strip::Terminal)] = Some(terminal);
+        strips[slot_of(Strip::GrabBar)] = Some(grab_bar.into());
+        let column: Element<'_, Message> =
+            widget::column::with_children(strips.into_iter().flatten().collect::<Vec<_>>())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
 
         // The slide: while the surface animates — ease-in from the
         // anchored edge after a show, ease-out back to it before a
@@ -3515,6 +3608,10 @@ impl DropTerm {
                 // while running stays consistent).
                 self.key_binds = keybinds::effective_key_binds(&self.config.custom_key_binds);
                 self.apply_config_to_tabs();
+                // The config echo is the last listed piggyback point
+                // for the band's process snapshot (criterion 5) — the
+                // band's own visibility/font ride this same echo.
+                self.refresh_active_process_name();
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a

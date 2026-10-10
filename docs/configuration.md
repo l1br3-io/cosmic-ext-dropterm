@@ -10,7 +10,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`, `status_bar_enabled`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -28,6 +28,16 @@ Geometry settings reshape the surface the moment they change - a shown surface i
 ## Tab bar position
 
 `tab_position` (`Auto`, `Top`, or `Bottom`; default `Auto`): which side of the surface the tab strip sits on, independent of `edge`. `Auto` keeps the strip beside the grab bar at the leading edge - the side opposite the screen edge, which on the default top anchor is the surface's bottom; `Top`/`Bottom` pin the strip to that side regardless of anchor, so on the matching anchor it sits at the screen edge. Unlike the keys above, a change never reshapes the surface - the rows keep their heights - so a shown surface just reorders immediately. Pick it in the Geometry section of the [settings drawer](settings.md).
+
+## Status bar
+
+`status_bar_enabled` (default `true`) shows or hides the status band: a 28 px strip at the surface's free edge, beside the grab bar, narrating the **active terminal**. From the left: a state disc - filled while a foreground process runs, a hollow ring over the idle shell - with the foreground process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed. From the right, dimmed: the tab's profile name (when it runs one), then the zoom delta (`+200%`) whenever the font is not at its base size. The band's colors derive from the active color scheme, it is typed in the terminal's own configured font at 12 px, and it sits adjacent to the grab bar in every `edge` × `tab_position` stacking. The process name is sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame. Toggle it with `Ctrl+Shift+B` or on the Behavior tab of the [settings drawer](settings.md), or write it directly:
+
+```sh
+echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar_enabled
+```
+
+A flip applies the moment it lands: the band leaves or joins the column and the terminal's pinned height reclaims or cedes its 28 px the same frame.
 
 ## Tab titles
 
@@ -86,7 +96,7 @@ The three appearance fields share one resolution rule, applied per field (never 
 
 ## Keybindings
 
-Keybindings are customized in-app on the [settings drawer](settings.md)'s Keybindings tab; the config file can also be hand-edited in the same shape. `custom_key_binds` (default empty - all defaults) maps one action id to one binding: modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key name (single letters are case-insensitive; named keys spell their names - `Tab`, `PageUp`, `F1`, `Space`, `Insert`). The action ids are the file-format vocabulary - `copy`, `paste`, `paste_primary`, `select_all`, `zoom_in`/`zoom_out`/`zoom_reset`, `hide`, `settings`, `new_tab`, `new_tab_home`, `close_tab`, `duplicate_tab`, `rename_tab`, `next_tab`, `prev_tab`, `move_tab_left`, `move_tab_right`, `activate_tab_1` through `activate_tab_8`, `activate_last_tab`, `clear_scrollback`, `copy_primary`:
+Keybindings are customized in-app on the [settings drawer](settings.md)'s Keybindings tab; the config file can also be hand-edited in the same shape. `custom_key_binds` (default empty - all defaults) maps one action id to one binding: modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key name (single letters are case-insensitive; named keys spell their names - `Tab`, `PageUp`, `F1`, `Space`, `Insert`). The action ids are the file-format vocabulary - `copy`, `paste`, `paste_primary`, `select_all`, `zoom_in`/`zoom_out`/`zoom_reset`, `hide`, `settings`, `toggle_status_bar`, `new_tab`, `new_tab_home`, `close_tab`, `duplicate_tab`, `rename_tab`, `next_tab`, `prev_tab`, `move_tab_left`, `move_tab_right`, `activate_tab_1` through `activate_tab_8`, `activate_last_tab`, `clear_scrollback`, `copy_primary`:
 
 ```ron
 // ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/custom_key_binds

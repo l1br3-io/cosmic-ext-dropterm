@@ -78,10 +78,17 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
 /// Height to pin the terminal widget to: the window minus the grab
 /// bar and tab strips, both always shown (the tab strip carries the
 /// settings button even with one tab), so the terminal's area never
-/// changes across the 1↔2 tab crossing. Pinned `Fixed` (see
-/// `TerminalBox::height`) so flex cannot push the bars off-surface.
-pub fn terminal_view_height(window_height: f32) -> f32 {
-    (window_height - crate::tab_bar::BAR_HEIGHT - crate::grab_bar::GRAB_BAR_HEIGHT).max(1.0)
+/// changes across the 1↔2 tab crossing — minus the status band's own
+/// strip while it is enabled (status-bar criterion 1). Pinned `Fixed`
+/// (see `TerminalBox::height`) so flex cannot push the bars
+/// off-surface.
+pub fn terminal_view_height(window_height: f32, status_bar_enabled: bool) -> f32 {
+    let band = if status_bar_enabled {
+        crate::status_bar::BAND_HEIGHT
+    } else {
+        0.0
+    };
+    (window_height - crate::tab_bar::BAR_HEIGHT - crate::grab_bar::GRAB_BAR_HEIGHT - band).max(1.0)
 }
 
 #[cfg(test)]
@@ -89,23 +96,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_view_height_always_reserves_both_strips() {
+    fn terminal_view_height_reserves_both_strips_while_the_band_is_hidden() {
         // Both strips are always shown — the tab strip carries the
         // settings button even with one tab — so the terminal's
         // height never jumps across the 1↔2 tab crossing.
         assert_eq!(
-            terminal_view_height(563.0),
+            terminal_view_height(563.0, false),
             563.0 - 32.0 - crate::grab_bar::GRAB_BAR_HEIGHT
         );
         assert_eq!(
-            terminal_view_height(563.0 + 32.0 + crate::grab_bar::GRAB_BAR_HEIGHT),
+            terminal_view_height(563.0 + 32.0 + crate::grab_bar::GRAB_BAR_HEIGHT, false),
+            563.0
+        );
+    }
+
+    #[test]
+    fn terminal_view_height_reserves_the_band_while_it_is_enabled() {
+        // The band takes its 28 px out of the terminal's pin exactly
+        // like the two strips — subtracted order-agnostically, never
+        // pushing a strip off-surface (status-bar criterion 1).
+        assert_eq!(
+            terminal_view_height(563.0, true),
+            563.0 - 32.0 - crate::grab_bar::GRAB_BAR_HEIGHT - 28.0
+        );
+        assert_eq!(
+            terminal_view_height(563.0 + 32.0 + crate::grab_bar::GRAB_BAR_HEIGHT + 28.0, true),
             563.0
         );
     }
 
     #[test]
     fn terminal_view_height_never_pinches_below_one_pixel() {
-        assert_eq!(terminal_view_height(20.0), 1.0);
+        assert_eq!(terminal_view_height(20.0, false), 1.0);
+        assert_eq!(terminal_view_height(20.0, true), 1.0);
+        assert_eq!(terminal_view_height(0.0, true), 1.0);
     }
 
     #[test]

@@ -326,6 +326,14 @@ pub struct DropTermConfig {
     /// Written once per drag release; double-clicking the drawer's
     /// drag handle resets it to `None`.
     pub settings_drawer_width: Option<u16>,
+    /// Whether the status band renders at the surface's free edge
+    /// (status-bar spec): the 28 px strip adjacent to the grab bar
+    /// narrating the active terminal. Defaults to `true` — the
+    /// identity feature should be seen; the Behavior toggle and
+    /// `Ctrl+Shift+B` make it cheap to hide. Flips apply instantly:
+    /// the band leaves the column and the terminal's pinned height
+    /// grows to reclaim its strip on the config echo.
+    pub status_bar_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -363,6 +371,7 @@ impl Default for DropTermConfig {
             default_cwd: None,
             custom_key_binds: BTreeMap::new(),
             settings_drawer_width: None,
+            status_bar_enabled: true,
         }
     }
 }
@@ -1324,6 +1333,78 @@ mod tests {
 
         let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
         assert!(loaded.respect_panel);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_status_bar_key_loads_as_true() {
+        // A config directory from a version before the status band: no
+        // `status_bar_enabled` key file. The entry derive backfills
+        // from the struct Default — which is `true`, the
+        // visible-by-default ruling (OQ-1) — so pre-band configs see
+        // the band, not a silently-off key.
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-missing-status-bar-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        }
+        .write_entry(&config)
+        .expect("write config keys");
+        std::fs::remove_file(
+            root.join("cosmic")
+                .join("dropterm-config-test")
+                .join(format!("v{CONFIG_VERSION}"))
+                .join("status_bar_enabled"),
+        )
+        .expect("remove status_bar_enabled key file");
+
+        let loaded =
+            DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+        assert!(loaded.status_bar_enabled);
+        // The directory is live, not ignored: the written key comes back.
+        assert_eq!(loaded.height_percent, 70);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_disabled_status_bar_round_trips_through_the_config_store() {
+        // The off state persists — a hidden band stays hidden across
+        // a write→load cycle (the control for the missing-key pin: a
+        // present `false` key is honored, not defaulted over).
+        let root = std::env::temp_dir().join(format!(
+            "dropterm-config-test-status-bar-off-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = cosmic_config::Config::with_custom_path(
+            "dropterm-config-test",
+            CONFIG_VERSION,
+            root.clone(),
+        )
+        .expect("temp config context");
+        let stored = DropTermConfig {
+            status_bar_enabled: false,
+            ..DropTermConfig::default()
+        };
+        stored.write_entry(&config).expect("write config keys");
+
+        let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+        assert_eq!(loaded, stored);
+        assert!(!loaded.status_bar_enabled);
 
         let _ = std::fs::remove_dir_all(&root);
     }
