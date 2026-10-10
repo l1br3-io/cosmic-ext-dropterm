@@ -27,6 +27,7 @@ mod profile;
 mod session;
 mod settings;
 mod slide;
+mod status_bar;
 mod surface;
 mod tab_bar;
 mod tabs;

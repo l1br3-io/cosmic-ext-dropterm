@@ -3184,7 +3184,10 @@ impl Application for DropTerm {
         // strips — both always reserved, so the 1↔2 tab crossing never
         // resizes the terminal (see `surface::terminal_view_height`).
         let terminal_height = self.window_height.map_or(Length::Fill, |h| {
-            Length::Fixed(surface::terminal_view_height(h))
+            Length::Fixed(surface::terminal_view_height(
+                h,
+                self.config.status_bar_enabled,
+            ))
         });
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
