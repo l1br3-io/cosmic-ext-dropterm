@@ -1,0 +1,48 @@
+{
+    "id": "io.github.l1br3_io.CosmicExtDropterm.Applet",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "25.08",
+    "sdk": "org.freedesktop.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "base": "com.system76.Cosmic.BaseApp",
+    "base-version": "stable",
+    "finish-args": [
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--share=ipc",
+        "--filesystem=xdg-config/cosmic:rw",
+        "--talk-name=com.system76.CosmicSettingsDaemon",
+        "--talk-name=io.github.l1br3_io.CosmicExtDropterm"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+            "CARGO_HOME": "/run/build/cosmic-ext-dropterm-applet/cargo"
+        }
+    },
+    "modules": [
+        {
+            "name": "cosmic-ext-dropterm-applet",
+            "buildsystem": "simple",
+            "build-commands": [
+                "cargo --offline fetch --manifest-path Cargo.toml --verbose",
+                "cargo build --offline --release -p cosmic-ext-dropterm-applet --verbose",
+                "install -Dm755 target/release/cosmic-ext-dropterm-applet /app/bin/cosmic-ext-dropterm-applet",
+                "install -Dm644 res/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop /app/share/applications/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop",
+                "install -Dm644 res/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg",
+                "install -Dm644 res/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm.Applet-symbolic.svg",
+                "sed -i 's/^Icon=.*/Icon=io.github.l1br3_io.CosmicExtDropterm.Applet-symbolic/' /app/share/applications/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.1.0/v0.1.0.tar.gz",
+                    "sha256": "a1310ef87fc1a90b21c196918f1601df73c5d00374d2195796267c5f00e7229d"
+                },
+                "cargo-sources.json"
+            ]
+        }
+    ]
+}

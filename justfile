@@ -49,6 +49,13 @@ applet-desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / apple
 applet-icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 applet-icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 
+# The applet's flatpak id doubles as its desktop-file stem: the panel
+# matches applets by stem, and flatpak exports the desktop file under
+# the flatpak id, so the two must be the same string.
+applet-appid := appid + '.Applet'
+flatpak-dir := 'packaging' / 'flatpak'
+applet-manifest := flatpak-dir / (applet-appid + '.json')
+
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 
@@ -185,3 +192,35 @@ install:
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
     rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}}
+
+# Regenerate packaging/flatpak/cargo-sources.json from Cargo.lock with
+# flatpak-builder-tools' cargo generator (the pop-os/cosmic-flatpak
+# convention; their tooling regenerates it at PR review, so it stays
+# gitignored here). On a bare Ubuntu python — no pip, no venv package —
+# pip bootstraps into the user site via get-pip, and tomlkit (the
+# generator's only dependency) installs beside it. Nothing is vendored
+# into the repo or installed system-wide.
+applet-flatpak-sources:
+    curl -fsSL https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
+        -o /tmp/flatpak-cargo-generator.py
+    python3 -m pip --version >/dev/null 2>&1 || { curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; python3 /tmp/get-pip.py --user --break-system-packages -q; }
+    python3 -c 'import tomlkit' 2>/dev/null || python3 -m pip install --user --break-system-packages -q tomlkit
+    python3 /tmp/flatpak-cargo-generator.py \
+        Cargo.lock -o {{flatpak-dir / 'cargo-sources.json'}}
+
+# Build the applet flatpak, mirroring cosmic-flatpak's CI invocation
+# (deps pulled from flathub into the user installation). State lands
+# in .flatpak-builder/, the build tree under packaging/flatpak/build-dir.
+applet-flatpak-build:
+    flatpak-builder --user --install-deps-from=flathub --force-clean \
+        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+
+# Install the built applet into the user installation (from the
+# builder's cache, so a prior applet-flatpak-build makes this quick).
+applet-flatpak-install:
+    flatpak-builder --user --install-deps-from=flathub --force-clean --install \
+        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+
+# Uninstall the applet flatpak from the user installation.
+applet-flatpak-remove:
+    flatpak uninstall --user -y {{applet-appid}}
