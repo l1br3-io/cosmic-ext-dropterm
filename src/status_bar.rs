@@ -446,26 +446,21 @@ pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<Segm
 }
 
 /// The band's wall-clock text: 24-hour `HH:MM`, local zone.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the app's clock tick consumes it when the clock task lands"
-    )
-)]
 pub fn clock_text(now: &jiff::Zoned) -> String {
     now.strftime("%H:%M").to_string()
 }
 
+/// Whether the clock's tick loop should exist — the band shown and
+/// the clock segment shown. Evaluated at init, on every config echo,
+/// and at every fired tick: a mid-flight toggle stands the loop down
+/// within one minute, and the resolver's toggle hides the segment
+/// itself immediately.
+pub const fn clock_due(band_enabled: bool, show_clock: bool) -> bool {
+    band_enabled && show_clock
+}
+
 /// The duration from `now` to the next minute boundary — the tick's
 /// alignment; an on-boundary `now` waits a full minute.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the app's clock tick consumes it when the clock task lands"
-    )
-)]
 pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
     // Civil seconds are 0..=59 and the subsecond part is strictly
     // below a second, so the difference is always positive and at
@@ -1521,6 +1516,14 @@ mod tests {
             next_tick_delay(&zoned("2026-10-10T14:32:30.500+00:00[UTC]")),
             std::time::Duration::from_millis(29_500)
         );
+    }
+
+    #[test]
+    fn the_clock_ticks_only_while_both_gates_hold() {
+        assert!(clock_due(true, true));
+        assert!(!clock_due(true, false));
+        assert!(!clock_due(false, true));
+        assert!(!clock_due(false, false));
     }
 
     // --- the git branch (real fixture trees under temp) ---
