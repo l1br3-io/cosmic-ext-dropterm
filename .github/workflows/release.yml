@@ -31,8 +31,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            just libxkbcommon-dev libwayland-dev libfontconfig-dev \
+            libxkbcommon-dev libwayland-dev libfontconfig-dev \
             libfreetype-dev libexpat1-dev pkg-config
+
+      # 24.04's apt `just` (1.14) predates the justfile's `set quiet`;
+      # the official installer is arch-aware for the release matrix.
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | bash -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -66,8 +74,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            just libxkbcommon-dev libwayland-dev libfontconfig-dev \
+            libxkbcommon-dev libwayland-dev libfontconfig-dev \
             libfreetype-dev libexpat1-dev pkg-config
+
+      # 24.04's apt `just` (1.14) predates the justfile's `set quiet`;
+      # the official installer is arch-aware for the release matrix.
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | bash -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
 
