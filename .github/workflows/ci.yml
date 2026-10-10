@@ -54,8 +54,13 @@ jobs:
             | bash -s -- --to "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # CI mirrors the maintainer's local gate (`just check` on
+      # rustc 1.97): floating stable drifts ahead of it — 1.99's
+      # clippy already flags pre-existing test code (`assert_is_empty`
+      # & co) that the local gate accepts. Bump this with the local
+      # toolchain.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
 
