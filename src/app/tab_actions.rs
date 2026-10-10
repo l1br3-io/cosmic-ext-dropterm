@@ -24,6 +24,7 @@ use crate::keybinds;
 use crate::notify;
 use crate::profile::{self, Profile};
 use crate::session;
+use crate::settings;
 use crate::tabs::{self, CloseSweep, TabId};
 use crate::terminal::Action;
 
@@ -205,6 +206,18 @@ impl DropTerm {
         if action == Action::Settings {
             return self.toggle_settings();
         }
+        // The status band's toggle rides the settings write path
+        // (status-bar Task 3): the keybind and the Behavior card's
+        // toggle are one funnel, and the `ConfigChanged` echo flips
+        // the band and re-pins the terminal's height — the same
+        // every-apply path, no new geometry code.
+        if action == Action::ToggleStatusBar {
+            self.write_config(
+                settings::WriteKind::Bare,
+                &settings::PlannedWrite::StatusBarEnabled(!self.config.status_bar_enabled),
+            );
+            return Task::none();
+        }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
         // and never reach the per-terminal actions.
@@ -230,6 +243,7 @@ impl DropTerm {
         match action {
             Action::Hide
             | Action::Settings
+            | Action::ToggleStatusBar
             | Action::NewTab
             | Action::NewTabHome
             | Action::NewProfileTab(_)
