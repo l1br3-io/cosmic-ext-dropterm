@@ -112,6 +112,29 @@ build-applet *args:
 # second name through to cargo.
 build-all: build-release build-applet
 
+# Vendored offline builds (the System76 release convention): `vendor`
+# snapshots the whole dependency graph — including the git-pinned
+# libcosmic — into vendor.tar together with the source-replacement
+# config cargo vendor prints (a git dependency needs its own
+# [source."url"] redirect, so the config cannot be hand-written). The
+# working tree is cleaned afterward so dev builds keep using git deps.
+vendor:
+    mkdir -p .cargo
+    cargo vendor --locked | head -n -1 > .cargo/config.toml
+    echo 'directory = "vendor"' >> .cargo/config.toml
+    tar -cf vendor.tar vendor .cargo/config.toml
+    rm -rf vendor .cargo
+
+# Extracts vendor/ and .cargo/config.toml from vendor.tar (see vendor).
+vendor-extract:
+    rm -rf vendor .cargo
+    tar -xf vendor.tar
+
+# Compiles both release artifacts from vendor.tar, per package,
+# --frozen --offline: the proof that vendor.tar is a complete
+# dependency snapshot (see build-applet for why per-package).
+build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args) (build-applet '--frozen' '--offline')
+
 run *args:
     cargo run {{args}}
 

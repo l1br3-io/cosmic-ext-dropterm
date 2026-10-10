@@ -1,4 +1,7 @@
 /target
+/vendor/
+/vendor.tar
+/.cargo/config.toml
 SPEC*.md
 /tasks
 .zcode/plans
