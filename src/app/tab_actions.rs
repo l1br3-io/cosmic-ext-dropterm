@@ -190,7 +190,7 @@ impl DropTerm {
         // precedent in `ensure_tabs` — and its fresh shell owns the
         // status band's process snapshot from the first event.
         self.refresh_active_window_bg();
-        self.refresh_active_process_name();
+        self.refresh_status_snapshot();
         Task::batch([refocus, self.mark_session_dirty()])
     }
 
@@ -340,7 +340,7 @@ impl DropTerm {
                 // The zoom segment re-renders from the live
                 // adjustment; the process snapshot refresh rides the
                 // same listed piggyback point (status-bar criterion 5).
-                self.refresh_active_process_name();
+                self.refresh_status_snapshot();
             }
         }
         Task::none()
@@ -727,7 +727,7 @@ impl DropTerm {
             // to a plain one (and vice versa) — and the status band's
             // snapshot follows the newly active tab's foreground.
             self.refresh_active_window_bg();
-            self.refresh_active_process_name();
+            self.refresh_status_snapshot();
             // The tab activation a close implies also retires the
             // newly active tab's attention marker, exactly like a
             // click or a numbered-switch bind would.
@@ -775,7 +775,7 @@ impl DropTerm {
         // resolution replaces the outgoing one's. The status band's
         // snapshot follows the same piggyback point (criterion 5).
         self.refresh_active_window_bg();
-        self.refresh_active_process_name();
+        self.refresh_status_snapshot();
         // Activation retires whatever attention marker the tab wore:
         // the user is now looking at it.
         if let Some(tab) = self.tabs.get_mut(index) {
@@ -1096,7 +1096,7 @@ impl DropTerm {
                 // band's snapshot piggyback points (criterion 5) —
                 // the foreground process often changed to report.
                 if tab_index == self.active_tab {
-                    self.refresh_active_process_name();
+                    self.refresh_status_snapshot();
                 }
                 return cwd_task;
             }
@@ -1108,7 +1108,7 @@ impl DropTerm {
                 let cwd_task = self.check_tab_cwd(tab_index);
                 self.retitle_tab(tab_index);
                 if tab_index == self.active_tab {
-                    self.refresh_active_process_name();
+                    self.refresh_status_snapshot();
                 }
                 return cwd_task;
             }
@@ -1120,7 +1120,7 @@ impl DropTerm {
                 // just produced output is exactly when the name
                 // should be fresh (criterion 5).
                 if tab_index == self.active_tab {
-                    self.refresh_active_process_name();
+                    self.refresh_status_snapshot();
                 } else {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_activity();

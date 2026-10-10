@@ -535,6 +535,20 @@ impl Terminal {
         self.size
     }
 
+    /// The terminal's cell dimensions (cols, rows) — an in-memory
+    /// derivation from the live [`Size`], read at view assembly
+    /// under the same lock as [`Self::zoom_adj`], so the status
+    /// band's grid segment tracks resizes without any snapshot or
+    /// syscall discipline of its own.
+    pub fn grid(&self) -> (u16, u16) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "cell counts fit u16 by construction — a screen beyond 65k cells does not exist"
+        )]
+        let (cols, rows) = (self.size.columns() as u16, self.size.screen_lines() as u16);
+        (cols, rows)
+    }
+
     pub fn zoom_adj(&self) -> i8 {
         self.zoom_adj
     }
@@ -1554,6 +1568,46 @@ mod tests {
         // The shell's own exit leaves nothing to confirm.
         terminal.input_no_scroll(&b"exit\r"[..]);
         poll_until_foreground(&terminal, false, "shell exit reads as no process");
+    }
+
+    #[test]
+    fn grid_floors_the_live_pixel_size_into_cells() {
+        use alacritty_terminal::tty::Shell as PtyShell;
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+
+        // The constructor sizes the default grid at 80x24 cells.
+        assert_eq!(terminal.grid(), (80, 24));
+
+        // Non-whole cells floor: ten columns' worth of pixels plus
+        // nine-tenths of a column is still ten columns.
+        let cell = terminal.size().cell_width;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "px under a u32 ceiling, far below u32::MAX"
+        )]
+        let width = (cell * 10.9).ceil() as u32;
+        terminal.resize(width, terminal.size().height);
+        assert_eq!(terminal.grid().0, 10);
+
+        // The one-cell minimum holds: a zero resize clamps before
+        // the floor-division ever sees a sub-cell size.
+        terminal.resize(0, 0);
+        assert_eq!(terminal.grid(), (1, 1));
     }
 
     /// Poll a live terminal's foreground check until it reads `want`,

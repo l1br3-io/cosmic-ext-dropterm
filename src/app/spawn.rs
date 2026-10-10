@@ -413,7 +413,7 @@ impl DropTerm {
                 // rule; spawn resolved each tab's own cells already),
                 // and its fresh shell seeds the status band's snapshot.
                 self.refresh_active_window_bg();
-                self.refresh_active_process_name();
+                self.refresh_status_snapshot();
                 return;
             }
             // Every spawn failed: fall through to the
@@ -425,7 +425,7 @@ impl DropTerm {
             // coincide — `true` just names the shipped default.
             self.active_tab = tabs::insert_new_tab(&mut self.tabs, self.active_tab, true, tab);
             self.refresh_active_window_bg();
-            self.refresh_active_process_name();
+            self.refresh_status_snapshot();
             // The spawn title through the live mode (the
             // `open_new_tab` precedent): the cwd modes read the
             // preset cwd a default profile seeded, if any.

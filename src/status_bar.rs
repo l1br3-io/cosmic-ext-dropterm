@@ -25,7 +25,9 @@
 
 use std::path::Path;
 
+use cosmic::iced::core::Shell;
 use cosmic::iced::core::alignment;
+use cosmic::iced::core::clipboard::{Clipboard, Kind};
 use cosmic::iced::core::text::{LineHeight, Shaping, paragraph};
 use cosmic::iced::core::text::{Text, Wrapping};
 use cosmic::iced::core::{
@@ -34,6 +36,8 @@ use cosmic::iced::core::{
     text::Renderer as _,
     widget::{Tree, Widget, tree},
 };
+use cosmic::iced::event::Event;
+use cosmic::iced::mouse::{Button, Cursor, Event as MouseEvent};
 use cosmic::iced::{Color, Length, Pixels, Point, mouse};
 use cosmic::theme::Theme;
 use cosmic::{Element, Renderer};
@@ -97,13 +101,6 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
 
 /// Which band region a segment owns — the shared id for cluster
 /// order, visibility, hit-testing, and copy payloads.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the widget consumes it when the rendering task lands"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentId {
     /// The state disc + the process name (one click target).
@@ -125,24 +122,10 @@ pub enum SegmentId {
 }
 
 /// The left cluster's segments in draw order — full alpha.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the widget consumes it when the rendering task lands"
-    )
-)]
 pub const LEFT_CLUSTER: [SegmentId; 3] = [SegmentId::Process, SegmentId::Path, SegmentId::Branch];
 
 /// The right cluster's segments in draw order — the dimmed alpha,
 /// the clock rightmost (the tmux seat).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the widget consumes it when the rendering task lands"
-    )
-)]
 pub const RIGHT_CLUSTER: [SegmentId; 5] = [
     SegmentId::Profile,
     SegmentId::Grid,
@@ -334,6 +317,77 @@ pub fn elide_path_left(path: &str, max_chars: usize) -> String {
     kept.into_iter().collect()
 }
 
+/// How the path renders after the left cluster's squeeze decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathFit {
+    /// The whole path fits.
+    Full,
+    /// Elide to `max_chars` (`…` plus the kept tail).
+    Elided(usize),
+    /// Even elision leaves nothing — the segment is gone.
+    Gone,
+}
+
+/// The left cluster's squeeze decision under a pixel `budget`: the
+/// path elides first (keeping its tail); the branch drops only when
+/// even a fully elided path cannot make room beside it.
+/// `path_chars` counts the path's characters; `path_full_width` and
+/// `branch_width` are the measured pixel widths (`branch_width` of
+/// zero when the branch is absent). Deterministic priority: path
+/// over branch.
+pub fn left_squeeze(
+    budget: f32,
+    path_chars: usize,
+    path_full_width: f32,
+    branch_width: f32,
+) -> (PathFit, bool) {
+    let branch = branch_width > 0.0;
+    if path_chars == 0 {
+        // Nothing to squeeze on the path's side — the branch either
+        // fits or it does not.
+        return (PathFit::Full, branch && branch_width <= budget);
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "char counts are px-scale strings (< 2^24), exact in f32"
+    )]
+    let per_char = path_full_width / path_chars as f32;
+    if per_char <= 0.0 {
+        return (PathFit::Full, branch && branch_width <= budget);
+    }
+    let branch_cost = if branch {
+        SEGMENT_GAP + branch_width
+    } else {
+        0.0
+    };
+    if path_full_width + branch_cost <= budget {
+        return (PathFit::Full, branch);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a px-budget char count, far below usize::MAX by construction"
+    )]
+    let mut max_chars = ((budget - branch_cost).max(0.0) / per_char) as usize;
+    let mut branch_shown = branch;
+    if branch && max_chars == 0 {
+        // Full elision still cannot fit the branch — the branch
+        // gives way and the path elides against the whole budget.
+        branch_shown = false;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a px-budget char count, far below usize::MAX by construction"
+        )]
+        let against_whole_budget = (budget.max(0.0) / per_char) as usize;
+        max_chars = against_whole_budget;
+    }
+    if max_chars == 0 {
+        return (PathFit::Gone, false);
+    }
+    (PathFit::Elided(max_chars), branch_shown)
+}
+
 /// The signed zoom percent a `zoom_adj` of `step_mul_100`-sized steps
 /// adds: `adj × step_mul_100`, saturating into `i16`. Zero adjustment
 /// is `None` — the segment hides until the font is not at its base
@@ -359,13 +413,6 @@ pub fn shell_basename(shell: &str) -> String {
 /// un-decorated string; a path the band would squeeze to `…/ced2`
 /// still copies whole. An absent segment copies nothing (hit-testing
 /// only yields rendered segments, so this is defensive).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the widget's click path consumes it when the rendering task lands"
-    )
-)]
 pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
     match id {
         SegmentId::Process => segments.process.clone(),
@@ -391,13 +438,6 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
 /// The segment whose rect contains `point`, if any — the pure half
 /// of the band's hit-testing; the widget supplies the laid-out
 /// rects. Gaps and everything outside the row belong to no segment.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the widget's hit-testing consumes it when the rendering task lands"
-    )
-)]
 pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<SegmentId> {
     rects
         .iter()
@@ -446,13 +486,6 @@ pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
 /// refs/heads/<name>` names the branch; anything else is a detached
 /// sha whose first 7 hex characters stand in. Unreadable or
 /// malformed input resolves `None` — never a wrong name.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the app's snapshot refresh consumes it when the rendering task lands"
-    )
-)]
 pub fn git_branch(cwd: Option<&Path>) -> Option<String> {
     let cwd = cwd?;
     let dot = cwd.join(".git");
@@ -475,13 +508,6 @@ pub fn git_branch(cwd: Option<&Path>) -> Option<String> {
 /// One `HEAD` file's branch: a `ref:` line names the branch after
 /// `refs/heads/`; anything else must be a detached sha (hex, at
 /// least 7 characters) and shortens to its first 7.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the app's snapshot refresh consumes it when the rendering task lands"
-    )
-)]
 fn parse_head(head: &str) -> Option<String> {
     let head = head.trim_end();
     if let Some(name) = head.strip_prefix("ref: refs/heads/") {
@@ -519,6 +545,10 @@ const DISC_GAP: f32 = 6.0;
 /// alpha and mass, never a new hue.
 const DIM_ALPHA: f32 = 0.6;
 
+/// How long a copied segment flashes its `✓` before the value
+/// returns (OQ-3: 800 ms, retunable at the hardware pass).
+pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800);
+
 /// The band's cached paragraph state: one per segment, re-laid from
 /// the resolved segments on every root layout (the tab bar's titles'
 /// cost model).
@@ -526,18 +556,40 @@ const DIM_ALPHA: f32 = 0.6;
 struct State {
     process: BandParagraph,
     path: BandParagraph,
+    branch: BandParagraph,
     profile: BandParagraph,
+    grid: BandParagraph,
+    tab: BandParagraph,
     zoom: BandParagraph,
+    clock: BandParagraph,
+}
+
+impl State {
+    fn paragraph_of(&self, id: SegmentId) -> &BandParagraph {
+        match id {
+            SegmentId::Process => &self.process,
+            SegmentId::Path => &self.path,
+            SegmentId::Branch => &self.branch,
+            SegmentId::Profile => &self.profile,
+            SegmentId::Grid => &self.grid,
+            SegmentId::Tab => &self.tab,
+            SegmentId::Zoom => &self.zoom,
+            SegmentId::Clock => &self.clock,
+        }
+    }
 }
 
 /// The status band widget: a fixed-height fill-width strip rendering
-/// [`StatusSegments`] — disc + process, then path on the left;
-/// profile, then zoom on the right — in the terminal's own font at
-/// 12 px, colors through the tab strip's shared `pane_colors`
-/// derivation. Constructed from plain resolved data only: the
-/// render path performs zero `/proc` reads by construction — the
-/// app-side snapshot refresh is the lone caller of the engine's comm
-/// read (status-bar criterion 5).
+/// [`StatusSegments`] — disc + process + path + branch in the left
+/// cluster; profile, grid, tab position, zoom, and clock in the
+/// right — in the terminal's own font at 12 px, colors through the
+/// tab strip's shared `pane_colors` derivation. Constructed from
+/// plain resolved data only: the render path performs zero `/proc`
+/// or `.git` reads by construction — the app-side snapshot refresh
+/// is the lone caller of both (status-bar criterion 5, extended).
+/// Every rendered segment is one click target: the press writes the
+/// segment's full value through [`copy_text`] and reports through
+/// `on_copy` for the app's `✓` flash.
 pub struct StatusBar<Message> {
     /// The active tab's resolved segments — owned, built fresh by the
     /// app on every view pass.
@@ -547,77 +599,171 @@ pub struct StatusBar<Message> {
     /// not resolve at the hardware pass is the default UI font at
     /// 12 px with every other token standing).
     font: cosmic::iced::Font,
-    _message: std::marker::PhantomData<fn() -> Message>,
+    /// The segment currently flashing its `✓`; the app owns the
+    /// timing (see [`COPY_FLASH`]).
+    copied: Option<SegmentId>,
+    /// Maps a clicked segment to the app's message.
+    on_copy: Box<dyn Fn(SegmentId) -> Message>,
 }
 
 impl<Message> StatusBar<Message> {
-    /// Creates a band rendering `segments`.
-    pub fn new(segments: StatusSegments, font: cosmic::iced::Font) -> Self {
+    /// Creates a band rendering `segments`, flashing `copied` as a
+    /// `✓` and reporting presses through `on_copy`.
+    pub fn new(
+        segments: StatusSegments,
+        font: cosmic::iced::Font,
+        copied: Option<SegmentId>,
+        on_copy: impl Fn(SegmentId) -> Message + 'static,
+    ) -> Self {
         Self {
             segments,
             font,
-            _message: std::marker::PhantomData,
+            copied,
+            on_copy: Box::new(on_copy),
         }
     }
 
-    /// Re-lays the cached paragraphs from the resolved segments. The
-    /// path paragraph elides from its left against the width the
-    /// measured right cluster leaves — what the user is inside of
-    /// survives (see [`elide_path_left`]).
+    /// Re-lays the cached paragraphs from the resolved segments, the
+    /// flashed segment rendering `✓` in place of its value (the copy
+    /// payload never changes — it comes from [`copy_text`], not the
+    /// display). The path elides from its left against the width the
+    /// measured right cluster leaves, and the branch yields only
+    /// after full elision — the pinned [`left_squeeze`] decision.
     fn refresh_paragraphs(&self, state: &mut State, width: f32) {
         let font = self.font;
-        state
-            .process
-            .update(segment_text(&self.segments.process, font));
+        let copied = self.copied;
+        state.process.update(segment_text(
+            display_text(copied, SegmentId::Process, &self.segments.process),
+            font,
+        ));
+        state.branch.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Branch,
+                self.segments.branch.as_deref().unwrap_or(""),
+            ),
+            font,
+        ));
         state.profile.update(segment_text(
-            self.segments.profile.as_deref().unwrap_or(""),
+            display_text(
+                copied,
+                SegmentId::Profile,
+                self.segments.profile.as_deref().unwrap_or(""),
+            ),
+            font,
+        ));
+        let grid = self
+            .segments
+            .grid
+            .map(|(cols, rows)| format!("{cols}×{rows}"));
+        state.grid.update(segment_text(
+            display_text(copied, SegmentId::Grid, grid.as_deref().unwrap_or("")),
+            font,
+        ));
+        let tab = self
+            .segments
+            .tab_position
+            .map(|(index, total)| format!("{index}/{total}"));
+        state.tab.update(segment_text(
+            display_text(copied, SegmentId::Tab, tab.as_deref().unwrap_or("")),
             font,
         ));
         let zoom = self
             .segments
             .zoom_percent
             .map(|percent| format!("{percent:+}%"));
-        state
-            .zoom
-            .update(segment_text(zoom.as_deref().unwrap_or(""), font));
+        state.zoom.update(segment_text(
+            display_text(copied, SegmentId::Zoom, zoom.as_deref().unwrap_or("")),
+            font,
+        ));
+        state.clock.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Clock,
+                self.segments.clock.as_deref().unwrap_or(""),
+            ),
+            font,
+        ));
 
         // The path's budget: the row width minus both side paddings,
         // the disc cluster, the process name, and the measured right
-        // cluster with its gaps. An over-budget path elides by the
-        // average glyph width of its full layout — a view heuristic
-        // the hardware pass eyeballs at narrow widths.
-        let mut right_width = SEGMENT_GAP + state.zoom.min_width();
-        if self.segments.profile.is_some() {
-            right_width += SEGMENT_GAP + state.profile.min_width();
+        // cluster with its gaps — a view heuristic the hardware pass
+        // eyeballs at narrow widths.
+        let mut right_width = 0.0;
+        for id in RIGHT_CLUSTER {
+            let paragraph = state.paragraph_of(id);
+            if paragraph.min_width() > 0.0 {
+                right_width += SEGMENT_GAP + paragraph.min_width();
+            }
         }
-        let left_fixed = PAD_X + DISC_SIZE + DISC_GAP + state.process.min_width() + SEGMENT_GAP;
+        let left_fixed = if state.process.min_width() > 0.0 {
+            PAD_X + DISC_SIZE + DISC_GAP + state.process.min_width() + SEGMENT_GAP
+        } else {
+            PAD_X + SEGMENT_GAP
+        };
         let budget = (width - left_fixed - right_width - PAD_X).max(0.0);
         let path = self.segments.path.as_deref().unwrap_or("");
         let mut measure = BandParagraph::default();
-        measure.update(segment_text(path, font));
-        let full_width = measure.min_width();
-        let elided = if full_width > budget && !path.is_empty() {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "char counts are px-scale strings (< 2^24), so usize -> f32 is exact"
-            )]
-            let per_char = full_width / path.chars().count() as f32;
-            if per_char > 0.0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a px-budget char count, far below usize::MAX by construction"
-                )]
-                let max_chars = (budget / per_char) as usize;
-                elide_path_left(path, max_chars)
-            } else {
-                path.to_string()
-            }
-        } else {
-            path.to_string()
+        measure.update(segment_text(
+            display_text(copied, SegmentId::Path, path),
+            font,
+        ));
+        let (fit, branch_shown) = left_squeeze(
+            budget,
+            path.chars().count(),
+            measure.min_width(),
+            state.branch.min_width(),
+        );
+        let elided = match fit {
+            PathFit::Full => display_text(copied, SegmentId::Path, path).to_string(),
+            PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
+            PathFit::Gone => String::new(),
         };
         state.path.update(segment_text(&elided, font));
+        if !branch_shown {
+            state.branch.update(segment_text("", font));
+        }
     }
+}
+
+/// The laid-out rects of every rendered segment, in cluster order —
+/// `draw` paints from them, `update` and `mouse_interaction`
+/// hit-test through them. The process rect owns its disc: one state,
+/// one click target. An empty paragraph (absent, hidden, or squeezed
+/// out) yields no rect.
+fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)> {
+    let mut rects = Vec::new();
+    let row =
+        |x: f32, width: f32| Rectangle::new(Point::new(x, bounds.y), Size::new(width, BAND_HEIGHT));
+    let mut x = bounds.x + PAD_X;
+    if state.process.min_width() > 0.0 {
+        let width = DISC_SIZE + DISC_GAP + state.process.min_width();
+        rects.push((SegmentId::Process, row(x, width)));
+        x += width + SEGMENT_GAP;
+    }
+    for id in [SegmentId::Path, SegmentId::Branch] {
+        let width = state.paragraph_of(id).min_width();
+        if width > 0.0 {
+            rects.push((id, row(x, width)));
+            x += width + SEGMENT_GAP;
+        }
+    }
+    let mut right = bounds.x + bounds.width - PAD_X;
+    for id in RIGHT_CLUSTER.iter().rev() {
+        let width = state.paragraph_of(*id).min_width();
+        if width > 0.0 {
+            right -= width;
+            rects.push((*id, row(right, width)));
+        }
+    }
+    rects
+}
+
+/// The text a segment renders: its value, or — while the copy flash
+/// holds — the `✓` in its place (the clipboard payload never
+/// changes; it comes from [`copy_text`], not the display).
+fn display_text(copied: Option<SegmentId>, id: SegmentId, value: &str) -> &str {
+    if copied == Some(id) { "✓" } else { value }
 }
 
 /// One segment's [`Text`] layout — 12 px, advanced shaping, single
@@ -672,6 +818,56 @@ where
         layout::Node::new(size)
     }
 
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        // A rendered segment is a copy target — the cursor says so;
+        // the gaps between them stay idle.
+        let Some(position) = cursor.position_in(layout.bounds()) else {
+            return mouse::Interaction::Idle;
+        };
+        let state = tree.state.downcast_ref::<State>();
+        let rects = segment_rects(state, layout.bounds());
+        if segment_at(&rects, position).is_some() {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::Idle
+        }
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        _renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        let Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) = event else {
+            return;
+        };
+        let Some(position) = cursor.position_in(layout.bounds()) else {
+            return;
+        };
+        let state = tree.state.downcast_ref::<State>();
+        let rects = segment_rects(state, layout.bounds());
+        if let Some(id) = segment_at(&rects, position) {
+            // The sole clipboard payload source: the segment's full
+            // value through `copy_text` — never the elided display.
+            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
+            shell.publish((self.on_copy)(id));
+            shell.capture_event();
+        }
+    }
+
     fn draw(
         &self,
         tree: &Tree,
@@ -706,87 +902,61 @@ where
 
         // The process-state disc: filled while a foreground child
         // runs, a hollow ring over the idle shell — the gear's own
-        // disc primitive.
+        // disc primitive. It renders with the process segment and
+        // belongs to its click target.
         let center_y = bounds.y + BAND_HEIGHT / 2.0;
         let disc = Rectangle::new(
             Point::new(bounds.x + PAD_X, center_y - DISC_SIZE / 2.0),
             Size::new(DISC_SIZE, DISC_SIZE),
         );
-        if self.segments.running {
-            fill_disc(renderer, disc, pane_fg);
-        } else {
-            renderer.fill_quad(
-                Quad {
-                    bounds: disc,
-                    border: Border {
-                        radius: (DISC_SIZE / 2.0).into(),
-                        width: DISC_RING_WIDTH,
-                        color: pane_fg,
+        if state.process.min_width() > 0.0 {
+            if self.segments.running {
+                fill_disc(renderer, disc, pane_fg);
+            } else {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: disc,
+                        border: Border {
+                            radius: (DISC_SIZE / 2.0).into(),
+                            width: DISC_RING_WIDTH,
+                            color: pane_fg,
+                        },
+                        snap: true,
+                        ..Default::default()
                     },
-                    snap: true,
-                    ..Default::default()
-                },
-                Color::TRANSPARENT,
-            );
+                    Color::TRANSPARENT,
+                );
+            }
         }
 
-        // Left cluster: the process name after the disc, then the
-        // path — full-alpha foreground, each clipped to the band.
+        // Both clusters paint from the same rects hit-testing walks:
+        // full alpha on the left, dimmed on the right — hierarchy by
+        // alpha and mass, never a new hue.
         let text_y =
             |paragraph: &BandParagraph| bounds.y + (BAND_HEIGHT - paragraph.min_height()) / 2.0;
-        let mut x = bounds.x + PAD_X + DISC_SIZE + DISC_GAP;
-        renderer.fill_paragraph(
-            state.process.raw(),
-            Point::new(x, text_y(&state.process)),
-            pane_fg,
-            Rectangle::new(
-                Point::new(x, bounds.y),
-                Size::new(state.process.min_width().max(0.0), BAND_HEIGHT),
-            ),
-        );
-        x += state.process.min_width() + SEGMENT_GAP;
-        renderer.fill_paragraph(
-            state.path.raw(),
-            Point::new(x, text_y(&state.path)),
-            pane_fg,
-            Rectangle::new(
-                Point::new(x, bounds.y),
-                Size::new(
-                    (bounds.width - PAD_X - (x - bounds.x)).max(0.0),
-                    BAND_HEIGHT,
-                ),
-            ),
-        );
-
-        // Right cluster: profile, then zoom at the right edge —
-        // dimmed, hierarchy by alpha.
         let dimmed = Color {
             a: DIM_ALPHA,
             ..pane_fg
         };
-        let mut right = bounds.x + bounds.width - PAD_X;
-        if self.segments.zoom_percent.is_some() {
-            right -= state.zoom.min_width();
+        for (id, rect) in segment_rects(state, bounds) {
+            let paragraph = state.paragraph_of(id);
+            let color = if LEFT_CLUSTER.contains(&id) {
+                pane_fg
+            } else {
+                dimmed
+            };
+            let text_x = if id == SegmentId::Process {
+                rect.x + DISC_SIZE + DISC_GAP
+            } else {
+                rect.x
+            };
             renderer.fill_paragraph(
-                state.zoom.raw(),
-                Point::new(right, text_y(&state.zoom)),
-                dimmed,
+                paragraph.raw(),
+                Point::new(text_x, text_y(paragraph)),
+                color,
                 Rectangle::new(
-                    Point::new(right, bounds.y),
-                    Size::new(state.zoom.min_width().max(0.0), BAND_HEIGHT),
-                ),
-            );
-            right -= SEGMENT_GAP;
-        }
-        if self.segments.profile.is_some() {
-            right -= state.profile.min_width();
-            renderer.fill_paragraph(
-                state.profile.raw(),
-                Point::new(right, text_y(&state.profile)),
-                dimmed,
-                Rectangle::new(
-                    Point::new(right, bounds.y),
-                    Size::new(state.profile.min_width().max(0.0), BAND_HEIGHT),
+                    Point::new(text_x, bounds.y),
+                    Size::new(paragraph.min_width().max(0.0), BAND_HEIGHT),
                 ),
             );
         }
@@ -985,6 +1155,50 @@ mod tests {
     fn degenerate_widths_elide_to_the_floor() {
         assert_eq!(elide_path_left("~/src/oss", 0), "");
         assert_eq!(elide_path_left("~/src/oss", 1), "…");
+    }
+
+    // --- the left cluster's squeeze (path elides before the branch
+    // yields) ---
+
+    #[test]
+    fn a_roomy_cluster_shows_the_path_and_branch_whole() {
+        // 120 px of path + 12 px gap + 30 px of branch under 200 px.
+        assert_eq!(left_squeeze(200.0, 12, 120.0, 30.0), (PathFit::Full, true));
+    }
+
+    #[test]
+    fn the_path_elides_before_the_branch_yields() {
+        // 100 px budget: the branch keeps its 42 px (gap included),
+        // the path elides into the remaining 58 px (5 chars at
+        // 10 px each).
+        assert_eq!(
+            left_squeeze(100.0, 12, 120.0, 30.0),
+            (PathFit::Elided(5), true)
+        );
+    }
+
+    #[test]
+    fn the_branch_yields_only_after_full_elision_of_the_path() {
+        // 40 px cannot host the branch beside even an empty path —
+        // the branch drops and the path elides into the whole 40 px.
+        assert_eq!(
+            left_squeeze(40.0, 12, 120.0, 30.0),
+            (PathFit::Elided(4), false)
+        );
+    }
+
+    #[test]
+    fn a_starved_cluster_loses_the_path_entirely() {
+        assert_eq!(left_squeeze(5.0, 12, 120.0, 30.0), (PathFit::Gone, false));
+    }
+
+    #[test]
+    fn an_absent_path_never_elides() {
+        // No path characters: nothing to squeeze — the branch either
+        // fits or it does not.
+        assert_eq!(left_squeeze(50.0, 0, 0.0, 30.0), (PathFit::Full, true));
+        assert_eq!(left_squeeze(20.0, 0, 0.0, 30.0), (PathFit::Full, false));
+        assert_eq!(left_squeeze(20.0, 0, 0.0, 0.0), (PathFit::Full, false));
     }
 
     // --- zoom arithmetic ---
@@ -1410,7 +1624,12 @@ mod tests {
             tab_position: None,
             clock: None,
         };
-        let band: StatusBar<()> = StatusBar::new(segments.clone(), cosmic::iced::Font::default());
+        let band: StatusBar<()> = StatusBar::new(
+            segments.clone(),
+            cosmic::iced::Font::default(),
+            None,
+            |_| (),
+        );
         assert_eq!(band.segments, segments);
     }
 }

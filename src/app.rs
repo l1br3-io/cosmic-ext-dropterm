@@ -113,6 +113,11 @@ pub enum Message {
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
+    /// A status-band segment was click-copied — the widget already
+    /// wrote the clipboard; the app flashes the segment's `✓`.
+    StatusSegmentCopied(status_bar::SegmentId),
+    /// The copy flash elapsed: the `✓` yields back to the value.
+    StatusCopyFlashLapse,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -301,6 +306,16 @@ pub struct DropTerm {
     /// resolved data. `None` reads idle or unreadable, and the band
     /// falls back to the recorded shell's basename.
     active_process_name: Option<String>,
+    /// The active tab's git branch for the band's branch segment —
+    /// the same snapshot discipline as the process name: the lone
+    /// `.git` read, refreshed at the same piggyback points, gated on
+    /// the band's master toggle. `None` reads outside a repo,
+    /// unreadable, or hidden.
+    active_branch: Option<String>,
+    /// The band segment currently flashing its `✓` after a
+    /// click-to-copy — set on the copied message, cleared by the
+    /// flash-lapse task (`status_bar::COPY_FLASH`).
+    copied_segment: Option<status_bar::SegmentId>,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -448,15 +463,29 @@ impl DropTerm {
         }
     }
 
-    /// Refreshes the active tab's foreground-process snapshot for the
-    /// status band — the lone caller of the engine's comm read (the
+    /// Refreshes the active tab's status snapshot — the foreground
+    /// process name and the cwd's git branch — the lone caller of
+    /// the engine's comm read and of the `.git` walk (the
     /// construction pin: [`status_bar::StatusBar`] takes plain
-    /// resolved data and cannot read `/proc` itself, so the render
-    /// path performs zero process reads by construction).
-    fn refresh_active_process_name(&mut self) {
-        self.active_process_name = self
-            .active()
-            .and_then(|tab| tab.terminal.lock().unwrap().foreground_process_name());
+    /// resolved data and cannot read `/proc` or `.git` itself, so
+    /// the render path performs zero filesystem reads by
+    /// construction). The branch read stops before the filesystem
+    /// while the band's master toggle is off.
+    fn refresh_status_snapshot(&mut self) {
+        let Some(tab) = self.active() else {
+            self.active_process_name = None;
+            self.active_branch = None;
+            return;
+        };
+        let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
+        let process = tab.terminal.lock().unwrap().foreground_process_name();
+        let branch = self
+            .config
+            .status_bar_enabled
+            .then(|| status_bar::git_branch(cwd))
+            .flatten();
+        self.active_process_name = process;
+        self.active_branch = branch;
     }
 
     /// The active tab's resolved status-band segments: pure assembly
@@ -475,7 +504,12 @@ impl DropTerm {
             .profile
             .as_deref()
             .and_then(|id| profile::find(&self.config.profiles, id));
-        let zoom_adj = tab.terminal.lock().unwrap().zoom_adj();
+        // The grid rides the same in-memory lock as the zoom —
+        // resize-fresh by construction, no snapshot of its own.
+        let (zoom_adj, grid) = {
+            let terminal = tab.terminal.lock().unwrap();
+            (terminal.zoom_adj(), terminal.grid())
+        };
         // The step the tab's terminal actually zooms by: the same
         // options construction every spawn builds from.
         let zoom_step = self
@@ -489,12 +523,25 @@ impl DropTerm {
             zoom_adj,
             zoom_step_mul_100: zoom_step,
             foreground: self.active_process_name.as_deref(),
-            branch: None,
-            grid: None,
-            tab_position: None,
+            branch: self.active_branch.as_deref(),
+            grid: Some(grid),
+            tab_position: self.active_tab_position(),
             clock: None,
         };
         status_bar::resolve_segments(&inputs, status_bar::StatusToggles::all())
+    }
+
+    /// The active tab's (index, total) for the band's tab segment —
+    /// saturated into `u16`; a session beyond 65k tabs has larger
+    /// problems than the band's arithmetic.
+    fn active_tab_position(&self) -> Option<(u16, u16)> {
+        let total = self.tabs.len();
+        (total > 0).then(|| {
+            (
+                u16::try_from(self.active_tab + 1).unwrap_or(u16::MAX),
+                u16::try_from(total).unwrap_or(u16::MAX),
+            )
+        })
     }
 
     /// Applies the current config and theme to every tab's terminal.
@@ -3038,6 +3085,8 @@ impl Application for DropTerm {
             session_save: session::SessionSave::default(),
             tab_cwds: HashMap::new(),
             active_process_name: None,
+            active_branch: None,
+            copied_segment: None,
             rename: None,
             pending_close: None,
             drag: None,
@@ -3407,6 +3456,8 @@ impl Application for DropTerm {
                 )),
                 ..cosmic::iced::Font::default()
             },
+            self.copied_segment,
+            Message::StatusSegmentCopied,
         )
         .into();
 
@@ -3616,7 +3667,7 @@ impl DropTerm {
                 // The config echo is the last listed piggyback point
                 // for the band's process snapshot (criterion 5) — the
                 // band's own visibility/font ride this same echo.
-                self.refresh_active_process_name();
+                self.refresh_status_snapshot();
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -3939,6 +3990,17 @@ impl DropTerm {
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
                     return self.request_close_tab(index);
                 }
+            }
+            Message::StatusSegmentCopied(id) => {
+                // The widget already wrote the clipboard; the app owns
+                // the flash's life — show the check, clear on lapse.
+                self.copied_segment = Some(id);
+                return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                    cosmic::Action::App(Message::StatusCopyFlashLapse)
+                });
+            }
+            Message::StatusCopyFlashLapse => {
+                self.copied_segment = None;
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();
