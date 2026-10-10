@@ -721,6 +721,43 @@ pub fn by_name(name: &str) -> Option<Colors> {
         .map(|entry| Colors::from(&entry.scheme))
 }
 
+/// The palette preview a UI renders for one scheme: the scheme's own
+/// background (when it has one) and its six normal ANSI accents in
+/// `ls`-colors order (red, green, yellow, blue, magenta, cyan). The
+/// profile list's swatch chip reads this; it is a *preview* seam, not
+/// a spawn seam — it never feeds [`by_name`]'s resolution chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemeSwatch {
+    /// The scheme's background, or `None` for the COSMIC pair (their
+    /// background follows the system theme — a preview may not invent
+    /// one).
+    pub background: Option<Rgb>,
+    /// The accents the chip paints as cells, in order. Unset normal
+    /// slots drop out rather than error: the registry's hole-free pin
+    /// makes that unreachable today, but a future palette edit
+    /// degrades to a shorter chip, never a panic.
+    pub accents: [Option<Rgb>; 6],
+}
+
+/// The [`SchemeSwatch`] for a registry name. Unknown names — the same
+/// names [`by_name`] rejects — return `None`; callers render their
+/// "follows global" preview for both that and an unset scheme.
+pub fn scheme_swatch(name: &str) -> Option<SchemeSwatch> {
+    let entry = SCHEMES.iter().find(|entry| entry.name == name)?;
+    let normal = &entry.scheme.normal;
+    Some(SchemeSwatch {
+        background: entry.scheme.background,
+        accents: [
+            normal.red,
+            normal.green,
+            normal.yellow,
+            normal.blue,
+            normal.magenta,
+            normal.cyan,
+        ],
+    })
+}
+
 /// The registry's scheme names in registry order (COSMIC pair first,
 /// the rest alphabetical) — the option list the settings dropdowns
 /// feed from. Derived from the same `SCHEMES` table `by_name` reads,
@@ -956,6 +993,45 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), SCHEMES.len());
+    }
+
+    // --- the swatch preview seam ---
+
+    #[test]
+    fn a_swatch_carries_the_scheme_background_and_six_accents() {
+        // Dracula's canonical values, in ls-colors cell order.
+        let swatch = scheme_swatch("Dracula").expect("registry name");
+        assert_eq!(swatch.background, Some(rgb(0x28_2A36)));
+        assert_eq!(
+            swatch.accents,
+            [
+                Some(rgb(0xFF_5555)),
+                Some(rgb(0x50_FA7B)),
+                Some(rgb(0xF1_FA8C)),
+                Some(rgb(0xBD_93F9)),
+                Some(rgb(0xFF_79C6)),
+                Some(rgb(0x8B_E9FD)),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_cosmic_pair_previews_accents_without_inventing_a_background() {
+        // The COSMIC schemes defer background to the system theme; the
+        // preview must not fabricate one.
+        for name in [COSMIC_THEME_DARK, COSMIC_THEME_LIGHT] {
+            let swatch = scheme_swatch(name).expect("registry name");
+            assert_eq!(swatch.background, None);
+            assert!(swatch.accents.iter().all(Option::is_some));
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_has_no_swatch() {
+        // The preview degrades exactly where resolution does: unknown
+        // names render the "follows global" chip.
+        assert!(scheme_swatch("Catppuccin Frappe").is_none());
+        assert!(scheme_swatch("").is_none());
     }
 
     #[test]

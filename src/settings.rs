@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use alacritty_terminal::vte::ansi::Rgb;
 use cosmic::Element;
+use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::theme;
 use cosmic::widget;
 
@@ -26,7 +28,7 @@ use crate::config::{
 };
 use crate::profile::Profile;
 use crate::tabs::command_line_parts;
-use crate::terminal::theme_source::scheme_names;
+use crate::terminal::theme_source::{scheme_names, scheme_swatch};
 
 /// The write kind a config change came from, deciding echo handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1650,18 +1652,26 @@ pub fn default_picker_options(profiles: &[Profile]) -> Vec<String> {
         .collect()
 }
 
+/// The list row [`crate::profile::effective_default`] resolves to —
+/// the row the page's `default` tag marks. `None` when no default
+/// resolves (unset, or dangling: read-side tolerance, no rewrite) —
+/// the picker's row 0, plain shell.
+pub fn effective_default_row(profiles: &[Profile], default: Option<&str>) -> Option<usize> {
+    // The position is found by name (not pointer identity) against
+    // the same list `effective_default` resolved it from, so it
+    // always exists.
+    crate::profile::effective_default(profiles, default)
+        .and_then(|resolved| profiles.iter().position(|p| p.name == resolved.name))
+}
+
 /// The picker's selection row: the row
 /// [`crate::profile::effective_default`] resolves to — row 0 when no
 /// default resolves (unset, or dangling: the picker never displays a
 /// name the list lacks; read-side tolerance, no rewrite). Always a
 /// row; the caller's `Some` is the dropdown API's shape.
 pub fn default_picker_selected(profiles: &[Profile], default: Option<&str>) -> usize {
-    // The position is found by name (not pointer identity) against
-    // the same list `effective_default` resolved it from, so it
-    // always exists.
-    let index = crate::profile::effective_default(profiles, default)
-        .and_then(|resolved| profiles.iter().position(|p| p.name == resolved.name));
-    index.map_or(0, |position| 1 + position)
+    // Row 0 is the None row; a resolved default's list row follows.
+    effective_default_row(profiles, default).map_or(0, |position| 1 + position)
 }
 
 /// The write a picker row commits: row 0 clears the key (`None`), a
@@ -2248,11 +2258,11 @@ fn tab_page(
 
 /// The Profiles tab's page: the read-only list — one row per
 /// profile in config order (the `+` dropdown / context-menu order),
-/// name plus a command preview, selection driving the edit form. An
-/// empty list shows the empty state with the add affordance placed
-/// but inert until the form ships. Read-only by construction: the
-/// rows emit selection events only; every mutation control joins in
-/// the later tasks.
+/// each row a thumbnail of the tab it opens (see [`profile_row`]),
+/// selection driving the edit form. An empty list shows the empty
+/// state with the add affordance. Read-only by construction: the
+/// rows emit selection events only; every mutation control lives on
+/// the row itself.
 pub fn profiles_view(
     config: &DropTermConfig,
     selection: Option<usize>,
@@ -2279,17 +2289,20 @@ pub fn profiles_view(
             )
             .into(),
     );
+    // The row the default tag marks — the picker's own resolution,
+    // so the tag can never name a profile the list lacks.
+    let default_row = effective_default_row(&config.profiles, config.default_profile.as_deref());
     if config.profiles.is_empty() {
         cards.push(
             widget::settings::section()
                 .title("Profiles")
                 .add(
-                    widget::settings::item::builder("No profiles")
-                        .description("Named presets of what a tab runs.")
-                        .control(
-                            widget::button::standard("Add profile")
-                                .on_press(SettingsEvent::OpenProfileDraft),
-                        ),
+                    widget::settings::item::builder("No profiles yet")
+                        .description(
+                            "A profile is a named preset — the command, directory, colors, \
+                             and environment a new tab opens with.",
+                        )
+                        .control(add_profile_button()),
                 )
                 .into(),
         );
@@ -2301,32 +2314,46 @@ pub fn profiles_view(
                 index,
                 profile,
                 selection == Some(index),
+                default_row == Some(index),
             ));
         }
         cards.push(list.into());
         // The list's add affordance, below the rows it appends after.
-        cards.push(
-            widget::button::standard("Add profile")
-                .on_press(SettingsEvent::OpenProfileDraft)
-                .into(),
-        );
+        cards.push(add_profile_button().into());
     }
     // The form: one draft at a time — an Add/Clone draft the buttons
     // opened, or the Edit draft a row selection seeded.
     if let Some(draft) = draft {
-        cards.push(profile_form(draft));
+        cards.push(profile_form(&config.profiles, draft));
     }
     widget::settings::view_column(cards).into()
+}
+
+/// The page's add affordance: the one text button among the row
+/// actions, so creation stays the loud gesture (the `+` matches the
+/// tab bar's own new-tab affordance).
+fn add_profile_button() -> widget::button::TextButton<'static, SettingsEvent> {
+    widget::button::standard("Add profile")
+        .leading_icon(widget::icon::from_name("list-add-symbolic"))
+        .on_press(SettingsEvent::OpenProfileDraft)
 }
 
 /// The form section: the draft's three text inputs (commit on Enter,
 /// the house text-input rule) with the last rejection's inline error
 /// under its field, plus the scheme dropdown (commit on change — the
-/// house dropdown rule).
-fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
+/// house dropdown rule). The Edit title names the profile the row
+/// selection seeded — the seed row may sit above the fold — and
+/// follows the committed name, never the uncommitted buffer.
+fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
     let title = match &draft.mode {
-        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile",
-        ProfileDraftMode::Edit { .. } => "Edit profile",
+        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile".to_string(),
+        ProfileDraftMode::Edit { index } => match profiles.get(*index) {
+            Some(profile) => format!("Edit {}", profile.name),
+            // A stale edit (the list changed under the draft) has no
+            // profile to name; the generic title covers the gap until
+            // the commit rejects it.
+            None => "Edit profile".to_string(),
+        },
     };
     widget::settings::section()
         .title(title)
@@ -2371,14 +2398,14 @@ fn profile_form(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
 fn env_rows_item(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
     let mut rows = widget::column(Vec::<Element<'static, SettingsEvent>>::new()).spacing(4);
     for (index, row) in draft.env_rows.iter().enumerate() {
-        let key_input = widget::text_input("KEY", row.key.clone())
+        let key_input = widget::text_input("Key", row.key.clone())
             .on_input(move |text| {
                 SettingsEvent::DraftProfileField(ProfileField::EnvKey(index), text)
             })
             .on_submit(move |text| {
                 SettingsEvent::CommitProfileField(ProfileField::EnvKey(index), text)
             });
-        let value_input = widget::text_input("value", row.value.clone())
+        let value_input = widget::text_input("Value", row.value.clone())
             .on_input(move |text| {
                 SettingsEvent::DraftProfileField(ProfileField::EnvValue(index), text)
             })
@@ -2456,44 +2483,213 @@ fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text
     }
 }
 
-/// One list row: the profile's name with its command line as the
-/// preview beneath, the whole row a button selecting it. The selected
-/// row carries the suggested style — selection is the edit form's
-/// seed, so it must be visible on light and dark panes alike (an
-/// OQ-3 hardware item). The action cluster: Clone, an immediate
-/// Delete (no dialog — OQ-1), and up/down reorder with the boundary
-/// direction disabled.
+/// One list row: the profile as a thumbnail of the tab it opens.
+/// The leading edge carries the scheme chip ([`scheme_chip`]), the
+/// identity column the name — with the dimmed `default` tag when the
+/// picker's resolution ([`effective_default_row`]) names this row —
+/// above the command as a prompt line ([`prompt_line`]) in the
+/// terminal's own mono. The whole identity column is the select
+/// button, filling the row's remaining width so the press target is
+/// the row, not just the text; the action cluster is tooltip'd icon
+/// buttons ([`row_icon_button`]): Clone, an immediate Delete (no
+/// dialog — OQ-1), and up/down reorder with the boundary direction
+/// disabled. The selected row carries the accent edge-and-tint
+/// treatment ([`row_button_class`]) — visible on light and dark
+/// panes alike (an OQ-3 hardware item) without spending the accent
+/// fill, which stays the primary-action color.
 fn profile_row(
     profiles_len: usize,
     index: usize,
     profile: &Profile,
     selected: bool,
+    is_default: bool,
 ) -> Element<'static, SettingsEvent> {
-    let class = if selected {
-        theme::Button::Suggested
-    } else {
-        theme::Button::Standard
-    };
-    widget::row!(
-        widget::button::custom(widget::column![
-            widget::text(profile.name.clone()),
-            widget::text(profile.command.clone()).size(12),
-        ])
-        .class(class)
-        .on_press(SettingsEvent::SelectProfile(index)),
-        widget::button::text("Clone").on_press(SettingsEvent::CloneProfile(index)),
-        widget::button::destructive("Delete").on_press(SettingsEvent::DeleteProfile(index)),
-        widget::button::text("↑").on_press_maybe(
+    let mut name_line = widget::row!(widget::text(profile.name.clone()))
+        .spacing(6)
+        .align_y(cosmic::iced::Alignment::Center);
+    if is_default {
+        name_line = name_line.push(
+            widget::text("default")
+                .size(12)
+                .class(theme::Text::Custom(dim_text_style)),
+        );
+    }
+    let identity = widget::column![name_line, prompt_line(&profile.command)].spacing(2);
+    widget::row![
+        scheme_chip(profile.color_scheme.as_deref()),
+        widget::button::custom(identity)
+            .class(row_button_class(selected))
+            .width(Length::Fill)
+            .on_press(SettingsEvent::SelectProfile(index)),
+        row_icon_button("edit-copy-symbolic", "Clone profile")
+            .on_press(SettingsEvent::CloneProfile(index)),
+        row_icon_button("user-trash-symbolic", "Delete profile")
+            .on_press(SettingsEvent::DeleteProfile(index)),
+        row_icon_button("go-up-symbolic", "Move up").on_press_maybe(
             can_move(profiles_len, index, ReorderDirection::Up)
                 .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Up)),
         ),
-        widget::button::text("↓").on_press_maybe(
+        row_icon_button("go-down-symbolic", "Move down").on_press_maybe(
             can_move(profiles_len, index, ReorderDirection::Down)
                 .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Down)),
         ),
-    )
+    ]
     .spacing(8)
     .into()
+}
+
+/// One row-action icon button: the icon carries the action, the
+/// tooltip names it (the keybinds page's undo-affordance idiom). All
+/// four share the plain icon class — the cluster stays quiet so the
+/// chip and the selected edge are the row's two signals.
+fn row_icon_button(
+    name: &'static str,
+    tip: &'static str,
+) -> widget::button::IconButton<'static, SettingsEvent> {
+    widget::button::icon(widget::icon::from_name(name)).tooltip(tip)
+}
+
+/// The row's scheme chip: the profile's palette miniaturized — the
+/// scheme's own background carrying its six ANSI accents in
+/// `ls`-colors order ([`scheme_swatch`]). An unset scheme, or a name
+/// the registry no longer knows, renders the hollow chip — the frame
+/// alone, "follows the global look" — matching the resolution
+/// chain's fallback instead of inventing colors.
+fn scheme_chip(scheme: Option<&str>) -> Element<'static, SettingsEvent> {
+    let swatch = scheme.and_then(scheme_swatch);
+    let cells: Element<'static, SettingsEvent> = match &swatch {
+        Some(swatch) => {
+            let mut row = widget::row(Vec::<Element<'static, SettingsEvent>>::new()).spacing(1);
+            for accent in swatch.accents.iter().flatten() {
+                row = row.push(swatch_cell(*accent));
+            }
+            row.into()
+        }
+        // The hollow chip keeps the filled chip's footprint so the
+        // name column's left edge never shifts between rows.
+        None => widget::space::Space::new()
+            .width(Length::from(29u16))
+            .height(Length::from(12u16))
+            .into(),
+    };
+    let fill = swatch
+        .as_ref()
+        .and_then(|swatch| swatch.background)
+        .map(|rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b));
+    widget::container(cells)
+        .padding(2)
+        .class(theme::Container::custom(move |theme| {
+            let cosmic = theme.cosmic();
+            cosmic::iced::widget::container::Style {
+                background: Some(Background::Color(
+                    fill.unwrap_or(Color::from(cosmic.background(true).base)),
+                )),
+                border: Border {
+                    color: Color::from(cosmic.palette.neutral_8).scale_alpha(0.4),
+                    width: 1.0,
+                    radius: cosmic.corner_radii.radius_xs.into(),
+                },
+                ..Default::default()
+            }
+        }))
+        .into()
+}
+
+/// One chip cell: a fixed swatch of a scheme accent.
+fn swatch_cell(rgb: Rgb) -> Element<'static, SettingsEvent> {
+    let color = Color::from_rgb8(rgb.r, rgb.g, rgb.b);
+    widget::container(
+        widget::space::Space::new()
+            .width(Length::from(4u16))
+            .height(Length::from(12u16)),
+    )
+    .class(theme::Container::custom(move |_| {
+        cosmic::iced::widget::container::Style {
+            background: Some(Background::Color(color)),
+            ..Default::default()
+        }
+    }))
+    .into()
+}
+
+/// The row's command preview: a dimmed prompt glyph and the command
+/// line in the terminal's own mono — the line the tab will run, in
+/// the vernacular it will run in.
+fn prompt_line(command: &str) -> Element<'static, SettingsEvent> {
+    widget::row![
+        widget::text::monotext("$")
+            .size(12)
+            .class(theme::Text::Custom(dim_text_style)),
+        widget::text::monotext(command.to_string())
+            .size(12)
+            .class(theme::Text::Custom(dim_text_style)),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// The dimmed text style: the on-background color at reduced alpha —
+/// the row's secondary line and the default tag, on light and dark
+/// panes alike.
+fn dim_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
+    let cosmic = theme.cosmic();
+    cosmic::iced::widget::text::Style {
+        color: Some(Color::from(cosmic.background(true).on).scale_alpha(0.65)),
+        selected_fill: cosmic.accent.base.into(),
+        selected_text_color: Some(cosmic.on_accent_color().into()),
+    }
+}
+
+/// The select button's class: the standard button when unselected;
+/// the accent edge-and-tint treatment when selected — an accent
+/// border plus a light accent tint over the standard background,
+/// deepening on hover and press so the interaction states stay
+/// legible.
+fn row_button_class(selected: bool) -> theme::Button {
+    const SELECTED_TINT: f32 = 0.12;
+    if !selected {
+        return theme::Button::Standard;
+    }
+    theme::Button::Custom {
+        active: Box::new(move |_, theme| selected_row_appearance(theme, SELECTED_TINT)),
+        disabled: Box::new(move |theme| selected_row_appearance(theme, SELECTED_TINT)),
+        hovered: Box::new(move |_, theme| selected_row_appearance(theme, SELECTED_TINT + 0.06)),
+        pressed: Box::new(move |_, theme| selected_row_appearance(theme, SELECTED_TINT + 0.12)),
+    }
+}
+
+/// The selected row's appearance: the standard button's own
+/// background blended toward the accent, edged in accent — the
+/// `Button::Image` selected idiom (an accent border on a themed
+/// surface) carried onto the profile row.
+fn selected_row_appearance(
+    theme: &cosmic::theme::Theme,
+    tint: f32,
+) -> cosmic::widget::button::Style {
+    let cosmic = theme.cosmic();
+    let accent = Color::from(cosmic.accent.base);
+    cosmic::widget::button::Style {
+        background: Some(Background::Color(blend(
+            Color::from(cosmic.button.base),
+            accent,
+            tint,
+        ))),
+        border_width: 1.5,
+        border_color: accent,
+        border_radius: cosmic.corner_radii.radius_xl.into(),
+        ..Default::default()
+    }
+}
+
+/// Linear blend of `tint` into `base` at `factor` (0 = `base`, 1 =
+/// `tint`) — the selected row's tint math.
+fn blend(base: Color, tint: Color, factor: f32) -> Color {
+    Color::from_rgba(
+        base.r + (tint.r - base.r) * factor,
+        base.g + (tint.g - base.g) * factor,
+        base.b + (tint.b - base.b) * factor,
+        1.0,
+    )
 }
 
 /// One drawer section: a `widget::settings` section carrying the
