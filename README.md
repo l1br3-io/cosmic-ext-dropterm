@@ -7,9 +7,30 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 - App ID: `io.github.l1br3_io.CosmicExtDropterm`
 - License: GPL-3.0-only (see [Credits](#credits))
 
+## Installing
+
+### From a release
+
+Grab the tarball for your architecture from the
+[v0.1.0 release](https://github.com/l1br3-io/cosmic-ext-dropterm/releases/tag/v0.1.0) — it carries both binaries (terminal and panel applet) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
+
+```sh
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.1.0/cosmic-ext-dropterm-0.1.0-x86_64.tar.gz
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.1.0/sha256sums
+sha256sum -c --ignore-missing sha256sums
+tar -xzf cosmic-ext-dropterm-0.1.0-x86_64.tar.gz
+sudo cp -a usr/. /usr/
+```
+
+ARM machines take the `cosmic-ext-dropterm-0.1.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
+
+### From source
+
+See [Building](#building) below.
+
 ## Status
 
-This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings drawer, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
+DropTerm v0.1.0 is released — see [Installing](#installing). This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings drawer, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
 
 ## Building
 
