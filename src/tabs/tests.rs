@@ -983,6 +983,68 @@ fn plan_respawn_resets_the_shell_title_tracker() {
     assert_eq!(plan.shell_title, None);
 }
 
+// --- the profile-exit fallback's plan (the one-shot ruling) ---
+
+#[test]
+fn plan_shell_respawn_drops_the_profile_id() {
+    // The whole point of the fallback plan: the preset's process
+    // exited, so the tab stops being a profile tab — a later
+    // restore must not re-resolve a profile whose exit already
+    // played out.
+    let plan = plan_shell_respawn(TabTitleMode::Shell, TabId(6), None, None);
+    assert_eq!(plan.profile, None);
+}
+
+#[test]
+fn plan_shell_respawn_keeps_a_user_rename_verbatim_in_title_and_override() {
+    // The same stickiness rule as a profile respawn: the fallback
+    // is not a title action either, so the rename survives in every
+    // mode.
+    for mode in [
+        TabTitleMode::Shell,
+        TabTitleMode::AbbreviatedPath,
+        TabTitleMode::LastSegment,
+        TabTitleMode::Numbered,
+    ] {
+        let plan = plan_shell_respawn(mode, TabId(6), None, Some("work"));
+        assert_eq!(plan.title, "work");
+        assert_eq!(plan.title_override.as_deref(), Some("work"));
+    }
+}
+
+#[test]
+fn plan_shell_respawn_titles_from_the_fresh_terminal_number_and_seeded_cwd() {
+    // With the profile gone, the title resolves as a plain tab's:
+    // the fresh `Terminal N` default in Shell mode, the seeded cwd
+    // in the path modes.
+    assert_eq!(
+        plan_shell_respawn(TabTitleMode::Shell, TabId(6), None, None).title,
+        "Terminal 7"
+    );
+    assert_eq!(
+        plan_shell_respawn(
+            TabTitleMode::LastSegment,
+            TabId(6),
+            Some(Path::new("/home/jpt/src/ced")),
+            None,
+        )
+        .title,
+        "ced"
+    );
+}
+
+#[test]
+fn plan_shell_respawn_resets_the_terminal_life_fields() {
+    // The resets a profile respawn applies apply here too: the OSC
+    // tracker, attention, and bell latch belong to the dead PTY,
+    // and the fallback tab is a persistent plain tab.
+    let plan = plan_shell_respawn(TabTitleMode::Shell, TabId(6), None, None);
+    assert_eq!(plan.shell_title, None);
+    assert_eq!(plan.attention, Attention::None);
+    assert!(!plan.bell_notified);
+    assert!(!plan.ephemeral);
+}
+
 #[test]
 fn tab_records_its_spawn_shell() {
     // The heaviest test in the module — the only one constructing
