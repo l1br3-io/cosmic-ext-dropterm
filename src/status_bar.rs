@@ -99,30 +99,6 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
     }
 }
 
-/// Which way the hover reveal floats: inward of the band — away
-/// from the grab bar, into the surface — so it never leaves the
-/// surface's own pixels (up under a Top anchor, down under a
-/// Bottom one).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BandInward {
-    /// The band sits at the surface's bottom: the reveal floats up.
-    Up,
-    /// The band sits at the surface's top: the reveal floats down.
-    Down,
-}
-
-impl BandInward {
-    /// The inward direction for a surface anchor: away from the
-    /// screen edge the surface drops from — the free edge the grab
-    /// bar (and the band beside it) always takes.
-    pub fn from_edge(edge: Edge) -> Self {
-        match edge {
-            Edge::Top => Self::Up,
-            Edge::Bottom => Self::Down,
-        }
-    }
-}
-
 /// Which band region a segment owns — the shared id for cluster
 /// order, visibility, hit-testing, and copy payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,45 +540,47 @@ pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<Segm
         .map(|(id, _)| *id)
 }
 
-/// The hover reveal — armed only while the cursor rests on an
-/// elided path; drawn inward of the band on the armed frame.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HoverReveal {
-    /// The path's hit rect the cursor rests on — the anchor the
-    /// tooltip floats inward from.
-    pub anchor: Rectangle,
-    /// The full un-elided value — exactly what a press copies
-    /// ([`copy_text`]): the reveal exists to make the copy verb
-    /// discoverable where the full value is shown.
-    pub value: String,
-}
-
-/// The armed hover reveal, if any (status-glance criterion 3): the
-/// cursor must rest inside the band's bounds and on the path's
-/// rect, and the path's display must be elided — an un-elided
-/// path's display already is its value, other segments reveal
-/// nothing, and a Gone path has no rect to rest on. Independent of
-/// the copy flash by construction: the reveal keeps the full value
-/// while the display shows `✓`. Instant arming (OQ-3); leaving the
-/// rect or the band disarms by absence.
-pub fn hover_reveal(
-    rects: &[(SegmentId, Rectangle)],
-    bounds: Rectangle,
+/// Whether the inline reveal is armed (status-glance criterion 3,
+/// the OQ-1 inline ruling): the path's display must be elided and
+/// the cursor must rest on its **current** display rect — the
+/// elided strip at rest, the expanded strip once armed (the
+/// expanded rect contains the elided one, so arming is stable
+/// through the swap). An un-elided path's display already is its
+/// value, other segments arm nothing, and a Gone path has no rect.
+/// Instant (OQ-3); disarming is absence.
+pub fn reveal_armed(
+    path_rect: Option<Rectangle>,
     cursor: Option<Point>,
     path_elided: bool,
-    value: &str,
-) -> Option<HoverReveal> {
-    let point = cursor?;
-    if !bounds.contains(point) || !path_elided {
-        return None;
-    }
-    let (_, anchor) = rects
+) -> bool {
+    path_elided && matches!((path_rect, cursor), (Some(rect), Some(point)) if rect.contains(point))
+}
+
+/// The armed frame's path display — the band's fit with the
+/// branch's seat lent to the path (the branch stays beside its
+/// path but yields it while the path is examined, v1's priority
+/// inverted for one frame-set): usually the whole value, always at
+/// least a longer elision than the resting one. `widths` are the
+/// idle fit's survivors (already pruned of its drops). The press
+/// payload never follows the display — it stays [`copy_text`]'s
+/// full value.
+pub fn reveal_display(
+    path: &str,
+    width: f32,
+    fixed: f32,
+    widths: &[(SegmentId, f32)],
+    measure: PathMeasure,
+) -> String {
+    let lent: Vec<(SegmentId, f32)> = widths
         .iter()
-        .find(|(id, rect)| *id == SegmentId::Path && rect.contains(point))?;
-    Some(HoverReveal {
-        anchor: *anchor,
-        value: value.to_string(),
-    })
+        .copied()
+        .filter(|(id, _)| *id != SegmentId::Branch)
+        .collect();
+    match band_fit(width, fixed, &lent, measure).path {
+        PathFit::Full => path.to_string(),
+        PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
+        PathFit::Gone => String::new(),
+    }
 }
 
 /// The band's wall-clock text: 24-hour `HH:MM`, local zone.
@@ -697,28 +675,19 @@ const SEGMENT_GAP: f32 = 12.0;
 const DISC_GAP: f32 = 6.0;
 
 /// The dimmed alpha the right cluster's segments carry — hierarchy by
-/// alpha and mass, never a new hue. The hover reveal's caption rides
-/// the same tier.
+/// alpha and mass, never a new hue.
 const DIM_ALPHA: f32 = 0.6;
 
 /// How long a copied segment flashes its `✓` before the value
 /// returns (OQ-3: 800 ms, retunable at the hardware pass).
 pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800);
 
-/// The hover reveal's inner padding and its caption's gap under the
-/// value — geometry only; the quad keeps the band's own background
-/// and border-free style.
-const REVEAL_PAD: f32 = 6.0;
-const REVEAL_LINE_GAP: f32 = 2.0;
-
-/// The caption under the reveal's value — the copy verb, said
-/// exactly where the full value is shown.
-const REVEAL_CAPTION: &str = "click to copy";
-
 /// The band's cached paragraph state: one per segment, re-laid from
 /// the resolved segments on every root layout (the tab bar's titles'
-/// cost model) — plus the hover reveal's two lines, laid alongside
-/// and painted only on the armed frame.
+/// cost model). The inline reveal swaps the path's and branch's
+/// paragraphs' text on arming transitions only — between
+/// transitions, every read (draw, hit-testing, pressing) sees the
+/// same laid display.
 #[derive(Default)]
 struct State {
     process: BandParagraph,
@@ -729,13 +698,19 @@ struct State {
     tab: BandParagraph,
     zoom: BandParagraph,
     clock: BandParagraph,
-    /// Whether the path's display is elided this layout — the
-    /// reveal's arming condition, read at draw time.
+    /// Whether the inline reveal is armed — the cursor rests on the
+    /// (elided) path's display rect.
+    armed: bool,
+    /// Whether the path's resting display is elided this layout —
+    /// the reveal's arming condition.
     path_elided: bool,
-    /// The reveal's value line: the full un-elided path.
-    reveal_value: BandParagraph,
-    /// The reveal's caption line under it.
-    reveal_caption: BandParagraph,
+    /// The path's resting display (the fit's elision verdict).
+    path_resting_text: String,
+    /// The path's armed display (the branch's seat lent).
+    path_armed_text: String,
+    /// The branch's display, cached for its restore on disarm (its
+    /// seat is lent while armed).
+    branch_text: String,
 }
 
 impl State {
@@ -789,29 +764,23 @@ pub struct StatusBar<Message> {
     /// The segment currently flashing its `✓`; the app owns the
     /// timing (see [`COPY_FLASH`]).
     copied: Option<SegmentId>,
-    /// Which way the hover reveal floats — inward of the band, from
-    /// the app's anchor-edge knowledge ([`BandInward::from_edge`]).
-    inward: BandInward,
     /// Maps a clicked segment to the app's message.
     on_copy: Box<dyn Fn(SegmentId) -> Message>,
 }
 
 impl<Message> StatusBar<Message> {
     /// Creates a band rendering `segments`, flashing `copied` as a
-    /// `✓`, floating the hover reveal `inward` of the band, and
-    /// reporting presses through `on_copy`.
+    /// `✓` and reporting presses through `on_copy`.
     pub fn new(
         segments: StatusSegments,
         font: cosmic::iced::Font,
         copied: Option<SegmentId>,
-        inward: BandInward,
         on_copy: impl Fn(SegmentId) -> Message + 'static,
     ) -> Self {
         Self {
             segments,
             font,
             copied,
-            inward,
             on_copy: Box::new(on_copy),
         }
     }
@@ -912,26 +881,68 @@ impl<Message> StatusBar<Message> {
                 full_width: measure.min_width(),
             },
         );
-        let elided = match fit.path {
-            PathFit::Full => display_text(copied, SegmentId::Path, path).to_string(),
-            PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
-            PathFit::Gone => String::new(),
-        };
-        state.path.update(segment_text(&elided, font));
         for id in &fit.dropped {
             state.paragraph_of_mut(*id).update(segment_text("", font));
         }
 
-        // The hover reveal's lines, laid alongside the segments:
-        // the full un-elided value (never the elided display — the
-        // reveal exists to show what the display cannot) and the
-        // caption under it. Painted only on the armed frame; the
-        // arming condition rides the fit's elision verdict.
+        // The inline reveal's two displays, cached as text and
+        // applied through [`Self::apply_reveal`] — the resting
+        // elision the fit just produced, and the armed expansion
+        // (the branch's seat lent to the path; the idle fit's
+        // drops already freed, the branch filtered besides). A
+        // rebuild while hovered re-lays the same armed selection.
         state.path_elided = matches!(fit.path, PathFit::Elided(_));
-        state.reveal_value.update(segment_text(path, font));
-        state
-            .reveal_caption
-            .update(segment_text(REVEAL_CAPTION, font));
+        state.path_resting_text = match fit.path {
+            PathFit::Full => path.to_string(),
+            PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
+            PathFit::Gone => String::new(),
+        };
+        let survivors: Vec<(SegmentId, f32)> = widths
+            .iter()
+            .copied()
+            .filter(|(id, _)| !fit.dropped.contains(id))
+            .collect();
+        state.path_armed_text = reveal_display(
+            path,
+            width,
+            fixed,
+            &survivors,
+            PathMeasure {
+                chars: path.chars().count(),
+                full_width: measure.min_width(),
+            },
+        );
+        state.branch_text = self.segments.branch.clone().unwrap_or_default();
+        self.apply_reveal(state);
+    }
+
+    /// Applies the reveal's armed selection to the laid paragraphs
+    /// — the text-swap mechanism the `✓` flash uses, driven by the
+    /// arming transition instead of the app: while armed the path
+    /// renders its expanded display and the branch lends its seat
+    /// (its paragraph blanks, so its rect — and click target —
+    /// vanish for the loan); on disarm both restore. The copy flash
+    /// wins over either display for its 800 ms.
+    fn apply_reveal(&self, state: &mut State) {
+        let font = self.font;
+        let path_text = if state.armed {
+            state.path_armed_text.clone()
+        } else {
+            state.path_resting_text.clone()
+        };
+        state.path.update(segment_text(
+            display_text(self.copied, SegmentId::Path, &path_text),
+            font,
+        ));
+        let branch_text = if state.armed {
+            String::new()
+        } else {
+            state.branch_text.clone()
+        };
+        state.branch.update(segment_text(
+            display_text(self.copied, SegmentId::Branch, &branch_text),
+            font,
+        ));
     }
 }
 
@@ -1060,6 +1071,29 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        // The inline reveal's arming (status-glance criterion 3, the
+        // OQ-1 inline ruling): recomputed against the path's
+        // *current* display rect whenever the cursor is placed —
+        // the elided strip arms, the expanded strip (a superset)
+        // keeps it armed, and absence or an un-elided path disarms.
+        // Instant (OQ-3); the swap happens on transitions only.
+        let path_rect = cursor.position().map(|_| {
+            let state = tree.state.downcast_ref::<State>();
+            segment_rects(state, layout.bounds())
+                .into_iter()
+                .find(|(id, _)| *id == SegmentId::Path)
+                .map(|(_, rect)| rect)
+        });
+        let want = {
+            let state = tree.state.downcast_ref::<State>();
+            reveal_armed(path_rect.flatten(), cursor.position(), state.path_elided)
+        };
+        let state = tree.state.downcast_mut::<State>();
+        if want != state.armed {
+            state.armed = want;
+            self.apply_reveal(state);
+        }
+
         let Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) = event else {
             return;
         };
@@ -1084,7 +1118,7 @@ where
         _theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        cursor_position: mouse::Cursor,
+        _cursor_position: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
@@ -1167,88 +1201,6 @@ where
                     Point::new(text_x, bounds.y),
                     Size::new(paragraph.min_width().max(0.0), BAND_HEIGHT),
                 ),
-            );
-        }
-
-        // The hover reveal (status-glance criterion 3), painted last
-        // so it reads over the band: while the cursor rests on the
-        // elided path, a small quad floats inward of the band
-        // carrying the full un-elided value and a `click to copy`
-        // caption — band background, readable foreground, the
-        // terminal font at 12 px, existing derivations only. A press
-        // while armed is the unchanged copy path above (full
-        // payload, `✓` flash); arming is instant, disarming is
-        // absence. Stored data only — zero reads on this path.
-        if let Some(reveal) = hover_reveal(
-            &segment_rects(state, bounds),
-            bounds,
-            cursor_position.position(),
-            state.path_elided,
-            &copy_text(SegmentId::Path, &self.segments),
-        ) {
-            let quad_w = state
-                .reveal_value
-                .min_width()
-                .max(state.reveal_caption.min_width())
-                + 2.0 * REVEAL_PAD;
-            let quad_h = state.reveal_value.min_height()
-                + REVEAL_LINE_GAP
-                + state.reveal_caption.min_height()
-                + 2.0 * REVEAL_PAD;
-            // Horizontal: anchored at the path's rect, clamped to the
-            // band's own span. Vertical: flush against the band's
-            // inner edge, floating into the surface — iced clips
-            // only inside scrollables, and the band sits in a plain
-            // column (OQ-1; the hardware pass eyeballs the quad at
-            // both edges).
-            let quad_x = reveal
-                .anchor
-                .x
-                .clamp(bounds.x, (bounds.x + bounds.width - quad_w).max(bounds.x));
-            let quad_y = match self.inward {
-                BandInward::Up => bounds.y - quad_h,
-                BandInward::Down => bounds.y + bounds.height,
-            };
-            renderer.fill_quad(
-                Quad {
-                    bounds: Rectangle::new(Point::new(quad_x, quad_y), Size::new(quad_w, quad_h)),
-                    border: Border {
-                        radius: 0.0.into(),
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
-                    },
-                    snap: true,
-                    ..Default::default()
-                },
-                band_bg,
-            );
-            let value_y = quad_y + REVEAL_PAD;
-            let caption_y = value_y + state.reveal_value.min_height() + REVEAL_LINE_GAP;
-            let value_bounds = Rectangle::new(
-                Point::new(quad_x + REVEAL_PAD, value_y),
-                Size::new(
-                    state.reveal_value.min_width().max(0.0),
-                    state.reveal_value.min_height().max(0.0),
-                ),
-            );
-            let caption_bounds = Rectangle::new(
-                Point::new(quad_x + REVEAL_PAD, caption_y),
-                Size::new(
-                    state.reveal_caption.min_width().max(0.0),
-                    state.reveal_caption.min_height().max(0.0),
-                ),
-            );
-            renderer.fill_paragraph(
-                state.reveal_value.raw(),
-                Point::new(quad_x + REVEAL_PAD, value_y),
-                pane_fg,
-                value_bounds,
-            );
-            renderer.fill_paragraph(
-                state.reveal_caption.raw(),
-                Point::new(quad_x + REVEAL_PAD, caption_y),
-                dimmed,
-                caption_bounds,
             );
         }
     }

@@ -909,151 +909,121 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         segments.clone(),
         cosmic::iced::Font::default(),
         None,
-        BandInward::from_edge(Edge::Top),
         |_| (),
     );
     assert_eq!(band.segments, segments);
 }
 
-// --- the hover reveal (status-glance criterion 3) ---
+// --- the inline reveal (status-glance criterion 3, the OQ-1
+// inline ruling) ---
+//
+// Hovering the elided path swaps its display to the expanded form
+// in place — the ✓-flash text-swap mechanism driven by the arming
+// transition — with the branch lending its seat. The press target
+// is the displayed strip itself (wherever it currently extends),
+// and the payload stays `copy_text(Path)`'s full value whatever
+// the display shows.
 
-fn reveal_rects() -> Vec<(SegmentId, Rectangle)> {
-    vec![
-        (
-            SegmentId::Process,
-            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
-        ),
-        (
-            SegmentId::Path,
-            Rectangle::new(Point::new(72.0, 0.0), Size::new(50.0, BAND_HEIGHT)),
-        ),
-        (
-            SegmentId::Branch,
-            Rectangle::new(Point::new(134.0, 0.0), Size::new(40.0, BAND_HEIGHT)),
-        ),
-    ]
-}
-
-fn reveal_bounds() -> Rectangle {
-    Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, BAND_HEIGHT))
+fn reveal_path_rect() -> Rectangle {
+    Rectangle::new(Point::new(72.0, 0.0), Size::new(50.0, BAND_HEIGHT))
 }
 
 #[test]
-fn the_reveal_arms_only_on_the_path_rect_while_elided() {
-    let reveal = hover_reveal(
-        &reveal_rects(),
-        reveal_bounds(),
+fn the_reveal_arms_only_on_the_current_path_rect_while_elided() {
+    let rect = reveal_path_rect();
+    assert!(reveal_armed(
+        Some(rect),
         Some(Point::new(100.0, 14.0)),
-        true,
-        "~/src/oss/l1br3/ced2",
-    )
-    .expect("an elided path under the cursor arms the reveal");
-    assert_eq!(reveal.anchor, reveal_rects()[1].1);
-    assert_eq!(reveal.value, "~/src/oss/l1br3/ced2");
+        true
+    ));
+    // The armed (expanded) rect is a superset of the elided one —
+    // the swap never disarms itself mid-rest.
+    let expanded = Rectangle::new(rect.position(), Size::new(200.0, BAND_HEIGHT));
+    assert!(reveal_armed(
+        Some(expanded),
+        Some(Point::new(250.0, 14.0)),
+        true
+    ));
 }
 
 #[test]
-fn an_un_elided_path_arms_nothing() {
+fn an_un_elided_path_never_arms() {
     // An un-elided path's display already is its value.
-    assert_eq!(
-        hover_reveal(
-            &reveal_rects(),
-            reveal_bounds(),
-            Some(Point::new(100.0, 14.0)),
-            false,
-            "~/src"
-        ),
-        None
-    );
+    assert!(!reveal_armed(
+        Some(reveal_path_rect()),
+        Some(Point::new(100.0, 14.0)),
+        false
+    ));
 }
 
 #[test]
-fn other_segments_and_the_gaps_arm_nothing() {
+fn other_segments_gaps_and_absence_arm_nothing() {
+    let rect = reveal_path_rect();
     for point in [
-        Point::new(20.0, 14.0),  // the process rect
-        Point::new(150.0, 14.0), // the branch rect
-        Point::new(65.0, 14.0),  // the gap between segments
+        Some(Point::new(20.0, 14.0)),         // the process strip
+        Some(Point::new(65.0, 14.0)),         // the gap before the path
+        Some(Point::new(150.0, 14.0)),        // the branch beyond the rect
+        Some(Point::new(100.0, -1.0)),        // above the band
+        Some(Point::new(100.0, BAND_HEIGHT)), // below the band
+        None,                                 // no cursor at all
     ] {
-        assert_eq!(
-            hover_reveal(
-                &reveal_rects(),
-                reveal_bounds(),
-                Some(point),
-                true,
-                "~/src/oss"
-            ),
-            None,
+        assert!(
+            !reveal_armed(Some(rect), point, true),
             "{point:?} must not arm the reveal"
         );
     }
 }
 
 #[test]
-fn a_cursor_outside_the_band_or_absent_arms_nothing() {
-    for point in [
-        Some(Point::new(100.0, -1.0)),
-        Some(Point::new(100.0, BAND_HEIGHT)),
-        Some(Point::new(-1.0, 14.0)),
-        Some(Point::new(500.0, 14.0)),
-        None,
-    ] {
-        assert_eq!(
-            hover_reveal(&reveal_rects(), reveal_bounds(), point, true, "~/src/oss"),
-            None,
-            "{point:?} must not arm the reveal"
-        );
-    }
-}
-
-#[test]
-fn a_missing_path_rect_arms_nothing() {
+fn a_missing_path_rect_never_arms() {
     // A Gone path yields no rect at all — nothing to rest on.
-    let rects: Vec<(SegmentId, Rectangle)> = reveal_rects()
-        .into_iter()
-        .filter(|(id, _)| *id != SegmentId::Path)
-        .collect();
-    assert_eq!(
-        hover_reveal(
-            &rects,
-            reveal_bounds(),
-            Some(Point::new(100.0, 14.0)),
-            true,
-            "~/src"
-        ),
-        None
-    );
+    assert!(!reveal_armed(None, Some(Point::new(100.0, 14.0)), true));
 }
 
 #[test]
-fn the_reveal_carries_the_press_payload_and_survives_the_flash() {
-    // The reveal's value is `copy_text(Path)` — the full
-    // un-elided value a press copies — and the flash coexists
-    // with it by construction: arming never consults `copied`, so
-    // the reveal keeps the full value while the display shows ✓.
+fn the_armed_display_borrows_the_branchs_seat() {
+    // 520 px: the resting fit elides the path to 16 chars beside
+    // the branch; lending the branch's 42 px frees the whole value
+    // — the armed display is the un-elided path.
+    let resting = band_fit(520.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(resting.path, PathFit::Elided(16));
+    let display = reveal_display(
+        "~/src/oss/l1br3/ced2",
+        520.0,
+        100.0,
+        &fit_widths(),
+        fit_path(),
+    );
+    assert_eq!(display, "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
+    // 320 px: the resting fit drops the grid and elides to one
+    // character; the armed fit — the branch's seat lent on top of
+    // the resting drops — still shows only a longer elision, never
+    // an overflow.
+    let resting = band_fit(320.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(resting.path, PathFit::Elided(1));
+    let survivors: Vec<(SegmentId, f32)> = fit_widths()
+        .into_iter()
+        .filter(|(id, _)| !resting.dropped.contains(id))
+        .collect();
+    let display = reveal_display("~/src/oss/l1br3/ced2", 320.0, 100.0, &survivors, fit_path());
+    assert_eq!(display, "…ced2");
+}
+
+#[test]
+fn the_press_payload_stays_the_full_value_whatever_the_display() {
+    // The display may itself be an elision on a truly narrow band;
+    // the press payload never follows it — `copy_text(Path)` is
+    // the whole value, the v1 contract the reveal rides on.
     let segments = StatusSegments {
         path: Some("~/src/oss/l1br3/ced2".to_string()),
         ..StatusSegments::default()
     };
-    let reveal = hover_reveal(
-        &reveal_rects(),
-        reveal_bounds(),
-        Some(Point::new(100.0, 14.0)),
-        true,
-        &copy_text(SegmentId::Path, &segments),
-    )
-    .expect("the reveal arms");
-    assert_eq!(reveal.value, copy_text(SegmentId::Path, &segments));
     assert_eq!(
-        display_text(Some(SegmentId::Path), SegmentId::Path, &reveal.value),
-        "✓",
-        "the display flashes while the reveal keeps the value"
+        copy_text(SegmentId::Path, &segments),
+        "~/src/oss/l1br3/ced2"
     );
-}
-
-#[test]
-fn the_inward_direction_follows_the_anchor_edge() {
-    // Away from the screen edge the surface drops from: the band
-    // sits at the free edge, the reveal floats into the surface.
-    assert_eq!(BandInward::from_edge(Edge::Top), BandInward::Up);
-    assert_eq!(BandInward::from_edge(Edge::Bottom), BandInward::Down);
 }

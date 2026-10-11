@@ -1826,9 +1826,6 @@ impl Application for DropTerm {
                 ..cosmic::iced::Font::default()
             },
             self.copied_segment,
-            // The reveal floats into the surface — away from the
-            // screen edge the surface drops from.
-            status_bar::BandInward::from_edge(self.config.edge),
             Message::StatusSegmentCopied,
         )
         .into();
