@@ -909,7 +909,151 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         segments.clone(),
         cosmic::iced::Font::default(),
         None,
+        BandInward::from_edge(Edge::Top),
         |_| (),
     );
     assert_eq!(band.segments, segments);
+}
+
+// --- the hover reveal (status-glance criterion 3) ---
+
+fn reveal_rects() -> Vec<(SegmentId, Rectangle)> {
+    vec![
+        (
+            SegmentId::Process,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Path,
+            Rectangle::new(Point::new(72.0, 0.0), Size::new(50.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Branch,
+            Rectangle::new(Point::new(134.0, 0.0), Size::new(40.0, BAND_HEIGHT)),
+        ),
+    ]
+}
+
+fn reveal_bounds() -> Rectangle {
+    Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, BAND_HEIGHT))
+}
+
+#[test]
+fn the_reveal_arms_only_on_the_path_rect_while_elided() {
+    let reveal = hover_reveal(
+        &reveal_rects(),
+        reveal_bounds(),
+        Some(Point::new(100.0, 14.0)),
+        true,
+        "~/src/oss/l1br3/ced2",
+    )
+    .expect("an elided path under the cursor arms the reveal");
+    assert_eq!(reveal.anchor, reveal_rects()[1].1);
+    assert_eq!(reveal.value, "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn an_un_elided_path_arms_nothing() {
+    // An un-elided path's display already is its value.
+    assert_eq!(
+        hover_reveal(
+            &reveal_rects(),
+            reveal_bounds(),
+            Some(Point::new(100.0, 14.0)),
+            false,
+            "~/src"
+        ),
+        None
+    );
+}
+
+#[test]
+fn other_segments_and_the_gaps_arm_nothing() {
+    for point in [
+        Point::new(20.0, 14.0),  // the process rect
+        Point::new(150.0, 14.0), // the branch rect
+        Point::new(65.0, 14.0),  // the gap between segments
+    ] {
+        assert_eq!(
+            hover_reveal(
+                &reveal_rects(),
+                reveal_bounds(),
+                Some(point),
+                true,
+                "~/src/oss"
+            ),
+            None,
+            "{point:?} must not arm the reveal"
+        );
+    }
+}
+
+#[test]
+fn a_cursor_outside_the_band_or_absent_arms_nothing() {
+    for point in [
+        Some(Point::new(100.0, -1.0)),
+        Some(Point::new(100.0, BAND_HEIGHT)),
+        Some(Point::new(-1.0, 14.0)),
+        Some(Point::new(500.0, 14.0)),
+        None,
+    ] {
+        assert_eq!(
+            hover_reveal(&reveal_rects(), reveal_bounds(), point, true, "~/src/oss"),
+            None,
+            "{point:?} must not arm the reveal"
+        );
+    }
+}
+
+#[test]
+fn a_missing_path_rect_arms_nothing() {
+    // A Gone path yields no rect at all — nothing to rest on.
+    let rects: Vec<(SegmentId, Rectangle)> = reveal_rects()
+        .into_iter()
+        .filter(|(id, _)| *id != SegmentId::Path)
+        .collect();
+    assert_eq!(
+        hover_reveal(
+            &rects,
+            reveal_bounds(),
+            Some(Point::new(100.0, 14.0)),
+            true,
+            "~/src"
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_reveal_carries_the_press_payload_and_survives_the_flash() {
+    // The reveal's value is `copy_text(Path)` — the full
+    // un-elided value a press copies — and the flash coexists
+    // with it by construction: arming never consults `copied`, so
+    // the reveal keeps the full value while the display shows ✓.
+    let segments = StatusSegments {
+        path: Some("~/src/oss/l1br3/ced2".to_string()),
+        ..StatusSegments::default()
+    };
+    let reveal = hover_reveal(
+        &reveal_rects(),
+        reveal_bounds(),
+        Some(Point::new(100.0, 14.0)),
+        true,
+        &copy_text(SegmentId::Path, &segments),
+    )
+    .expect("the reveal arms");
+    assert_eq!(reveal.value, copy_text(SegmentId::Path, &segments));
+    assert_eq!(
+        display_text(Some(SegmentId::Path), SegmentId::Path, &reveal.value),
+        "✓",
+        "the display flashes while the reveal keeps the value"
+    );
+}
+
+#[test]
+fn the_inward_direction_follows_the_anchor_edge() {
+    // Away from the screen edge the surface drops from: the band
+    // sits at the free edge, the reveal floats into the surface.
+    assert_eq!(BandInward::from_edge(Edge::Top), BandInward::Up);
+    assert_eq!(BandInward::from_edge(Edge::Bottom), BandInward::Down);
 }
