@@ -65,6 +65,20 @@ pub(super) fn rename_overlay_hosted(tab_count: usize) -> bool {
     tab_count > 1
 }
 
+/// The Exit routing rule: a plain shell's exit closes its tab (the
+/// user typed `exit` — today's behavior), and a `--cmd` tab's exit
+/// closes it (session-ephemeral by design, the spawn-resolution
+/// spec's "exit closes the tab" ruling), but a profile tab's exit
+/// respawns the configured plain shell in its place — a one-shot
+/// profile command (`ls`) must never take its tab with it. The two
+/// flags are exclusive by construction (`spawn_shell` records exactly
+/// one of profile id and ephemeral flag); the `&& !ephemeral` arm is
+/// the defensive half of the pin, keeping a future flag combination
+/// from silently widening the respawn to `--cmd` tabs.
+fn exit_respawns_shell(profile: Option<&str>, ephemeral: bool) -> bool {
+    profile.is_some() && !ephemeral
+}
+
 /// The trees the view hands `widget::context_menu` for the current
 /// open state: `None` while closed — the wrapper is then a plain
 /// pass-through of the terminal — and the full row trees while open,
