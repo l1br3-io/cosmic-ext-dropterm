@@ -4,11 +4,12 @@ use super::*;
 
 #[test]
 fn escape_with_the_drawer_open_closes_it_and_only_it() {
-    // Criterion 6: with the drawer open the press closes the
-    // drawer — it never hides the surface and never reaches the
-    // terminal (disabled while the drawer is open, criterion 4).
+    // Criterion 6: with the drawer open and no draft in it, the
+    // press closes the drawer — it never hides the surface and
+    // never reaches the terminal (disabled while the drawer is
+    // open, criterion 4).
     assert_eq!(
-        drawer_escape_routing(true, &Key::Named(Named::Escape)),
+        drawer_escape_routing(true, false, &Key::Named(Named::Escape)),
         DrawerKeyRouting::CloseDrawer
     );
 }
@@ -17,9 +18,14 @@ fn escape_with_the_drawer_open_closes_it_and_only_it() {
 fn escape_with_the_drawer_closed_keeps_today_s_routing() {
     // Criterion 6's second half: with the drawer closed, Escape
     // behaves exactly as today — terminal input, the rule never
-    // fires.
+    // fires, draft or no draft (a draft cannot outlive the drawer
+    // anyway; the pin is the precedence).
     assert_eq!(
-        drawer_escape_routing(false, &Key::Named(Named::Escape)),
+        drawer_escape_routing(false, false, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::FallThrough
+    );
+    assert_eq!(
+        drawer_escape_routing(false, true, &Key::Named(Named::Escape)),
         DrawerKeyRouting::FallThrough
     );
 }
@@ -28,17 +34,49 @@ fn escape_with_the_drawer_closed_keeps_today_s_routing() {
 fn every_other_key_falls_through_even_with_the_drawer_open() {
     // The Ctrl+Shift+I toggle resolves through the normal bind
     // match (criterion 5), and typing never trips the escape
-    // rule — only Escape is the drawer's key.
+    // rule — only Escape is the drawer's key, draft or no draft.
     for key in [
         Key::Character("i".into()),
         Key::Character("a".into()),
         Key::Named(Named::Enter),
     ] {
         assert_eq!(
-            drawer_escape_routing(true, &key),
+            drawer_escape_routing(true, false, &key),
+            DrawerKeyRouting::FallThrough
+        );
+        assert_eq!(
+            drawer_escape_routing(true, true, &key),
             DrawerKeyRouting::FallThrough
         );
     }
+}
+
+// --- the draft-first Escape rule (profile-form-commit PF-3) ---
+
+#[test]
+fn escape_with_a_profile_draft_open_cancels_it_and_keeps_the_drawer() {
+    // The draft-first rule: with the drawer open and a profile
+    // draft present, Escape cancels the draft — the drawer stays
+    // open beneath (a second Escape, draft now gone, closes it as
+    // today). The cancel writes nothing and keeps the selection.
+    assert_eq!(
+        drawer_escape_routing(true, true, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::CancelDraft
+    );
+}
+
+#[test]
+fn the_modal_owns_escape_ahead_of_the_draft_rule() {
+    // The precedence stack, pinned end to end: while a close
+    // confirmation is pending, the modal's gate answers first —
+    // its Escape cancels the modal (not the draft, not the
+    // drawer), and only a later Escape reaches the draft rule.
+    // `modal_key_routing` sits ahead of `drawer_escape_routing` in
+    // the key funnel, so its verdict is the one that fires.
+    assert_eq!(
+        modal_key_routing(true, &Key::Named(Named::Escape)),
+        ModalKeyRouting::Cancel
+    );
 }
 
 // --- the close-confirmation gate and modal key routing

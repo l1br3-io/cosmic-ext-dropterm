@@ -872,23 +872,36 @@ const fn leaves_profiles_tab(from: SettingsTab, to: SettingsTab) -> bool {
 /// while the settings drawer is open (spec criterion 6): Escape
 /// closes the drawer — and only that. The surface does not hide,
 /// and the press is never forwarded to the terminal (which is
-/// disabled while the drawer is open anyway, criterion 4). Every
-/// other key — including the Ctrl+Shift+I toggle, which resolves
-/// through the normal bind match into [`DropTerm::toggle_settings`]
-/// — keeps the normal routing; with the drawer closed the rule
-/// never fires and Escape is terminal input exactly as before.
+/// disabled while the drawer is open anyway, criterion 4). One
+/// rule sits ahead of this one in the key funnel — the pending
+/// close confirmation's modal gate ([`modal_key_routing`]) answers
+/// first — and one sits inside it: with a profile draft open,
+/// Escape cancels the draft and the drawer stays open beneath (the
+/// draft-first rule, a pure decision). Every other key — including
+/// the Ctrl+Shift+I toggle, which resolves through the normal bind
+/// match into [`DropTerm::toggle_settings`] — keeps the normal
+/// routing; with the drawer closed the rule never fires and Escape
+/// is terminal input exactly as before.
 /// Pure so the drawer-first rule is headless-testable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DrawerKeyRouting {
+    /// The drawer is open with a profile draft in it and this
+    /// Escape cancels the draft: swallow the press here — the
+    /// drawer stays open.
+    CancelDraft,
     /// The drawer is open and this press closes it: swallow it here.
     CloseDrawer,
     /// No drawer-first role: the press takes the normal routing.
     FallThrough,
 }
 
-fn drawer_escape_routing(settings_open: bool, key: &Key) -> DrawerKeyRouting {
+fn drawer_escape_routing(settings_open: bool, draft_open: bool, key: &Key) -> DrawerKeyRouting {
     if settings_open && matches!(key, Key::Named(Named::Escape)) {
-        DrawerKeyRouting::CloseDrawer
+        if draft_open {
+            DrawerKeyRouting::CancelDraft
+        } else {
+            DrawerKeyRouting::CloseDrawer
+        }
     } else {
         DrawerKeyRouting::FallThrough
     }
@@ -2324,10 +2337,18 @@ impl DropTerm {
                 // owns the first Escape (the keybind-capture rule):
                 // its overlay publishes the close, and this routing
                 // must not also close the drawer — a later Escape
-                // does.
+                // does. An open profile draft owns the next Escape
+                // (the draft-first rule): the draft cancels — no
+                // write, the selection kept — and the drawer stays
+                // open for the plain close on a later press.
                 let drawer_escapable = self.settings_open && self.scheme_picker.is_none();
-                if drawer_escape_routing(drawer_escapable, &key) == DrawerKeyRouting::CloseDrawer {
-                    return self.close_settings_drawer();
+                match drawer_escape_routing(drawer_escapable, self.profile_draft.is_some(), &key) {
+                    DrawerKeyRouting::CancelDraft => {
+                        self.profile_draft = None;
+                        return Task::none();
+                    }
+                    DrawerKeyRouting::CloseDrawer => return self.close_settings_drawer(),
+                    DrawerKeyRouting::FallThrough => {}
                 }
                 if let Some(action) =
                     keybinds::matched_action(&self.key_binds, modifiers, &key, Some(&physical_key))
