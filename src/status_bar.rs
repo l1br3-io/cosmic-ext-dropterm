@@ -583,6 +583,116 @@ pub fn reveal_display(
     }
 }
 
+// --- text selection (the user-ruled interaction, 2026-10-11) ---
+//
+// Press-and-drag across the band selects the covered characters of
+// the row's display text and the release copies them (clipboard +
+// primary, so the terminal's middle-click paste serves the
+// selection). A click — a press that never crossed the threshold —
+// keeps the shipped verb: the segment's full un-elided value and
+// the `✓` flash. The highlight persists after release, like
+// terminal selection, and clears on the next press.
+
+/// One segment's selection inputs: its laid rect and its display
+/// text — the monospace terminal font makes character offsets
+/// px-derived, the per-character width being the rect's width over
+/// the text's character count.
+pub struct RowSegment {
+    /// The segment's laid-out rect.
+    pub rect: Rectangle,
+    /// The segment's display text.
+    pub text: String,
+}
+
+/// The selection-drag threshold: a press that stays within it is a
+/// click, past it a selection — the tab row's reorder-drag idiom
+/// at a text-selection scale.
+const SELECTION_THRESHOLD: f32 = 4.0;
+
+/// The alpha of the selection highlight — the pane foreground at a
+/// quarter strength, hierarchy by alpha, never a new hue.
+const SELECTION_ALPHA: f32 = 0.25;
+
+/// Whether a press-release pair is a click (it rides the copy
+/// verb) rather than a drag (it selects).
+pub fn selection_is_click(anchor: Point, release: Point) -> bool {
+    let dx = release.x - anchor.x;
+    let dy = release.y - anchor.y;
+    (dx * dx + dy * dy) < SELECTION_THRESHOLD * SELECTION_THRESHOLD
+}
+
+/// The normalized horizontal span of a selection drag.
+fn selection_span(anchor: Point, focus: Point) -> (f32, f32) {
+    if anchor.x <= focus.x {
+        (anchor.x, focus.x)
+    } else {
+        (focus.x, anchor.x)
+    }
+}
+
+/// The highlight quads of a selection: the span intersected with
+/// each row segment's rect — the visual mark, painted under the
+/// text on the armed frames.
+pub fn selection_rects(anchor: Point, focus: Point, row: &[RowSegment]) -> Vec<Rectangle> {
+    let (lo, hi) = selection_span(anchor, focus);
+    row.iter()
+        .map(|seg| {
+            let left = lo.max(seg.rect.x);
+            let right = hi.min(seg.rect.x + seg.rect.width);
+            Rectangle::new(
+                Point::new(left, seg.rect.y),
+                Size::new((right - left).max(0.0), seg.rect.height),
+            )
+        })
+        .filter(|rect| rect.width > 0.0)
+        .collect()
+}
+
+/// The selected text: the characters whose cells the span covers,
+/// segments joined by single spaces (the visual gaps) — WYSIWYG,
+/// the elided display included; the click verb remains the full
+/// value through [`copy_text`].
+pub fn selection_text(anchor: Point, focus: Point, row: &[RowSegment]) -> String {
+    let (lo, hi) = selection_span(anchor, focus);
+    let mut parts: Vec<String> = Vec::new();
+    for seg in row {
+        let chars: Vec<char> = seg.text.chars().collect();
+        if chars.is_empty() {
+            continue;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "px-scale char math on strings < 2^24 chars, exact in f32"
+        )]
+        let len = chars.len() as f32;
+        let per_char = seg.rect.width / len;
+        if per_char <= 0.0 {
+            continue;
+        }
+        // A character is covered when its cell intersects the span;
+        // the cell indices clamp into range before the usize cast.
+        let cells = |edge: f32, round: fn(f32) -> f32| {
+            round((edge - seg.rect.x) / per_char).clamp(0.0, len)
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a char index clamped into 0..=len from a px offset"
+        )]
+        let first = cells(lo, f32::floor) as usize;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a char index clamped into 0..=len from a px offset"
+        )]
+        let last = cells(hi, f32::ceil) as usize;
+        if last > first {
+            parts.push(chars[first..last].iter().collect());
+        }
+    }
+    parts.join(" ")
+}
+
 /// The band's wall-clock text: 24-hour `HH:MM`, local zone.
 pub fn clock_text(now: &jiff::Zoned) -> String {
     now.strftime("%H:%M").to_string()
@@ -711,6 +821,16 @@ struct State {
     /// The branch's display, cached for its restore on disarm (its
     /// seat is lent while armed).
     branch_text: String,
+    /// The row's display texts in x-order (left cluster, then
+    /// right), cached every layout — the selection's WYSIWYG
+    /// source, paired with the laid rects at event and draw time.
+    row_texts: Vec<(SegmentId, String)>,
+    /// The press that may become a selection drag — its anchor,
+    /// held from press to release.
+    press: Option<Point>,
+    /// The live-or-persisting selection: anchor and focus. Persists
+    /// highlighted after release until the next press.
+    selection: Option<(Point, Point)>,
 }
 
 impl State {
@@ -914,6 +1034,43 @@ impl<Message> StatusBar<Message> {
         );
         state.branch_text = self.segments.branch.clone().unwrap_or_default();
         self.apply_reveal(state);
+
+        // The selection's WYSIWYG row: every segment's display text
+        // in x-order, exactly as laid — post-drop, post-reveal, the
+        // `✓` flash included while it holds. Dropped segments keep
+        // their text here; the row builder pairs texts with rects,
+        // and a dropped segment has no rect.
+        let armed = state.armed;
+        let displayed = |id: SegmentId| -> String {
+            let value = match id {
+                SegmentId::Process => self.segments.process.clone(),
+                SegmentId::Path => {
+                    if armed {
+                        state.path_armed_text.clone()
+                    } else {
+                        state.path_resting_text.clone()
+                    }
+                }
+                SegmentId::Branch => {
+                    if armed {
+                        String::new()
+                    } else {
+                        state.branch_text.clone()
+                    }
+                }
+                SegmentId::Profile => self.segments.profile.clone().unwrap_or_default(),
+                SegmentId::Grid => grid.clone().unwrap_or_default(),
+                SegmentId::Tab => tab.clone().unwrap_or_default(),
+                SegmentId::Zoom => zoom.clone().unwrap_or_default(),
+                SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
+            };
+            display_text(copied, id, &value).to_string()
+        };
+        state.row_texts = LEFT_CLUSTER
+            .iter()
+            .chain(RIGHT_CLUSTER.iter())
+            .map(|id| (*id, displayed(*id)))
+            .collect();
     }
 
     /// Applies the reveal's armed selection to the laid paragraphs
@@ -977,6 +1134,30 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
         }
     }
     rects
+}
+
+/// The selection's row: every rendered segment's rect paired with
+/// its cached display text, in x-order — the WYSIWYG source for
+/// both the highlight quads and the copied text.
+fn row_segments(state: &State, bounds: Rectangle) -> Vec<RowSegment> {
+    let rects = segment_rects(state, bounds);
+    LEFT_CLUSTER
+        .iter()
+        .chain(RIGHT_CLUSTER.iter())
+        .filter_map(|id| {
+            let rect = rects
+                .iter()
+                .find(|(rid, _)| rid == id)
+                .map(|(_, rect)| *rect)?;
+            let text = state
+                .row_texts
+                .iter()
+                .find(|(rid, _)| rid == id)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_default();
+            Some(RowSegment { rect, text })
+        })
+        .collect()
 }
 
 /// The text a segment renders: its value, or — while the copy flash
@@ -1094,20 +1275,68 @@ where
             self.apply_reveal(state);
         }
 
-        let Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) = event else {
-            return;
-        };
-        let Some(position) = cursor.position_in(layout.bounds()) else {
-            return;
-        };
-        let state = tree.state.downcast_ref::<State>();
-        let rects = segment_rects(state, layout.bounds());
-        if let Some(id) = segment_at(&rects, position) {
-            // The sole clipboard payload source: the segment's full
-            // value through `copy_text` — never the elided display.
-            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
-            shell.publish((self.on_copy)(id));
-            shell.capture_event();
+        // The selection machine (the user-ruled interaction): a
+        // press arms, a crossing drag selects — the highlight
+        // following the cursor — and the release decides: a click
+        // rides the shipped copy verb (the segment's full value
+        // plus the ✓ flash), a drag writes the selected display
+        // text to the clipboard and the primary selection (the
+        // terminal's middle-click paste serves it). The highlight
+        // persists after release until the next press.
+        match event {
+            Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
+                let Some(position) = cursor.position_in(layout.bounds()) else {
+                    return;
+                };
+                let state = tree.state.downcast_mut::<State>();
+                state.press = Some(position);
+                state.selection = None;
+                shell.capture_event();
+                shell.request_redraw();
+            }
+            Event::Mouse(MouseEvent::CursorMoved { position }) => {
+                let state = tree.state.downcast_ref::<State>();
+                let Some(anchor) = state.press else {
+                    return;
+                };
+                let crossed = (position.x - anchor.x).abs() >= SELECTION_THRESHOLD
+                    || (position.y - anchor.y).abs() >= SELECTION_THRESHOLD;
+                if !crossed {
+                    return;
+                }
+                let state = tree.state.downcast_mut::<State>();
+                state.selection = Some((anchor, *position));
+                shell.capture_event();
+                shell.request_redraw();
+            }
+            Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
+                let state = tree.state.downcast_mut::<State>();
+                let Some(anchor) = state.press.take() else {
+                    return;
+                };
+                shell.capture_event();
+                shell.request_redraw();
+                if selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
+                    // The click verb: the segment's full value
+                    // through `copy_text` — never the elided
+                    // display.
+                    let rects = segment_rects(state, layout.bounds());
+                    if let Some(id) = cursor
+                        .position()
+                        .and_then(|point| segment_at(&rects, point))
+                    {
+                        clipboard.write(Kind::Standard, copy_text(id, &self.segments));
+                        shell.publish((self.on_copy)(id));
+                    }
+                } else if let Some((from, to)) = state.selection {
+                    let text = selection_text(from, to, &row_segments(state, layout.bounds()));
+                    if !text.is_empty() {
+                        clipboard.write(Kind::Standard, text.clone());
+                        clipboard.write(Kind::Primary, text);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1142,6 +1371,31 @@ where
             },
             band_bg,
         );
+
+        // The selection highlight, under the text and above the
+        // strip: the pane foreground at a quarter strength —
+        // hierarchy by alpha, never a new hue. Painted while a
+        // selection lives, drag or persisting.
+        if let Some((from, to)) = state.selection {
+            for rect in selection_rects(from, to, &row_segments(state, bounds)) {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: rect,
+                        border: Border {
+                            radius: 0.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color {
+                        a: SELECTION_ALPHA,
+                        ..pane_fg
+                    },
+                );
+            }
+        }
 
         // The process-state disc: filled while a foreground child
         // runs, a hollow ring over the idle shell — the gear's own
