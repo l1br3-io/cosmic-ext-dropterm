@@ -1780,7 +1780,7 @@ fn the_profiles_page_builds_in_every_read_state() {
     let _ = profiles_view(&config, Some(1), None);
     let _ = profiles_view(&config, Some(9), None);
     let mut erroring = ProfileDraft::add();
-    erroring.error = Some((ProfileField::Name, ProfileFieldError::DuplicateName));
+    erroring.errors = vec![(ProfileField::Name, ProfileFieldError::DuplicateName)];
     let _ = profiles_view(&config, None, Some(&erroring));
     let cloning = ProfileDraft::clone_of(&config.profiles[0], &config.profiles);
     let _ = profiles_view(&config, Some(0), Some(&cloning));
@@ -2297,13 +2297,13 @@ fn env_rows_round_trip_through_apply_edit_and_reseeding() {
 #[test]
 fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
     // The keystroke rule, row edition: the input buffers into its
-    // row and any stale error clears — it described text that no
-    // longer exists.
+    // row and that row's stale error clears — it described text
+    // that no longer exists.
     let mut draft = ProfileDraft::edit(0, &sourced_env_profile());
-    draft.error = Some((ProfileField::EnvKey(1), ProfileFieldError::EnvKeyEquals));
+    draft.errors = vec![(ProfileField::EnvKey(1), ProfileFieldError::EnvKeyEquals)];
     draft.set_field_text(ProfileField::EnvKey(1), "TERM".to_string());
     assert_eq!(draft.env_rows[1].key, "TERM");
-    assert_eq!(draft.error, None);
+    assert!(draft.errors.is_empty());
     draft.set_field_text(ProfileField::EnvValue(0), "prod".to_string());
     assert_eq!(draft.env_rows[0].value, "prod");
 }
@@ -2342,7 +2342,7 @@ fn an_add_draft_opens_empty() {
     assert_eq!(draft.name, "");
     assert_eq!(draft.command, "");
     assert_eq!(draft.cwd, "");
-    assert_eq!(draft.error, None);
+    assert!(draft.errors.is_empty());
 }
 
 #[test]
@@ -2407,7 +2407,7 @@ fn a_clone_draft_seeds_from_the_source_with_a_unique_name() {
     assert_eq!(draft.name, "web-prod (copy)");
     assert_eq!(draft.command, "ssh web-prod");
     assert_eq!(draft.cwd, "/srv/web");
-    assert_eq!(draft.error, None);
+    assert!(draft.errors.is_empty());
 }
 
 #[test]
@@ -2424,9 +2424,9 @@ fn an_edit_draft_seeds_from_the_profile() {
 #[test]
 fn typing_into_a_draft_field_clears_the_stale_error() {
     let mut draft = ProfileDraft::add();
-    draft.error = Some((ProfileField::Name, ProfileFieldError::DuplicateName));
+    draft.errors = vec![(ProfileField::Name, ProfileFieldError::DuplicateName)];
     draft.set_field_text(ProfileField::Name, "server".to_string());
-    assert_eq!(draft.error, None);
+    assert!(draft.errors.is_empty());
     assert_eq!(draft.name, "server");
 }
 
@@ -2756,4 +2756,224 @@ fn the_selection_after_a_reorder_follows_the_moved_profile() {
         Some(0)
     );
     assert_eq!(selection_after_move(None, 1, ReorderDirection::Up), None);
+}
+
+// --- the transactional save (profile-form-commit PF-1) ---
+
+#[test]
+fn a_valid_add_save_plans_one_append_and_no_default_write() {
+    // The whole draft lands as one profile on one whole-list write:
+    // every field the form exposes — text, scheme, env rows — rides
+    // the Save, trimmed through the same rules the per-field commits
+    // used. An Add never touches `default_profile`.
+    let profiles = [profile("ssh", "ssh web-prod")];
+    let mut draft = ProfileDraft::add();
+    draft.name = "  monitor ".to_string();
+    draft.command = "btop".to_string();
+    draft.cwd = "/srv/mon".to_string();
+    draft.scheme = Some("Dracula".to_string());
+    draft.env_rows = vec![env_row("DROPTERM_PROFILE", "monitor"), env_row("", "")];
+    let ProfileSavePlan::Write {
+        profiles: written,
+        default_after_rename,
+    } = plan_profile_save(&draft, &profiles, Some("ssh"))
+    else {
+        panic!("a valid add saves");
+    };
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[1].name, "monitor");
+    assert_eq!(written[1].command, "btop");
+    assert_eq!(written[1].cwd, Some(PathBuf::from("/srv/mon")));
+    assert_eq!(written[1].color_scheme, Some("Dracula".to_string()));
+    assert_eq!(
+        written[1].env,
+        Some(BTreeMap::from([(
+            "DROPTERM_PROFILE".to_string(),
+            "monitor".to_string()
+        )]))
+    );
+    assert_eq!(default_after_rename, None);
+}
+
+#[test]
+fn a_valid_edit_save_replaces_every_field_in_one_write() {
+    // The Edit counterpart: the whole draft replaces the profile at
+    // its index — no field rides along nowhere, no field needs its
+    // own Enter — and every other slot stays byte-identical.
+    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.name = "server".to_string();
+    draft.command = "ssh backup".to_string();
+    draft.cwd = "/srv/backup".to_string();
+    draft.scheme = Some("Dracula".to_string());
+    draft.env_rows = vec![env_row("KEY", "v")];
+    let ProfileSavePlan::Write {
+        profiles: written,
+        default_after_rename,
+    } = plan_profile_save(&draft, &profiles, None)
+    else {
+        panic!("a valid edit saves");
+    };
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0].name, "server");
+    assert_eq!(written[0].command, "ssh backup");
+    assert_eq!(written[0].cwd, Some(PathBuf::from("/srv/backup")));
+    assert_eq!(written[0].color_scheme, Some("Dracula".to_string()));
+    assert_eq!(
+        written[0].env,
+        Some(BTreeMap::from([("KEY".to_string(), "v".to_string())]))
+    );
+    assert_eq!(written[1].command, "htop");
+    assert_eq!(default_after_rename, None);
+}
+
+#[test]
+fn an_edit_save_cascades_only_when_the_rename_hits_the_default() {
+    // One Save, at most one paired default write: present iff the
+    // draft renamed the default-named profile (the once-per-Save
+    // rule the per-field cascade already followed); a non-default
+    // rename or an absent default writes nothing extra.
+    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.name = "server".to_string();
+    let ProfileSavePlan::Write {
+        default_after_rename: hit,
+        ..
+    } = plan_profile_save(&draft, &profiles, Some("ssh"))
+    else {
+        panic!("a valid rename saves");
+    };
+    assert_eq!(hit, Some("server".to_string()));
+
+    let ProfileSavePlan::Write {
+        default_after_rename: missed,
+        ..
+    } = plan_profile_save(&draft, &profiles, Some("top"))
+    else {
+        panic!("a valid rename saves");
+    };
+    assert_eq!(missed, None);
+
+    let ProfileSavePlan::Write {
+        default_after_rename: absent,
+        ..
+    } = plan_profile_save(&draft, &profiles, None)
+    else {
+        panic!("a valid rename saves");
+    };
+    assert_eq!(absent, None);
+}
+
+#[test]
+fn an_invalid_save_names_every_offending_field_at_once() {
+    // The transactional gate: every rule evaluates at Save, and
+    // every offending field surfaces in one plan — the form shows
+    // them all simultaneously, each under its own input. A wholly
+    // blank env row never rejects (the write drops it).
+    let profiles = [profile("ssh", "ssh web-prod")];
+    let mut draft = ProfileDraft::add();
+    draft.name = "  ".to_string();
+    draft.command = "   ".to_string();
+    draft.env_rows = vec![env_row("A=B", "v"), env_row("", ""), env_row("", "orphan")];
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, None),
+        ProfileSavePlan::Invalid {
+            errors: vec![
+                (ProfileField::Name, ProfileFieldError::BlankName),
+                (ProfileField::Command, ProfileFieldError::BlankCommand),
+                (ProfileField::EnvKey(0), ProfileFieldError::EnvKeyEquals),
+                (ProfileField::EnvKey(2), ProfileFieldError::BlankEnvKey),
+            ],
+        }
+    );
+}
+
+#[test]
+fn a_duplicate_name_errors_alongside_its_fellow_offenders() {
+    // The rule set is unchanged, only its evaluation point: a
+    // duplicate name still rejects — now shoulder to shoulder with
+    // every other bad field, not first-past-the-post.
+    let profiles = [profile("ssh", "ssh web-prod")];
+    let mut draft = ProfileDraft::add();
+    draft.name = "ssh".to_string();
+    draft.command = "btop".to_string();
+    draft.env_rows = vec![env_row("", "orphan")];
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, None),
+        ProfileSavePlan::Invalid {
+            errors: vec![
+                (ProfileField::Name, ProfileFieldError::DuplicateName),
+                (ProfileField::EnvKey(0), ProfileFieldError::BlankEnvKey),
+            ],
+        }
+    );
+}
+
+#[test]
+fn an_unchanged_edit_save_plans_no_write() {
+    // The anti-churn idiom (`echo_retitles_tabs`'s): a seeded,
+    // untouched Edit draft compares equal against the committed
+    // profile — the Save is an empty transaction, not a same-value
+    // write. Seeding round-trips every field, so equality is exact.
+    let profiles = [sourced_profile()];
+    let draft = ProfileDraft::edit(0, &profiles[0]);
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, Some("web-prod")),
+        ProfileSavePlan::Unchanged
+    );
+}
+
+#[test]
+fn a_stale_edit_save_plans_a_drop() {
+    // The list shrank under the open draft: the Save reports the
+    // staleness — never a panic, never a write.
+    let profiles = [profile("ssh", "ssh web-prod")];
+    let draft = ProfileDraft {
+        mode: ProfileDraftMode::Edit { index: 9 },
+        ..ProfileDraft::add()
+    };
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, None),
+        ProfileSavePlan::StaleEdit
+    );
+}
+
+#[test]
+fn a_keystroke_clears_only_its_own_field_s_error() {
+    // The stale-error rule, field-scoped: typing re-validates
+    // nothing, it only retires the error that described the text
+    // being replaced — the other fields' errors describe text that
+    // still exists and stay.
+    let mut draft = ProfileDraft::add();
+    draft.errors = vec![
+        (ProfileField::Name, ProfileFieldError::DuplicateName),
+        (ProfileField::Command, ProfileFieldError::BlankCommand),
+    ];
+    draft.set_field_text(ProfileField::Name, "server".to_string());
+    assert_eq!(
+        draft.errors,
+        vec![(ProfileField::Command, ProfileFieldError::BlankCommand)]
+    );
+    assert_eq!(draft.name, "server");
+}
+
+#[test]
+fn selection_after_save_follows_the_written_row() {
+    // Save closes the form on the row it wrote: an Edit keeps the
+    // row it rewrote; an Add/Clone selects the appended row —
+    // `profiles_len` is the pre-append length, the Save's own +1.
+    assert_eq!(
+        selection_after_save(&ProfileDraftMode::Edit { index: 1 }, 3),
+        1
+    );
+    assert_eq!(selection_after_save(&ProfileDraftMode::Add, 3), 3);
+    assert_eq!(
+        selection_after_save(
+            &ProfileDraftMode::Clone {
+                source: sourced_profile()
+            },
+            3
+        ),
+        3
+    );
 }

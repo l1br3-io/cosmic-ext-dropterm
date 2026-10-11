@@ -2941,7 +2941,7 @@ impl DropTerm {
                                 }
                                 settings::ProfileCommitPlan::Invalid { field, error } => {
                                     if let Some(draft) = self.profile_draft.as_mut() {
-                                        draft.error = Some((field, error));
+                                        draft.errors = vec![(field, error)];
                                     }
                                 }
                                 settings::ProfileCommitPlan::StaleEdit => {
@@ -2986,7 +2986,7 @@ impl DropTerm {
                                 }
                                 if let Some(open) = self.profile_draft.as_mut() {
                                     open.scheme = scheme;
-                                    open.error = None;
+                                    open.errors.clear();
                                 }
                             }
                         }
@@ -2998,7 +2998,7 @@ impl DropTerm {
                         // clears — the row list it described is gone.
                         if let Some(draft) = self.profile_draft.as_mut() {
                             draft.env_rows.push(settings::ProfileEnvRow::default());
-                            draft.error = None;
+                            draft.errors.clear();
                         }
                     }
                     settings::SettingsEvent::RemoveProfileEnvRow(index) => {
@@ -3012,7 +3012,7 @@ impl DropTerm {
                             && index < draft.env_rows.len()
                         {
                             draft.env_rows.remove(index);
-                            draft.error = None;
+                            draft.errors.clear();
                         }
                     }
                     settings::SettingsEvent::DrawerResize(pointer_x) => {

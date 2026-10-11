@@ -1270,6 +1270,31 @@ pub fn env_row_invalid(rows: &[ProfileEnvRow]) -> Option<(usize, ProfileFieldErr
     })
 }
 
+/// Every row that could not enter a map — each as its field-and-
+/// error pair, in row order — for the whole-draft gate: a Save
+/// rejects with every offending row at once, where the per-field
+/// commits' [`env_row_invalid`] stopped at the first. Wholly blank
+/// rows never reject (the transform drops them); an empty value is
+/// legitimate (`FOO=` is a real variable).
+// PF-2 wires the Save arms; tests-only until then.
+#[allow(dead_code)]
+pub fn env_row_errors(rows: &[ProfileEnvRow]) -> Vec<(ProfileField, ProfileFieldError)> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let key = row.key.trim();
+            if key.is_empty() {
+                (!row.value.trim().is_empty())
+                    .then_some((ProfileField::EnvKey(index), ProfileFieldError::BlankEnvKey))
+            } else if key.contains('=') {
+                Some((ProfileField::EnvKey(index), ProfileFieldError::EnvKeyEquals))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// What the draft is committing as: a fresh profile (Add), a copy of
 /// one (Clone), or an edit of the list profile at `index` (Edit).
 #[derive(Debug, Clone, PartialEq)]
@@ -1308,8 +1333,9 @@ pub struct ProfileDraft {
     /// list edits, not writes — the form has no gesture but Enter
     /// that writes.
     pub env_rows: Vec<ProfileEnvRow>,
-    /// The last rejected commit's field and error, if any.
-    pub error: Option<(ProfileField, ProfileFieldError)>,
+    /// Every offending field from the last rejected Save — one pair
+    /// per input, all rendered at once, each under its own field.
+    pub errors: Vec<(ProfileField, ProfileFieldError)>,
 }
 
 impl ProfileDraft {
@@ -1322,7 +1348,7 @@ impl ProfileDraft {
             cwd: String::new(),
             scheme: None,
             env_rows: Vec::new(),
-            error: None,
+            errors: Vec::new(),
         }
     }
 
@@ -1338,7 +1364,7 @@ impl ProfileDraft {
             cwd: cwd_text(source),
             scheme: source.color_scheme.clone(),
             env_rows: env_rows_from_map(source.env.as_ref()),
-            error: None,
+            errors: Vec::new(),
         }
     }
 
@@ -1352,14 +1378,16 @@ impl ProfileDraft {
             cwd: cwd_text(profile),
             scheme: profile.color_scheme.clone(),
             env_rows: env_rows_from_map(profile.env.as_ref()),
-            error: None,
+            errors: Vec::new(),
         }
     }
 
-    /// Buffer a field's text (a keystroke): display-only, and any
-    /// stale error clears — it described text that no longer exists.
+    /// Buffer a field's text (a keystroke): display-only, and that
+    /// field's stale error clears — it described text that no longer
+    /// exists. The other fields' errors stay: they describe text
+    /// that still does.
     pub fn set_field_text(&mut self, field: ProfileField, text: String) {
-        self.error = None;
+        self.errors.retain(|(at, _)| *at != field);
         match field {
             ProfileField::Name => self.name = text,
             ProfileField::Command => self.command = text,
@@ -1382,7 +1410,7 @@ impl ProfileDraft {
     /// what the echo will serve) and clear the error — the other
     /// fields' buffered drafts persist, per-field commits.
     pub fn field_committed(&mut self, field: ProfileField, written: &Profile) {
-        self.error = None;
+        self.errors.clear();
         match field {
             ProfileField::Name => self.name.clone_from(&written.name),
             ProfileField::Command => self.command.clone_from(&written.command),
@@ -1604,6 +1632,177 @@ fn invalid_name(error: ProfileFieldError) -> ProfileCommitPlan {
     ProfileCommitPlan::Invalid {
         field: ProfileField::Name,
         error,
+    }
+}
+
+// --- the transactional save: one write per Save, whole-draft
+// validation (profile-form-commit) ---
+
+/// What a Save of the whole draft produced: the write to land, the
+/// rejections to show, the empty transaction, or the stale-edit
+/// drop. The transactional sibling of [`ProfileCommitPlan`] — the
+/// same write vocabulary, evaluated over the whole draft at once.
+// PF-2 wires the Save arms; tests-only until then.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProfileSavePlan {
+    /// A valid save: one whole-list write, plus the paired
+    /// `default_profile` write when the save renamed the
+    /// default-named profile ([`default_after_rename`] — `None`
+    /// means no paired write).
+    Write {
+        /// The new `profiles` list.
+        profiles: Vec<Profile>,
+        /// The rename cascade's new default, if the save hit it.
+        default_after_rename: Option<String>,
+    },
+    /// An invalid save: every offending field and why, one pair per
+    /// input. Nothing is written; the draft keeps its text and every
+    /// error renders under its own field simultaneously.
+    Invalid {
+        /// Each offending field with its rejection reason.
+        errors: Vec<(ProfileField, ProfileFieldError)>,
+    },
+    /// An Edit draft whose fields all compare equal against the
+    /// committed profile: the transaction is empty — no write, the
+    /// draft simply closes (the `echo_retitles_tabs` anti-churn
+    /// idiom).
+    Unchanged,
+    /// The edited profile is gone (the list changed under the open
+    /// draft): nothing to save — the draft is stale and drops.
+    StaleEdit,
+}
+
+/// Plan the Save a whole draft produces — the pure heart of the
+/// transactional form.
+///
+/// Every rule the form knows evaluates at once — the name (blank,
+/// then unique), the command line ([`command_line_parts`]), and
+/// every env row ([`env_row_errors`]) — so a rejection names every
+/// offending field, not the first. A valid Edit replaces its profile
+/// with the whole draft and cascades `default_profile` iff the
+/// rename hit the default-named profile; a valid Add/Clone appends
+/// (the clone seed already derives its unique name). An Edit that
+/// compares equal against the committed profile plans no write at
+/// all.
+// PF-2 wires the Save/Cancel arms; until then the non-test bin has
+// no caller for the transactional half (the tests do).
+#[allow(dead_code)]
+pub fn plan_profile_save(
+    draft: &ProfileDraft,
+    profiles: &[Profile],
+    default: Option<&str>,
+) -> ProfileSavePlan {
+    match &draft.mode {
+        ProfileDraftMode::Edit { index } => {
+            let Some(base) = profiles.get(*index) else {
+                return ProfileSavePlan::StaleEdit;
+            };
+            let errors = whole_draft_errors(
+                profiles,
+                Some(*index),
+                &draft.name,
+                &draft.command,
+                &draft.env_rows,
+            );
+            if !errors.is_empty() {
+                return ProfileSavePlan::Invalid { errors };
+            }
+            let mut edited = base.clone();
+            edited.name = draft.name.trim().to_string();
+            edited.command = draft.command.trim().to_string();
+            edited.cwd = parse_cwd(&draft.cwd);
+            edited.color_scheme.clone_from(&draft.scheme);
+            edited.env = env_map_from_rows(&draft.env_rows);
+            if edited == *base {
+                return ProfileSavePlan::Unchanged;
+            }
+            // The cascade: only a real rename of the default-named
+            // profile re-points the key (a same-name save is not a
+            // rename), and only when the key's value actually
+            // changes — an unchanged default writes nothing extra.
+            let default_after_rename = if edited.name == base.name {
+                None
+            } else {
+                match default_after_rename(default, &base.name, &edited.name) {
+                    Some(new_default) if Some(new_default.as_str()) != default => Some(new_default),
+                    _ => None,
+                }
+            };
+            ProfileSavePlan::Write {
+                profiles: apply_edit(profiles, *index, edited),
+                default_after_rename,
+            }
+        }
+        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
+            let errors =
+                whole_draft_errors(profiles, None, &draft.name, &draft.command, &draft.env_rows);
+            if !errors.is_empty() {
+                return ProfileSavePlan::Invalid { errors };
+            }
+            let added = Profile {
+                name: draft.name.trim().to_string(),
+                command: draft.command.trim().to_string(),
+                cwd: parse_cwd(&draft.cwd),
+                color_scheme: draft.scheme.clone(),
+                env: env_map_from_rows(&draft.env_rows),
+                // The font/scrollback overrides the form exposes no
+                // fields for yet (profile-manager's scope): a Clone
+                // copies the source's, an Add starts unset — a save
+                // of anything else never resets them.
+                font_size: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.font_size,
+                    _ => None,
+                },
+                scrollback_lines: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.scrollback_lines,
+                    _ => None,
+                },
+            };
+            ProfileSavePlan::Write {
+                profiles: add_profile(profiles, added),
+                default_after_rename: None,
+            }
+        }
+    }
+}
+
+/// The whole-draft gate: every form rule evaluated at once — the
+/// name (blank, then unique), the command line, and every env row —
+/// so one Save rejects with every offending field, in form order.
+// PF-2 wires the Save arms; tests-only until then.
+#[allow(dead_code)]
+fn whole_draft_errors(
+    profiles: &[Profile],
+    editing: Option<usize>,
+    name: &str,
+    command: &str,
+    env_rows: &[ProfileEnvRow],
+) -> Vec<(ProfileField, ProfileFieldError)> {
+    let mut errors = Vec::new();
+    let name = name.trim();
+    if name.is_empty() {
+        errors.push((ProfileField::Name, ProfileFieldError::BlankName));
+    } else if !name_unique(profiles, editing, name) {
+        errors.push((ProfileField::Name, ProfileFieldError::DuplicateName));
+    }
+    if command_line_parts(command.trim()).is_none() {
+        errors.push((ProfileField::Command, ProfileFieldError::BlankCommand));
+    }
+    errors.extend(env_row_errors(env_rows));
+    errors
+}
+
+/// The selection after a Save lands: an Edit keeps the row it
+/// rewrote; an Add/Clone selects the row the append created —
+/// `profiles_len` is the pre-append length (the Save's own write
+/// owns the +1). A `Write` plan guarantees the index is live.
+// PF-2 wires the Save arms; tests-only until then.
+#[allow(dead_code)]
+pub const fn selection_after_save(mode: &ProfileDraftMode, profiles_len: usize) -> usize {
+    match mode {
+        ProfileDraftMode::Edit { index } => *index,
+        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => profiles_len,
     }
 }
 
@@ -2578,18 +2777,23 @@ fn env_rows_item(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
                 SettingsEvent::CommitProfileField(ProfileField::EnvValue(index), text)
             });
         let inputs = widget::row!(key_input, value_input, remove_row_button(index)).spacing(8);
-        // A rejected env commit's error renders under the offending
-        // row's key input — the row's name — whichever input
-        // committed (the `form_field` rule, row edition).
-        let pair = match draft.error {
-            Some((ProfileField::EnvKey(at), error)) if at == index => widget::column![
+        // A rejected Save's row error renders under the offending
+        // row's key input — the row's name (the `form_field` rule,
+        // row edition).
+        let pair = match draft
+            .errors
+            .iter()
+            .copied()
+            .find(|(at, _)| *at == ProfileField::EnvKey(index))
+        {
+            Some((_, error)) => widget::column![
                 inputs,
                 widget::text(error.message())
                     .size(12)
                     .class(cosmic::theme::Text::Custom(danger_text_style)),
             ]
             .spacing(4),
-            _ => widget::column![inputs].spacing(4),
+            None => widget::column![inputs].spacing(4),
         };
         rows = rows.push(pair);
     }
@@ -2621,15 +2825,15 @@ fn form_field(
     let input = widget::text_input(placeholder, text.to_string())
         .on_input(move |text| SettingsEvent::DraftProfileField(field, text))
         .on_submit(move |text| SettingsEvent::CommitProfileField(field, text));
-    let control = match draft.error {
-        Some((at, error)) if at == field => widget::column![
+    let control = match draft.errors.iter().copied().find(|(at, _)| *at == field) {
+        Some((_, error)) => widget::column![
             input,
             widget::text(error.message())
                 .size(12)
                 .class(cosmic::theme::Text::Custom(danger_text_style)),
         ]
         .spacing(4),
-        _ => widget::column![input],
+        None => widget::column![input],
     };
     widget::settings::item::builder(label)
         .control(control)
