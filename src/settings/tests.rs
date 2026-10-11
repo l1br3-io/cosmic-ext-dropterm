@@ -1741,28 +1741,6 @@ fn parse_cwd_accepts_a_path_without_existence_checks() {
     assert_eq!(parse_cwd(" ~/src "), Some(PathBuf::from("~/src")));
 }
 
-#[test]
-fn draft_valid_rejects_blank_and_duplicate_names() {
-    let profiles = [profile("ssh", "ssh web-prod")];
-    assert!(!draft_valid(&profiles, None, "   ", "htop"));
-    assert!(!draft_valid(&profiles, None, "ssh", "htop"));
-    // The duplicate check is self-excluded on edit.
-    assert!(draft_valid(&profiles, Some(0), "ssh", "htop"));
-}
-
-#[test]
-fn draft_valid_rejects_a_command_line_without_a_program() {
-    let profiles = [profile("ssh", "ssh web-prod")];
-    assert!(!draft_valid(&profiles, None, "top", ""));
-    assert!(!draft_valid(&profiles, None, "top", "   "));
-}
-
-#[test]
-fn draft_valid_accepts_a_complete_triple() {
-    let profiles = [profile("ssh", "ssh web-prod")];
-    assert!(draft_valid(&profiles, None, "top", "htop"));
-}
-
 // --- the Profiles page's view (construction, profile-settings T1) ---
 
 #[test]
@@ -1913,27 +1891,6 @@ fn a_scheme_pick_round_trips_through_apply_edit() {
 }
 
 #[test]
-fn an_add_drafts_scheme_pick_rides_the_first_valid_commit() {
-    // Gated identically to its siblings: the pick buffers in an
-    // Add/Clone draft — no write until the triple commits — then
-    // lands with the added profile.
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.name = "monitor".to_string();
-    draft.command = "btop".to_string();
-    draft.scheme = profile_scheme_write(1)
-        .expect("row 1 is the first registry name")
-        .field_value();
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None)
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(written[1].color_scheme, Some(scheme_names()[0].to_string()));
-}
-
-#[test]
 fn draft_seeding_carries_the_scheme_into_clone_and_edit_forms() {
     // A Clone draft copies the source's scheme verbatim (the
     // name is what re-seeds unique); an Edit draft seeds from the
@@ -2037,35 +1994,6 @@ fn env_map_from_rows_never_emits_an_invalid_key() {
 }
 
 #[test]
-fn env_row_invalid_flags_a_value_without_its_key() {
-    // A value-only row is a variable half-defined: reject at its
-    // row, so the inline error points where the key belongs.
-    assert_eq!(
-        env_row_invalid(&[env_row("KEY", "v"), env_row("", "orphan")]),
-        Some((1, ProfileFieldError::BlankEnvKey))
-    );
-}
-
-#[test]
-fn env_row_invalid_flags_an_equals_bearing_key() {
-    assert_eq!(
-        env_row_invalid(&[env_row("A=B", "v"), env_row("KEY", "v")]),
-        Some((0, ProfileFieldError::EnvKeyEquals))
-    );
-}
-
-#[test]
-fn env_row_invalid_passes_blank_and_wholesome_rows() {
-    // A wholly blank row is an abandoned row, not a violation
-    // (the transform drops it); an empty value is legitimate —
-    // `FOO=` is a real variable.
-    assert_eq!(
-        env_row_invalid(&[env_row("", ""), env_row("KEY", "v"), env_row("EMPTY", "")]),
-        None
-    );
-}
-
-#[test]
 fn env_rows_seed_from_the_stored_map_in_btree_order() {
     // Clone and Edit seed one row per entry in the map's BTree
     // order — the same profile opens the same form every time;
@@ -2084,217 +2012,6 @@ fn env_rows_seed_from_the_stored_map_in_btree_order() {
 }
 
 #[test]
-fn an_edit_env_commit_writes_the_map_from_the_rows() {
-    // Enter in any env input commits the whole map from the row
-    // list — the row inputs' Enter is the form's commit gesture,
-    // exactly like the name input's. The committed row's raw
-    // text lands in its row first (the `raw` rule), blank rows
-    // drop, everything else lands trimmed.
-    let profiles = [sourced_env_profile()];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.env_rows.push(env_row("  EXTRA  ", " 1 "));
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::EnvKey(2), "EXTRA", &profiles, None)
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(
-        written[0].env,
-        Some(BTreeMap::from([
-            ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
-            ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
-            ("EXTRA".to_string(), "1".to_string()),
-        ]))
-    );
-}
-
-#[test]
-fn an_edit_env_commit_rejects_an_equals_key_at_its_row() {
-    // The gate is the whole row list, not the committed row: the
-    // first invalid row rejects the commit with its own inline
-    // error (a value Enter can catch a bad key buffered rows
-    // away).
-    let profiles = [sourced_env_profile()];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.env_rows.push(env_row("A=B", "v"));
-    assert_eq!(
-        plan_profile_commit(
-            &draft,
-            ProfileField::EnvValue(0),
-            "ssh-prod",
-            &profiles,
-            None
-        ),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::EnvKey(2),
-            error: ProfileFieldError::EnvKeyEquals,
-        }
-    );
-}
-
-#[test]
-fn an_edit_env_commit_rejects_a_value_without_its_key() {
-    let profiles = [sourced_env_profile()];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.env_rows.push(env_row("", "orphan"));
-    assert_eq!(
-        plan_profile_commit(
-            &draft,
-            ProfileField::EnvKey(0),
-            "DROPTERM_PROFILE",
-            &profiles,
-            None
-        ),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::EnvKey(2),
-            error: ProfileFieldError::BlankEnvKey,
-        }
-    );
-}
-
-#[test]
-fn an_edit_name_commit_never_touches_the_env_map() {
-    // Per-field isolation (the form's standing rule): the rows
-    // are the env inputs' buffer; another field's Enter writes
-    // `base.env` untouched — buffered rows ride along nowhere.
-    let profiles = [sourced_env_profile()];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.env_rows.clear();
-    draft.env_rows.push(env_row("BUFFERED", "never-committed"));
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "ssh-renamed", &profiles, None)
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(written[0].name, "ssh-renamed");
-    assert_eq!(written[0].env, sourced_env_profile().env);
-}
-
-#[test]
-fn an_add_drafts_env_rows_ride_the_first_valid_commit() {
-    // The scheme pick's rule: the rows buffer in an Add/Clone
-    // draft — no profile exists to write until the triple
-    // commits — then the transformed map lands with it.
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.name = "monitor".to_string();
-    draft.command = "btop".to_string();
-    draft.env_rows = vec![env_row("DROPTERM_PROFILE", "monitor"), env_row("", "")];
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None)
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(
-        written[1].env,
-        Some(BTreeMap::from([(
-            "DROPTERM_PROFILE".to_string(),
-            "monitor".to_string()
-        )]))
-    );
-}
-
-#[test]
-fn an_add_drafts_invalid_row_gates_the_first_commit() {
-    // The first commit writes the env map too, so the row gate
-    // rides the whole-triple gate: a bad row blocks the profile's
-    // entry until fixed, never corrupts it.
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.name = "monitor".to_string();
-    draft.command = "btop".to_string();
-    draft.env_rows = vec![env_row("A=B", "v")];
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::EnvKey(0),
-            error: ProfileFieldError::EnvKeyEquals,
-        }
-    );
-}
-
-#[test]
-fn a_clone_commit_writes_the_rows_not_the_source_map() {
-    // The rows — not the source's stored map — are what a clone
-    // writes: buffer edits between seeding and the first commit
-    // land with the clone.
-    let source = sourced_env_profile();
-    let mut draft = ProfileDraft::clone_of(&source, std::slice::from_ref(&source));
-    draft.env_rows[1].value = "edited".to_string();
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(
-        &draft,
-        ProfileField::Name,
-        draft.name.as_str(),
-        std::slice::from_ref(&source),
-        None,
-    )
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(
-        written[1].env,
-        Some(BTreeMap::from([
-            ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
-            ("TERM_PROGRAM".to_string(), "edited".to_string()),
-        ]))
-    );
-}
-
-#[test]
-fn an_env_commit_reseeds_the_rows_from_the_written_profile() {
-    // `field_committed`'s echo rule for the row list: the written
-    // map is the rows' new truth (rows the write dropped — the
-    // blank ones — disappear from the form too).
-    let written = sourced_env_profile();
-    let mut draft = ProfileDraft::edit(0, &written);
-    draft.env_rows.push(env_row("", ""));
-    draft.field_committed(ProfileField::EnvKey(0), &written);
-    assert_eq!(
-        draft.env_rows,
-        vec![
-            env_row("DROPTERM_PROFILE", "ssh-prod"),
-            env_row("TERM_PROGRAM", "dropterm-ssh"),
-        ]
-    );
-}
-
-#[test]
-fn env_rows_round_trip_through_apply_edit_and_reseeding() {
-    // The store's shape and the form's shape meet twice — the
-    // write (plan → apply_edit) and the reseed (`ProfileDraft::
-    // edit` off the written list) — and the rows come back
-    // identical, in the map's `BTree` order.
-    let profiles = [sourced_env_profile()];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.env_rows.push(env_row("EXTRA", "1"));
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(
-        &draft,
-        ProfileField::EnvValue(1),
-        "dropterm-ssh",
-        &profiles,
-        None,
-    )
-    else {
-        panic!("expected a write plan");
-    };
-    assert_eq!(
-        ProfileDraft::edit(0, &written[0]).env_rows,
-        vec![
-            env_row("DROPTERM_PROFILE", "ssh-prod"),
-            env_row("EXTRA", "1"),
-            env_row("TERM_PROGRAM", "dropterm-ssh"),
-        ]
-    );
-}
-
-#[test]
 fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
     // The keystroke rule, row edition: the input buffers into its
     // row and that row's stale error clears — it described text
@@ -2308,21 +2025,7 @@ fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
     assert_eq!(draft.env_rows[0].value, "prod");
 }
 
-#[test]
-fn an_env_enter_for_a_row_that_no_longer_exists_plans_a_drop() {
-    // Unreachable in practice (row removal and the Enter are
-    // ordered events on one channel), but a stale index must
-    // never panic — it reports the same staleness a vanished
-    // profile does.
-    let profiles = [sourced_env_profile()];
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::EnvKey(9), "KEY", &profiles, None),
-        ProfileCommitPlan::StaleEdit
-    );
-}
-
-// --- the profile form: drafts, commits, lifecycle (T3) ---
+// --- the profile form: drafts, lifecycle (T3) ---
 
 fn sourced_profile() -> Profile {
     Profile {
@@ -2343,59 +2046,6 @@ fn an_add_draft_opens_empty() {
     assert_eq!(draft.command, "");
     assert_eq!(draft.cwd, "");
     assert!(draft.errors.is_empty());
-}
-
-#[test]
-fn commits_never_reset_the_overrides_the_form_does_not_expose() {
-    // The form has no font/scrollback fields yet (profile-manager's
-    // scope), so no commit gesture may reset them either: an Edit's
-    // base clone carries them by construction, a Clone copies the
-    // source's, and only an Add starts unset.
-    let overridden = Profile {
-        font_size: Some(11),
-        scrollback_lines: Some(50_000),
-        ..sourced_profile()
-    };
-    let profiles = [overridden.clone()];
-
-    let edit = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        profiles: edited, ..
-    } = plan_profile_commit(&edit, ProfileField::Name, "renamed", &profiles, None)
-    else {
-        panic!("a valid edit commits");
-    };
-    assert_eq!(edited[0].font_size, Some(11));
-    assert_eq!(edited[0].scrollback_lines, Some(50_000));
-
-    let clone = ProfileDraft::clone_of(&profiles[0], &profiles);
-    let ProfileCommitPlan::Write {
-        profiles: cloned, ..
-    } = plan_profile_commit(
-        &clone,
-        ProfileField::Command,
-        "ssh web-prod",
-        &profiles,
-        None,
-    )
-    else {
-        panic!("a valid clone commits");
-    };
-    assert_eq!(cloned[1].font_size, Some(11));
-    assert_eq!(cloned[1].scrollback_lines, Some(50_000));
-
-    let add = ProfileDraft::add();
-    let mut typed = add;
-    typed.name = "fresh".to_string();
-    typed.command = "htop".to_string();
-    let ProfileCommitPlan::Write {
-        profiles: added, ..
-    } = plan_profile_commit(&typed, ProfileField::Name, "fresh", &[], None)
-    else {
-        panic!("a valid add commits");
-    };
-    assert_eq!(added[0].font_size, None);
-    assert_eq!(added[0].scrollback_lines, None);
 }
 
 #[test]
@@ -2428,204 +2078,6 @@ fn typing_into_a_draft_field_clears_the_stale_error() {
     draft.set_field_text(ProfileField::Name, "server".to_string());
     assert!(draft.errors.is_empty());
     assert_eq!(draft.name, "server");
-}
-
-#[test]
-fn an_add_commit_appends_only_on_a_valid_triple() {
-    // Draft-gated: with a valid name but a blank command the Enter
-    // is invalid on the command field — nothing is written.
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.name = "monitor".to_string();
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Name, "monitor", &profiles, None,),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::Command,
-            error: ProfileFieldError::BlankCommand,
-        }
-    );
-    // The first valid commit appends — and writes no default.
-    draft.command = "btop".to_string();
-    let ProfileCommitPlan::Write {
-        profiles: written,
-        default_after_rename,
-    } = plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None)
-    else {
-        panic!("a valid triple must commit");
-    };
-    assert_eq!(written.len(), 2);
-    assert_eq!(written[1].name, "monitor");
-    assert_eq!(written[1].command, "btop");
-    assert_eq!(default_after_rename, None);
-}
-
-#[test]
-fn an_add_commit_rejects_blank_and_duplicate_names_at_the_name_field() {
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.command = "htop".to_string();
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Name, "  ", &profiles, None),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::Name,
-            error: ProfileFieldError::BlankName,
-        }
-    );
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, None),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::Name,
-            error: ProfileFieldError::DuplicateName,
-        }
-    );
-}
-
-#[test]
-fn an_add_commit_parses_the_cwd_field() {
-    // The Enter'd raw text replaces the draft's cwd; empty clears
-    // to None, a path lands verbatim (never existence-checked).
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let mut draft = ProfileDraft::add();
-    draft.name = "monitor".to_string();
-    draft.command = "btop".to_string();
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::Cwd, "/srv/mon", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(written[1].cwd, Some(PathBuf::from("/srv/mon")));
-    let ProfileCommitPlan::Write {
-        profiles: cleared, ..
-    } = plan_profile_commit(&draft, ProfileField::Cwd, "   ", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(cleared[1].cwd, None);
-}
-
-#[test]
-fn an_edit_commit_rewrites_only_the_entered_field() {
-    // Per-field commits: Enter on the command field writes the
-    // base profile with only the command replaced — a buffered
-    // but un-Enter'd name edit rides along nowhere.
-    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let mut draft = ProfileDraft::edit(0, &profiles[0]);
-    draft.name = "garbage-unentered".to_string();
-    let ProfileCommitPlan::Write {
-        profiles: written,
-        default_after_rename,
-    } = plan_profile_commit(&draft, ProfileField::Command, "btop", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(written[0].name, "ssh");
-    assert_eq!(written[0].command, "btop");
-    assert_eq!(written[1].command, "htop");
-    assert_eq!(default_after_rename, None);
-}
-
-#[test]
-fn a_rename_commit_cascades_only_when_it_hits_the_default() {
-    // The paired write: renaming the default-named profile
-    // re-points `default_profile` in the same interaction;
-    // non-default renames, absent defaults, and a same-name
-    // re-commit write nothing extra.
-    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        profiles: renamed,
-        default_after_rename,
-    } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, Some("ssh"))
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(renamed[0].name, "server");
-    assert_eq!(default_after_rename, Some("server".to_string()));
-
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        default_after_rename: non_default,
-        ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, Some("top"))
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(non_default, None);
-
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        default_after_rename: absent,
-        ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(absent, None);
-
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        default_after_rename: same_name,
-        ..
-    } = plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, Some("ssh"))
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(same_name, None);
-}
-
-#[test]
-fn an_edit_commit_clears_the_cwd_on_empty_text() {
-    let profiles = [sourced_profile()];
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    let ProfileCommitPlan::Write {
-        profiles: written, ..
-    } = plan_profile_commit(&draft, ProfileField::Cwd, "", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(written[0].cwd, None);
-    let ProfileCommitPlan::Write {
-        profiles: repathed, ..
-    } = plan_profile_commit(&draft, ProfileField::Cwd, "~/src", &profiles, None)
-    else {
-        panic!("expected a write plan")
-    };
-    assert_eq!(repathed[0].cwd, Some(PathBuf::from("~/src")));
-}
-
-#[test]
-fn an_edit_commit_rejects_a_duplicate_name_self_excluded() {
-    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let draft = ProfileDraft::edit(0, &profiles[0]);
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Name, "top", &profiles, None),
-        ProfileCommitPlan::Invalid {
-            field: ProfileField::Name,
-            error: ProfileFieldError::DuplicateName,
-        }
-    );
-    // The profile's own name re-commits cleanly.
-    assert!(matches!(
-        plan_profile_commit(&draft, ProfileField::Name, "ssh", &profiles, None),
-        ProfileCommitPlan::Write { .. }
-    ));
-}
-
-#[test]
-fn a_stale_edit_index_plans_a_drop_not_a_write() {
-    // The list shrank under an open edit draft (an external config
-    // edit echoed in): the planner reports the staleness — never
-    // a panic, never a write.
-    let profiles = [profile("ssh", "ssh web-prod")];
-    let draft = ProfileDraft {
-        mode: ProfileDraftMode::Edit { index: 9 },
-        ..ProfileDraft::add()
-    };
-    assert_eq!(
-        plan_profile_commit(&draft, ProfileField::Name, "server", &profiles, None),
-        ProfileCommitPlan::StaleEdit
-    );
 }
 
 #[test]
@@ -2976,4 +2428,192 @@ fn selection_after_save_follows_the_written_row() {
         ),
         3
     );
+}
+
+// --- the wire and the view: Save/Cancel, the pencil (PF-2) ---
+
+#[test]
+fn env_row_errors_flags_every_value_without_its_key() {
+    // The row gate's whole-draft edition: every keyless-value row
+    // rejects at its own index, not just the first — each gets its
+    // inline error on one failed Save.
+    assert_eq!(
+        env_row_errors(&[env_row("", "orphan"), env_row("KEY", "v"), env_row("", "x")]),
+        vec![
+            (ProfileField::EnvKey(0), ProfileFieldError::BlankEnvKey),
+            (ProfileField::EnvKey(2), ProfileFieldError::BlankEnvKey),
+        ]
+    );
+}
+
+#[test]
+fn env_row_errors_flags_every_equals_bearing_key() {
+    assert_eq!(
+        env_row_errors(&[env_row("A=B", "v"), env_row("C=D", "v")]),
+        vec![
+            (ProfileField::EnvKey(0), ProfileFieldError::EnvKeyEquals),
+            (ProfileField::EnvKey(1), ProfileFieldError::EnvKeyEquals),
+        ]
+    );
+}
+
+#[test]
+fn env_row_errors_passes_blank_and_wholesome_rows() {
+    // A wholly blank row is an abandoned row, not a violation (the
+    // write drops it); an empty value is legitimate — `FOO=` is a
+    // real variable.
+    assert_eq!(
+        env_row_errors(&[env_row("", ""), env_row("KEY", "v"), env_row("EMPTY", "")]),
+        Vec::new()
+    );
+}
+
+#[test]
+fn a_clone_save_writes_the_rows_not_the_source_map() {
+    // The rows — not the source's stored map — are what a clone
+    // saves: buffer edits between seeding and Save land with the
+    // clone.
+    let source = sourced_env_profile();
+    let mut draft = ProfileDraft::clone_of(&source, std::slice::from_ref(&source));
+    draft.env_rows[1].value = "edited".to_string();
+    let ProfileSavePlan::Write {
+        profiles: written, ..
+    } = plan_profile_save(&draft, std::slice::from_ref(&source), None)
+    else {
+        panic!("expected a write plan");
+    };
+    assert_eq!(
+        written[1].env,
+        Some(BTreeMap::from([
+            ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+            ("TERM_PROGRAM".to_string(), "edited".to_string()),
+        ]))
+    );
+}
+
+#[test]
+fn a_save_never_resets_the_overrides_the_form_does_not_expose() {
+    // The form has no font/scrollback fields yet (profile-manager's
+    // scope), so no Save may reset them either: an Edit's base clone
+    // carries them by construction, a Clone copies the source's, and
+    // only an Add starts unset.
+    let overridden = Profile {
+        font_size: Some(11),
+        scrollback_lines: Some(50_000),
+        ..sourced_profile()
+    };
+    let profiles = [overridden.clone()];
+
+    let mut edit = ProfileDraft::edit(0, &profiles[0]);
+    edit.name = "renamed".to_string();
+    let ProfileSavePlan::Write {
+        profiles: edited, ..
+    } = plan_profile_save(&edit, &profiles, None)
+    else {
+        panic!("a valid edit saves");
+    };
+    assert_eq!(edited[0].font_size, Some(11));
+    assert_eq!(edited[0].scrollback_lines, Some(50_000));
+
+    let clone = ProfileDraft::clone_of(&profiles[0], &profiles);
+    let ProfileSavePlan::Write {
+        profiles: cloned, ..
+    } = plan_profile_save(&clone, &profiles, None)
+    else {
+        panic!("a valid clone saves");
+    };
+    assert_eq!(cloned[1].font_size, Some(11));
+    assert_eq!(cloned[1].scrollback_lines, Some(50_000));
+
+    let mut typed = ProfileDraft::add();
+    typed.name = "fresh".to_string();
+    typed.command = "htop".to_string();
+    let ProfileSavePlan::Write {
+        profiles: added, ..
+    } = plan_profile_save(&typed, &[], None)
+    else {
+        panic!("a valid add saves");
+    };
+    assert_eq!(added[0].font_size, None);
+    assert_eq!(added[0].scrollback_lines, None);
+}
+
+#[test]
+fn an_edit_save_rejects_a_duplicate_name_self_excluded() {
+    // Uniqueness self-excludes the edited row, the model's id rule:
+    // renaming onto another profile's name rejects; the profile's
+    // own name is not a collision (it plans `Unchanged`, not an
+    // error).
+    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.name = "top".to_string();
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, None),
+        ProfileSavePlan::Invalid {
+            errors: vec![(ProfileField::Name, ProfileFieldError::DuplicateName)],
+        }
+    );
+    let seeded = ProfileDraft::edit(0, &profiles[0]);
+    assert_eq!(
+        plan_profile_save(&seeded, &profiles, None),
+        ProfileSavePlan::Unchanged
+    );
+}
+
+#[test]
+fn env_rows_round_trip_through_a_save_and_reopen() {
+    // The store's shape and the form's shape meet twice — the Save
+    // (plan → write) and the reseed (`ProfileDraft::edit` off the
+    // written list, the reopening gesture) — and the rows come back
+    // identical, in the map's `BTree` order.
+    let profiles = [sourced_env_profile()];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.env_rows.push(env_row("EXTRA", "1"));
+    let ProfileSavePlan::Write {
+        profiles: written, ..
+    } = plan_profile_save(&draft, &profiles, None)
+    else {
+        panic!("expected a write plan");
+    };
+    assert_eq!(
+        ProfileDraft::edit(0, &written[0]).env_rows,
+        vec![
+            env_row("DROPTERM_PROFILE", "ssh-prod"),
+            env_row("EXTRA", "1"),
+            env_row("TERM_PROGRAM", "dropterm-ssh"),
+        ]
+    );
+}
+
+#[test]
+fn profile_row_builds_at_the_boundaries_with_the_edit_cluster() {
+    // The five-icon row — pencil, Clone, Delete, and the two
+    // reorder directions with the boundary one disabled — builds
+    // for the first and last rows alike; construction is the
+    // assertion (a broken glyph name or cluster panics here, not on
+    // hardware).
+    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
+    let last = profiles.len() - 1;
+    let _ = profile_row(profiles.len(), 0, &profiles[0], false, true);
+    let _ = profile_row(profiles.len(), last, &profiles[last], true, false);
+}
+
+#[test]
+fn the_form_builds_with_the_save_footer_in_every_draft_shape() {
+    // Construction is the assertion: every draft shape — Add,
+    // Clone, Edit — and a draft erroring in several fields at once
+    // builds the transactional form (footer, per-field errors)
+    // without panicking.
+    let profiles = [sourced_profile()];
+    let _ = profile_form(&profiles, &ProfileDraft::add());
+    let _ = profile_form(&profiles, &ProfileDraft::clone_of(&profiles[0], &profiles));
+    let _ = profile_form(&profiles, &ProfileDraft::edit(0, &profiles[0]));
+    let mut erroring = ProfileDraft::add();
+    erroring.errors = vec![
+        (ProfileField::Name, ProfileFieldError::BlankName),
+        (ProfileField::Command, ProfileFieldError::BlankCommand),
+        (ProfileField::EnvKey(0), ProfileFieldError::EnvKeyEquals),
+    ];
+    erroring.env_rows = vec![env_row("A=B", "v")];
+    let _ = profile_form(&profiles, &erroring);
 }

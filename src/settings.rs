@@ -1136,23 +1136,7 @@ pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
     }
 }
 
-/// Whether a draft triple may commit: a non-blank name unique against
-/// the list (self-excluded on edit) plus a command line that survives
-/// [`command_line_parts`] — [`Profile::validate`] plus the uniqueness
-/// this page adds at write time. The cwd is not gated: any path or
-/// none is definable.
-pub fn draft_valid(
-    profiles: &[Profile],
-    editing: Option<usize>,
-    name: &str,
-    command: &str,
-) -> bool {
-    !name.trim().is_empty()
-        && name_unique(profiles, editing, name)
-        && command_line_parts(command).is_some()
-}
-
-// --- the profile form: draft, per-field commits, lifecycle ---
+// --- the profile form: draft, transactional save, lifecycle ---
 
 /// One of the form's text inputs: the three whole-profile fields,
 /// plus the env rows' key and value inputs at their row index.
@@ -1164,9 +1148,9 @@ pub enum ProfileField {
     Command,
     /// The optional working directory (raw path text).
     Cwd,
-    /// Env row `index`'s key input. Also where a rejected env
-    /// commit's inline error renders — the key is the row's name, so
-    /// the error belongs under it whichever input committed.
+    /// Env row `index`'s key input. Also where a rejected Save's row
+    /// error renders — the key is the row's name, so the error
+    /// belongs under it.
     EnvKey(usize),
     /// Env row `index`'s value input.
     EnvValue(usize),
@@ -1234,8 +1218,8 @@ pub fn env_rows_from_map(map: Option<&BTreeMap<String, String>>) -> Vec<ProfileE
 /// are verbatim, `=` in a value included); a repeated key keeps its
 /// last row (`BTreeMap` insert — the editor offers discrete rows, so
 /// duplicates are a non-concern, ruling 1). Rows whose trimmed key is
-/// empty or `=`-bearing also drop: [`env_row_invalid`] rejects them
-/// at the commit for the user, and this floor keeps any path that
+/// empty or `=`-bearing also drop: [`env_row_errors`] rejects them
+/// at Save for the user, and this floor keeps any path that
 /// somehow skips the gate from landing a broken environ entry in the
 /// store. An empty result is `None` — "no variables" is the field's
 /// unset shape, never an empty map.
@@ -1251,33 +1235,12 @@ pub fn env_map_from_rows(rows: &[ProfileEnvRow]) -> Option<BTreeMap<String, Stri
     (!map.is_empty()).then_some(map)
 }
 
-/// The row gate every env-writing commit runs: the first row that
-/// could not enter a map — a value without its key, a key carrying
-/// `=` — as that row's index and error, for the inline error under
-/// the row's key input. Wholly blank rows never reject (the
-/// transform drops them without a word); an empty value is
-/// legitimate (`FOO=` is a real variable).
-pub fn env_row_invalid(rows: &[ProfileEnvRow]) -> Option<(usize, ProfileFieldError)> {
-    rows.iter().enumerate().find_map(|(index, row)| {
-        let key = row.key.trim();
-        if key.is_empty() {
-            (!row.value.trim().is_empty()).then_some((index, ProfileFieldError::BlankEnvKey))
-        } else if key.contains('=') {
-            Some((index, ProfileFieldError::EnvKeyEquals))
-        } else {
-            None
-        }
-    })
-}
-
 /// Every row that could not enter a map — each as its field-and-
 /// error pair, in row order — for the whole-draft gate: a Save
 /// rejects with every offending row at once, where the per-field
-/// commits' [`env_row_invalid`] stopped at the first. Wholly blank
+/// commits stopped at the first. Wholly blank
 /// rows never reject (the transform drops them); an empty value is
 /// legitimate (`FOO=` is a real variable).
-// PF-2 wires the Save arms; tests-only until then.
-#[allow(dead_code)]
 pub fn env_row_errors(rows: &[ProfileEnvRow]) -> Vec<(ProfileField, ProfileFieldError)> {
     rows.iter()
         .enumerate()
@@ -1323,15 +1286,14 @@ pub struct ProfileDraft {
     /// The cwd input's buffered raw path text.
     pub cwd: String,
     /// The scheme dropdown's buffered pick: `None` = follow the
-    /// global scheme. Add/Clone drafts carry it into their first
-    /// valid commit; an Edit draft writes it through the moment it
-    /// is picked (the dropdown commit-on-change rule).
+    /// global scheme. The pick buffers in every mode — the recolor
+    /// lands on Save with the rest of the draft (a profile's running
+    /// tabs take it when the written config echoes).
     pub scheme: Option<String>,
     /// The env rows' buffered text ([`env_rows_from_map`] seeds them
-    /// from the profile). An Enter in any row input commits the
-    /// whole map ([`env_map_from_rows`]); add/remove are buffered
-    /// list edits, not writes — the form has no gesture but Enter
-    /// that writes.
+    /// from the profile). The whole row list rides Save
+    /// ([`env_map_from_rows`]); add/remove are buffered list edits,
+    /// not writes — the form has no gesture but Save that writes.
     pub env_rows: Vec<ProfileEnvRow>,
     /// Every offending field from the last rejected Save — one pair
     /// per input, all rendered at once, each under its own field.
@@ -1404,25 +1366,6 @@ impl ProfileDraft {
             }
         }
     }
-
-    /// After `field`'s commit landed as `written`: reset that field's
-    /// buffered text to the written value (the input falls back to
-    /// what the echo will serve) and clear the error — the other
-    /// fields' buffered drafts persist, per-field commits.
-    pub fn field_committed(&mut self, field: ProfileField, written: &Profile) {
-        self.errors.clear();
-        match field {
-            ProfileField::Name => self.name.clone_from(&written.name),
-            ProfileField::Command => self.command.clone_from(&written.command),
-            ProfileField::Cwd => self.cwd = cwd_text(written),
-            // Either env input's Enter wrote the whole map: the rows
-            // re-seed from it — the write's dropped blanks disappear
-            // from the form too (the echo rule, row edition).
-            ProfileField::EnvKey(_) | ProfileField::EnvValue(_) => {
-                self.env_rows = env_rows_from_map(written.env.as_ref());
-            }
-        }
-    }
 }
 
 /// The cwd input's text for a profile's cwd: the path verbatim, empty
@@ -1434,216 +1377,13 @@ fn cwd_text(profile: &Profile) -> String {
         .map_or_else(String::new, |path| path.display().to_string())
 }
 
-/// What an Enter in one form field produced: the write to land, the
-/// rejection to show, or the stale-edit drop.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ProfileCommitPlan {
-    /// A valid commit: one whole-list write, plus the paired
-    /// `default_profile` write when the commit renamed the
-    /// default-named profile ([`default_after_rename`] — `None` means
-    /// no paired write).
-    Write {
-        /// The new `profiles` list.
-        profiles: Vec<Profile>,
-        /// The rename cascade's new default, if the commit hit it.
-        default_after_rename: Option<String>,
-    },
-    /// An invalid commit: the field at fault and why. Nothing is
-    /// written; the draft keeps its text.
-    Invalid {
-        /// The field the inline error renders under.
-        field: ProfileField,
-        /// The rejection's reason.
-        error: ProfileFieldError,
-    },
-    /// The edited profile is gone (the list changed under the open
-    /// draft): nothing to commit — the draft is stale and drops.
-    StaleEdit,
-}
-
-/// Plan the commit an Enter in `field` with `raw` produces under
-/// `draft` — the pure heart of the form.
-///
-/// Per-field commits: an Edit-mode Enter validates that field and
-/// writes the base profile with only it replaced (buffered but
-/// un-Enter'd edits to other fields ride along nowhere). Add and
-/// Clone drafts are whole-triple gated — a profile enters the list
-/// only on its first fully valid commit, because [`Profile::validate`]
-/// rejects a blank command — with the error pointing at whichever
-/// field is invalid. Name commits trim and enforce uniqueness
-/// (self-excluded on edit); command commits go through
-/// [`command_line_parts`]; cwd commits go through [`parse_cwd`] and
-/// can never reject.
-pub fn plan_profile_commit(
-    draft: &ProfileDraft,
-    field: ProfileField,
-    raw: &str,
-    profiles: &[Profile],
-    default: Option<&str>,
-) -> ProfileCommitPlan {
-    match &draft.mode {
-        ProfileDraftMode::Edit { index } => {
-            let Some(base) = profiles.get(*index) else {
-                return ProfileCommitPlan::StaleEdit;
-            };
-            let mut edited = base.clone();
-            match field {
-                ProfileField::Name => {
-                    let name = raw.trim();
-                    if name.is_empty() {
-                        return invalid_name(ProfileFieldError::BlankName);
-                    }
-                    if !name_unique(profiles, Some(*index), name) {
-                        return invalid_name(ProfileFieldError::DuplicateName);
-                    }
-                    edited.name = name.to_string();
-                }
-                ProfileField::Command => {
-                    let command = raw.trim();
-                    if command_line_parts(command).is_none() {
-                        return ProfileCommitPlan::Invalid {
-                            field: ProfileField::Command,
-                            error: ProfileFieldError::BlankCommand,
-                        };
-                    }
-                    edited.command = command.to_string();
-                }
-                ProfileField::Cwd => edited.cwd = parse_cwd(raw),
-                ProfileField::EnvKey(row) | ProfileField::EnvValue(row) => {
-                    // The committed input's raw text lands in its row
-                    // (the `raw` rule), then the whole row list gates
-                    // and writes as one map — an env Enter is the
-                    // form's commit gesture for every row at once. A
-                    // row index past the list means the draft moved
-                    // under the Enter: the same staleness a vanished
-                    // profile reports.
-                    let mut rows = draft.env_rows.clone();
-                    let Some(target) = rows.get_mut(row) else {
-                        return ProfileCommitPlan::StaleEdit;
-                    };
-                    match field {
-                        ProfileField::EnvKey(_) => target.key = raw.to_string(),
-                        ProfileField::EnvValue(_) => target.value = raw.to_string(),
-                        _ => unreachable!("the match pinned an env field"),
-                    }
-                    if let Some((at, error)) = env_row_invalid(&rows) {
-                        return ProfileCommitPlan::Invalid {
-                            field: ProfileField::EnvKey(at),
-                            error,
-                        };
-                    }
-                    edited.env = env_map_from_rows(&rows);
-                }
-            }
-            // The cascade: only a real rename of the default-named
-            // profile re-points the key (a same-name re-commit is not
-            // a rename), and only when the key's value actually
-            // changes — an unchanged default writes nothing extra.
-            let default_after_rename = match field {
-                ProfileField::Name if edited.name != base.name => {
-                    match default_after_rename(default, &base.name, &edited.name) {
-                        Some(new_default) if Some(new_default.as_str()) != default => {
-                            Some(new_default)
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            ProfileCommitPlan::Write {
-                profiles: apply_edit(profiles, *index, edited),
-                default_after_rename,
-            }
-        }
-        ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
-            // The Enter'd raw text replaces its field; the rest of
-            // the triple is the draft's buffered text.
-            let name = match field {
-                ProfileField::Name => raw.trim(),
-                _ => draft.name.trim(),
-            };
-            let command = match field {
-                ProfileField::Command => raw.trim(),
-                _ => draft.command.trim(),
-            };
-            let cwd_raw = match field {
-                ProfileField::Cwd => raw,
-                _ => draft.cwd.as_str(),
-            };
-            // The whole-triple gate is `draft_valid`; the checks
-            // inside pinpoint the field for the inline error.
-            if !draft_valid(profiles, None, name, command) {
-                if name.is_empty() {
-                    return invalid_name(ProfileFieldError::BlankName);
-                }
-                if !name_unique(profiles, None, name) {
-                    return invalid_name(ProfileFieldError::DuplicateName);
-                }
-                return ProfileCommitPlan::Invalid {
-                    field: ProfileField::Command,
-                    error: ProfileFieldError::BlankCommand,
-                };
-            }
-            // The first commit writes the env map too (the scheme
-            // pick's ride-along rule), so the row gate rides the
-            // whole-triple gate: a row that could not enter a map
-            // blocks the profile's entry until fixed — never
-            // corrupts it.
-            if let Some((at, error)) = env_row_invalid(&draft.env_rows) {
-                return ProfileCommitPlan::Invalid {
-                    field: ProfileField::EnvKey(at),
-                    error,
-                };
-            }
-            let added = Profile {
-                name: name.to_string(),
-                command: command.to_string(),
-                cwd: parse_cwd(cwd_raw),
-                // The dropdown's buffered pick rides the first valid
-                // commit, like the buffered cwd text does; so do the
-                // buffered rows — a Clone's rows seed from the
-                // source, an Add's start empty, and the first commit
-                // writes whatever they hold now.
-                color_scheme: draft.scheme.clone(),
-                env: env_map_from_rows(&draft.env_rows),
-                // The font/scrollback overrides the form exposes no
-                // fields for yet (profile-manager's scope): a Clone
-                // copies the source's, an Add starts unset — an edit
-                // of anything else never resets them.
-                font_size: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.font_size,
-                    _ => None,
-                },
-                scrollback_lines: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.scrollback_lines,
-                    _ => None,
-                },
-            };
-            ProfileCommitPlan::Write {
-                profiles: add_profile(profiles, added),
-                default_after_rename: None,
-            }
-        }
-    }
-}
-
-/// An invalid-name rejection (the field arm is always `Name`).
-fn invalid_name(error: ProfileFieldError) -> ProfileCommitPlan {
-    ProfileCommitPlan::Invalid {
-        field: ProfileField::Name,
-        error,
-    }
-}
-
 // --- the transactional save: one write per Save, whole-draft
 // validation (profile-form-commit) ---
 
 /// What a Save of the whole draft produced: the write to land, the
 /// rejections to show, the empty transaction, or the stale-edit
-/// drop. The transactional sibling of [`ProfileCommitPlan`] — the
-/// same write vocabulary, evaluated over the whole draft at once.
-// PF-2 wires the Save arms; tests-only until then.
-#[allow(dead_code)]
+/// drop — the per-field commits' plan vocabulary, evaluated over
+/// the whole draft at once.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProfileSavePlan {
     /// A valid save: one whole-list write, plus the paired
@@ -1685,9 +1425,6 @@ pub enum ProfileSavePlan {
 /// (the clone seed already derives its unique name). An Edit that
 /// compares equal against the committed profile plans no write at
 /// all.
-// PF-2 wires the Save/Cancel arms; until then the non-test bin has
-// no caller for the transactional half (the tests do).
-#[allow(dead_code)]
 pub fn plan_profile_save(
     draft: &ProfileDraft,
     profiles: &[Profile],
@@ -1770,8 +1507,6 @@ pub fn plan_profile_save(
 /// The whole-draft gate: every form rule evaluated at once — the
 /// name (blank, then unique), the command line, and every env row —
 /// so one Save rejects with every offending field, in form order.
-// PF-2 wires the Save arms; tests-only until then.
-#[allow(dead_code)]
 fn whole_draft_errors(
     profiles: &[Profile],
     editing: Option<usize>,
@@ -1797,8 +1532,6 @@ fn whole_draft_errors(
 /// rewrote; an Add/Clone selects the row the append created —
 /// `profiles_len` is the pre-append length (the Save's own write
 /// owns the +1). A `Write` plan guarantees the index is live.
-// PF-2 wires the Save arms; tests-only until then.
-#[allow(dead_code)]
 pub const fn selection_after_save(mode: &ProfileDraftMode, profiles_len: usize) -> usize {
     match mode {
         ProfileDraftMode::Edit { index } => *index,
@@ -2225,22 +1958,28 @@ pub enum SettingsEvent {
     /// A row's Clone action: seed a draft from that profile.
     CloneProfile(usize),
     /// A form field's content changed — display only (no write until
-    /// its Enter).
+    /// Save).
     DraftProfileField(ProfileField, String),
-    /// A form field was submitted (Enter): validate that field, write
-    /// the whole list if it commits.
-    CommitProfileField(ProfileField, String),
-    /// The form's scheme dropdown was picked: an Edit draft writes
-    /// through immediately (the dropdown commit-on-change rule); an
-    /// Add/Clone draft buffers the pick for its first valid commit.
+    /// The form's Save: an Enter in any input or the footer's Save
+    /// button — validate the whole draft, write once if it passes,
+    /// close the form on the row it wrote.
+    SaveProfileDraft,
+    /// The form's Cancel: the footer's Cancel button (Escape routes
+    /// here through the drawer's key funnel) — drop the draft, write
+    /// nothing.
+    CancelProfileDraft,
+    /// The form's scheme dropdown was picked: the pick buffers in
+    /// every mode — the recolor lands on Save with the rest of the
+    /// draft (the drawer's commit-on-change rule does not reach
+    /// inside the transactional form).
     PickProfileScheme(usize),
     /// The env rows editor's add affordance: buffer one blank row.
     /// Display-only like a keystroke — the form writes nothing until
-    /// an env input's Enter.
+    /// Save.
     AddProfileEnvRow,
     /// The env rows editor's remove affordance: drop the buffered
-    /// row at `index`. Display-only — the write rides the next env
-    /// Enter, exactly like buffered text.
+    /// row at `index`. Display-only — the write rides Save, exactly
+    /// like buffered text.
     RemoveProfileEnvRow(usize),
     /// A row's Delete action: immediate, no dialog (OQ-1's standing
     /// ruling).
@@ -2702,12 +2441,14 @@ fn add_profile_button() -> widget::button::TextButton<'static, SettingsEvent> {
         .on_press(SettingsEvent::OpenProfileDraft)
 }
 
-/// The form section: the draft's three text inputs (commit on Enter,
-/// the house text-input rule) with the last rejection's inline error
-/// under its field, plus the scheme dropdown (commit on change — the
-/// house dropdown rule). The Edit title names the profile the row
-/// selection seeded — the seed row may sit above the fold — and
-/// follows the committed name, never the uncommitted buffer.
+/// The form section: the draft's three text inputs (Enter is Save,
+/// the form's one commit gesture) with every rejected field's
+/// inline error under it, the scheme dropdown (buffered — its
+/// commit-on-change rule does not reach inside the transactional
+/// form), the env rows editor, and the Save/Cancel footer. The Edit
+/// title names the profile the row selection seeded — the seed row
+/// may sit above the fold — and follows the committed name, never
+/// the uncommitted buffer.
 fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
     let title = match &draft.mode {
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile".to_string(),
@@ -2715,7 +2456,7 @@ fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, 
             Some(profile) => format!("Edit {}", profile.name),
             // A stale edit (the list changed under the draft) has no
             // profile to name; the generic title covers the gap until
-            // the commit rejects it.
+            // the save rejects it.
             None => "Edit profile".to_string(),
         },
     };
@@ -2750,15 +2491,31 @@ fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, 
             )),
         )
         .add(env_rows_item(draft))
+        .add(profile_form_footer())
         .into()
+}
+
+/// The form's footer: the transaction's two affordances in one
+/// right-aligned row under the env editor — Save as the standard
+/// button (the primary action, the one an Enter also presses) with
+/// Cancel's quiet text button beside it. Every draft carries it:
+/// Add, Clone, and Edit alike.
+fn profile_form_footer() -> Element<'static, SettingsEvent> {
+    widget::row![
+        widget::space::Space::new().width(Length::Fill),
+        widget::button::text("Cancel").on_press(SettingsEvent::CancelProfileDraft),
+        widget::button::standard("Save").on_press(SettingsEvent::SaveProfileDraft),
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// The env rows editor: one key + value input pair per buffered row
 /// with its remove affordance, an add affordance beneath, and a
-/// rejected commit's inline error under the offending row's key
-/// input. Rows commit on Enter like every other field (the Enter
-/// writes the whole map from the row list); add/remove are buffered
-/// list edits, not writes — no gesture but Enter writes.
+/// rejected Save's inline error under every offending row's key
+/// input. Enter in any row input is Save, like every other field;
+/// add/remove are buffered list edits, not writes — no gesture but
+/// Save writes.
 fn env_rows_item(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
     let mut rows = widget::column(Vec::<Element<'static, SettingsEvent>>::new()).spacing(4);
     for (index, row) in draft.env_rows.iter().enumerate() {
@@ -2766,16 +2523,12 @@ fn env_rows_item(draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
             .on_input(move |text| {
                 SettingsEvent::DraftProfileField(ProfileField::EnvKey(index), text)
             })
-            .on_submit(move |text| {
-                SettingsEvent::CommitProfileField(ProfileField::EnvKey(index), text)
-            });
+            .on_submit(move |_| SettingsEvent::SaveProfileDraft);
         let value_input = widget::text_input("Value", row.value.clone())
             .on_input(move |text| {
                 SettingsEvent::DraftProfileField(ProfileField::EnvValue(index), text)
             })
-            .on_submit(move |text| {
-                SettingsEvent::CommitProfileField(ProfileField::EnvValue(index), text)
-            });
+            .on_submit(move |_| SettingsEvent::SaveProfileDraft);
         let inputs = widget::row!(key_input, value_input, remove_row_button(index)).spacing(8);
         // A rejected Save's row error renders under the offending
         // row's key input — the row's name (the `form_field` rule,
@@ -2813,8 +2566,9 @@ fn remove_row_button(index: usize) -> Element<'static, SettingsEvent> {
         .into()
 }
 
-/// One form field: the labeled text input with its inline error, when
-/// the last rejection pointed here.
+/// One form field: the labeled text input with its inline error,
+/// when the last Save's rejection named this field. Enter is Save —
+/// the form's one commit gesture, so the submit carries no payload.
 fn form_field(
     field: ProfileField,
     label: &'static str,
@@ -2824,7 +2578,7 @@ fn form_field(
 ) -> Element<'static, SettingsEvent> {
     let input = widget::text_input(placeholder, text.to_string())
         .on_input(move |text| SettingsEvent::DraftProfileField(field, text))
-        .on_submit(move |text| SettingsEvent::CommitProfileField(field, text));
+        .on_submit(move |_| SettingsEvent::SaveProfileDraft);
     let control = match draft.errors.iter().copied().find(|(at, _)| *at == field) {
         Some((_, error)) => widget::column![
             input,
@@ -2859,13 +2613,16 @@ fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text
 /// above the command as a prompt line ([`prompt_line`]) in the
 /// terminal's own mono. The whole identity column is the select
 /// button, filling the row's remaining width so the press target is
-/// the row, not just the text; the action cluster is tooltip'd icon
-/// buttons ([`row_icon_button`]): Clone, an immediate Delete (no
-/// dialog — OQ-1), and up/down reorder with the boundary direction
-/// disabled. The selected row carries the accent edge-and-tint
-/// treatment ([`row_button_class`]) — visible on light and dark
-/// panes alike (an OQ-3 hardware item) without spending the accent
-/// fill, which stays the primary-action color.
+/// the row, not just the text; the edit pencil emits the same
+/// selection event, making the edit path visible (the identity
+/// column absorbs the fifth icon's width cost at the drawer's
+/// minimum). The action cluster is tooltip'd icon buttons
+/// ([`row_icon_button`]): Clone, an immediate Delete (no dialog —
+/// OQ-1), and up/down reorder with the boundary direction disabled.
+/// The selected row carries the accent edge-and-tint treatment
+/// ([`row_button_class`]) — visible on light and dark panes alike
+/// (an OQ-3 hardware item) without spending the accent fill, which
+/// stays the primary-action color.
 fn profile_row(
     profiles_len: usize,
     index: usize,
@@ -2890,6 +2647,8 @@ fn profile_row(
             .class(row_button_class(selected))
             .width(Length::Fill)
             .on_press(SettingsEvent::SelectProfile(index)),
+        row_icon_button("document-edit-symbolic", "Edit profile")
+            .on_press(SettingsEvent::SelectProfile(index)),
         row_icon_button("edit-copy-symbolic", "Clone profile")
             .on_press(SettingsEvent::CloneProfile(index)),
         row_icon_button("user-trash-symbolic", "Delete profile")
@@ -2909,7 +2668,7 @@ fn profile_row(
 
 /// One row-action icon button: the icon carries the action, the
 /// tooltip names it (the keybinds page's undo-affordance idiom). All
-/// four share the plain icon class — the cluster stays quiet so the
+/// five share the plain icon class — the cluster stays quiet so the
 /// chip and the selected edge are the row's two signals.
 fn row_icon_button(
     name: &'static str,

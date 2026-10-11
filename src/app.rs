@@ -2880,20 +2880,25 @@ impl DropTerm {
                             draft.set_field_text(field, text);
                         }
                     }
-                    settings::SettingsEvent::CommitProfileField(field, text) => {
-                        // The per-field commit: plan purely, then land
-                        // one whole-list write (plus the paired
-                        // rename-cascade write). Invalid Enters keep
-                        // the draft and show the inline error.
+                    settings::SettingsEvent::SaveProfileDraft => {
+                        // The transactional commit: one Save, one
+                        // plan, at most one whole-list write plus
+                        // the paired rename cascade — then the form
+                        // closes on the row it wrote. An invalid
+                        // Save writes nothing and keeps the form
+                        // open with every offending field erroring
+                        // at once; an unchanged draft closes clean.
                         if let Some(draft) = self.profile_draft.clone() {
-                            match settings::plan_profile_commit(
+                            // Pre-append length: the selection the
+                            // Write leaves behind (an Add/Clone
+                            // selects the row its write creates).
+                            let pre_append_len = self.config.profiles.len();
+                            match settings::plan_profile_save(
                                 &draft,
-                                field,
-                                &text,
                                 &self.config.profiles,
                                 self.config.default_profile.as_deref(),
                             ) {
-                                settings::ProfileCommitPlan::Write {
+                                settings::ProfileSavePlan::Write {
                                     profiles,
                                     default_after_rename,
                                 } => {
@@ -2902,7 +2907,7 @@ impl DropTerm {
                                     // order; read-side tolerance
                                     // covers the crash window.
                                     self.write_profile_config(&settings::ProfileWrite::Profiles(
-                                        profiles.clone(),
+                                        profiles,
                                     ));
                                     if let Some(new_default) = default_after_rename {
                                         self.write_profile_config(
@@ -2911,40 +2916,23 @@ impl DropTerm {
                                             )),
                                         );
                                     }
-                                    match draft.mode {
-                                        settings::ProfileDraftMode::Add
-                                        | settings::ProfileDraftMode::Clone { .. } => {
-                                            // The profile entered the
-                                            // list: select it and
-                                            // continue as its edit
-                                            // draft.
-                                            let index = profiles.len() - 1;
-                                            self.profile_selection = Some(index);
-                                            self.profile_draft =
-                                                Some(settings::ProfileDraft::edit(
-                                                    index,
-                                                    &profiles[index],
-                                                ));
-                                        }
-                                        settings::ProfileDraftMode::Edit { index } => {
-                                            // Keep the draft open
-                                            // with its other fields'
-                                            // buffered text; the
-                                            // committed field falls
-                                            // back to the written
-                                            // value.
-                                            let mut draft = draft;
-                                            draft.field_committed(field, &profiles[index]);
-                                            self.profile_draft = Some(draft);
-                                        }
+                                    self.profile_selection = Some(settings::selection_after_save(
+                                        &draft.mode,
+                                        pre_append_len,
+                                    ));
+                                    self.profile_draft = None;
+                                }
+                                settings::ProfileSavePlan::Invalid { errors } => {
+                                    if let Some(open) = self.profile_draft.as_mut() {
+                                        open.errors = errors;
                                     }
                                 }
-                                settings::ProfileCommitPlan::Invalid { field, error } => {
-                                    if let Some(draft) = self.profile_draft.as_mut() {
-                                        draft.errors = vec![(field, error)];
-                                    }
+                                settings::ProfileSavePlan::Unchanged => {
+                                    // The empty transaction: clean
+                                    // close, no write.
+                                    self.profile_draft = None;
                                 }
-                                settings::ProfileCommitPlan::StaleEdit => {
+                                settings::ProfileSavePlan::StaleEdit => {
                                     // The edited profile is gone: the
                                     // draft (and its selection) drop.
                                     self.profile_selection = None;
@@ -2953,42 +2941,24 @@ impl DropTerm {
                             }
                         }
                     }
+                    settings::SettingsEvent::CancelProfileDraft => {
+                        // Cancel drops the draft with no write; the
+                        // selection persists — the row still names
+                        // a profile for the next pencil press.
+                        self.profile_draft = None;
+                    }
                     settings::SettingsEvent::PickProfileScheme(pick) => {
-                        // Dropdowns commit on change (the `Picked`
-                        // rule): an Edit draft's pick writes the base
-                        // profile with only the scheme replaced — the
-                        // one field a pick can never reject — while
-                        // Add/Clone drafts only buffer it (no profile
-                        // exists to write until the first valid triple
-                        // commit carries it). An out-of-range pick is
-                        // ignored — the options are the only writable
-                        // vocabulary, never an invented name; a stale
-                        // edit index drops the draft (`StaleEdit`'s
-                        // rule).
-                        if let Some(draft) = self.profile_draft.clone()
-                            && let Some(pick) = settings::profile_scheme_write(pick)
+                        // The pick buffers in every mode — the
+                        // recolor lands on Save with the rest of the
+                        // draft (the Edit draft's pick-writes-
+                        // instantly rule retired with the per-field
+                        // commits). An out-of-range pick is ignored —
+                        // the options are the only writable
+                        // vocabulary, never an invented name.
+                        if let Some(pick) = settings::profile_scheme_write(pick)
+                            && let Some(open) = self.profile_draft.as_mut()
                         {
-                            let scheme = pick.field_value();
-                            if let settings::ProfileDraftMode::Edit { index } = draft.mode
-                                && self.config.profiles.get(index).is_none()
-                            {
-                                self.profile_selection = None;
-                                self.profile_draft = None;
-                            } else {
-                                if let settings::ProfileDraftMode::Edit { index } = draft.mode
-                                    && let Some(base) = self.config.profiles.get(index)
-                                {
-                                    let mut edited = base.clone();
-                                    edited.color_scheme.clone_from(&scheme);
-                                    self.write_profile_config(&settings::ProfileWrite::Profiles(
-                                        settings::apply_edit(&self.config.profiles, index, edited),
-                                    ));
-                                }
-                                if let Some(open) = self.profile_draft.as_mut() {
-                                    open.scheme = scheme;
-                                    open.errors.clear();
-                                }
-                            }
+                            open.scheme = pick.field_value();
                         }
                     }
                     settings::SettingsEvent::AddProfileEnvRow => {
