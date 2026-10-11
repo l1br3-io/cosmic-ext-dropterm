@@ -217,6 +217,187 @@ fn a_starved_cluster_loses_the_path_entirely() {
     assert_eq!(left_squeeze(5.0, 12, 120.0, 30.0), (PathFit::Gone, false));
 }
 
+// --- the band-wide fit pass (status-glance criterion 2) ---
+//
+// One pure decision over the whole band: the path elides first,
+// progressively; past full elision segments drop one at a time in
+// DROP_ORDER, skipping absent ones, and the path re-expands into
+// each freed width. Process and path never drop — the disc cluster
+// rides `fixed`, the path elides.
+
+/// The standard fit fixture: 100 px of fixed disc cluster, a
+/// 20-char path at 10 px per char (200 px whole), and all six
+/// droppable segments measured (gap-inclusive costs 52/42/42/32/
+/// 42/42 with `SEGMENT_GAP` = 12).
+fn fit_widths() -> Vec<(SegmentId, f32)> {
+    vec![
+        (SegmentId::Branch, 30.0),
+        (SegmentId::Profile, 40.0),
+        (SegmentId::Grid, 30.0),
+        (SegmentId::Tab, 20.0),
+        (SegmentId::Zoom, 30.0),
+        (SegmentId::Clock, 30.0),
+    ]
+}
+
+fn fit_path() -> PathMeasure {
+    PathMeasure {
+        chars: 20,
+        full_width: 200.0,
+    }
+}
+
+#[test]
+fn the_drop_order_pins_the_precedence() {
+    // Facts the shell knows go first, then slow-moving identity,
+    // the branch beside its path, the clock to the bitter end.
+    // Process and path are absent by construction: the disc never
+    // yields, and the path elides before anything else gives way.
+    assert_eq!(
+        DROP_ORDER,
+        [
+            SegmentId::Grid,
+            SegmentId::Tab,
+            SegmentId::Zoom,
+            SegmentId::Profile,
+            SegmentId::Branch,
+            SegmentId::Clock,
+        ]
+    );
+}
+
+#[test]
+fn zero_pressure_renders_everything() {
+    // 552 px of consumption (fixed + six gaps-and-widths + the
+    // whole path) under 600 px: nothing drops, nothing elides.
+    let fit = band_fit(600.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(fit.path, PathFit::Full);
+    assert!(fit.dropped.is_empty());
+}
+
+#[test]
+fn pressure_elides_the_path_before_any_segment_drops() {
+    // 500 px leaves 248 px of room for the 200 px path: elide to
+    // 14 chars — but nothing drops while any of the path survives.
+    let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(fit.path, PathFit::Elided(14));
+    assert!(fit.dropped.is_empty());
+}
+
+#[test]
+fn past_full_elision_segments_drop_one_at_a_time_in_order() {
+    // 350 px cannot host even a fully elided path (room below one
+    // character): the grid goes first, and the path re-expands
+    // into the freed 42 px — four characters' worth.
+    let fit = band_fit(350.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Grid]);
+    assert_eq!(fit.path, PathFit::Elided(4));
+
+    // 300 px costs a second drop: tab follows grid, and the path
+    // re-expands again (22 px of room, two characters).
+    let fit = band_fit(300.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
+    assert_eq!(fit.path, PathFit::Elided(2));
+}
+
+#[test]
+fn absent_segments_are_skipped_in_the_drop_order() {
+    // No grid segment (toggle off, or at spawn dimensions): 300 px
+    // starves the band past full elision, and the first yield is
+    // the tab — the absent grid is skipped, not waited on.
+    let widths: Vec<(SegmentId, f32)> = fit_widths()
+        .into_iter()
+        .filter(|(id, _)| *id != SegmentId::Grid)
+        .collect();
+    let fit = band_fit(300.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Tab]);
+    assert_eq!(fit.path, PathFit::Elided(2));
+}
+
+#[test]
+fn the_path_re_expands_monotonically_as_drops_free_width() {
+    // Widths chosen so exactly `k` drops are forced (the k-th
+    // survivor's room sits at 10 + 8(k-1) px — one character plus
+    // a growing slack, while the (k-1)-th sits below one
+    // character): the path's char budget never shrinks as drops
+    // free width.
+    let mut prev_chars = 0;
+    let fixture = fit_widths();
+    for k in 1..=6 {
+        let freed: f32 = DROP_ORDER
+            .iter()
+            .take(k)
+            .map(|id| {
+                let (_, w) = fixture
+                    .iter()
+                    .find(|(wid, _)| wid == id)
+                    .expect("every DROP_ORDER id is measured in the fixture");
+                SEGMENT_GAP + w
+            })
+            .sum();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a loop index of six, exact in f32"
+        )]
+        let room = 10.0 + 8.0 * (k as f32 - 1.0);
+        let width = 100.0 + 252.0 + room - freed;
+        let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
+        assert_eq!(
+            fit.dropped.len(),
+            k,
+            "width {width} must force exactly {k} drops"
+        );
+        let chars = match fit.path {
+            PathFit::Elided(n) => n,
+            PathFit::Gone => 0,
+            PathFit::Full => panic!("a starved band cannot render the whole path"),
+        };
+        assert!(
+            chars >= prev_chars,
+            "the path must not re-elide after a drop (got {chars}, had {prev_chars})"
+        );
+        prev_chars = chars;
+    }
+}
+
+#[test]
+fn the_disc_never_yields_even_when_everything_drops() {
+    // Zero width: all six droppables give way in order and the
+    // path is gone — but `fixed` (the paddings and the disc
+    // cluster) is untouchable by construction, and the path never
+    // appears in the dropped set: the type has no say in it.
+    let fit = band_fit(0.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(
+        fit.dropped,
+        vec![
+            SegmentId::Grid,
+            SegmentId::Tab,
+            SegmentId::Zoom,
+            SegmentId::Profile,
+            SegmentId::Branch,
+            SegmentId::Clock,
+        ]
+    );
+    assert_eq!(fit.path, PathFit::Gone);
+}
+
+#[test]
+fn an_absent_path_never_forces_a_drop() {
+    // No path characters: nothing to squeeze for — every segment
+    // keeps its seat at any width.
+    let fit = band_fit(
+        100.0,
+        100.0,
+        &fit_widths(),
+        PathMeasure {
+            chars: 0,
+            full_width: 0.0,
+        },
+    );
+    assert_eq!(fit.path, PathFit::Full);
+    assert!(fit.dropped.is_empty());
+}
+
 #[test]
 fn an_absent_path_never_elides() {
     // No path characters: nothing to squeeze — the branch either

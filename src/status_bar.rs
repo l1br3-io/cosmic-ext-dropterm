@@ -134,6 +134,22 @@ pub const RIGHT_CLUSTER: [SegmentId; 5] = [
     SegmentId::Clock,
 ];
 
+/// Drop precedence under width pressure — first-dropped first.
+/// Process and path are absent by construction: the disc never
+/// yields, and the path elides before anything else gives way.
+/// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
+/// then slow-moving identity (tab position, zoom, profile), the
+/// branch stays beside its path, and the clock is last — tmux
+/// keeps time to the bitter end.
+pub const DROP_ORDER: [SegmentId; 6] = [
+    SegmentId::Grid,
+    SegmentId::Tab,
+    SegmentId::Zoom,
+    SegmentId::Profile,
+    SegmentId::Branch,
+    SegmentId::Clock,
+];
+
 /// The per-segment visibility switches, folded from the config's
 /// eight `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
@@ -401,6 +417,72 @@ pub fn left_squeeze(
     (PathFit::Elided(max_chars), branch_shown)
 }
 
+/// The path's measured inputs to [`band_fit`]: its character count
+/// and full un-elided pixel width (the per-character width is the
+/// quotient — monospace cells).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathMeasure {
+    /// The path's character count.
+    pub chars: usize,
+    /// The whole path's measured pixel width.
+    pub full_width: f32,
+}
+
+/// The band's fit decision under a row width: which segments
+/// render, and how the path elides into the room that remains.
+/// Pure over measured widths — deterministic for a fixed input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandFit {
+    /// The path's render decision (the inner [`left_squeeze`]
+    /// step).
+    pub path: PathFit,
+    /// The segments that give way, in drop order — a prefix of
+    /// [`DROP_ORDER`] restricted to the measured (present) ones.
+    pub dropped: Vec<SegmentId>,
+}
+
+/// One fit pass over the whole band under a row `width`
+/// (status-glance criterion 2): the path elides first,
+/// progressively; when even a fully elided path cannot fit,
+/// segments drop one at a time in [`DROP_ORDER`], skipping absent
+/// ones, and the path re-expands into each freed width. `fixed` is
+/// the never-yielding consumption — both side paddings and the
+/// process's disc cluster with its gaps; `widths` are the measured
+/// widths of every other present segment (path and process
+/// excluded — the path elides, the disc never yields). Survivors
+/// keep their cluster seats: positioning is stable through every
+/// drop step, never uniformly compressed. Deterministic for a
+/// fixed input — fewest drops, then least elision.
+pub fn band_fit(width: f32, fixed: f32, widths: &[(SegmentId, f32)], path: PathMeasure) -> BandFit {
+    let mut dropped: Vec<SegmentId> = Vec::new();
+    let fit = loop {
+        let consumed: f32 = widths
+            .iter()
+            .filter(|(id, _)| !dropped.contains(id))
+            .map(|(_, w)| SEGMENT_GAP + w)
+            .sum();
+        let room = width - fixed - consumed;
+        // The path's inner step: [`left_squeeze`] as pure elision —
+        // the branch rides `widths` like any droppable segment, so
+        // its eager internal yield is subsumed by the patient
+        // DROP_ORDER loop above it.
+        let (fit, _) = left_squeeze(room, path.chars, path.full_width, 0.0);
+        if !matches!(fit, PathFit::Gone) {
+            break fit;
+        }
+        // Even a fully elided path cannot fit — the next present
+        // segment in precedence order gives way.
+        match DROP_ORDER
+            .iter()
+            .find(|id| widths.iter().any(|(wid, _)| wid == *id) && !dropped.contains(id))
+        {
+            Some(next) => dropped.push(*next),
+            None => break fit,
+        }
+    };
+    BandFit { path: fit, dropped }
+}
+
 /// The signed zoom percent a `zoom_adj` of `step_mul_100`-sized steps
 /// adds: `adj × step_mul_100`, saturating into `i16`. Zero adjustment
 /// is `None` — the segment hides until the font is not at its base
@@ -585,6 +667,19 @@ impl State {
             SegmentId::Clock => &self.clock,
         }
     }
+
+    fn paragraph_of_mut(&mut self, id: SegmentId) -> &mut BandParagraph {
+        match id {
+            SegmentId::Process => &mut self.process,
+            SegmentId::Path => &mut self.path,
+            SegmentId::Branch => &mut self.branch,
+            SegmentId::Profile => &mut self.profile,
+            SegmentId::Grid => &mut self.grid,
+            SegmentId::Tab => &mut self.tab,
+            SegmentId::Zoom => &mut self.zoom,
+            SegmentId::Clock => &mut self.clock,
+        }
+    }
 }
 
 /// The status band widget: a fixed-height fill-width strip rendering
@@ -634,9 +729,9 @@ impl<Message> StatusBar<Message> {
     /// Re-lays the cached paragraphs from the resolved segments, the
     /// flashed segment rendering `✓` in place of its value (the copy
     /// payload never changes — it comes from [`copy_text`], not the
-    /// display). The path elides from its left against the width the
-    /// measured right cluster leaves, and the branch yields only
-    /// after full elision — the pinned [`left_squeeze`] decision.
+    /// display). The layout is the pinned [`band_fit`] decision over
+    /// the row's whole width — [`left_squeeze`] as the path's inner
+    /// step.
     fn refresh_paragraphs(&self, state: &mut State, width: f32) {
         let font = self.font;
         let copied = self.copied;
@@ -693,43 +788,48 @@ impl<Message> StatusBar<Message> {
             font,
         ));
 
-        // The path's budget: the row width minus both side paddings,
-        // the disc cluster, the process name, and the measured right
-        // cluster with its gaps — a view heuristic the hardware pass
-        // eyeballs at narrow widths.
-        let mut right_width = 0.0;
-        for id in RIGHT_CLUSTER {
-            let paragraph = state.paragraph_of(id);
-            if paragraph.min_width() > 0.0 {
-                right_width += SEGMENT_GAP + paragraph.min_width();
+        // The band-wide fit (status-glance criterion 2): one pure
+        // pass over every measured width — the path elides first,
+        // then segments drop one at a time in DROP_ORDER, the path
+        // re-expanding into each freed width, survivors keeping
+        // their seats. The old left-budget math subtracted the
+        // right cluster's width unconditionally and overflowed on
+        // narrow surfaces; the drop order fits them instead.
+        let mut widths = Vec::new();
+        for id in std::iter::once(SegmentId::Branch).chain(RIGHT_CLUSTER.iter().copied()) {
+            let w = state.paragraph_of(id).min_width();
+            if w > 0.0 {
+                widths.push((id, w));
             }
         }
-        let left_fixed = if state.process.min_width() > 0.0 {
-            PAD_X + DISC_SIZE + DISC_GAP + state.process.min_width() + SEGMENT_GAP
+        let fixed = if state.process.min_width() > 0.0 {
+            PAD_X + DISC_SIZE + DISC_GAP + state.process.min_width() + SEGMENT_GAP + PAD_X
         } else {
-            PAD_X + SEGMENT_GAP
+            PAD_X + SEGMENT_GAP + PAD_X
         };
-        let budget = (width - left_fixed - right_width - PAD_X).max(0.0);
         let path = self.segments.path.as_deref().unwrap_or("");
         let mut measure = BandParagraph::default();
-        measure.update(segment_text(
-            display_text(copied, SegmentId::Path, path),
-            font,
-        ));
-        let (fit, branch_shown) = left_squeeze(
-            budget,
-            path.chars().count(),
-            measure.min_width(),
-            state.branch.min_width(),
+        // The steady-state measurement: the flash's `✓` swap is
+        // textual and never re-fits the band (the reveal keeps the
+        // full value while the display flashes).
+        measure.update(segment_text(path, font));
+        let fit = band_fit(
+            width,
+            fixed,
+            &widths,
+            PathMeasure {
+                chars: path.chars().count(),
+                full_width: measure.min_width(),
+            },
         );
-        let elided = match fit {
+        let elided = match fit.path {
             PathFit::Full => display_text(copied, SegmentId::Path, path).to_string(),
             PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
             PathFit::Gone => String::new(),
         };
         state.path.update(segment_text(&elided, font));
-        if !branch_shown {
-            state.branch.update(segment_text("", font));
+        for id in &fit.dropped {
+            state.paragraph_of_mut(*id).update(segment_text("", font));
         }
     }
 }
