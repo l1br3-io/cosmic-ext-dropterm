@@ -284,9 +284,12 @@ const TOOLTIP_GAP: f32 = 4.0;
 /// Dropdown geometry, logical pixels: row height, label padding on
 /// each side, and the gap left between the strip and the popped
 /// dropdown (row metrics are OQ-2, ratified at the hardware STOP).
-const DROPDOWN_ROW_HEIGHT: f32 = 28.0;
-const DROPDOWN_PADDING_X: f32 = 10.0;
-const DROPDOWN_GAP: f32 = 4.0;
+/// Shared by every hand-drawn menu bubble on the surface — the
+/// per-tab menu and the status band's menu ride them too, so one
+/// idiom keeps the bubbles pixel-identical.
+pub const DROPDOWN_ROW_HEIGHT: f32 = 28.0;
+pub const DROPDOWN_PADDING_X: f32 = 10.0;
+pub const DROPDOWN_GAP: f32 = 4.0;
 
 /// Vertical inset of the drop indicator from the bar's top and bottom.
 const DROP_INDICATOR_INSET: f32 = 4.0;
@@ -523,10 +526,11 @@ fn dropdown_bounds(
     Rectangle::new(Point::new(bar_width - width, y), Size::new(width, height))
 }
 
-/// Which dropdown row a point lands on, `None` outside the
-/// dropdown's rect: the pure press classification behind dismissal —
-/// a row pick and an away-press close both reduce to this.
-fn dropdown_row_at(dropdown: Rectangle, point: Point) -> Option<usize> {
+/// Which menu-bubble row a point lands on, `None` outside the
+/// bubble's rect: the pure press classification behind dismissal —
+/// a row pick and an away-press close both reduce to this. The
+/// per-tab menu and the status band's menu ride it unchanged.
+pub fn dropdown_row_at(dropdown: Rectangle, point: Point) -> Option<usize> {
     if !dropdown.contains(point) {
         return None;
     }

@@ -28,10 +28,11 @@ use std::path::Path;
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::alignment;
 use cosmic::iced::core::clipboard::{Clipboard, Kind};
+use cosmic::iced::core::overlay;
 use cosmic::iced::core::text::{LineHeight, Shaping, paragraph};
 use cosmic::iced::core::text::{Text, Wrapping};
 use cosmic::iced::core::{
-    Border, Layout, Rectangle, Size, layout,
+    Border, Layout, Rectangle, Size, Vector, layout,
     renderer::{self, Quad, Renderer as _},
     text::Renderer as _,
     widget::{Tree, Widget, tree},
@@ -43,7 +44,11 @@ use cosmic::theme::Theme;
 use cosmic::{Element, Renderer};
 
 use crate::config::{Edge, TabPosition};
-use crate::tab_bar::{fill_disc, pane_colors};
+use crate::tab_bar::{
+    DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, dropdown_row_at, fill_disc,
+    pane_colors,
+};
+use crate::terminal::Action;
 
 /// The band's height in logical pixels — one notch below the tab
 /// strip's 32 px, for callers that reserve room for it outside the
@@ -693,6 +698,150 @@ pub fn selection_text(anchor: Point, focus: Point, row: &[RowSegment]) -> String
     parts.join(" ")
 }
 
+// --- the context menu (the per-tab menu's pattern) ---
+
+/// One pick a status-menu row carries. The copy rows resolve
+/// against the live segments at pick time — the pressed segment
+/// for [`MenuPick::CopySegment`], every present one for
+/// [`MenuPick::CopyAll`] — while every action row routes to an
+/// existing [`Action`] funnel, the keybinds' own: the menu
+/// introduces no behavior of its own (the per-tab menu's
+/// contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuPick {
+    /// Copy the pressed segment's full [`copy_text`] value — the
+    /// click verb's twin, ✓ flash included.
+    CopySegment(SegmentId),
+    /// Copy every present segment's full value, space-joined (the
+    /// selection release's join rule).
+    CopyAll,
+    /// An existing terminal/app action — Paste, the zoom trio, the
+    /// band's own toggle, Settings.
+    Action(Action),
+}
+
+/// One rendered row of the band's context menu — the per-tab
+/// menu's row shape: label, the pick a left press publishes
+/// (`None` when the row has nothing to pick — the Copy row over a
+/// gap press), whether it renders active (the GNOME disabled-row
+/// rule), and whether a separator line renders above it.
+struct MenuRow {
+    /// Label drawn in the row.
+    label: String,
+    /// The pick a left press publishes.
+    pick: Option<MenuPick>,
+    /// Whether the row renders active and publishes its pick.
+    enabled: bool,
+    /// Whether a separator line renders above the row.
+    separated: bool,
+}
+
+/// An interactive row.
+fn pick_row(label: &str, pick: MenuPick, enabled: bool, separated: bool) -> MenuRow {
+    MenuRow {
+        label: label.to_owned(),
+        pick: Some(pick),
+        enabled,
+        separated,
+    }
+}
+
+/// The band's context-menu rows for the live segments and the
+/// opening press's segment — the clipboard cluster (the pressed
+/// segment's value, every present segment's value, paste into the
+/// narrated terminal), the zoom cluster the Zoom segment narrates
+/// (Reset muted at base size — `zoom_percent`'s own condition),
+/// and the band's lifecycle rows. Labels are static; enablement is
+/// live, re-derived each frame, so a keybind passing through the
+/// open menu cannot leave a stale enabled row. Muted rows — a gap
+/// press's Copy, an empty payload — render disabled and never
+/// publish, the tab menu's edge-move rule.
+fn menu_rows(segments: &StatusSegments, pressed: Option<SegmentId>) -> Vec<MenuRow> {
+    // Copy resolves its payload against the same live segments at
+    // pick time; the row mutes when the press scoped no segment or
+    // the segment's live value is empty.
+    let copy_enabled = pressed.is_some_and(|id| !copy_text(id, segments).is_empty());
+    vec![
+        MenuRow {
+            label: "Copy".to_owned(),
+            pick: pressed.map(MenuPick::CopySegment),
+            enabled: copy_enabled,
+            separated: false,
+        },
+        pick_row(
+            "Copy All",
+            MenuPick::CopyAll,
+            !copy_all_text(segments).is_empty(),
+            false,
+        ),
+        pick_row("Paste", MenuPick::Action(Action::Paste), true, false),
+        pick_row("Zoom In", MenuPick::Action(Action::ZoomIn), true, true),
+        pick_row("Zoom Out", MenuPick::Action(Action::ZoomOut), true, false),
+        pick_row(
+            "Reset Zoom",
+            MenuPick::Action(Action::ZoomReset),
+            segments.zoom_percent.is_some(),
+            false,
+        ),
+        pick_row(
+            "Hide Status Bar",
+            MenuPick::Action(Action::ToggleStatusBar),
+            true,
+            true,
+        ),
+        // The ellipsis (U+2026) marks an item that opens a window —
+        // the terminal menu's Settings… rule.
+        pick_row(
+            "Settings\u{2026}",
+            MenuPick::Action(Action::Settings),
+            true,
+            false,
+        ),
+    ]
+}
+
+/// The Copy All payload: every present segment's full [`copy_text`]
+/// value in row order (left cluster then right), joined by single
+/// spaces — the selection release's join rule; full values, never
+/// displays. Empty when nothing is present.
+fn copy_all_text(segments: &StatusSegments) -> String {
+    LEFT_CLUSTER
+        .iter()
+        .chain(RIGHT_CLUSTER.iter())
+        .map(|id| copy_text(*id, segments))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The menu's rect, band-local: anchored at the opening
+/// right-press's x, clamped so the bubble never overflows either
+/// end of the band (the per-tab menu's both-edges rule), popping
+/// to `side` — the terminal's side, the only side with surface
+/// under it. Width from the widest row label plus the shared menu
+/// padding, rows stacked on the shared menu row height (the tab
+/// strip's menus' metrics — one idiom).
+fn menu_bounds(
+    band_width: f32,
+    press_x: f32,
+    widest_label: f32,
+    row_count: usize,
+    side: TooltipSide,
+) -> Rectangle {
+    let width = widest_label + DROPDOWN_PADDING_X * 2.0;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "row count is far below 2^24, so usize -> f32 is exact"
+    )]
+    let height = row_count as f32 * DROPDOWN_ROW_HEIGHT;
+    let x = press_x.clamp(0.0, (band_width - width).max(0.0));
+    let y = match side {
+        TooltipSide::Below => BAND_HEIGHT + DROPDOWN_GAP,
+        TooltipSide::Above => -height - DROPDOWN_GAP,
+    };
+    Rectangle::new(Point::new(x, y), Size::new(width, height))
+}
+
 /// The band's wall-clock text: 24-hour `HH:MM`, local zone.
 pub fn clock_text(now: &jiff::Zoned) -> String {
     now.strftime("%H:%M").to_string()
@@ -826,11 +975,27 @@ struct State {
     /// source, paired with the laid rects at event and draw time.
     row_texts: Vec<(SegmentId, String)>,
     /// The press that may become a selection drag — its anchor,
-    /// held from press to release.
+    /// held from press to release (window-absolute, the space
+    /// moves and releases speak).
     press: Option<Point>,
     /// The live-or-persisting selection: anchor and focus. Persists
     /// highlighted after release until the next press.
     selection: Option<(Point, Point)>,
+    /// Whether the context menu is open. Band-local by the
+    /// dropdown's rule — the open state dies with the band's tree
+    /// on hide/show.
+    menu_open: bool,
+    /// The opening right-press's segment (`None` over a gap) — the
+    /// Copy row's target, re-resolved against the live segments at
+    /// pick time.
+    menu_segment: Option<SegmentId>,
+    /// The opening right-press's band-local point — the bubble's
+    /// anchor.
+    menu_point: Point,
+    /// The menu's row label paragraphs, cached and synced like the
+    /// tab menu's — static labels, so the cache fills once per
+    /// open; enablement re-derives live at update and draw.
+    menu_paragraphs: Vec<(String, BandParagraph)>,
 }
 
 impl State {
@@ -886,6 +1051,15 @@ pub struct StatusBar<Message> {
     copied: Option<SegmentId>,
     /// Maps a clicked segment to the app's message.
     on_copy: Box<dyn Fn(SegmentId) -> Message>,
+    /// Maps a context-menu action pick to the app's message — the
+    /// app routes it through the same `perform_action` funnel the
+    /// keybind map uses (the menu introduces no behavior).
+    on_menu_action: Option<Box<dyn Fn(Action) -> Message>>,
+    /// Which vertical side of the band the context menu pops to:
+    /// the terminal's side (the band hugs the free edge; the other
+    /// side is off the surface). The app knows the edge; the
+    /// widget does not.
+    menu_side: TooltipSide,
 }
 
 impl<Message> StatusBar<Message> {
@@ -902,7 +1076,24 @@ impl<Message> StatusBar<Message> {
             font,
             copied,
             on_copy: Box::new(on_copy),
+            on_menu_action: None,
+            menu_side: TooltipSide::default(),
         }
+    }
+
+    /// Sets the message published when an action row of the
+    /// context menu is picked — the app maps it onto the existing
+    /// `Action` funnel, the keybinds' own path.
+    pub fn on_menu_action(mut self, on_menu_action: impl Fn(Action) -> Message + 'static) -> Self {
+        self.on_menu_action = Some(Box::new(on_menu_action));
+        self
+    }
+
+    /// Sets which vertical side of the band the context menu pops
+    /// to: the terminal's side.
+    pub fn menu_side(mut self, side: TooltipSide) -> Self {
+        self.menu_side = side;
+        self
     }
 
     /// Re-lays the cached paragraphs from the resolved segments, the
@@ -1071,6 +1262,28 @@ impl<Message> StatusBar<Message> {
             .chain(RIGHT_CLUSTER.iter())
             .map(|id| (*id, displayed(*id)))
             .collect();
+
+        // The menu's rows, synced like the tab menu's — but with
+        // static labels, so the cache fills once per open and only
+        // re-lays afterwards; enablement never lives here (it
+        // re-derives from the live segments at update and draw).
+        if state.menu_open {
+            let rows = menu_rows(&self.segments, state.menu_segment);
+            let labels_match = state
+                .menu_paragraphs
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .eq(rows.iter().map(|row| row.label.as_str()));
+            if !labels_match {
+                state.menu_paragraphs = rows
+                    .iter()
+                    .map(|row| (row.label.clone(), BandParagraph::default()))
+                    .collect();
+            }
+            for (label, paragraph) in &mut state.menu_paragraphs {
+                paragraph.update(segment_text(label, font));
+            }
+        }
     }
 
     /// Applies the reveal's armed selection to the laid paragraphs
@@ -1228,8 +1441,12 @@ where
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         // A rendered segment is a copy target — the cursor says so;
-        // the gaps between them stay idle.
-        let Some(position) = cursor.position_in(layout.bounds()) else {
+        // the gaps between them stay idle. Window-absolute, the
+        // laid rects' own space (the update paths' rule).
+        let Some(position) = cursor
+            .position()
+            .filter(|point| layout.bounds().contains(*point))
+        else {
             return mouse::Interaction::Idle;
         };
         let state = tree.state.downcast_ref::<State>();
@@ -1284,11 +1501,46 @@ where
         // terminal's middle-click paste serves it). The highlight
         // persists after release until the next press.
         match event {
-            Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
-                let Some(position) = cursor.position_in(layout.bounds()) else {
+            Event::Mouse(MouseEvent::ButtonPressed(Button::Right)) => {
+                // The context menu opens on any right-press inside
+                // the band — segment or gap alike, the pressed
+                // segment scoping the Copy row (a gap mutes it).
+                // The anchor is band-local (the bubble's frame);
+                // the segment resolves in the window-absolute space
+                // the laid rects live in. A press is a press, so
+                // any live selection clears — the next-press rule —
+                // and no left drag can be in flight. The open
+                // invalidates layout: the bubble sizes from the row
+                // cache `refresh_paragraphs` fills only during a
+                // root layout and only while open (the tab menu's
+                // nudge).
+                let Some(local) = cursor.position_in(layout.bounds()) else {
                     return;
                 };
-                let state = tree.state.downcast_mut::<State>();
+                let rects = segment_rects(state, layout.bounds());
+                state.menu_segment = cursor
+                    .position()
+                    .and_then(|point| segment_at(&rects, point));
+                state.menu_point = local;
+                state.menu_open = true;
+                state.press = None;
+                state.selection = None;
+                shell.invalidate_layout();
+                shell.capture_event();
+                shell.request_redraw();
+            }
+            Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
+                // The anchor is window-absolute — the space
+                // CursorMoved and the release already speak — so
+                // the 4 px click/drag discrimination is honest on a
+                // band laid out mid-column (`position_in`'s local
+                // point would skew it by the band's own y).
+                let Some(position) = cursor
+                    .position()
+                    .filter(|point| layout.bounds().contains(*point))
+                else {
+                    return;
+                };
                 state.press = Some(position);
                 state.selection = None;
                 shell.capture_event();
@@ -1338,6 +1590,35 @@ where
             }
             _ => {}
         }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        // The context menu, when open: the per-tab menu's pattern.
+        // The bubble hangs over the terminal (and, popping to the
+        // terminal's side, never over the grab bar), so it must be
+        // an overlay at all — only the overlay pass sees presses
+        // there, ahead of the tree, and a captured overlay press
+        // reaches nothing else.
+        if !tree.state.downcast_ref::<State>().menu_open {
+            return None;
+        }
+        let bounds = layout.bounds();
+        let absolute = Rectangle::new(bounds.position() + translation, bounds.size());
+        Some(overlay::Element::new(Box::new(StatusMenuOverlay {
+            state: tree.state.downcast_mut::<State>(),
+            segments: &self.segments,
+            on_copy: &self.on_copy,
+            on_menu_action: &self.on_menu_action,
+            side: self.menu_side,
+            band: absolute,
+        })))
     }
 
     fn draw(
@@ -1455,6 +1736,260 @@ where
                     Point::new(text_x, bounds.y),
                     Size::new(paragraph.min_width().max(0.0), BAND_HEIGHT),
                 ),
+            );
+        }
+    }
+}
+
+/// The band's context menu, hand-drawn on the overlay pass (the
+/// per-tab menu's pattern): a pane-inverted bubble of
+/// [`menu_rows`] rows anchored at the opening right-press, popping
+/// to the terminal's side of the band. While open it owns every
+/// press, the dropdown's contract: any press closes it, a left
+/// press on an enabled row first resolves its pick — the copy rows
+/// write the clipboard here, where it already lives for the click
+/// verb, and report through the band's copy callback for the ✓
+/// flash; the action rows publish through `on_menu_action` — and
+/// every press is captured so nothing under the menu acts on it.
+struct StatusMenuOverlay<'a, Message> {
+    /// The band's state: the open flag (cleared on any press), the
+    /// pressed segment, the anchor, and the cached row label
+    /// paragraphs.
+    state: &'a mut State,
+    /// The live segments — the rows' enablement and the copy
+    /// payloads resolve against them at pick time.
+    segments: &'a StatusSegments,
+    /// The copy report — the click verb's ✓ flash path.
+    on_copy: &'a dyn Fn(SegmentId) -> Message,
+    /// The action rows' publisher — the app's `Action` funnel.
+    on_menu_action: &'a Option<Box<dyn Fn(Action) -> Message>>,
+    /// Which vertical side of the band the bubble pops to.
+    side: TooltipSide,
+    /// The band's absolute bounds (translation applied).
+    band: Rectangle,
+}
+
+impl<Message> StatusMenuOverlay<'_, Message> {
+    /// The live rows for the open menu's pressed segment.
+    fn rows(&self) -> Vec<MenuRow> {
+        menu_rows(self.segments, self.state.menu_segment)
+    }
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for StatusMenuOverlay<'_, Message>
+where
+    Message: Clone,
+{
+    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        let rows = self.rows();
+        let widest = self
+            .state
+            .menu_paragraphs
+            .iter()
+            .map(|(_, paragraph)| paragraph.min_width())
+            .fold(0.0, f32::max);
+        let band_local = menu_bounds(
+            self.band.width,
+            self.state.menu_point.x,
+            widest,
+            rows.len(),
+            self.side,
+        );
+        let position = self.band.position() + Vector::new(band_local.x, band_local.y);
+        layout::Node::new(band_local.size()).move_to(position)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        _renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        // The dropdown's dismissal contract, unchanged: every press
+        // closes, a left press on an enabled row first resolves its
+        // pick against the live segments, and every press is
+        // captured so nothing under the menu — the band, the
+        // terminal below — acts on it. Motion and keyboard pass
+        // through; a motion event asks for the frame the hover tint
+        // needs (the runtime draws only on request).
+        if matches!(event, Event::Mouse(MouseEvent::CursorMoved { .. })) {
+            shell.request_redraw();
+            return;
+        }
+        let Event::Mouse(MouseEvent::ButtonPressed(button)) = event else {
+            return;
+        };
+        let rows = self.rows();
+        let pick = cursor
+            .position()
+            .and_then(|point| dropdown_row_at(layout.bounds(), point))
+            .and_then(|index| rows.get(index))
+            .filter(|row| row.enabled)
+            .and_then(|row| row.pick);
+        if *button == Button::Left
+            && let Some(pick) = pick
+        {
+            match pick {
+                MenuPick::CopySegment(id) => {
+                    // The click verb's twin: the full value through
+                    // `copy_text` (never the display), the same ✓
+                    // flash through the band's copy report. An
+                    // emptied live value writes nothing.
+                    let text = copy_text(id, self.segments);
+                    if !text.is_empty() {
+                        clipboard.write(Kind::Standard, text);
+                        shell.publish((self.on_copy)(id));
+                    }
+                }
+                MenuPick::CopyAll => {
+                    // Every present segment's full value — no
+                    // flash, no single segment owns the copy (the
+                    // menu's own dismissal is the acknowledgment).
+                    let text = copy_all_text(self.segments);
+                    if !text.is_empty() {
+                        clipboard.write(Kind::Standard, text);
+                    }
+                }
+                MenuPick::Action(action) => {
+                    if let Some(message) = self
+                        .on_menu_action
+                        .as_ref()
+                        .map(|on_menu_action| on_menu_action(action))
+                    {
+                        shell.publish(message);
+                    }
+                }
+            }
+        }
+        self.state.menu_open = false;
+        shell.capture_event();
+        shell.request_redraw();
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        // Pointer over the bubble only: elsewhere the interaction
+        // falls back to whatever the band itself reports (the
+        // dropdown's rule — muted rows keep the pointer shape,
+        // honest at a glance).
+        let over_menu = cursor
+            .position()
+            .is_some_and(|point| layout.bounds().contains(point));
+        if over_menu {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::None
+        }
+    }
+
+    // The pane_bg/pane_fg names match the band draw's vocabulary;
+    // `similar_names` resolves its level at the fn, so the expect
+    // rides here rather than on the binding.
+    #[expect(
+        clippy::similar_names,
+        reason = "the pane_bg/pane_fg pair matches the band draw's vocabulary"
+    )]
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor_position: Cursor,
+    ) {
+        let menu = layout.bounds();
+        let (pane_bg, pane_fg) = pane_colors();
+        // The pane pair swapped, the dropdown's rule: a
+        // foreground-colored bubble carrying the band's color as
+        // its text stays readable on light and dark panes alike.
+        renderer.fill_quad(
+            Quad {
+                bounds: menu,
+                border: Border {
+                    radius: theme.cosmic().radius_s().into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            pane_fg,
+        );
+
+        let rows = self.rows();
+        let hovered = cursor_position
+            .position()
+            .and_then(|point| dropdown_row_at(menu, point));
+        for (index, (_, paragraph)) in self.state.menu_paragraphs.iter().enumerate() {
+            let Some(row) = rows.get(index) else {
+                break;
+            };
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "row count is far below 2^24, so usize -> f32 is exact"
+            )]
+            let row_bounds = Rectangle::new(
+                Point::new(menu.x, menu.y + index as f32 * DROPDOWN_ROW_HEIGHT),
+                Size::new(menu.width, DROPDOWN_ROW_HEIGHT),
+            );
+            // A hairline separator above the section-leading rows,
+            // drawn in the text color at low alpha.
+            if row.separated {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: Rectangle::new(
+                            row_bounds.position(),
+                            Size::new(row_bounds.width, 1.0),
+                        ),
+                        border: Border {
+                            radius: 0.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.3, ..pane_bg },
+                );
+            }
+            // Rows highlight on hover, clickable ones only — a
+            // muted row is not a target (the per-tab menu's rule).
+            if hovered == Some(index) && row.enabled && row.pick.is_some() {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: row_bounds,
+                        border: Border {
+                            radius: theme.cosmic().radius_s().into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color { a: 0.3, ..pane_bg },
+                );
+            }
+            // Muted rows — a gap press's Copy, base-size Reset —
+            // draw their label at half alpha; enabled rows full.
+            let active = row.enabled && row.pick.is_some();
+            let text_color = if active {
+                pane_bg
+            } else {
+                Color { a: 0.5, ..pane_bg }
+            };
+            let text_y = row_bounds.y + (row_bounds.height - paragraph.min_height()) / 2.0;
+            renderer.fill_paragraph(
+                paragraph.raw(),
+                Point::new(row_bounds.x + DROPDOWN_PADDING_X, text_y),
+                text_color,
+                menu,
             );
         }
     }
