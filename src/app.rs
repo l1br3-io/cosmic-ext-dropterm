@@ -1309,7 +1309,7 @@ fn effective_bar_at_bottom(edge: Edge, tab_position: TabPosition) -> bool {
     }
 }
 
-/// Which side the strip's tooltips pop to: the terminal's side of the
+/// Which side the tab strip's tooltips pop to: the terminal's side of the
 /// bar, wherever the bar sits — the bar widget itself stays
 /// edge-agnostic.
 fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
@@ -1317,6 +1317,17 @@ fn bar_tooltip_side(bar_at_bottom: bool) -> TooltipSide {
         TooltipSide::Above
     } else {
         TooltipSide::Below
+    }
+}
+
+/// Which side the status band's context menu pops to: the
+/// terminal's side of the band. The band hugs the free edge beside
+/// the grab bar, so its terminal side is opposite the tab strip's
+/// for the same edge — the strip's own helper, inverted.
+fn band_menu_side(edge: Edge) -> TooltipSide {
+    match edge {
+        Edge::Top => TooltipSide::Above,
+        Edge::Bottom => TooltipSide::Below,
     }
 }
 
@@ -1841,6 +1852,14 @@ impl Application for DropTerm {
             self.copied_segment,
             Message::StatusSegmentCopied,
         )
+        // The menu's action rows ride the `perform_action` funnel
+        // every keybind uses — the same `Message::Action` route the
+        // tab menu's New Tab row takes; the band's menu introduces
+        // no behavior of its own. The bubble pops to the terminal's
+        // side of the band (the band hugs the free edge, so that
+        // side is the strip's own tooltip side inverted).
+        .on_menu_action(Message::Action)
+        .menu_side(band_menu_side(self.config.edge))
         .into();
 
         // Stacking: `status_bar::column_stacking` owns the orders —
