@@ -5,6 +5,7 @@
 //! that guards stale or hand-edited values.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
@@ -435,14 +436,45 @@ impl DropTermConfig {
         self
     }
 
-    /// Resolve the shell to run: the configured shell, else `$SHELL`, else
-    /// `/bin/sh`.
+    /// Resolve the shell to run: the configured shell, else `$SHELL`,
+    /// else `/bin/sh` — each leg kept only if its program can exec
+    /// today, so a stale or hand-edited value degrades down the chain
+    /// instead of arming every spawn to fail. The skip itself is
+    /// silent: resolution feeds placeholder text as well as spawns,
+    /// and the spawn-side degradation carries the warning.
     pub fn resolved_shell(&self) -> String {
         self.shell
             .clone()
-            .or_else(|| std::env::var("SHELL").ok())
-            .filter(|s| !s.is_empty())
+            .filter(|s| program_is_runnable(s))
+            .or_else(|| {
+                std::env::var("SHELL")
+                    .ok()
+                    .filter(|s| program_is_runnable(s))
+            })
             .unwrap_or_else(|| "/bin/sh".to_string())
+    }
+}
+
+/// Whether a command program could exec right now: a slash-bearing
+/// path is checked directly, a bare name is searched on `PATH`, and
+/// either way the file must carry an execute bit. Best-effort by
+/// design — it lets config- and spawn-resolved programs degrade
+/// before they reach a pty whose failure would kill the whole tab,
+/// not predict every exec failure (races and permission oddities
+/// still land in `Terminal::new`'s error log).
+pub(crate) fn program_is_runnable(program: &str) -> bool {
+    let runnable_file = |path: &Path| {
+        use std::os::unix::fs::PermissionsExt;
+
+        path.is_file()
+            && std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    };
+    if program.contains('/') {
+        runnable_file(Path::new(program))
+    } else {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|dir| runnable_file(&dir.join(program)))
+        })
     }
 }
 

@@ -832,18 +832,34 @@ fn opacity_is_clamped_to_100() {
 
 #[test]
 fn shell_falls_back_to_env_then_bin_sh() {
+    // The chain keeps only values whose program can exec today — a
+    // dead configured or env shell skips to the next leg instead of
+    // arming every spawn to fail. Every SHELL mutation lives in this
+    // one test so the asserts stay sequenced (tests run in parallel
+    // threads).
     let configured = DropTermConfig {
-        shell: Some("/usr/bin/fish".to_string()),
+        shell: Some("/bin/sh".to_string()),
         ..DropTermConfig::default()
     };
-    assert_eq!(configured.resolved_shell(), "/usr/bin/fish");
+    assert_eq!(configured.resolved_shell(), "/bin/sh");
+
+    let dead_configured = DropTermConfig {
+        shell: Some("/dropterm-not-a-real-shell".to_string()),
+        ..DropTermConfig::default()
+    };
 
     // SAFETY: single-threaded test, no other test reads/writes SHELL.
     unsafe {
-        std::env::set_var("SHELL", "/usr/bin/zsh");
+        std::env::set_var("SHELL", "/bin/sh");
     }
-    let unconfigured = DropTermConfig::default();
-    assert_eq!(unconfigured.resolved_shell(), "/usr/bin/zsh");
+    assert_eq!(DropTermConfig::default().resolved_shell(), "/bin/sh");
+    assert_eq!(dead_configured.resolved_shell(), "/bin/sh");
+
+    // SAFETY: single-threaded test, no other test reads/writes SHELL.
+    unsafe {
+        std::env::set_var("SHELL", "/dropterm-not-a-real-shell");
+    }
+    assert_eq!(dead_configured.resolved_shell(), "/bin/sh");
 
     // SAFETY: single-threaded test, no other test reads/writes SHELL.
     unsafe {
@@ -851,6 +867,41 @@ fn shell_falls_back_to_env_then_bin_sh() {
     }
     let no_env = DropTermConfig::default();
     assert_eq!(no_env.resolved_shell(), "/bin/sh");
+}
+
+#[test]
+fn program_is_runnable_checks_a_path_directly() {
+    // `/bin/sh` is POSIX-guaranteed present and executable.
+    assert!(program_is_runnable("/bin/sh"));
+    assert!(!program_is_runnable("/dropterm-not-a-real-program"));
+    // No program at all is never runnable — an exec of "" dies.
+    assert!(!program_is_runnable(""));
+}
+
+#[test]
+fn program_is_runnable_requires_an_execute_bit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "dropterm-runnable-execute-bit-{}",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"#!/bin/sh\n").expect("write the test program");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("drop the exec bit");
+    assert!(!program_is_runnable(
+        path.to_str().expect("utf-8 temp path")
+    ));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("set the exec bit");
+    assert!(program_is_runnable(path.to_str().expect("utf-8 temp path")));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn program_is_runnable_scans_path_for_bare_names() {
+    assert!(program_is_runnable("sh"));
+    assert!(!program_is_runnable("dropterm-not-a-real-program"));
 }
 
 #[test]

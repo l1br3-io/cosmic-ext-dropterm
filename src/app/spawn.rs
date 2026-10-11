@@ -7,7 +7,7 @@ use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
 use super::{DropTerm, SurfaceState, effective_colors, effective_is_dark, resolved_profile};
-use crate::config::{DropTermConfig, NewTabCwd};
+use crate::config::{DropTermConfig, NewTabCwd, program_is_runnable};
 use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
@@ -177,9 +177,14 @@ struct SpawnParts {
 /// profile's stored one — carries its own trailing arguments and never
 /// inherits them: `--cmd htop` must not run `htop --login`. A profile
 /// spawn records its id only when the command line actually runs: the
-/// degraded blank-line branch spawns a plain-shell tab, which must not
-/// save an id restore would keep re-degrading — nor half a profile's
-/// identity (no id, no env).
+/// degraded branches spawn a plain-shell tab, which must not save an
+/// id restore would keep re-degrading — nor half a profile's identity
+/// (no id, no env). And a program that cannot exec today — a typo,
+/// an uninstall, a hand-edited path, a session-recorded shell the
+/// system no longer carries — degrades to the config's plain shell
+/// exactly like a blank command line: warn once, spawn a shell tab,
+/// never an error surface, never a spawn that fails into a silent
+/// no-op.
 fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
     let plain = || SpawnParts {
         program: config.resolved_shell(),
@@ -188,16 +193,33 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
         env: HashMap::new(),
     };
     match command {
-        SpawnCommand::Shell(shell) => SpawnParts {
+        // The recorded-shell leg: `resolved_shell`'s own chain
+        // filters configured and env values, so this guard covers a
+        // shell recorded on a tab — session-restored — that the
+        // system no longer carries.
+        SpawnCommand::Shell(shell) if program_is_runnable(shell) => SpawnParts {
             program: shell.clone(),
             ..plain()
         },
+        SpawnCommand::Shell(shell) => {
+            log::warn!("shell {shell:?} cannot run; spawning the configured shell instead");
+            plain()
+        }
         SpawnCommand::CommandLine(line) => match tabs::command_line_parts(line) {
-            Some((program, trailing)) => SpawnParts {
+            Some((program, trailing)) if program_is_runnable(&program) => SpawnParts {
                 program,
                 trailing,
                 ..plain()
             },
+            // A `--cmd` whose program cannot exec: degrade to the
+            // plain shell — something runnable always appears.
+            Some((program, ..)) => {
+                log::warn!(
+                    "command program {program:?} cannot run; \
+                     spawning the shell instead"
+                );
+                plain()
+            }
             // Unreachable in practice — the CLI rejects an empty
             // --cmd — but a degraded empty line still spawns the
             // default shell rather than a dying exec of "".
@@ -205,25 +227,38 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
         },
         SpawnCommand::Profile {
             name, command, env, ..
-        } => {
-            if let Some((program, trailing)) = tabs::command_line_parts(command) {
-                SpawnParts {
-                    program,
-                    trailing,
-                    profile_id: Some(name.clone()),
-                    env: preset_env(env.as_ref()),
-                }
-            } else {
-                // A hand-edited config can store a blank command line;
-                // warn and spawn the plain shell — degradation, never
-                // an error surface.
+        } => match tabs::command_line_parts(command) {
+            // The id is recorded only when the spawn actually runs
+            // the preset: every degraded line below spawns a
+            // plain-shell tab, which must not save an id restore
+            // would keep re-degrading — nor the env, never half a
+            // profile's identity.
+            Some((program, trailing)) if program_is_runnable(&program) => SpawnParts {
+                program,
+                trailing,
+                profile_id: Some(name.clone()),
+                env: preset_env(env.as_ref()),
+            },
+            // The stored line parses but its program is gone: the
+            // same degradation the blank line gets.
+            Some((program, ..)) => {
+                log::warn!(
+                    "profile {name} command program {program:?} cannot run; \
+                     spawning the shell instead"
+                );
+                plain()
+            }
+            // A hand-edited config can store a blank command line;
+            // warn and spawn the plain shell — degradation, never an
+            // error surface.
+            None => {
                 log::warn!(
                     "profile {name} stores no runnable command line; \
                      spawning the shell instead"
                 );
                 plain()
             }
-        }
+        },
     }
 }
 
@@ -649,7 +684,7 @@ mod tests {
     #[test]
     fn profile_pick_carries_the_preset_env() {
         // The menu pick resolves the whole preset, env included; the
-        // call site composes the live-cwd filter on top as always.
+        // call site composes the live cwd filter on top as always.
         let config = test_config(
             &[
                 profile::Profile {
@@ -679,6 +714,156 @@ mod tests {
                 cwd: None,
                 env: None,
             })
+        );
+    }
+
+    // --- the unrunnable-program degradation policy ---
+
+    /// A program no test installs — deterministically not runnable,
+    /// as a bare name (PATH-scan miss) or as a path.
+    fn dead_program() -> &'static str {
+        "dropterm-not-a-real-program"
+    }
+
+    /// The plain-shell shape every degradation lands on: the test
+    /// config's live `/bin/sh`, its args, and no profile identity.
+    fn plain_parts() -> SpawnParts {
+        SpawnParts {
+            program: "/bin/sh".to_string(),
+            trailing: Vec::new(),
+            profile_id: None,
+            env: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn spawn_parts_runs_a_profile_command_with_its_recorded_identity() {
+        // The runnable case: the stored line's program and trailing
+        // arguments, with the id and env applied together.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::Profile {
+                    name: "top".to_string(),
+                    command: "/bin/sh -c top".to_string(),
+                    cwd: None,
+                    env: Some(env_map()),
+                },
+                &config,
+            ),
+            SpawnParts {
+                program: "/bin/sh".to_string(),
+                trailing: vec!["-c".to_string(), "top".to_string()],
+                profile_id: Some("top".to_string()),
+                env: HashMap::from([
+                    ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                    ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+                ]),
+            }
+        );
+    }
+
+    #[test]
+    fn spawn_parts_degrades_a_profile_program_that_cannot_run() {
+        // The stored line parses but its program is gone — a typo,
+        // an uninstall, a hand-edited config: the plain shell spawns
+        // in full (no id, no env — never half a profile's identity),
+        // instead of a spawn that fails into a silent no-op tab.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::Profile {
+                    name: "ttttt".to_string(),
+                    command: dead_program().to_string(),
+                    cwd: Some(PathBuf::from("/srv")),
+                    env: Some(env_map()),
+                },
+                &config,
+            ),
+            plain_parts()
+        );
+    }
+
+    #[test]
+    fn spawn_parts_degrades_a_blank_profile_command_line() {
+        // The hand-edited blank line degrades the same way — the two
+        // degradations land on the identical plain-shell shape.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::Profile {
+                    name: "ssh".to_string(),
+                    command: "   ".to_string(),
+                    cwd: None,
+                    env: Some(env_map()),
+                },
+                &config,
+            ),
+            plain_parts()
+        );
+    }
+
+    #[test]
+    fn spawn_parts_runs_a_cmd_line_with_its_trailing_arguments() {
+        // The runnable `--cmd` line: program and args from the line,
+        // never the config's shell arguments.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::CommandLine("/bin/sh -c htop".to_string()),
+                &config,
+            ),
+            SpawnParts {
+                program: "/bin/sh".to_string(),
+                trailing: vec!["-c".to_string(), "htop".to_string()],
+                profile_id: None,
+                env: HashMap::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn spawn_parts_degrades_a_cmd_program_that_cannot_run() {
+        // A `--cmd` whose program is gone degrades to the plain shell
+        // rather than a silent no-op: something runnable always
+        // appears.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::CommandLine(dead_program().to_string()),
+                &config,
+            ),
+            plain_parts()
+        );
+    }
+
+    #[test]
+    fn spawn_parts_pairs_the_config_args_with_the_shell() {
+        // A shell path rides the config's shell arguments (`--login`
+        // and kin); a live recorded shell keeps them verbatim.
+        let mut config = test_config(&[], None);
+        config.args = vec!["--login".to_string()];
+        assert_eq!(
+            spawn_parts(&SpawnCommand::Shell("/bin/sh".to_string()), &config),
+            SpawnParts {
+                trailing: vec!["--login".to_string()],
+                ..plain_parts()
+            }
+        );
+    }
+
+    #[test]
+    fn spawn_parts_degrades_a_recorded_shell_that_cannot_run() {
+        // A session-recorded shell can outlive its system: the
+        // respawn degrades through the config's live-checked chain —
+        // the tab opens on a working shell, never drops silently.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawn_parts(
+                &SpawnCommand::Shell("/dropterm-not-a-real-shell".to_string()),
+                &config,
+            ),
+            plain_parts()
         );
     }
 
