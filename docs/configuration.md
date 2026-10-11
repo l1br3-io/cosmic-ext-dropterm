@@ -39,7 +39,7 @@ echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar
 
 A flip applies the moment it lands: the band leaves or joins the column and the terminal's pinned height reclaims or cedes its 28 px the same frame.
 
-Each segment is individually showable with its own key - `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock` (all default `true`). A hidden segment is never computed: hiding the branch stops the `.git` reads, hiding the clock stops its tick. The rows live on the Behavior tab's Status bar card and apply live; hand-edits echo the same frame:
+Each segment is individually showable with its own key - `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock` (all default `true`). A hidden segment is never computed: hiding the branch stops the `.git` reads, hiding the clock stops its tick. The grid key makes the segment *eligible*, not always-on: it appears only after a resize away from the tab's spawn dimensions (a respawn resets those). The rows live on the Behavior tab's Status bar card and apply live; hand-edits echo the same frame:
 
 ```sh
 echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar_show_clock
