@@ -276,9 +276,11 @@ pub struct DropTerm {
     /// disc-and-name segment (status-bar criterion 5): a snapshot
     /// refreshed only at event piggyback points — title reports,
     /// terminal wakeups, tab switches, spawns/respawns, zoom,
-    /// config echo — never per frame; the band widget renders plain
-    /// resolved data. `None` reads idle or unreadable, and the band
-    /// falls back to the recorded shell's basename.
+    /// config echo, and the surface's show transition (the show
+    /// arm's landing refresh, status-glance criterion 4) — never per
+    /// frame; the band widget renders plain resolved data. `None`
+    /// reads idle or unreadable, and the band falls back to the
+    /// recorded shell's basename.
     active_process_name: Option<String>,
     /// The active tab's git branch for the band's branch segment —
     /// the same snapshot discipline as the process name: the lone
@@ -2145,6 +2147,18 @@ impl DropTerm {
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
+                    // The show arm's refresh (status-glance criterion
+                    // 4): a landing surface narrates the present, not
+                    // whatever the last piggyback point saw — the
+                    // snapshot re-reads the lone `/proc` + `.git`
+                    // pair and the clock re-stores, before the first
+                    // frame's view assembly. One read pair per
+                    // landing, the sanctioned cadence; the tick's own
+                    // arming is unchanged (assumption 7 — the loop
+                    // runs while hidden too, so `sync_status_clock`
+                    // only re-stores the text).
+                    self.refresh_status_snapshot();
+                    let clock_task = self.sync_status_clock();
                     // The slide-in starts here, with the shown
                     // surface: the full surface height is both the
                     // from-offset and the distance — deterministic
@@ -2176,6 +2190,7 @@ impl DropTerm {
                         ),
                         set_exclusive_zone(id, surface::exclusive_zone(self.config.respect_panel)),
                         widget::text_input::focus(self.terminal_id.clone()),
+                        clock_task,
                     ]);
                 }
             }
