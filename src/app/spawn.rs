@@ -173,18 +173,22 @@ struct SpawnParts {
 /// Resolves a [`SpawnCommand`] against the config's shell settings —
 /// the pure resolution half of [`DropTerm::spawn_terminal`], extracted
 /// so every rule is testable headless. A shell path pairs with the
-/// config's shell arguments; an explicit command line — like a
-/// profile's stored one — carries its own trailing arguments and never
-/// inherits them: `--cmd htop` must not run `htop --login`. A profile
-/// spawn records its id only when the command line actually runs: the
-/// degraded branches spawn a plain-shell tab, which must not save an
-/// id restore would keep re-degrading — nor half a profile's identity
-/// (no id, no env). And a program that cannot exec today — a typo,
-/// an uninstall, a hand-edited path, a session-recorded shell the
-/// system no longer carries — degrades to the config's plain shell
-/// exactly like a blank command line: warn once, spawn a shell tab,
-/// never an error surface, never a spawn that fails into a silent
-/// no-op.
+/// config's shell arguments; an explicit `--cmd` line carries its own
+/// trailing arguments and never inherits them: `--cmd htop` must not
+/// run `htop --login`. A profile spawn runs its command as a preamble
+/// of the resolved shell with a guaranteed interactive tail (the
+/// command-then-shell ruling, 2026-10-12): `sh -c "<line>; exec sh"`,
+/// so a command that finishes — `ls`, an unrunnable `a` — leaves the
+/// tab alive with its output above the prompt and the profile's whole
+/// identity intact (id, env, appearance); an unrunnable program is
+/// reported by the shell in-band, never degraded. Only a blank stored
+/// line — a hand-edited config — degrades to the plain shell (no id,
+/// no env: never half a profile's identity). And a program that
+/// cannot exec today — a typo, an uninstall, a hand-edited path, a
+/// session-recorded shell the system no longer carries — degrades to
+/// the config's plain shell exactly like a blank command line: warn
+/// once, spawn a shell tab, never an error surface, never a spawn
+/// that fails into a silent no-op.
 fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
     let plain = || SpawnParts {
         program: config.resolved_shell(),
@@ -227,38 +231,37 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
         },
         SpawnCommand::Profile {
             name, command, env, ..
-        } => match tabs::command_line_parts(command) {
-            // The id is recorded only when the spawn actually runs
-            // the preset: every degraded line below spawns a
-            // plain-shell tab, which must not save an id restore
-            // would keep re-degrading — nor the env, never half a
-            // profile's identity.
-            Some((program, trailing)) if program_is_runnable(&program) => SpawnParts {
-                program,
-                trailing,
-                profile_id: Some(name.clone()),
-                env: preset_env(env.as_ref()),
-            },
-            // The stored line parses but its program is gone: the
-            // same degradation the blank line gets.
-            Some((program, ..)) => {
-                log::warn!(
-                    "profile {name} command program {program:?} cannot run; \
-                     spawning the shell instead"
-                );
-                plain()
-            }
-            // A hand-edited config can store a blank command line;
-            // warn and spawn the plain shell — degradation, never an
-            // error surface.
-            None => {
+        } => {
+            // A blank stored line has no preamble to run — a hand-edited
+            // config — so it keeps the old degradation: the plain shell,
+            // and no id restore would keep re-wrapping a line that isn't
+            // there (never half a profile's identity).
+            if command.trim().is_empty() {
                 log::warn!(
                     "profile {name} stores no runnable command line; \
                      spawning the shell instead"
                 );
-                plain()
+                return plain();
             }
-        },
+            // The command-then-shell ruling: the stored line becomes a
+            // preamble of the resolved shell, closed by `exec` of the
+            // same shell — the terminal the command leaves behind is an
+            // interactive prompt in the profile's own colors and env,
+            // with the command's output still on screen. The line rides
+            // as one `-c` argument verbatim (no re-quoting), and an
+            // unrunnable program surfaces as the shell's own "command
+            // not found" above that prompt — visible, honest, identity
+            // kept. The wrap also makes one-shot commands long-lived,
+            // so their tabs never flash-die (the exit path keeps
+            // today's close-on-exit for everything).
+            let shell = config.resolved_shell();
+            SpawnParts {
+                trailing: vec!["-c".to_owned(), format!("{command}; exec {shell}")],
+                program: shell,
+                profile_id: Some(name.clone()),
+                env: preset_env(env.as_ref()),
+            }
+        }
     }
 }
 
@@ -737,9 +740,12 @@ mod tests {
     }
 
     #[test]
-    fn spawn_parts_runs_a_profile_command_with_its_recorded_identity() {
-        // The runnable case: the stored line's program and trailing
-        // arguments, with the id and env applied together.
+    fn spawn_parts_runs_a_profile_command_as_a_shell_preamble_with_an_interactive_tail() {
+        // The command-then-shell ruling (2026-10-12): the stored line
+        // rides as one `-c` argument of the resolved shell, closed by
+        // `exec` of the same shell — the command's output stays above
+        // an interactive prompt and the profile keeps its whole
+        // identity (id + env together).
         let config = test_config(&[], None);
         assert_eq!(
             spawn_parts(
@@ -753,7 +759,7 @@ mod tests {
             ),
             SpawnParts {
                 program: "/bin/sh".to_string(),
-                trailing: vec!["-c".to_string(), "top".to_string()],
+                trailing: vec!["-c".to_string(), "/bin/sh -c top; exec /bin/sh".to_string(),],
                 profile_id: Some("top".to_string()),
                 env: HashMap::from([
                     ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
@@ -764,11 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn spawn_parts_degrades_a_profile_program_that_cannot_run() {
-        // The stored line parses but its program is gone — a typo,
-        // an uninstall, a hand-edited config: the plain shell spawns
-        // in full (no id, no env — never half a profile's identity),
-        // instead of a spawn that fails into a silent no-op tab.
+    fn spawn_parts_wraps_an_unrunnable_profile_program_with_its_identity_kept() {
+        // A program that cannot exec — a typo, an uninstall — is no
+        // longer a degrade-to-plain-shell case: the shell reports it
+        // in-band ("command not found") above the prompt, and the tab
+        // keeps the id and env it launched under.
         let config = test_config(&[], None);
         assert_eq!(
             spawn_parts(
@@ -780,14 +786,26 @@ mod tests {
                 },
                 &config,
             ),
-            plain_parts()
+            SpawnParts {
+                program: "/bin/sh".to_string(),
+                trailing: vec![
+                    "-c".to_string(),
+                    format!("{}; exec /bin/sh", dead_program()),
+                ],
+                profile_id: Some("ttttt".to_string()),
+                env: HashMap::from([
+                    ("DROPTERM_PROFILE".to_string(), "ssh-prod".to_string()),
+                    ("TERM_PROGRAM".to_string(), "dropterm-ssh".to_string()),
+                ]),
+            }
         );
     }
 
     #[test]
     fn spawn_parts_degrades_a_blank_profile_command_line() {
-        // The hand-edited blank line degrades the same way — the two
-        // degradations land on the identical plain-shell shape.
+        // The hand-edited blank line has no preamble to wrap — the
+        // one degradation left, landing on the plain shell with no
+        // half identity.
         let config = test_config(&[], None);
         assert_eq!(
             spawn_parts(

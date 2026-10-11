@@ -646,33 +646,5 @@ pub fn plan_respawn(
     }
 }
 
-/// Plans the field half of the profile-exit fallback: a profile tab
-/// whose child exited respawns the configured plain shell in its
-/// place — the never-empty rule generalized from "the last tab" to
-/// "every profile tab", because a one-shot profile command (`ls`)
-/// must not take its tab with it (the New Tab pick would flash and
-/// vanish; the Switch Profile pick would destroy the current slot).
-/// [`plan_respawn`]'s resets apply verbatim — rename kept, OSC
-/// tracker cleared, markers cleared, `ephemeral = false` — with the
-/// profile id dropped: the preset's process is gone, and the tab is
-/// a plain shell tab from here on (a later restore must not
-/// re-resolve a profile whose exit already played out).
-pub fn plan_shell_respawn(
-    mode: TabTitleMode,
-    id: TabId,
-    cwd: Option<&Path>,
-    old_override: Option<&str>,
-) -> RespawnFields {
-    RespawnFields {
-        title: resolve_title(mode, None, cwd, None, id, old_override),
-        shell_title: None,
-        title_override: old_override.map(str::to_owned),
-        attention: Attention::None,
-        bell_notified: false,
-        ephemeral: false,
-        profile: None,
-    }
-}
-
 #[cfg(test)]
 mod tests;
