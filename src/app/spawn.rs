@@ -158,6 +158,75 @@ fn preset_env(map: Option<&BTreeMap<String, String>>) -> HashMap<String, String>
     .unwrap_or_default()
 }
 
+/// What a spawn actually runs once its command resolves: the program
+/// the pty execs, the trailing arguments handed to it, and the
+/// profile identity the spawn carries — id and env only ever
+/// together, and only when the preset's command line actually runs.
+#[derive(Debug, PartialEq, Eq)]
+struct SpawnParts {
+    program: String,
+    trailing: Vec<String>,
+    profile_id: Option<String>,
+    env: HashMap<String, String>,
+}
+
+/// Resolves a [`SpawnCommand`] against the config's shell settings —
+/// the pure resolution half of [`DropTerm::spawn_terminal`], extracted
+/// so every rule is testable headless. A shell path pairs with the
+/// config's shell arguments; an explicit command line — like a
+/// profile's stored one — carries its own trailing arguments and never
+/// inherits them: `--cmd htop` must not run `htop --login`. A profile
+/// spawn records its id only when the command line actually runs: the
+/// degraded blank-line branch spawns a plain-shell tab, which must not
+/// save an id restore would keep re-degrading — nor half a profile's
+/// identity (no id, no env).
+fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
+    let plain = || SpawnParts {
+        program: config.resolved_shell(),
+        trailing: config.args.clone(),
+        profile_id: None,
+        env: HashMap::new(),
+    };
+    match command {
+        SpawnCommand::Shell(shell) => SpawnParts {
+            program: shell.clone(),
+            ..plain()
+        },
+        SpawnCommand::CommandLine(line) => match tabs::command_line_parts(line) {
+            Some((program, trailing)) => SpawnParts {
+                program,
+                trailing,
+                ..plain()
+            },
+            // Unreachable in practice — the CLI rejects an empty
+            // --cmd — but a degraded empty line still spawns the
+            // default shell rather than a dying exec of "".
+            None => plain(),
+        },
+        SpawnCommand::Profile {
+            name, command, env, ..
+        } => {
+            if let Some((program, trailing)) = tabs::command_line_parts(command) {
+                SpawnParts {
+                    program,
+                    trailing,
+                    profile_id: Some(name.clone()),
+                    env: preset_env(env.as_ref()),
+                }
+            } else {
+                // A hand-edited config can store a blank command line;
+                // warn and spawn the plain shell — degradation, never
+                // an error surface.
+                log::warn!(
+                    "profile {name} stores no runnable command line; \
+                     spawning the shell instead"
+                );
+                plain()
+            }
+        }
+    }
+}
+
 impl DropTerm {
     /// Spawns one terminal tab from a session restore's resolved
     /// spawn parameters ([`session::SpawnSpec`], with its recorded
@@ -277,56 +346,16 @@ impl DropTerm {
             return None;
         };
 
-        // A shell path pairs with the config's shell arguments; an
-        // explicit command line — like a profile's stored one —
-        // carries its own trailing arguments and never inherits them:
-        // `--cmd htop` must not run `htop --login`. A command tab is
-        // also session-ephemeral (never saved, never replayed); a
-        // profile tab is the explicit opt-in for persistence, so it
-        // never is.
+        // A command tab is session-ephemeral (never saved, never
+        // replayed); a profile tab is the explicit opt-in for
+        // persistence, so it never is.
         let ephemeral = matches!(command, SpawnCommand::CommandLine(_));
-        let mut profile_id: Option<String> = None;
-        // The preset's extra environment, applied exactly where
-        // `profile_id` is: only a spawn that actually runs the
-        // preset's command line carries it — the degraded branch
-        // leaves this empty, so a degraded tab is a plain-shell tab
-        // in full (no id, no env — never half a profile's identity).
-        let mut pty_env: HashMap<String, String> = HashMap::new();
-        let (shell, args) = match command {
-            SpawnCommand::Shell(shell) => (shell.clone(), self.config.args.clone()),
-            SpawnCommand::CommandLine(line) => {
-                match tabs::command_line_parts(line) {
-                    Some((program, trailing)) => (program, trailing),
-                    // Unreachable in practice — the CLI rejects an
-                    // empty --cmd — but a degraded empty line still
-                    // spawns the default shell rather than a dying
-                    // exec of "".
-                    None => (self.config.resolved_shell(), self.config.args.clone()),
-                }
-            }
-            SpawnCommand::Profile {
-                name, command, env, ..
-            } => {
-                if let Some((program, trailing)) = tabs::command_line_parts(command) {
-                    // The id is recorded only when the spawn actually
-                    // runs the preset: the degraded line below spawns
-                    // a plain-shell tab, which must not save an id
-                    // restore would keep re-degrading.
-                    profile_id = Some(name.clone());
-                    pty_env = preset_env(env.as_ref());
-                    (program, trailing)
-                } else {
-                    // A hand-edited config can store a blank command
-                    // line; warn and spawn the plain shell —
-                    // degradation, never an error surface.
-                    log::warn!(
-                        "profile {name} stores no runnable command line; \
-                         spawning the shell instead"
-                    );
-                    (self.config.resolved_shell(), self.config.args.clone())
-                }
-            }
-        };
+        let SpawnParts {
+            program: shell,
+            trailing: args,
+            profile_id,
+            env: pty_env,
+        } = spawn_parts(command, &self.config);
 
         // The spawn's own appearance resolution — the same
         // [`resolved_profile`]/seam chain the config-apply pass runs
