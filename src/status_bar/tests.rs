@@ -1027,3 +1027,128 @@ fn the_press_payload_stays_the_full_value_whatever_the_display() {
         "~/src/oss/l1br3/ced2"
     );
 }
+
+// --- text selection (the user-ruled interaction, 2026-10-11) ---
+//
+// Press-and-drag across the band selects the covered characters of
+// the row's display text — WYSIWYG, the elided display included —
+// and the release copies them (clipboard + primary). A click (no
+// meaningful drag) keeps the shipped verb: the segment's full
+// un-elided value and the ✓ flash.
+
+fn row_segments() -> Vec<RowSegment> {
+    vec![
+        RowSegment {
+            rect: Rectangle::new(Point::new(12.0, 0.0), Size::new(40.0, BAND_HEIGHT)),
+            text: "fish".to_string(),
+        },
+        RowSegment {
+            rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(100.0, BAND_HEIGHT)),
+            text: "~/src/oss/l1br3/ced2".to_string(),
+        },
+        RowSegment {
+            rect: Rectangle::new(Point::new(300.0, 0.0), Size::new(40.0, BAND_HEIGHT)),
+            text: "14:32".to_string(),
+        },
+    ]
+}
+
+#[test]
+fn a_full_row_drag_selects_every_segment_joined_by_spaces() {
+    let text = selection_text(
+        Point::new(12.0, 14.0),
+        Point::new(340.0, 14.0),
+        &row_segments(),
+    );
+    assert_eq!(text, "fish ~/src/oss/l1br3/ced2 14:32");
+}
+
+#[test]
+fn a_partial_drag_selects_the_covered_characters_of_both_sides() {
+    // A character is covered when its cell intersects the span:
+    // from x=20 (inside `fish`'s first cell) to x=100 (8 cells
+    // into the path at 5 px per char); the untouched clock
+    // contributes nothing, not even a joining space.
+    let text = selection_text(
+        Point::new(20.0, 14.0),
+        Point::new(100.0, 14.0),
+        &row_segments(),
+    );
+    assert_eq!(text, "fish ~/src/os");
+    // Dragging backwards selects the same span.
+    let text = selection_text(
+        Point::new(100.0, 14.0),
+        Point::new(20.0, 14.0),
+        &row_segments(),
+    );
+    assert_eq!(text, "fish ~/src/os");
+}
+
+#[test]
+fn a_drag_confined_to_a_gap_selects_nothing() {
+    let text = selection_text(
+        Point::new(52.0, 14.0),
+        Point::new(60.0, 14.0),
+        &row_segments(),
+    );
+    assert_eq!(text, "");
+}
+
+#[test]
+fn selection_rects_intersect_each_segment_horizontally() {
+    let rects = selection_rects(
+        Point::new(20.0, 14.0),
+        Point::new(100.0, 14.0),
+        &row_segments(),
+    );
+    assert_eq!(rects.len(), 2);
+    assert_eq!(
+        rects[0],
+        Rectangle::new(Point::new(20.0, 0.0), Size::new(32.0, BAND_HEIGHT))
+    );
+    assert_eq!(
+        rects[1],
+        Rectangle::new(Point::new(64.0, 0.0), Size::new(36.0, BAND_HEIGHT))
+    );
+}
+
+#[test]
+fn a_still_press_is_a_click_and_a_moving_press_selects() {
+    assert!(selection_is_click(
+        Point::new(20.0, 14.0),
+        Point::new(20.0, 14.0)
+    ));
+    assert!(selection_is_click(
+        Point::new(20.0, 14.0),
+        Point::new(23.0, 15.0)
+    ));
+    assert!(!selection_is_click(
+        Point::new(20.0, 14.0),
+        Point::new(28.0, 14.0)
+    ));
+    assert!(!selection_is_click(
+        Point::new(20.0, 14.0),
+        Point::new(60.0, 14.0)
+    ));
+}
+
+#[test]
+fn selection_copies_the_display_wysiwyg_click_copies_the_full_value() {
+    // An elided path's selection yields its elided characters —
+    // what is seen is what is selected; the click verb remains the
+    // full un-elided value through `copy_text`.
+    let row = vec![RowSegment {
+        rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(50.0, BAND_HEIGHT)),
+        text: "…/l1br3/ced2".to_string(),
+    }];
+    let text = selection_text(Point::new(64.0, 14.0), Point::new(94.0, 14.0), &row);
+    assert_eq!(text, "…/l1br3/");
+    let segments = StatusSegments {
+        path: Some("~/src/oss/l1br3/ced2".to_string()),
+        ..StatusSegments::default()
+    };
+    assert_eq!(
+        copy_text(SegmentId::Path, &segments),
+        "~/src/oss/l1br3/ced2"
+    );
+}
