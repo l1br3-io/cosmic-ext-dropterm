@@ -1152,3 +1152,194 @@ fn selection_copies_the_display_wysiwyg_click_copies_the_full_value() {
         "~/src/oss/l1br3/ced2"
     );
 }
+
+// --- the context menu (the per-tab menu's pattern) ---
+
+/// A rich band — every segment present — the menu pins' fixture.
+fn rich_segments() -> StatusSegments {
+    StatusSegments {
+        running: true,
+        process: "cargo".to_string(),
+        path: Some("~/src/oss/l1br3/ced2".to_string()),
+        branch: Some("ced2".to_string()),
+        profile: Some("dev".to_string()),
+        zoom_percent: Some(120),
+        grid: Some((120, 30)),
+        tab_position: Some((1, 3)),
+        clock: Some("14:32".to_string()),
+    }
+}
+
+#[test]
+fn menu_rows_compose_clipboard_zoom_and_band_clusters_in_order() {
+    // Copy · Copy All · Paste │ Zoom In · Zoom Out · Reset Zoom │
+    // Hide Status Bar · Settings… — the clipboard cluster over the
+    // band's own values, the zoom cluster the Zoom segment
+    // narrates, the band's lifecycle rows last, Settings behind
+    // its divider (the GNOME end placement).
+    let rows = menu_rows(&rich_segments(), Some(SegmentId::Path));
+    let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Copy",
+            "Copy All",
+            "Paste",
+            "Zoom In",
+            "Zoom Out",
+            "Reset Zoom",
+            "Hide Status Bar",
+            "Settings\u{2026}",
+        ]
+    );
+    let separated: Vec<bool> = rows.iter().map(|row| row.separated).collect();
+    assert_eq!(
+        separated,
+        vec![false, false, false, true, false, false, true, false]
+    );
+    let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
+    assert!(
+        enabled.iter().all(|&enabled| enabled),
+        "every row is live on a rich band"
+    );
+}
+
+#[test]
+fn menu_rows_labels_are_unique_and_non_empty() {
+    let rows = menu_rows(&rich_segments(), Some(SegmentId::Path));
+    for (i, left) in rows.iter().enumerate() {
+        assert!(
+            !left.label.is_empty(),
+            "{:?} has an empty label",
+            left.label
+        );
+        for right in &rows[i + 1..] {
+            assert_ne!(left.label, right.label);
+        }
+    }
+}
+
+#[test]
+fn the_copy_row_carries_the_pressed_segment_and_mutes_on_a_gap_press() {
+    // A segment press scopes Copy to it; a gap press mutes the row
+    // and leaves it nothing to publish.
+    let rows = menu_rows(&rich_segments(), Some(SegmentId::Path));
+    assert_eq!(rows[0].pick, Some(MenuPick::CopySegment(SegmentId::Path)));
+    assert!(rows[0].enabled);
+    let gap = menu_rows(&rich_segments(), None);
+    assert_eq!(gap[0].pick, None);
+    assert!(!gap[0].enabled, "a gap press's Copy is muted, never picked");
+}
+
+#[test]
+fn the_copy_row_mutes_when_the_pressed_segment_has_no_value() {
+    // The live value decides: a pressed-but-absent segment is an
+    // empty payload, and an empty payload never copies.
+    let segments = StatusSegments {
+        process: "fish".to_string(),
+        ..StatusSegments::default()
+    };
+    let rows = menu_rows(&segments, Some(SegmentId::Clock));
+    assert!(
+        !rows[0].enabled,
+        "a pressed segment with no value mutes Copy"
+    );
+    assert_eq!(rows[0].pick, Some(MenuPick::CopySegment(SegmentId::Clock)));
+}
+
+#[test]
+fn copy_all_mutes_when_nothing_is_present() {
+    let rows = menu_rows(&StatusSegments::default(), None);
+    assert!(!rows[1].enabled, "an empty band has nothing to Copy All");
+    let rich = menu_rows(&rich_segments(), None);
+    assert!(rich[1].enabled);
+}
+
+#[test]
+fn reset_zoom_mutes_at_base_size_and_lives_while_zoomed() {
+    // `zoom_percent`'s own condition, restated as the row's
+    // enablement — Reset at base size would always no-op.
+    let base = StatusSegments {
+        process: "fish".to_string(),
+        ..StatusSegments::default()
+    };
+    assert!(!menu_rows(&base, None)[5].enabled);
+    assert!(menu_rows(&rich_segments(), None)[5].enabled);
+}
+
+#[test]
+fn every_action_row_routes_to_its_keybinds_own_action() {
+    let rows = menu_rows(&rich_segments(), Some(SegmentId::Path));
+    let picks: Vec<Option<MenuPick>> = rows.iter().map(|row| row.pick).collect();
+    assert_eq!(
+        picks,
+        vec![
+            Some(MenuPick::CopySegment(SegmentId::Path)),
+            Some(MenuPick::CopyAll),
+            Some(MenuPick::Action(Action::Paste)),
+            Some(MenuPick::Action(Action::ZoomIn)),
+            Some(MenuPick::Action(Action::ZoomOut)),
+            Some(MenuPick::Action(Action::ZoomReset)),
+            Some(MenuPick::Action(Action::ToggleStatusBar)),
+            Some(MenuPick::Action(Action::Settings)),
+        ]
+    );
+}
+
+#[test]
+fn copy_all_joins_every_present_full_value_with_single_spaces() {
+    // Full values through `copy_text` in row order — left cluster
+    // then right — never displays, empties skipped.
+    assert_eq!(
+        copy_all_text(&rich_segments()),
+        "cargo ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
+    );
+}
+
+#[test]
+fn copy_all_skips_absent_segments_and_empty_in_empty_out() {
+    let sparse = StatusSegments {
+        process: "vim".to_string(),
+        path: Some("~/src".to_string()),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_all_text(&sparse), "vim ~/src");
+    assert_eq!(copy_all_text(&StatusSegments::default()), "");
+}
+
+#[test]
+fn menu_bounds_anchors_at_the_press_and_clamps_into_the_band() {
+    // The bubble pops to the terminal's side of the band with its
+    // left edge at the press — unless that would overflow the
+    // band's right end, where it shifts left to fit (the per-tab
+    // menu's both-edges rule).
+    let beside = menu_bounds(1000.0, 120.0, 80.0, 8, TooltipSide::Below);
+    assert_eq!(beside.x, 120.0);
+    assert_eq!(
+        beside.y,
+        BAND_HEIGHT + DROPDOWN_GAP,
+        "a Below bubble starts under the band"
+    );
+    let above = menu_bounds(1000.0, 120.0, 80.0, 8, TooltipSide::Above);
+    assert_eq!(
+        above.y + above.height,
+        -DROPDOWN_GAP,
+        "an Above bubble clears the band upward"
+    );
+    let clamped = menu_bounds(300.0, 280.0, 80.0, 8, TooltipSide::Below);
+    assert_eq!(
+        clamped.x + clamped.width,
+        300.0,
+        "an anchored-too-far-right bubble ends at the band's right edge"
+    );
+    assert_eq!(
+        clamped.width,
+        80.0 + DROPDOWN_PADDING_X * 2.0,
+        "width is the widest label plus the shared menu padding"
+    );
+    assert_eq!(
+        clamped.height,
+        8.0 * DROPDOWN_ROW_HEIGHT,
+        "height is the row count on the shared menu row height"
+    );
+}

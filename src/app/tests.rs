@@ -742,3 +742,13 @@ fn tooltip_side_pinned_layouts_follow_the_bar_not_the_anchor() {
         TooltipSide::Above
     );
 }
+
+#[test]
+fn band_menu_side_pops_terminal_ward_on_both_edges() {
+    // The band hugs the free edge beside the grab bar, so its
+    // terminal side is opposite the tab strip's for the same edge:
+    // above a top-anchored band, below a bottom-anchored one — the
+    // only side with surface under the bubble.
+    assert_eq!(band_menu_side(Edge::Top), TooltipSide::Above);
+    assert_eq!(band_menu_side(Edge::Bottom), TooltipSide::Below);
+}
