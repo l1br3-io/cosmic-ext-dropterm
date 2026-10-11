@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
-use super::{DropTerm, effective_colors, effective_is_dark, resolved_profile};
+use super::{DropTerm, SurfaceState, effective_colors, effective_is_dark, resolved_profile};
 use crate::config::{DropTermConfig, NewTabCwd};
 use crate::profile;
 use crate::session;
@@ -240,6 +240,19 @@ impl DropTerm {
         // an inherited cwd seeds the directory the tab opened in, for
         // the same reason.
         self.tab_cwds.insert(tab.id, cwd);
+        // The spawn-grid settle's arming (status-glance criterion 1):
+        // with a live surface already laid out, the fresh terminal's
+        // first resize is the settling one — arm the close so it
+        // records the resting grid and every later resize reads as
+        // the user's deviation. With no live surface (startup, or a
+        // hidden one), the settle waits for the opening's granted-
+        // size adoption to arm it instead.
+        if matches!(
+            self.surface,
+            SurfaceState::Shown(_) | SurfaceState::Hiding(_)
+        ) {
+            tab.terminal.lock().unwrap().arm_spawn_grid_next_resize();
+        }
         Some(tab)
     }
 

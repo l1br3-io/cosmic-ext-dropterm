@@ -513,11 +513,13 @@ impl DropTerm {
             .profile
             .as_deref()
             .and_then(|id| profile::find(&self.config.profiles, id));
-        // The grid rides the same in-memory lock as the zoom —
-        // resize-fresh by construction, no snapshot of its own.
-        let (zoom_adj, grid) = {
+        // The grid and its spawn record ride the same in-memory
+        // lock as the zoom — resize-fresh by construction, no
+        // snapshot of its own; the record is the engine-owned
+        // resting grid (status-glance criterion 1).
+        let (zoom_adj, grid, spawn_grid) = {
             let terminal = tab.terminal.lock().unwrap();
-            (terminal.zoom_adj(), terminal.grid())
+            (terminal.zoom_adj(), terminal.grid(), terminal.spawn_grid())
         };
         // The step the tab's terminal actually zooms by: the same
         // options construction every spawn builds from.
@@ -534,6 +536,7 @@ impl DropTerm {
             foreground: self.active_process_name.as_deref(),
             branch: self.active_branch.as_deref(),
             grid: Some(grid),
+            spawn_grid: Some(spawn_grid),
             tab_position: self.active_tab_position(),
             clock: self.status_clock.as_deref(),
         };

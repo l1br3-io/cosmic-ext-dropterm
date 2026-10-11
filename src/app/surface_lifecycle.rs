@@ -491,6 +491,15 @@ impl DropTerm {
         let now = std::time::Instant::now();
         if geometry::window_pin_due(self.pin_applied, now, height) {
             self.window_height = Some(height);
+            // The spawn-grid settle's adoption arm (status-glance
+            // criterion 1): the granted stream just settled, so any
+            // terminal still waiting records its resting grid on the
+            // next resize — the draw at this adopted height. A no-op
+            // on settled records, so a re-show's adoption can never
+            // absorb a live deviation into the record.
+            for tab in &self.tabs {
+                tab.terminal.lock().unwrap().arm_spawn_grid_next_resize();
+            }
             // Re-adopting the height the pin already has must not
             // refresh the adoption clock (see `window_pin_due`): the
             // echo stream would otherwise starve changed heights.

@@ -184,6 +184,12 @@ impl DropTerm {
         // shell's first OSC title report reads as unchanged.
         self.tab_cwds.remove(&tab);
         self.tab_cwds.insert(tab_id, respawn_cwd);
+        // The spawn-grid record follows the terminal swap the same
+        // way — the fresh terminal's settle IS the OQ-2 reset (a
+        // respawn starts default), armed here because a respawn only
+        // ever runs on a live, laid-out surface: the new terminal's
+        // first resize records the resting grid and freezes.
+        target.terminal.lock().unwrap().arm_spawn_grid_next_resize();
         // The respawned tab is the focused one: its (possibly new)
         // scheme owns the window background from the first paint of
         // the fresh terminal — the every-assignment rule, the restore

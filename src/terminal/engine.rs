@@ -365,8 +365,35 @@ pub struct Terminal {
     search_value: String,
     shell_pid: Option<u32>,
     size: Size,
+    /// The grid recorded at the tab's spawn — the resting grid the
+    /// status band's grid segment measures deviation against
+    /// (status-glance criterion 1). Owned by the [`SpawnSettle`]
+    /// state machine; dies with the terminal, so a respawn (a fresh
+    /// terminal) resets it by construction.
+    spawn_grid: (u16, u16),
+    spawn_settle: SpawnSettle,
     use_bright_bold: bool,
     zoom_adj: i8,
+}
+
+/// The spawn-grid settle (status-glance criterion 1): a fresh
+/// terminal's first resizes are not user deviations — the
+/// construction default, an opening surface's measuring stretch,
+/// and the granted-size stream all land before the resting grid
+/// exists — so the record re-baselines through them and freezes
+/// only once the surface has settled.
+enum SpawnSettle {
+    /// The surface is opening: every resize re-baselines the record
+    /// (opening churn) until the app's granted-size adoption arms
+    /// the close.
+    WaitingAdoption,
+    /// A laid-out surface exists (or an adoption just landed): the
+    /// next resize is the settling one — it records the resting
+    /// grid and closes the settle.
+    NextResize,
+    /// The resting grid is recorded; every later resize is a
+    /// deviation for the band to report.
+    Settled,
 }
 
 impl Terminal {
@@ -470,6 +497,15 @@ impl Terminal {
         let notifier = Notifier(pty_event_loop.channel());
         let _pty_join_handle = pty_event_loop.spawn();
 
+        // The construction grid is the spawn record's honest starting
+        // value: the default the pty opened at, replaced by the
+        // resting grid once the surface's opening settles.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "cell counts fit u16 by construction — a screen beyond 65k cells does not exist"
+        )]
+        let spawn_grid = (size.columns() as u16, size.screen_lines() as u16);
+
         Ok(Self {
             active_regex_match: None,
             active_hyperlink_id: None,
@@ -488,6 +524,8 @@ impl Terminal {
             search_value: String::new(),
             shell_pid,
             size,
+            spawn_grid,
+            spawn_settle: SpawnSettle::WaitingAdoption,
             term,
             use_bright_bold,
             zoom_adj: Default::default(),
@@ -547,6 +585,31 @@ impl Terminal {
         )]
         let (cols, rows) = (self.size.columns() as u16, self.size.screen_lines() as u16);
         (cols, rows)
+    }
+
+    /// The grid recorded at the tab's spawn — the resting grid the
+    /// status band's grid segment measures deviation against: the
+    /// band narrates a grid only while the live one differs from
+    /// this (status-glance criterion 1). Recorded through the
+    /// spawn-settle machinery ([`Self::arm_spawn_grid_next_resize`]);
+    /// a respawn is a fresh terminal, so its settle — and record —
+    /// start over.
+    pub fn spawn_grid(&self) -> (u16, u16) {
+        self.spawn_grid
+    }
+
+    /// Arms the spawn-grid settle's close: the terminal's next
+    /// resize records the resting grid and freezes the record. The
+    /// app arms where a laid-out surface's granted size is adopted
+    /// (the pin funnel — every show runs one) and, only when a live
+    /// surface already exists, at spawn/respawn, where the fresh
+    /// terminal's first — settling — resize is the resting one.
+    /// Arming a settled record is a no-op: a later adoption (every
+    /// re-show) must never re-snapshot a frozen record.
+    pub fn arm_spawn_grid_next_resize(&mut self) {
+        if matches!(self.spawn_settle, SpawnSettle::WaitingAdoption) {
+            self.spawn_settle = SpawnSettle::NextResize;
+        }
     }
 
     pub fn zoom_adj(&self) -> i8 {
@@ -661,6 +724,18 @@ impl Terminal {
             let min_height = self.size.cell_height.ceil() as u32;
             self.size.width = width.max(min_width);
             self.size.height = height.max(min_height);
+
+            // The spawn-grid settle's only write site: opening churn
+            // re-baselines, the settling resize records the resting
+            // grid and freezes, and everything after is a deviation.
+            match self.spawn_settle {
+                SpawnSettle::WaitingAdoption => self.spawn_grid = self.grid(),
+                SpawnSettle::NextResize => {
+                    self.spawn_grid = self.grid();
+                    self.spawn_settle = SpawnSettle::Settled;
+                }
+                SpawnSettle::Settled => {}
+            }
 
             self.notifier.on_resize(self.size.into());
             self.term.lock().resize(self.size);
@@ -1608,6 +1683,156 @@ mod tests {
         // the floor-division ever sees a sub-cell size.
         terminal.resize(0, 0);
         assert_eq!(terminal.grid(), (1, 1));
+    }
+
+    // --- the spawn-grid settle (status-glance criterion 1) ---
+    //
+    // The band's grid segment reports only a resize away from the
+    // grid the tab started at, and a fresh terminal's first resizes
+    // are not that: the construction default, an opening surface's
+    // measuring stretch, and the granted-size stream all land before
+    // the resting grid exists. The settle state machine below
+    // records the resting grid and freezes it — engine-owned, per
+    // the 2026-10-11 ruling.
+
+    fn spawn_grid_terminal() -> Terminal {
+        use alacritty_terminal::tty::Shell as PtyShell;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal")
+    }
+
+    /// Resize to exactly `cols` cells wide, keeping the current
+    /// height — the whole-cell multiple the floor division lands on.
+    fn resize_cols(terminal: &mut Terminal, cols: u32) {
+        let cell = terminal.size().cell_width;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "test col counts and their px products are far below both u32::MAX and f32's mantissa"
+        )]
+        let width = (cell * cols as f32).ceil() as u32;
+        let height = terminal.size().height;
+        terminal.resize(width, height);
+    }
+
+    #[test]
+    fn a_fresh_terminal_carries_the_default_grid_as_its_spawn_grid() {
+        let terminal = spawn_grid_terminal();
+        assert_eq!(terminal.grid(), (80, 24));
+        assert_eq!(terminal.spawn_grid(), (80, 24));
+    }
+
+    #[test]
+    fn arming_makes_the_next_resize_record_the_resting_grid_and_freeze() {
+        // The shown-surface spawn: one settling resize to the
+        // resting grid, then the record is frozen — later resizes
+        // are the deviations the band reports, and resizing back
+        // to the resting grid reads as returned (live == record).
+        let mut terminal = spawn_grid_terminal();
+        terminal.arm_spawn_grid_next_resize();
+        resize_cols(&mut terminal, 40);
+        assert_eq!(terminal.spawn_grid().0, 40);
+        resize_cols(&mut terminal, 60);
+        assert_eq!(
+            terminal.spawn_grid().0,
+            40,
+            "a settled record never follows a later resize"
+        );
+        resize_cols(&mut terminal, 40);
+        assert_eq!(terminal.spawn_grid().0, 40);
+        assert_eq!(
+            terminal.grid().0,
+            40,
+            "returning to rest reads as un-resized"
+        );
+    }
+
+    #[test]
+    fn opening_churn_rebaselines_until_the_adoption_arms() {
+        // The startup spawn: the measuring stretch and the granted
+        // stream both land before any adoption — each re-baselines
+        // (churn, not deviation) — and only the resize after the
+        // adoption's arm freezes the record.
+        let mut terminal = spawn_grid_terminal();
+        resize_cols(&mut terminal, 120);
+        assert_eq!(terminal.spawn_grid().0, 120, "the stretch re-baselines");
+        resize_cols(&mut terminal, 90);
+        assert_eq!(terminal.spawn_grid().0, 90, "the grant re-baselines");
+        terminal.arm_spawn_grid_next_resize();
+        resize_cols(&mut terminal, 45);
+        assert_eq!(terminal.spawn_grid().0, 45);
+        resize_cols(&mut terminal, 70);
+        assert_eq!(
+            terminal.spawn_grid().0,
+            45,
+            "the record froze at the resting grid"
+        );
+    }
+
+    #[test]
+    fn arming_a_settled_spawn_grid_is_a_no_op() {
+        // Every re-show runs an adoption; one must never resurrect
+        // or re-snapshot a record that already settled — a geometry
+        // change made while hidden stays a visible deviation.
+        let mut terminal = spawn_grid_terminal();
+        terminal.arm_spawn_grid_next_resize();
+        resize_cols(&mut terminal, 40);
+        terminal.arm_spawn_grid_next_resize();
+        resize_cols(&mut terminal, 55);
+        assert_eq!(
+            terminal.spawn_grid().0,
+            40,
+            "the second arm changes nothing"
+        );
+    }
+
+    #[test]
+    fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
+        // The zoom path re-fires `resize` through `update_cell_size`
+        // — scale-only today: `zoom_adj` moves the band's percent,
+        // not the cells — and a real metrics change (a profile's
+        // font size through `set_config`) re-fires it with new
+        // cells. A settled record must read neither as a
+        // re-baseline: the grid segment narrates the deviation, and
+        // the metrics' return restores the rest.
+        let mut terminal = spawn_grid_terminal();
+        terminal.arm_spawn_grid_next_resize();
+        resize_cols(&mut terminal, 40);
+        let resting = terminal.spawn_grid();
+
+        terminal.set_zoom_adj(2);
+        terminal.update_cell_size();
+        assert_eq!(terminal.spawn_grid(), resting);
+        assert_eq!(terminal.grid().0, 40, "zoom is scale-only: cells stand");
+
+        let enlarged = TerminalOptions {
+            font_size: 24,
+            ..TerminalOptions::default()
+        };
+        terminal.set_config(&enlarged, &Colors::default());
+        assert_eq!(terminal.spawn_grid(), resting);
+        assert_ne!(terminal.grid().0, 40, "bigger cells deviate from rest");
+
+        terminal.set_zoom_adj(0);
+        terminal.set_config(&TerminalOptions::default(), &Colors::default());
+        assert_eq!(
+            terminal.grid().0,
+            40,
+            "the metrics' return restores the rest"
+        );
     }
 
     /// Poll a live terminal's foreground check until it reads `want`,

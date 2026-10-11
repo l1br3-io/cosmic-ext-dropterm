@@ -215,8 +215,8 @@ pub struct StatusSegments {
 /// the resolver stays pure and headless-testable. The app feeds it
 /// the `~`-collapse base, the cwd, the recorded shell, the
 /// id-resolved profile name, the zoom adjustment and step, the
-/// process-name and branch snapshots, the grid and tab position, and
-/// the stored clock string.
+/// process-name and branch snapshots, the grid with its spawn record,
+/// the tab position, and the stored clock string.
 pub struct StatusInputs<'a> {
     /// The `~`-collapse base; `None` (an unset `HOME` — never in a
     /// real desktop session) keeps paths verbatim.
@@ -237,6 +237,11 @@ pub struct StatusInputs<'a> {
     pub branch: Option<&'a str>,
     /// The terminal's cell dimensions (cols, rows).
     pub grid: Option<(u16, u16)>,
+    /// The grid recorded at the tab's spawn (status-glance
+    /// criterion 1) — the resting grid the live one measures
+    /// deviation against; `None` (no record) shows the live grid,
+    /// the honest reading when default was never witnessed.
+    pub spawn_grid: Option<(u16, u16)>,
     /// The active tab's position (index, total).
     pub tab_position: Option<(u16, u16)>,
     /// The stored wall-clock string.
@@ -271,7 +276,15 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.profile_name)
             .flatten()
             .map(str::to_string),
-        grid: toggles.grid.then_some(inputs.grid).flatten(),
+        grid: toggles
+            .grid
+            .then_some(inputs.grid)
+            .flatten()
+            // The resized-from-spawn condition: equal means absent —
+            // the same indistinguishable `None` a toggle-off segment
+            // resolves to, so default and hidden cannot be told
+            // apart downstream. An absent record shows the live grid.
+            .filter(|&live| Some(live) != inputs.spawn_grid),
         tab_position: toggles.tab.then_some(inputs.tab_position).flatten(),
         zoom_percent: toggles
             .zoom

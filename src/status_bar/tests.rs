@@ -26,6 +26,7 @@ fn resolve(
         foreground,
         branch: None,
         grid: None,
+        spawn_grid: None,
         tab_position: None,
         clock: None,
     };
@@ -365,6 +366,7 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         foreground: Some("cargo"),
         branch: Some("ced2"),
         grid: Some((80, 24)),
+        spawn_grid: None,
         tab_position: Some((2, 5)),
         clock: Some("14:32"),
     };
@@ -459,6 +461,72 @@ fn the_new_segments_resolve_from_their_inputs() {
     assert_eq!(segments.grid, Some((80, 24)));
     assert_eq!(segments.tab_position, Some((2, 5)));
     assert_eq!(segments.clock.as_deref(), Some("14:32"));
+}
+
+// --- the grid condition (status-glance) ---
+
+fn resolve_grid(
+    spawn_grid: Option<(u16, u16)>,
+    grid: Option<(u16, u16)>,
+    toggles: StatusToggles,
+) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid,
+        spawn_grid,
+        tab_position: None,
+        clock: None,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn a_live_grid_equal_to_spawn_hides_the_segment_even_toggle_on() {
+    // tmux renders its zoom flag only when true: a tab still sitting
+    // at the grid it started at has nothing to say — hidden ≡
+    // absent ≡ default, so the formatter never runs downstream.
+    let segments = resolve_grid(Some((80, 24)), Some((80, 24)), StatusToggles::all());
+    assert_eq!(segments.grid, None);
+}
+
+#[test]
+fn either_dimension_off_spawn_shows_the_grid() {
+    for live in [(81, 24), (80, 25), (120, 38)] {
+        let segments = resolve_grid(Some((80, 24)), Some(live), StatusToggles::all());
+        assert_eq!(
+            segments.grid,
+            Some(live),
+            "live {live:?} must read as resized"
+        );
+    }
+}
+
+#[test]
+fn the_grid_toggle_still_wins_over_the_resize_condition() {
+    // Eligibility is the toggle's, appearance the condition's: an
+    // off toggle hides the segment whatever the grids say. Zoom's
+    // own condition is untouched by this module — still purely
+    // `zoom_adj`-gated (zero adjustment hides, as pinned in the
+    // zoom-arithmetic section above).
+    let mut toggles = StatusToggles::all();
+    toggles.grid = false;
+    let segments = resolve_grid(Some((80, 24)), Some((120, 38)), toggles);
+    assert_eq!(segments.grid, None);
+}
+
+#[test]
+fn an_absent_spawn_record_shows_the_live_grid() {
+    // No evidence of default means show — the honest reading for a
+    // record that never landed, never a silently hidden segment.
+    let segments = resolve_grid(None, Some((80, 24)), StatusToggles::all());
+    assert_eq!(segments.grid, Some((80, 24)));
 }
 
 #[test]
