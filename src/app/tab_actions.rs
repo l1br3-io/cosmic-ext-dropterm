@@ -133,38 +133,67 @@ impl DropTerm {
                 .unwrap()
                 .working_directory()
         });
+        // Deferred (no event channel yet) or the spawn errored —
+        // both already logged; the tab is untouched, its live
+        // terminal still running.
+        self.respawn_tab_in_place(index, &command, respawn_cwd, Some(name))
+            .unwrap_or_else(Task::none)
+    }
+
+    /// The shared in-place respawn tail: the tab at `index` keeps its
+    /// slot, activation state, and sticky user rename while its
+    /// terminal is replaced by a fresh PTY running `command` in `cwd`
+    /// — the whole field dance [`Self::switch_tab_profile`] spells out
+    /// for a profile pick and the profile-exit fallback
+    /// ([`Self::respawn_shell_after_profile_exit`]) rides for the
+    /// plain shell. `profile_name` picks the plan: `Some` records a
+    /// persistent profile tab (degraded spawns included — the switch
+    /// keeps the pick), `None` a plain shell tab. `None` back means
+    /// the spawn never happened (deferred or errored, already
+    /// logged); the caller owns the fallback because only it knows
+    /// whether the old terminal was still alive.
+    fn respawn_tab_in_place(
+        &mut self,
+        index: usize,
+        command: &SpawnCommand,
+        cwd: Option<PathBuf>,
+        profile_name: Option<&str>,
+    ) -> Option<Task<Message>> {
         // An open inline rename on the target is discarded (the
         // rename-tab precedent): the draft must not commit over the
         // respawn, and the explicit end gives the deterministic
         // refocus below.
         let refocus = self.end_rename_on(index);
         let old_override = self.tabs[index].title_override.clone();
-        let Some(SpawnedTerminal {
+        let SpawnedTerminal {
             tab_id,
             terminal,
             shell,
             ..
-        }) = self.spawn_terminal(&command, respawn_cwd.as_deref())
-        else {
-            // Deferred (no event channel yet) or the spawn errored —
-            // both already logged; the tab is untouched.
-            return Task::none();
+        } = self.spawn_terminal(command, cwd.as_deref())?;
+        let plan = match profile_name {
+            Some(name) => tabs::plan_respawn(
+                self.config.tab_title_mode,
+                tab_id,
+                cwd.as_deref(),
+                old_override.as_deref(),
+                name,
+            ),
+            None => tabs::plan_shell_respawn(
+                self.config.tab_title_mode,
+                tab_id,
+                cwd.as_deref(),
+                old_override.as_deref(),
+            ),
         };
-        let plan = tabs::plan_respawn(
-            self.config.tab_title_mode,
-            tab_id,
-            respawn_cwd.as_deref(),
-            old_override.as_deref(),
-            name,
-        );
         let target = &mut self.tabs[index];
         // Every field the old terminal's life touched comes from the
-        // plan — the profile id included: the tab is a profile tab
-        // from now on, whatever it was before. (A degraded blank
-        // command line still records the pick; the next restore
-        // re-derives the pair through `spawn_shell`, which drops the
-        // id for a degraded line, so a broken preset heals itself
-        // after one cycle.)
+        // plan — the profile id included for a profile respawn (the
+        // tab is a profile tab from now on, whatever it was before; a
+        // degraded blank command line still records the pick, and the
+        // next restore re-derives the pair through `spawn_shell`), or
+        // cleared for the shell fallback (the preset's process is
+        // gone, and the tab is a plain shell tab from here on).
         target.title = plan.title;
         target.shell_title = plan.shell_title;
         target.title_override = plan.title_override;
@@ -177,13 +206,14 @@ impl DropTerm {
         // field drops the old `Terminal`, whose `Drop` sends
         // `Msg::Shutdown`, and late events from the dying PTY find no
         // tab carrying the old id.
+        let old_id = target.id;
         target.id = tab_id;
         target.terminal = Mutex::new(terminal);
         // The cwd cache follows the id swap: drop the dead tab's
         // entry, seed the new one with the respawn cwd so the fresh
         // shell's first OSC title report reads as unchanged.
-        self.tab_cwds.remove(&tab);
-        self.tab_cwds.insert(tab_id, respawn_cwd);
+        self.tab_cwds.remove(&old_id);
+        self.tab_cwds.insert(tab_id, cwd);
         // The spawn-grid record follows the terminal swap the same
         // way — the fresh terminal's settle IS the OQ-2 reset (a
         // respawn starts default), armed here because a respawn only
@@ -197,7 +227,48 @@ impl DropTerm {
         // status band's process snapshot from the first event.
         self.refresh_active_window_bg();
         self.refresh_status_snapshot();
-        Task::batch([refocus, self.mark_session_dirty()])
+        Some(Task::batch([refocus, self.mark_session_dirty()]))
+    }
+
+    /// The profile-exit fallback: a profile tab's child has exited,
+    /// and the tab respawns the configured plain shell in its place
+    /// instead of closing — the never-empty rule generalized from
+    /// "the last tab" to "every profile tab". A one-shot profile
+    /// command (`ls`) must not take its tab with it: the New Tab pick
+    /// would flash and vanish ("does not work"), and the Switch
+    /// Profile pick would destroy the current slot outright — the old
+    /// shell was already killed for the respawn, so closing here
+    /// would discard it with no confirmation. The shell is the
+    /// configured plain one, never the default spawn: a one-shot
+    /// `default_profile` must not loop the fallback forever. The
+    /// fresh shell opens in the directory the profile ran in — the
+    /// dying child's `/proc` cwd is gone with it, so the seeded cwd
+    /// cache is the source. A spawn that cannot land (deferred or
+    /// errored) falls back to today's close: a dead-PTY tab left in
+    /// the list is the one outcome worse than losing the slot.
+    fn respawn_shell_after_profile_exit(&mut self, index: usize) -> Task<Message> {
+        let dead_id = self.tabs[index].id;
+        let profile = self.tabs[index].profile.clone();
+        // The fresh shell opens in the directory the profile ran in.
+        // The dying child's own `/proc/<pid>/cwd` is gone with it (and
+        // a recycled pid would silently read the wrong process), so
+        // the seeded cwd cache is the source — spawn-seeded, refreshed
+        // by every title event's sample.
+        let cwd = self.tab_cwds.get(&dead_id).cloned().flatten();
+        let command = SpawnCommand::Shell(self.config.resolved_shell());
+        if let Some(task) = self.respawn_tab_in_place(index, &command, cwd, None) {
+            log::info!(
+                "profile {} exited; respawned the shell in its tab",
+                profile.as_deref().unwrap_or("?")
+            );
+            task
+        } else {
+            log::warn!(
+                "profile {} exited and the shell respawn failed; closing the tab",
+                profile.as_deref().unwrap_or("?")
+            );
+            self.close_tab_at(index)
+        }
     }
 
     pub(super) fn perform_action(&mut self, action: Action) -> Task<Message> {
@@ -1140,7 +1211,19 @@ impl DropTerm {
                 // A tab whose shell exits is closed; when it was the
                 // last, a fresh tab spawns in its place so the
                 // overlay is never left without a terminal (see
-                // `ensure_tabs`).
+                // `ensure_tabs`). A profile tab is the exception: its
+                // command exiting respawns the plain shell in place
+                // (the one-shot ruling — see
+                // [`Self::respawn_shell_after_profile_exit`]), so a
+                // profile like `ls` neither vanishes a New Tab pick
+                // nor destroys the slot a Switch Profile pick
+                // replaced.
+                if exit_respawns_shell(
+                    self.tabs[tab_index].profile.as_deref(),
+                    self.tabs[tab_index].ephemeral,
+                ) {
+                    return self.respawn_shell_after_profile_exit(tab_index);
+                }
                 return self.close_tab_at(tab_index);
             }
         }
@@ -1205,5 +1288,20 @@ mod tests {
         assert!(!rename_overlay_hosted(1));
         assert!(rename_overlay_hosted(2));
         assert!(rename_overlay_hosted(5));
+    }
+
+    #[test]
+    fn only_a_profile_tab_s_exit_respawns_the_shell() {
+        // The one-shot ruling's routing pin: a profile tab's exit
+        // respawns the plain shell in place — a plain shell's exit
+        // (the user typed `exit`) and a `--cmd` tab's exit (ephemeral
+        // by design) keep today's close.
+        assert!(exit_respawns_shell(Some("hahaha"), false));
+        assert!(!exit_respawns_shell(None, false));
+        assert!(!exit_respawns_shell(None, true));
+        // Exclusive by construction today; the defensive half of the
+        // pin — a hypothetical profile-carrying ephemeral tab must
+        // still close, never respawn.
+        assert!(!exit_respawns_shell(Some("hahaha"), true));
     }
 }
