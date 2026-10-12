@@ -609,7 +609,10 @@ impl DropTerm {
             &self.config,
             self.active().and_then(|tab| tab.profile.as_deref()),
         );
-        Self::refresh_window_bg_color(&effective_colors(&self.config, active_profile, is_dark));
+        Self::refresh_window_bg_color(
+            &effective_colors(&self.config, active_profile, is_dark),
+            is_dark,
+        );
         for tab in &self.tabs {
             let profile = resolved_profile(&self.config, tab.profile.as_deref());
             let options = self.terminal_options_for(profile);
@@ -623,8 +626,25 @@ impl DropTerm {
     /// used as a fallback wherever a color scheme leaves "background"
     /// unset, so it must be refreshed whenever the active tab's
     /// resolution, the global scheme, or the COSMIC theme changes.
-    fn refresh_window_bg_color(colors: &aterm::color::Colors) {
-        let theme = cosmic::theme::active();
+    ///
+    /// The fallback is derived from the palette matching `is_dark` — the
+    /// caller's `effective_is_dark` decision — via
+    /// [`cosmic::theme::system_dark`]/[`cosmic::theme::system_light`],
+    /// the same palettes [`theme_override_task`] pins. It must NOT read
+    /// [`cosmic::theme::active`]: when the preference pins a mode, a
+    /// startup race in libcosmic's theme watcher can deliver the other
+    /// mode's `SystemThemeChange` (the watcher is built before the pin
+    /// lands), and its handler writes the delivered palette into the
+    /// process global while preserving only the `prefer_dark` marker —
+    /// `active()` then reports the wrong mode with the pin still "set",
+    /// and every later refresh re-derives the opposite-mode background
+    /// under cells that correctly resolve the pinned scheme (the
+    /// white-background-in-dark-mode bug, hardware walk 2026-10-12).
+    /// Deriving from the mode the same way `effective_colors` does
+    /// keeps the fallback and the cells in step whatever the global
+    /// says.
+    fn refresh_window_bg_color(colors: &aterm::color::Colors, is_dark: bool) {
+        let theme = system_palette_for_mode(is_dark);
         let color = cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base);
         let bytes = color.into_rgba8();
         let system_bg = u32::from(bytes[2])
@@ -1161,6 +1181,25 @@ fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
             0xFF00_0000 | (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
         }
         None => system_bg,
+    }
+}
+
+/// The user's own system palette for the effective mode — the source
+/// of the window-background fallback derivation
+/// ([`Self::refresh_window_bg_color`]). Reads the palette files via
+/// cosmic-config, with the built-in fallback on failure, exactly like
+/// [`theme_override_task`] does. Deliberately NOT
+/// [`cosmic::theme::active`]: the process global can sit on the
+/// opposite mode's palette while the preference pin is still "set"
+/// (see [`Self::refresh_window_bg_color`]'s race note), so the
+/// fallback follows the mode the caller decided, the same way
+/// [`effective_colors`] does. Free-standing so the mode→palette
+/// mapping is headless-pinnable.
+fn system_palette_for_mode(is_dark: bool) -> cosmic::Theme {
+    if is_dark {
+        cosmic::theme::system_dark()
+    } else {
+        cosmic::theme::system_light()
     }
 }
 

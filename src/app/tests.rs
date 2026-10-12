@@ -268,6 +268,21 @@ fn unset_background_passes_the_system_derivation_through() {
     assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
 }
 
+#[test]
+fn the_fallback_palette_matches_the_effective_mode() {
+    // The window-background fallback derives from the palette of the
+    // mode the caller decided (`effective_is_dark`), never from the
+    // process-global active theme — a post-pin startup race can leave
+    // the global on the opposite palette with the pin still "set"
+    // (hardware walk 2026-10-12: dark preference, light global,
+    // pale pane). Both arms resolve a palette whose own `is_dark`
+    // agrees with the requested mode, whatever cosmic-config returns
+    // (built-in fallbacks agree too), so a drifted global cannot
+    // leak into the fallback.
+    assert!(system_palette_for_mode(true).cosmic().is_dark);
+    assert!(!system_palette_for_mode(false).cosmic().is_dark);
+}
+
 // --- the per-tab appearance resolution chain ---
 //
 // `resolved_profile` + `effective_colors` is the one chain both
