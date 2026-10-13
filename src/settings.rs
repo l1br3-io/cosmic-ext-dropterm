@@ -1136,6 +1136,20 @@ pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
     }
 }
 
+/// Parse a font-size override draft: empty (or whitespace-only) text
+/// clears to `None` — inherit the global size — and any other text
+/// parses as the number it must be for Save to have passed the band
+/// check. `None` is also the floor for text that does not parse:
+/// Save's gate rejects that first, so this arm never carries a
+/// planned write.
+fn parse_profile_font_size(raw: &str) -> Option<u16> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse().ok()
+}
+
 // --- the profile form: draft, transactional save, lifecycle ---
 
 /// One of the form's text inputs: the three whole-profile fields,
@@ -1148,6 +1162,13 @@ pub enum ProfileField {
     Command,
     /// The optional working directory (raw path text).
     Cwd,
+    /// The scheme pick. No text input exists — the arm is where a
+    /// rejected Save's scheme error lives (under the picker).
+    Scheme,
+    /// The font-size override input (raw text; empty = inherit).
+    FontSize,
+    /// The scrollback-override input (raw text; empty = inherit).
+    Scrollback,
     /// Env row `index`'s key input. Also where a rejected Save's row
     /// error renders — the key is the row's name, so the error
     /// belongs under it.
@@ -1165,6 +1186,14 @@ pub enum ProfileFieldError {
     DuplicateName,
     /// The command line has no program to run.
     BlankCommand,
+    /// The scheme name is not one of the built-in registry's.
+    UnknownScheme,
+    /// The font size falls outside the global band ([`FONT_SIZE_MIN`]
+    /// – [`FONT_SIZE_MAX`]) or is not a whole number.
+    FontOutOfRange,
+    /// The scrollback text has no number in it (the parse's clamp
+    /// rules absorb everything else, like the global input).
+    UnparsableScrollback,
     /// An env row carries a value but no key.
     BlankEnvKey,
     /// An env row's key contains `=` — a character environ entry
@@ -1179,6 +1208,9 @@ impl ProfileFieldError {
             Self::BlankName => "Name is required",
             Self::DuplicateName => "That name is already taken",
             Self::BlankCommand => "Command needs a program to run",
+            Self::UnknownScheme => "Not one of the built-in schemes",
+            Self::FontOutOfRange => "Font size must be between 6 and 32",
+            Self::UnparsableScrollback => "Scrollback must be a number",
             Self::BlankEnvKey => "Variable needs a key",
             Self::EnvKeyEquals => "Keys can't contain '='",
         }
@@ -1270,11 +1302,13 @@ pub enum ProfileDraftMode {
     Edit { index: usize },
 }
 
-/// The form's one-at-a-time draft: the three raw text fields, the
-/// scheme pick, the env rows, plus the per-field error state of the
-/// last rejected commit. Not a [`SettingsBuffer`] extension — the
-/// page owns its lifecycle (see [`ProfileDraftTransition`]), and
-/// [`TextField`]'s four arms stay pinned to the Settings page's keys.
+/// The form's one-at-a-time draft: the six raw fields (name,
+/// command, cwd, scheme, font size, scrollback — the last two as
+/// text, empty = inherit), the env rows, plus the per-field error
+/// state of the last rejected commit. Not a [`SettingsBuffer`]
+/// extension — the page owns its lifecycle (see
+/// [`ProfileDraftTransition`]), and [`TextField`]'s arms stay pinned
+/// to the Settings page's keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileDraft {
     /// What a commit writes this draft as.
@@ -1290,6 +1324,13 @@ pub struct ProfileDraft {
     /// lands on Save with the rest of the draft (a profile's running
     /// tabs take it when the written config echoes).
     pub scheme: Option<String>,
+    /// The font-size input's buffered text: empty = inherit the
+    /// global size; any other text must parse into the global band
+    /// at Save.
+    pub font_size: String,
+    /// The scrollback input's buffered text: empty = inherit the
+    /// global capacity; any other text must parse at Save.
+    pub scrollback: String,
     /// The env rows' buffered text ([`env_rows_from_map`] seeds them
     /// from the profile). The whole row list rides Save
     /// ([`env_map_from_rows`]); add/remove are buffered list edits,
@@ -1309,6 +1350,8 @@ impl ProfileDraft {
             command: String::new(),
             cwd: String::new(),
             scheme: None,
+            font_size: String::new(),
+            scrollback: String::new(),
             env_rows: Vec::new(),
             errors: Vec::new(),
         }
@@ -1325,6 +1368,8 @@ impl ProfileDraft {
             command: source.command.clone(),
             cwd: cwd_text(source),
             scheme: source.color_scheme.clone(),
+            font_size: override_text(source.font_size),
+            scrollback: override_text(source.scrollback_lines),
             env_rows: env_rows_from_map(source.env.as_ref()),
             errors: Vec::new(),
         }
@@ -1339,6 +1384,8 @@ impl ProfileDraft {
             command: profile.command.clone(),
             cwd: cwd_text(profile),
             scheme: profile.color_scheme.clone(),
+            font_size: override_text(profile.font_size),
+            scrollback: override_text(profile.scrollback_lines),
             env_rows: env_rows_from_map(profile.env.as_ref()),
             errors: Vec::new(),
         }
@@ -1354,6 +1401,11 @@ impl ProfileDraft {
             ProfileField::Name => self.name = text,
             ProfileField::Command => self.command = text,
             ProfileField::Cwd => self.cwd = text,
+            // No text input buffers the scheme — the pick's own
+            // handler clears a stale scheme error when it re-picks.
+            ProfileField::Scheme => {}
+            ProfileField::FontSize => self.font_size = text,
+            ProfileField::Scrollback => self.scrollback = text,
             ProfileField::EnvKey(index) => {
                 if let Some(row) = self.env_rows.get_mut(index) {
                     row.key = text;
@@ -1366,6 +1418,13 @@ impl ProfileDraft {
             }
         }
     }
+}
+
+/// The override input's text for a profile's set override: the
+/// number verbatim, empty for `None` (inherit) — the seeding half of
+/// empty-means-inherit, so an untouched Edit draft round-trips.
+fn override_text<T: std::fmt::Display>(override_value: Option<T>) -> String {
+    override_value.map_or_else(String::new, |value| value.to_string())
 }
 
 /// The cwd input's text for a profile's cwd: the path verbatim, empty
@@ -1417,8 +1476,10 @@ pub enum ProfileSavePlan {
 /// transactional form.
 ///
 /// Every rule the form knows evaluates at once — the name (blank,
-/// then unique), the command line ([`command_line_parts`]), and
-/// every env row ([`env_row_errors`]) — so a rejection names every
+/// then unique), the command line ([`command_line_parts`]), the
+/// scheme name (registry), the font size (the global band), the
+/// scrollback text ([`parse_scrollback`]), and every env row
+/// ([`env_row_errors`]) — so a rejection names every
 /// offending field, not the first. A valid Edit replaces its profile
 /// with the whole draft and cascades `default_profile` iff the
 /// rename hit the default-named profile; a valid Add/Clone appends
@@ -1435,13 +1496,7 @@ pub fn plan_profile_save(
             let Some(base) = profiles.get(*index) else {
                 return ProfileSavePlan::StaleEdit;
             };
-            let errors = whole_draft_errors(
-                profiles,
-                Some(*index),
-                &draft.name,
-                &draft.command,
-                &draft.env_rows,
-            );
+            let errors = whole_draft_errors(profiles, draft, Some(*index));
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1450,6 +1505,8 @@ pub fn plan_profile_save(
             edited.command = draft.command.trim().to_string();
             edited.cwd = parse_cwd(&draft.cwd);
             edited.color_scheme.clone_from(&draft.scheme);
+            edited.font_size = parse_profile_font_size(&draft.font_size);
+            edited.scrollback_lines = parse_scrollback(&draft.scrollback);
             edited.env = env_map_from_rows(&draft.env_rows);
             if edited == *base {
                 return ProfileSavePlan::Unchanged;
@@ -1472,8 +1529,7 @@ pub fn plan_profile_save(
             }
         }
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
-            let errors =
-                whole_draft_errors(profiles, None, &draft.name, &draft.command, &draft.env_rows);
+            let errors = whole_draft_errors(profiles, draft, None);
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1483,18 +1539,12 @@ pub fn plan_profile_save(
                 cwd: parse_cwd(&draft.cwd),
                 color_scheme: draft.scheme.clone(),
                 env: env_map_from_rows(&draft.env_rows),
-                // The font/scrollback overrides the form exposes no
-                // fields for yet (profile-manager's scope): a Clone
-                // copies the source's, an Add starts unset — a save
-                // of anything else never resets them.
-                font_size: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.font_size,
-                    _ => None,
-                },
-                scrollback_lines: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.scrollback_lines,
-                    _ => None,
-                },
+                // The override text is the draft's own in every mode:
+                // seeding copied the source's values into a Clone,
+                // so the round-trip preserves them without a
+                // mode-special case here.
+                font_size: parse_profile_font_size(&draft.font_size),
+                scrollback_lines: parse_scrollback(&draft.scrollback),
             };
             ProfileSavePlan::Write {
                 profiles: add_profile(profiles, added),
@@ -1505,26 +1555,47 @@ pub fn plan_profile_save(
 }
 
 /// The whole-draft gate: every form rule evaluated at once — the
-/// name (blank, then unique), the command line, and every env row —
-/// so one Save rejects with every offending field, in form order.
+/// name (blank, then unique), the command line, the scheme name
+/// (registry), the font size (the global band), the scrollback
+/// text, and every env row — so one Save rejects with every
+/// offending field, in form order.
 fn whole_draft_errors(
     profiles: &[Profile],
+    draft: &ProfileDraft,
     editing: Option<usize>,
-    name: &str,
-    command: &str,
-    env_rows: &[ProfileEnvRow],
 ) -> Vec<(ProfileField, ProfileFieldError)> {
     let mut errors = Vec::new();
-    let name = name.trim();
+    let name = draft.name.trim();
     if name.is_empty() {
         errors.push((ProfileField::Name, ProfileFieldError::BlankName));
     } else if !name_unique(profiles, editing, name) {
         errors.push((ProfileField::Name, ProfileFieldError::DuplicateName));
     }
-    if command_line_parts(command.trim()).is_none() {
+    if command_line_parts(draft.command.trim()).is_none() {
         errors.push((ProfileField::Command, ProfileFieldError::BlankCommand));
     }
-    errors.extend(env_row_errors(env_rows));
+    if draft
+        .scheme
+        .as_deref()
+        .is_some_and(|name| scheme_index(name).is_none())
+    {
+        errors.push((ProfileField::Scheme, ProfileFieldError::UnknownScheme));
+    }
+    let font = draft.font_size.trim();
+    if !font.is_empty()
+        && !font
+            .parse::<u16>()
+            .is_ok_and(|size| (FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&size))
+    {
+        errors.push((ProfileField::FontSize, ProfileFieldError::FontOutOfRange));
+    }
+    if !draft.scrollback.trim().is_empty() && parse_scrollback(&draft.scrollback).is_none() {
+        errors.push((
+            ProfileField::Scrollback,
+            ProfileFieldError::UnparsableScrollback,
+        ));
+    }
+    errors.extend(env_row_errors(&draft.env_rows));
     errors
 }
 
@@ -1563,6 +1634,74 @@ pub fn apply_profile_draft_transition(
 }
 
 // --- row actions: delete + auto-clear, reorder ---
+
+/// One press of a row's delete cluster — the armed-delete state
+/// machine's whole vocabulary. `Arm` is the row's Delete press (the
+/// row then renders its inline Confirm/Keep pair); `Confirm` deletes
+/// through [`plan_profile_delete`] (default auto-clear intact);
+/// `Keep` disarms without deleting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "profile-manager T2 wires the delete cluster's events through this vocabulary"
+    )
+)]
+pub enum ProfileDeletePress {
+    /// The row's Delete press: arm this row's inline pair.
+    Arm(usize),
+    /// The armed row's Confirm press: delete it.
+    Confirm(usize),
+    /// The armed row's Keep press: disarm, delete nothing.
+    Keep,
+}
+
+/// The armed row after `press` — the armed-delete state machine's
+/// one pure transition: arming a row arms exactly that row (the
+/// pair renders inline on one row, so arming another row disarms the
+/// first), and both ends of the pair clear the arm (Confirm's delete
+/// lands through [`plan_profile_delete`] in the same interaction).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "profile-manager T2 wires the delete cluster's events through this vocabulary"
+    )
+)]
+pub const fn armed_profile_delete_row(press: ProfileDeletePress) -> Option<usize> {
+    match press {
+        ProfileDeletePress::Arm(index) => Some(index),
+        ProfileDeletePress::Confirm(_) | ProfileDeletePress::Keep => None,
+    }
+}
+
+/// Whether `event` may act on the Profiles page while a profile
+/// draft is open — the draft lock: no list mutation and no draft
+/// switch is reachable while a draft is open, so the draft's origin
+/// index cannot shift under it (the stale-index class dies at the
+/// root instead of by index bookkeeping). The locked view renders
+/// the list's controls disabled; the wiring consults this rule so a
+/// stale press — a race between a render and a click — is a no-op
+/// even if a control flashed enabled. Pure over the event/state
+/// pair, headless-pinned.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "profile-manager T2 gates the wiring on this rule")
+)]
+pub fn profile_event_reachable(event: &SettingsEvent, draft_open: bool) -> bool {
+    if !draft_open {
+        return true;
+    }
+    !matches!(
+        event,
+        SettingsEvent::SelectProfile(_)
+            | SettingsEvent::OpenProfileDraft
+            | SettingsEvent::CloneProfile(_)
+            | SettingsEvent::DeleteProfile(_)
+            | SettingsEvent::ReorderProfile(..)
+    )
+}
 
 /// The plan a delete produces: the list without the profile at
 /// `index`, plus the paired `default_profile` write when the deleted
@@ -2094,10 +2233,16 @@ impl ConfigKey {
     }
 }
 
+/// The font-size band every font input shares: the global slider's
+/// range, which the profile form's Save enforces on its override
+/// text as "the global range" the profile-manager spec names.
+pub const FONT_SIZE_MIN: u16 = 6;
+pub const FONT_SIZE_MAX: u16 = 32;
+
 /// The font-size slider's display range. The slider constrains what
 /// the control can produce; the write path applies no extra clamp.
-const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
-const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
+const FONT_SIZE_SLIDER_MIN: f32 = FONT_SIZE_MIN as f32;
+const FONT_SIZE_SLIDER_MAX: f32 = FONT_SIZE_MAX as f32;
 
 /// The drawer pane's default width in px (spec drawer-resize
 /// criterion 1): what a never-dragged drawer renders — `None` in
