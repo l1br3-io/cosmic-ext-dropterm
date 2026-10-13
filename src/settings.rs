@@ -118,6 +118,7 @@ impl Section {
             Section::Tabs => &[
                 ConfigKey::TabPosition,
                 ConfigKey::TabTitleMode,
+                ConfigKey::TabBarBorder,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::NewTabCwd,
                 ConfigKey::CloseConfirmationEnabled,
@@ -125,6 +126,7 @@ impl Section {
             ],
             Section::StatusBar => &[
                 ConfigKey::StatusBarEnabled,
+                ConfigKey::StatusBarBorder,
                 ConfigKey::StatusBarShowProcess,
                 ConfigKey::StatusBarShowPath,
                 ConfigKey::StatusBarShowBranch,
@@ -204,6 +206,12 @@ pub enum ConfigKey {
     StatusBarShowTab,
     StatusBarShowZoom,
     StatusBarShowClock,
+    /// The strip's border hairline (bar-borders spec) — one per
+    /// bar, each flipping live through the single planned-write
+    /// path.
+    TabBarBorder,
+    /// The band's border hairline — the strip key's twin.
+    StatusBarBorder,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -356,6 +364,8 @@ impl ConfigKey {
             ConfigKey::StatusBarShowTab => "status_bar_show_tab",
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
+            ConfigKey::TabBarBorder => "tab_bar_border",
+            ConfigKey::StatusBarBorder => "status_bar_border",
         }
     }
 }
@@ -421,6 +431,12 @@ pub enum PlannedWrite {
     StatusBarShowTab(bool),
     StatusBarShowZoom(bool),
     StatusBarShowClock(bool),
+    /// The bars' border hairlines (bar-borders spec): pure display
+    /// flips — the echo's next view pass rebuilds each widget with
+    /// its flag, no reshape anywhere.
+    TabBarBorder(bool),
+    /// The band's twin of the strip's border write.
+    StatusBarBorder(bool),
 }
 
 impl PlannedWrite {
@@ -464,6 +480,8 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowTab(_) => ConfigKey::StatusBarShowTab,
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
+            PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
+            PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
         }
     }
 
@@ -590,6 +608,12 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarShowClock(value) => {
                 handler.set(ConfigKey::StatusBarShowClock.key_name(), *value)
+            }
+            PlannedWrite::TabBarBorder(value) => {
+                handler.set(ConfigKey::TabBarBorder.key_name(), *value)
+            }
+            PlannedWrite::StatusBarBorder(value) => {
+                handler.set(ConfigKey::StatusBarBorder.key_name(), *value)
             }
         }
     }
@@ -734,6 +758,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // gathered.
         | ConfigKey::SettingsDrawerWidth
         | ConfigKey::StatusBarEnabled
+        | ConfigKey::TabBarBorder
+        | ConfigKey::StatusBarBorder
         | ConfigKey::StatusBarShowProcess
         | ConfigKey::StatusBarShowPath
         | ConfigKey::StatusBarShowBranch
@@ -2016,6 +2042,8 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
+        ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
+        ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
         ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
         ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
         ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),
@@ -2090,6 +2118,8 @@ impl ConfigKey {
             ConfigKey::StatusBarShowTab => "Show the tab position",
             ConfigKey::StatusBarShowZoom => "Show the zoom level",
             ConfigKey::StatusBarShowClock => "Show the clock",
+            ConfigKey::TabBarBorder => "Show the tab bar border",
+            ConfigKey::StatusBarBorder => "Show the status band border",
         }
     }
 }
@@ -3551,6 +3581,8 @@ fn toggle_control(
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
         ConfigKey::StatusBarEnabled => config.status_bar_enabled,
+        ConfigKey::TabBarBorder => config.tab_bar_border,
+        ConfigKey::StatusBarBorder => config.status_bar_border,
         ConfigKey::StatusBarShowProcess => config.status_bar_show_process,
         ConfigKey::StatusBarShowPath => config.status_bar_show_path,
         ConfigKey::StatusBarShowBranch => config.status_bar_show_branch,
