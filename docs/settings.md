@@ -44,6 +44,7 @@ Each control states next to it when its edit takes effect, and because the termi
 | `tab_position` | live - pure relayout, no reshape: the strip reorders immediately and nothing resizes |
 | `status_bar_enabled` | live - the band joins or leaves the column and the terminal's pinned height follows the same frame |
 | `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock` | live - the hidden segment vanishes from the next render and its inputs stop being gathered (the branch's `.git` reads and the clock's tick stop at the gate) |
+| `tab_bar_border`, `status_bar_border` | live - a pure display flip: the bar's hairline appears or vanishes on the next render, nothing resizes |
 | `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title, cwd, and (in Profile name mode) profile name the moment the pick lands |
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging. `font_size` and the scheme pair apply to every tab whose profile does not override that field ([profiles](configuration.md#profiles) carry per-field overrides) |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |

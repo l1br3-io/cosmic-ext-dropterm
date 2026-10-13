@@ -10,7 +10,7 @@ DropTerm uses `cosmic-config` and reloads its config live - no restart needed. T
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`, `status_bar_enabled`, `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
+Each setting is its own RON file inside that directory (`height_percent`, `width_percent`, `h_align`, `edge`, `tab_position`, `layer`, `keyboard_mode`, `respect_panel`, `shell`, `args`, `font_name`, `font_size`, `color_scheme_dark`, `color_scheme_light`, `theme_preference`, `opacity`, `scrollback_lines`, `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `tab_title_mode`, `new_tab_after_current`, `profiles`, `default_profile`, `new_tab_cwd`, `default_cwd`, `status_bar_enabled`, `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock`, `tab_bar_border`, `status_bar_border`). Every one of them is editable in the [settings drawer](settings.md); the files can also be edited directly, e.g.:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -43,6 +43,14 @@ Each segment is individually showable with its own key - `status_bar_show_proces
 
 ```sh
 echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/status_bar_show_clock
+```
+
+## Bar borders
+
+`tab_bar_border` and `status_bar_border` (both default `true`) draw a 1 px hairline on each bar's terminal-facing edge: the tab strip's line on whichever side the terminal sits (it moves with `tab_position`), the status band's on its side away from the grab bar. The color derives from the active color scheme - the pane foreground at low alpha - so a scheme flip recolors both lines on the next render and neither scheme ever needs a hand-picked hue. Where the two barred strips adjoin, only the band's line renders, so no seam is ever doubled. Both are pure display: no bar changes height, the terminal's pixel size is identical with borders on or off, and a flip lands the moment it echoes. The two keys are independent - border one bar, the other, or both; a hidden status band renders nothing, and re-enabling it restores its border per the key. Toggle them on the Behavior tab of the [settings drawer](settings.md), or write them directly:
+
+```sh
+echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/tab_bar_border
 ```
 
 ## Tab titles
