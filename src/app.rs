@@ -358,12 +358,15 @@ pub struct DropTerm {
     /// the chord — the inline error row's payload. Cleared by the
     /// next arm, commit, revert, page turn, or close.
     keybind_conflict: Option<(Action, Action)>,
-    /// The scheme picker whose popover is open (scheme-picker):
-    /// `None` = closed. One at most — the flag is transient view
-    /// state the drawer's rules clear (an explicit close, a page
-    /// turn off Appearance); focus-loss hides preserve it with the
-    /// drawer.
-    scheme_picker: Option<settings::ConfigKey>,
+    /// The scheme picker whose popover is open (scheme-picker): the
+    /// two global controls or the profile form's picker, `None` =
+    /// closed. One at most — the flag is transient view state the
+    /// drawer's rules clear (an explicit close, a page turn away
+    /// from the hosting page); focus-loss hides preserve it with the
+    /// drawer. An open picker owns the first Escape (the popover
+    /// first, then the draft, then the drawer — the ordering the
+    /// profile-manager spec pinned).
+    scheme_picker: Option<settings::SchemePickerId>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -402,6 +405,13 @@ pub struct DropTerm {
     /// seeded. Focus-loss hides preserve it; an explicit close and a
     /// page leave clear it (`ProfileDraftTransition`).
     profile_draft: Option<settings::ProfileDraft>,
+    /// The Profiles page's armed delete row (profile-manager): the
+    /// row rendering its inline Confirm/Keep pair, `None` = no armed
+    /// row. The state machine is [`settings::armed_profile_delete_row`];
+    /// the draft lock hides the pair while a draft is open (the arm
+    /// waits out the draft). Cleared with the page's other state on
+    /// a leave or close; focus-loss hides preserve it.
+    profile_delete_armed: Option<usize>,
     /// The settings drawer's in-flight drafts: display-only text and
     /// slider state, cleared on an explicit drawer close so a
     /// reopened drawer renders purely from config (spec criterion 8).
@@ -835,21 +845,23 @@ impl DropTerm {
     /// Turn the drawer's page to `tab` — the strip pick's and the
     /// explicit close's shared page-turn path. A turn away from the
     /// Profiles tab drops that page's state — selection, the form
-    /// draft — so a reopened Profiles page starts from config; any
-    /// other turn keeps every draft. Focus-loss hides never route
-    /// here: preservation is their rule.
+    /// draft, the armed delete — so a reopened Profiles page starts
+    /// from config; any other turn keeps every draft. Focus-loss
+    /// hides never route here: preservation is their rule.
     fn turn_settings_page(&mut self, tab: SettingsTab) {
         if leaves_profiles_tab(self.settings_page, tab) {
             self.profile_selection = None;
+            self.profile_delete_armed = None;
             settings::apply_profile_draft_transition(
                 &mut self.profile_draft,
                 settings::ProfileDraftTransition::Clear,
             );
         }
-        // A turn off Appearance closes the scheme popover with its
-        // anchor — a stale open flag must not resurrect it on return
-        // (the keybind-capture page-turn rule).
-        if tab != SettingsTab::Appearance {
+        // A turn away from the hosting page closes the scheme popover
+        // with its anchor — a stale open flag must not resurrect it on
+        // return (the keybind-capture page-turn rule). Both hosting
+        // pages turn through here, so every non-self turn clears.
+        if tab != self.settings_page {
             self.scheme_picker = None;
         }
         self.settings_page = tab;
@@ -1540,6 +1552,7 @@ impl Application for DropTerm {
             settings_tab_model,
             profile_selection: None,
             profile_draft: None,
+            profile_delete_armed: None,
             settings_buffer: settings::SettingsBuffer::default(),
             drawer_drag: None,
             context_menu_open: false,
@@ -1994,11 +2007,21 @@ impl Application for DropTerm {
                 settings::appearance_view(&self.config, &self.settings_buffer, self.scheme_picker)
             }
             SettingsTab::Behavior => settings::behavior_view(&self.config, &self.settings_buffer),
-            SettingsTab::Profiles => settings::profiles_view(
-                &self.config,
-                self.profile_selection,
-                self.profile_draft.as_ref(),
-            ),
+            SettingsTab::Profiles => {
+                // `is_dark` resolves the Inherit row's swatch the way
+                // the terminal renders — the preference over the
+                // system mode, the `effective_is_dark` decision.
+                let is_dark =
+                    effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
+                settings::profiles_view(
+                    &self.config,
+                    self.profile_selection,
+                    self.profile_draft.as_ref(),
+                    self.profile_delete_armed,
+                    self.scheme_picker == Some(settings::SchemePickerId::ProfileForm),
+                    is_dark,
+                )
+            }
             SettingsTab::Keybindings => settings::keybindings_view(
                 &self.config.custom_key_binds,
                 &self.keybind_search,
@@ -2759,6 +2782,15 @@ impl DropTerm {
                 }
             }
             Message::Settings(event) => {
+                // The draft lock (profile-manager): while a profile
+                // draft is open, no list mutation and no draft switch
+                // is reachable — the pure rule the disabled view
+                // renders and this gate enforces, so a stale press (a
+                // race between a render and a click) is a no-op even
+                // if a control flashed enabled.
+                if !settings::profile_event_reachable(&event, self.profile_draft.is_some()) {
+                    return Task::none();
+                }
                 // The settings drawer's commit path: every event
                 // resolves through a pure planner and lands as one
                 // `Bare` write via [`Self::write_config`] — the
@@ -2817,10 +2849,10 @@ impl DropTerm {
                             self.scheme_picker = None;
                         }
                     }
-                    settings::SettingsEvent::ToggleSchemePicker(key) => {
-                        // One picker at most: pressing the other scheme
+                    settings::SettingsEvent::ToggleSchemePicker(id) => {
+                        // One picker at most: pressing another scheme
                         // control swaps, pressing the open one closes.
-                        self.scheme_picker = (self.scheme_picker != Some(key)).then_some(key);
+                        self.scheme_picker = (self.scheme_picker != Some(id)).then_some(id);
                     }
                     settings::SettingsEvent::CloseSchemePicker => {
                         self.scheme_picker = None;
@@ -2894,12 +2926,28 @@ impl DropTerm {
                             ));
                         }
                     }
-                    settings::SettingsEvent::DeleteProfile(index) => {
-                        // Immediate delete, no dialog (OQ-1): one
-                        // whole-list write, plus the paired auto-clear
-                        // when the deleted profile was the default.
-                        // Page state follows the shrunken list
-                        // through the pure adjusters.
+                    settings::SettingsEvent::ArmProfileDelete(index) => {
+                        // The two-step delete's first press: the row
+                        // trades its trash for the inline Confirm/Keep
+                        // pair. Single-row arming lives in the pure
+                        // state machine — arming another row disarms
+                        // the first.
+                        self.profile_delete_armed = settings::armed_profile_delete_row(
+                            settings::ProfileDeletePress::Arm(index),
+                        );
+                    }
+                    settings::SettingsEvent::KeepProfileDelete => {
+                        // The pair's retreat: disarm, delete nothing.
+                        self.profile_delete_armed =
+                            settings::armed_profile_delete_row(settings::ProfileDeletePress::Keep);
+                    }
+                    settings::SettingsEvent::ConfirmProfileDelete(index) => {
+                        // Confirm deletes — one whole-list write, plus
+                        // the paired auto-clear when the deleted
+                        // profile was the default — and the arm ends
+                        // with it. Page state follows the shrunken
+                        // list through the pure adjusters; a stale
+                        // index plans nothing and disarms anyway.
                         if let Some((list, paired)) = settings::plan_profile_delete(
                             &self.config.profiles,
                             index,
@@ -2914,6 +2962,9 @@ impl DropTerm {
                             self.profile_draft =
                                 settings::draft_after_delete(self.profile_draft.take(), index);
                         }
+                        self.profile_delete_armed = settings::armed_profile_delete_row(
+                            settings::ProfileDeletePress::Confirm(index),
+                        );
                     }
                     settings::SettingsEvent::ReorderProfile(index, direction) => {
                         // One slot per press, one whole-list write;
@@ -3026,15 +3077,25 @@ impl DropTerm {
                     settings::SettingsEvent::PickProfileScheme(pick) => {
                         // The pick buffers in every mode — the
                         // recolor lands on Save with the rest of the
-                        // draft (the Edit draft's pick-writes-
-                        // instantly rule retired with the per-field
-                        // commits). An out-of-range pick is ignored —
-                        // the options are the only writable
-                        // vocabulary, never an invented name.
+                        // draft — and retires the scheme's stale error
+                        // (it described a value the pick just
+                        // replaced). A pick then closes its popover:
+                        // the dismissal contract, applied where the
+                        // pick lands. An out-of-range pick is ignored
+                        // — the rows are the only writable vocabulary,
+                        // never an invented name.
                         if let Some(pick) = settings::profile_scheme_write(pick)
                             && let Some(open) = self.profile_draft.as_mut()
                         {
                             open.scheme = pick.field_value();
+                            open.errors
+                                .retain(|(at, _)| *at != settings::ProfileField::Scheme);
+                        }
+                        if matches!(
+                            self.scheme_picker,
+                            Some(settings::SchemePickerId::ProfileForm)
+                        ) {
+                            self.scheme_picker = None;
                         }
                     }
                     settings::SettingsEvent::AddProfileEnvRow => {
