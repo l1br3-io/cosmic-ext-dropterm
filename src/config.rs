@@ -357,6 +357,13 @@ pub struct DropTermConfig {
     pub status_bar_show_zoom: bool,
     /// The wall clock (`HH:MM`).
     pub status_bar_show_clock: bool,
+    /// Whether the tab strip renders its border hairline
+    /// (bar-borders spec): a 1 px line on the strip's
+    /// terminal-facing edge, in the pane-derived foreground at low
+    /// alpha. Defaults to `true` — the feature ships visible (the
+    /// `status_bar_enabled` precedent). Flips apply on the config
+    /// echo's next view pass: pure paint, no reshape.
+    pub tab_bar_border: bool,
 }
 
 impl Default for DropTermConfig {
@@ -403,6 +410,7 @@ impl Default for DropTermConfig {
             status_bar_show_tab: true,
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
+            tab_bar_border: true,
         }
     }
 }

@@ -40,6 +40,45 @@ fn pane_colors_derives_text_from_the_stored_pane_background() {
     );
 }
 
+#[test]
+fn border_rect_is_a_top_hairline_for_above() {
+    // `Above` names the strip's terminal-facing top edge: a 1 px
+    // line spanning the strip's full width, inside its own bounds.
+    let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(300.0, 32.0));
+    let rect = border_rect(bounds, TooltipSide::Above);
+    assert_eq!(
+        rect,
+        Rectangle::new(Point::new(10.0, 20.0), Size::new(300.0, 1.0))
+    );
+}
+
+#[test]
+fn border_rect_is_a_bottom_hairline_for_below() {
+    // `Below` names the strip's bottom edge: the hairline hugs the
+    // boundary the strip shares with its lower neighbor.
+    let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(300.0, 32.0));
+    let rect = border_rect(bounds, TooltipSide::Below);
+    assert_eq!(
+        rect,
+        Rectangle::new(Point::new(10.0, 51.0), Size::new(300.0, 1.0))
+    );
+}
+
+#[test]
+fn border_rect_floors_degenerate_bounds() {
+    // A zero-height strip paints no line, never a negative-size or
+    // out-of-bounds quad.
+    let bounds = Rectangle::new(Point::new(0.0, 5.0), Size::new(100.0, 0.0));
+    for side in [TooltipSide::Above, TooltipSide::Below] {
+        let rect = border_rect(bounds, side);
+        assert_eq!(rect.height, 0.0, "zero-height bounds stay zero ({side:?})");
+        assert_eq!(
+            rect.width, 100.0,
+            "width is untouched by the floor ({side:?})"
+        );
+    }
+}
+
 /// Tests run against a small, easy-to-reason-about metrics set.
 const M: BarMetrics = BarMetrics {
     bar_height: 32.0,

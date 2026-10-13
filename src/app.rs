@@ -1855,7 +1855,11 @@ impl Application for DropTerm {
                 TabMenuPick::CloseOthers => Message::CloseOtherTabs(tab),
                 TabMenuPick::CloseRight => Message::CloseTabsRight(tab),
             })
-            .tooltip_side(tooltip_side);
+            .tooltip_side(tooltip_side)
+            // The border hairline rides the same side the tooltips
+            // pop to — the terminal's side of the strip — off the
+            // `tab_bar_border` key (bar-borders spec).
+            .show_border(self.config.tab_bar_border);
         if let Some(edit) = &self.rename
             && self.tabs.iter().any(|tab| tab.id == edit.tab)
         {

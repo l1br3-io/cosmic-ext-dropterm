@@ -115,6 +115,28 @@ fn readable_foreground(background: Color) -> Color {
     }
 }
 
+/// The alpha of the bars' border hairlines — the pane foreground at
+/// low strength, hierarchy by alpha, never a new hue (bar-borders
+/// spec). The menu separators' own value; retunable at the hardware
+/// pass's light/dark rows.
+pub(crate) const BORDER_ALPHA: f32 = 0.3;
+
+/// The border hairline's rect: 1 px tall, the strip's full width,
+/// at the named vertical edge of `bounds` — the shared shape of the
+/// tab strip's and the status band's border lines. Painted inside
+/// each strip's own bounds, so no line ever moves layout. Degenerate
+/// bounds floor to a zero-height (never negative) rect.
+pub(crate) fn border_rect(bounds: Rectangle, side: TooltipSide) -> Rectangle {
+    let y = match side {
+        TooltipSide::Above => bounds.y,
+        TooltipSide::Below => bounds.y + bounds.height - 1.0,
+    };
+    Rectangle::new(
+        Point::new(bounds.x, y),
+        Size::new(bounds.width.max(0.0), bounds.height.clamp(0.0, 1.0)),
+    )
+}
+
 /// Fills `bounds` as a disc — a quad rounded by half its smaller side —
 /// the shared shape of the gear's parts, the settings hover disc, and
 /// the status band's filled process-state disc (status-bar spec).
@@ -1151,6 +1173,11 @@ pub struct TabBar<'a, Message> {
     /// Which vertical side of the strip the settings tooltip pops to:
     /// the terminal's side, set by the app from the configured edge.
     tooltip_side: TooltipSide,
+    /// Whether the strip renders its border hairline (bar-borders
+    /// spec) on its terminal-facing edge — the side `tooltip_side`
+    /// already names. Off by default at construction; the app passes
+    /// the `tab_bar_border` key.
+    border: bool,
 }
 
 impl<'a, Message> TabBar<'a, Message>
@@ -1174,6 +1201,7 @@ where
             profiles: &[],
             rename: None,
             tooltip_side: TooltipSide::default(),
+            border: false,
         }
     }
 
@@ -1254,6 +1282,15 @@ where
     /// to: the terminal's side.
     pub fn tooltip_side(mut self, side: TooltipSide) -> Self {
         self.tooltip_side = side;
+        self
+    }
+
+    /// Sets whether the strip renders its border hairline: a 1 px
+    /// pane-derived line on its terminal-facing edge — the side
+    /// `tooltip_side` names — painted inside the strip's own bounds
+    /// (bar-borders spec; pure paint, no layout).
+    pub fn show_border(mut self, show: bool) -> Self {
+        self.border = show;
         self
     }
 
@@ -2139,6 +2176,31 @@ where
                 }
             },
         );
+
+        // The border hairline (bar-borders spec): one 1 px line on
+        // the strip's terminal-facing edge — the side `tooltip_side`
+        // names — in the pane foreground at low alpha, painted over
+        // the row layer so buttons that reach the strip's edge do
+        // not swallow it. Inside the strip's own bounds: no layout
+        // ever moves.
+        if self.border {
+            renderer.fill_quad(
+                Quad {
+                    bounds: border_rect(bounds, self.tooltip_side),
+                    border: Border {
+                        radius: 0.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color {
+                    a: BORDER_ALPHA,
+                    ..pane_fg
+                },
+            );
+        }
 
         // The corner buttons — the new-tab `+` and the settings gear —
         // are quads only, font-free like the close `×`, over the
