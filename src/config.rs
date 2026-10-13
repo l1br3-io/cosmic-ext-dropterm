@@ -364,6 +364,11 @@ pub struct DropTermConfig {
     /// `status_bar_enabled` precedent). Flips apply on the config
     /// echo's next view pass: pure paint, no reshape.
     pub tab_bar_border: bool,
+    /// The band's twin: whether the status band renders the same
+    /// hairline on its side away from the grab bar. Independent of
+    /// the band's own enable — a hidden band renders nothing, and
+    /// re-enabling it restores the border per this key.
+    pub status_bar_border: bool,
 }
 
 impl Default for DropTermConfig {
@@ -411,6 +416,7 @@ impl Default for DropTermConfig {
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
             tab_bar_border: true,
+            status_bar_border: true,
         }
     }
 }

@@ -767,3 +767,42 @@ fn band_menu_side_pops_terminal_ward_on_both_edges() {
     assert_eq!(band_menu_side(Edge::Top), TooltipSide::Above);
     assert_eq!(band_menu_side(Edge::Bottom), TooltipSide::Below);
 }
+
+#[test]
+fn bar_border_lines_never_share_a_seam() {
+    // Bar-borders spec: through every stacking, the strip's line
+    // (terminal-facing — `bar_tooltip_side`) and the band's line
+    // (away from the grab bar — `band_menu_side`, the side the
+    // widgets already hold) land in different seams: no boundary
+    // between strips ever carries two hairlines. Where the two
+    // barred strips adjoin, only the band's line renders, because
+    // the strip's always faces the terminal.
+    for edge in [Edge::Top, Edge::Bottom] {
+        for tab_position in [TabPosition::Auto, TabPosition::Top, TabPosition::Bottom] {
+            let stacking = crate::status_bar::column_stacking(edge, tab_position);
+            let index_of = |strip: crate::status_bar::Strip| {
+                stacking.iter().position(|s| *s == strip).expect("stacked")
+            };
+            // The seam a bar's line owns: the ordered index pair of
+            // the bar and the neighbor its side points to.
+            let seam = |from: crate::status_bar::Strip, side: TooltipSide| {
+                let index = index_of(from);
+                let neighbor = match side {
+                    TooltipSide::Above => index.checked_sub(1),
+                    TooltipSide::Below => index.checked_add(1),
+                }
+                .expect("the line side always points at a stacked neighbor");
+                (index.min(neighbor), index.max(neighbor))
+            };
+            let tab_seam = seam(
+                crate::status_bar::Strip::Tabs,
+                bar_tooltip_side(effective_bar_at_bottom(edge, tab_position)),
+            );
+            let band_seam = seam(crate::status_bar::Strip::StatusBand, band_menu_side(edge));
+            assert_ne!(
+                tab_seam, band_seam,
+                "doubled hairline in the same seam at {edge:?}/{tab_position:?}"
+            );
+        }
+    }
+}

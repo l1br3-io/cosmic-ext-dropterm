@@ -1108,6 +1108,13 @@ fn tab_bar_border_defaults_on() {
 }
 
 #[test]
+fn status_bar_border_defaults_on() {
+    // The band's twin of the strip's key: both borders ship
+    // visible, one ruling for both bars.
+    assert!(DropTermConfig::default().status_bar_border);
+}
+
+#[test]
 fn missing_tab_bar_border_key_loads_as_true() {
     // A config directory from a version before the border keys: no
     // `tab_bar_border` key file. The entry derive backfills from the
@@ -1144,6 +1151,45 @@ fn missing_tab_bar_border_key_loads_as_true() {
         DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
     assert!(loaded.tab_bar_border);
     // The directory is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn missing_status_bar_border_key_loads_as_true() {
+    // The band's twin of the strip's missing-key pin: a pre-border
+    // config directory gains the band's hairline through the same
+    // additive backfill.
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-missing-band-border-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    }
+    .write_entry(&config)
+    .expect("write config keys");
+    std::fs::remove_file(
+        root.join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"))
+            .join("status_bar_border"),
+    )
+    .expect("remove status_bar_border key file");
+
+    let loaded =
+        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    assert!(loaded.status_bar_border);
     assert_eq!(loaded.height_percent, 70);
 
     let _ = std::fs::remove_dir_all(&root);

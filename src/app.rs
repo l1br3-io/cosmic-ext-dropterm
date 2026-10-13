@@ -1903,6 +1903,10 @@ impl Application for DropTerm {
         // side is the strip's own tooltip side inverted).
         .on_menu_action(Message::Action)
         .menu_side(band_menu_side(self.config.edge))
+        // The border hairline rides the same side the menu pops to
+        // — the band's side away from the grab bar — off the
+        // `status_bar_border` key (bar-borders spec).
+        .show_border(self.config.status_bar_border)
         .into();
 
         // Stacking: `status_bar::column_stacking` owns the orders —
