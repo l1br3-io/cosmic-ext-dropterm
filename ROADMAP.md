@@ -26,7 +26,7 @@ High-level feature list.
 - [x] Built-in color scheme picker
 
 
-## V3 
+## v3 - Profiles and desktop integration
 - [x] increase sidebar width size, draggable
 - [x] Settings sidebar as tabs - General, Keybindings, Advance
 - [x] close confirmation setting flag when tab has process in progress - on by default

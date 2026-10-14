@@ -57,16 +57,19 @@ Each control states next to it when its edit takes effect, and because the termi
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging. `font_size` and the scheme pair apply to every tab whose profile does not override that field ([profiles](configuration.md#profiles) carry per-field overrides) |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
 | `custom_key_binds` | instant - the very next key press uses the new chord, in the same session |
+| `settings_drawer_width` | live by drag - written when the drawer's drag handle releases, clamped at render into 344 px to half the surface; double-clicking the handle resets it |
 | `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
 | `profiles` (color_scheme, font_size) | live - a config pass re-resolves these per tab, so an edit recolors or re-sizes the profile's running tabs without a respawn |
 | `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched, and a terminal's scrollback capacity or environment never changes mid-run |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
+| `close_confirmation_enabled` | next close - the key is read at request time, so a flip applies to the very next user-initiated close of a tab running a foreground process (a shell exiting on its own never confirms) |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 
 - `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
 - `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
 - `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H` (the home-directory new tab), the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
+- `close_confirmation_enabled`: `false` restores instant, unconfirmed closes of tabs whose terminal runs a foreground process ([configuration](configuration.md#close-confirmation)).
 
 ## Input ranges and limitations
 

@@ -30,7 +30,7 @@ See [Building](#building) below.
 
 ## Status
 
-DropTerm v0.1.0 is released — see [Installing](#installing). This is a v1 + v2 implementation: tabs with session restore, drag-to-resize with remembered geometry, slide animation, an in-app settings drawer, built-in color schemes, and the in-app Application theme control. See [ROADMAP.md](ROADMAP.md) for what's done and what's planned.
+DropTerm v0.1.0 is released — see [Installing](#installing). Development continues toward the next release on the [roadmap](ROADMAP.md)'s v3 and Later lines; the feature list below describes the current main build.
 
 ## Building
 
@@ -75,7 +75,7 @@ No COSMIC shortcut configured yet? You can still open and dismiss the overlay fr
 The details live in the `docs/` directory:
 
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
-- [Configuration](docs/configuration.md) - all 27 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 43 config keys, profiles, and direct editing
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
 - [Theming](docs/theming.md) - the Application theme pin and the 12 built-in color schemes
@@ -85,33 +85,17 @@ The details live in the `docs/` directory:
 - [Research & decision log](docs/research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives
 - [Development](docs/development.md) - the dev loop, running without a shortcut, and the manual test checklist
 
-## Features (v1)
+## Features
 
-- Layer-shell window anchored to the top (or bottom) edge, full width, above other windows
-- Hidden from Alt-Tab and the dock
-- Exclusive keyboard focus when shown; focus returns to the previous window when hidden
-- Shell session persists while hidden (the PTY is never torn down - only the surface is)
-- COSMIC theme integration: light/dark and the built-in color schemes
-- Copy/paste (`Ctrl+Shift+C`/`V`), primary-selection paste (middle-click, `Shift+Insert`), scrollback, mouse reporting, `Ctrl`-click to open URLs
-- New tabs (`Ctrl+Shift+T`, the tab bar's `+`) inherit the active tab's working directory — `cd` once, spawn tabs where you already are; a failed read falls back to the pty's default directory. Optionally flip Behavior's "New tab directory" to `Default directory` and set one on the Terminal card: every plain new tab then opens there (a dead path warns and falls back to the pty default; `Ctrl+Shift+H`, duplicates, profiles, and restore keep their own directories; an explicit `--cwd` always wins). `Ctrl+Shift+H` instead opens the new tab in the home directory — settings compose exactly as for `Ctrl+Shift+T` (a default profile's own live cwd still applies), with home standing in for the inherited working directory
-- Editable spawn defaults: the Terminal card's shell dropdown lists this system's `/etc/shells` shells by name (bash, zsh, fish, … — a pick writes the full path), with the free-text row beneath for custom paths — both take effect on the next spawn, and the rows say so when a `default_profile` owns plain spawns outright
-- Named profiles (`ssh web-prod` as a first-class tab): a profile's tab runs its command in its `cwd` — and, when it carries one, in its own color scheme (a built-in registry name), so prod reads red and local reads default at a glance, plus its own environment variables, merged over the inherited environment at spawn (`DROPTERM_PROFILE=prod` for rc files to read — spawn-time by nature, so an edit affects the next spawn); the context menu's Switch Profile folder respawns the active tab under any profile in place — `switch-profile-tab`'s one-click twin. Editing the scheme recolors its running tabs without a respawn, and every miss (unset, unknown name, deleted profile) falls back to the global pick
-- Zoom (`Ctrl+`/`Ctrl-`/`Ctrl+0`), select-all and clear-scrollback shortcuts
-- Tabs: open/close, duplicate (`Ctrl+Shift+D` or the context-menu row — a fresh shell in the active tab's working directory, right after it, that keeps a renamed tab's name), rename inline (`Ctrl+Shift+R`, double-click, or the context-menu row; a rename wins over every title mode), title modes including `Profile` — the tab bar labels each tab by the profile it runs, plain tabs keep their shell titles - reorder by drag or `Ctrl+Shift+PageUp`/`PageDown`, cycle with `Ctrl+PageUp`/`PageDown` or `Ctrl+Tab`, jump with `Ctrl+Shift+1..8` (`Ctrl+Shift+9` always takes the last tab) - cosmic-term's binds
-- Tab attention markers: a tab that rang the bell wears `🔔` and one that produced output while inactive wears `•`, until you activate it (kitty's `bell_on_tab` + iTerm2-style activity dots)
-- Per-tab context menu: right-click a tab button for a menu scoped to *that* tab — new tab; rename, duplicate, and switch-profile acting on the clicked tab (duplicate is the same verb as `duplicate-tab --tab-index` on it); pin/unpin (a pinned tab prefixes 📌 to its title, refuses every user-initiated close, and stays put under drags and moves — only its own shell exit closes it; the pin survives a restart); move one slot left/right (muted at the edges); close, close other tabs, close tabs to the right — the close confirmation still gates every running process, one prompt at a time, and both close sweeps skip pinned tabs
-- In-app dismiss: `Ctrl+Shift+Q` hides the overlay; clicking away hides it too
-- Remote control from the CLI: `new-tab [--cwd DIR] [--cmd COMMAND]` opens a tab in the running instance over the single-instance D-Bus seam (Guake-style scripting without Guake's full surface)
+- **The drop-down core** - a layer-shell window anchored to the top (or bottom) edge, full width, above other windows and hidden from Alt-Tab and the dock; exclusive keyboard focus while shown, with focus returned to the previous window on hide; the shell session stays alive while hidden (the PTY is never torn down - only the surface). COSMIC theme integration ([theming](docs/theming.md)), copy/paste with primary-selection paste, scrollback, mouse reporting, `Ctrl`-click to open URLs, zoom, select-all and clear-scrollback.
+- **Tabs and sessions** - open/close, duplicate, inline rename, drag reorder, cycle and jump chords, and title modes including by-profile ([configuration](docs/configuration.md#tab-titles)); attention markers for bells and background output; sessions save and restore across shutdowns ([sessions](docs/sessions.md)); drag-to-resize with remembered geometry; the 130 ms slide ([animation](docs/animation.md)); and the in-app [settings drawer](docs/settings.md) with its five tabs.
+- **Profiles** - named presets like `ssh web-prod` as a first-class tab: each carries its own command, working directory, color scheme, font size, scrollback, and environment variables, and the context menu's Switch Profile respawns any tab under another profile in place ([configuration](docs/configuration.md#profiles)). New tabs inherit the active tab's working directory, with a configurable default directory and editable spawn defaults.
+- **The status band** - a 28 px strip beside the grab bar narrating the active terminal: foreground process, working directory with git branch, profile, cell dimensions, tab position, zoom delta, and clock - every segment click-to-copy, each one individually toggleable.
+- **Desktop integration** - the per-tab context menu with pin/unpin; a close-confirmation guardrail for tabs running foreground processes; desktop notifications when the bell rings while hidden ([bell](docs/bell.md)); remote control from the CLI - `new-tab` and the tab verbs over the single-instance D-Bus seam ([CLI reference](docs/cli.md)); and a COSMIC panel applet that toggles the drop-down and shows its running state from the panel.
 
 ## Known risks
 
-A few known rough edges, each detailed in [Known issues](docs/known-issues.md):
-
-- The clipboard survives hide/show cycles only via an invisible anchor window
-- Hiding destroys the layer surface and re-creates it on the next show (a deliberate workaround)
-- Shift-modified custom shortcuts can fail to fire on COSMIC
-- No GlobalShortcuts portal: the toggle must be a COSMIC custom shortcut
-- No Flatpak packaging (layer-shell isn't exposed to sandboxes)
+A few known rough edges — the clipboard's invisible anchor window, the surface recreate-on-hide workaround, Shift-modified custom shortcuts failing to fire, no GlobalShortcuts portal (the toggle must be a COSMIC custom shortcut), and no main-app Flatpak — each detailed in [Known issues](docs/known-issues.md).
 
 ## Non-goals
 
