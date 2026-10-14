@@ -86,7 +86,9 @@ The details live in the `docs/` directory:
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
 - [Research & decision log](docs/research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives
-- [Development](docs/development.md) - the dev loop, running without a shortcut, and the manual test checklist
+- [Development](docs/development.md) - the dev loop and running without a shortcut
+- [Testing](docs/testing.md) - the manual test checklist every change answers to
+- [Architecture](docs/architecture.md) - the module map and the load-bearing seams
 
 ## Features
 
