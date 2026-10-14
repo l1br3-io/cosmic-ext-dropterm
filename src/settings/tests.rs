@@ -396,6 +396,8 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::ColorSchemeLight(String::new()),
         PlannedWrite::ThemePreference(ThemePreference::System),
         PlannedWrite::StatusBarEnabled(true),
+        PlannedWrite::TabBarBorder(true),
+        PlannedWrite::StatusBarBorder(true),
         PlannedWrite::StatusBarShowProcess(true),
         PlannedWrite::StatusBarShowPath(true),
         PlannedWrite::StatusBarShowBranch(true),
@@ -465,6 +467,8 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::ColorSchemeLight, "color_scheme_light"),
         (ConfigKey::ThemePreference, "theme_preference"),
         (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
+        (ConfigKey::TabBarBorder, "tab_bar_border"),
+        (ConfigKey::StatusBarBorder, "status_bar_border"),
     ];
     for (key, name) in expected {
         assert_eq!(key.key_name(), name);
@@ -698,6 +702,8 @@ fn apply_timing_states_each_field_s_documented_semantics() {
         ConfigKey::ColorSchemeLight,
         ConfigKey::ThemePreference,
         ConfigKey::StatusBarEnabled,
+        ConfigKey::TabBarBorder,
+        ConfigKey::StatusBarBorder,
         ConfigKey::StatusBarShowProcess,
         ConfigKey::StatusBarShowPath,
         ConfigKey::StatusBarShowBranch,
@@ -979,12 +985,12 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_plus_eight_show_rows() {
-    // status-segments Task 3: the Status bar card grows from one
-    // row to nine, in band order — the master toggle, then one
-    // "Show …" row per segment — each under its exact file
-    // spelling, each flipping through the single planned-write
-    // path, all Live.
+fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
+    // status-segments Task 3 + bar-borders BB-3: the Status bar card
+    // grows to ten rows, in band order — the master toggle, the
+    // border toggle, then one "Show …" row per segment — each under
+    // its exact file spelling, each flipping through the single
+    // planned-write path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -1000,6 +1006,7 @@ fn the_status_bar_card_hosts_the_master_toggle_plus_eight_show_rows() {
         Section::StatusBar.keys(),
         &[
             ConfigKey::StatusBarEnabled,
+            ConfigKey::StatusBarBorder,
             ConfigKey::StatusBarShowProcess,
             ConfigKey::StatusBarShowPath,
             ConfigKey::StatusBarShowBranch,
@@ -1011,6 +1018,10 @@ fn the_status_bar_card_hosts_the_master_toggle_plus_eight_show_rows() {
         ]
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
+    assert_eq!(
+        ConfigKey::StatusBarBorder.label(),
+        "Show the status band border"
+    );
     assert_eq!(
         ConfigKey::StatusBarShowProcess.key_name(),
         "status_bar_show_process"
@@ -1336,15 +1347,17 @@ fn tab_position_selection_mirrors_the_config_value() {
 #[test]
 fn the_tabs_card_groups_the_tab_strip_keys() {
     // The Tabs card: everything about the tab strip on one card —
-    // position, titles, new-tab placement and its default
-    // directory (default-spawn DS-1), close confirmation, and
-    // session persistence (restoring *tabs*). The title mode's
-    // flip applies live through the retitle loop.
+    // position, titles, the strip's border (bar-borders BB-3),
+    // new-tab placement and its default directory (default-spawn
+    // DS-1), close confirmation, and session persistence
+    // (restoring *tabs*). The title mode's flip applies live
+    // through the retitle loop.
     assert_eq!(
         Section::Tabs.keys(),
         &[
             ConfigKey::TabPosition,
             ConfigKey::TabTitleMode,
+            ConfigKey::TabBarBorder,
             ConfigKey::NewTabAfterCurrent,
             ConfigKey::NewTabCwd,
             ConfigKey::CloseConfirmationEnabled,
@@ -1353,6 +1366,7 @@ fn the_tabs_card_groups_the_tab_strip_keys() {
     );
     assert_eq!(ConfigKey::TabPosition.label(), "Tab bar position");
     assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");
+    assert_eq!(ConfigKey::TabBarBorder.label(), "Show the tab bar border");
     assert_eq!(
         ConfigKey::NewTabAfterCurrent.label(),
         "New tabs after current tab"

@@ -45,8 +45,8 @@ use cosmic::{Element, Renderer};
 
 use crate::config::{Edge, TabPosition};
 use crate::tab_bar::{
-    DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, dropdown_row_at, fill_disc,
-    pane_colors,
+    BORDER_ALPHA, DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, border_rect,
+    dropdown_row_at, fill_disc, pane_colors,
 };
 use crate::terminal::Action;
 
@@ -1060,6 +1060,11 @@ pub struct StatusBar<Message> {
     /// side is off the surface). The app knows the edge; the
     /// widget does not.
     menu_side: TooltipSide,
+    /// Whether the band renders its border hairline (bar-borders
+    /// spec) on its side away from the grab bar — the side
+    /// `menu_side` already names. Off by default at construction;
+    /// the app passes the `status_bar_border` key.
+    border: bool,
 }
 
 impl<Message> StatusBar<Message> {
@@ -1078,6 +1083,7 @@ impl<Message> StatusBar<Message> {
             on_copy: Box::new(on_copy),
             on_menu_action: None,
             menu_side: TooltipSide::default(),
+            border: false,
         }
     }
 
@@ -1093,6 +1099,16 @@ impl<Message> StatusBar<Message> {
     /// to: the terminal's side.
     pub fn menu_side(mut self, side: TooltipSide) -> Self {
         self.menu_side = side;
+        self
+    }
+
+    /// Sets whether the band renders its border hairline: the same
+    /// 1 px pane-derived line the tab strip draws, on the band's
+    /// side away from the grab bar — the side `menu_side` names —
+    /// painted inside the band's own bounds (bar-borders spec;
+    /// pure paint, no layout).
+    pub fn show_border(mut self, show: bool) -> Self {
+        self.border = show;
         self
     }
 
@@ -1652,6 +1668,33 @@ where
             },
             band_bg,
         );
+
+        // The border hairline (bar-borders spec): one 1 px line on
+        // the band's side away from the grab bar — the side
+        // `menu_side` names, the same derivation the bubble pops to
+        // — in the pane foreground at low alpha, over the strip and
+        // under the content. Inside the band's own bounds: pure
+        // paint, no reshape; where the band adjoins the tab strip,
+        // this is the seam's only line (the strip's own faces the
+        // terminal — the never-share-a-seam pin).
+        if self.border {
+            renderer.fill_quad(
+                Quad {
+                    bounds: border_rect(bounds, self.menu_side),
+                    border: Border {
+                        radius: 0.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color {
+                    a: BORDER_ALPHA,
+                    ..pane_fg
+                },
+            );
+        }
 
         // The selection highlight, under the text and above the
         // strip: the pane foreground at a quarter strength —
