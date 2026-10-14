@@ -1162,6 +1162,20 @@ pub fn parse_cwd(raw: &str) -> Option<PathBuf> {
     }
 }
 
+/// Parse a font-size override draft: empty (or whitespace-only) text
+/// clears to `None` — inherit the global size — and any other text
+/// parses as the number it must be for Save to have passed the band
+/// check. `None` is also the floor for text that does not parse:
+/// Save's gate rejects that first, so this arm never carries a
+/// planned write.
+fn parse_profile_font_size(raw: &str) -> Option<u16> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse().ok()
+}
+
 // --- the profile form: draft, transactional save, lifecycle ---
 
 /// One of the form's text inputs: the three whole-profile fields,
@@ -1174,6 +1188,13 @@ pub enum ProfileField {
     Command,
     /// The optional working directory (raw path text).
     Cwd,
+    /// The scheme pick. No text input exists — the arm is where a
+    /// rejected Save's scheme error lives (under the picker).
+    Scheme,
+    /// The font-size override input (raw text; empty = inherit).
+    FontSize,
+    /// The scrollback-override input (raw text; empty = inherit).
+    Scrollback,
     /// Env row `index`'s key input. Also where a rejected Save's row
     /// error renders — the key is the row's name, so the error
     /// belongs under it.
@@ -1191,6 +1212,14 @@ pub enum ProfileFieldError {
     DuplicateName,
     /// The command line has no program to run.
     BlankCommand,
+    /// The scheme name is not one of the built-in registry's.
+    UnknownScheme,
+    /// The font size falls outside the global band ([`FONT_SIZE_MIN`]
+    /// – [`FONT_SIZE_MAX`]) or is not a whole number.
+    FontOutOfRange,
+    /// The scrollback text has no number in it (the parse's clamp
+    /// rules absorb everything else, like the global input).
+    UnparsableScrollback,
     /// An env row carries a value but no key.
     BlankEnvKey,
     /// An env row's key contains `=` — a character environ entry
@@ -1205,6 +1234,9 @@ impl ProfileFieldError {
             Self::BlankName => "Name is required",
             Self::DuplicateName => "That name is already taken",
             Self::BlankCommand => "Command needs a program to run",
+            Self::UnknownScheme => "Not one of the built-in schemes",
+            Self::FontOutOfRange => "Font size must be between 6 and 32",
+            Self::UnparsableScrollback => "Scrollback must be a number",
             Self::BlankEnvKey => "Variable needs a key",
             Self::EnvKeyEquals => "Keys can't contain '='",
         }
@@ -1296,11 +1328,13 @@ pub enum ProfileDraftMode {
     Edit { index: usize },
 }
 
-/// The form's one-at-a-time draft: the three raw text fields, the
-/// scheme pick, the env rows, plus the per-field error state of the
-/// last rejected commit. Not a [`SettingsBuffer`] extension — the
-/// page owns its lifecycle (see [`ProfileDraftTransition`]), and
-/// [`TextField`]'s four arms stay pinned to the Settings page's keys.
+/// The form's one-at-a-time draft: the six raw fields (name,
+/// command, cwd, scheme, font size, scrollback — the last two as
+/// text, empty = inherit), the env rows, plus the per-field error
+/// state of the last rejected commit. Not a [`SettingsBuffer`]
+/// extension — the page owns its lifecycle (see
+/// [`ProfileDraftTransition`]), and [`TextField`]'s arms stay pinned
+/// to the Settings page's keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileDraft {
     /// What a commit writes this draft as.
@@ -1316,6 +1350,13 @@ pub struct ProfileDraft {
     /// lands on Save with the rest of the draft (a profile's running
     /// tabs take it when the written config echoes).
     pub scheme: Option<String>,
+    /// The font-size input's buffered text: empty = inherit the
+    /// global size; any other text must parse into the global band
+    /// at Save.
+    pub font_size: String,
+    /// The scrollback input's buffered text: empty = inherit the
+    /// global capacity; any other text must parse at Save.
+    pub scrollback: String,
     /// The env rows' buffered text ([`env_rows_from_map`] seeds them
     /// from the profile). The whole row list rides Save
     /// ([`env_map_from_rows`]); add/remove are buffered list edits,
@@ -1335,6 +1376,8 @@ impl ProfileDraft {
             command: String::new(),
             cwd: String::new(),
             scheme: None,
+            font_size: String::new(),
+            scrollback: String::new(),
             env_rows: Vec::new(),
             errors: Vec::new(),
         }
@@ -1351,6 +1394,8 @@ impl ProfileDraft {
             command: source.command.clone(),
             cwd: cwd_text(source),
             scheme: source.color_scheme.clone(),
+            font_size: override_text(source.font_size),
+            scrollback: override_text(source.scrollback_lines),
             env_rows: env_rows_from_map(source.env.as_ref()),
             errors: Vec::new(),
         }
@@ -1365,6 +1410,8 @@ impl ProfileDraft {
             command: profile.command.clone(),
             cwd: cwd_text(profile),
             scheme: profile.color_scheme.clone(),
+            font_size: override_text(profile.font_size),
+            scrollback: override_text(profile.scrollback_lines),
             env_rows: env_rows_from_map(profile.env.as_ref()),
             errors: Vec::new(),
         }
@@ -1380,6 +1427,11 @@ impl ProfileDraft {
             ProfileField::Name => self.name = text,
             ProfileField::Command => self.command = text,
             ProfileField::Cwd => self.cwd = text,
+            // No text input buffers the scheme — the pick's own
+            // handler clears a stale scheme error when it re-picks.
+            ProfileField::Scheme => {}
+            ProfileField::FontSize => self.font_size = text,
+            ProfileField::Scrollback => self.scrollback = text,
             ProfileField::EnvKey(index) => {
                 if let Some(row) = self.env_rows.get_mut(index) {
                     row.key = text;
@@ -1392,6 +1444,13 @@ impl ProfileDraft {
             }
         }
     }
+}
+
+/// The override input's text for a profile's set override: the
+/// number verbatim, empty for `None` (inherit) — the seeding half of
+/// empty-means-inherit, so an untouched Edit draft round-trips.
+fn override_text<T: std::fmt::Display>(override_value: Option<T>) -> String {
+    override_value.map_or_else(String::new, |value| value.to_string())
 }
 
 /// The cwd input's text for a profile's cwd: the path verbatim, empty
@@ -1443,8 +1502,10 @@ pub enum ProfileSavePlan {
 /// transactional form.
 ///
 /// Every rule the form knows evaluates at once — the name (blank,
-/// then unique), the command line ([`command_line_parts`]), and
-/// every env row ([`env_row_errors`]) — so a rejection names every
+/// then unique), the command line ([`command_line_parts`]), the
+/// scheme name (registry), the font size (the global band), the
+/// scrollback text ([`parse_scrollback`]), and every env row
+/// ([`env_row_errors`]) — so a rejection names every
 /// offending field, not the first. A valid Edit replaces its profile
 /// with the whole draft and cascades `default_profile` iff the
 /// rename hit the default-named profile; a valid Add/Clone appends
@@ -1461,13 +1522,7 @@ pub fn plan_profile_save(
             let Some(base) = profiles.get(*index) else {
                 return ProfileSavePlan::StaleEdit;
             };
-            let errors = whole_draft_errors(
-                profiles,
-                Some(*index),
-                &draft.name,
-                &draft.command,
-                &draft.env_rows,
-            );
+            let errors = whole_draft_errors(profiles, draft, Some(*index));
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1476,6 +1531,8 @@ pub fn plan_profile_save(
             edited.command = draft.command.trim().to_string();
             edited.cwd = parse_cwd(&draft.cwd);
             edited.color_scheme.clone_from(&draft.scheme);
+            edited.font_size = parse_profile_font_size(&draft.font_size);
+            edited.scrollback_lines = parse_scrollback(&draft.scrollback);
             edited.env = env_map_from_rows(&draft.env_rows);
             if edited == *base {
                 return ProfileSavePlan::Unchanged;
@@ -1498,8 +1555,7 @@ pub fn plan_profile_save(
             }
         }
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
-            let errors =
-                whole_draft_errors(profiles, None, &draft.name, &draft.command, &draft.env_rows);
+            let errors = whole_draft_errors(profiles, draft, None);
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1509,18 +1565,12 @@ pub fn plan_profile_save(
                 cwd: parse_cwd(&draft.cwd),
                 color_scheme: draft.scheme.clone(),
                 env: env_map_from_rows(&draft.env_rows),
-                // The font/scrollback overrides the form exposes no
-                // fields for yet (profile-manager's scope): a Clone
-                // copies the source's, an Add starts unset — a save
-                // of anything else never resets them.
-                font_size: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.font_size,
-                    _ => None,
-                },
-                scrollback_lines: match &draft.mode {
-                    ProfileDraftMode::Clone { source } => source.scrollback_lines,
-                    _ => None,
-                },
+                // The override text is the draft's own in every mode:
+                // seeding copied the source's values into a Clone,
+                // so the round-trip preserves them without a
+                // mode-special case here.
+                font_size: parse_profile_font_size(&draft.font_size),
+                scrollback_lines: parse_scrollback(&draft.scrollback),
             };
             ProfileSavePlan::Write {
                 profiles: add_profile(profiles, added),
@@ -1531,26 +1581,47 @@ pub fn plan_profile_save(
 }
 
 /// The whole-draft gate: every form rule evaluated at once — the
-/// name (blank, then unique), the command line, and every env row —
-/// so one Save rejects with every offending field, in form order.
+/// name (blank, then unique), the command line, the scheme name
+/// (registry), the font size (the global band), the scrollback
+/// text, and every env row — so one Save rejects with every
+/// offending field, in form order.
 fn whole_draft_errors(
     profiles: &[Profile],
+    draft: &ProfileDraft,
     editing: Option<usize>,
-    name: &str,
-    command: &str,
-    env_rows: &[ProfileEnvRow],
 ) -> Vec<(ProfileField, ProfileFieldError)> {
     let mut errors = Vec::new();
-    let name = name.trim();
+    let name = draft.name.trim();
     if name.is_empty() {
         errors.push((ProfileField::Name, ProfileFieldError::BlankName));
     } else if !name_unique(profiles, editing, name) {
         errors.push((ProfileField::Name, ProfileFieldError::DuplicateName));
     }
-    if command_line_parts(command.trim()).is_none() {
+    if command_line_parts(draft.command.trim()).is_none() {
         errors.push((ProfileField::Command, ProfileFieldError::BlankCommand));
     }
-    errors.extend(env_row_errors(env_rows));
+    if draft
+        .scheme
+        .as_deref()
+        .is_some_and(|name| scheme_index(name).is_none())
+    {
+        errors.push((ProfileField::Scheme, ProfileFieldError::UnknownScheme));
+    }
+    let font = draft.font_size.trim();
+    if !font.is_empty()
+        && !font
+            .parse::<u16>()
+            .is_ok_and(|size| (FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&size))
+    {
+        errors.push((ProfileField::FontSize, ProfileFieldError::FontOutOfRange));
+    }
+    if !draft.scrollback.trim().is_empty() && parse_scrollback(&draft.scrollback).is_none() {
+        errors.push((
+            ProfileField::Scrollback,
+            ProfileFieldError::UnparsableScrollback,
+        ));
+    }
+    errors.extend(env_row_errors(&draft.env_rows));
     errors
 }
 
@@ -1590,12 +1661,65 @@ pub fn apply_profile_draft_transition(
 
 // --- row actions: delete + auto-clear, reorder ---
 
+/// One press of a row's delete cluster — the armed-delete state
+/// machine's whole vocabulary. `Arm` is the row's Delete press (the
+/// row then renders its inline Confirm/Keep pair); `Confirm` deletes
+/// through [`plan_profile_delete`] (default auto-clear intact);
+/// `Keep` disarms without deleting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileDeletePress {
+    /// The row's Delete press: arm this row's inline pair.
+    Arm(usize),
+    /// The armed row's Confirm press: delete it.
+    Confirm(usize),
+    /// The armed row's Keep press: disarm, delete nothing.
+    Keep,
+}
+
+/// The armed row after `press` — the armed-delete state machine's
+/// one pure transition: arming a row arms exactly that row (the
+/// pair renders inline on one row, so arming another row disarms the
+/// first), and both ends of the pair clear the arm (Confirm's delete
+/// lands through [`plan_profile_delete`] in the same interaction).
+pub const fn armed_profile_delete_row(press: ProfileDeletePress) -> Option<usize> {
+    match press {
+        ProfileDeletePress::Arm(index) => Some(index),
+        ProfileDeletePress::Confirm(_) | ProfileDeletePress::Keep => None,
+    }
+}
+
+/// Whether `event` may act on the Profiles page while a profile
+/// draft is open — the draft lock: no list mutation and no draft
+/// switch is reachable while a draft is open, so the draft's origin
+/// index cannot shift under it (the stale-index class dies at the
+/// root instead of by index bookkeeping). The locked view renders
+/// the list's controls disabled; the wiring consults this rule so a
+/// stale press — a race between a render and a click — is a no-op
+/// even if a control flashed enabled. Pure over the event/state
+/// pair, headless-pinned.
+pub fn profile_event_reachable(event: &SettingsEvent, draft_open: bool) -> bool {
+    if !draft_open {
+        return true;
+    }
+    !matches!(
+        event,
+        SettingsEvent::SelectProfile(_)
+            | SettingsEvent::OpenProfileDraft
+            | SettingsEvent::CloneProfile(_)
+            | SettingsEvent::ArmProfileDelete(_)
+            | SettingsEvent::ConfirmProfileDelete(_)
+            | SettingsEvent::KeepProfileDelete
+            | SettingsEvent::ReorderProfile(..)
+    )
+}
+
 /// The plan a delete produces: the list without the profile at
 /// `index`, plus the paired `default_profile` write when the deleted
 /// profile was the one the key named — the owner's auto-clear ruling
 /// (a write must never dangle; the picker can never show a stale
-/// name). A stale out-of-bounds index plans nothing. Delete is
-/// immediate — no dialog (OQ-1's standing ruling).
+/// name). A stale out-of-bounds index plans nothing. This is the
+/// armed row's Confirm step — the delete lands immediately from
+/// Confirm, never a dialog.
 pub fn plan_profile_delete(
     profiles: &[Profile],
     index: usize,
@@ -1780,38 +1904,54 @@ pub fn default_picker_write(profiles: &[Profile], index: usize) -> Option<Profil
     }
 }
 
-// --- the profile form's scheme dropdown ---
+// --- the profile form's scheme picker: the shared swatch popover
+// with a leading Inherit row ---
 
-/// The form's scheme dropdown row 0 label: the unset field, following
-/// the global scheme pick.
-pub const PROFILE_SCHEME_NONE_ROW: &str = "None — follow global setting";
-
-/// The form's scheme dropdown rows: [`PROFILE_SCHEME_NONE_ROW`] first,
-/// then every built-in registry name in registry order — derived from
-/// the same [`scheme_names`] the global pickers feed from, so the form
-/// can never offer a name `by_name` would reject.
-pub fn profile_scheme_options() -> Vec<&'static str> {
-    std::iter::once(PROFILE_SCHEME_NONE_ROW)
-        .chain(scheme_names())
-        .collect()
+/// Which scheme picker the app holds open — the two global controls
+/// (Appearance) and the profile form's override picker (Profiles),
+/// so the one-open-picker rule and the Escape ordering (popover
+/// first, then draft, then drawer) cover all three through one flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemePickerId {
+    /// A global scheme control — dark or light.
+    Global(ConfigKey),
+    /// The profile form's override picker.
+    ProfileForm,
 }
 
-/// The dropdown's selection row for a draft's scheme: row 0 when
-/// unset — or when the stored name is unknown (a hand-edited config;
-/// the control shows the fallback the resolution chain is already
-/// serving, never a value it invents) — and the name's option row
-/// when set. Mirrors [`default_picker_selected`].
+/// The Inherit row's swatch: the global scheme the terminal renders
+/// for the current system mode — the dark/light pair resolved for
+/// `is_dark`, the same resolution the terminal's color chain applies
+/// — previewed as the popover rows preview themselves. `None` when
+/// the configured global name is one the registry lacks (the closed
+/// control's unknown-name rule: no strip, never an invented
+/// palette).
+pub fn inherit_scheme_preview(config: &DropTermConfig, is_dark: bool) -> Option<SchemePreview> {
+    let name = crate::profile::effective_scheme_name(
+        None,
+        &config.color_scheme_dark,
+        &config.color_scheme_light,
+        is_dark,
+    );
+    scheme_preview_by_name(name)
+}
+
+/// The picker's selection row for a draft's scheme: row 0 (Inherit)
+/// when unset — or when the stored name is unknown (a hand-edited
+/// config; the control shows the fallback the resolution chain is
+/// already serving, never a value it invents) — and the name's
+/// option row when set. Mirrors [`default_picker_selected`].
 pub fn profile_scheme_selected(scheme: Option<&str>) -> usize {
     scheme
         .and_then(|name| scheme_index(name).map(|position| position + 1))
         .unwrap_or(0)
 }
 
-/// What a scheme-dropdown row resolves to: the cleared field, a
-/// registry name, or nothing for an out-of-range row.
+/// What a picker row resolves to: the cleared field, a registry
+/// name, or nothing for an out-of-range row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileSchemePick {
-    /// Row 0: unset the field — follow the global scheme.
+    /// Row 0 (Inherit): unset the field — follow the global scheme.
     None,
     /// A registry row: the name to set.
     Scheme(String),
@@ -1827,10 +1967,10 @@ impl ProfileSchemePick {
     }
 }
 
-/// The field value a dropdown row commits: row 0 clears to `None`
-/// (follow the global pick), a registry row sets its name. Any other
-/// index is stale and rejects — no write, never an invented value (the
-/// [`dropdown_write`] rule).
+/// The field value a picker row commits: row 0 (Inherit) clears to
+/// `None` — follow the global pick — and a registry row sets its
+/// name. Any other index is stale and rejects — no write, never an
+/// invented value (the [`dropdown_write`] rule).
 pub fn profile_scheme_write(index: usize) -> Option<ProfileSchemePick> {
     if index == 0 {
         return Some(ProfileSchemePick::None);
@@ -1953,8 +2093,10 @@ pub enum SettingsEvent {
     Picked(ConfigKey, usize),
     /// A scheme picker's closed control was pressed: flip that
     /// picker's popover open state (the app owns the flag; one
-    /// picker is open at most).
-    ToggleSchemePicker(ConfigKey),
+    /// picker is open at most — the two global controls and the
+    /// profile form's picker share the one-open rule and the
+    /// Escape ordering).
+    ToggleSchemePicker(SchemePickerId),
     /// The open scheme picker should close without picking — Escape
     /// or a press outside its bubble (the dropdown's dismissal
     /// contract).
@@ -1994,10 +2136,10 @@ pub enum SettingsEvent {
     /// here through the drawer's key funnel) — drop the draft, write
     /// nothing.
     CancelProfileDraft,
-    /// The form's scheme dropdown was picked: the pick buffers in
+    /// The form's scheme picker was picked: the pick buffers in
     /// every mode — the recolor lands on Save with the rest of the
     /// draft (the drawer's commit-on-change rule does not reach
-    /// inside the transactional form).
+    /// inside the transactional form). Row 0 is the Inherit row.
     PickProfileScheme(usize),
     /// The env rows editor's add affordance: buffer one blank row.
     /// Display-only like a keystroke — the form writes nothing until
@@ -2007,9 +2149,17 @@ pub enum SettingsEvent {
     /// row at `index`. Display-only — the write rides Save, exactly
     /// like buffered text.
     RemoveProfileEnvRow(usize),
-    /// A row's Delete action: immediate, no dialog (OQ-1's standing
-    /// ruling).
-    DeleteProfile(usize),
+    /// A row's Delete press: arm that row's inline Confirm/Keep
+    /// pair (arming another row disarms the first — single-row
+    /// arming; the pair replaces the bare click the row's delete
+    /// used to be).
+    ArmProfileDelete(usize),
+    /// The armed row's Confirm press: delete it — one whole-list
+    /// write plus the paired auto-clear when the deleted profile
+    /// was the default. Immediate from Confirm, never a dialog.
+    ConfirmProfileDelete(usize),
+    /// The armed row's Keep press: disarm, delete nothing.
+    KeepProfileDelete,
     /// A row's reorder press: move that profile one slot.
     ReorderProfile(usize, ReorderDirection),
     /// The drawer's resize handle is dragging: the pointer's
@@ -2124,10 +2274,16 @@ impl ConfigKey {
     }
 }
 
+/// The font-size band every font input shares: the global slider's
+/// range, which the profile form's Save enforces on its override
+/// text as "the global range" the profile-manager spec names.
+pub const FONT_SIZE_MIN: u16 = 6;
+pub const FONT_SIZE_MAX: u16 = 32;
+
 /// The font-size slider's display range. The slider constrains what
 /// the control can produce; the write path applies no extra clamp.
-const FONT_SIZE_SLIDER_MIN: f32 = 6.0;
-const FONT_SIZE_SLIDER_MAX: f32 = 32.0;
+const FONT_SIZE_SLIDER_MIN: f32 = FONT_SIZE_MIN as f32;
+const FONT_SIZE_SLIDER_MAX: f32 = FONT_SIZE_MAX as f32;
 
 /// The drawer pane's default width in px (spec drawer-resize
 /// criterion 1): what a never-dragged drawer renders — `None` in
@@ -2231,7 +2387,7 @@ pub fn drawer_with_handle(
 pub fn appearance_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<ConfigKey>,
+    scheme_picker: Option<SchemePickerId>,
 ) -> Element<'static, SettingsEvent> {
     tab_page(SettingsTab::Appearance, config, buffer, scheme_picker)
 }
@@ -2380,7 +2536,7 @@ fn tab_page(
     tab: SettingsTab,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<ConfigKey>,
+    scheme_picker: Option<SchemePickerId>,
 ) -> Element<'static, SettingsEvent> {
     let cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
         .iter()
@@ -2389,22 +2545,32 @@ fn tab_page(
     widget::settings::view_column(cards).into()
 }
 
-/// The Profiles tab's page: the read-only list — one row per
-/// profile in config order (the `+` dropdown / context-menu order),
-/// each row a thumbnail of the tab it opens (see [`profile_row`]),
-/// selection driving the edit form. An empty list shows the empty
-/// state with the add affordance. Read-only by construction: the
-/// rows emit selection events only; every mutation control lives on
-/// the row itself.
+/// The Profiles tab's page: the list — one row per profile in
+/// config order (the `+` dropdown / context-menu order), each row a
+/// thumbnail of the tab it opens (see [`profile_row`]) — the edit
+/// form below it, and the default picker above. While a draft is
+/// open the list is locked (see [`profile_event_reachable`]): every
+/// row control and the add affordance render disabled, and the
+/// armed delete pair waits hidden until the draft closes. `armed`
+/// names the row rendering its inline Confirm/Keep pair; `is_dark`
+/// resolves the Inherit row's swatch the way the terminal renders.
+/// An empty list shows the empty state with the add affordance.
 pub fn profiles_view(
     config: &DropTermConfig,
     selection: Option<usize>,
     draft: Option<&ProfileDraft>,
+    armed: Option<usize>,
+    picker_open: bool,
+    is_dark: bool,
 ) -> Element<'static, SettingsEvent> {
+    // The lock is the draft's presence: the list mutates nothing
+    // while the form below it holds an uncommitted draft.
+    let locked = draft.is_some();
     let mut cards: Vec<Element<'static, SettingsEvent>> = Vec::new();
     // The default picker: commit-on-change, the drawer's dropdown
     // rule. Selection mirrors `effective_default`, so it never opens
-    // on a name the list lacks.
+    // on a name the list lacks. Not a list mutation — it stays live
+    // under the draft lock.
     cards.push(
         widget::settings::section()
             .title("Default profile")
@@ -2435,54 +2601,72 @@ pub fn profiles_view(
                             "A profile is a named preset — the command, directory, colors, \
                              and environment a new tab opens with.",
                         )
-                        .control(add_profile_button()),
+                        .control(add_profile_button(locked)),
                 )
                 .into(),
         );
     } else {
         let mut list = widget::settings::section().title("Profiles");
         for (index, profile) in config.profiles.iter().enumerate() {
+            // The armed pair renders only on an unlocked row: the
+            // lock degrades an armed row to the idle trash until the
+            // draft closes.
+            let delete = if armed == Some(index) && !locked {
+                RowDelete::Armed
+            } else {
+                RowDelete::Idle
+            };
             list = list.add(profile_row(
                 config.profiles.len(),
                 index,
                 profile,
                 selection == Some(index),
                 default_row == Some(index),
+                delete,
+                locked,
             ));
         }
         cards.push(list.into());
         // The list's add affordance, below the rows it appends after.
-        cards.push(add_profile_button().into());
+        cards.push(add_profile_button(locked).into());
     }
     // The form: one draft at a time — an Add/Clone draft the buttons
     // opened, or the Edit draft a row selection seeded.
     if let Some(draft) = draft {
-        cards.push(profile_form(&config.profiles, draft));
+        cards.push(profile_form(config, draft, picker_open, is_dark));
     }
     widget::settings::view_column(cards).into()
 }
 
 /// The page's add affordance: the one text button among the row
 /// actions, so creation stays the loud gesture (the `+` matches the
-/// tab bar's own new-tab affordance).
-fn add_profile_button() -> widget::button::TextButton<'static, SettingsEvent> {
+/// tab bar's own new-tab affordance). Disabled while the draft lock
+/// holds — an open draft is the page's one transaction.
+fn add_profile_button(locked: bool) -> widget::button::TextButton<'static, SettingsEvent> {
     widget::button::standard("Add profile")
         .leading_icon(widget::icon::from_name("list-add-symbolic"))
-        .on_press(SettingsEvent::OpenProfileDraft)
+        .on_press_maybe((!locked).then_some(SettingsEvent::OpenProfileDraft))
 }
 
-/// The form section: the draft's three text inputs (Enter is Save,
+/// The form section: the draft's five text inputs (Enter is Save,
 /// the form's one commit gesture) with every rejected field's
-/// inline error under it, the scheme dropdown (buffered — its
-/// commit-on-change rule does not reach inside the transactional
-/// form), the env rows editor, and the Save/Cancel footer. The Edit
-/// title names the profile the row selection seeded — the seed row
-/// may sit above the fold — and follows the committed name, never
-/// the uncommitted buffer.
-fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, SettingsEvent> {
+/// inline error under it, the scheme picker with its leading
+/// Inherit row (buffered — the drawer's commit-on-change rule does
+/// not reach inside the transactional form), the font-size and
+/// scrollback inputs with their `inherits <global>` placeholders
+/// naming what empty means, the env rows editor, and the Save/Cancel
+/// footer. The Edit title names the profile the row selection
+/// seeded — the seed row may sit above the fold — and follows the
+/// committed name, never the uncommitted buffer.
+fn profile_form(
+    config: &DropTermConfig,
+    draft: &ProfileDraft,
+    picker_open: bool,
+    is_dark: bool,
+) -> Element<'static, SettingsEvent> {
     let title = match &draft.mode {
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => "New profile".to_string(),
-        ProfileDraftMode::Edit { index } => match profiles.get(*index) {
+        ProfileDraftMode::Edit { index } => match config.profiles.get(*index) {
             Some(profile) => format!("Edit {}", profile.name),
             // A stale edit (the list changed under the draft) has no
             // profile to name; the generic title covers the gap until
@@ -2490,36 +2674,66 @@ fn profile_form(profiles: &[Profile], draft: &ProfileDraft) -> Element<'static, 
             None => "Edit profile".to_string(),
         },
     };
+    // The scheme item carries the picker plus, on a rejected Save,
+    // the scheme's own inline error under it — the `form_field`
+    // rule, picker edition.
+    let scheme_control: Element<'static, SettingsEvent> = {
+        let control = profile_scheme_control(config, draft, picker_open, is_dark);
+        match draft
+            .errors
+            .iter()
+            .copied()
+            .find(|(at, _)| *at == ProfileField::Scheme)
+        {
+            Some((_, error)) => widget::column![
+                control,
+                widget::text(error.message())
+                    .size(12)
+                    .class(cosmic::theme::Text::Custom(danger_text_style)),
+            ]
+            .spacing(4)
+            .into(),
+            None => control,
+        }
+    };
     widget::settings::section()
         .title(title)
         .add(form_field(
             ProfileField::Name,
             "Name",
             &draft.name,
-            "web-prod",
+            "web-prod".to_string(),
             draft,
         ))
         .add(form_field(
             ProfileField::Command,
             "Command",
             &draft.command,
-            "ssh web-prod",
+            "ssh web-prod".to_string(),
             draft,
         ))
         .add(form_field(
             ProfileField::Cwd,
             "Working directory",
             &draft.cwd,
-            "optional",
+            "optional".to_string(),
             draft,
         ))
-        .add(
-            widget::settings::item::builder("Color scheme").control(widget::dropdown(
-                profile_scheme_options(),
-                Some(profile_scheme_selected(draft.scheme.as_deref())),
-                SettingsEvent::PickProfileScheme,
-            )),
-        )
+        .add(widget::settings::item::builder("Color scheme").control(scheme_control))
+        .add(form_field(
+            ProfileField::FontSize,
+            "Font size",
+            &draft.font_size,
+            format!("inherits {}", config.font_size),
+            draft,
+        ))
+        .add(form_field(
+            ProfileField::Scrollback,
+            "Scrollback lines",
+            &draft.scrollback,
+            format!("inherits {}", config.scrollback_lines),
+            draft,
+        ))
         .add(env_rows_item(draft))
         .add(profile_form_footer())
         .into()
@@ -2599,11 +2813,13 @@ fn remove_row_button(index: usize) -> Element<'static, SettingsEvent> {
 /// One form field: the labeled text input with its inline error,
 /// when the last Save's rejection named this field. Enter is Save —
 /// the form's one commit gesture, so the submit carries no payload.
+/// The placeholder is owned text: the override fields name the
+/// global value they'd inherit (`inherits 14`).
 fn form_field(
     field: ProfileField,
     label: &'static str,
     text: &str,
-    placeholder: &'static str,
+    placeholder: String,
     draft: &ProfileDraft,
 ) -> Element<'static, SettingsEvent> {
     let input = widget::text_input(placeholder, text.to_string())
@@ -2636,6 +2852,18 @@ fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text
     }
 }
 
+/// The row's delete cluster state: the idle trash (arming the
+/// delete; disabled under the draft lock) or the armed inline
+/// Confirm/Keep pair replacing it. An armed row under the lock
+/// degrades to the idle trash until the draft closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowDelete {
+    /// The trash icon; its press arms the pair.
+    Idle,
+    /// The armed pair — Confirm deletes, Keep disarms.
+    Armed,
+}
+
 /// One list row: the profile as a thumbnail of the tab it opens.
 /// The leading edge carries the scheme chip ([`scheme_chip`]), the
 /// identity column the name — with the dimmed `default` tag when the
@@ -2645,11 +2873,15 @@ fn danger_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text
 /// button, filling the row's remaining width so the press target is
 /// the row, not just the text; the edit pencil emits the same
 /// selection event, making the edit path visible (the identity
-/// column absorbs the fifth icon's width cost at the drawer's
-/// minimum). The action cluster is tooltip'd icon buttons
-/// ([`row_icon_button`]): Clone, an immediate Delete (no dialog —
-/// OQ-1), and up/down reorder with the boundary direction disabled.
-/// The selected row carries the accent edge-and-tint treatment
+/// column absorbs the cluster's width cost at the drawer's minimum).
+/// The action cluster is tooltip'd icon buttons
+/// ([`row_icon_button`]): Clone, the two-step delete (the trash arms
+/// the row's inline Confirm/Keep pair — [`RowDelete::Armed`]), and
+/// up/down reorder with the boundary direction disabled. While a
+/// draft is open (`locked`) every one of them — the identity select
+/// included — renders disabled: the draft's origin index is only
+/// valid because nothing can shift it (the draft lock). The selected
+/// row carries the accent edge-and-tint treatment
 /// ([`row_button_class`]) — visible on light and dark panes alike
 /// (an OQ-3 hardware item) without spending the accent fill, which
 /// stays the primary-action color.
@@ -2659,6 +2891,8 @@ fn profile_row(
     profile: &Profile,
     selected: bool,
     is_default: bool,
+    delete: RowDelete,
+    locked: bool,
 ) -> Element<'static, SettingsEvent> {
     let mut name_line = widget::row!(widget::text(profile.name.clone()))
         .spacing(6)
@@ -2671,24 +2905,39 @@ fn profile_row(
         );
     }
     let identity = widget::column![name_line, prompt_line(&profile.command)].spacing(2);
+    // The delete cluster: an armed row trades its trash for the
+    // inline Confirm/Keep pair (single-row arming); under the draft
+    // lock the cluster is just one more disabled list control — the
+    // arm waits out the draft, then the pair returns.
+    let delete: Element<'static, SettingsEvent> = if matches!(delete, RowDelete::Armed) {
+        widget::row![
+            widget::button::text("Confirm").on_press(SettingsEvent::ConfirmProfileDelete(index)),
+            widget::button::text("Keep").on_press(SettingsEvent::KeepProfileDelete),
+        ]
+        .spacing(4)
+        .into()
+    } else {
+        row_icon_button("user-trash-symbolic", "Delete profile")
+            .on_press_maybe((!locked).then_some(SettingsEvent::ArmProfileDelete(index)))
+            .into()
+    };
     widget::row![
         scheme_chip(profile.color_scheme.as_deref()),
         widget::button::custom(identity)
             .class(row_button_class(selected))
             .width(Length::Fill)
-            .on_press(SettingsEvent::SelectProfile(index)),
+            .on_press_maybe((!locked).then_some(SettingsEvent::SelectProfile(index))),
         row_icon_button("edit-symbolic", "Edit profile")
-            .on_press(SettingsEvent::SelectProfile(index)),
+            .on_press_maybe((!locked).then_some(SettingsEvent::SelectProfile(index))),
         row_icon_button("edit-copy-symbolic", "Clone profile")
-            .on_press(SettingsEvent::CloneProfile(index)),
-        row_icon_button("user-trash-symbolic", "Delete profile")
-            .on_press(SettingsEvent::DeleteProfile(index)),
+            .on_press_maybe((!locked).then_some(SettingsEvent::CloneProfile(index))),
+        delete,
         row_icon_button("go-up-symbolic", "Move up").on_press_maybe(
-            can_move(profiles_len, index, ReorderDirection::Up)
+            (!locked && can_move(profiles_len, index, ReorderDirection::Up))
                 .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Up)),
         ),
         row_icon_button("go-down-symbolic", "Move down").on_press_maybe(
-            can_move(profiles_len, index, ReorderDirection::Down)
+            (!locked && can_move(profiles_len, index, ReorderDirection::Down))
                 .then_some(SettingsEvent::ReorderProfile(index, ReorderDirection::Down)),
         ),
     ]
@@ -2857,7 +3106,7 @@ fn drawer_section(
     section: Section,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<ConfigKey>,
+    scheme_picker: Option<SchemePickerId>,
 ) -> Element<'static, SettingsEvent> {
     let mut built = widget::settings::section().title(section.title());
     for key in section.keys() {
@@ -2889,7 +3138,7 @@ fn drawer_item(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<ConfigKey>,
+    scheme_picker: Option<SchemePickerId>,
 ) -> Element<'static, SettingsEvent> {
     let control = drawer_control(key, config, buffer, scheme_picker)
         .expect("every exposed key has exactly one control (section map)");
@@ -2908,7 +3157,7 @@ fn drawer_control(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<ConfigKey>,
+    scheme_picker: Option<SchemePickerId>,
 ) -> Option<Element<'static, SettingsEvent>> {
     // The two scheme controls are pickers, not stock dropdowns: the
     // palette is the preview (see the scheme-picker section).
@@ -2919,7 +3168,7 @@ fn drawer_control(
         return Some(scheme_picker_control(
             key,
             config,
-            scheme_picker == Some(key),
+            scheme_picker == Some(SchemePickerId::Global(key)),
         ));
     }
     // The Shell item is the one two-control setting (default-spawn
@@ -3037,7 +3286,7 @@ fn dropdown_control(
 
 // --- the scheme pickers: the palette is the preview (scheme-picker) ---
 //
-// The two scheme controls are not stock dropdowns: every scheme row
+// The scheme controls are not stock dropdowns: every scheme row
 // shows the scheme itself — a background chip, a foreground chip,
 // then the sixteen ANSI colors the terminal actually renders with,
 // resolved through [`scheme_previews`] (the same conversion the
@@ -3046,9 +3295,14 @@ fn dropdown_control(
 // lists the whole registry, anchored like the stock dropdown's menu
 // (the overlay resolves its position per frame against the anchor's
 // translated bounds, so it tracks the control through the drawer's
-// scrollable). A row pick emits the *same*
+// scrollable). A global picker's row pick emits the *same*
 // [`SettingsEvent::Picked`] with the *same* registry-order index the
-// stock dropdown emitted — planners and writes untouched.
+// stock dropdown emitted — planners and writes untouched. The
+// profile form's picker reuses the whole apparatus with one extra
+// row: a leading **Inherit** row (row 0) previewing the global
+// scheme resolved for the current system mode, whose pick emits
+// [`SettingsEvent::PickProfileScheme`] in the same row space
+// [`profile_scheme_write`] maps.
 
 /// One popover row's height in px.
 const SCHEME_ROW_HEIGHT: f32 = 32.0;
@@ -3063,6 +3317,14 @@ const SCHEME_CHIP_GAP: f32 = 2.0;
 const SCHEME_CHIP_MINI: f32 = 5.0;
 /// The popover's inner horizontal padding in px.
 const SCHEME_POPOVER_PAD_X: f32 = 8.0;
+/// The profile picker's leading Inherit row label.
+const SCHEME_INHERIT_ROW: &str = "Inherit";
+
+/// One chip strip's total width: eighteen chips and their gaps —
+/// the popover's rows and layout share the arithmetic.
+const fn scheme_strip_width() -> f32 {
+    18.0 * SCHEME_CHIP + 17.0 * SCHEME_CHIP_GAP
+}
 
 /// The picker's cached name paragraph — registry names are
 /// compile-time, so the cache is built once and only the count is
@@ -3070,34 +3332,43 @@ const SCHEME_POPOVER_PAD_X: f32 = 8.0;
 type SchemeNameParagraph =
     paragraph::Plain<<Renderer as cosmic::iced::core::text::Renderer>::Paragraph>;
 
+/// One cached label paragraph: the fixed styling every popover row's
+/// name shares.
+fn name_paragraph(content: &str) -> SchemeNameParagraph {
+    let mut paragraph = SchemeNameParagraph::default();
+    paragraph.update(Text {
+        content,
+        bounds: Size::INFINITE,
+        size: Pixels(14.0),
+        line_height: LineHeight::default(),
+        font: cosmic::font::default(),
+        align_x: cosmic::iced::core::text::Alignment::Left,
+        align_y: alignment::Vertical::Center,
+        shaping: Shaping::Advanced,
+        wrapping: cosmic::iced::core::text::Wrapping::default(),
+        ellipsize: cosmic::iced::core::text::Ellipsize::None,
+    });
+    paragraph
+}
+
 /// The scheme picker host's tree state: one name paragraph per
-/// registry scheme, in registry order.
+/// registry scheme in registry order, plus the profile picker's
+/// static Inherit label cached beside them.
 struct SchemePickerState {
     names: Vec<SchemeNameParagraph>,
+    inherit: SchemeNameParagraph,
 }
 
 impl SchemePickerState {
     fn new() -> Self {
         let names = scheme_names()
-            .into_iter()
-            .map(|name| {
-                let mut paragraph = SchemeNameParagraph::default();
-                paragraph.update(Text {
-                    content: name,
-                    bounds: Size::INFINITE,
-                    size: Pixels(14.0),
-                    line_height: LineHeight::default(),
-                    font: cosmic::font::default(),
-                    align_x: cosmic::iced::core::text::Alignment::Left,
-                    align_y: alignment::Vertical::Center,
-                    shaping: Shaping::Advanced,
-                    wrapping: cosmic::iced::core::text::Wrapping::default(),
-                    ellipsize: cosmic::iced::core::text::Ellipsize::None,
-                });
-                paragraph
-            })
+            .iter()
+            .map(|name| name_paragraph(name))
             .collect();
-        Self { names }
+        Self {
+            names,
+            inherit: name_paragraph(SCHEME_INHERIT_ROW),
+        }
     }
 }
 
@@ -3163,24 +3434,82 @@ pub fn scheme_picker_control(
         content = content.push(scheme_chip_strip(preview));
     }
     let control: Element<'static, SettingsEvent> = widget::button::custom(content)
-        .on_press(SettingsEvent::ToggleSchemePicker(key))
+        .on_press(SettingsEvent::ToggleSchemePicker(SchemePickerId::Global(
+            key,
+        )))
         .into();
     Element::new(SchemePicker {
-        key,
+        id: SchemePickerId::Global(key),
         selected,
+        inherit: None,
         open,
         control,
     })
+}
+
+/// The profile form's scheme picker control — the shared picker with
+/// the override's vocabulary: the closed control names the picked
+/// scheme (or "Inherit") over its strip, and an inherit preview is
+/// the global scheme resolved for the current system mode — the
+/// colors a save-less inherit actually renders, the closed control's
+/// honest-preview rule. An unknown stored name shows verbatim with
+/// no strip and marks no row (the global control's unknown rule).
+#[must_use]
+fn profile_scheme_control(
+    config: &DropTermConfig,
+    draft: &ProfileDraft,
+    open: bool,
+    is_dark: bool,
+) -> Element<'static, SettingsEvent> {
+    let inherit = inherit_scheme_preview(config, is_dark);
+    let label = match draft.scheme.as_deref() {
+        Some(name) => name.to_string(),
+        None => SCHEME_INHERIT_ROW.to_string(),
+    };
+    let preview = match draft.scheme.as_deref() {
+        Some(name) => scheme_preview_by_name(name),
+        None => inherit,
+    };
+    let mut content = widget::column![widget::text(label)].spacing(4);
+    if let Some(preview) = preview {
+        content = content.push(scheme_chip_strip(preview));
+    }
+    let control: Element<'static, SettingsEvent> = widget::button::custom(content)
+        .on_press(SettingsEvent::ToggleSchemePicker(
+            SchemePickerId::ProfileForm,
+        ))
+        .into();
+    Element::new(SchemePicker {
+        id: SchemePickerId::ProfileForm,
+        selected: Some(profile_scheme_selected(draft.scheme.as_deref())),
+        inherit,
+        open,
+        control,
+    })
+}
+
+/// The registry preview a name resolves to, `None` for a name the
+/// registry lacks — the picker's single find-by-name seam (the
+/// Inherit row's resolution and a picked scheme's strip share it).
+fn scheme_preview_by_name(name: &str) -> Option<SchemePreview> {
+    scheme_previews()
+        .iter()
+        .find(|(option, _)| *option == name)
+        .map(|(_, preview)| *preview)
 }
 
 /// The scheme picker host: lays out, updates, and draws exactly its
 /// closed control (the delegation pattern of libcosmic's `Tooltip`),
 /// and — while the app holds the picker open — hosts the popover as
 /// its overlay, anchored to the control's translated bounds so it
-/// tracks the control inside the drawer's scrollable.
+/// tracks the control inside the drawer's scrollable. `id` picks the
+/// popover's row model (registry-only, or registry behind a leading
+/// Inherit row); `inherit` is the Inherit row's resolved preview,
+/// `None` for the global pickers and for an unresolvable global.
 struct SchemePicker<'a> {
-    key: ConfigKey,
+    id: SchemePickerId,
     selected: Option<usize>,
+    inherit: Option<SchemePreview>,
     open: bool,
     control: Element<'a, SettingsEvent>,
 }
@@ -3306,8 +3635,9 @@ impl Widget<SettingsEvent, Theme, Renderer> for SchemePicker<'_> {
         let bounds = layout.bounds();
         Some(overlay::Element::new(Box::new(SchemePopover {
             state: tree.state.downcast_mut::<SchemePickerState>(),
-            key: self.key,
+            id: self.id,
             selected: self.selected,
+            inherit: self.inherit,
             anchor: Rectangle::new(bounds.position() + translation, bounds.size()),
         })))
     }
@@ -3316,15 +3646,19 @@ impl Widget<SettingsEvent, Theme, Renderer> for SchemePicker<'_> {
 /// The open scheme picker's popover: one row per registry scheme —
 /// name plus its resolved eighteen colors — in a dropdown-styled
 /// bubble anchored below the control (above it when the space below
-/// runs out, the stock menu's rule). Dismissal is the dropdown's own
-/// contract: a left press on a row picks it and closes, any other
-/// press closes without picking, every press is captured, and Escape
-/// closes. The marker is the stock menu's selected treatment: the
-/// picked row fills and its name carries the accent.
+/// runs out, the stock menu's rule); the profile form's variant
+/// carries one leading Inherit row in front of the registry,
+/// previewing the global scheme resolved for the current system
+/// mode. Dismissal is the dropdown's own contract: a left press on a
+/// row picks it and closes, any other press closes without picking,
+/// every press is captured, and Escape closes. The marker is the
+/// stock menu's selected treatment: the picked row fills and its
+/// name carries the accent.
 struct SchemePopover<'a> {
     state: &'a mut SchemePickerState,
-    key: ConfigKey,
+    id: SchemePickerId,
     selected: Option<usize>,
+    inherit: Option<SchemePreview>,
     /// The control's absolute bounds (translation applied).
     anchor: Rectangle,
 }
@@ -3343,21 +3677,64 @@ impl SchemePopover<'_> {
         Some(((point.y - bounds.y) / SCHEME_ROW_HEIGHT) as usize)
     }
 
-    /// The chip strip's total width: eighteen chips and their gaps.
-    fn strip_width() -> f32 {
-        18.0 * SCHEME_CHIP + 17.0 * SCHEME_CHIP_GAP
+    /// The popover's row count: the registry, plus the profile
+    /// form's leading Inherit row.
+    fn rows(&self) -> usize {
+        scheme_previews().len() + self.registry_offset()
+    }
+
+    /// The registry's first row index — 0 for the global pickers,
+    /// one past the Inherit row for the profile form's.
+    const fn registry_offset(&self) -> usize {
+        match self.id {
+            SchemePickerId::Global(_) => 0,
+            SchemePickerId::ProfileForm => 1,
+        }
+    }
+
+    /// The pick event a left press on `row` publishes — the global
+    /// pickers' `Picked` in registry space (row space, offset 0) and
+    /// the profile form's `PickProfileScheme` in its own row space
+    /// (row 0 = Inherit), the spaces their planners already map.
+    const fn pick_event(&self, row: usize) -> SettingsEvent {
+        match self.id {
+            SchemePickerId::Global(key) => SettingsEvent::Picked(key, row),
+            SchemePickerId::ProfileForm => SettingsEvent::PickProfileScheme(row),
+        }
+    }
+
+    /// One row's paint inputs: the marker against `hovered`, the
+    /// cached label, and the strip.
+    fn row_view<'label>(
+        &self,
+        row: usize,
+        hovered: Option<usize>,
+        label: &'label SchemeNameParagraph,
+        strip: Option<SchemePreview>,
+    ) -> SchemeRowView<'label> {
+        let mark = if self.selected == Some(row) {
+            RowMark::Selected
+        } else if hovered == Some(row) {
+            RowMark::Hovered
+        } else {
+            RowMark::Plain
+        };
+        SchemeRowView { mark, label, strip }
     }
 }
 
 impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
     fn layout(&mut self, _renderer: &Renderer, bounds: Size) -> layout::Node {
-        let widest = self
+        let mut widest = self
             .state
             .names
             .iter()
             .map(SchemeNameParagraph::min_width)
             .fold(0.0, f32::max);
-        let content = SCHEME_POPOVER_PAD_X * 2.0 + 24.0 + widest + 8.0 + Self::strip_width();
+        if self.registry_offset() > 0 {
+            widest = widest.max(self.state.inherit.min_width());
+        }
+        let content = SCHEME_POPOVER_PAD_X * 2.0 + 24.0 + widest + 8.0 + scheme_strip_width();
         let width = content
             .max(self.anchor.width)
             .min((bounds.width - self.anchor.x).max(0.0));
@@ -3368,7 +3745,7 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
             clippy::cast_precision_loss,
             reason = "row count is far below 2^24, so usize -> f32 is exact"
         )]
-        let height = (scheme_previews().len() as f32 * SCHEME_ROW_HEIGHT).min(if below {
+        let height = (self.rows() as f32 * SCHEME_ROW_HEIGHT).min(if below {
             space_below
         } else {
             space_above
@@ -3394,17 +3771,18 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
             // The dropdown's dismissal contract, unchanged from the
             // tab-bar menus: a left press on a row first publishes
             // its pick — the identical event, the identical
-            // registry-order index the stock dropdown emitted — then
-            // everything closes, and the press is captured so nothing
-            // under the bubble acts on it.
+            // row-space index the stock dropdown emitted for the
+            // global pickers, the profile form's own space otherwise
+            // — then everything closes, and the press is captured so
+            // nothing under the bubble acts on it.
             Event::Mouse(MouseEvent::ButtonPressed(button)) => {
                 if *button == Button::Left
                     && let Some(index) = cursor
                         .position()
                         .and_then(|point| Self::row_at(layout.bounds(), point))
-                    && index < scheme_previews().len()
+                    && index < self.rows()
                 {
-                    shell.publish(SettingsEvent::Picked(self.key, index));
+                    shell.publish(self.pick_event(index));
                 }
                 shell.publish(SettingsEvent::CloseSchemePicker);
                 shell.capture_event();
@@ -3446,7 +3824,6 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
         cursor: mouse::Cursor,
     ) {
         let cosmic = theme.cosmic();
-        let accent: Color = cosmic.accent.base.into();
         let menu = layout.bounds();
         // The stock dropdown container's own surface: component
         // background, hairline divider, small radius — cohesion with
@@ -3468,101 +3845,152 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
         let hovered = cursor
             .position()
             .and_then(|point| Self::row_at(menu, point));
-        let chip_y = menu.y + (SCHEME_ROW_HEIGHT - SCHEME_CHIP) / 2.0;
-        let strip_x = menu.x + menu.width - SCHEME_POPOVER_PAD_X - Self::strip_width();
-        for (index, (_, preview)) in scheme_previews().iter().enumerate() {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "row count is far below 2^24, so usize -> f32 is exact"
-            )]
-            let row_y = menu.y + index as f32 * SCHEME_ROW_HEIGHT;
-            let row = Rectangle::new(
-                Point::new(menu.x, row_y),
-                Size::new(menu.width, SCHEME_ROW_HEIGHT),
-            );
-            // The marker: the picked row fills and its name carries
-            // the accent — the stock menu's selected treatment. The
-            // hover fill is the same treatment at whisper alpha, the
-            // tab-bar menus' rule.
-            if self.selected == Some(index) {
-                renderer.fill_quad(
-                    Quad {
-                        bounds: row,
-                        snap: true,
-                        ..Default::default()
-                    },
-                    Color { a: 0.25, ..accent },
-                );
-            } else if hovered == Some(index) {
-                renderer.fill_quad(
-                    Quad {
-                        bounds: row,
-                        snap: true,
-                        ..Default::default()
-                    },
-                    Color { a: 0.12, ..accent },
-                );
-            }
-
-            // The chip strip: background, foreground, then the ANSI
-            // sixteen — the palette is the preview. The background
-            // chip carries a hairline divider border, the one chip
-            // that can otherwise vanish against the bubble's own
-            // surface (OQ-2's rule).
-            let text_color = if self.selected == Some(index) {
-                accent
-            } else {
-                style.text_color
-            };
-            for (chip_index, color) in std::iter::once(preview.background)
-                .chain(std::iter::once(preview.foreground))
-                .chain(preview.ansi.iter().copied())
-                .enumerate()
-            {
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "chip count is far below 2^24, so usize -> f32 is exact"
-                )]
-                let chip_x = strip_x + chip_index as f32 * (SCHEME_CHIP + SCHEME_CHIP_GAP);
-                let bounds = Rectangle::new(
-                    Point::new(chip_x, chip_y),
-                    Size::new(SCHEME_CHIP, SCHEME_CHIP),
-                );
-                let color = color.map_or(Color::from(cosmic.bg_component_color()), |rgb| {
-                    Color::from_rgb8(rgb.r, rgb.g, rgb.b)
-                });
-                renderer.fill_quad(
-                    Quad {
-                        bounds,
-                        border: if chip_index == 0 {
-                            Border {
-                                width: 1.0,
-                                color: cosmic.bg_component_divider().into(),
-                                radius: 2.0.into(),
-                            }
-                        } else {
-                            Border {
-                                radius: 2.0.into(),
-                                ..Default::default()
-                            }
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    color,
-                );
-            }
-
-            let paragraph = &self.state.names[index];
-            let text_y = row.y + (row.height - paragraph.min_height()) / 2.0;
-            renderer.fill_paragraph(
-                paragraph.raw(),
-                Point::new(row.x + SCHEME_POPOVER_PAD_X, text_y),
-                text_color,
+        let offset = self.registry_offset();
+        // The profile form's leading row: the Inherit label over the
+        // global scheme resolved for the current system mode — the
+        // palette an unset override actually renders.
+        if offset > 0 {
+            draw_scheme_row(
+                renderer,
+                theme,
+                style,
                 menu,
+                0,
+                self.row_view(0, hovered, &self.state.inherit, self.inherit),
+            );
+        }
+        for (index, (_, preview)) in scheme_previews().iter().enumerate() {
+            let row = offset + index;
+            draw_scheme_row(
+                renderer,
+                theme,
+                style,
+                menu,
+                row,
+                self.row_view(row, hovered, &self.state.names[index], Some(*preview)),
             );
         }
     }
+}
+
+/// One popover row's marker state: the stock menu's picked-row
+/// treatment, the same fill at whisper alpha on hover, or plain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowMark {
+    Selected,
+    Hovered,
+    Plain,
+}
+
+/// One popover row's paint inputs: the marker, the cached label,
+/// and the previewed strip (`None` renders the label alone — the
+/// Inherit row whose global name does not resolve).
+#[derive(Debug, Clone, Copy)]
+struct SchemeRowView<'a> {
+    mark: RowMark,
+    label: &'a SchemeNameParagraph,
+    strip: Option<SchemePreview>,
+}
+
+/// One popover row's paint: the marker fills, the eighteen-chip
+/// strip, and the cached label in the row's accent-or-body color —
+/// every popover row (registry and Inherit alike) renders through
+/// here.
+fn draw_scheme_row(
+    renderer: &mut Renderer,
+    theme: &Theme,
+    style: &renderer::Style,
+    menu: Rectangle,
+    row: usize,
+    view: SchemeRowView<'_>,
+) {
+    let SchemeRowView { mark, label, strip } = view;
+    let selected = matches!(mark, RowMark::Selected);
+    let cosmic = theme.cosmic();
+    let accent: Color = cosmic.accent.base.into();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "row count is far below 2^24, so usize -> f32 is exact"
+    )]
+    let row_y = menu.y + row as f32 * SCHEME_ROW_HEIGHT;
+    let bounds = Rectangle::new(
+        Point::new(menu.x, row_y),
+        Size::new(menu.width, SCHEME_ROW_HEIGHT),
+    );
+    if selected {
+        renderer.fill_quad(
+            Quad {
+                bounds,
+                snap: true,
+                ..Default::default()
+            },
+            Color { a: 0.25, ..accent },
+        );
+    } else if matches!(mark, RowMark::Hovered) {
+        renderer.fill_quad(
+            Quad {
+                bounds,
+                snap: true,
+                ..Default::default()
+            },
+            Color { a: 0.12, ..accent },
+        );
+    }
+    let text_color = if selected { accent } else { style.text_color };
+    if let Some(preview) = strip {
+        // The chip strip: background, foreground, then the ANSI
+        // sixteen — the palette is the preview. The background chip
+        // carries a hairline divider border, the one chip that can
+        // otherwise vanish against the bubble's own surface (OQ-2's
+        // rule).
+        let chip_y = menu.y + (SCHEME_ROW_HEIGHT - SCHEME_CHIP) / 2.0;
+        let strip_x = menu.x + menu.width - SCHEME_POPOVER_PAD_X - scheme_strip_width();
+        for (chip_index, color) in std::iter::once(preview.background)
+            .chain(std::iter::once(preview.foreground))
+            .chain(preview.ansi.iter().copied())
+            .enumerate()
+        {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "chip count is far below 2^24, so usize -> f32 is exact"
+            )]
+            let chip_x = strip_x + chip_index as f32 * (SCHEME_CHIP + SCHEME_CHIP_GAP);
+            let chip = Rectangle::new(
+                Point::new(chip_x, chip_y),
+                Size::new(SCHEME_CHIP, SCHEME_CHIP),
+            );
+            let color = color.map_or(Color::from(cosmic.bg_component_color()), |rgb| {
+                Color::from_rgb8(rgb.r, rgb.g, rgb.b)
+            });
+            renderer.fill_quad(
+                Quad {
+                    bounds: chip,
+                    border: if chip_index == 0 {
+                        Border {
+                            width: 1.0,
+                            color: cosmic.bg_component_divider().into(),
+                            radius: 2.0.into(),
+                        }
+                    } else {
+                        Border {
+                            radius: 2.0.into(),
+                            ..Default::default()
+                        }
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                color,
+            );
+        }
+    }
+    let text_y = bounds.y + (bounds.height - label.min_height()) / 2.0;
+    renderer.fill_paragraph(
+        label.raw(),
+        Point::new(bounds.x + SCHEME_POPOVER_PAD_X, text_y),
+        text_color,
+        menu,
+    );
 }
 
 /// A toggle control (commit on change). The flip resolves through

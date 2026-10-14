@@ -1,64 +1,106 @@
 # Settings drawer
 
-Every DropTerm setting is editable in this in-app drawer, and every edit applies the moment you commit it - there is no Apply button. The one exception is the Profiles page's edit form, a transactional draft with its own Save and Cancel (its own section explains why).
+Every DropTerm setting is editable in this in-app drawer, and every edit applies the moment you commit it - there is no Apply button. The one exception is the Profiles page's edit form, a transactional draft with its own Save and Cancel.
 
 ## Opening the drawer
 
-Every setting is editable in-app: press `Ctrl+Shift+I` while the terminal has keyboard focus, pick "Settings…" in the terminal's context menu, or click the gear button at the right corner of the tab strip - all three hit the same toggle. The drawer is an overlay pinned to the right edge of the drop-down surface itself (the libcosmic context drawer cosmic-term uses), so the terminal stays visible - and live-editable - the whole time: opening settings never hides or resizes the surface, and the pty grid is untouched by drawer open/close. The strip is always present whatever the tab count - with a single tab it carries the settings button alone - so settings are one click away in every state; hovering the button shows a `Settings…` tooltip. The keypress is swallowed from the shell like every other app bind. A second press toggles the drawer closed; there is never a second window.
+Three ways in, all the same toggle:
 
-## Tabs, sections, and commit points
+- press `Ctrl+Shift+I` while the terminal has keyboard focus,
+- pick "Settings…" in the terminal's context menu,
+- click the gear button at the right end of the tab strip.
 
-The drawer's pages sit behind a five-tab strip - Appearance, Behavior, Profiles, Keybindings, and Advanced - pinned under the drawer title, so the tabs stay put while a page scrolls beneath them. Each tab has one job. Appearance carries how the terminal looks: the Appearance card (font, size, opacity, the two scheme pickers - each previewing its configured scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, and edge - the surface's shape pairs naturally with its look on one page). Behavior carries how DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement with the new-tab-directory dropdown, close confirmation, and session persistence - everything about the tab strip on one card, so tuning tabs is one visit), Status bar (the master "Show the status band" toggle - also bound to `Ctrl+Shift+B` - plus one "Show ..." row per band segment: process name, working directory, git branch, profile, terminal size, tab position, zoom level, and clock, all live, see [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss and slide animation - the drop-down's own mechanics), and Terminal (the shell dropdown with its custom-path input beneath, arguments, the default directory, scrollback, and bell notifications - the global defaults every profile falls back to, which is the app's behavior, not power-user territory). Profiles carries the profile manager (its own section below). Keybindings carries the shortcut editor (its own section below). Advanced carries the power controls: `respect_panel`, `layer`, and `keyboard_mode`. Every exposed control appears exactly once across the tabs - none lost, none duplicated.
+The drawer is an overlay pinned to the right edge of the drop-down surface, so the terminal stays visible - and live-editable - the whole time: opening settings never hides or resizes the surface. The tab strip (with its gear) is always present, even with a single tab, so settings are one click away in every state. A second press of `Ctrl+Shift+I` toggles the drawer closed; there is never a second window.
 
-Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives on its tab (start typing in a field, flip tabs, flip back - the text is still there). The drawer title stays "Settings" on every tab; the strip disambiguates. Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab, and an explicit close resets the drawer to Appearance for the next open, while a focus-loss hide preserves the open tab and its drafts exactly as they were.
+## The five tabs
 
-Every edit applies the moment you commit it, with no Apply button. Commit points per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The rule holds for every control outside the profile form. The profile form is the drawer's one buffered island: a multi-field draft with a lifecycle already lived there, so its writes collect behind an explicit Save instead - the Profiles section below states its contract.
+| Tab | Carries |
+|---|---|
+| **Appearance** | How the terminal looks: the Appearance card (font, size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
+| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications). |
+| **Profiles** | The profile manager - its own section below. |
+| **Keybindings** | The shortcut editor - its own section below. |
+| **Advanced** | The power controls: `respect_panel`, `layer`, and `keyboard_mode`. |
+
+Every exposed control appears exactly once across the tabs - none lost, none duplicated.
+
+Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives (start typing in a field, flip tabs, flip back - the text is still there). Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab; an explicit close resets it to Appearance, while a focus-loss hide preserves the open tab and its drafts.
+
+Commits are per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The profile form is the one buffered island - its writes collect behind an explicit Save.
 
 ## Keybindings tab
 
-The Keybindings tab is the shortcut editor: a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other), each row showing its effective binding - the custom binding if one is set, otherwise every default chord joined (`Ctrl + Plus / Ctrl + Equal` for zoom-in), or `None` for actions that ship unbound (copy-primary - middle-click paste covers it). One binding per action: setting a new chord replaces the action's previous bindings entirely, and the row's undo affordance (visible only while a custom exists) reverts to the defaults. The numbered tab-activation rows are one row per digit, 1 through 8, with 9 as its own "Activate last tab" row; the per-profile new-tab action is deliberately not keybindable.
+The editor is a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other). Each row shows its effective binding: the custom chord if one is set, otherwise every default chord joined (`Ctrl + Plus / Ctrl + Equal` for zoom-in), or `None` for actions that ship unbound. The full default table lives in [keybindings](keybindings.md).
 
-Rebinding is a two-press interaction: press the row's binding to arm the capture (a hint row appears under it), then press the chord. While armed, the capture owns every key press - nothing reaches the terminal or any other binding. Escape (or the hint's Cancel button) ends the capture without changes; a later Escape closes the drawer as usual. Capturing a chord another action already holds shows an inline error naming the holder and writes nothing; capturing the action's own current chord just ends the capture.
+Rebinding is two presses: press the row's binding to arm the capture, then press the chord. While armed, the capture owns every key press - nothing reaches the terminal. Escape or the hint's Cancel ends it without changes; capturing a chord another action already holds shows an inline error naming the holder and writes nothing.
 
-A committed rebind applies instantly - the very next key press uses the new chord, no restart - and persists to the config file, so it survives a restart. Editing the config file by hand while the app runs has the same effect (the file is watched); entries with unknown action ids or unparseable keys are skipped with a warning, never fatal. The on-disk shape is one `custom_key_binds` entry per action, keyed by the action's id and spelling the binding as modifier names plus a key name (see [configuration](configuration.md#keybindings)).
+Rules worth knowing:
+
+- One binding per action: a new chord replaces the action's previous bindings entirely; the row's undo affordance reverts to the defaults.
+- A committed rebind applies to the very next key press and persists across restarts.
+- Editing the config file by hand while the app runs has the same effect - the file is watched. Entries with unknown ids or unparseable keys are skipped with a warning, never fatal.
+- The on-disk shape is documented in [configuration](configuration.md#keybindings).
+
+The numbered activation rows are one per digit, 1 through 8, with 9 as "Activate last tab"; the per-profile new-tab actions are deliberately not keybindable.
 
 ## Profiles tab
 
-Profiles is a first-class tab in the strip - there is no entry row and no back button; the strip is the only way in and out, and the drawer title stays "Settings" like on every other tab. Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any page - though on this page an open form draft owns the first Escape (it cancels the draft; see below).
+The page holds the profile list, the edit form, and the default-profile picker. The list shows one row per profile in config order - the same order the tab bar `+`'s dropdown and the context menu's submenu use. Each row is a thumbnail of the tab it opens: a scheme swatch chip (the profile's palette miniaturized; a hollow frame when it follows the global look), the name above the command as a dimmed `$` prompt line, and a `default` tag when the picker names this row. The row's actions are tooltip'd icon buttons - edit pencil, clone, delete, move up/down - and clicking the identity column selects it.
 
-The page holds the profile list, the edit form, and the default-profile picker. The list shows one row per profile in config order - the exact order the tab bar `+`'s dropdown and the context menu's submenu use - each row a thumbnail of the tab it opens: a scheme swatch chip at the leading edge (the profile's palette miniaturized - its background carrying its six ANSI accent colors; an unset scheme or a name the registry no longer knows renders the hollow frame, "follows the global look"), the profile's name above its command line as a dimmed prompt - a `$` glyph and the command in the terminal's own monospace - and, when the default-profile picker resolves to this row, a small dimmed `default` tag beside the name. The row's actions are tooltip'd icon buttons - an edit pencil (which opens the form - the same selection the identity column's click makes, only labeled), clone, an immediate delete, and move up/down with the boundary direction disabled - and the whole identity column selects the row, edged and tinted in the accent color when selected. The selected row's three fields (`name`, `command`, `cwd`) edit in the form below it - titled `Edit <name>` for the row that seeded it - joined by a Color scheme dropdown - "None — follow global setting" first, then every built-in scheme - and by an Environment variables editor: one key/value input pair per entry, seeded from the stored map in sorted key order, with an Add variable affordance and a per-row remove. The form is transactional - the drawer's one buffered island: nothing it holds writes until Save. Save is the footer's Save button or an Enter in any input, text field or env row alike; it validates the whole draft and, when every field passes, writes exactly once. The scheme dropdown's pick buffers like every other field (in an edit draft too - no more writing the moment you pick) and its recolor lands on Save, recoloring the profile's running tabs without a respawn. The env rows ride the same Save with the same rules: a wholly blank row drops at the write (an abandoned row holds nothing), while a value without a key or a key carrying `=` rejects with an inline error under that row. A failed Save writes nothing and shows every offending field's inline error simultaneously - blank name, duplicate name, blank command, bad env rows, all at once, each under its own input; typing in a field clears only that field's error. An unchanged Edit draft's Save closes the form without writing anything. A valid Save closes the form on the row it wrote - an Edit keeps its row, an Add/Clone selects the newly appended one - and reopening is the row or pencil press again. The written map applies to the profile's next spawn - a running tab's environment never changes. Add and Clone open the same draft form, Clone seeding a copy under a unique `name (copy)` name. Outside the form, the drawer's instant rule holds as everywhere: default-picker picks, row deletes, and up/down reorders write the moment you make them. Deleting the profile the default names clears the default in the same interaction, and a Save that renames that profile moves the default along, so the picker never shows a name the list lacks.
+**Delete is two-step inline, never a dialog.** A trash press arms that row - the trash becomes a Confirm / Keep pair right on the row. Only one row is ever armed. Confirming deletes immediately and, if the deleted profile was the default, clears the default in the same interaction.
 
-A profile draft is page-local: a focus-loss hide preserves it with the drawer (see above), while leaving the tab - a strip pick or a close - clears it, so a reopened Profiles page starts from the config. Cancel (the footer's button) and Escape (with a draft open) both drop the draft with no write - the drawer stays open beneath Escape, and a second Escape closes it as on every other page.
+**While a form draft is open, the list is locked** - every row button, the add button, and selection itself render disabled until Save or Cancel. The default-profile picker stays live, and an armed delete simply waits out the draft.
+
+### The edit form
+
+The form is the drawer's one buffered island: nothing writes until Save - the footer's button or an Enter in any input. Its fields:
+
+| Field | Rules |
+|---|---|
+| Name, Command | Text, required. The name must be non-blank and not another profile's. |
+| Working directory | Text, optional; never existence-checked. |
+| Color scheme | The same swatch picker as the Appearance tab, with a leading **Inherit** row showing the global scheme resolved for the current mode. |
+| Font size, Scrollback | Text; empty means inherit the global value - the placeholder names it (`inherits 14`). |
+| Environment variables | One key/value pair per entry, with add and per-row remove. |
+
+Save validates the whole draft at once and writes exactly once when every field passes: the command must parse to a program, the scheme (if set) must be a built-in, the font size must sit in the 6-32 band, the scrollback must be a number (clamping like the global input), and every env key must be non-empty and free of `=`. A failed Save writes nothing and shows every offending field's inline error at once; typing in a field clears only its error. An unchanged Edit draft's Save closes the form without writing; a valid Save closes on the row it wrote.
+
+The scheme recolors the profile's running tabs live; command, cwd, font size, scrollback, and env apply to the profile's next spawn - a running tab is never re-launched. Add and Clone open the same form, Clone seeding a copy under a unique `name (copy)` name.
+
+A draft is page-local: a focus-loss hide preserves it with the drawer, while leaving the tab - or closing the drawer - clears it and any armed delete, so a reopened Profiles page starts from the config. Cancel and Escape both drop the draft with no write; the drawer stays open beneath Escape.
 
 ## While the drawer is open
 
-While the drawer is open, terminal input is inert - keyboard and pointer never reach the shell; the drawer's own inputs type normally. Escape cancels an open profile-form draft first (the drawer stays); with no draft it closes the drawer (only the drawer: the surface stays), as does the drawer's Close button and a repeat `Ctrl+Shift+I`. Focus loss keeps working as configured: with `hide_on_focus_loss` the surface hides with the drawer preserved exactly as it was - open, drafts and all - and the next show uncovers it; explicitly closing the drawer clears any in-flight drafts, so a reopen starts fresh from the config file.
+Terminal input is inert - keyboard and pointer never reach the shell; the drawer's own inputs type normally. Escape peels one layer at a time: an open scheme-picker popover closes first, then an open profile draft cancels, and only with neither does Escape close the drawer (the surface stays). The drawer's Close button and a repeat `Ctrl+Shift+I` close it too. Focus loss keeps working as configured: the surface hides with the drawer preserved exactly as it was, drafts and all.
 
 ## When each edit takes effect
 
-Each control states next to it when its edit takes effect, and because the terminal is visible under the drawer, the live keys are visible the moment they land:
+Each control states next to it when its edit applies, and the terminal is visible under the drawer, so the live keys show their effect the moment they land:
 
 | Field | Applies |
 |---|---|
 | `height_percent`, `width_percent`, `h_align`, `edge` | live - reshapes a shown surface in place (deferred mid-drag and mid-slide) |
-| `tab_position` | live - pure relayout, no reshape: the strip reorders immediately and nothing resizes |
+| `tab_position` | live - pure relayout, no reshape |
 | `status_bar_enabled` | live - the band joins or leaves the column and the terminal's pinned height follows the same frame |
-| `status_bar_show_process`, `status_bar_show_path`, `status_bar_show_branch`, `status_bar_show_profile`, `status_bar_show_grid`, `status_bar_show_tab`, `status_bar_show_zoom`, `status_bar_show_clock` | live - the hidden segment vanishes from the next render and its inputs stop being gathered (the branch's `.git` reads and the clock's tick stop at the gate) |
-| `tab_bar_border`, `status_bar_border` | live - a pure display flip: the bar's hairline appears or vanishes on the next render, nothing resizes |
-| `tab_title_mode` | live - every un-renamed tab re-titles from its stored shell title, cwd, and (in Profile name mode) profile name the moment the pick lands |
-| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, visible in the terminal beneath the open drawer - drag the opacity slider and watch the surface change while dragging. `font_size` and the scheme pair apply to every tab whose profile does not override that field ([profiles](configuration.md#profiles) carry per-field overrides) |
+| `status_bar_show_*` segments | live - the hidden segment vanishes from the next render and its inputs stop being gathered |
+| `tab_bar_border`, `status_bar_border` | live - the bar's hairline appears or vanishes on the next render, nothing resizes |
+| `tab_title_mode` | live - every un-renamed tab re-titles immediately |
+| `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, visible beneath the open drawer. `font_size` and the scheme pair apply to every tab whose profile does not override that field |
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
-| `custom_key_binds` | instant - the very next key press uses the new chord, in the same session |
+| `custom_key_binds` | instant - the very next key press uses the new chord |
+| `settings_drawer_width` | live by drag - written on handle release; double-clicking the handle resets it |
 | `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
-| `profiles` (color_scheme, font_size) | live - a config pass re-resolves these per tab, so an edit recolors or re-sizes the profile's running tabs without a respawn |
-| `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched, and a terminal's scrollback capacity or environment never changes mid-run |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition (a running animation is never aborted), the bell toggle at the next bell, the placement toggle at the next new-tab open |
+| `profiles` (color_scheme, font_size) | live - an edit recolors or re-sizes the profile's running tabs without a respawn |
+| `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched |
+| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
+| `close_confirmation_enabled` | next close - the key is read at request time |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 
-- `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing `session.ron` is never deleted or rewritten by disabling - re-enabling resumes saving over it.
-- `slide_animation_enabled`: `false` restores instant show/hide with immediate destroy (the pre-slide-animation behavior).
-- `new_tab_after_current`: `false` appends new tabs at the end of the tab list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H` (the home-directory new tab), the tab bar's `+`, and the remote `new-tab` follow it; `duplicate-tab` always lands after the active tab, and session restore keeps the saved order.
+- `session_persistence_enabled` is symmetric: `false` stops session saves *and* skips launch restore. The existing saved session is never deleted or rewritten by disabling.
+- `slide_animation_enabled`: `false` restores instant show/hide.
+- `new_tab_after_current`: `false` appends new tabs at the end of the list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H`, the tab bar's `+`, and the remote `new-tab` follow it; duplicates always land after the active tab, and session restore keeps the saved order.
+- `close_confirmation_enabled`: `false` restores instant, unconfirmed closes ([configuration](configuration.md#close-confirmation)).
 
 ## Input ranges and limitations
 

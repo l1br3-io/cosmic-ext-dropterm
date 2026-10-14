@@ -246,7 +246,11 @@ fn the_appearance_page_builds_with_a_picker_open_and_closed() {
     // builder; the page must construct in both states.
     let config = DropTermConfig::default();
     let buffer = SettingsBuffer::default();
-    let _ = appearance_view(&config, &buffer, Some(ConfigKey::ColorSchemeDark));
+    let _ = appearance_view(
+        &config,
+        &buffer,
+        Some(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
+    );
     let _ = appearance_view(&config, &buffer, None);
 }
 
@@ -1765,19 +1769,19 @@ fn the_profiles_page_builds_in_every_read_state() {
     // draft, a clone draft, an edit draft — must all build
     // without panicking.
     let mut config = DropTermConfig::default();
-    let _ = profiles_view(&config, None, None);
-    let _ = profiles_view(&config, Some(0), None);
+    let _ = profiles_view(&config, None, None, None, false, true);
+    let _ = profiles_view(&config, Some(0), None, None, false, true);
     config.profiles = vec![profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let _ = profiles_view(&config, None, None);
-    let _ = profiles_view(&config, Some(1), None);
-    let _ = profiles_view(&config, Some(9), None);
+    let _ = profiles_view(&config, None, None, None, false, true);
+    let _ = profiles_view(&config, Some(1), None, None, false, true);
+    let _ = profiles_view(&config, Some(9), None, None, false, true);
     let mut erroring = ProfileDraft::add();
     erroring.errors = vec![(ProfileField::Name, ProfileFieldError::DuplicateName)];
-    let _ = profiles_view(&config, None, Some(&erroring));
+    let _ = profiles_view(&config, None, Some(&erroring), None, false, true);
     let cloning = ProfileDraft::clone_of(&config.profiles[0], &config.profiles);
-    let _ = profiles_view(&config, Some(0), Some(&cloning));
+    let _ = profiles_view(&config, Some(0), Some(&cloning), None, false, true);
     let editing = ProfileDraft::edit(0, &config.profiles[0]);
-    let _ = profiles_view(&config, Some(0), Some(&editing));
+    let _ = profiles_view(&config, Some(0), Some(&editing), None, false, true);
 }
 
 // --- the default-profile picker (profile-settings T2) ---
@@ -1847,21 +1851,10 @@ fn registry_row(name: &str) -> usize {
 }
 
 #[test]
-fn profile_scheme_options_are_the_none_row_then_the_registry() {
-    // Row 0 is the None row; the built-in registry follows in its
-    // own order — the same vocabulary the global pickers feed
-    // from, so the form can never offer a name `by_name` would
-    // reject.
-    let options = profile_scheme_options();
-    assert_eq!(options[0], "None — follow global setting");
-    assert_eq!(&options[1..], scheme_names().as_slice());
-}
-
-#[test]
-fn profile_scheme_selection_maps_unset_and_unknown_to_the_none_row() {
-    // Unset → row 0; a set, known name → its option row; a name
-    // the registry lacks (hand-edited) falls back to row 0 — the
-    // control shows the fallback the resolution chain is already
+fn profile_scheme_selection_maps_unset_and_unknown_to_the_inherit_row() {
+    // Unset → row 0 (Inherit); a set, known name → its option row;
+    // a name the registry lacks (hand-edited) falls back to row 0 —
+    // the control shows the fallback the resolution chain is already
     // serving, never a value it would invent.
     assert_eq!(profile_scheme_selected(None), 0);
     assert_eq!(
@@ -1882,7 +1875,7 @@ fn profile_scheme_picks_resolve_to_the_field_value_or_reject() {
         profile_scheme_write(registry_row("Nord") + 1),
         Some(ProfileSchemePick::Scheme("Nord".to_string()))
     );
-    assert_eq!(profile_scheme_write(profile_scheme_options().len()), None);
+    assert_eq!(profile_scheme_write(scheme_names().len() + 1), None);
 }
 
 #[test]
@@ -2506,11 +2499,12 @@ fn a_clone_save_writes_the_rows_not_the_source_map() {
 }
 
 #[test]
-fn a_save_never_resets_the_overrides_the_form_does_not_expose() {
-    // The form has no font/scrollback fields yet (profile-manager's
-    // scope), so no Save may reset them either: an Edit's base clone
-    // carries them by construction, a Clone copies the source's, and
-    // only an Add starts unset.
+fn a_save_never_loses_the_override_fields_the_seed_carried() {
+    // The override fields ride the draft text and the seeding
+    // round-trips them, so no Save can lose them: an Edit's base
+    // clone re-writes what the draft carried, a Clone's seed copies
+    // the source's values through its own text, and only an Add
+    // starts unset.
     let overridden = Profile {
         font_size: Some(11),
         scrollback_lines: Some(50_000),
@@ -2601,17 +2595,74 @@ fn env_rows_round_trip_through_a_save_and_reopen() {
 
 #[test]
 fn profile_row_builds_at_the_boundaries_with_the_edit_cluster() {
-    // The five-icon row — pencil, Clone, Delete, and the two
-    // reorder directions with the boundary one disabled — builds
-    // for the first and last rows alike; construction is the
-    // assertion (a malformed cluster panics here, not on
-    // hardware). A name the theme lacks renders blank instead of
-    // panicking — that failure belongs to
+    // The action cluster — pencil, Clone, the delete cluster, and
+    // the two reorder directions with the boundary one disabled —
+    // builds for the first and last rows alike, in every cluster
+    // state: the idle trash, the armed inline Confirm/Keep pair, and
+    // the draft lock (everything disabled); construction is the
+    // assertion (a malformed cluster panics here, not on hardware).
+    // A name the theme lacks renders blank instead of panicking —
+    // that failure belongs to
     // `every_static_icon_name_resolves_in_the_theme_chain` below.
+    // The lock-plus-arm combination never reaches the row — the
+    // page degrades an armed row to the idle trash while a draft is
+    // open — and the page-level pin covers that instead.
     let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
     let last = profiles.len() - 1;
-    let _ = profile_row(profiles.len(), 0, &profiles[0], false, true);
-    let _ = profile_row(profiles.len(), last, &profiles[last], true, false);
+    let _ = profile_row(
+        profiles.len(),
+        0,
+        &profiles[0],
+        false,
+        true,
+        RowDelete::Idle,
+        false,
+    );
+    let _ = profile_row(
+        profiles.len(),
+        last,
+        &profiles[last],
+        true,
+        false,
+        RowDelete::Idle,
+        false,
+    );
+    let _ = profile_row(
+        profiles.len(),
+        0,
+        &profiles[0],
+        false,
+        true,
+        RowDelete::Armed,
+        false,
+    );
+    let _ = profile_row(
+        profiles.len(),
+        last,
+        &profiles[last],
+        true,
+        false,
+        RowDelete::Armed,
+        false,
+    );
+    let _ = profile_row(
+        profiles.len(),
+        0,
+        &profiles[0],
+        false,
+        true,
+        RowDelete::Idle,
+        true,
+    );
+    let _ = profile_row(
+        profiles.len(),
+        last,
+        &profiles[last],
+        true,
+        false,
+        RowDelete::Idle,
+        true,
+    );
 }
 
 #[test]
@@ -2730,10 +2781,16 @@ fn the_form_builds_with_the_save_footer_in_every_draft_shape() {
     // Clone, Edit — and a draft erroring in several fields at once
     // builds the transactional form (footer, per-field errors)
     // without panicking.
+    let config = DropTermConfig::default();
     let profiles = [sourced_profile()];
-    let _ = profile_form(&profiles, &ProfileDraft::add());
-    let _ = profile_form(&profiles, &ProfileDraft::clone_of(&profiles[0], &profiles));
-    let _ = profile_form(&profiles, &ProfileDraft::edit(0, &profiles[0]));
+    let _ = profile_form(&config, &ProfileDraft::add(), false, true);
+    let _ = profile_form(
+        &config,
+        &ProfileDraft::clone_of(&profiles[0], &profiles),
+        false,
+        true,
+    );
+    let _ = profile_form(&config, &ProfileDraft::edit(0, &profiles[0]), false, true);
     let mut erroring = ProfileDraft::add();
     erroring.errors = vec![
         (ProfileField::Name, ProfileFieldError::BlankName),
@@ -2741,5 +2798,353 @@ fn the_form_builds_with_the_save_footer_in_every_draft_shape() {
         (ProfileField::EnvKey(0), ProfileFieldError::EnvKeyEquals),
     ];
     erroring.env_rows = vec![env_row("A=B", "v")];
-    let _ = profile_form(&profiles, &erroring);
+    let _ = profile_form(&config, &erroring, false, true);
+}
+
+// --- the override fields, armed delete, the draft lock
+// (profile-manager T1) ---
+
+#[test]
+fn draft_seeding_round_trips_the_override_fields() {
+    // The six-field draft: font and scrollback seed as text — a set
+    // override as its number, an unset one as empty (inherit) — in
+    // every mode, so an untouched Edit still plans `Unchanged` and
+    // no Save can reset an override its form never showed.
+    let overridden = Profile {
+        font_size: Some(11),
+        scrollback_lines: Some(50_000),
+        ..sourced_profile()
+    };
+    let edit = ProfileDraft::edit(0, &overridden);
+    assert_eq!(edit.font_size, "11");
+    assert_eq!(edit.scrollback, "50000");
+    let clone = ProfileDraft::clone_of(&overridden, std::slice::from_ref(&overridden));
+    assert_eq!(clone.font_size, "11");
+    assert_eq!(clone.scrollback, "50000");
+    let add = ProfileDraft::add();
+    assert_eq!(add.font_size, "");
+    assert_eq!(add.scrollback, "");
+    // The inherit shape seeds both inputs empty.
+    let inheritor = ProfileDraft::edit(0, &sourced_profile());
+    assert_eq!(inheritor.font_size, "");
+    assert_eq!(inheritor.scrollback, "");
+}
+
+#[test]
+fn typing_into_an_override_field_buffers_and_clears_the_stale_error() {
+    // The keystroke rule, override edition: the input buffers its
+    // text and that field's stale error retires.
+    let mut draft = ProfileDraft::add();
+    draft.errors = vec![(ProfileField::FontSize, ProfileFieldError::FontOutOfRange)];
+    draft.set_field_text(ProfileField::FontSize, "12".to_string());
+    assert_eq!(draft.font_size, "12");
+    assert!(draft.errors.is_empty());
+    draft.errors = vec![(
+        ProfileField::Scrollback,
+        ProfileFieldError::UnparsableScrollback,
+    )];
+    draft.set_field_text(ProfileField::Scrollback, String::new());
+    assert_eq!(draft.scrollback, "");
+    assert!(draft.errors.is_empty());
+}
+
+#[test]
+fn the_override_fields_ride_the_save_and_empty_persists_none() {
+    // The inherit round-trip (the additive shape profile-appearance
+    // pinned on load): values write through, the same draft emptied
+    // writes None — empty-means-inherit, both fields.
+    let profiles = [sourced_profile()];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.font_size = "11".to_string();
+    draft.scrollback = "50000".to_string();
+    let ProfileSavePlan::Write {
+        profiles: written, ..
+    } = plan_profile_save(&draft, &profiles, None)
+    else {
+        panic!("a valid save");
+    };
+    assert_eq!(written[0].font_size, Some(11));
+    assert_eq!(written[0].scrollback_lines, Some(50_000));
+
+    // The same draft emptied against the written list writes None:
+    // empty-means-inherit, both fields.
+    let mut cleared_draft = ProfileDraft::edit(0, &written[0]);
+    assert_eq!(cleared_draft.font_size, "11");
+    cleared_draft.font_size = "  ".to_string();
+    cleared_draft.scrollback = String::new();
+    let ProfileSavePlan::Write {
+        profiles: cleared, ..
+    } = plan_profile_save(&cleared_draft, &written, None)
+    else {
+        panic!("a valid save");
+    };
+    assert_eq!(cleared[0].font_size, None);
+    assert_eq!(cleared[0].scrollback_lines, None);
+}
+
+#[test]
+fn an_unknown_scheme_fails_save_alone() {
+    // The registry gate: a name the built-ins lack (a hand-edited
+    // config seeded it) rejects Save on the scheme field alone —
+    // everything else about the draft is fine, nothing writes.
+    let profiles = [sourced_profile()];
+    let mut draft = ProfileDraft::edit(0, &profiles[0]);
+    draft.scheme = Some("No such scheme".to_string());
+    assert_eq!(
+        plan_profile_save(&draft, &profiles, None),
+        ProfileSavePlan::Invalid {
+            errors: vec![(ProfileField::Scheme, ProfileFieldError::UnknownScheme)],
+        }
+    );
+}
+
+#[test]
+fn an_out_of_band_font_fails_save_alone_and_the_edges_pass() {
+    // The global range (the slider's own 6–32 band) is what Save
+    // enforces on the text: below, above, unparsable — each alone
+    // fails on the font field; the band's edges write through, and
+    // surrounding whitespace is input debris like everywhere else.
+    for bad in ["5", "33", "0", "70000", "six", "-1", "6.5"] {
+        let profiles = [sourced_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.font_size = bad.to_string();
+        assert_eq!(
+            plan_profile_save(&draft, &profiles, None),
+            ProfileSavePlan::Invalid {
+                errors: vec![(ProfileField::FontSize, ProfileFieldError::FontOutOfRange)],
+            },
+            "font text {bad:?} must fail Save alone"
+        );
+    }
+    for (text, expected) in [("6", 6u16), ("32", 32), (" 12 ", 12)] {
+        let profiles = [sourced_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.font_size = text.to_string();
+        let ProfileSavePlan::Write {
+            profiles: written, ..
+        } = plan_profile_save(&draft, &profiles, None)
+        else {
+            panic!("font {text:?} is in band");
+        };
+        assert_eq!(written[0].font_size, Some(expected));
+    }
+}
+
+#[test]
+fn an_unparsable_scrollback_fails_save_alone_and_the_clamp_rules_ride() {
+    // `parse_scrollback` is the authority: text without a number
+    // rejects on the scrollback field alone; its clamp rules
+    // (negatives to zero, absurd magnitudes to u32::MAX) ride the
+    // Save instead of erroring, exactly as the global input behaves.
+    for bad in ["lots", "12x", "1.5"] {
+        let profiles = [sourced_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.scrollback = bad.to_string();
+        assert_eq!(
+            plan_profile_save(&draft, &profiles, None),
+            ProfileSavePlan::Invalid {
+                errors: vec![(
+                    ProfileField::Scrollback,
+                    ProfileFieldError::UnparsableScrollback
+                )],
+            },
+            "scrollback text {bad:?} must fail Save alone"
+        );
+    }
+    for (text, expected) in [("-5", 0u32), ("99999999999999999999", u32::MAX)] {
+        let profiles = [sourced_profile()];
+        let mut draft = ProfileDraft::edit(0, &profiles[0]);
+        draft.scrollback = text.to_string();
+        let ProfileSavePlan::Write {
+            profiles: written, ..
+        } = plan_profile_save(&draft, &profiles, None)
+        else {
+            panic!("scrollback {text:?} clamps, never rejects");
+        };
+        assert_eq!(written[0].scrollback_lines, Some(expected));
+    }
+}
+
+#[test]
+fn the_override_errors_ride_a_rejected_save_in_form_order() {
+    // The atomic gate grew three rules and they evaluate with the
+    // rest: one Save, every offending field — old and new — in form
+    // order (name, command, scheme, font, scrollback, env rows).
+    let mut draft = ProfileDraft::add();
+    draft.name = "  ".to_string();
+    draft.command = "btop".to_string();
+    draft.scheme = Some("Nope".to_string());
+    draft.font_size = "33".to_string();
+    draft.scrollback = "lots".to_string();
+    draft.env_rows = vec![env_row("", "orphan")];
+    assert_eq!(
+        plan_profile_save(&draft, &[], None),
+        ProfileSavePlan::Invalid {
+            errors: vec![
+                (ProfileField::Name, ProfileFieldError::BlankName),
+                (ProfileField::Scheme, ProfileFieldError::UnknownScheme),
+                (ProfileField::FontSize, ProfileFieldError::FontOutOfRange),
+                (
+                    ProfileField::Scrollback,
+                    ProfileFieldError::UnparsableScrollback
+                ),
+                (ProfileField::EnvKey(0), ProfileFieldError::BlankEnvKey),
+            ],
+        }
+    );
+}
+
+#[test]
+fn arming_a_delete_arms_one_row_and_both_ends_disarm() {
+    // Single-row arming by construction: an Arm press names the one
+    // armed row (arming another row disarms the first — the inline
+    // pair renders on exactly one row), and both ends of the pair
+    // clear the arm: Confirm (whose delete lands through
+    // `plan_profile_delete`, cascade intact) and Keep.
+    let mut armed = armed_profile_delete_row(ProfileDeletePress::Arm(1));
+    assert_eq!(armed, Some(1));
+    armed = armed_profile_delete_row(ProfileDeletePress::Arm(0));
+    assert_eq!(armed, Some(0));
+    armed = armed_profile_delete_row(ProfileDeletePress::Keep);
+    assert_eq!(armed, None);
+    assert_eq!(
+        armed_profile_delete_row(ProfileDeletePress::Confirm(1)),
+        None
+    );
+}
+
+#[test]
+fn list_mutations_and_draft_switches_are_unreachable_while_a_draft_is_open() {
+    // The draft lock (spec criterion 1): while a draft is open, no
+    // event that mutates the list or switches the draft is
+    // reachable — the origin index is unshiftable by construction.
+    // One representative per SettingsEvent variant; exactly the list
+    // and draft gestures lock (selection, add, clone, the whole
+    // delete cluster, reorder), everything else (the form's own
+    // gestures, Save/Cancel, the drawer's controls) stays reachable,
+    // and nothing is locked without a draft.
+    let events = vec![
+        SettingsEvent::Draft(TextField::Shell, String::new()),
+        SettingsEvent::Submitted(TextField::Shell, String::new()),
+        SettingsEvent::SliderMoved(ConfigKey::Opacity, 50.0),
+        SettingsEvent::SliderReleased(ConfigKey::Opacity),
+        SettingsEvent::Picked(ConfigKey::Edge, 0),
+        SettingsEvent::ToggleSchemePicker(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
+        SettingsEvent::ToggleSchemePicker(SchemePickerId::ProfileForm),
+        SettingsEvent::CloseSchemePicker,
+        SettingsEvent::Toggled(ConfigKey::RespectPanel, true),
+        SettingsEvent::KeybindSearchChanged(String::new()),
+        SettingsEvent::CaptureStart(crate::terminal::Action::Copy),
+        SettingsEvent::CaptureCancel,
+        SettingsEvent::RevertKeybind(crate::terminal::Action::Copy),
+        SettingsEvent::SelectProfile(0),
+        SettingsEvent::PickDefaultProfile(0),
+        SettingsEvent::OpenProfileDraft,
+        SettingsEvent::CloneProfile(0),
+        SettingsEvent::DraftProfileField(ProfileField::Name, String::new()),
+        SettingsEvent::SaveProfileDraft,
+        SettingsEvent::CancelProfileDraft,
+        SettingsEvent::PickProfileScheme(0),
+        SettingsEvent::AddProfileEnvRow,
+        SettingsEvent::RemoveProfileEnvRow(0),
+        SettingsEvent::ArmProfileDelete(0),
+        SettingsEvent::ConfirmProfileDelete(0),
+        SettingsEvent::KeepProfileDelete,
+        SettingsEvent::ReorderProfile(0, ReorderDirection::Up),
+        SettingsEvent::DrawerResize(0.0),
+        SettingsEvent::DrawerResizeReleased,
+        SettingsEvent::DrawerReset,
+    ];
+    for event in &events {
+        let expected = !matches!(
+            event,
+            SettingsEvent::SelectProfile(_)
+                | SettingsEvent::OpenProfileDraft
+                | SettingsEvent::CloneProfile(_)
+                | SettingsEvent::ArmProfileDelete(_)
+                | SettingsEvent::ConfirmProfileDelete(_)
+                | SettingsEvent::KeepProfileDelete
+                | SettingsEvent::ReorderProfile(..)
+        );
+        assert_eq!(
+            profile_event_reachable(event, true),
+            expected,
+            "with a draft open: {event:?}"
+        );
+        assert!(
+            profile_event_reachable(event, false),
+            "without a draft nothing locks: {event:?}"
+        );
+    }
+}
+
+#[test]
+fn the_inherit_row_preview_resolves_the_global_scheme_for_the_mode() {
+    // The Inherit row's swatch is the global scheme the terminal
+    // would render for the current system mode — the same
+    // `effective_scheme_name` resolution — and honest `None` when
+    // the configured global name is one the registry lacks (the
+    // closed control's unknown-name rule; the row shows no strip).
+    let mut config = DropTermConfig {
+        color_scheme_dark: "Dracula".to_string(),
+        color_scheme_light: "Solarized Light".to_string(),
+        ..DropTermConfig::default()
+    };
+    let dark = inherit_scheme_preview(&config, true).expect("the dark name resolves");
+    let light = inherit_scheme_preview(&config, false).expect("the light name resolves");
+    assert_eq!(dark, scheme_previews()[registry_row("Dracula")].1);
+    assert_eq!(light, scheme_previews()[registry_row("Solarized Light")].1);
+
+    config.color_scheme_dark = "No such scheme".to_string();
+    assert_eq!(inherit_scheme_preview(&config, true), None);
+}
+
+#[test]
+fn the_profiles_page_builds_with_armed_rows_and_a_locked_list() {
+    // Construction is the assertion: the page builds with a row
+    // armed (the inline Confirm/Keep pair), with the list locked by
+    // an open draft (every list control disabled), and with both at
+    // once (the lock hides the pair for the moment).
+    let config = DropTermConfig {
+        profiles: vec![profile("ssh", "ssh web-prod"), profile("top", "htop")],
+        ..DropTermConfig::default()
+    };
+    let _ = profiles_view(&config, None, None, None, false, true);
+    let _ = profiles_view(&config, Some(0), None, Some(0), false, true);
+    let _ = profiles_view(&config, Some(1), None, Some(1), false, false);
+    let draft = ProfileDraft::edit(0, &config.profiles[0]);
+    let _ = profiles_view(&config, Some(0), Some(&draft), None, false, true);
+    let _ = profiles_view(&config, Some(0), Some(&draft), Some(1), false, true);
+    let _ = profiles_view(&config, None, Some(&ProfileDraft::add()), None, true, true);
+    // An armed index past the list (the list shrank under it) renders
+    // as no armed row.
+    let _ = profiles_view(&config, None, None, Some(9), false, true);
+}
+
+#[test]
+fn the_form_builds_with_the_override_fields_and_the_inherit_picker() {
+    // Construction is the assertion: the six-field form builds with
+    // the inherit picker open and closed, in both system modes, with
+    // a scheme picked and inherited, and with the new fields
+    // erroring alongside their peers.
+    let config = DropTermConfig {
+        font_size: 14,
+        scrollback_lines: 10_000,
+        ..DropTermConfig::default()
+    };
+    let profiles = [sourced_profile()];
+    let mut picked = ProfileDraft::edit(0, &profiles[0]);
+    picked.scheme = Some("Dracula".to_string());
+    let _ = profile_form(&config, &ProfileDraft::add(), false, true);
+    let _ = profile_form(&config, &picked, true, false);
+    let mut erroring = ProfileDraft::add();
+    erroring.errors = vec![
+        (ProfileField::Scheme, ProfileFieldError::UnknownScheme),
+        (ProfileField::FontSize, ProfileFieldError::FontOutOfRange),
+        (
+            ProfileField::Scrollback,
+            ProfileFieldError::UnparsableScrollback,
+        ),
+    ];
+    let _ = profile_form(&config, &erroring, false, true);
 }

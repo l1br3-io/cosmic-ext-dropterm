@@ -1534,3 +1534,28 @@ fn tab_position_key_on_disk_is_honored() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Every serialized config key must appear in `docs/configuration.md`
+/// — the docs-as-code drift gate: an undocumented key fails `just
+/// check`. The key set is enumerated through serde itself (no
+/// hand-kept list to drift), and the backticked form is required so a
+/// bare word elsewhere in the prose cannot satisfy the check.
+#[test]
+fn every_config_key_is_documented() {
+    let keys = serde_json::to_value(DropTermConfig::default())
+        .expect("config serializes")
+        .as_object()
+        .expect("config serializes to a map")
+        .keys()
+        .cloned()
+        .collect::<Vec<String>>();
+    assert!(!keys.is_empty(), "key enumeration came back empty");
+
+    let docs = include_str!("../../docs/configuration.md");
+    for key in keys {
+        assert!(
+            docs.contains(&format!("`{key}`")),
+            "config key `{key}` is not documented in docs/configuration.md"
+        );
+    }
+}

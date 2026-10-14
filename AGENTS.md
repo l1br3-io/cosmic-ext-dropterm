@@ -40,11 +40,18 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 `code-reviewer`, `security-auditor`, `test-engineer`, `web-performance-auditor` — single-role subagents invoked by `/ship` / `/webperf` (or directly). **Personas do not invoke other personas**; orchestration belongs to slash commands and the main session (see `.agents/references/orchestration-patterns.md`).
 
+## Docs
+
+- A shipped feature ships its user doc: a `docs/` page or section, linked from README's Documentation index.
+- A feature with a research record gets (or updates) its row in `docs/research/README.md` — status lives in the index; the records themselves are never edited after the fact.
+- Two gates hold the docs to the code: `cargo test` pins every serialized `DropTermConfig` key to `docs/configuration.md` (`every_config_key_is_documented`), and `just docs-check` (part of `just check`) verifies every internal markdown link resolves.
+- Committed docs never reference the gitignored `SPEC*.md`/`tasks/` artifacts — checklist rows and prose must be self-contained.
+
 ## Rust project notes
 
 - Run `cargo clippy` and `cargo fmt --check` before a change counts as done; `cargo test` is the verification gate.
 - Unit tests live inline in `#[cfg(test)] mod tests`. When a test module outgrows ~500 lines, move it to a sibling `tests.rs` (e.g. `src/app/tests.rs`) declared as `#[cfg(test)] mod tests;` — it stays a child module, keeping private access and cfg gating while keeping whole-file reads cheap for agents. Never move unit tests to a top-level `tests/` dir; that is integration-test territory and loses private access.
-- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/development.md`); unit tests cover what can be tested headless.
+- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/testing.md`); unit tests cover what can be tested headless.
 
 ## Spec & task artifacts (local working docs)
 

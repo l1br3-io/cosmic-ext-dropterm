@@ -59,10 +59,11 @@ applet-manifest := flatpak-dir / (applet-appid + '.json')
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 
-# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`, all
-# across the workspace. Union features are fine here: nothing renders
-# in tests or lints. Release/install recipes stay per-package.
-check: fmt-check clippy test
+# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` +
+# the docs link gate, all across the workspace. Union features are
+# fine here: nothing renders in tests or lints. Release/install
+# recipes stay per-package.
+check: fmt-check clippy test docs-check
 
 fmt:
     cargo fmt --all
@@ -75,6 +76,79 @@ clippy *args:
 
 test *args:
     cargo test --workspace --locked {{args}}
+
+# Docs drift gate: every internal markdown link — relative path and
+# in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
+# External (http/mailto) links are out of scope. Silent on success;
+# failures name the file and the dangling link.
+docs-check:
+    #!/usr/bin/env python3
+    import re
+    from pathlib import Path
+    files = [
+        f
+        for f in [Path("README.md"), Path("ROADMAP.md"), *sorted(Path("docs").rglob("*.md"))]
+        # A local `just docs-serve` leaves its build output under
+        # docs/_site/ — gitignored, and not source to lint.
+        if "/_site/" not in f.as_posix()
+    ]
+    link = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+    def anchors(text):
+        heads = re.findall(r"^#+\s+(.*)$", text, re.M)
+        return {re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", h.strip().lower())) for h in heads}
+    bad = []
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        own = anchors(text)
+        for target in link.findall(text):
+            if "://" in target or target.startswith("mailto:"):
+                continue
+            path, _, frag = target.partition("#")
+            if path:
+                resolved = (f.parent / path).resolve()
+                if not resolved.is_file():
+                    bad.append(f"{f}: missing file {target}")
+                    continue
+                if frag and frag not in anchors(resolved.read_text(encoding="utf-8")):
+                    bad.append(f"{f}: missing anchor {target}")
+            elif frag and frag not in own:
+                bad.append(f"{f}: missing anchor {target}")
+    if bad:
+        raise SystemExit("dangling doc links:\n  " + "\n  ".join(bad))
+
+# Live preview of the docs site — the plugin set GitHub Pages builds
+# with, via the jekyll/jekyll docker image, so no local Ruby is
+# needed. The disk cache stays off: it would otherwise drop
+# root-owned files into docs/.
+#
+# Port discipline: the container runs under a fixed name, so a
+# leftover from a run whose terminal died without the Ctrl-C reaching
+# docker (docker's --rm never fires, the orphan holds the port) is
+# replaced up front — every run starts fresh. Anything ELSE already
+# listening on the port can't be replaced, so the serve falls forward
+# to the next free port and prints the URL it actually got (jekyll
+# reports its in-container address, a lie under a remapped host port).
+# `just docs-serve 4377` starts from a chosen port instead of 4000.
+docs-serve port='4000':
+    #!/usr/bin/env sh
+    set -eu
+    port='{{port}}'
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "docs-serve needs docker (there is no local Ruby toolchain)" >&2
+        exit 1
+    fi
+    docker rm -f dropterm-docs >/dev/null 2>&1 || true
+    busy() {
+        python3 -c 'import socket,sys; sys.exit(socket.socket().connect_ex(("127.0.0.1", int(sys.argv[1]))) != 0)' "$1"
+    }
+    while busy "$port"; do
+        port=$((port + 1))
+    done
+    echo "serving at http://127.0.0.1:$port/cosmic-ext-dropterm/"
+    exec docker run --rm -i --name dropterm-docs -p 127.0.0.1:"$port":4000 \
+        -v "{{justfile_directory()}}/docs:/srv/jekyll" \
+        jekyll/jekyll:4 \
+        sh -c "gem install --no-document jekyll-relative-links jekyll-default-layout jekyll-titles-from-headings jekyll-readme-index jekyll-optional-front-matter >/dev/null && jekyll serve --host 0.0.0.0 --disable-disk-cache"
 
 # Send a CLI action to the running instance, like a COSMIC keybind would:
 # `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from

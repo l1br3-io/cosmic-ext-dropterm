@@ -99,6 +99,13 @@ terminal = [
     "libcosmic/single-instance",
 ]
 
+[dev-dependencies]
+# The config-key ↔ docs sync test enumerates `DropTermConfig`'s
+# serialized keys via `serde_json::to_value`. Version-matched to the
+# 1.0.151 line the libcosmic tree already pulls into the lock, so no
+# new code enters the build.
+serde_json = "1"
+
 [profile.release]
 lto = true
 strip = true
