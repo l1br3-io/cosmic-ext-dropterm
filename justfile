@@ -59,10 +59,11 @@ applet-manifest := flatpak-dir / (applet-appid + '.json')
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 
-# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test`, all
-# across the workspace. Union features are fine here: nothing renders
-# in tests or lints. Release/install recipes stay per-package.
-check: fmt-check clippy test
+# `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` +
+# the docs link gate, all across the workspace. Union features are
+# fine here: nothing renders in tests or lints. Release/install
+# recipes stay per-package.
+check: fmt-check clippy test docs-check
 
 fmt:
     cargo fmt --all
@@ -75,6 +76,39 @@ clippy *args:
 
 test *args:
     cargo test --workspace --locked {{args}}
+
+# Docs drift gate: every internal markdown link — relative path and
+# in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
+# External (http/mailto) links are out of scope. Silent on success;
+# failures name the file and the dangling link.
+docs-check:
+    #!/usr/bin/env python3
+    import re
+    from pathlib import Path
+    files = [Path("README.md"), Path("ROADMAP.md"), *sorted(Path("docs").rglob("*.md"))]
+    link = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+    def anchors(text):
+        heads = re.findall(r"^#+\s+(.*)$", text, re.M)
+        return {re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", h.strip().lower())) for h in heads}
+    bad = []
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        own = anchors(text)
+        for target in link.findall(text):
+            if "://" in target or target.startswith("mailto:"):
+                continue
+            path, _, frag = target.partition("#")
+            if path:
+                resolved = (f.parent / path).resolve()
+                if not resolved.is_file():
+                    bad.append(f"{f}: missing file {target}")
+                    continue
+                if frag and frag not in anchors(resolved.read_text(encoding="utf-8")):
+                    bad.append(f"{f}: missing anchor {target}")
+            elif frag and frag not in own:
+                bad.append(f"{f}: missing anchor {target}")
+    if bad:
+        raise SystemExit("dangling doc links:\n  " + "\n  ".join(bad))
 
 # Send a CLI action to the running instance, like a COSMIC keybind would:
 # `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from
