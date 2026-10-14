@@ -1,0 +1,39 @@
+# The GitHub Pages site. Built by actions/jekyll-build-pages (see
+# .github/workflows/pages.yml) from this directory — the same plugin
+# set GitHub Pages enables by default; listing them here also lets a
+# plain `jekyll build` (just docs-serve) activate them.
+title: DropTerm
+description: >-
+  A native, Yakuake/Guake-style drop-down terminal for the COSMIC
+  desktop, written in Rust with libcosmic.
+
+# Project pages serve under the repository subpath.
+baseurl: /cosmic-ext-dropterm
+url: https://l1br3-io.github.io
+
+# Extensionless page URLs (/configuration/, /research/).
+permalink: pretty
+
+kramdown:
+  input: GFM
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-default-layout
+  - jekyll-titles-from-headings
+  - jekyll-readme-index
+  - jekyll-optional-front-matter
+
+# Pages here carry no front matter (the docs are plain markdown);
+# optional-front-matter converts them — and drops the raw .md copies
+# it would otherwise leave in the output alongside each page.
+optional_front_matter:
+  remove_originals: true
+
+github_repo_url: https://github.com/l1br3-io/cosmic-ext-dropterm
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

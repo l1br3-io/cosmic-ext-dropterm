@@ -8,3 +8,7 @@
 SPEC*.md
 /tasks
 .zcode/plans
+# Jekyll build output (just docs-serve / actions/jekyll-build-pages)
+docs/_site/
+.jekyll-cache/
+.bundle/

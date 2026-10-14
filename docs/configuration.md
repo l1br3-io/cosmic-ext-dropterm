@@ -70,7 +70,7 @@ echo false > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/tab_bar_bo
 Two keys load and persist today but change no behavior:
 
 - `settings_drawer_click_close` (default `true`) is **parked**: the planned behavior - a left-click in the terminal's bounds dismissing an open settings drawer - cannot ship, because the open drawer's overlay captures every mouse event over the surface, so a dismiss press can never be observed from the base tree. The key keeps loading and persisting for the day a capture mechanism exists; a hand-edited value is inert, and the settings row ships hidden.
-- `output` (default unset) is **reserved** for monitor selection: it would name the Wayland output the drop-down shows on, where unset follows the compositor's active output (usually the one under the cursor). Nothing reads it yet - the pinned libcosmic rev exposes no focused or fixed output targeting, so the feature is blocked on the [roadmap](../ROADMAP.md) - and unset is today's only behavior.
+- `output` (default unset) is **reserved** for monitor selection: it would name the Wayland output the drop-down shows on, where unset follows the compositor's active output (usually the one under the cursor). Nothing reads it yet - the pinned libcosmic rev exposes no focused or fixed output targeting, so the feature is blocked on the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md) - and unset is today's only behavior.
 
 ## Shell, arguments, and the new tab directory
 
