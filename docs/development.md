@@ -2,6 +2,8 @@
 
 How to work on DropTerm itself: the dev launcher loop, running without a shortcut, and the manual test checklist every change answers to.
 
+The reasoning behind non-trivial design decisions — peer surveys, recommendations, rejected alternatives — lives in the research records; start from the [decision log](research/README.md).
+
 ## Development launcher
 
 Don't point the shortcut at `cargo run`. COSMIC spawns a custom shortcut from

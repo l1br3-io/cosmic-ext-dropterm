@@ -1,0 +1,43 @@
+# Research — DropTerm's decision records
+
+Every non-trivial DropTerm feature started as a research record in this
+directory: a peer survey with the evidence, a recommendation graded by
+precedent, and the alternatives that were rejected and why. The records are
+the project's ADRs — this index is their status layer.
+
+## The rules
+
+- **Records are immutable.** A record captures what was known and decided on
+  its date; it is never edited to match later reality. When a decision is
+  reversed, a new record supersedes the old one and both stay.
+- **Status lives here, not in the records.** The table below is the only
+  place that tracks whether a verdict shipped, stalled, or was overtaken —
+  the records' "What DropTerm has today" sections are period snapshots and
+  are allowed to go stale.
+- **A new record follows the house format:** a question for a title, a date,
+  a TL;DR with the verdict in the first sentence, numbered findings with
+  line-level citations into the surveyed sources, a "what DropTerm has
+  today" grounding section, a recommendation with rejected alternatives
+  spelled out, and sources pinned by repo, commit, and fetch date. Add its
+  row here when the verdict lands.
+
+## Decision log
+
+Ordered by record date. "Shipped as" names the code or doc that carries the
+verdict today.
+
+| Record | Date | Verdict | Status | Shipped as |
+|---|---|---|---|---|
+| [panel-visibility](panel-visibility.md) | 2026-10-01 | The panel can stay visible beside the overlay: an exclusive zone of 0 reserves space, so a `respect_panel` config knob beats forcing `layer: Top` (rejected — doesn't achieve the goal) | Shipped | `respect_panel` key + the Behavior toggle (`src/config.rs`, `src/settings.rs`) |
+| [terminal-de-integration](terminal-de-integration.md) | 2026-10-02 | How drop-down terminals integrate with the desktop, and what fits COSMIC: desktop notifications, single-instance D-Bus, and cwd inheritance in; shell-integration injection, OSC 133, portals, and Flatpak out — the 13-entry rejection ledger | Shipped (the seeded parts) | `src/notify.rs`, `src/dbus_state.rs`, new-tab cwd inheritance; the narrower records below descend from it |
+| [settings-trigger](settings-trigger.md) | 2026-10-02 | The right-click context menu carries the "Settings…" item; gear and grab-bar buttons rejected; `preferences-system` is the icon that actually exists in Pop's theme | Shipped | `src/context_menu.rs` |
+| [terminal-theming](terminal-theming.md) | 2026-10-02 | Color schemes live in config as a named registry (not directory-scanned), the Application-theme pin drives light/dark, and the per-scheme licensing audit governs what may ship; `terminal-colors.d(5)` ruled out | Shipped | `src/terminal/theme_source.rs`, [Theming](../theming.md) |
+| [settings-sidebar](settings-sidebar.md) | 2026-10-03 | cosmic-term's settings UI is a libcosmic context drawer, not a sidebar widget; DropTerm adopts the overlay drawer (side-by-side rejected — it would resize the PTY on every open) and deletes the second window | Shipped | `src/settings.rs`, the drawer in `src/app.rs`, [Settings drawer](../settings.md) |
+| [remote-control-commands](remote-control-commands.md) | 2026-10-03 | Fire-and-forget tab verbs over the single-instance seam; move-tab and query verbs rejected — the seam structurally cannot offer replies | Shipped (a superset) | `ToggleAction` in `src/app/remote.rs`, [CLI reference](../cli.md) |
+| [v3-panel-applet](v3-panel-applet.md) | 2026-10-03 | An out-of-process COSMIC panel applet (desktop-file discovery, read-only D-Bus state) over an SNI tray icon; a dedicated crate dodges wgpu feature unification on panel surfaces | Shipped | `applet/` crate, `src/dbus_state.rs` |
+| [tab-title-generation](tab-title-generation.md) | 2026-10-04 | A `tab_title_mode` enum over a template mini-language (rejected as overkill); a user rename wins in every mode, and an empty report resets the title | Shipped (a superset) | `TabTitleMode` in `src/config.rs` — five modes, `Profile` beyond the recommended three |
+| [settings-tabs](settings-tabs.md) | 2026-10-05 | The drawer navigates by libcosmic `segmented_button` tabs; vertical nav, segmented controls, context pages, and reusing the tab strip were all rejected; `src/settings.rs` stays one file | Shipped (grown to five tabs) | `SettingsTab` pages in `src/settings.rs` |
+| [terminal-profile-settings](terminal-profile-settings.md) | 2026-10-05 | Profiles take the named-model core from Windows Terminal and iTerm2 without GUIDs; GNOME Terminal's inherit-on-new-tab default is a known fork, deliberately not adopted | Shipped | `src/profile.rs`, the Profiles tab in `src/settings.rs` |
+| [tab-context-menu](tab-context-menu.md) | 2026-10-08 | A six-item per-tab menu graded by peer precedent; terminal-scoped verbs excluded (zero precedents), Pin kept as the one extension beyond the peer norm | Shipped | the per-tab menu in `src/tab_bar.rs` |
+| [packaging-and-release](packaging-and-release.md) | 2026-10-10 | Native deb/AUR/nix following the System76 release convention; Flathub for the applet only — the main app is blocked until COSMIC exposes layer-shell to sandboxes; cargo-dist rejected as wrong-shaped | In progress | `packaging/flatpak/` (applet submission) |
+| [status-bar-ux](status-bar-ux.md) | 2026-10-11 | Keep the glance bar and its fixed height; resist CPU/memory/network segments; never auto-hide, but degrade gracefully per segment | Shipped — iterating | `src/status_bar.rs` |
