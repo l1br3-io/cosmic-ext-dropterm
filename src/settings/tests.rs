@@ -2604,12 +2604,124 @@ fn profile_row_builds_at_the_boundaries_with_the_edit_cluster() {
     // The five-icon row — pencil, Clone, Delete, and the two
     // reorder directions with the boundary one disabled — builds
     // for the first and last rows alike; construction is the
-    // assertion (a broken glyph name or cluster panics here, not on
-    // hardware).
+    // assertion (a malformed cluster panics here, not on
+    // hardware). A name the theme lacks renders blank instead of
+    // panicking — that failure belongs to
+    // `every_static_icon_name_resolves_in_the_theme_chain` below.
     let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
     let last = profiles.len() - 1;
     let _ = profile_row(profiles.len(), 0, &profiles[0], false, true);
     let _ = profile_row(profiles.len(), last, &profiles[last], true, false);
+}
+
+#[test]
+fn every_static_icon_name_resolves_in_the_theme_chain() {
+    // The blank edit-profile button: `document-edit-symbolic`
+    // exists only in Adwaita — a grandparent theme (Cosmic → Pop
+    // → Pop-Extra → pop-os-branding → Adwaita) the icon lookup
+    // never reaches — and a name that resolves nowhere renders an
+    // empty button. Construction can't catch it (`from_name` never
+    // validates), only the theme lookup knows. So this scans src/
+    // for every static icon-name literal passed to `from_name` or
+    // `row_icon_button` and requires each to exist somewhere in
+    // the chain the lookup actually walks. Machines without
+    // /usr/share/icons/Cosmic (headless CI) skip; the machines
+    // that render the UI ship it.
+    fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+
+    let icons_root = std::path::Path::new("/usr/share/icons");
+    if !icons_root.join("Cosmic").is_dir() {
+        eprintln!("skipping: /usr/share/icons/Cosmic is not installed");
+        return;
+    }
+
+    // The lookup chain, mirroring what `from_name` actually walks
+    // (freedesktop-icons searches the active theme, then the
+    // DIRECT entries of its Inherits= line — parents' own parents
+    // are never recursed into — then hardcoded hicolor/gnome/Yaru
+    // fallbacks). An unparseable index.theme just contributes no
+    // parents; a theme dir that doesn't exist walks to nothing.
+    let mut chain = vec!["Cosmic".to_string()];
+    if let Ok(index) = std::fs::read_to_string(icons_root.join("Cosmic").join("index.theme")) {
+        for parent in index
+            .lines()
+            .filter_map(|line| line.strip_prefix("Inherits="))
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .filter(|parent| !parent.is_empty())
+        {
+            chain.push(parent.to_string());
+        }
+    }
+    chain.extend(["hicolor", "gnome", "Yaru"].map(str::to_string));
+
+    let mut theme_files = Vec::new();
+    for theme in &chain {
+        walk(&icons_root.join(theme), &mut theme_files);
+    }
+    let available: std::collections::BTreeSet<String> = theme_files
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .map(str::to_owned)
+        .collect();
+
+    // The markers end in an opening quote so only literal call
+    // sites match — prose mentioning the API (like this comment)
+    // reads past to no closing quote and contributes nothing.
+    let mut src_files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut src_files,
+    );
+    let mut used = Vec::new();
+    for file in &src_files {
+        let is_rust = file.extension().is_some_and(|ext| ext == "rs");
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        if !is_rust {
+            continue;
+        }
+        for marker in ["from_name(\"", "row_icon_button(\""] {
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(marker) {
+                let after = &rest[at + marker.len()..];
+                let Some(end) = after.find('"') else { break };
+                used.push(after[..end].to_string());
+                rest = &after[end..];
+            }
+        }
+    }
+    used.sort();
+    used.dedup();
+    assert!(!used.is_empty(), "the source scan found no icon names");
+
+    // Lookup matches a filename, extension and all — Cosmic ships
+    // svg, the inherited themes mostly png, xpm is the spec's
+    // floor. Any of the three resolving counts.
+    let resolves = |name: &str| {
+        ["svg", "png", "xpm"]
+            .iter()
+            .any(|ext| available.contains(&format!("{name}.{ext}")))
+    };
+    let missing: Vec<&String> = used.iter().filter(|name| !resolves(name)).collect();
+    assert!(
+        missing.is_empty(),
+        "icon names used in src/ resolve nowhere in the {} chain: {missing:?}",
+        chain.join(" → "),
+    );
 }
 
 #[test]

@@ -2677,7 +2677,7 @@ fn profile_row(
             .class(row_button_class(selected))
             .width(Length::Fill)
             .on_press(SettingsEvent::SelectProfile(index)),
-        row_icon_button("document-edit-symbolic", "Edit profile")
+        row_icon_button("edit-symbolic", "Edit profile")
             .on_press(SettingsEvent::SelectProfile(index)),
         row_icon_button("edit-copy-symbolic", "Clone profile")
             .on_press(SettingsEvent::CloneProfile(index)),
