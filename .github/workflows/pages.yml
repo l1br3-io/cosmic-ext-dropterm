@@ -1,0 +1,52 @@
+name: Pages
+
+# The docs site: docs/ is built into static HTML by GitHub's own
+# jekyll-build-pages image (the same plugin set native Pages builds
+# use) and deployed by deploy-pages. PRs build without deploying, so
+# a Jekyll error fails the pull request instead of the site.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      # No Gemfile: the action's image carries the github-pages
+      # dependency set, and _config.yml lists only plugins GitHub
+      # Pages enables by default.
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
+          destination: ./_site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    # Main only — PR builds stop after the artifact upload.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

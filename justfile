@@ -85,7 +85,13 @@ docs-check:
     #!/usr/bin/env python3
     import re
     from pathlib import Path
-    files = [Path("README.md"), Path("ROADMAP.md"), *sorted(Path("docs").rglob("*.md"))]
+    files = [
+        f
+        for f in [Path("README.md"), Path("ROADMAP.md"), *sorted(Path("docs").rglob("*.md"))]
+        # A local `just docs-serve` leaves its build output under
+        # docs/_site/ — gitignored, and not source to lint.
+        if "/_site/" not in f.as_posix()
+    ]
     link = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
     def anchors(text):
         heads = re.findall(r"^#+\s+(.*)$", text, re.M)
@@ -109,6 +115,22 @@ docs-check:
                 bad.append(f"{f}: missing anchor {target}")
     if bad:
         raise SystemExit("dangling doc links:\n  " + "\n  ".join(bad))
+
+# Live preview of the docs site at
+# http://127.0.0.1:4000/cosmic-ext-dropterm/ — the plugin set GitHub
+# Pages builds with, via the jekyll/jekyll docker image, so no local
+# Ruby is needed. The disk cache stays off: it would otherwise drop
+# root-owned files into docs/.
+docs-serve:
+    #!/usr/bin/env sh
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "docs-serve needs docker (there is no local Ruby toolchain)" >&2
+        exit 1
+    fi
+    docker run --rm -i -p 127.0.0.1:4000:4000 \
+        -v "{{justfile_directory()}}/docs:/srv/jekyll" \
+        jekyll/jekyll:4 \
+        sh -c "gem install --no-document jekyll-relative-links jekyll-default-layout jekyll-titles-from-headings jekyll-readme-index jekyll-optional-front-matter >/dev/null && jekyll serve --host 0.0.0.0 --disable-disk-cache"
 
 # Send a CLI action to the running instance, like a COSMIC keybind would:
 # `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from

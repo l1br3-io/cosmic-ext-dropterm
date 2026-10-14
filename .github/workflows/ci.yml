@@ -75,5 +75,8 @@ jobs:
       - name: Test
         run: just test
 
+      - name: Docs links
+        run: just docs-check
+
       - name: Build (release)
         run: just build-release
