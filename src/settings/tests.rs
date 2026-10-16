@@ -1,3 +1,4 @@
+use super::view::drawer_description;
 use super::*;
 use std::collections::BTreeMap;
 
@@ -115,56 +116,6 @@ fn drawer_release_commits_only_real_drags() {
     );
 }
 
-// --- the drawer's migrated content (settings-drawer Task 1) ---
-
-#[test]
-fn every_section_page_builds_with_drafts_and_from_config() {
-    // The section-hosted pages (Appearance, Behavior, Advanced)
-    // over the six-card map. Construction is the assertion: the
-    // item builder's `expect` totality panics if a key resolves
-    // to no control, and the widget builders must tolerate the
-    // states the file can be in — buffered drafts winning over
-    // file values (including a scrollback draft that does not
-    // parse — the draft simply renders; rejection is the update
-    // path's job) — and the plain default config. Exactly-once
-    // across the pages is tab_sections' partition, pinned below.
-    let config = DropTermConfig::default();
-    let mut buffer = SettingsBuffer::default();
-    buffer.set_text(TextField::FontName, "Draft Font".to_string());
-    buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
-    buffer.set_text(TextField::Args, "-l -i".to_string());
-    buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
-    buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
-    buffer.set_slider(ConfigKey::Opacity, 42.0);
-    let _ = appearance_view(&config, &buffer, None);
-    let _ = behavior_view(&config, &buffer);
-    let _ = advanced_view(&config, &buffer);
-    let _ = appearance_view(&config, &SettingsBuffer::default(), None);
-    let _ = behavior_view(&config, &SettingsBuffer::default());
-    let _ = advanced_view(&config, &SettingsBuffer::default());
-}
-
-#[test]
-fn every_section_item_builds_a_control_for_every_key() {
-    // Criterion 3's construction side: every key of every section
-    // resolves to exactly one item control — the builder's
-    // `expect` totality panics otherwise — with every text field
-    // holding a draft (the buffer's display-wins rule) and a
-    // scrollback draft that does not parse (the draft simply
-    // renders; rejection is the update path's job).
-    let config = DropTermConfig::default();
-    let mut buffer = SettingsBuffer::default();
-    buffer.set_text(TextField::FontName, "Draft Font".to_string());
-    buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
-    buffer.set_text(TextField::Args, "-l -i".to_string());
-    buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
-    for section in Section::ALL {
-        for key in section.keys() {
-            let _ = drawer_item(*key, &config, &buffer, None);
-        }
-    }
-}
-
 // --- the tab regrouping (settings-tabs ST-1) ---
 
 #[test]
@@ -217,92 +168,6 @@ fn tab_headers_are_the_strip_labels() {
     assert_eq!(tab_header(SettingsTab::Profiles), "Profiles");
     assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
     assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
-}
-
-#[test]
-fn the_appearance_page_builds_with_a_picker_open_and_closed() {
-    // The open flag is view state threaded through the page
-    // builder; the page must construct in both states.
-    let config = DropTermConfig::default();
-    let buffer = SettingsBuffer::default();
-    let _ = appearance_view(
-        &config,
-        &buffer,
-        Some(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
-    );
-    let _ = appearance_view(&config, &buffer, None);
-}
-
-#[test]
-fn the_keybindings_tab_builds_with_and_without_matches() {
-    // The third tab's view (keybinds-editor criterion 1):
-    // construction smoke — every group renders with the empty
-    // query, a query nothing matches still builds (the
-    // empty-result state), and the armed-capture and conflict
-    // states build too. Row inventory and filtering are pinned in
-    // `keybinds` (the groups and search tests).
-    let _unfiltered = keybindings_view(&BTreeMap::new(), "", None, None);
-    let _no_matches = keybindings_view(&BTreeMap::new(), "xyzzy-no-action-has-this", None, None);
-    let custom = BTreeMap::from([(
-        "copy".to_string(),
-        crate::keybinds::Binding {
-            modifiers: vec![crate::keybinds::ModifierName::Alt],
-            key: "C".to_string(),
-        },
-    )]);
-    let _filtered = keybindings_view(&custom, "copy", None, None);
-    let _armed = keybindings_view(&custom, "", Some(crate::terminal::Action::Copy), None);
-    let _conflict = keybindings_view(
-        &custom,
-        "",
-        None,
-        Some((
-            crate::terminal::Action::Copy,
-            crate::terminal::Action::Paste,
-        )),
-    );
-}
-
-// --- the tab strip's model (settings-tabs ST-3) ---
-
-#[test]
-fn the_strip_model_carries_one_row_per_tab_in_order() {
-    // Criterion 7's entity↔tab lockstep, construction side:
-    // exactly the five tabs of `SettingsTab::ALL` in strip
-    // order, each row labeled with its `tab_header` and carrying
-    // its `SettingsTab` as data — the payload the activation
-    // handler resolves.
-    let mut model = tab_strip_model();
-    assert_eq!(model.iter().count(), SettingsTab::ALL.len());
-    for (position, tab) in SettingsTab::ALL.iter().enumerate() {
-        let entity = model
-            .entity_at(u16::try_from(position).expect("five tabs, position 0-4"))
-            .expect("one row per tab, in ALL order");
-        assert_eq!(model.data::<SettingsTab>(entity), Some(tab));
-        assert_eq!(model.text(entity), Some(tab_header(*tab)));
-    }
-}
-
-#[test]
-fn activating_a_tab_row_selects_it_and_only_it() {
-    // Criterion 7's lockstep, selection side: `activate_tab_row`
-    // moves the single selection to the row carrying the tab —
-    // the sync every page mutation applies after assigning
-    // `settings_page` (pick, explicit close).
-    let mut model = tab_strip_model();
-    // The strip's selection only ever moves through
-    // `activate_tab_row`: a fresh model selects nothing.
-    assert_eq!(model.active_data::<SettingsTab>(), None);
-    activate_tab_row(&mut model, SettingsTab::Advanced);
-    assert_eq!(
-        model.active_data::<SettingsTab>(),
-        Some(&SettingsTab::Advanced)
-    );
-    activate_tab_row(&mut model, SettingsTab::Appearance);
-    assert_eq!(
-        model.active_data::<SettingsTab>(),
-        Some(&SettingsTab::Appearance)
-    );
 }
 
 // --- the drawer's lifecycle transitions (settings-drawer T3) ---
@@ -1566,7 +1431,7 @@ fn buffer_shell_text_shows_empty_for_an_unconfigured_shell() {
 
 // --- the Profiles page's pure seams (profile-settings T1) ---
 
-fn profile(name: &str, command: &str) -> Profile {
+pub(super) fn profile(name: &str, command: &str) -> Profile {
     Profile {
         name: name.to_string(),
         command: command.to_string(),
@@ -1738,31 +1603,6 @@ fn parse_cwd_accepts_a_path_without_existence_checks() {
     assert_eq!(parse_cwd(" ~/src "), Some(PathBuf::from("~/src")));
 }
 
-// --- the Profiles page's view (construction, profile-settings T1) ---
-
-#[test]
-fn the_profiles_page_builds_in_every_read_state() {
-    // Construction is the assertion: empty list (the empty state
-    // with its add affordance), a populated list, a stale
-    // selection index, and every draft shape — an erroring add
-    // draft, a clone draft, an edit draft — must all build
-    // without panicking.
-    let mut config = DropTermConfig::default();
-    let _ = profiles_view(&config, None, None, None, false, true);
-    let _ = profiles_view(&config, Some(0), None, None, false, true);
-    config.profiles = vec![profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let _ = profiles_view(&config, None, None, None, false, true);
-    let _ = profiles_view(&config, Some(1), None, None, false, true);
-    let _ = profiles_view(&config, Some(9), None, None, false, true);
-    let mut erroring = ProfileDraft::add();
-    erroring.errors = vec![(ProfileField::Name, ProfileFieldError::DuplicateName)];
-    let _ = profiles_view(&config, None, Some(&erroring), None, false, true);
-    let cloning = ProfileDraft::clone_of(&config.profiles[0], &config.profiles);
-    let _ = profiles_view(&config, Some(0), Some(&cloning), None, false, true);
-    let editing = ProfileDraft::edit(0, &config.profiles[0]);
-    let _ = profiles_view(&config, Some(0), Some(&editing), None, false, true);
-}
-
 // --- the default-profile picker (profile-settings T2) ---
 
 #[test]
@@ -1896,7 +1736,7 @@ fn draft_seeding_carries_the_scheme_into_clone_and_edit_forms() {
 
 // --- the profile form's env rows (profile-env) ---
 
-fn env_row(key: &str, value: &str) -> ProfileEnvRow {
+pub(super) fn env_row(key: &str, value: &str) -> ProfileEnvRow {
     ProfileEnvRow {
         key: key.to_string(),
         value: value.to_string(),
@@ -2013,7 +1853,7 @@ fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
 
 // --- the profile form: drafts, lifecycle (T3) ---
 
-fn sourced_profile() -> Profile {
+pub(super) fn sourced_profile() -> Profile {
     Profile {
         name: "web-prod".to_string(),
         command: "ssh web-prod".to_string(),
@@ -2573,78 +2413,6 @@ fn env_rows_round_trip_through_a_save_and_reopen() {
 }
 
 #[test]
-fn profile_row_builds_at_the_boundaries_with_the_edit_cluster() {
-    // The action cluster — pencil, Clone, the delete cluster, and
-    // the two reorder directions with the boundary one disabled —
-    // builds for the first and last rows alike, in every cluster
-    // state: the idle trash, the armed inline Confirm/Keep pair, and
-    // the draft lock (everything disabled); construction is the
-    // assertion (a malformed cluster panics here, not on hardware).
-    // A name the theme lacks renders blank instead of panicking —
-    // that failure belongs to
-    // `every_static_icon_name_resolves_in_the_theme_chain` below.
-    // The lock-plus-arm combination never reaches the row — the
-    // page degrades an armed row to the idle trash while a draft is
-    // open — and the page-level pin covers that instead.
-    let profiles = [profile("ssh", "ssh web-prod"), profile("top", "htop")];
-    let last = profiles.len() - 1;
-    let _ = profile_row(
-        profiles.len(),
-        0,
-        &profiles[0],
-        false,
-        true,
-        RowDelete::Idle,
-        false,
-    );
-    let _ = profile_row(
-        profiles.len(),
-        last,
-        &profiles[last],
-        true,
-        false,
-        RowDelete::Idle,
-        false,
-    );
-    let _ = profile_row(
-        profiles.len(),
-        0,
-        &profiles[0],
-        false,
-        true,
-        RowDelete::Armed,
-        false,
-    );
-    let _ = profile_row(
-        profiles.len(),
-        last,
-        &profiles[last],
-        true,
-        false,
-        RowDelete::Armed,
-        false,
-    );
-    let _ = profile_row(
-        profiles.len(),
-        0,
-        &profiles[0],
-        false,
-        true,
-        RowDelete::Idle,
-        true,
-    );
-    let _ = profile_row(
-        profiles.len(),
-        last,
-        &profiles[last],
-        true,
-        false,
-        RowDelete::Idle,
-        true,
-    );
-}
-
-#[test]
 fn every_static_icon_name_resolves_in_the_theme_chain() {
     // The blank edit-profile button: `document-edit-symbolic`
     // exists only in Adwaita — a grandparent theme (Cosmic → Pop
@@ -2752,32 +2520,6 @@ fn every_static_icon_name_resolves_in_the_theme_chain() {
         "icon names used in src/ resolve nowhere in the {} chain: {missing:?}",
         chain.join(" → "),
     );
-}
-
-#[test]
-fn the_form_builds_with_the_save_footer_in_every_draft_shape() {
-    // Construction is the assertion: every draft shape — Add,
-    // Clone, Edit — and a draft erroring in several fields at once
-    // builds the transactional form (footer, per-field errors)
-    // without panicking.
-    let config = DropTermConfig::default();
-    let profiles = [sourced_profile()];
-    let _ = profile_form(&config, &ProfileDraft::add(), false, true);
-    let _ = profile_form(
-        &config,
-        &ProfileDraft::clone_of(&profiles[0], &profiles),
-        false,
-        true,
-    );
-    let _ = profile_form(&config, &ProfileDraft::edit(0, &profiles[0]), false, true);
-    let mut erroring = ProfileDraft::add();
-    erroring.errors = vec![
-        (ProfileField::Name, ProfileFieldError::BlankName),
-        (ProfileField::Command, ProfileFieldError::BlankCommand),
-        (ProfileField::EnvKey(0), ProfileFieldError::EnvKeyEquals),
-    ];
-    erroring.env_rows = vec![env_row("A=B", "v")];
-    let _ = profile_form(&config, &erroring, false, true);
 }
 
 // --- the override fields, armed delete, the draft lock
@@ -3076,54 +2818,4 @@ fn the_inherit_row_preview_resolves_the_global_scheme_for_the_mode() {
 
     config.color_scheme_dark = "No such scheme".to_string();
     assert_eq!(inherit_scheme_preview(&config, true), None);
-}
-
-#[test]
-fn the_profiles_page_builds_with_armed_rows_and_a_locked_list() {
-    // Construction is the assertion: the page builds with a row
-    // armed (the inline Confirm/Keep pair), with the list locked by
-    // an open draft (every list control disabled), and with both at
-    // once (the lock hides the pair for the moment).
-    let config = DropTermConfig {
-        profiles: vec![profile("ssh", "ssh web-prod"), profile("top", "htop")],
-        ..DropTermConfig::default()
-    };
-    let _ = profiles_view(&config, None, None, None, false, true);
-    let _ = profiles_view(&config, Some(0), None, Some(0), false, true);
-    let _ = profiles_view(&config, Some(1), None, Some(1), false, false);
-    let draft = ProfileDraft::edit(0, &config.profiles[0]);
-    let _ = profiles_view(&config, Some(0), Some(&draft), None, false, true);
-    let _ = profiles_view(&config, Some(0), Some(&draft), Some(1), false, true);
-    let _ = profiles_view(&config, None, Some(&ProfileDraft::add()), None, true, true);
-    // An armed index past the list (the list shrank under it) renders
-    // as no armed row.
-    let _ = profiles_view(&config, None, None, Some(9), false, true);
-}
-
-#[test]
-fn the_form_builds_with_the_override_fields_and_the_inherit_picker() {
-    // Construction is the assertion: the six-field form builds with
-    // the inherit picker open and closed, in both system modes, with
-    // a scheme picked and inherited, and with the new fields
-    // erroring alongside their peers.
-    let config = DropTermConfig {
-        font_size: 14,
-        scrollback_lines: 10_000,
-        ..DropTermConfig::default()
-    };
-    let profiles = [sourced_profile()];
-    let mut picked = ProfileDraft::edit(0, &profiles[0]);
-    picked.scheme = Some("Dracula".to_string());
-    let _ = profile_form(&config, &ProfileDraft::add(), false, true);
-    let _ = profile_form(&config, &picked, true, false);
-    let mut erroring = ProfileDraft::add();
-    erroring.errors = vec![
-        (ProfileField::Scheme, ProfileFieldError::UnknownScheme),
-        (ProfileField::FontSize, ProfileFieldError::FontOutOfRange),
-        (
-            ProfileField::Scrollback,
-            ProfileFieldError::UnparsableScrollback,
-        ),
-    ];
-    let _ = profile_form(&config, &erroring, false, true);
 }

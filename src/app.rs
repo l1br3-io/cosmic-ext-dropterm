@@ -204,7 +204,7 @@ pub enum Message {
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
     /// whose `ConfigChanged` echo is the only apply path.
-    Settings(settings::SettingsEvent),
+    Settings(settings::view::SettingsEvent),
     /// The settings tab strip: a row was activated. The row's entity
     /// rides the message — the activation closure is `'static` and
     /// cannot borrow the stored model — and the handler resolves it
@@ -389,12 +389,12 @@ pub struct DropTerm {
     /// drafts.
     settings_page: SettingsTab,
     /// The tab strip's rows: built once at init
-    /// ([`settings::tab_strip_model`]) and never rebuilt per frame —
+    /// ([`settings::view::tab_strip_model`]) and never rebuilt per frame —
     /// the strip renders from it, each row carrying its `SettingsTab`
     /// as data. The selection is kept in lockstep with
     /// `settings_page` ([`Self::sync_settings_tab_strip`]); the rows
     /// themselves never change.
-    settings_tab_model: settings::TabStripModel,
+    settings_tab_model: settings::view::TabStripModel,
     /// The Profiles page's selected row: the index into
     /// `config.profiles` driving the edit form. Cleared whenever the
     /// page is left (back or close) — a reopened page starts from
@@ -784,7 +784,7 @@ impl DropTerm {
             self.keybind_capture = None;
             self.keybind_conflict = None;
         }
-        settings::activate_tab_row(&mut self.settings_tab_model, self.settings_page);
+        settings::view::activate_tab_row(&mut self.settings_tab_model, self.settings_page);
     }
 }
 
@@ -1265,8 +1265,8 @@ impl Application for DropTerm {
 
         // The tab strip's model, built once (criterion 7); its
         // selection starts in lockstep with the initial page.
-        let mut settings_tab_model = settings::tab_strip_model();
-        settings::activate_tab_row(&mut settings_tab_model, home_settings_page());
+        let mut settings_tab_model = settings::view::tab_strip_model();
+        settings::view::activate_tab_row(&mut settings_tab_model, home_settings_page());
 
         // The live bind map starts from the loaded config — defaults
         // overlaid with any persisted custom bindings — so a restart
@@ -1775,17 +1775,21 @@ impl Application for DropTerm {
         // The title stays "Settings" on every page — the strip
         // disambiguates.
         let drawer_content = match self.settings_page {
-            SettingsTab::Appearance => {
-                settings::appearance_view(&self.config, &self.settings_buffer, self.scheme_picker)
+            SettingsTab::Appearance => settings::view::appearance_view(
+                &self.config,
+                &self.settings_buffer,
+                self.scheme_picker,
+            ),
+            SettingsTab::Behavior => {
+                settings::view::behavior_view(&self.config, &self.settings_buffer)
             }
-            SettingsTab::Behavior => settings::behavior_view(&self.config, &self.settings_buffer),
             SettingsTab::Profiles => {
                 // `is_dark` resolves the Inherit row's swatch the way
                 // the terminal renders — the preference over the
                 // system mode, the `effective_is_dark` decision.
                 let is_dark =
                     effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
-                settings::profiles_view(
+                settings::view::profiles_view(
                     &self.config,
                     self.profile_selection,
                     self.profile_draft.as_ref(),
@@ -1794,13 +1798,15 @@ impl Application for DropTerm {
                     is_dark,
                 )
             }
-            SettingsTab::Keybindings => settings::keybindings_view(
+            SettingsTab::Keybindings => settings::view::keybindings_view(
                 &self.config.custom_key_binds,
                 &self.keybind_search,
                 self.keybind_capture,
                 self.keybind_conflict,
             ),
-            SettingsTab::Advanced => settings::advanced_view(&self.config, &self.settings_buffer),
+            SettingsTab::Advanced => {
+                settings::view::advanced_view(&self.config, &self.settings_buffer)
+            }
         };
         // The tab strip rides the drawer's header slot — pinned under
         // the title, above the pane's scrollable — on every page.
@@ -1820,7 +1826,7 @@ impl Application for DropTerm {
             None,
             Message::Action(Action::Settings),
             content,
-            settings::drawer_with_handle(drawer_content).map(Message::Settings),
+            settings::view::drawer_with_handle(drawer_content).map(Message::Settings),
             settings::drawer_width(
                 self.drawer_drag.or(self.config.settings_drawer_width),
                 surface_width,
@@ -2566,10 +2572,10 @@ impl DropTerm {
                 // just the buffer; commits that fail to parse are
                 // no-ops that leave the draft for the user to fix.
                 match event {
-                    settings::SettingsEvent::Draft(field, text) => {
+                    settings::view::SettingsEvent::Draft(field, text) => {
                         self.settings_buffer.set_text(field, text);
                     }
-                    settings::SettingsEvent::Submitted(field, text) => {
+                    settings::view::SettingsEvent::Submitted(field, text) => {
                         if let Some(write) = settings::submit_write(field, &text) {
                             // A parsed submit clears its draft so the
                             // input falls back to the echoed config
@@ -2578,10 +2584,10 @@ impl DropTerm {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
-                    settings::SettingsEvent::SliderMoved(key, value) => {
+                    settings::view::SettingsEvent::SliderMoved(key, value) => {
                         self.settings_buffer.set_slider(key, value);
                     }
-                    settings::SettingsEvent::SliderReleased(key) => {
+                    settings::view::SettingsEvent::SliderReleased(key) => {
                         // `on_release` carries no value (the pinned
                         // rev's API), so the release commits the
                         // buffered position the readout showed.
@@ -2590,7 +2596,7 @@ impl DropTerm {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
-                    settings::SettingsEvent::Picked(key, index) => {
+                    settings::view::SettingsEvent::Picked(key, index) => {
                         // Shell's dropdown is dynamic — its options are
                         // built per view from `/etc/shells` — so the
                         // pick resolves through the dynamic planner,
@@ -2615,35 +2621,35 @@ impl DropTerm {
                             self.scheme_picker = None;
                         }
                     }
-                    settings::SettingsEvent::ToggleSchemePicker(id) => {
+                    settings::view::SettingsEvent::ToggleSchemePicker(id) => {
                         // One picker at most: pressing another scheme
                         // control swaps, pressing the open one closes.
                         self.scheme_picker = (self.scheme_picker != Some(id)).then_some(id);
                     }
-                    settings::SettingsEvent::CloseSchemePicker => {
+                    settings::view::SettingsEvent::CloseSchemePicker => {
                         self.scheme_picker = None;
                     }
-                    settings::SettingsEvent::Toggled(key, checked) => {
+                    settings::view::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
-                    settings::SettingsEvent::KeybindSearchChanged(text) => {
+                    settings::view::SettingsEvent::KeybindSearchChanged(text) => {
                         // Display only: the next view build re-filters
                         // the Keybindings tab's rows.
                         self.keybind_search = text;
                     }
-                    settings::SettingsEvent::CaptureStart(action) => {
+                    settings::view::SettingsEvent::CaptureStart(action) => {
                         // Arm the capture: from here the KeyPressed
                         // arm's first gate owns every press. A fresh
                         // arm clears any standing conflict error.
                         self.keybind_capture = Some(action);
                         self.keybind_conflict = None;
                     }
-                    settings::SettingsEvent::CaptureCancel => {
+                    settings::view::SettingsEvent::CaptureCancel => {
                         self.keybind_capture = None;
                     }
-                    settings::SettingsEvent::RevertKeybind(action) => {
+                    settings::view::SettingsEvent::RevertKeybind(action) => {
                         // Revert: drop the action's custom entry — its
                         // defaults come back when the echo rebuilds the
                         // live map, effective on the next key press.
@@ -2654,7 +2660,7 @@ impl DropTerm {
                         ));
                         self.write_keybinds_config(&write);
                     }
-                    settings::SettingsEvent::SelectProfile(index) => {
+                    settings::view::SettingsEvent::SelectProfile(index) => {
                         // The view emits live indices only; the bound
                         // guards the echo race where the list shrank
                         // between render and press. Selection seeds
@@ -2667,7 +2673,7 @@ impl DropTerm {
                             ));
                         }
                     }
-                    settings::SettingsEvent::PickDefaultProfile(index) => {
+                    settings::view::SettingsEvent::PickDefaultProfile(index) => {
                         // Commit-on-change through the module's one
                         // persist path; the `ConfigChanged` echo
                         // updates the in-memory config the next view
@@ -2679,10 +2685,10 @@ impl DropTerm {
                             self.write_profile_config(&write);
                         }
                     }
-                    settings::SettingsEvent::OpenProfileDraft => {
+                    settings::view::SettingsEvent::OpenProfileDraft => {
                         self.profile_draft = Some(settings::ProfileDraft::add());
                     }
-                    settings::SettingsEvent::CloneProfile(index) => {
+                    settings::view::SettingsEvent::CloneProfile(index) => {
                         // Seeding only — no write until the draft
                         // commits.
                         if let Some(source) = self.config.profiles.get(index) {
@@ -2692,7 +2698,7 @@ impl DropTerm {
                             ));
                         }
                     }
-                    settings::SettingsEvent::ArmProfileDelete(index) => {
+                    settings::view::SettingsEvent::ArmProfileDelete(index) => {
                         // The two-step delete's first press: the row
                         // trades its trash for the inline Confirm/Keep
                         // pair. Single-row arming lives in the pure
@@ -2702,12 +2708,12 @@ impl DropTerm {
                             settings::ProfileDeletePress::Arm(index),
                         );
                     }
-                    settings::SettingsEvent::KeepProfileDelete => {
+                    settings::view::SettingsEvent::KeepProfileDelete => {
                         // The pair's retreat: disarm, delete nothing.
                         self.profile_delete_armed =
                             settings::armed_profile_delete_row(settings::ProfileDeletePress::Keep);
                     }
-                    settings::SettingsEvent::ConfirmProfileDelete(index) => {
+                    settings::view::SettingsEvent::ConfirmProfileDelete(index) => {
                         // Confirm deletes — one whole-list write, plus
                         // the paired auto-clear when the deleted
                         // profile was the default — and the arm ends
@@ -2732,7 +2738,7 @@ impl DropTerm {
                             settings::ProfileDeletePress::Confirm(index),
                         );
                     }
-                    settings::SettingsEvent::ReorderProfile(index, direction) => {
+                    settings::view::SettingsEvent::ReorderProfile(index, direction) => {
                         // One slot per press, one whole-list write;
                         // the selection follows the moved profile.
                         // The new order is the `+` dropdown /
@@ -2766,14 +2772,14 @@ impl DropTerm {
                             }
                         }
                     }
-                    settings::SettingsEvent::DraftProfileField(field, text) => {
+                    settings::view::SettingsEvent::DraftProfileField(field, text) => {
                         // Display-only buffering; the keystroke also
                         // clears any stale error.
                         if let Some(draft) = self.profile_draft.as_mut() {
                             draft.set_field_text(field, text);
                         }
                     }
-                    settings::SettingsEvent::SaveProfileDraft => {
+                    settings::view::SettingsEvent::SaveProfileDraft => {
                         // The transactional commit: one Save, one
                         // plan, at most one whole-list write plus
                         // the paired rename cascade — then the form
@@ -2834,13 +2840,13 @@ impl DropTerm {
                             }
                         }
                     }
-                    settings::SettingsEvent::CancelProfileDraft => {
+                    settings::view::SettingsEvent::CancelProfileDraft => {
                         // Cancel drops the draft with no write; the
                         // selection persists — the row still names
                         // a profile for the next pencil press.
                         self.profile_draft = None;
                     }
-                    settings::SettingsEvent::PickProfileScheme(pick) => {
+                    settings::view::SettingsEvent::PickProfileScheme(pick) => {
                         // The pick buffers in every mode — the
                         // recolor lands on Save with the rest of the
                         // draft — and retires the scheme's stale error
@@ -2864,7 +2870,7 @@ impl DropTerm {
                             self.scheme_picker = None;
                         }
                     }
-                    settings::SettingsEvent::AddProfileEnvRow => {
+                    settings::view::SettingsEvent::AddProfileEnvRow => {
                         // A buffered list edit, not a write: the row
                         // joins the draft (an Enter in any env input
                         // writes the whole map); any stale error
@@ -2874,7 +2880,7 @@ impl DropTerm {
                             draft.errors.clear();
                         }
                     }
-                    settings::SettingsEvent::RemoveProfileEnvRow(index) => {
+                    settings::view::SettingsEvent::RemoveProfileEnvRow(index) => {
                         // Same buffering rule: the row leaves the
                         // draft, the write rides the next env Enter.
                         // A stale index (the row already gone) is a
@@ -2888,7 +2894,7 @@ impl DropTerm {
                             draft.errors.clear();
                         }
                     }
-                    settings::SettingsEvent::DrawerResize(pointer_x) => {
+                    settings::view::SettingsEvent::DrawerResize(pointer_x) => {
                         // Live width (criterion 2): display-only while
                         // the press is held — the same band render
                         // clamps through, so the drag can never leave
@@ -2898,7 +2904,7 @@ impl DropTerm {
                             self.current_surface_width(),
                         ));
                     }
-                    settings::SettingsEvent::DrawerResizeReleased => {
+                    settings::view::SettingsEvent::DrawerResizeReleased => {
                         // One write per drag (criterion 3), and only a
                         // real one: a plain click armed no live value,
                         // and a drag landing back on the stored px
@@ -2912,7 +2918,7 @@ impl DropTerm {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
                     }
-                    settings::SettingsEvent::DrawerReset => {
+                    settings::view::SettingsEvent::DrawerReset => {
                         // Double-click (criterion 5): back to the
                         // built-in default, stored value cleared.
                         self.drawer_drag = None;
