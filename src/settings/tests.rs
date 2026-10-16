@@ -219,27 +219,6 @@ fn tab_headers_are_the_strip_labels() {
     assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
 }
 
-// --- the scheme pickers (scheme-picker T2) ---
-
-#[test]
-fn the_scheme_picker_control_builds_in_every_config_state() {
-    // Construction is the assertion for both halves: the closed
-    // control (name + mini chip strip) and the popover host it
-    // becomes while open — both keys, open and closed, over a
-    // default, set, and unknown stored scheme name.
-    let mut config = DropTermConfig::default();
-    for open in [false, true] {
-        let _ = scheme_picker_control(ConfigKey::ColorSchemeDark, &config, open);
-        let _ = scheme_picker_control(ConfigKey::ColorSchemeLight, &config, open);
-    }
-    config.color_scheme_dark = "Dracula".to_string();
-    config.color_scheme_light = "Not A Scheme".to_string();
-    for open in [false, true] {
-        let _ = scheme_picker_control(ConfigKey::ColorSchemeDark, &config, open);
-        let _ = scheme_picker_control(ConfigKey::ColorSchemeLight, &config, open);
-    }
-}
-
 #[test]
 fn the_appearance_page_builds_with_a_picker_open_and_closed() {
     // The open flag is view state threaded through the page
