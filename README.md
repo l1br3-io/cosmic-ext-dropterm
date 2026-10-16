@@ -84,6 +84,7 @@ The details live in the `docs/` directory:
 - [Theming](docs/theming.md) - the Application theme pin and the 12 built-in color schemes
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
+- [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
 - [Research & decision log](docs/research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives
 - [Development](docs/development.md) - the dev loop and running without a shortcut

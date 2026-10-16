@@ -143,6 +143,7 @@ impl Section {
                 ConfigKey::DefaultCwd,
                 ConfigKey::ScrollbackLines,
                 ConfigKey::BellNotificationEnabled,
+                ConfigKey::AutosuggestionsEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::RespectPanel,
@@ -163,7 +164,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (27 — default-spawn's two rows included).
+/// count (28 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -178,6 +179,9 @@ pub enum ConfigKey {
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
     BellNotificationEnabled,
+    /// The autosuggest kill switch (autosuggest spec) — the Terminal
+    /// card's toggle beside the bell, flipping live on the echo.
+    AutosuggestionsEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -339,6 +343,7 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
+            ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::NewTabCwd => "new_tab_cwd",
@@ -390,6 +395,7 @@ pub enum PlannedWrite {
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
+    AutosuggestionsEnabled(bool),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
     NewTabCwd(NewTabCwd),
@@ -455,6 +461,7 @@ impl PlannedWrite {
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
+            PlannedWrite::AutosuggestionsEnabled(_) => ConfigKey::AutosuggestionsEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::NewTabCwd(_) => ConfigKey::NewTabCwd,
@@ -537,6 +544,9 @@ impl PlannedWrite {
             }
             PlannedWrite::BellNotificationEnabled(value) => {
                 handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsEnabled(value) => {
+                handler.set(ConfigKey::AutosuggestionsEnabled.key_name(), *value)
             }
             PlannedWrite::TabTitleMode(value) => {
                 handler.set(ConfigKey::TabTitleMode.key_name(), value)
@@ -768,6 +778,11 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowTab
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
+        // A showing suggestion disappears the moment the kill switch
+        // lands: the echo runs set_config, the next update's guard
+        // chain yields None, and re-enabling suggests again at the
+        // next typed prefix (autosuggest spec).
+        | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::ThemePreference => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
@@ -2183,6 +2198,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
+        ConfigKey::AutosuggestionsEnabled => Some(PlannedWrite::AutosuggestionsEnabled(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))
@@ -2238,6 +2254,7 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",
+            ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
             ConfigKey::NewTabCwd => "New tab directory",
@@ -4004,6 +4021,7 @@ fn toggle_control(
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
+        ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
