@@ -1168,22 +1168,34 @@ fn interned_font_family(name: &str) -> &'static str {
 /// window created, and when that surface is destroyed the binding is
 /// dropped — taking the smithay-clipboard connection, and with it
 /// any selection this app copied, down with it. `DropTerm`'s only
-/// surface is the layer shell, which every hide destroys, so
+/// other surface is the layer shell, which every hide destroys, so
 /// copying out could never survive the focus switch to the paste
-/// target. This window — invisible, never closed, created before
-/// any layer surface — owns the binding for the whole process
-/// lifetime instead: unmapped, so it appears nowhere and paints
-/// nothing, and exempt from close requests, so nothing the user or
-/// the runtime does can drop the connection mid-session.
+/// target. This window — never closed, created before any layer
+/// surface — owns the binding for the whole process lifetime instead,
+/// exempt from close requests, so nothing the user or the runtime
+/// does can drop the connection mid-session.
+///
+/// Wayland cannot honor `visible: false` (winit's `set_visible` is a
+/// no-op there), so the anchor is mapped after all and the shell's
+/// window switcher lists it. Its `application_id` is the only name
+/// that toplevel carries — the runtime does not derive it from
+/// `Application::APP_ID` — and with the empty default the switcher
+/// matches no desktop file and labels the window "unknown". Pinned
+/// to the app id, it resolves to `DropTerm`'s name and icon.
 fn clipboard_anchor_settings() -> window::Settings {
-    window::Settings {
+    let mut settings = window::Settings {
         visible: false,
         exit_on_close_request: false,
         resizable: false,
         decorations: false,
         size: cosmic::iced::Size::new(1.0, 1.0),
         ..window::Settings::default()
+    };
+    #[cfg(target_os = "linux")]
+    {
+        settings.platform_specific.application_id = APP_ID.to_string();
     }
+    settings
 }
 
 impl Application for DropTerm {

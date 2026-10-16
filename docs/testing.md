@@ -4,7 +4,7 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] First launch shows the overlay at the configured edge, focused and ready for input
 - [ ] The bound shortcut hides and re-shows it
 - [ ] A background job (`sleep 100 &`, shell history) survives a hide/show cycle
-- [ ] It does not appear in Alt-Tab or the dock
+- [ ] Alt-Tab identity: Wayland cannot unmap the clipboard-anchor toplevel, so the switcher (and the dock) list one DropTerm window - it carries the DropTerm name and icon via its application_id, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
 - [ ] Rapid repeated toggles (double key-press) don't crash or duplicate the surface
 - [ ] It appears correctly above a fullscreen window
 - [ ] `Ctrl+Shift+C` / `Ctrl+Shift+V` copy/paste, and middle-click / `Shift+Insert` paste the primary selection
