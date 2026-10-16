@@ -1,3 +1,6 @@
+use alacritty_terminal::vte::ansi::NamedColor;
+
+use super::theme_glue::effective_colors;
 use super::*;
 
 // --- the settings drawer's key routing (settings-drawer Task 0) ---
@@ -244,63 +247,13 @@ fn the_explicit_close_resets_to_the_appearance_tab() {
     assert_eq!(home_settings_page(), SettingsTab::Appearance);
 }
 
-// --- the window-background source decision ---
-
-#[test]
-fn scheme_background_wins_over_the_system_derivation() {
-    // Dracula owns its background (#282a36, alacritty-theme
-    // Dracula.toml): the resolved slot must land in
-    // WINDOW_BG_COLOR's packed layout (0xAARRGGBB, opaque), not
-    // the system theme's — chrome and the unset-bg fallback then
-    // follow by construction.
-    let dracula = theme_source::by_name("Dracula").unwrap();
-    assert_eq!(window_bg_color(&dracula, 0xFF1E_1E2E), 0xFF28_2A36);
-}
-
-#[test]
-fn unset_background_passes_the_system_derivation_through() {
-    // The COSMIC pair owns no background (the system theme
-    // supplies it), so the decision is a plain passthrough —
-    // default-config chrome follows the system theme, and a
-    // bogus scheme name keeps that too (the `active_colors`
-    // fallback resolves to this same pair).
-    let cosmic_dark = theme_source::by_name("COSMIC Dark").unwrap();
-    assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
-}
-
-#[test]
-fn the_fallback_palette_matches_the_effective_mode() {
-    // The window-background fallback derives from the palette of the
-    // mode the caller decided (`effective_is_dark`), never from the
-    // process-global active theme — a post-pin startup race can leave
-    // the global on the opposite palette with the pin still "set"
-    // (hardware walk 2026-10-12: dark preference, light global,
-    // pale pane). Both arms resolve a palette whose own `is_dark`
-    // agrees with the requested mode, whatever cosmic-config returns
-    // (built-in fallbacks agree too), so a drifted global cannot
-    // leak into the fallback.
-    assert!(system_palette_for_mode(true).cosmic().is_dark);
-    assert!(!system_palette_for_mode(false).cosmic().is_dark);
-}
-
-// --- the per-tab appearance resolution chain ---
-//
-// `resolved_profile` + `effective_colors` is the one chain both
-// application points consume (spawn and the config-apply pass):
-// the tab's recorded profile id → the profile → the seams → the
-// built-in registry. Every miss falls back to the global pick;
-// the chain never errors. Nord plays the global below — its
-// slots differ from Dracula's everywhere asserted, so a silent
-// fallback to the scheme (or a scheme leaking into a fallback)
-// cannot pass.
-
 /// Decode a packed `0xRRGGBB` literal into an `Rgb` (mirrors
 /// `theme_source`'s test helper).
 #[expect(
     clippy::cast_possible_truncation,
     reason = "low-byte extraction is the 0xRRGGBB decode contract"
 )]
-fn rgb(data: u32) -> alacritty_terminal::vte::ansi::Rgb {
+pub(super) fn rgb(data: u32) -> alacritty_terminal::vte::ansi::Rgb {
     alacritty_terminal::vte::ansi::Rgb {
         r: (data >> 16) as u8,
         g: (data >> 8) as u8,
@@ -308,7 +261,7 @@ fn rgb(data: u32) -> alacritty_terminal::vte::ansi::Rgb {
     }
 }
 
-fn chain_profile(name: &str, scheme: Option<&str>) -> crate::profile::Profile {
+pub(super) fn chain_profile(name: &str, scheme: Option<&str>) -> crate::profile::Profile {
     crate::profile::Profile {
         name: name.to_string(),
         command: "ssh host".to_string(),
@@ -320,7 +273,7 @@ fn chain_profile(name: &str, scheme: Option<&str>) -> crate::profile::Profile {
     }
 }
 
-fn chain_config(profiles: &[crate::profile::Profile]) -> DropTermConfig {
+pub(super) fn chain_config(profiles: &[crate::profile::Profile]) -> DropTermConfig {
     // Nord as the global pair — a real registry scheme whose
     // slots differ from Dracula's everywhere asserted below.
     DropTermConfig {
@@ -329,76 +282,6 @@ fn chain_config(profiles: &[crate::profile::Profile]) -> DropTermConfig {
         color_scheme_light: "Nord".to_string(),
         ..DropTermConfig::default()
     }
-}
-
-#[test]
-fn effective_colors_resolves_a_known_scheme_name() {
-    let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-    let profile = resolved_profile(&config, Some("ssh-prod"));
-    let colors = effective_colors(&config, profile, true);
-    // Dracula owns bg #282a36 and red #ff5555 (alacritty-theme).
-    assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
-    assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_5555)));
-}
-
-#[test]
-fn effective_colors_falls_back_to_global_for_a_plain_tab() {
-    // No recorded id — plain shell tabs, and the degraded preset
-    // arm whose blank command line records none (the shared
-    // `profile_id = None` rule): the global pick, unchanged.
-    let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-    let colors = effective_colors(&config, resolved_profile(&config, None), true);
-    assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
-}
-
-#[test]
-fn effective_colors_falls_back_to_global_on_a_dangling_profile_id() {
-    // The tab records a profile the config no longer carries
-    // (deleted mid-run): the lookup is `None`, the global pick —
-    // never an error, never a rewrite.
-    let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-    assert_eq!(resolved_profile(&config, Some("ghost")), None);
-    let colors = effective_colors(&config, resolved_profile(&config, Some("ghost")), true);
-    assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
-}
-
-#[test]
-fn effective_colors_falls_back_to_global_when_the_profile_sets_no_scheme() {
-    // A profile without a scheme override: its tabs follow the
-    // global pick.
-    let config = chain_config(&[chain_profile("ssh-prod", None)]);
-    let profile = resolved_profile(&config, Some("ssh-prod"));
-    let colors = effective_colors(&config, profile, true);
-    assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
-}
-
-#[test]
-fn effective_colors_falls_back_to_global_on_an_unknown_scheme_name() {
-    // A hand-edited config can name a scheme the registry does
-    // not ship ("Catppuccin Frappe" is a real upstream variant):
-    // resolve global, silently — exactly how an unknown global
-    // name falls to the COSMIC pair — never an error, never a
-    // rewrite.
-    let config = chain_config(&[chain_profile("ssh-prod", Some("Catppuccin Frappe"))]);
-    let profile = resolved_profile(&config, Some("ssh-prod"));
-    let colors = effective_colors(&config, profile, true);
-    assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
-}
-
-#[test]
-fn one_config_pass_resolves_mixed_tabs_to_different_colors() {
-    // The apply criterion's headless pin: one config, one global
-    // pick, two recorded ids (a profile tab and a plain tab) —
-    // the per-tab resolutions differ, so one `apply_config_to_tabs`
-    // pass paints them differently.
-    let config = chain_config(&[chain_profile("ssh-prod", Some("Dracula"))]);
-    let profile_tab = effective_colors(&config, resolved_profile(&config, Some("ssh-prod")), true);
-    let plain_tab = effective_colors(&config, resolved_profile(&config, None), true);
-    assert_ne!(
-        profile_tab[NamedColor::Background],
-        plain_tab[NamedColor::Background]
-    );
-    assert_ne!(profile_tab[NamedColor::Red], plain_tab[NamedColor::Red]);
 }
 
 #[test]
@@ -475,26 +358,6 @@ fn clipboard_anchor_window_cannot_be_closed() {
 }
 
 // --- the pure theme-preference decisions ---
-
-#[test]
-fn effective_is_dark_pins_dark_and_light() {
-    // A pin wins regardless of the system mode — that is the
-    // whole point of the feature.
-    assert!(effective_is_dark(ThemePreference::Dark, false));
-    assert!(effective_is_dark(ThemePreference::Dark, true));
-    assert!(!effective_is_dark(ThemePreference::Light, false));
-    assert!(!effective_is_dark(ThemePreference::Light, true));
-}
-
-#[test]
-fn effective_is_dark_system_follows_the_injected_mode() {
-    // The system value is a parameter, not a global read (the
-    // same pattern as `window_bg_color`): the decision stays
-    // pure, and tests never depend on the process-wide THEME
-    // state.
-    assert!(effective_is_dark(ThemePreference::System, true));
-    assert!(!effective_is_dark(ThemePreference::System, false));
-}
 
 #[test]
 fn echo_retitles_on_a_title_mode_flip_regardless_of_profiles() {
@@ -578,124 +441,6 @@ fn echo_never_retitles_on_an_unrelated_change() {
         &profiles,
         &[]
     ));
-}
-
-#[test]
-fn theme_override_is_none_when_preference_is_unchanged() {
-    // Steady state issues nothing: a default `System` config
-    // never calls `set_theme`, and unrelated config echoes —
-    // including our own theme echo — never storm the task.
-    assert_eq!(
-        theme_override(ThemePreference::System, ThemePreference::System),
-        None
-    );
-    assert_eq!(
-        theme_override(ThemePreference::Dark, ThemePreference::Dark),
-        None
-    );
-    assert_eq!(
-        theme_override(ThemePreference::Light, ThemePreference::Light),
-        None
-    );
-}
-
-#[test]
-fn theme_override_pins_on_any_transition_to_dark_or_light() {
-    assert_eq!(
-        theme_override(ThemePreference::System, ThemePreference::Dark),
-        Some(ThemeOverrideKind::PinDark)
-    );
-    assert_eq!(
-        theme_override(ThemePreference::Light, ThemePreference::Dark),
-        Some(ThemeOverrideKind::PinDark)
-    );
-    assert_eq!(
-        theme_override(ThemePreference::System, ThemePreference::Light),
-        Some(ThemeOverrideKind::PinLight)
-    );
-    assert_eq!(
-        theme_override(ThemePreference::Dark, ThemePreference::Light),
-        Some(ThemeOverrideKind::PinLight)
-    );
-}
-
-#[test]
-fn theme_override_restores_follow_system_from_a_pin() {
-    assert_eq!(
-        theme_override(ThemePreference::Dark, ThemePreference::System),
-        Some(ThemeOverrideKind::FollowSystem)
-    );
-    assert_eq!(
-        theme_override(ThemePreference::Light, ThemePreference::System),
-        Some(ThemeOverrideKind::FollowSystem)
-    );
-}
-
-/// Drives a [`Task`](cosmic::app::Task)'s stream to completion on
-/// the current thread, collecting every runtime
-/// [`Action::Output`] message in delivery order. `Task::then`
-/// consumes the first task's output and replaces it with the
-/// continuation's, so only a stream-level check can prove a
-/// message actually ships.
-fn delivered_outputs<T: Send + 'static>(task: cosmic::app::Task<T>) -> Vec<cosmic::Action<T>> {
-    use cosmic::iced::futures::StreamExt;
-    use cosmic::iced::futures::executor::block_on;
-
-    let mut stream =
-        cosmic::iced::runtime::task::into_stream(task).expect("theme override task has a stream");
-    let mut outputs = Vec::new();
-    block_on(async {
-        while let Some(action) = stream.next().await {
-            if let cosmic::iced::runtime::Action::Output(message) = action {
-                outputs.push(message);
-            }
-        }
-    });
-    outputs
-}
-
-#[test]
-fn theme_override_task_delivers_set_theme_then_reapply() {
-    // `Task::then` would CONSUME the `set_theme` output — the
-    // pin message would never reach the runtime, the process
-    // theme would never flip, and pinning Dark would leave a
-    // light, frosted terminal. The task must deliver BOTH
-    // messages: the theme override first, the `ReapplyColors`
-    // echo second — `Task::chain`'s contract.
-    for (kind, expected_prefer) in [
-        (ThemeOverrideKind::PinDark, Some(true)),
-        (ThemeOverrideKind::PinLight, Some(false)),
-        // FollowSystem's palette is whatever the system prefers —
-        // only the cleared marker is environment-independent.
-        (ThemeOverrideKind::FollowSystem, None),
-    ] {
-        let outputs = delivered_outputs(theme_override_task(kind));
-        assert_eq!(
-            outputs.len(),
-            2,
-            "expected exactly the set_theme + ReapplyColors pair for {kind:?}"
-        );
-        let cosmic::Action::Cosmic(cosmic::app::Action::AppThemeChange(theme)) = &outputs[0] else {
-            panic!("first delivered message must be the theme override for {kind:?}");
-        };
-        // The pins construct their System theme outright, so they
-        // must always be System-typed with the exact marker.
-        // FollowSystem re-reads the system mode, and on a host
-        // with no theme-mode source (headless CI)
-        // `system_preference()` falls back to a plain
-        // `Theme::dark()` — no System typing, no marker to clear.
-        match (&theme.theme_type, expected_prefer) {
-            (cosmic::theme::ThemeType::System { prefer_dark, .. }, _) => {
-                assert_eq!(*prefer_dark, expected_prefer, "marker for {kind:?}");
-            }
-            (_, None) => {}
-            _ => panic!("override theme must be System-typed for {kind:?}"),
-        }
-        assert!(
-            matches!(&outputs[1], cosmic::Action::App(Message::ReapplyColors)),
-            "second delivered message must be the ReapplyColors echo for {kind:?}"
-        );
-    }
 }
 
 // --- bar placement + tooltip side ---

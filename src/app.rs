@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm};
-use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
@@ -49,12 +48,13 @@ use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
-use crate::terminal::{self, Action, TerminalBox, TerminalOptions, theme_source};
+use crate::terminal::{self, Action, TerminalBox, TerminalOptions};
 
 pub(crate) mod remote;
 mod spawn;
 mod surface_lifecycle;
 mod tab_actions;
+mod theme_glue;
 
 use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
 use self::surface_lifecycle::{
@@ -62,6 +62,10 @@ use self::surface_lifecycle::{
     resize_acts_on,
 };
 use self::tab_actions::{RenameEdit, open_trees};
+use self::theme_glue::{
+    effective_colors, effective_is_dark, system_palette_for_mode, theme_override,
+    theme_override_task, window_bg_color,
+};
 
 pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 
@@ -1180,41 +1184,6 @@ fn capture_verdict_for(
     capture.map(|_| keybinds::capture_verdict(modifiers, key))
 }
 
-/// The window-background source decision: a scheme that resolves a
-/// background owns the window background — the tab-bar/grab-bar
-/// chrome and the unset-bg cell fallback all read `WINDOW_BG_COLOR`,
-/// so they follow by construction. A scheme without one (the COSMIC
-/// pair, and any unknown name that fell back to it) defers to the
-/// system-theme derivation, passed in already packed so this stays a
-/// pure, headless-testable decision.
-fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
-    match colors[NamedColor::Background] {
-        Some(rgb) => {
-            0xFF00_0000 | (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
-        }
-        None => system_bg,
-    }
-}
-
-/// The user's own system palette for the effective mode — the source
-/// of the window-background fallback derivation
-/// ([`Self::refresh_window_bg_color`]). Reads the palette files via
-/// cosmic-config, with the built-in fallback on failure, exactly like
-/// [`theme_override_task`] does. Deliberately NOT
-/// [`cosmic::theme::active`]: the process global can sit on the
-/// opposite mode's palette while the preference pin is still "set"
-/// (see [`Self::refresh_window_bg_color`]'s race note), so the
-/// fallback follows the mode the caller decided, the same way
-/// [`effective_colors`] does. Free-standing so the mode→palette
-/// mapping is headless-pinnable.
-fn system_palette_for_mode(is_dark: bool) -> cosmic::Theme {
-    if is_dark {
-        cosmic::theme::system_dark()
-    } else {
-        cosmic::theme::system_light()
-    }
-}
-
 /// The profile a recorded tab id resolves to right now — `None` for
 /// plain tabs and dangling ids (a deleted profile, a hand-edited
 /// config): the lookup every per-tab appearance resolution (colors,
@@ -1225,78 +1194,6 @@ fn resolved_profile<'a>(
     name: Option<&str>,
 ) -> Option<&'a profile::Profile> {
     name.and_then(|name| profile::find(&config.profiles, name))
-}
-
-/// The colors a tab under `profile` renders with — the color arm of
-/// the per-tab resolution both application points (spawn and the
-/// live config-apply pass) consume:
-/// [`profile::effective_scheme_name`] resolves the scheme name (the
-/// profile's explicit pick in both system modes, else the global
-/// pair for `is_dark`), and the registry lookup falls back to the
-/// COSMIC pair for the mode on any miss — unknown profile names and
-/// unknown global names alike, exactly as the global pick itself
-/// always has. The chain never errors, and the store is never
-/// rewritten to "fix" a stored name.
-fn effective_colors(
-    config: &DropTermConfig,
-    profile: Option<&profile::Profile>,
-    is_dark: bool,
-) -> aterm::color::Colors {
-    let name = profile::effective_scheme_name(
-        profile,
-        &config.color_scheme_dark,
-        &config.color_scheme_light,
-        is_dark,
-    );
-    theme_source::by_name(name).unwrap_or_else(|| {
-        if is_dark {
-            theme_source::cosmic_dark()
-        } else {
-            theme_source::cosmic_light()
-        }
-    })
-}
-
-/// Whether the app resolves colors for dark mode right now. The
-/// config preference is the source of truth; the global theme (what
-/// widgets read) follows via the `set_theme` task, so color
-/// decisions must not wait for it. Call sites inject the current
-/// system value — the [`window_bg_color`] pattern — keeping the
-/// decision pure and headless-testable.
-fn effective_is_dark(preference: ThemePreference, system_is_dark: bool) -> bool {
-    match preference {
-        ThemePreference::System => system_is_dark,
-        ThemePreference::Dark => true,
-        ThemePreference::Light => false,
-    }
-}
-
-/// What a theme-preference transition asks the runtime to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ThemeOverrideKind {
-    /// Pin the app to the user's dark system palette.
-    PinDark,
-    /// Pin the app to the user's light system palette.
-    PinLight,
-    /// Clear the pin and follow the system mode again.
-    FollowSystem,
-}
-
-/// The one pure transition matrix shared by `init` and
-/// `ConfigChanged`: `None` when the preference did not change —
-/// steady state issues no task, so a default `System` config never
-/// calls `set_theme` and unrelated config echoes never storm one.
-fn theme_override(old: ThemePreference, new: ThemePreference) -> Option<ThemeOverrideKind> {
-    match (old, new) {
-        (ThemePreference::System, ThemePreference::System)
-        | (ThemePreference::Dark, ThemePreference::Dark)
-        | (ThemePreference::Light, ThemePreference::Light) => None,
-        (_, ThemePreference::Dark) => Some(ThemeOverrideKind::PinDark),
-        (_, ThemePreference::Light) => Some(ThemeOverrideKind::PinLight),
-        (ThemePreference::Dark | ThemePreference::Light, ThemePreference::System) => {
-            Some(ThemeOverrideKind::FollowSystem)
-        }
-    }
 }
 
 /// Whether a config echo must retitle every live tab: a title-mode
@@ -1314,38 +1211,6 @@ fn echo_retitles_tabs(
     new_profiles: &[crate::profile::Profile],
 ) -> bool {
     old_mode != new_mode || (new_mode == TabTitleMode::Profile && old_profiles != new_profiles)
-}
-
-/// The impure shell over [`theme_override`]: builds the override
-/// theme from the user's own system palettes — never libcosmic's
-/// built-in constants — marks it through `ThemeType::prefer_dark`
-/// (which only writes through on `System`, the only theme type these
-/// constructors produce), and hands it to the runtime's global.
-/// Everything decidable is decided in the pure fns above; the
-/// chained [`Message::ReapplyColors`] re-runs the color apply once
-/// the global has landed, so the window-background derivation — the
-/// one consumer that must read the global — sees the new mode.
-///
-/// The follow-up rides [`Task::chain`], never [`Task::then`]: `then`
-/// CONSUMES the first task's output and replaces it with the
-/// continuation's, so `set_theme(...).then(...)` would silently drop
-/// the `Action::AppThemeChange` message — the pin would never reach
-/// the runtime and the theme would stay whatever it was (the
-/// "dark mode does nothing" bug). `chain` forwards every output of
-/// the first task and only then runs the second, preserving both
-/// messages and their order. Pinned by
-/// `theme_override_task_delivers_set_theme_then_reapply`.
-fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
-    let (mut theme, prefer_dark) = match kind {
-        ThemeOverrideKind::PinDark => (cosmic::theme::system_dark(), Some(true)),
-        ThemeOverrideKind::PinLight => (cosmic::theme::system_light(), Some(false)),
-        // Restore: re-read the system mode from cosmic-config fresh
-        // and clear the marker, so system flips resume driving the
-        // app.
-        ThemeOverrideKind::FollowSystem => (cosmic::theme::system_preference(), None),
-    };
-    theme.theme_type.prefer_dark(prefer_dark);
-    cosmic::command::set_theme(theme).chain(Task::done(cosmic::Action::App(Message::ReapplyColors)))
 }
 
 /// Whether the tab strip sits at the surface's bottom in this

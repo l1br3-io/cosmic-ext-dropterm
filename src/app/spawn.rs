@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell as PtyShell};
 
-use super::{DropTerm, SurfaceState, effective_colors, effective_is_dark, resolved_profile};
+use super::theme_glue::{effective_colors, effective_is_dark};
+use super::{DropTerm, SurfaceState, resolved_profile};
 use crate::config::{DropTermConfig, NewTabCwd, program_is_runnable};
 use crate::profile;
 use crate::session;
