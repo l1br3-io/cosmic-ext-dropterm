@@ -54,6 +54,20 @@ It needs [`cargo-watch`](https://github.com/watchexec/cargo-watch)
 failed build prints the compiler error, and the next save that compiles brings
 it back.
 
+## Command map
+
+Which recipe targets what, in one table:
+
+| Recipe | Target |
+| --- | --- |
+| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build, launched as `cosmic-ext-dropterm-dev` |
+| `just act …`, `toggle`, `show`, `hide`, `new-tab …` | Whichever instance is running — the verbs ride the `-dev` launcher and the running instance executes them |
+| `just dev-applet` | Development — the panel applet's binary, desktop file, and icon under `~/.local` |
+| `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
+| `just applet-flatpak-build` / `-install` / `-remove` | The flatpaked applet, built from the release manifest into the user flatpak installation |
+| `just check` | The gate — fmt + clippy + test across the workspace |
+| `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
+
 ## Running locally without a shortcut
 
 No COSMIC shortcut configured yet? You can still open and dismiss the overlay from a local run:
