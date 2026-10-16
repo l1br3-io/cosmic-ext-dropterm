@@ -14,17 +14,6 @@
 //! guard is certain, so any uncertain snapshot degrades to `None`,
 //! never to a wrong suffix.
 
-// The pure model is test-pinned ahead of its consumer: Task 2's
-// engine wiring constructs these items at runtime. The expectation
-// self-expires the moment they do.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the Task 1 model; Task 2's engine wiring consumes it"
-    )
-)]
-
 use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
@@ -48,6 +37,18 @@ const RING_CAP: usize = 256;
 pub(crate) enum SuggestionSource {
     /// The tab's own scraped command ring.
     History,
+}
+
+/// How much of the showing suffix an accept key writes (autosuggest
+/// spec): the whole remainder (Right), or one fish-shaped forward
+/// word (Alt+Right).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcceptKind {
+    /// The entire suffix — Right's accept.
+    Full,
+    /// One forward word — Alt+Right's accept; the remainder
+    /// re-suggests after the echo settles.
+    Word,
 }
 
 /// One displayed suggestion (autosuggest spec). The suffix is the
@@ -135,6 +136,12 @@ impl Suggest {
     /// only thing the widget renders.
     pub(crate) fn showing(&self) -> Option<&Showing> {
         self.showing.as_ref()
+    }
+
+    /// Whether an anchor is adopted — the engine's settle-prompt
+    /// latch clears once a prompt exists.
+    pub(crate) fn anchored(&self) -> bool {
+        self.anchor.is_some()
     }
 
     /// Takes the showing's suffix and clears the showing state: an

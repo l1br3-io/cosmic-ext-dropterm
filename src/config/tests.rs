@@ -1052,6 +1052,77 @@ fn a_disabled_status_bar_round_trips_through_the_config_store() {
 }
 
 #[test]
+fn missing_autosuggestions_key_loads_as_true() {
+    // A config directory from a version before autosuggestions: no
+    // `autosuggestions_enabled` key file. The entry derive backfills
+    // from the struct Default — `true`, the default-on ruling — so
+    // pre-existing configs see ghost text, not a silently-off key.
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-missing-autosuggest-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    }
+    .write_entry(&config)
+    .expect("write config keys");
+    std::fs::remove_file(
+        root.join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"))
+            .join("autosuggestions_enabled"),
+    )
+    .expect("remove autosuggestions_enabled key file");
+
+    let loaded =
+        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    assert!(loaded.autosuggestions_enabled);
+    // The directory is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_disabled_autosuggestions_round_trips_through_the_config_store() {
+    // The off state persists — the kill switch stays off across a
+    // write→load cycle (the control for the missing-key pin: a
+    // present `false` key is honored, not defaulted over).
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-autosuggest-off-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    let stored = DropTermConfig {
+        autosuggestions_enabled: false,
+        ..DropTermConfig::default()
+    };
+    stored.write_entry(&config).expect("write config keys");
+
+    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    assert_eq!(loaded, stored);
+    assert!(!loaded.autosuggestions_enabled);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn missing_show_keys_load_as_shown() {
     // A config directory from before the per-segment toggles
     // (status-segments spec): no `status_bar_show_*` key files.

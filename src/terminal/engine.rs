@@ -55,6 +55,7 @@ pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
 use crate::tabs::TabId;
 use crate::terminal::mouse_reporter::MouseReporter;
+use crate::terminal::suggest::{self, AcceptKind, Suggest};
 
 /// Runtime font and rendering options for a [`Terminal`].
 ///
@@ -72,6 +73,12 @@ pub struct TerminalOptions {
     pub use_bright_bold: bool,
     pub font_size: u16,
     pub font_size_zoom_step_mul_100: u16,
+    /// Whether autosuggestions compute (autosuggest spec): resolved
+    /// from the app config's `autosuggestions_enabled` where options
+    /// are built — flips apply at the next `set_config` pass, so a
+    /// showing suggestion disappears the moment the kill switch
+    /// lands.
+    pub autosuggestions_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -84,6 +91,7 @@ impl Default for TerminalOptions {
             use_bright_bold: false,
             font_size: 14,
             font_size_zoom_step_mul_100: 100,
+            autosuggestions_enabled: true,
         }
     }
 }
@@ -344,6 +352,10 @@ impl Metadata {
 /// One terminal: the `alacritty_terminal` grid behind a `FairMutex`,
 /// its cosmic-text buffer, the PTY notifier, and the state that
 /// renders one grid into the other.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own engine fact (focus, config, foreground bookkeeping, bright-bold); not a state machine to reshape"
+)]
 pub struct Terminal {
     pub metadata_set: IndexSet<Metadata>,
     pub needs_update: bool,
@@ -361,6 +373,27 @@ pub struct Terminal {
     dim_font_weight: Weight,
     mouse_reporter: MouseReporter,
     notifier: Notifier,
+    /// Whether autosuggestions compute (autosuggest spec) — the
+    /// resolved options flag, re-read at every `set_config`.
+    autosuggestions_enabled: bool,
+    /// The ghost tint (autosuggest spec, OQ-2): the scheme fg→bg
+    /// blend, computed at construction and every `set_config` —
+    /// never per frame.
+    ghost_color: cosmic_text::Color,
+    /// The foreground-transition bookkeeping (autosuggest spec): the
+    /// foreground check's value at the previous update — the
+    /// running→idle edge is the finish that marks the next
+    /// observation a fresh prompt.
+    last_foreground_child: bool,
+    /// The settle-close's fresh-prompt latch (autosuggest spec): set
+    /// when the spawn settle closes, held until an anchor is adopted
+    /// or a child runs — the shell's first prompt can land after the
+    /// settling update.
+    settle_prompt_pending: bool,
+    /// The autosuggest state (autosuggest spec) — engine-owned, per
+    /// the status-glance lesson: it dies with the terminal, so a
+    /// respawn (a fresh terminal) resets history by construction.
+    suggest: Suggest,
     search_regex_opt: Option<RegexSearch>,
     search_value: String,
     shell_pid: Option<u32>,
@@ -520,6 +553,11 @@ impl Terminal {
             mouse_reporter: MouseReporter::default(),
             needs_update: true,
             notifier,
+            autosuggestions_enabled: options.autosuggestions_enabled,
+            ghost_color: suggest::ghost_color(colors),
+            last_foreground_child: false,
+            settle_prompt_pending: false,
+            suggest: Suggest::new(),
             search_regex_opt: None,
             search_value: String::new(),
             shell_pid,
@@ -704,6 +742,40 @@ impl Terminal {
         }
     }
 
+    /// Writes the showing suggestion's suffix into the PTY (autosuggest
+    /// spec) — the exact funnel every keystroke takes, raw bytes, no
+    /// bracketed-paste wrapping: typed characters, not a paste.
+    /// [`AcceptKind::Full`] sends the whole suffix,
+    /// [`AcceptKind::Word`] one fish-shaped forward word (the
+    /// remainder re-suggests after the echo settles). With nothing
+    /// showing, nothing is written.
+    pub fn accept_suggestion(&mut self, kind: AcceptKind) {
+        let Some(suffix) = self.suggest.take_suffix() else {
+            return;
+        };
+        let bytes = match kind {
+            AcceptKind::Full => suffix,
+            AcceptKind::Word => suggest::split_word(&suffix).0.to_string(),
+        };
+        if !bytes.is_empty() {
+            self.input_no_scroll(bytes.into_bytes());
+        }
+    }
+
+    /// The showing suggestion's suffix (autosuggest spec) — the only
+    /// thing the widget renders; `None` renders nothing.
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggest
+            .showing()
+            .map(|showing| showing.suffix.as_str())
+    }
+
+    /// The ghost tint (autosuggest spec, OQ-2): the scheme's fg→bg
+    /// blend, stored at construction and every `set_config`.
+    pub fn ghost_color(&self) -> cosmic_text::Color {
+        self.ghost_color
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width != self.size.width || height != self.size.height {
             let instant = Instant::now();
@@ -733,6 +805,10 @@ impl Terminal {
                 SpawnSettle::NextResize => {
                     self.spawn_grid = self.grid();
                     self.spawn_settle = SpawnSettle::Settled;
+                    // The settle's close is a fresh-prompt moment
+                    // (autosuggest spec): the update that follows
+                    // may adopt the shell's first prompt.
+                    self.settle_prompt_pending = true;
                 }
                 SpawnSettle::Settled => {}
             }
@@ -969,6 +1045,16 @@ impl Terminal {
             }
         }
 
+        if self.autosuggestions_enabled != options.autosuggestions_enabled {
+            self.autosuggestions_enabled = options.autosuggestions_enabled;
+            update = true;
+        }
+
+        // The ghost tint recomputes from the (possibly just-copied)
+        // scheme — three channel averages, cheaper than the diff that
+        // guards them.
+        self.ghost_color = suggest::ghost_color(&self.colors);
+
         // NOTE: this is done on every set_config because the changed boolean above does not capture
         // WINDOW_BG changes
         let default_colors_updated = self.update_default_colors();
@@ -1047,6 +1133,14 @@ impl Terminal {
 
         let instant = Instant::now();
 
+        // The autosuggest cycle (autosuggest spec): the kernel's
+        // foreground truth read once per update, before the term
+        // lock — the running→idle edge is the finish that marks the
+        // next observation a fresh prompt.
+        let foreground_child = self.foreground_child_running();
+        let fresh_by_finish = self.last_foreground_child && !foreground_child;
+        self.last_foreground_child = foreground_child;
+
         // Only keep default
         self.metadata_set.truncate(1);
 
@@ -1076,6 +1170,65 @@ impl Terminal {
                         .extend(regex_matches.drain(..).flat_map(|rm| -> Vec<_> {
                             HintPostProcessor::new(&term, &mut self.url_regex_search, rm).collect()
                         }));
+                }
+
+                // The observation + eligibility step (autosuggest
+                // spec): one cursor-line scrape off the same walked
+                // cells this update already iterates, under the lock
+                // it already holds — no second grid lock anywhere in
+                // the path.
+                {
+                    let grid = term.grid();
+                    let cursor = grid.cursor.point;
+                    let columns = grid.columns();
+                    let row = &grid[cursor.line];
+                    let mut before_cursor = String::new();
+                    let mut after_cursor_blank = true;
+                    for column in 0..columns {
+                        let cell = &row[Column(column)];
+                        if Column(column) < cursor.column {
+                            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                                continue;
+                            }
+                            before_cursor.push(match cell.c {
+                                '\t' => ' ',
+                                c => c,
+                            });
+                            if let Some(zerowidth) = cell.zerowidth() {
+                                for &c in zerowidth {
+                                    before_cursor.push(c);
+                                }
+                            }
+                        } else {
+                            let blank = cell.c == ' '
+                                && !cell.flags.intersects(
+                                    Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+                                )
+                                && cell.zerowidth().is_none();
+                            if !blank {
+                                after_cursor_blank = false;
+                            }
+                        }
+                    }
+                    let observation = suggest::Observation {
+                        enabled: self.autosuggestions_enabled,
+                        focused: self.is_focused,
+                        foreground_child,
+                        display_offset: grid.display_offset(),
+                        cursor_on_bottom_row: cursor.line == grid.bottommost_line(),
+                        columns,
+                        cursor_column: cursor.column.0,
+                        before_cursor: &before_cursor,
+                        after_cursor_blank,
+                        fresh_prompt: fresh_by_finish || self.settle_prompt_pending,
+                    };
+                    suggest::step(&observation, &mut self.suggest);
+                    // The settle latch drains once a prompt exists
+                    // (or a child runs): until then every update may
+                    // be the one that finds the shell's first prompt.
+                    if self.suggest.anchored() || foreground_child {
+                        self.settle_prompt_pending = false;
+                    }
                 }
 
                 let grid = term.grid();
@@ -1559,359 +1712,4 @@ impl Drop for Terminal {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tagged_event_proxy_stamps_events_with_tab_id() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let proxy = TaggedEventProxy {
-            tab_id: TabId(7),
-            tx,
-        };
-
-        proxy.send_event(Event::Wakeup);
-
-        let (tab_id, event) = rx.try_recv().expect("tagged event should arrive");
-        assert_eq!(tab_id, TabId(7));
-        assert!(matches!(event, Event::Wakeup));
-    }
-
-    #[test]
-    fn foreground_check_reads_false_without_a_master_handle() {
-        // Fail-open pin (criterion 7): no dup'd fd → the check can
-        // never trap a tab behind its own confirmation.
-        assert!(!foreground_child_running(None, Some(1234)));
-    }
-
-    #[test]
-    fn foreground_check_reads_false_without_a_shell_pid() {
-        // Fail-open pin (criterion 7): nothing to compare the
-        // foreground pgrp against reads as "no process".
-        let master = fs::File::open("/dev/null").expect("open a non-pty fd");
-        assert!(!foreground_child_running(Some(&master), None));
-    }
-
-    #[test]
-    fn foreground_check_reads_false_without_either_input() {
-        assert!(!foreground_child_running(None, None));
-    }
-
-    #[test]
-    fn foreground_check_tracks_a_live_pty_from_idle_to_child_and_back() {
-        // The heaviest test in this module — the second in the
-        // codebase to construct a real Terminal (a real /bin/sh PTY) —
-        // because the point under test is exactly the kernel pty
-        // state the dup'd master fd observes: an idle shell holds the
-        // foreground itself (criterion 2), a foreground child takes
-        // it, and both SIGINT and the shell's own exit hand it back
-        // or take it away (detection must agree with the never-gated
-        // TermEvent::Exit close).
-        use alacritty_terminal::tty::Shell as PtyShell;
-
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let terminal = Terminal::new(
-            TabId(0),
-            tx,
-            Config::default(),
-            &Options {
-                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
-                drain_on_exit: true,
-                ..Options::default()
-            },
-            &TerminalOptions::default(),
-            &Colors::default(),
-        )
-        .expect("spawn a /bin/sh test terminal");
-
-        // Idle at the prompt: the shell's own pgrp holds the foreground.
-        assert!(!terminal.foreground_child_running());
-
-        // A foreground child (interactive dash job-controls it into
-        // its own pgrp) takes the tty's foreground.
-        terminal.input_no_scroll(&b"sleep 30\r"[..]);
-        poll_until_foreground(&terminal, true, "foreground child takes the foreground");
-
-        // SIGINT returns the foreground to the shell.
-        terminal.input_no_scroll(&b"\x03"[..]);
-        poll_until_foreground(
-            &terminal,
-            false,
-            "SIGINT returns the foreground to the shell",
-        );
-
-        // The shell's own exit leaves nothing to confirm.
-        terminal.input_no_scroll(&b"exit\r"[..]);
-        poll_until_foreground(&terminal, false, "shell exit reads as no process");
-    }
-
-    #[test]
-    fn grid_floors_the_live_pixel_size_into_cells() {
-        use alacritty_terminal::tty::Shell as PtyShell;
-
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let mut terminal = Terminal::new(
-            TabId(0),
-            tx,
-            Config::default(),
-            &Options {
-                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
-                drain_on_exit: true,
-                ..Options::default()
-            },
-            &TerminalOptions::default(),
-            &Colors::default(),
-        )
-        .expect("spawn a /bin/sh test terminal");
-
-        // The constructor sizes the default grid at 80x24 cells.
-        assert_eq!(terminal.grid(), (80, 24));
-
-        // Non-whole cells floor: ten columns' worth of pixels plus
-        // nine-tenths of a column is still ten columns.
-        let cell = terminal.size().cell_width;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "px under a u32 ceiling, far below u32::MAX"
-        )]
-        let width = (cell * 10.9).ceil() as u32;
-        terminal.resize(width, terminal.size().height);
-        assert_eq!(terminal.grid().0, 10);
-
-        // The one-cell minimum holds: a zero resize clamps before
-        // the floor-division ever sees a sub-cell size.
-        terminal.resize(0, 0);
-        assert_eq!(terminal.grid(), (1, 1));
-    }
-
-    // --- the spawn-grid settle (status-glance criterion 1) ---
-    //
-    // The band's grid segment reports only a resize away from the
-    // grid the tab started at, and a fresh terminal's first resizes
-    // are not that: the construction default, an opening surface's
-    // measuring stretch, and the granted-size stream all land before
-    // the resting grid exists. The settle state machine below
-    // records the resting grid and freezes it — engine-owned, per
-    // the 2026-10-11 ruling.
-
-    fn spawn_grid_terminal() -> Terminal {
-        use alacritty_terminal::tty::Shell as PtyShell;
-        let (tx, _rx) = mpsc::unbounded_channel();
-        Terminal::new(
-            TabId(0),
-            tx,
-            Config::default(),
-            &Options {
-                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
-                drain_on_exit: true,
-                ..Options::default()
-            },
-            &TerminalOptions::default(),
-            &Colors::default(),
-        )
-        .expect("spawn a /bin/sh test terminal")
-    }
-
-    /// Resize to exactly `cols` cells wide, keeping the current
-    /// height — the whole-cell multiple the floor division lands on.
-    fn resize_cols(terminal: &mut Terminal, cols: u32) {
-        let cell = terminal.size().cell_width;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "test col counts and their px products are far below both u32::MAX and f32's mantissa"
-        )]
-        let width = (cell * cols as f32).ceil() as u32;
-        let height = terminal.size().height;
-        terminal.resize(width, height);
-    }
-
-    #[test]
-    fn a_fresh_terminal_carries_the_default_grid_as_its_spawn_grid() {
-        let terminal = spawn_grid_terminal();
-        assert_eq!(terminal.grid(), (80, 24));
-        assert_eq!(terminal.spawn_grid(), (80, 24));
-    }
-
-    #[test]
-    fn arming_makes_the_next_resize_record_the_resting_grid_and_freeze() {
-        // The shown-surface spawn: one settling resize to the
-        // resting grid, then the record is frozen — later resizes
-        // are the deviations the band reports, and resizing back
-        // to the resting grid reads as returned (live == record).
-        let mut terminal = spawn_grid_terminal();
-        terminal.arm_spawn_grid_next_resize();
-        resize_cols(&mut terminal, 40);
-        assert_eq!(terminal.spawn_grid().0, 40);
-        resize_cols(&mut terminal, 60);
-        assert_eq!(
-            terminal.spawn_grid().0,
-            40,
-            "a settled record never follows a later resize"
-        );
-        resize_cols(&mut terminal, 40);
-        assert_eq!(terminal.spawn_grid().0, 40);
-        assert_eq!(
-            terminal.grid().0,
-            40,
-            "returning to rest reads as un-resized"
-        );
-    }
-
-    #[test]
-    fn opening_churn_rebaselines_until_the_adoption_arms() {
-        // The startup spawn: the measuring stretch and the granted
-        // stream both land before any adoption — each re-baselines
-        // (churn, not deviation) — and only the resize after the
-        // adoption's arm freezes the record.
-        let mut terminal = spawn_grid_terminal();
-        resize_cols(&mut terminal, 120);
-        assert_eq!(terminal.spawn_grid().0, 120, "the stretch re-baselines");
-        resize_cols(&mut terminal, 90);
-        assert_eq!(terminal.spawn_grid().0, 90, "the grant re-baselines");
-        terminal.arm_spawn_grid_next_resize();
-        resize_cols(&mut terminal, 45);
-        assert_eq!(terminal.spawn_grid().0, 45);
-        resize_cols(&mut terminal, 70);
-        assert_eq!(
-            terminal.spawn_grid().0,
-            45,
-            "the record froze at the resting grid"
-        );
-    }
-
-    #[test]
-    fn arming_a_settled_spawn_grid_is_a_no_op() {
-        // Every re-show runs an adoption; one must never resurrect
-        // or re-snapshot a record that already settled — a geometry
-        // change made while hidden stays a visible deviation.
-        let mut terminal = spawn_grid_terminal();
-        terminal.arm_spawn_grid_next_resize();
-        resize_cols(&mut terminal, 40);
-        terminal.arm_spawn_grid_next_resize();
-        resize_cols(&mut terminal, 55);
-        assert_eq!(
-            terminal.spawn_grid().0,
-            40,
-            "the second arm changes nothing"
-        );
-    }
-
-    #[test]
-    fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
-        // The zoom path re-fires `resize` through `update_cell_size`
-        // — scale-only today: `zoom_adj` moves the band's percent,
-        // not the cells — and a real metrics change (a profile's
-        // font size through `set_config`) re-fires it with new
-        // cells. A settled record must read neither as a
-        // re-baseline: the grid segment narrates the deviation, and
-        // the metrics' return restores the rest.
-        let mut terminal = spawn_grid_terminal();
-        terminal.arm_spawn_grid_next_resize();
-        resize_cols(&mut terminal, 40);
-        let resting = terminal.spawn_grid();
-
-        terminal.set_zoom_adj(2);
-        terminal.update_cell_size();
-        assert_eq!(terminal.spawn_grid(), resting);
-        assert_eq!(terminal.grid().0, 40, "zoom is scale-only: cells stand");
-
-        let enlarged = TerminalOptions {
-            font_size: 24,
-            ..TerminalOptions::default()
-        };
-        terminal.set_config(&enlarged, &Colors::default());
-        assert_eq!(terminal.spawn_grid(), resting);
-        assert_ne!(terminal.grid().0, 40, "bigger cells deviate from rest");
-
-        terminal.set_zoom_adj(0);
-        terminal.set_config(&TerminalOptions::default(), &Colors::default());
-        assert_eq!(
-            terminal.grid().0,
-            40,
-            "the metrics' return restores the rest"
-        );
-    }
-
-    /// Poll a live terminal's foreground check until it reads `want`,
-    /// bounded at 10s (the chunk's flake guard).
-    fn poll_until_foreground(terminal: &Terminal, want: bool, what: &str) {
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if terminal.foreground_child_running() == want {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for detection to read {want}: {what}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    #[test]
-    fn process_name_reads_none_without_inputs() {
-        // The fail-open shape, mirrored from the bool check: missing
-        // inputs read as "nothing to name" — never a fake process.
-        assert_eq!(foreground_process_name(None, Some(1234)), None);
-        let master = fs::File::open("/dev/null").expect("open a non-pty fd");
-        assert_eq!(foreground_process_name(Some(&master), None), None);
-    }
-
-    #[test]
-    fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
-        // The name variant of the bool check's live-pty pin: an idle
-        // shell has nothing to name, a foreground child is named by
-        // its own comm (the kernel's name for `sleep` is "sleep"),
-        // and SIGINT hands the foreground back.
-        use alacritty_terminal::tty::Shell as PtyShell;
-
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let terminal = Terminal::new(
-            TabId(0),
-            tx,
-            Config::default(),
-            &Options {
-                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
-                drain_on_exit: true,
-                ..Options::default()
-            },
-            &TerminalOptions::default(),
-            &Colors::default(),
-        )
-        .expect("spawn a /bin/sh test terminal");
-
-        assert_eq!(terminal.foreground_process_name(), None);
-
-        terminal.input_no_scroll(&b"sleep 30\r"[..]);
-        poll_until_process_name(&terminal, Some("sleep"), "the child's comm names it");
-
-        terminal.input_no_scroll(&b"\x03"[..]);
-        poll_until_process_name(
-            &terminal,
-            None,
-            "SIGINT returns the foreground to the shell",
-        );
-
-        terminal.input_no_scroll(&b"exit\r"[..]);
-        poll_until_process_name(&terminal, None, "shell exit reads as no process");
-    }
-
-    /// Poll a live terminal's process name until it reads `want`,
-    /// bounded at 10s (the bool check's own flake guard).
-    fn poll_until_process_name(terminal: &Terminal, want: Option<&str>, what: &str) {
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if terminal.foreground_process_name().as_deref() == want {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for the name to read {want:?}: {what}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-}
+mod tests;
