@@ -9,6 +9,7 @@
 
 mod engine;
 pub mod mouse_reporter;
+mod suggest;
 pub mod theme_source;
 mod widget;
 
