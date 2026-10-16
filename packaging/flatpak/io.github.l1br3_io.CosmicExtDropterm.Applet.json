@@ -31,6 +31,7 @@
                 "cargo build --offline --release -p cosmic-ext-dropterm-applet --verbose",
                 "install -Dm755 target/release/cosmic-ext-dropterm-applet /app/bin/cosmic-ext-dropterm-applet",
                 "install -Dm644 res/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop /app/share/applications/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop",
+                "install -Dm644 res/io.github.l1br3_io.CosmicExtDropterm.Applet.metainfo.xml /app/share/metainfo/io.github.l1br3_io.CosmicExtDropterm.Applet.metainfo.xml",
                 "install -Dm644 res/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg",
                 "install -Dm644 res/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.l1br3_io.CosmicExtDropterm.Applet-symbolic.svg",
                 "sed -i 's/^Icon=.*/Icon=io.github.l1br3_io.CosmicExtDropterm.Applet-symbolic/' /app/share/applications/io.github.l1br3_io.CosmicExtDropterm.Applet.desktop"

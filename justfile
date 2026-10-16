@@ -48,6 +48,9 @@ applet-bin-src := cargo-target-dir / 'release' / applet
 applet-bin-dst := base-dir / 'bin' / applet
 applet-desktop-src := 'res' / applet-desktop
 applet-desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / applet-desktop
+applet-metainfo := appid + '.Applet.metainfo.xml'
+applet-metainfo-src := 'res' / applet-metainfo
+applet-metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / applet-metainfo
 applet-icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 applet-icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 
@@ -264,12 +267,13 @@ install:
     install -Dm0644 {{icon-src}} {{icon-dst}}
     install -Dm0755 {{applet-bin-src}} {{applet-bin-dst}}
     install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
+    install -Dm0644 {{applet-metainfo-src}} {{applet-metainfo-dst}}
     install -Dm0644 {{applet-icon-src}} {{applet-icon-dst}}
 
 # Uninstalls installed files
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
-    rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}}
+    rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}} {{applet-metainfo-dst}}
 
 # Regenerate packaging/flatpak/cargo-sources.json from Cargo.lock with
 # flatpak-builder-tools' cargo generator (the pop-os/cosmic-flatpak

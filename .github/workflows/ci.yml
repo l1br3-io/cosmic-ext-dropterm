@@ -33,6 +33,7 @@ jobs:
       - name: Validate AppStream metainfo
         run: |
           appstreamcli validate --no-net res/io.github.l1br3_io.CosmicExtDropterm.metainfo.xml
+          appstreamcli validate --no-net res/io.github.l1br3_io.CosmicExtDropterm.Applet.metainfo.xml
 
   check:
     runs-on: ubuntu-24.04

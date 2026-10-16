@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.l1br3_io.CosmicExtDropterm.Applet</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <project_group>COSMIC</project_group>
+  <name>DropTerm</name>
+  <summary>A drop-down terminal panel applet for the COSMIC™ desktop</summary>
+  <description>
+    <p>Panel applet companion to DropTerm: one click on the panel button toggles the drop-down terminal overlay, and the button shows at a glance whether the terminal is running.</p>
+    <p>The applet drives the DropTerm terminal over the session bus. The terminal itself is native-only — a sandboxed client gets no layer shell on cosmic-comp — so install it from the project's GitHub release; this applet is the store-listed entry point.</p>
+  </description>
+  <provides>
+    <id>com.system76.CosmicApplet</id>
+  </provides>
+  <launchable type="desktop-id">io.github.l1br3_io.CosmicExtDropterm.Applet.desktop</launchable>
+  <developer id="io.github.l1br3_io">
+    <name>l1br3-io</name>
+  </developer>
+  <url type="homepage">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
+  <url type="bugtracker">https://github.com/l1br3-io/cosmic-ext-dropterm/issues</url>
+  <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-10-17">
+      <description>
+        <p>First listing in the COSMIC Flatpak source, tracking DropTerm 0.2.0.</p>
+      </description>
+    </release>
+  </releases>
+</component>
