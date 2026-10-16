@@ -45,11 +45,11 @@ Rust via [rustup](https://rustup.rs/) (stable).
 ### Build and install
 
 ```sh
-just build-release
+just build-all        # both release binaries: terminal + applet
 sudo just install
 ```
 
-`just uninstall` removes the installed files again.
+`sudo just uninstall` removes the installed files again.
 
 ## Setting up the shortcut
 

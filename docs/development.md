@@ -15,11 +15,22 @@ launcher that always runs the current debug build instead:
 just dev-install
 ```
 
-That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm`
-to `target/debug/cosmic-ext-dropterm`. Set the shortcut's Command to the plain
-`cosmic-ext-dropterm` once and leave it - `~/.local/bin` precedes `/usr/bin` on
-the COSMIC session PATH, so it shadows a release copy installed with
-`sudo just install`.
+That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm-dev`
+to `target/debug/cosmic-ext-dropterm`. Set the development shortcut's Command
+to `cosmic-ext-dropterm-dev` once and leave it. The `-dev` suffix keeps an
+installed release (from `sudo just install` or a release tarball) separate:
+plain `cosmic-ext-dropterm` on PATH is always the installed copy, and the two
+never shadow each other.
+
+One instance runs at a time, whichever owns the bus name: DropTerm is
+single-instance, so launching `cosmic-ext-dropterm` while the `-dev` instance
+runs just forwards the action to it (and vice versa) — the running instance
+parses every verb, whatever binary delivered it. `just dev-reload` kills the
+running instance (either one) before starting the new debug build; that is
+also how control passes back to the installed copy — exit or kill the dev
+instance, and the next press of a shortcut bound to the plain name starts the
+release. Config and sessions are shared (same app id), so settings carry
+across both.
 
 The edit-build-see loop is then one command:
 
@@ -44,6 +55,20 @@ It needs [`cargo-watch`](https://github.com/watchexec/cargo-watch)
 (`cargo install cargo-watch`). Each save rebuilds and restarts the overlay; a
 failed build prints the compiler error, and the next save that compiles brings
 it back.
+
+## Command map
+
+Which recipe targets what, in one table:
+
+| Recipe | Target |
+| --- | --- |
+| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build, launched as `cosmic-ext-dropterm-dev` |
+| `just act …`, `toggle`, `show`, `hide`, `new-tab …` | Whichever instance is running — the verbs ride the `-dev` launcher and the running instance executes them |
+| `just dev-applet` | Development — the panel applet's binary, desktop file, and icon under `~/.local` |
+| `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
+| `just applet-flatpak-build` / `-install` / `-remove` | The flatpaked applet, built from the release manifest into the user flatpak installation |
+| `just check` | The gate — fmt + clippy + test across the workspace |
+| `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
 
 ## Running locally without a shortcut
 
