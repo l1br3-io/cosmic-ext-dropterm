@@ -12,17 +12,17 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 ### From a release
 
 Grab the tarball for your architecture from the
-[v0.1.0 release](https://github.com/l1br3-io/cosmic-ext-dropterm/releases/tag/v0.1.0) — it carries both binaries (terminal and [panel applet](docs/applet.md)) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
+[v0.2.0 release](https://github.com/l1br3-io/cosmic-ext-dropterm/releases/tag/v0.2.0) — it carries both binaries (terminal and [panel applet](docs/applet.md)) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
 
 ```sh
-curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.1.0/cosmic-ext-dropterm-0.1.0-x86_64.tar.gz
-curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.1.0/sha256sums
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.2.0/cosmic-ext-dropterm-0.2.0-x86_64.tar.gz
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.2.0/sha256sums
 sha256sum -c --ignore-missing sha256sums
-tar -xzf cosmic-ext-dropterm-0.1.0-x86_64.tar.gz
+tar -xzf cosmic-ext-dropterm-0.2.0-x86_64.tar.gz
 sudo cp -a usr/. /usr/
 ```
 
-ARM machines take the `cosmic-ext-dropterm-0.1.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
+ARM machines take the `cosmic-ext-dropterm-0.2.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
 
 ### From source
 
@@ -30,7 +30,7 @@ See [Building](#building) below.
 
 ## Status
 
-DropTerm v0.1.0 is released — see [Installing](#installing). Development continues toward the next release on the [roadmap](ROADMAP.md)'s v3 and Later lines; the feature list below describes the current main build.
+DropTerm v0.2.0 is released — see [Installing](#installing). Development continues toward the next release on the [roadmap](ROADMAP.md)'s v3 and Later lines; the feature list below describes the current main build.
 
 ## Building
 

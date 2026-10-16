@@ -18,6 +18,12 @@
   <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-10-17">
+      <description>
+        <p>New status band beneath the terminal — segments for the working path, git branch, profile, and more, with click-to-copy, text selection, and a right-click menu. The Profiles page gained explicit, transactional editing (Save/Cancel, a two-step delete, per-profile overrides), and the tab strip and status band each grew an optional hairline border.</p>
+        <p>Fixes: the window background follows the effective dark or light mode, profile commands run through the shell as a preamble, unspawnable programs degrade to a plain shell instead of a silent no-op, and every surface carries the app id so the shell never shows 'unknown'.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-10">
       <description>
         <p>First release: drop-down terminal overlay, tabs and launch profiles, theming, bell notifications, D-Bus remote control, and the companion panel applet.</p>
