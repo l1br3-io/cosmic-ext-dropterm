@@ -551,3 +551,17 @@ fn bar_border_lines_never_share_a_seam() {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn clipboard_anchor_carries_the_app_id() {
+    // The anchor is the app's only mapped xdg toplevel — Wayland
+    // cannot unmap it — so the shell's window switcher names it by
+    // this application_id alone. With the empty default the switcher
+    // matched no desktop file and labeled the window "unknown"; the
+    // id must stay the app id so it resolves to DropTerm's entry.
+    assert_eq!(
+        clipboard_anchor_settings().platform_specific.application_id,
+        APP_ID
+    );
+}

@@ -19,8 +19,11 @@ use cosmic::iced::window;
 
 use crate::config::{KeyboardMode, Layer};
 
-/// Layer-shell namespace identifying this app's surfaces.
-pub const NAMESPACE: &str = "cosmic-ext-dropterm";
+/// Layer-shell namespace identifying this app's surfaces: the app id,
+/// matching the desktop file's stem, so shell components that resolve
+/// a layer surface by namespace find `DropTerm`'s entry instead of a
+/// generic "unknown".
+pub const NAMESPACE: &str = crate::app::APP_ID;
 
 /// Maps the configured [`Layer`] to its wlr-layer-shell equivalent.
 pub fn wlr_layer(layer: Layer) -> WlrLayer {
@@ -63,7 +66,10 @@ pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
         keyboard_interactivity: KeyboardInteractivity::None,
         anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
         output: IcedOutput::Active,
-        namespace: format!("{NAMESPACE}-measure"),
+        // The app id, unadorned: the measuring surface is reshaped in
+        // place into the shown terminal (never recreated), so any
+        // "-measure" suffix would stick to the visible surface forever.
+        namespace: NAMESPACE.to_string(),
         size: Some((None, None)),
         // DontCare (-1), not the default neutral zone (0): a neutral
         // surface arranges inside the space exclusive layers like the
@@ -130,6 +136,18 @@ mod tests {
         assert_eq!(terminal_view_height(20.0, false), 1.0);
         assert_eq!(terminal_view_height(20.0, true), 1.0);
         assert_eq!(terminal_view_height(0.0, true), 1.0);
+    }
+
+    #[test]
+    fn measuring_namespace_is_the_app_id() {
+        // One surface, one identity: the measuring surface is reshaped in
+        // place into the shown terminal, so its namespace is what shell
+        // components resolve against desktop files — the app id, never a
+        // placeholder, or the surface names as "unknown".
+        assert_eq!(
+            measuring(window::Id::unique()).namespace,
+            crate::app::APP_ID
+        );
     }
 
     #[test]
