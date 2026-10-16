@@ -16,10 +16,12 @@ bin-src := cargo-target-dir / 'release' / name
 bin-dst := base-dir / 'bin' / name
 debug-bin := cargo-target-dir / 'debug' / name
 
-# Where the dev launcher lives. ~/.local/bin comes before /usr/bin on the
-# COSMIC session PATH, so it shadows an installed copy while developing.
+# Where the dev launcher lives. The launcher carries a `-dev` suffix
+# so it never shadows an installed release: `cosmic-ext-dropterm` on
+# PATH is always the installed copy, `cosmic-ext-dropterm-dev` always
+# the debug build.
 dev-bin-dir := env('XDG_BIN_HOME', home_directory() / '.local' / 'bin')
-dev-bin := dev-bin-dir / name
+dev-bin := dev-bin-dir / (name + '-dev')
 
 # `pkill -f` pattern with a bracketed first character, so it cannot match this
 # recipe's own `sh -c` command line. Update the name here if the binary is
@@ -77,28 +79,28 @@ test *args:
     cargo test --workspace --locked {{args}}
 
 # Send a CLI action to the running instance, like a COSMIC keybind would:
-# `just act toggle`, `just act new-tab --cwd /tmp`. Runs the binary from
-# PATH (`just dev-install` shadows an installed copy with the debug build);
-# the running instance parses the action itself, so any build drives it.
+# `just act toggle`, `just act new-tab --cwd /tmp`. Runs the dev launcher
+# (`just dev-install`); the running instance parses the action itself, so
+# the same verb drives a dev or a released instance.
 act *args:
-    {{name}} {{args}}
+    {{dev-bin}} {{args}}
 
 # Toggle the overlay (the default action of a bare launch).
 toggle:
-    {{name}} toggle
+    {{dev-bin}} toggle
 
 # Show the overlay without toggling.
 show:
-    {{name}} show
+    {{dev-bin}} show
 
 # Hide the overlay without toggling.
 hide:
-    {{name}} hide
+    {{dev-bin}} hide
 
 # Open a new tab in the running instance, e.g.
 # `just new-tab --cwd /tmp` or `just new-tab --cmd htop`.
 new-tab *args:
-    {{name}} new-tab {{args}}
+    {{dev-bin}} new-tab {{args}}
 
 # Compiles with the debug profile. Per-package on purpose — a plain
 # `cargo build` now spans the workspace and unifies features across
@@ -149,7 +151,9 @@ build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args)
 run *args:
     cargo run {{args}}
 
-# Symlink the debug build into ~/.local/bin so a COSMIC shortcut can run it.
+# Symlink the debug build into ~/.local/bin as `cosmic-ext-dropterm-dev`
+# so a COSMIC shortcut (and the act recipes) can run it; the `-dev` name
+# leaves an installed release's plain name untouched.
 dev-install: build-debug
     install -d {{dev-bin-dir}}
     ln -sfn {{justfile_directory() / debug-bin}} {{dev-bin}}

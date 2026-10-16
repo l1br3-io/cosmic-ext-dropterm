@@ -13,11 +13,22 @@ launcher that always runs the current debug build instead:
 just dev-install
 ```
 
-That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm`
-to `target/debug/cosmic-ext-dropterm`. Set the shortcut's Command to the plain
-`cosmic-ext-dropterm` once and leave it - `~/.local/bin` precedes `/usr/bin` on
-the COSMIC session PATH, so it shadows a release copy installed with
-`sudo just install`.
+That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm-dev`
+to `target/debug/cosmic-ext-dropterm`. Set the development shortcut's Command
+to `cosmic-ext-dropterm-dev` once and leave it. The `-dev` suffix keeps an
+installed release (from `sudo just install` or a release tarball) separate:
+plain `cosmic-ext-dropterm` on PATH is always the installed copy, and the two
+never shadow each other.
+
+One instance runs at a time, whichever owns the bus name: DropTerm is
+single-instance, so launching `cosmic-ext-dropterm` while the `-dev` instance
+runs just forwards the action to it (and vice versa) — the running instance
+parses every verb, whatever binary delivered it. `just dev-reload` kills the
+running instance (either one) before starting the new debug build; that is
+also how control passes back to the installed copy — exit or kill the dev
+instance, and the next press of a shortcut bound to the plain name starts the
+release. Config and sessions are shared (same app id), so settings carry
+across both.
 
 The edit-build-see loop is then one command:
 
