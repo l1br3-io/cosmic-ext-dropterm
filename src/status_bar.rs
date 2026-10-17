@@ -326,6 +326,12 @@ pub struct StatusInputs<'a> {
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
+    /// The foreground ssh command's destination token (status-remote
+    /// spec) — the engine's cmdline read, gathered only at the
+    /// snapshot points and only under [`ssh_read_due`]'s gate;
+    /// `None` (not ssh, unreadable, unparseable) keeps today's
+    /// local path and branch.
+    pub ssh_destination: Option<&'a str>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -344,10 +350,26 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         },
         path: toggles
             .path
-            .then(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+            .then(|| {
+                // The ssh stand-in (status-remote spec): while ssh
+                // owns the foreground and its argv certifies a
+                // destination, the path's own seat shows that token
+                // verbatim — the local cwd froze when ssh started,
+                // and the band never narrates a stale seat. The
+                // copy payload rides the same field: the token is
+                // the full value.
+                inputs
+                    .ssh_destination
+                    .map(str::to_string)
+                    .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+            })
             .flatten(),
-        branch: toggles
-            .branch
+        // The branch hides while stood-in (status-remote OQ-1): the
+        // token's presence is the ssh fact — the local repo's branch
+        // is as stale as the path was. Keyed on the fact, not the
+        // seat's visibility; the app's read gate keeps the two
+        // reachable states one and the same.
+        branch: (toggles.branch && inputs.ssh_destination.is_none())
             .then_some(inputs.branch)
             .flatten()
             .map(str::to_string),
@@ -415,6 +437,61 @@ pub fn duration_display(segments: &StatusSegments) -> String {
 /// click is the jump, not a copy; this display is the whole value.
 pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
+}
+
+/// The ssh command's destination token (status-remote spec): the
+/// last argument that is neither an option nor a value an option
+/// consumed — `ssh -p 2222 box`, `ssh -i key git@host`, and
+/// `ssh host -W %h:%p` all yield their host token, because the
+/// value-taking options' arguments are skipped and a bare `--`
+/// ends the option walk. `None` when nothing survives: the local
+/// path stands, never a wrong host.
+pub fn ssh_destination(argv: &[&str]) -> Option<String> {
+    /// The short options whose *separate* next argument is a value,
+    /// not an operand — ssh(1)'s own consuming set (the 9.6 usage
+    /// line: every option that names what follows it). Attached
+    /// spellings (`-p2222`) and bundles (`-vA`) carry their values
+    /// inside or take none: the token itself is the option either
+    /// way, and only the exact single-letter spellings consume.
+    const VALUE_SHORTS: [char; 22] = [
+        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
+        'R', 'S', 'W', 'w',
+    ];
+
+    let mut destination = None;
+    let mut consume_next = false;
+    let mut options_done = false;
+    for &token in argv.iter().skip(1) {
+        if consume_next {
+            consume_next = false;
+            continue;
+        }
+        if !options_done && token.starts_with("--") {
+            if token == "--" {
+                options_done = true;
+            } else if token.contains('=') {
+                // `--name=value` carries its value inside.
+            } else {
+                // A bare long form consumes what follows: this ssh
+                // (9.6) has no long spellings, and 9.8's flag-forms
+                // are unknown from here — consuming is the
+                // degrade-safe bias, because an uncertifiable value
+                // must never be shown as the host.
+                consume_next = true;
+            }
+            continue;
+        }
+        if !options_done && token.starts_with('-') {
+            consume_next = token
+                .strip_prefix('-')
+                .filter(|rest| rest.chars().count() == 1)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|flag| VALUE_SHORTS.contains(&flag));
+            continue;
+        }
+        destination = Some(token.to_string());
+    }
+    destination
 }
 
 /// Collapse a `home`-prefixed path to `~` plus its remainder — on
@@ -988,6 +1065,16 @@ pub const fn duration_due(
     surface_visible: bool,
 ) -> bool {
     band_enabled && show_duration && running && surface_visible
+}
+
+/// Whether the ssh stand-in's cmdline read should happen
+/// (status-remote spec): the band shown, the path seat shown, and
+/// the foreground comm `ssh` — `clock_due`'s shape with the comm
+/// gate. Evaluated at every snapshot refresh: hidden means never
+/// gathered (the read stops before `/proc`), and a non-ssh
+/// foreground never pays it.
+pub const fn ssh_read_due(band_enabled: bool, show_path: bool, foreground_is_ssh: bool) -> bool {
+    band_enabled && show_path && foreground_is_ssh
 }
 
 /// The duration from `now` to the next minute boundary — the tick's

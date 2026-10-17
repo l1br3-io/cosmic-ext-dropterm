@@ -304,6 +304,13 @@ pub struct DropTerm {
     /// the band's master toggle. `None` reads outside a repo,
     /// unreadable, or hidden.
     active_branch: Option<String>,
+    /// The foreground ssh command's destination token (status-remote
+    /// spec) — the engine's cmdline read at the same snapshot
+    /// points, gated by [`status_bar::ssh_read_due`]: one extra
+    /// `/proc` read, and only while the band, the path seat, and an
+    /// ssh foreground all hold. `None` keeps the local path and
+    /// branch — the stand-in never guesses a host.
+    active_ssh_destination: Option<String>,
     /// The band segment currently flashing its `✓` after a
     /// click-to-copy — set on the copied message, cleared by the
     /// flash-lapse task (`status_bar::COPY_FLASH`).
@@ -502,16 +509,29 @@ impl DropTerm {
         let Some(tab) = self.active() else {
             self.active_process_name = None;
             self.active_branch = None;
+            self.active_ssh_destination = None;
             return;
         };
         let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
         let process = tab.terminal.lock().unwrap().foreground_process_name();
+        // Hidden means never gathered (status-remote spec): the
+        // cmdline read waits for the band, the path seat, and an ssh
+        // foreground — and the engine re-verifies the comm before
+        // the read itself, so the gate is honesty, not just economy.
+        let ssh_destination = status_bar::ssh_read_due(
+            self.config.status_bar_enabled,
+            self.config.status_bar_show_path,
+            process.as_deref() == Some("ssh"),
+        )
+        .then(|| tab.terminal.lock().unwrap().ssh_destination())
+        .flatten();
         // Hidden means never gathered: the `.git` walk stops at the
         // gate, before the filesystem.
         let branch = (self.config.status_bar_enabled && self.config.status_bar_show_branch)
             .then(|| status_bar::git_branch(cwd))
             .flatten();
         self.active_process_name = process;
+        self.active_ssh_destination = ssh_destination;
         self.active_branch = branch;
         // The narration name for the frozen pairing (command-lifecycle
         // spec, OQ-1): the last comm sampled running on this tab —
@@ -650,6 +670,7 @@ impl DropTerm {
                 .as_ref()
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
+            ssh_destination: self.active_ssh_destination.as_deref(),
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -1400,6 +1421,7 @@ impl Application for DropTerm {
             tab_cwds: HashMap::new(),
             active_process_name: None,
             active_branch: None,
+            active_ssh_destination: None,
             copied_segment: None,
             status_clock: None,
             clock_armed: false,

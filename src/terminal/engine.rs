@@ -318,6 +318,63 @@ fn read_comm(pid: i32) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// The ssh stand-in's destination token (status-remote spec):
+/// `/proc/<fg-pid>/cmdline` — NUL-split argv through
+/// [`crate::status_bar::ssh_destination`] — read only when the
+/// foreground group's own comm is `ssh` (any other comm never
+/// reaches the cmdline read). `None` whenever the shell owns the
+/// foreground, the inputs are missing, or the argv is unreadable,
+/// non-UTF-8, or unparseable: the band keeps today's local path,
+/// never a wrong host.
+pub fn foreground_ssh_destination(
+    master: Option<&std::fs::File>,
+    shell_pid: Option<u32>,
+) -> Option<String> {
+    let (Some(master), Some(shell_pid)) = (master, shell_pid) else {
+        return None;
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: both calls read kernel pty/process state only;
+        // neither touches caller memory.
+        let fg = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        let shell_pgrp = i32::try_from(shell_pid).map_or(-1, |pid| unsafe { libc::getpgid(pid) });
+        (fg > 0 && shell_pgrp > 0 && fg != shell_pgrp)
+            .then(|| read_ssh_destination(fg))
+            .flatten()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (master, shell_pid);
+        None
+    }
+}
+
+/// `/proc/<pid>/cmdline` as the ssh stand-in's source (status-remote
+/// spec): the process's own comm must read `ssh` before the cmdline
+/// is touched — the getter's gate, so a non-ssh foreground never
+/// pays (or risks) the read. The NUL-split argv goes to the pure
+/// parser ([`crate::status_bar::ssh_destination`]); strict UTF-8,
+/// and anything unreadable or unparseable reads `None` — the local
+/// path stands, never a guessed host.
+#[cfg(target_os = "linux")]
+fn read_ssh_destination(pid: i32) -> Option<String> {
+    if read_comm(pid).as_deref() != Some("ssh") {
+        return None;
+    }
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    // cmdline is NUL-separated with a trailing NUL; the bytes are
+    // another process's own — strict UTF-8, degrading on anything
+    // else rather than rendering a half-read token.
+    let text = String::from_utf8(raw).ok()?;
+    let argv: Vec<&str> = text.split('\0').filter(|token| !token.is_empty()).collect();
+    crate::status_bar::ssh_destination(&argv)
+}
+
 /// Per-cell rendering metadata (background, underline color, cell
 /// flags), interned in the terminal's [`Terminal::metadata_set`] so
 /// cosmic-text attrs can reference it by index.
@@ -730,6 +787,15 @@ impl Terminal {
     /// band falls back to the recorded shell's basename.
     pub fn foreground_process_name(&self) -> Option<String> {
         foreground_process_name(self.master_fd.as_ref(), self.shell_pid)
+    }
+
+    /// The ssh stand-in's destination token for the status band's
+    /// path seat (status-remote spec): [`foreground_ssh_destination`]
+    /// over this terminal's dup'd master and recorded shell pid —
+    /// `None` reads idle, non-ssh, or unparseable, and the band
+    /// keeps the local path.
+    pub fn ssh_destination(&self) -> Option<String> {
+        foreground_ssh_destination(self.master_fd.as_ref(), self.shell_pid)
     }
 
     /// The running command's state (command-lifecycle spec): whether

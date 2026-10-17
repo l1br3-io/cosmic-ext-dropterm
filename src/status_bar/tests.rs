@@ -32,6 +32,7 @@ fn resolve(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -604,6 +605,7 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
         scrolled_back: Some(12),
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -744,6 +746,7 @@ fn resolve_duration(
         running_elapsed,
         frozen,
         scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -873,6 +876,7 @@ fn resolve_grid(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -944,6 +948,7 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         running_elapsed: None,
         frozen: None,
         scrolled_back,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1065,6 +1070,235 @@ fn segment_at_hits_only_the_rect_containing_the_point() {
     assert_eq!(segment_at(&rects, Point::new(65.0, 14.0)), None);
     assert_eq!(segment_at(&rects, Point::new(-1.0, 14.0)), None);
     assert_eq!(segment_at(&rects, Point::new(10.0, BAND_HEIGHT)), None);
+}
+
+// --- the ssh stand-in (status-remote) ---
+
+/// The stand-in's resolver shape: the path seat and branch fed
+/// beside the token the engine's argv read produced (or `None` —
+/// not ssh, unreadable, unparseable — the states the band cannot
+/// tell apart, by design).
+fn resolve_ssh(
+    ssh_destination: Option<&str>,
+    cwd: Option<&Path>,
+    branch: Option<&str>,
+    toggles: StatusToggles,
+) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: Some(&home()),
+        cwd,
+        shell: "/bin/bash",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: Some("ssh"),
+        branch,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn a_bare_host_token_wins() {
+    assert_eq!(ssh_destination(&["ssh", "box"]), Some("box".to_string()));
+}
+
+#[test]
+fn a_user_at_host_token_wins() {
+    assert_eq!(
+        ssh_destination(&["ssh", "git@github.com"]),
+        Some("git@github.com".to_string())
+    );
+}
+
+#[test]
+fn a_separate_option_value_is_consumed_not_won() {
+    assert_eq!(
+        ssh_destination(&["ssh", "-p", "2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_key_option_leaves_the_destination_standing() {
+    assert_eq!(
+        ssh_destination(&["ssh", "-i", "key", "git@host"]),
+        Some("git@host".to_string())
+    );
+}
+
+#[test]
+fn options_after_the_host_let_it_still_win() {
+    // The pinned trailing-options shape: `-W`'s `%h:%p` is a
+    // consumed value — the %-pattern class never wins (the spec's
+    // own rule).
+    assert_eq!(
+        ssh_destination(&["ssh", "box", "-W", "%h:%p"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_url_shaped_token_passes_verbatim() {
+    assert_eq!(
+        ssh_destination(&["ssh", "ssh://user@host:22"]),
+        Some("ssh://user@host:22".to_string())
+    );
+}
+
+#[test]
+fn options_only_yields_none() {
+    assert_eq!(ssh_destination(&["ssh", "-v", "-A", "-4"]), None);
+}
+
+#[test]
+fn a_program_only_or_empty_argv_yields_none() {
+    assert_eq!(ssh_destination(&["ssh"]), None);
+    assert_eq!(ssh_destination(&[]), None);
+}
+
+#[test]
+fn an_attached_option_value_never_wins() {
+    // `-p2222` carries its value inside the cluster: one option
+    // token, nothing separate consumed, the host still stands.
+    assert_eq!(
+        ssh_destination(&["ssh", "-p2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn every_value_taking_short_consumes_its_argument() {
+    // The grounded ssh(1) set (9.6's usage line — the superset the
+    // chunk's table rides in): any of these ahead of the host
+    // leaves the host standing; a miss would let the option's
+    // value masquerade as the destination when options trail.
+    for flag in [
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-P", "-p", "-Q", "-R", "-S", "-W", "-w",
+    ] {
+        let argv = ["ssh", flag, "value", "box"];
+        assert_eq!(
+            ssh_destination(&argv),
+            Some("box".to_string()),
+            "the consuming flag {flag}"
+        );
+    }
+}
+
+#[test]
+fn an_equals_long_form_is_self_contained() {
+    assert_eq!(
+        ssh_destination(&["ssh", "--port=2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_bare_long_form_consumes_rather_than_misreads_its_value() {
+    // This ssh (9.6) has no long forms; 9.8's flag-form spellings
+    // are unknown from here — the degrade-safe bias consumes, so an
+    // uncertifiable value is never shown as the host (the spec's
+    // floor: None, the local path stands).
+    assert_eq!(ssh_destination(&["ssh", "--no-such-flag", "value"]), None);
+    // A host ahead of the long form still wins — nothing follows
+    // for it to consume.
+    assert_eq!(
+        ssh_destination(&["ssh", "box", "--verbose"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_double_dash_ends_the_option_walk() {
+    // The argv convention: after `--`, every token is an operand —
+    // even one shaped like a flag (a host literally named `-x`).
+    assert_eq!(
+        ssh_destination(&["ssh", "--", "box"]),
+        Some("box".to_string())
+    );
+    assert_eq!(
+        ssh_destination(&["ssh", "--", "-x"]),
+        Some("-x".to_string())
+    );
+}
+
+#[test]
+fn a_stood_in_path_seat_shows_and_copies_the_token() {
+    let segments = resolve_ssh(
+        Some("box"),
+        Some(Path::new("/home/jpt/src")),
+        Some("main"),
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("box"));
+    // The full-value rule holds: the token is the value.
+    assert_eq!(copy_text(SegmentId::Path, &segments), "box");
+    assert_eq!(
+        segments.branch, None,
+        "the branch hides while stood-in (OQ-1: the stale-name rule)"
+    );
+}
+
+#[test]
+fn the_stood_in_token_passes_verbatim_no_tilde_collapse() {
+    // OQ-2: the token exactly as typed — the `~` collapse is the
+    // local path's treatment, never the stand-in's.
+    let segments = resolve_ssh(
+        Some("/home/jpt"),
+        Some(Path::new("/srv")),
+        None,
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("/home/jpt"));
+}
+
+#[test]
+fn an_unparseable_argv_degrades_to_todays_path_and_branch() {
+    // Not-ssh is the same inputs — indistinguishable from a failed
+    // read, which is the point: degradation is today's exact
+    // resolution, never a wrong host.
+    let segments = resolve_ssh(
+        None,
+        Some(Path::new("/home/jpt/src")),
+        Some("main"),
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("~/src"));
+    assert_eq!(segments.branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_path_toggle_off_tab_hides_the_stand_in_and_keeps_the_branch_hidden() {
+    // Hidden means never computed: the app's read gate keeps this
+    // state unreachable (no token can arrive while the path seat is
+    // off), and the resolver's suppression keys on the ssh fact —
+    // the branch data is stale whether or not the seat displays.
+    let toggles = StatusToggles {
+        path: false,
+        ..StatusToggles::all()
+    };
+    let segments = resolve_ssh(Some("box"), Some(Path::new("/home/jpt/src")), None, toggles);
+    assert_eq!(segments.path, None);
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn the_ssh_read_gate_requires_band_path_and_an_ssh_comm() {
+    // `clock_due`'s shape with the comm gate: each gate alone drops
+    // the read — hidden means never gathered, and only the ssh comm
+    // certifies a destination exists to read.
+    assert!(ssh_read_due(true, true, true));
+    assert!(!ssh_read_due(false, true, true));
+    assert!(!ssh_read_due(true, false, true));
+    assert!(!ssh_read_due(true, true, false));
 }
 
 // --- the clock helpers ---
