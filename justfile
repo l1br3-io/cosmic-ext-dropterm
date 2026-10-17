@@ -41,6 +41,12 @@ dev-image := cargo-target-dir / 'debug' / (name + '-dev-image')
 # an installed release's.
 dev-identity-args := '--features=dev-identity'
 
+# Show all recipes when `just` is run with no arguments (without a
+# default recipe, just runs the first one — dev-image-install —
+# silently, under `set quiet`).
+default:
+    just --list --unsorted
+
 # Installs the freshly built dev-identity debug binary to the dev
 # image path. Every consumer of the dev identity (the launcher
 # symlink, `dev-reload`, the `act` recipes) runs the image, never
@@ -94,6 +100,15 @@ applet-manifest := flatpak-dir / (applet-appid + '.json')
 
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
+
+# The dev terminal's desktop file: the res/ original with the dev
+# name, Exec, and StartupWMClass, generated here (like the dev
+# applet's) so the desktop contract has one source of truth. The stem
+# is the dev identity's app id — the window switcher matches the
+# clipboard-anchor toplevel (always mapped) by it, and without the
+# file the dev anchor lists as "unknown". NoDisplay stays set
+# (inherited): the dev build is a keybind app, not an app-grid entry.
+dev-desktop := dev-data-dir / 'applications' / (appid + '.Dev.desktop')
 
 # `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` +
 # the docs link gate, all across the workspace. Union features are
@@ -282,10 +297,13 @@ run *args:
 # Symlinks the dev launcher at `~/.local/bin/cosmic-ext-dropterm-dev`
 # to the dev image (see `dev-image-install`) so a COSMIC shortcut
 # (and the act recipes) can run it; the `-dev` name leaves an
-# installed release's plain name untouched.
+# installed release's plain name untouched. Also installs the dev
+# identity's desktop file (see `dev-desktop`).
 dev-install: (build-debug dev-identity-args) dev-image-install
     install -d {{dev-bin-dir}}
     ln -sfn {{dev-image}} {{dev-bin}}
+    install -d {{dev-data-dir / 'applications'}}
+    sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{name}}-dev/' -e 's/^StartupWMClass=.*/StartupWMClass={{appid}}.Dev/' {{desktop-src}} > {{dev-desktop}}
 
 # Kill the running dev instance and restart on the dev image. An
 # installed release keeps running — the two identities coexist, each
@@ -321,13 +339,14 @@ dev-applet: dev-install
     sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{applet}}-dev/' {{applet-desktop-src}} > {{dev-applet-desktop}}
     install -Dm0644 {{applet-icon-src}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
 
-# Removes the dev footprint — the launcher, the dev applet's binary,
-# desktop file, and icon. The dev identity's config and session files
+# Removes the dev footprint — the launcher, the dev terminal's
+# desktop file, the dev applet's binary, desktop file, and icon. The
+# dev identity's config and session files
 # (~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron,
 # ~/.local/state/io.github.l1br3_io.CosmicExtDropterm.Dev/) stay
 # behind for the user to keep or delete.
 dev-uninstall:
-    rm -f {{dev-bin}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
+    rm -f {{dev-bin}} {{dev-desktop}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
 
 clean:
     cargo clean

@@ -9,6 +9,17 @@
 //! cosmic-notifications serves the interface directly
 //! (docs/research/terminal-de-integration.md §7).
 
+/// The bell notification's app name — what the notification daemon
+/// groups and displays the notification under. Identity-split: with a
+/// dev instance and an installed release both running, `DropTerm`
+/// alone cannot say which one rang.
+#[cfg(not(feature = "dev-identity"))]
+const NOTIFY_APP_NAME: &str = "DropTerm";
+/// The dev build's twin — matches the `DropTerm (Dev)` names of the
+/// dev launcher's desktop file and the dev applet's panel entry.
+#[cfg(feature = "dev-identity")]
+const NOTIFY_APP_NAME: &str = "DropTerm (Dev)";
+
 /// Whether a bell posts a desktop notification: only while the overlay
 /// is hidden (kitty/iTerm2 semantics — when visible, the tab-bar 🔔
 /// marker alone carries the signal), only when the setting is enabled,
@@ -29,7 +40,7 @@ pub fn should_notify(
 pub fn post_bell_notification(tab_title: String) {
     std::thread::spawn(move || {
         let result = notify_rust::Notification::new()
-            .appname("DropTerm")
+            .appname(NOTIFY_APP_NAME)
             .summary(&tab_title)
             .body("A bell rang while the terminal was hidden.")
             .show();
@@ -41,7 +52,7 @@ pub fn post_bell_notification(tab_title: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_notify;
+    use super::{NOTIFY_APP_NAME, should_notify};
 
     #[test]
     fn a_bell_notifies_only_while_the_terminal_is_hidden() {
@@ -61,5 +72,17 @@ mod tests {
         // the first notification and clears only when the surface is
         // shown again.
         assert!(!should_notify(true, true, true));
+    }
+
+    #[test]
+    #[cfg(not(feature = "dev-identity"))]
+    fn the_release_build_notifies_as_dropterm() {
+        assert_eq!(NOTIFY_APP_NAME, "DropTerm");
+    }
+
+    #[test]
+    #[cfg(feature = "dev-identity")]
+    fn the_dev_build_notifies_as_dropterm_dev() {
+        assert_eq!(NOTIFY_APP_NAME, "DropTerm (Dev)");
     }
 }
