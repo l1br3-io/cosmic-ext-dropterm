@@ -9,6 +9,7 @@
 // roots where it fires, for the same reason.
 #![warn(clippy::pedantic)]
 #![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
+#![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty than assert_eq!(x, [] as [T; 0])
 #![expect(
     clippy::too_many_lines,
     reason = "standing: OQ-4 — dissolved by module-decomposition"
