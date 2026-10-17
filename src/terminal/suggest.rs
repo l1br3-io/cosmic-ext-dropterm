@@ -19,6 +19,7 @@ use alacritty_terminal::{
     vte::ansi::{NamedColor, Rgb},
 };
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use super::engine::WINDOW_BG_COLOR;
@@ -75,6 +76,19 @@ pub(crate) struct Observation<'a> {
     /// `autosuggestions_enabled` as resolved into the terminal's
     /// options.
     pub(crate) enabled: bool,
+    /// The path provider's spawn gate (path-suggest spec): the
+    /// spawned program is an allowlisted shell. Static local path
+    /// knowledge describes the *local* machine — on a tab spawned as
+    /// ssh, `/proc/{shell_pid}/cwd` is the wrong machine's truth, so
+    /// paths stay silent there and only grid-scraped history keeps
+    /// suggesting (remote-truthful). A typed ssh session is already
+    /// silent end-to-end via the foreground guard. The gate, not the
+    /// provider: the listing and candidates land behind it in later
+    /// tasks.
+    // The gate ships before its consumer: the path provider's guard
+    // test reads this when PS-3 lands.
+    #[allow(dead_code)]
+    pub(crate) paths_eligible: bool,
     /// The terminal's focus state.
     pub(crate) focused: bool,
     /// A foreground child holds the PTY (`tcgetpgrp` vs the shell's
@@ -356,6 +370,26 @@ fn is_path_shaped(token: &str) -> bool {
     token == "~" || token.contains('/')
 }
 
+/// The shells whose tabs may suggest local paths (path-suggest
+/// spec): the `/etc/shells` regulars, ruled at clarification. The
+/// provider's honesty gate — static local path knowledge describes
+/// the *local* machine, so it may only run on a tab whose spawn truth
+/// is one of these; membership is a one-line flip at approval.
+const SHELL_ALLOWLIST: [&str; 8] = ["bash", "zsh", "fish", "sh", "dash", "ksh", "csh", "tcsh"];
+
+/// Whether a spawned program's basename is an allowlisted shell
+/// (path-suggest spec) — the spawn truth that decides the
+/// observation's [`Observation::paths_eligible`]. The program word
+/// arrives spawn-resolved (`/bin/bash` for a configured shell, `ssh`
+/// for a spawned-as-ssh profile); the basename is what the allowlist
+/// compares, and a non-UTF-8 or empty name is never a shell.
+pub(crate) fn is_allowlisted_shell(program: &str) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| SHELL_ALLOWLIST.contains(&name))
+}
+
 /// The accept splitter (autosuggest spec): fish's forward-word shape
 /// — one word carries the suffix's leading whitespace plus the next
 /// non-whitespace run, and the remainder stays suggestable for the
@@ -411,6 +445,7 @@ mod tests {
     fn obs() -> Observation<'static> {
         Observation {
             enabled: true,
+            paths_eligible: true,
             focused: true,
             foreground_child: false,
             display_offset: 0,
@@ -878,6 +913,43 @@ mod tests {
         // are plain words until a slash appears; flags never are.
         for token in ["src", "-la", "--flag", "che", ".", "..", ".hidden", "~jpt"] {
             assert!(!is_path_shaped(token), "{token:?} is not path-shaped");
+        }
+    }
+
+    // --- the path provider's spawn gate (path-suggest) ---
+
+    #[test]
+    fn the_shell_allowlist_admits_the_etc_shells_regulars() {
+        // The ruled default set, pinned as data: the eight
+        // `/etc/shells` regulars. `nu` and `elvish` are deliberately
+        // absent — an unknown shell degrades to silence, never a
+        // guess.
+        for shell in SHELL_ALLOWLIST {
+            assert!(is_allowlisted_shell(shell), "{shell} is allowlisted");
+        }
+    }
+
+    #[test]
+    fn the_spawn_gate_reads_the_spawned_programs_basename() {
+        // Spawn truth arrives as the resolved program word — a path
+        // for configured and recorded shells, a bare name for a
+        // profile command's leading program; the gate reads the
+        // basename either way.
+        assert!(is_allowlisted_shell("/bin/bash"));
+        assert!(is_allowlisted_shell("/usr/bin/fish"));
+    }
+
+    #[test]
+    fn the_spawn_gate_rejects_non_shells_unknown_shells_and_nothing_at_all() {
+        // `ssh` and `python3` are the honesty line — those tabs never
+        // suggest local paths. `nu`/`elvish` are unknown shells; a
+        // custom-path shell outside the list is not a regular; the
+        // empty string is the options default. All silent.
+        for program in ["ssh", "python3", "nu", "elvish", "/opt/fancysh", ""] {
+            assert!(
+                !is_allowlisted_shell(program),
+                "{program} is not allowlisted"
+            );
         }
     }
 

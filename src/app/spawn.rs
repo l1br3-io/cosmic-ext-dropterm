@@ -266,6 +266,35 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
     }
 }
 
+/// The program word the tab is *spawned as* (path-suggest spec): the
+/// shell for a plain spawn and every degradation that lands on one,
+/// the leading program of a `--cmd` line, and a profile command's
+/// leading program — spawn truth resolved app-side, never a
+/// process-name heuristic. The one deliberate divergence from
+/// [`SpawnParts::program`]: a profile's pty wraps its command in a
+/// shell preamble, but the tab is still *spawned as* that command
+/// (`ssh web` is an ssh tab), so the path provider's allowlist gates
+/// on the command's program, never the wrapper.
+fn spawned_as_program(command: &SpawnCommand, config: &DropTermConfig) -> String {
+    let plain = || config.resolved_shell();
+    match command {
+        SpawnCommand::Shell(shell) if program_is_runnable(shell) => shell.clone(),
+        SpawnCommand::Shell(_) => plain(),
+        SpawnCommand::CommandLine(line) => match tabs::command_line_parts(line) {
+            Some((program, ..)) if program_is_runnable(&program) => program,
+            _ => plain(),
+        },
+        // Every non-blank stored line keeps its profile identity —
+        // runnable or not — so its leading program is the spawn truth
+        // regardless of runnability; only the blank line (a
+        // hand-edited config) degrades to the plain shell.
+        SpawnCommand::Profile { command, .. } => match tabs::command_line_parts(command) {
+            Some((program, ..)) => program,
+            None => plain(),
+        },
+    }
+}
+
 impl DropTerm {
     /// Spawns one terminal tab from a session restore's resolved
     /// spawn parameters ([`session::SpawnSpec`], with its recorded
@@ -443,6 +472,7 @@ impl DropTerm {
             &TerminalOptions {
                 font_size,
                 autosuggestions_enabled: self.config.autosuggestions_enabled,
+                spawned_program: spawned_as_program(command, &self.config),
                 ..TerminalOptions::default()
             },
             &colors,
@@ -885,6 +915,74 @@ mod tests {
             ),
             plain_parts()
         );
+    }
+
+    // --- the path provider's spawn truth (path-suggest) ---
+
+    #[test]
+    fn spawned_as_program_resolves_shell_and_degraded_spawns_to_the_shell() {
+        // Plain shell, the unrunnable recorded shell's degradation,
+        // and the unrunnable --cmd program's degradation all land on
+        // a shell — exactly what the pty execs, so the spawn truth
+        // matches.
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawned_as_program(&SpawnCommand::Shell("/bin/bash".to_string()), &config),
+            "/bin/bash"
+        );
+        assert_eq!(
+            spawned_as_program(
+                &SpawnCommand::Shell("/dropterm-not-a-real-shell".to_string()),
+                &config
+            ),
+            "/bin/sh"
+        );
+        assert_eq!(
+            spawned_as_program(
+                &SpawnCommand::CommandLine(dead_program().to_string()),
+                &config
+            ),
+            "/bin/sh"
+        );
+    }
+
+    #[test]
+    fn spawned_as_program_resolves_a_cmd_line_to_its_leading_program() {
+        // A bare PATH name resolves like the pty leg's own check —
+        // `sh` is on every test PATH, `htop` is not (its degradation
+        // is pinned above).
+        let config = test_config(&[], None);
+        assert_eq!(
+            spawned_as_program(
+                &SpawnCommand::CommandLine("sh -c htop".to_string()),
+                &config
+            ),
+            "sh"
+        );
+    }
+
+    #[test]
+    fn spawned_as_program_resolves_a_profile_to_its_commands_leading_program() {
+        // The wrapping shell never counts: an ssh profile is
+        // spawned-as ssh, a python-REPL profile spawned-as python3 —
+        // the path provider's allowlist shuts both out by
+        // construction. An unrunnable program keeps that identity
+        // (`spawn_parts` keeps it too); only the blank stored line
+        // degrades to the shell.
+        let config = test_config(&[], None);
+        let profile = |command: &str| SpawnCommand::Profile {
+            name: "p".to_string(),
+            command: command.to_string(),
+            cwd: None,
+            env: None,
+        };
+        assert_eq!(spawned_as_program(&profile("ssh web"), &config), "ssh");
+        assert_eq!(spawned_as_program(&profile("python3"), &config), "python3");
+        assert_eq!(
+            spawned_as_program(&profile(dead_program()), &config),
+            dead_program()
+        );
+        assert_eq!(spawned_as_program(&profile("   "), &config), "/bin/sh");
     }
 
     // --- the plain-arm cwd composition (default-spawn DS-1) ---

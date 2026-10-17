@@ -80,6 +80,14 @@ pub struct TerminalOptions {
     /// showing suggestion disappears the moment the kill switch
     /// lands.
     pub autosuggestions_enabled: bool,
+    /// The program the tab is spawned as (path-suggest spec): the
+    /// spawn-resolved program word — the configured or recorded
+    /// shell, a command line's leading program, or a profile
+    /// command's leading program. Spawn truth: read once at
+    /// construction and never rewritten by `set_config` (a respawn is
+    /// a fresh terminal), so a mid-run config change cannot repaint a
+    /// spawned-as-ssh tab into a shell tab.
+    pub spawned_program: String,
 }
 
 impl Default for TerminalOptions {
@@ -93,6 +101,7 @@ impl Default for TerminalOptions {
             font_size: 14,
             font_size_zoom_step_mul_100: 100,
             autosuggestions_enabled: true,
+            spawned_program: String::new(),
         }
     }
 }
@@ -377,6 +386,10 @@ pub struct Terminal {
     /// Whether autosuggestions compute (autosuggest spec) — the
     /// resolved options flag, re-read at every `set_config`.
     autosuggestions_enabled: bool,
+    /// The program the tab is spawned as (path-suggest spec) — spawn
+    /// truth fixed for the terminal's life; the path provider's
+    /// allowlist gate reads it at every observation build.
+    spawned_program: String,
     /// The ghost tint (autosuggest spec, OQ-2): the scheme fg→bg
     /// blend, computed at construction and every `set_config` —
     /// never per frame.
@@ -568,6 +581,7 @@ impl Terminal {
             needs_update: true,
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
+            spawned_program: options.spawned_program.clone(),
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
             timer: CommandTimer::default(),
@@ -812,6 +826,14 @@ impl Terminal {
         self.suggest
             .showing()
             .map(|showing| showing.suffix.as_str())
+    }
+
+    /// The path provider's spawn gate (path-suggest spec): the
+    /// spawned program is an allowlisted shell — computed from
+    /// spawn-resolved truth that never changes over the terminal's
+    /// life, read at every observation build.
+    fn paths_eligible(&self) -> bool {
+        suggest::is_allowlisted_shell(&self.spawned_program)
     }
 
     /// The ghost tint (autosuggest spec, OQ-2): the scheme's fg→bg
@@ -1182,6 +1204,11 @@ impl Terminal {
         // lock — the running→idle edge is the finish that marks the
         // next observation a fresh prompt.
         let foreground_child = self.foreground_child_running();
+        // The path provider's spawn gate (path-suggest spec), read
+        // before the buffer's mutable borrow the observation build
+        // sits inside: spawn truth, so it never changes mid-life —
+        // but the read must still not borrow `self` in there.
+        let paths_eligible = self.paths_eligible();
         let fresh_by_finish = self.last_foreground_child && !foreground_child;
         self.last_foreground_child = foreground_child;
         // The command timer rides the engine's own diff
@@ -1266,6 +1293,7 @@ impl Terminal {
                     }
                     let observation = suggest::Observation {
                         enabled: self.autosuggestions_enabled,
+                        paths_eligible,
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),

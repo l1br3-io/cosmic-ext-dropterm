@@ -850,3 +850,36 @@ fn command_timer_steps_with_autosuggestions_disabled() {
     let duration = terminal.command_frozen().expect("the frozen duration");
     assert_eq!(terminal.take_command_finished(), Some(duration));
 }
+
+#[test]
+fn the_path_spawn_gate_reads_spawn_resolved_truth_from_the_options() {
+    // Options → terminal → the observation's `paths_eligible` gate
+    // (path-suggest spec): an allowlisted shell opens it, a
+    // spawned-as-ssh program keeps it shut — whatever shell the pty
+    // wraps the command in. The pty here runs /bin/sh for both; only
+    // the spawn truth differs.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let gate = |spawned_program: &str| {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions {
+                spawned_program: spawned_program.to_owned(),
+                ..TerminalOptions::default()
+            },
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+        terminal.paths_eligible()
+    };
+    assert!(gate("/bin/bash"), "a spawned bash tab may suggest paths");
+    assert!(!gate("ssh"), "a spawned-as-ssh tab never does");
+}
