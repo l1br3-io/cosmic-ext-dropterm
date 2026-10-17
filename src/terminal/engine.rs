@@ -921,6 +921,16 @@ impl Terminal {
         }
     }
 
+    /// The viewport's lines scrolled back from the bottom
+    /// (status-scrolled spec): `display_offset` under the same
+    /// term lock the scrollbar's math takes, saturated into `u16`.
+    /// Zero at the bottom — the band's chip filters it to absence
+    /// downstream.
+    pub fn scrolled_back_lines(&self) -> u16 {
+        let term = self.term.lock();
+        u16::try_from(term.grid().display_offset()).unwrap_or(u16::MAX)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,

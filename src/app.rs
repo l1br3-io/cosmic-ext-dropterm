@@ -47,7 +47,7 @@ use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
-use crate::terminal::{Action, TerminalBox, TerminalOptions};
+use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
 pub(crate) mod remote;
 mod spawn;
@@ -109,6 +109,10 @@ pub enum Message {
     /// A status-band segment was click-copied — the widget already
     /// wrote the clipboard; the app flashes the segment's `✓`.
     StatusSegmentCopied(status_bar::SegmentId),
+    /// The scrolled chip was clicked (status-scrolled spec): the
+    /// active terminal's viewport jumps to the bottom through the
+    /// engine's own scroll funnel — the band's one action chip.
+    StatusScrollJump,
     /// The copy flash elapsed: the `✓` yields back to the value.
     StatusCopyFlashLapse,
     /// The status band's minute tick fired: refresh the stored clock
@@ -595,10 +599,17 @@ impl DropTerm {
         // The grid and its spawn record ride the same in-memory
         // lock as the zoom — resize-fresh by construction, no
         // snapshot of its own; the record is the engine-owned
-        // resting grid (status-glance criterion 1).
-        let (zoom_adj, grid, spawn_grid) = {
+        // resting grid (status-glance criterion 1). The scrolled
+        // chip's count joins them (status-scrolled spec): a
+        // `display_offset` read, zero fs, the same lock.
+        let (zoom_adj, grid, spawn_grid, scrolled_back) = {
             let terminal = tab.terminal.lock().unwrap();
-            (terminal.zoom_adj(), terminal.grid(), terminal.spawn_grid())
+            (
+                terminal.zoom_adj(),
+                terminal.grid(),
+                terminal.spawn_grid(),
+                Some(terminal.scrolled_back_lines()),
+            )
         };
         // The step the tab's terminal actually zooms by: the same
         // options construction every spawn builds from.
@@ -638,6 +649,7 @@ impl DropTerm {
             frozen: frozen
                 .as_ref()
                 .map(|(name, duration)| (name.as_str(), *duration)),
+            scrolled_back,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -1807,6 +1819,10 @@ impl Application for DropTerm {
         // side of the band (the band hugs the free edge, so that
         // side is the strip's own tooltip side inverted).
         .on_menu_action(Message::Action)
+        // The scrolled chip's click — the one action chip
+        // (status-scrolled spec): the jump routes to the engine's
+        // scroll-to-bottom funnel, never the copy verb.
+        .on_scroll_bottom(|| Message::StatusScrollJump)
         .menu_side(band_menu_side(self.config.edge))
         // The border hairline rides the same side the menu pops to
         // — the band's side away from the grab bar — off the
@@ -2406,6 +2422,16 @@ impl DropTerm {
                 return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
                     cosmic::Action::App(Message::StatusCopyFlashLapse)
                 });
+            }
+            Message::StatusScrollJump => {
+                // The chip's whole verb (status-scrolled spec): the
+                // existing scroll-to-bottom funnel every keystroke's
+                // own `input_scroll` takes — no new scroll behavior.
+                // The message's view pass re-reads the offset at the
+                // bottom, so the chip vanishes the same frame.
+                if let Some(tab) = self.active() {
+                    tab.terminal.lock().unwrap().scroll(TerminalScroll::Bottom);
+                }
             }
             Message::StatusCopyFlashLapse => {
                 self.copied_segment = None;

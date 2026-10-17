@@ -17,11 +17,14 @@
 //! process-state disc: filled while a foreground child runs, a hollow
 //! ring over the idle shell.
 //!
-//! The set is nine — process, duration, path, branch in the left
-//! cluster; profile, grid, tab position, zoom, clock in the right —
-//! each individually toggleable (a hidden segment is never computed)
-//! and click-copyable through [`copy_text`]: the full value, never
-//! the elided display.
+//! The set is ten — process, duration, path, branch in the left
+//! cluster; profile, grid, tab position, zoom, scrolled-back chip,
+//! clock in the right — each individually toggleable (a hidden
+//! segment is never computed) and click-copyable through
+//! [`copy_text`]: the full value, never the elided display. The
+//! scrolled chip bends the copy rule exactly once (status-scrolled
+//! spec): its click jumps the viewport to the bottom — it has no
+//! copyable value, and the jump is the verb.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -127,6 +130,9 @@ pub enum SegmentId {
     Tab,
     /// The signed zoom percent.
     Zoom,
+    /// The viewport's lines scrolled back from the bottom
+    /// (status-scrolled spec) — the off-bottom chip, `↑12`.
+    Scrolled,
     /// The pre-formatted wall clock.
     Clock,
 }
@@ -142,12 +148,15 @@ pub const LEFT_CLUSTER: [SegmentId; 4] = [
 ];
 
 /// The right cluster's segments in draw order — the dimmed alpha,
-/// the clock rightmost (the tmux seat).
-pub const RIGHT_CLUSTER: [SegmentId; 5] = [
+/// the clock rightmost (the tmux seat). The scrolled chip sits
+/// between Zoom and Clock (status-scrolled OQ-2): state of the
+/// view, beside time.
+pub const RIGHT_CLUSTER: [SegmentId; 6] = [
     SegmentId::Profile,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
+    SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
@@ -157,23 +166,27 @@ pub const RIGHT_CLUSTER: [SegmentId; 5] = [
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
-/// and the clock is last — tmux keeps time to the bitter end.
-pub const DROP_ORDER: [SegmentId; 7] = [
+/// the scrolled chip follows the duration (it answers "what's
+/// happening now" — it must survive while the command's own
+/// narration stands), and the clock is last — tmux keeps time to
+/// the bitter end.
+pub const DROP_ORDER: [SegmentId; 8] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
     SegmentId::Duration,
+    SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// nine `status_bar_show_*` bools. A hidden segment is absent
+/// ten `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "nine independent visibility switches — one per config key, by design"
+    reason = "ten independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -193,12 +206,14 @@ pub struct StatusToggles {
     pub tab: bool,
     /// The zoom percent.
     pub zoom: bool,
+    /// The scrolled-back chip.
+    pub scrolled: bool,
     /// The wall clock.
     pub clock: bool,
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's nine
+    /// Every segment shown — the all-on default the config's ten
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
@@ -210,6 +225,7 @@ impl StatusToggles {
             grid: true,
             tab: true,
             zoom: true,
+            scrolled: true,
             clock: true,
         }
     }
@@ -257,6 +273,13 @@ pub struct StatusSegments {
     /// command starts. An empty name is the honest floor — the
     /// duration without a name to lie about.
     pub frozen: Option<(String, Duration)>,
+    /// The viewport's lines scrolled back from the bottom
+    /// (status-scrolled spec) — absent at the bottom (and when
+    /// hidden): the same indistinguishable `None`, so the chip
+    /// exists only when the viewport is somewhere it shouldn't
+    /// rest. The display is [`scrolled_display`]; the click is the
+    /// jump, never a copy.
+    pub scrolled: Option<u16>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -299,6 +322,10 @@ pub struct StatusInputs<'a> {
     /// The last finished command's (name, duration) pair — the
     /// name the app last sampled running on this tab.
     pub frozen: Option<(&'a str, Duration)>,
+    /// The viewport's lines scrolled back from the bottom — the
+    /// engine's `scrolled_back_lines()` read at the same lock the
+    /// grid and zoom take.
+    pub scrolled_back: Option<u16>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -357,6 +384,15 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
                     .map(|(name, duration)| (name.to_string(), duration))
             })
             .flatten(),
+        // Absent at bottom — the same indistinguishable None a
+        // hidden or zoomed-at-base segment resolves to
+        // (status-scrolled spec); the chip exists only when the
+        // viewport is somewhere it shouldn't rest.
+        scrolled: toggles
+            .scrolled
+            .then_some(inputs.scrolled_back)
+            .flatten()
+            .filter(|&lines| lines > 0),
     }
 }
 
@@ -372,6 +408,13 @@ pub fn duration_display(segments: &StatusSegments) -> String {
         (None, Some((name, duration))) => format!("{name} {}", format_duration(*duration)),
         (None, None) => String::new(),
     }
+}
+
+/// The scrolled chip's display (status-scrolled spec, OQ-1):
+/// `↑12` — the arrow, then the count, reading "12 up". The chip's
+/// click is the jump, not a copy; this display is the whole value.
+pub fn scrolled_display(lines: u16) -> String {
+    format!("↑{lines}")
 }
 
 /// Collapse a `home`-prefixed path to `~` plus its remainder — on
@@ -588,7 +631,21 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
             .unwrap_or_default(),
         SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
         SegmentId::Duration => duration_display(segments),
+        // The action chip has no copyable value — the jump is the
+        // verb (status-scrolled spec). The widget's press routing
+        // never reaches this arm; empty is defensive.
+        SegmentId::Scrolled => String::new(),
     }
+}
+
+/// Whether a segment's click is the band's jump verb rather than
+/// the copy verb — the one deliberate action chip (status-scrolled
+/// spec): the scrolled chip's click jumps the viewport to the
+/// bottom through the app callback, ahead of the copy path and
+/// never reaching [`copy_text`] (whose payload for it is empty
+/// besides, defensive).
+pub fn click_jumps(id: SegmentId) -> bool {
+    id == SegmentId::Scrolled
 }
 
 /// The segment whose rect contains `point`, if any — the pure half
@@ -1107,6 +1164,7 @@ struct State {
     grid: BandParagraph,
     tab: BandParagraph,
     zoom: BandParagraph,
+    scrolled: BandParagraph,
     clock: BandParagraph,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
@@ -1160,6 +1218,7 @@ impl State {
             SegmentId::Grid => &self.grid,
             SegmentId::Tab => &self.tab,
             SegmentId::Zoom => &self.zoom,
+            SegmentId::Scrolled => &self.scrolled,
             SegmentId::Clock => &self.clock,
         }
     }
@@ -1174,6 +1233,7 @@ impl State {
             SegmentId::Grid => &mut self.grid,
             SegmentId::Tab => &mut self.tab,
             SegmentId::Zoom => &mut self.zoom,
+            SegmentId::Scrolled => &mut self.scrolled,
             SegmentId::Clock => &mut self.clock,
         }
     }
@@ -1204,6 +1264,10 @@ pub struct StatusBar<Message> {
     copied: Option<SegmentId>,
     /// Maps a clicked segment to the app's message.
     on_copy: Box<dyn Fn(SegmentId) -> Message>,
+    /// Publishes the scrolled chip's click (status-scrolled spec):
+    /// the app routes it to the existing scroll-to-bottom funnel —
+    /// the one deliberate action chip, ahead of the copy path.
+    on_scroll_bottom: Option<Box<dyn Fn() -> Message>>,
     /// Maps a context-menu action pick to the app's message — the
     /// app routes it through the same `perform_action` funnel the
     /// keybind map uses (the menu introduces no behavior).
@@ -1234,10 +1298,21 @@ impl<Message> StatusBar<Message> {
             font,
             copied,
             on_copy: Box::new(on_copy),
+            on_scroll_bottom: None,
             on_menu_action: None,
             menu_side: TooltipSide::default(),
             border: false,
         }
+    }
+
+    /// Sets the message published when the scrolled chip is
+    /// clicked — the jump to the bottom through the app's existing
+    /// scroll funnel (status-scrolled spec: no new scroll
+    /// behavior; without the callback the chip renders but its
+    /// click publishes nothing).
+    pub fn on_scroll_bottom(mut self, on_scroll_bottom: impl Fn() -> Message + 'static) -> Self {
+        self.on_scroll_bottom = Some(Box::new(on_scroll_bottom));
+        self
     }
 
     /// Sets the message published when an action row of the
@@ -1321,6 +1396,15 @@ impl<Message> StatusBar<Message> {
             .map(|percent| format!("{percent:+}%"));
         state.zoom.update(segment_text(
             display_text(copied, SegmentId::Zoom, zoom.as_deref().unwrap_or("")),
+            font,
+        ));
+        let scrolled = self.segments.scrolled.map(scrolled_display);
+        state.scrolled.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Scrolled,
+                scrolled.as_deref().unwrap_or(""),
+            ),
             font,
         ));
         state.clock.update(segment_text(
@@ -1428,6 +1512,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Grid => grid.clone().unwrap_or_default(),
                 SegmentId::Tab => tab.clone().unwrap_or_default(),
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
+                SegmentId::Scrolled => scrolled.clone().unwrap_or_default(),
                 SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
             };
             display_text(copied, id, &value).to_string()
@@ -1744,16 +1829,26 @@ where
                 shell.capture_event();
                 shell.request_redraw();
                 if selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
-                    // The click verb: the segment's full value
-                    // through `copy_text` — never the elided
-                    // display.
+                    // The click verb, branched ahead of the copy
+                    // path: the scrolled chip is the band's one
+                    // action chip (status-scrolled spec) — its
+                    // press publishes the jump through the app
+                    // callback and never reaches `copy_text`. Every
+                    // other segment copies its full value through
+                    // `copy_text` — never the elided display.
                     let rects = segment_rects(state, layout.bounds());
                     if let Some(id) = cursor
                         .position()
                         .and_then(|point| segment_at(&rects, point))
                     {
-                        clipboard.write(Kind::Standard, copy_text(id, &self.segments));
-                        shell.publish((self.on_copy)(id));
+                        if click_jumps(id) {
+                            if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
+                                shell.publish(on_scroll_bottom());
+                            }
+                        } else {
+                            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
+                            shell.publish((self.on_copy)(id));
+                        }
                     }
                 } else if let Some((from, to)) = state.selection {
                     let text = selection_text(from, to, &row_segments(state, layout.bounds()));

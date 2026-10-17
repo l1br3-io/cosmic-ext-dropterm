@@ -31,6 +31,7 @@ fn resolve(
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled_back: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -228,9 +229,9 @@ fn a_starved_cluster_loses_the_path_entirely() {
 // rides `fixed`, the path elides.
 
 /// The standard fit fixture: 100 px of fixed disc cluster, a
-/// 20-char path at 10 px per char (200 px whole), and all seven
+/// 20-char path at 10 px per char (200 px whole), and all eight
 /// droppable segments measured (gap-inclusive costs 42/42/52/42/32/
-/// 42/42 with `SEGMENT_GAP` = 12 — 294 total).
+/// 42/42/42 with `SEGMENT_GAP` = 12 — 336 total).
 fn fit_widths() -> Vec<(SegmentId, f32)> {
     vec![
         (SegmentId::Branch, 30.0),
@@ -239,6 +240,7 @@ fn fit_widths() -> Vec<(SegmentId, f32)> {
         (SegmentId::Grid, 30.0),
         (SegmentId::Tab, 20.0),
         (SegmentId::Zoom, 30.0),
+        (SegmentId::Scrolled, 30.0),
         (SegmentId::Clock, 30.0),
     ]
 }
@@ -254,9 +256,11 @@ fn fit_path() -> PathMeasure {
 fn the_drop_order_pins_the_precedence() {
     // Facts the shell knows go first, then slow-moving identity,
     // the branch beside its path, the duration after its command,
-    // the clock to the bitter end. Process and path are absent by
-    // construction: the disc never yields, and the path elides
-    // before anything else gives way.
+    // the scrolled chip after the duration (it answers "what's
+    // happening now" — it must survive while the command's own
+    // narration stands), the clock to the bitter end. Process and
+    // path are absent by construction: the disc never yields, and
+    // the path elides before anything else gives way.
     assert_eq!(
         DROP_ORDER,
         [
@@ -266,6 +270,7 @@ fn the_drop_order_pins_the_precedence() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
@@ -291,8 +296,28 @@ fn duration_drops_after_branch_and_before_clock() {
 }
 
 #[test]
+fn scrolled_drops_after_duration_and_before_clock() {
+    // The seat pin (status-scrolled criterion 3): with only
+    // Duration, Scrolled, and Clock measured, starvation drops the
+    // duration first, the chip second, and the clock survives —
+    // DROP_ORDER's precedence restricted to the present (the chip
+    // rides the order only when present, like every segment).
+    let widths = vec![
+        (SegmentId::Duration, 30.0),
+        (SegmentId::Scrolled, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all three consumed 126 → room -74 past Gone; the
+    // duration's 42 and the chip's 42 free 10 px of room — one
+    // character's worth, beside the surviving clock.
+    let fit = band_fit(152.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Duration, SegmentId::Scrolled]);
+    assert_eq!(fit.path, PathFit::Elided(1));
+}
+
+#[test]
 fn zero_pressure_renders_everything() {
-    // 594 px of consumption (fixed + seven gaps-and-widths + the
+    // 636 px of consumption (fixed + eight gaps-and-widths + the
     // whole path) under 700 px: nothing drops, nothing elides.
     let fit = band_fit(700.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
@@ -301,39 +326,39 @@ fn zero_pressure_renders_everything() {
 
 #[test]
 fn pressure_elides_the_path_before_any_segment_drops() {
-    // 500 px leaves 106 px of room for the 200 px path: elide to
-    // 10 chars — but nothing drops while any of the path survives.
+    // 500 px leaves 64 px of room for the 200 px path: elide to
+    // 6 chars — but nothing drops while any of the path survives.
     let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
-    assert_eq!(fit.path, PathFit::Elided(10));
+    assert_eq!(fit.path, PathFit::Elided(6));
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn past_full_elision_segments_drop_one_at_a_time_in_order() {
-    // 385 px cannot host even a fully elided path (room below one
+    // 427 px cannot host even a fully elided path (room below one
     // character): the grid goes first, and the path re-expands
     // into the freed 42 px — three characters' worth.
-    let fit = band_fit(385.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(427.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid]);
     assert_eq!(fit.path, PathFit::Elided(3));
 
-    // 345 px costs a second drop: tab follows grid, and the path
+    // 387 px costs a second drop: tab follows grid, and the path
     // re-expands again (25 px of room, two characters).
-    let fit = band_fit(345.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(387.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
 
 #[test]
 fn absent_segments_are_skipped_in_the_drop_order() {
-    // No grid segment (toggle off, or at spawn dimensions): 300 px
+    // No grid segment (toggle off, or at spawn dimensions): 342 px
     // starves the band past full elision, and the first yield is
     // the tab — the absent grid is skipped, not waited on.
     let widths: Vec<(SegmentId, f32)> = fit_widths()
         .into_iter()
         .filter(|(id, _)| *id != SegmentId::Grid)
         .collect();
-    let fit = band_fit(300.0, 100.0, &widths, fit_path());
+    let fit = band_fit(342.0, 100.0, &widths, fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Tab, SegmentId::Zoom]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
@@ -341,13 +366,13 @@ fn absent_segments_are_skipped_in_the_drop_order() {
 #[test]
 fn the_path_re_expands_monotonically_as_drops_free_width() {
     // Widths chosen so exactly `k` drops are forced (the k-th
-    // survivor's room sits at 10 + 6(k-1) px — one character plus a
+    // survivor's room sits at 10 + 5(k-1) px — one character plus a
     // growing slack that stays below the next drop's freed width,
     // while the (k-1)-th sits below one character): the path's char
     // budget never shrinks as drops free width.
     let mut prev_chars = 0;
     let fixture = fit_widths();
-    for k in 1..=7 {
+    for k in 1..=8 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -361,10 +386,10 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of seven, exact in f32"
+            reason = "a loop index of eight, exact in f32"
         )]
-        let room = 10.0 + 6.0 * (k as f32 - 1.0);
-        let width = 100.0 + 294.0 + room - freed;
+        let room = 10.0 + 5.0 * (k as f32 - 1.0);
+        let width = 100.0 + 336.0 + room - freed;
         let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
         assert_eq!(
             fit.dropped.len(),
@@ -386,7 +411,7 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
 
 #[test]
 fn the_disc_never_yields_even_when_everything_drops() {
-    // Zero width: all seven droppables give way in order and the
+    // Zero width: all eight droppables give way in order and the
     // path is gone — but `fixed` (the paddings and the disc
     // cluster) is untouchable by construction, and the path never
     // appears in the dropped set: the type has no say in it.
@@ -400,6 +425,7 @@ fn the_disc_never_yields_even_when_everything_drops() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
@@ -577,6 +603,7 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         clock: Some("14:32"),
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
+        scrolled_back: Some(12),
     };
     resolve_segments(&inputs, toggles)
 }
@@ -592,6 +619,7 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Zoom => segments.zoom_percent.is_some(),
         SegmentId::Clock => segments.clock.is_some(),
         SegmentId::Duration => segments.running_elapsed.is_some() || segments.frozen.is_some(),
+        SegmentId::Scrolled => segments.scrolled.is_some(),
     }
 }
 
@@ -606,15 +634,18 @@ fn hide(toggles: &mut StatusToggles, id: SegmentId) {
         SegmentId::Zoom => &mut toggles.zoom,
         SegmentId::Clock => &mut toggles.clock,
         SegmentId::Duration => &mut toggles.duration,
+        SegmentId::Scrolled => &mut toggles.scrolled,
     };
     *field = false;
 }
 
 #[test]
-fn the_clusters_pin_the_nine_segments_order() {
+fn the_clusters_pin_the_ten_segments_order() {
     // The duration sits in the left cluster's second seat — right
     // beside the process it times (OQ-2) — but carries the dimmed
     // alpha of a meta narration, not identity (the draw's rule).
+    // The scrolled chip sits between Zoom and Clock
+    // (status-scrolled OQ-2): state of the view, beside time.
     assert_eq!(
         LEFT_CLUSTER,
         [
@@ -631,6 +662,7 @@ fn the_clusters_pin_the_nine_segments_order() {
             SegmentId::Grid,
             SegmentId::Tab,
             SegmentId::Zoom,
+            SegmentId::Scrolled,
             SegmentId::Clock
         ]
     );
@@ -680,6 +712,7 @@ fn the_new_segments_resolve_from_their_inputs() {
     assert_eq!(segments.tab_position, Some((2, 5)));
     assert_eq!(segments.clock.as_deref(), Some("14:32"));
     assert_eq!(segments.running_elapsed, Some(Duration::from_secs(161)));
+    assert_eq!(segments.scrolled, Some(12));
 }
 
 // --- the duration segment (command-lifecycle) ---
@@ -710,6 +743,7 @@ fn resolve_duration(
         clock: None,
         running_elapsed,
         frozen,
+        scrolled_back: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -838,6 +872,7 @@ fn resolve_grid(
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled_back: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -884,6 +919,84 @@ fn an_absent_spawn_record_shows_the_live_grid() {
     assert_eq!(segments.grid, Some((80, 24)));
 }
 
+// --- the scrolled chip (status-scrolled) ---
+//
+// The tenth segment: the viewport's lines back from the bottom —
+// `↑12` — absent at the bottom (the same indistinguishable `None`
+// as hidden), and the band's one deliberate action chip: its
+// click jumps to the bottom instead of copying (a ruling
+// recorded, not an erosion — the chunk's boundary).
+
+fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn an_at_bottom_viewport_resolves_no_chip_even_toggle_on() {
+    // The filter: zero lines back is the bottom — the resting
+    // state shows nothing, the conditional-appearance rule the
+    // zoom and grid segments already follow.
+    let segments = resolve_scrolled(Some(0), StatusToggles::all());
+    assert_eq!(segments.scrolled, None);
+}
+
+#[test]
+fn an_off_bottom_viewport_resolves_its_line_count() {
+    let segments = resolve_scrolled(Some(12), StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(12));
+    // The display (OQ-1): the arrow, then the count — "12 up".
+    assert_eq!(scrolled_display(12), "↑12");
+}
+
+#[test]
+fn the_scrolled_toggle_hides_the_chip_whatever_the_offset() {
+    // Hidden ≡ absent, like every segment.
+    let mut toggles = StatusToggles::all();
+    toggles.scrolled = false;
+    let segments = resolve_scrolled(Some(12), toggles);
+    assert_eq!(segments.scrolled, None);
+}
+
+#[test]
+fn an_absurd_saturated_offset_still_resolves() {
+    // The getter saturates into `u16`; a count at the ceiling (a
+    // scrollback no human made) still resolves — the filter only
+    // ever rejects zero.
+    let segments = resolve_scrolled(Some(u16::MAX), StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(u16::MAX));
+    assert_eq!(scrolled_display(u16::MAX), format!("↑{}", u16::MAX));
+}
+
+#[test]
+fn only_the_scrolled_chip_is_an_action_chip() {
+    // The click routing (criterion 2): the chip's press takes the
+    // jump branch ahead of the copy path; every other segment
+    // keeps the copy verb.
+    assert!(click_jumps(SegmentId::Scrolled));
+    for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
+        if *id != SegmentId::Scrolled {
+            assert!(!click_jumps(*id), "{id:?} must keep the copy verb");
+        }
+    }
+}
+
 #[test]
 fn copy_text_carries_each_segments_full_value() {
     // Copy pays no attention to display: the payload is the
@@ -903,6 +1016,9 @@ fn copy_text_carries_each_segments_full_value() {
     assert_eq!(copy_text(SegmentId::Zoom, &segments), "+200%");
     assert_eq!(copy_text(SegmentId::Clock, &segments), "14:32");
     assert_eq!(copy_text(SegmentId::Duration, &segments), "2:41");
+    // The action chip has no copyable value — the jump is the verb
+    // (status-scrolled spec); the empty payload is defensive.
+    assert_eq!(copy_text(SegmentId::Scrolled, &segments), "");
 }
 
 #[test]
@@ -911,6 +1027,16 @@ fn copy_text_of_an_absent_segment_is_empty() {
     for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
         assert_eq!(copy_text(*id, &empty), String::new());
     }
+}
+
+#[test]
+fn the_scrolled_chip_press_never_reaches_copy_text() {
+    // The branch-order pin from the payload side: even a present,
+    // counted chip carries no copy value, so a mis-routed press
+    // would still write nothing — the jump is the only verb.
+    let segments = resolve_full(StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(12));
+    assert_eq!(copy_text(SegmentId::Scrolled, &segments), "");
 }
 
 #[test]
@@ -1186,6 +1312,7 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled: None,
     };
     let band: StatusBar<()> = StatusBar::new(
         segments.clone(),
@@ -1264,14 +1391,14 @@ fn a_missing_path_rect_never_arms() {
 
 #[test]
 fn the_armed_display_borrows_the_branchs_seat() {
-    // 560 px: the resting fit elides the path to 16 chars beside
+    // 602 px: the resting fit elides the path to 16 chars beside
     // the branch; lending the branch's 42 px frees the whole value
     // — the armed display is the un-elided path.
-    let resting = band_fit(560.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(602.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(resting.path, PathFit::Elided(16));
     let display = reveal_display(
         "~/src/oss/l1br3/ced2",
-        560.0,
+        602.0,
         100.0,
         &fit_widths(),
         fit_path(),
@@ -1281,11 +1408,11 @@ fn the_armed_display_borrows_the_branchs_seat() {
 
 #[test]
 fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
-    // 320 px: the resting fit drops the grid, tab, and zoom and
+    // 362 px: the resting fit drops the grid, tab, and zoom and
     // elides to four characters; the armed fit — the branch's seat
     // lent on top of the resting drops — still shows only a longer
     // elision, never an overflow.
-    let resting = band_fit(320.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(362.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(
         resting.dropped,
         vec![SegmentId::Grid, SegmentId::Tab, SegmentId::Zoom]
@@ -1295,7 +1422,7 @@ fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
         .into_iter()
         .filter(|(id, _)| !resting.dropped.contains(id))
         .collect();
-    let display = reveal_display("~/src/oss/l1br3/ced2", 320.0, 100.0, &survivors, fit_path());
+    let display = reveal_display("~/src/oss/l1br3/ced2", 362.0, 100.0, &survivors, fit_path());
     assert_eq!(display, "…r3/ced2");
 }
 
@@ -1455,6 +1582,7 @@ fn rich_segments() -> StatusSegments {
         clock: Some("14:32".to_string()),
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
+        scrolled: Some(7),
     }
 }
 

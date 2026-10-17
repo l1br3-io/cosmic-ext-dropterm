@@ -377,6 +377,12 @@ pub struct DropTermConfig {
     /// alike; the engine's timestamps keep running either way, so a
     /// mid-command re-enable shows the live elapsed immediately.
     pub status_bar_show_duration: bool,
+    /// The scrolled-back chip (status-scrolled spec): the
+    /// viewport's lines back from the bottom — `↑12` — shown only
+    /// off-bottom, its click jumping to the bottom (the band's one
+    /// action chip). An in-memory grid read at view assembly; the
+    /// toggle hides the chip outright.
+    pub status_bar_show_scrollback: bool,
     /// Whether the tab strip renders its border hairline
     /// (bar-borders spec): a 1 px line on the strip's
     /// terminal-facing edge, in the pane-derived foreground at low
@@ -447,6 +453,7 @@ impl Default for DropTermConfig {
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
             status_bar_show_duration: true,
+            status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
             autosuggestions_enabled: true,
@@ -456,7 +463,7 @@ impl Default for DropTermConfig {
 
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
-    /// nine additive bools — the resolver's toggle set.
+    /// ten additive bools — the resolver's toggle set.
     pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
@@ -467,6 +474,7 @@ impl DropTermConfig {
             grid: self.status_bar_show_grid,
             tab: self.status_bar_show_tab,
             zoom: self.status_bar_show_zoom,
+            scrolled: self.status_bar_show_scrollback,
             clock: self.status_bar_show_clock,
         }
     }

@@ -1216,6 +1216,7 @@ fn missing_show_keys_load_as_shown() {
         "status_bar_show_tab",
         "status_bar_show_zoom",
         "status_bar_show_clock",
+        "status_bar_show_scrollback",
     ] {
         std::fs::remove_file(keys.join(key))
             .unwrap_or_else(|error| panic!("remove {key} key file: {error}"));
@@ -1225,8 +1226,17 @@ fn missing_show_keys_load_as_shown() {
     assert!(loaded.status_bar_show_process);
     assert!(loaded.status_bar_show_branch);
     assert!(loaded.status_bar_show_clock);
+    assert!(loaded.status_bar_show_scrollback);
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn status_bar_show_scrollback_defaults_on() {
+    // The chip ships visible (status-scrolled spec) — the
+    // default-on ruling every status-bar key follows: the feature
+    // is the point, so the default shows it.
+    assert!(DropTermConfig::default().status_bar_show_scrollback);
 }
 
 #[test]

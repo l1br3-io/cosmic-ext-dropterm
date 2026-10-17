@@ -850,3 +850,37 @@ fn command_timer_steps_with_autosuggestions_disabled() {
     let duration = terminal.command_frozen().expect("the frozen duration");
     assert_eq!(terminal.take_command_finished(), Some(duration));
 }
+
+// --- the scrolled-back getter (status-scrolled spec) ---
+//
+// The band's chip reads `display_offset` — state only the grid
+// owns — saturated into `u16` under the same term lock the grid
+// and scrollbar reads take. Pinned live: a fresh terminal sits at
+// the bottom, a scroll up counts its lines, Bottom returns to
+// zero (the click funnel the chip routes through).
+
+#[test]
+fn scrolled_back_lines_reads_the_display_offset() {
+    let mut terminal = autosuggest_terminal();
+    // Construction: no history, the viewport at the bottom.
+    assert_eq!(terminal.scrolled_back_lines(), 0);
+
+    // Build scrollback (40 numbered lines on the 24-row grid),
+    // then scroll up five — the same scroll_display call the
+    // wheel's Delta(lines) funnels through.
+    terminal.input_no_scroll(&b"seq 1 40\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| {
+            let term = t.term.lock();
+            term.grid().history_size() > 5
+        },
+        "the seq output builds scrollback",
+    );
+    terminal.scroll(TerminalScroll::Delta(5));
+    assert_eq!(terminal.scrolled_back_lines(), 5);
+
+    // The chip's own click funnel: Bottom clears the offset.
+    terminal.scroll(TerminalScroll::Bottom);
+    assert_eq!(terminal.scrolled_back_lines(), 0);
+}
