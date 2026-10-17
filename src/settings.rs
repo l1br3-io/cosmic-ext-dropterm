@@ -24,6 +24,7 @@ use crate::profile::Profile;
 use crate::tabs::command_line_parts;
 use crate::terminal::theme_source::{SchemePreview, scheme_names, scheme_previews};
 
+mod font_picker;
 mod scheme_picker;
 
 pub mod view;
@@ -660,10 +661,11 @@ pub fn bare_write_cancels_pending_drag(key: ConfigKey, drag_write_pending: bool)
 // copy, and the in-window buffer ---
 
 /// Which text input a settings draft belongs to. Drafts live in
-/// [`SettingsBuffer`] display-only until the input is submitted.
+/// [`SettingsBuffer`] display-only until the input is submitted. The
+/// font control is a picker now (font-picker spec): `FontName` has no
+/// text field, its write rides `font_pick_write`'s rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextField {
-    FontName,
     Shell,
     Args,
     ScrollbackLines,
@@ -727,7 +729,6 @@ pub fn parse_command_notify_secs(raw: &str) -> Option<u16> {
 /// and nothing is written.
 pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
     match field {
-        TextField::FontName => Some(PlannedWrite::FontName(raw.trim().to_string())),
         // Empty shell text commits `""` — `resolved_shell` filters it
         // back to the `$SHELL` fallback, same effect as a hand-edited
         // empty value in the file.
@@ -1009,7 +1010,6 @@ impl SettingsBuffer {
             return draft.clone();
         }
         match field {
-            TextField::FontName => config.font_name.clone(),
             TextField::Shell => config.shell.clone().unwrap_or_default(),
             TextField::Args => config.args.join(" "),
             TextField::ScrollbackLines => config.scrollback_lines.to_string(),
@@ -1956,15 +1956,27 @@ pub fn default_picker_write(profiles: &[Profile], index: usize) -> Option<Profil
 // with a leading Inherit row ---
 
 /// Which scheme picker the app holds open — the two global controls
-/// (Appearance) and the profile form's override picker (Profiles),
-/// so the one-open-picker rule and the Escape ordering (popover
-/// first, then draft, then drawer) cover all three through one flag.
+/// (Appearance) and the profile form's override picker (Profiles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemePickerId {
     /// A global scheme control — dark or light.
     Global(ConfigKey),
     /// The profile form's override picker.
     ProfileForm,
+}
+
+/// Which picker the app holds open — the scheme pickers (the two
+/// global Appearance controls and the profile form's override picker)
+/// and the Appearance card's font picker — so the one-open-picker
+/// rule and the Escape ordering (popover first, then draft, then
+/// drawer) cover every popover through one flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerId {
+    /// A scheme picker — a global Appearance control or the profile
+    /// form's override picker.
+    Scheme(SchemePickerId),
+    /// The Appearance card's font picker.
+    Font,
 }
 
 /// The Inherit row's swatch: the global scheme the terminal renders
@@ -2137,13 +2149,6 @@ pub fn shell_pick_write(index: usize) -> Option<PlannedWrite> {
 /// list order, preceded by the stored name itself when no family
 /// matches — a hand-edited or uninstalled value stays visible and
 /// selectable, never an empty picker.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
-    )
-)]
 pub fn font_picker_rows(families: &[String], stored: &str) -> Vec<String> {
     if families.iter().any(|family| family == stored) {
         return families.to_vec();
@@ -2160,13 +2165,6 @@ pub fn font_picker_rows(families: &[String], stored: &str) -> Vec<String> {
 /// always the selected one. The match is exact and case-sensitive
 /// (`Family::Name`'s own match is exact; a case variant is a
 /// different family).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
-    )
-)]
 pub fn font_picker_selected(families: &[String], stored: &str) -> usize {
     // A match selects its family's row (no leader exists to offset
     // past); anything else selects the leader at 0 — one expression
@@ -2182,13 +2180,6 @@ pub fn font_picker_selected(families: &[String], stored: &str) -> usize {
 /// past the rows (the system's list changed under the open popover)
 /// rejects — the [`dropdown_write`] rule, [`shell_pick_write`]'s
 /// dynamic-list edition over the app-owned family scan.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
-    )
-)]
 pub fn font_pick_write(families: &[String], stored: &str, index: usize) -> Option<PlannedWrite> {
     font_picker_rows(families, stored)
         .get(index)

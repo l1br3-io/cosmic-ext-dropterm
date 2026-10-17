@@ -403,7 +403,14 @@ pub struct DropTerm {
     /// drawer. An open picker owns the first Escape (the popover
     /// first, then the draft, then the drawer — the ordering the
     /// profile-manager spec pinned).
-    scheme_picker: Option<settings::SchemePickerId>,
+    open_picker: Option<settings::PickerId>,
+    /// The system's monospace families (font-picker spec): scanned
+    /// once here — the renderer loads its own system fonts at
+    /// startup, so a mid-run rescan could list families iced cannot
+    /// yet draw (dishonest previews). Process-stable for the
+    /// lifetime; the picker's rows and `font_pick_write`'s picks
+    /// resolve against it.
+    font_families: Vec<String>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -788,11 +795,11 @@ impl DropTerm {
     /// page it closed on.
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
-        // The scheme popover dies with the drawer: the explicit close
+        // The open popover dies with the drawer: the explicit close
         // clears transient UI state (the keybind search and capture
         // rule below); the landing turn stays on Appearance, so the
         // page-turn clear would not catch it.
-        self.scheme_picker = None;
+        self.open_picker = None;
         self.turn_settings_page(home_settings_page());
         // The Keybindings tab's search and capture state are drawer
         // buffer state: cleared on the explicit close, preserved
@@ -876,12 +883,12 @@ impl DropTerm {
                 settings::ProfileDraftTransition::Clear,
             );
         }
-        // A turn away from the hosting page closes the scheme popover
+        // A turn away from the hosting page closes the open popover
         // with its anchor — a stale open flag must not resurrect it on
-        // return (the keybind-capture page-turn rule). Both hosting
+        // return (the keybind-capture page-turn rule). The hosting
         // pages turn through here, so every non-self turn clears.
         if tab != self.settings_page {
-            self.scheme_picker = None;
+            self.open_picker = None;
         }
         self.settings_page = tab;
         self.sync_settings_tab_strip();
@@ -1266,7 +1273,7 @@ fn band_menu_side(edge: Edge) -> TooltipSide {
 /// requires — interned per distinct name, libcosmic's own
 /// `FontConfig → Font` conversion leaks-and-caches the same way, so
 /// config echo's constant re-renders never grow the intern set.
-fn interned_font_family(name: &str) -> &'static str {
+pub(crate) fn interned_font_family(name: &str) -> &'static str {
     static FAMILY_MAP: std::sync::LazyLock<
         std::sync::RwLock<std::collections::BTreeSet<&'static str>>,
     > = std::sync::LazyLock::new(std::sync::RwLock::default);
@@ -1438,7 +1445,8 @@ impl Application for DropTerm {
             key_binds,
             keybind_capture: None,
             keybind_search: String::new(),
-            scheme_picker: None,
+            open_picker: None,
+            font_families: cosmic_ext_dropterm::font_list::load_monospace_families(),
             keybind_conflict: None,
             last_toggle: None,
             slide: None,
@@ -1940,7 +1948,8 @@ impl Application for DropTerm {
             SettingsTab::Appearance => settings::view::appearance_view(
                 &self.config,
                 &self.settings_buffer,
-                self.scheme_picker,
+                self.open_picker,
+                &self.font_families,
             ),
             SettingsTab::Behavior => {
                 settings::view::behavior_view(&self.config, &self.settings_buffer)
@@ -1956,7 +1965,10 @@ impl Application for DropTerm {
                     self.profile_selection,
                     self.profile_draft.as_ref(),
                     self.profile_delete_armed,
-                    self.scheme_picker == Some(settings::SchemePickerId::ProfileForm),
+                    self.open_picker
+                        == Some(settings::PickerId::Scheme(
+                            settings::SchemePickerId::ProfileForm,
+                        )),
                     is_dark,
                 )
             }
@@ -2372,7 +2384,7 @@ impl DropTerm {
                 // (the draft-first rule): the draft cancels — no
                 // write, the selection kept — and the drawer stays
                 // open for the plain close on a later press.
-                let drawer_escapable = self.settings_open && self.scheme_picker.is_none();
+                let drawer_escapable = self.settings_open && self.open_picker.is_none();
                 match drawer_escape_routing(drawer_escapable, self.profile_draft.is_some(), &key) {
                     DrawerKeyRouting::CancelDraft => {
                         self.profile_draft = None;
@@ -2805,37 +2817,46 @@ impl DropTerm {
                         }
                     }
                     settings::view::SettingsEvent::Picked(key, index) => {
-                        // Shell's dropdown is dynamic — its options are
-                        // built per view from `/etc/shells` — so the
-                        // pick resolves through the dynamic planner,
-                        // which rebuilds the list rather than trusting
-                        // the open dropdown's snapshot.
+                        // The dynamic-list pickers — the shell dropdown
+                        // (options rebuilt per view from `/etc/shells`)
+                        // and the font picker (the startup family scan)
+                        // — resolve through their own planners against
+                        // the authoritative list, never the open
+                        // popover's snapshot, so a stale index rejects
+                        // instead of writing the wrong value.
                         let write = if key == settings::ConfigKey::Shell {
                             settings::shell_pick_write(index)
+                        } else if key == settings::ConfigKey::FontName {
+                            settings::font_pick_write(
+                                &self.font_families,
+                                &self.config.font_name,
+                                index,
+                            )
                         } else {
                             settings::dropdown_write(key, index)
                         };
                         if let Some(write) = write {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
-                        // A scheme pick closes its picker: the
+                        // A picker's pick closes its picker: the
                         // popover's dismissal contract, applied where
                         // the pick lands.
                         if matches!(
                             key,
                             settings::ConfigKey::ColorSchemeDark
                                 | settings::ConfigKey::ColorSchemeLight
+                                | settings::ConfigKey::FontName
                         ) {
-                            self.scheme_picker = None;
+                            self.open_picker = None;
                         }
                     }
-                    settings::view::SettingsEvent::ToggleSchemePicker(id) => {
-                        // One picker at most: pressing another scheme
+                    settings::view::SettingsEvent::TogglePicker(id) => {
+                        // One picker at most: pressing another picker's
                         // control swaps, pressing the open one closes.
-                        self.scheme_picker = (self.scheme_picker != Some(id)).then_some(id);
+                        self.open_picker = (self.open_picker != Some(id)).then_some(id);
                     }
-                    settings::view::SettingsEvent::CloseSchemePicker => {
-                        self.scheme_picker = None;
+                    settings::view::SettingsEvent::ClosePicker => {
+                        self.open_picker = None;
                     }
                     settings::view::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
@@ -3072,10 +3093,12 @@ impl DropTerm {
                                 .retain(|(at, _)| *at != settings::ProfileField::Scheme);
                         }
                         if matches!(
-                            self.scheme_picker,
-                            Some(settings::SchemePickerId::ProfileForm)
+                            self.open_picker,
+                            Some(settings::PickerId::Scheme(
+                                settings::SchemePickerId::ProfileForm
+                            ))
                         ) {
-                            self.scheme_picker = None;
+                            self.open_picker = None;
                         }
                     }
                     settings::view::SettingsEvent::AddProfileEnvRow => {

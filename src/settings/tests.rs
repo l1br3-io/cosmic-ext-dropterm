@@ -523,10 +523,6 @@ fn scrollback_text_clamps_above_u32_range() {
 #[test]
 fn submitted_text_fields_commit_trimmed_values() {
     assert_eq!(
-        submit_write(TextField::FontName, " Fira Code "),
-        Some(PlannedWrite::FontName("Fira Code".to_string()))
-    );
-    assert_eq!(
         submit_write(TextField::Shell, " /usr/bin/fish "),
         Some(PlannedWrite::Shell("/usr/bin/fish".to_string()))
     );
@@ -862,6 +858,20 @@ fn font_picker_picks_commit_their_row_and_reject_stale_indices() {
     );
     assert_eq!(font_pick_write(&families, "Noto Sans Mono", 2), None);
     assert_eq!(font_pick_write(&families, "Noto Sans Mono", 99), None);
+}
+
+#[test]
+fn font_popover_scroll_clamps_at_both_ends() {
+    // Criterion 5's clamp: the wheel offset lives in
+    // [0, content − viewport] px, so every listed family is
+    // reachable and neither end runs past — and a list shorter than
+    // its viewport (nothing to scroll into) pins at 0.
+    assert_eq!(font_picker::clamp_scroll(-40.0, 600.0, 300.0), 0.0);
+    assert_eq!(font_picker::clamp_scroll(0.0, 600.0, 300.0), 0.0);
+    assert_eq!(font_picker::clamp_scroll(120.0, 600.0, 300.0), 120.0);
+    assert_eq!(font_picker::clamp_scroll(300.0, 600.0, 300.0), 300.0);
+    assert_eq!(font_picker::clamp_scroll(320.0, 600.0, 300.0), 300.0);
+    assert_eq!(font_picker::clamp_scroll(120.0, 200.0, 300.0), 0.0);
 }
 
 #[test]
@@ -1533,7 +1543,7 @@ fn slider_release_rejects_keys_without_sliders() {
 fn buffer_text_falls_back_to_the_config_value() {
     let config = DropTermConfig::default();
     let buffer = SettingsBuffer::default();
-    assert_eq!(buffer.text(TextField::FontName, &config), "Noto Sans Mono");
+    assert_eq!(buffer.text(TextField::Args, &config), "");
     assert_eq!(buffer.text(TextField::ScrollbackLines, &config), "10000");
 }
 
@@ -1541,10 +1551,10 @@ fn buffer_text_falls_back_to_the_config_value() {
 fn buffer_text_draft_wins_until_it_is_cleared() {
     let config = DropTermConfig::default();
     let mut buffer = SettingsBuffer::default();
-    buffer.set_text(TextField::FontName, "JetBrains Mono".to_string());
-    assert_eq!(buffer.text(TextField::FontName, &config), "JetBrains Mono");
-    buffer.clear_text(TextField::FontName);
-    assert_eq!(buffer.text(TextField::FontName, &config), "Noto Sans Mono");
+    buffer.set_text(TextField::Args, "-l -i".to_string());
+    assert_eq!(buffer.text(TextField::Args, &config), "-l -i");
+    buffer.clear_text(TextField::Args);
+    assert_eq!(buffer.text(TextField::Args, &config), "");
 }
 
 #[test]
@@ -2902,9 +2912,12 @@ fn list_mutations_and_draft_switches_are_unreachable_while_a_draft_is_open() {
         SettingsEvent::SliderMoved(ConfigKey::Opacity, 50.0),
         SettingsEvent::SliderReleased(ConfigKey::Opacity),
         SettingsEvent::Picked(ConfigKey::Edge, 0),
-        SettingsEvent::ToggleSchemePicker(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
-        SettingsEvent::ToggleSchemePicker(SchemePickerId::ProfileForm),
-        SettingsEvent::CloseSchemePicker,
+        SettingsEvent::TogglePicker(PickerId::Scheme(SchemePickerId::Global(
+            ConfigKey::ColorSchemeDark,
+        ))),
+        SettingsEvent::TogglePicker(PickerId::Scheme(SchemePickerId::ProfileForm)),
+        SettingsEvent::TogglePicker(PickerId::Font),
+        SettingsEvent::ClosePicker,
         SettingsEvent::Toggled(ConfigKey::RespectPanel, true),
         SettingsEvent::KeybindSearchChanged(String::new()),
         SettingsEvent::CaptureStart(crate::terminal::Action::Copy),

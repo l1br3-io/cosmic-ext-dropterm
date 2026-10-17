@@ -23,7 +23,7 @@ use cosmic::theme::Theme;
 use cosmic::{Element, Renderer, theme, widget};
 
 use super::{
-    ConfigKey, ProfileDraft, SchemePickerId, SettingsEvent, dropdown_selected,
+    ConfigKey, PickerId, ProfileDraft, SchemePickerId, SettingsEvent, dropdown_selected,
     inherit_scheme_preview, profile_scheme_selected, scheme_preview_by_name,
 };
 use crate::config::DropTermConfig;
@@ -242,8 +242,8 @@ pub(super) fn scheme_picker_control(
         content = content.push(scheme_chip_strip(preview));
     }
     let control: Element<'static, SettingsEvent> = widget::button::custom(content)
-        .on_press(SettingsEvent::ToggleSchemePicker(SchemePickerId::Global(
-            key,
+        .on_press(SettingsEvent::TogglePicker(PickerId::Scheme(
+            SchemePickerId::Global(key),
         )))
         .into();
     Element::new(SchemePicker {
@@ -283,9 +283,9 @@ pub(super) fn profile_scheme_control(
         content = content.push(scheme_chip_strip(preview));
     }
     let control: Element<'static, SettingsEvent> = widget::button::custom(content)
-        .on_press(SettingsEvent::ToggleSchemePicker(
+        .on_press(SettingsEvent::TogglePicker(PickerId::Scheme(
             SchemePickerId::ProfileForm,
-        ))
+        )))
         .into();
     Element::new(SchemePicker {
         id: SchemePickerId::ProfileForm,
@@ -582,7 +582,7 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
                 {
                     shell.publish(self.pick_event(index));
                 }
-                shell.publish(SettingsEvent::CloseSchemePicker);
+                shell.publish(SettingsEvent::ClosePicker);
                 shell.capture_event();
                 shell.request_redraw();
             }
@@ -590,7 +590,7 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for SchemePopover<'_> {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
             }) => {
-                shell.publish(SettingsEvent::CloseSchemePicker);
+                shell.publish(SettingsEvent::ClosePicker);
                 shell.capture_event();
             }
             _ => {}
