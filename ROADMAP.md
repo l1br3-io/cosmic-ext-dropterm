@@ -42,7 +42,7 @@ High-level feature list.
 
 ## V4
 
-- [ ] improve tab bar ux
+- [x] improve tab bar ux
 - [ ] improve docs
 - [ ] improve autocomplete feature
 - [ ] make app version and cross platform, currently its only serve as an applet. 
