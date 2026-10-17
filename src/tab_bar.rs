@@ -28,7 +28,7 @@
 //! leave it in — the feedback model of libcosmic's
 //! `reorderable_flex_row` (same rev), driven by the same
 //! redraw-request loop. [`displaced_row`], [`followed_x`] and
-//! [`drop_index`] decide all of it from plain geometry; the release
+//! [`drop_index`](reorder::drop_index) decide all of it from plain geometry; the release
 //! reports the drop, which the app applies via
 //! [`crate::tabs::reorder_tabs`].
 //!
@@ -39,7 +39,6 @@
 //! the component's `on` text color.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use cosmic::iced::core::alignment;
 use cosmic::iced::core::mouse::click;
@@ -66,6 +65,10 @@ use crate::terminal::WINDOW_BG_COLOR;
 
 use crate::profile::Profile;
 use crate::tabs::{MoveDirection, Tab, TabId, title_prefix};
+
+mod reorder;
+
+use self::reorder::{Drag, SlotAnimation, displaced_row, drop_from_followed, followed_x};
 
 /// The bar's background and a text color readable on it.
 ///
@@ -266,17 +269,9 @@ fn label_text(content: &str, font: cosmic::iced::Font) -> Text<&str> {
 /// (pinned rev `08a09e3`, `mouse/click.rs`: `distance < 6.0`).
 const DRAG_THRESHOLD: f32 = 6.0;
 
-/// How long a displaced button takes to slide to its new slot,
-/// cubic-eased. Matches libcosmic's reorderable row at the pinned rev.
-const DRAG_ANIMATION: Duration = Duration::from_millis(180);
-
 /// How far the dragged button lifts out of the row while it follows
 /// the cursor, in logical pixels.
 const DRAG_LIFT: f32 = 2.0;
-
-/// How close a slot's animated position must be to a new target before
-/// retargeting treats them as the same spot.
-const POSITION_EPSILON: f32 = 0.5;
 
 /// Width of the drop indicator line, in logical pixels.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
@@ -897,150 +892,6 @@ fn press_target(
         return Some(PressTarget::NewTab);
     }
     hit_test(buttons, point).map(|(index, target)| PressTarget::Tab(index, target))
-}
-
-/// Where a horizontal drag of the tab at `dragged` would drop if released
-/// at bar-local `x`: the number of *other* buttons whose center the cursor
-/// has passed. A tab must be dragged past a neighbor's center to move by
-/// it, so the result is always a valid index of the reordered list.
-fn drop_index(buttons: &[ButtonGeometry], dragged: usize, x: f32) -> usize {
-    buttons
-        .iter()
-        .enumerate()
-        .filter(|(index, button)| *index != dragged && button.bounds.center_x() < x)
-        .count()
-}
-
-/// The row as it looks while `dragged` is out of it and lands at
-/// `drop`: the left-edge x every *other* button eases to — the slot it
-/// occupies in the reordered row (`None` for the dragged one, which
-/// follows the cursor instead) — plus the x the drop indicator marks,
-/// half a gap ahead of the dragged tab's slot in that row.
-fn displaced_row(widths: &[f32], dragged: usize, drop: usize, gap: f32) -> (Vec<Option<f32>>, f32) {
-    // The reordered row: the dragged button lifted out, then inserted
-    // back at the drop slot.
-    let mut order: Vec<usize> = (0..widths.len()).filter(|&i| i != dragged).collect();
-    order.insert(drop.min(order.len()), dragged);
-
-    let mut targets = vec![None; widths.len()];
-    let mut indicator = 0.0;
-    let mut x = 0.0;
-    for &index in &order {
-        if index == dragged {
-            indicator = x - gap / 2.0;
-        } else {
-            targets[index] = Some(x);
-        }
-        x += widths[index] + gap;
-    }
-    (targets, indicator)
-}
-
-/// Left-edge x of the dragged button while it follows the cursor,
-/// clamped to the row so it can never leave the bar.
-fn followed_x(row_width: f32, button_width: f32, cursor_x: f32, grab_x: f32) -> f32 {
-    (cursor_x - grab_x).clamp(0.0, (row_width - button_width).max(0.0))
-}
-
-/// The drop slot for a drag of `dragged` whose cursor sits at bar-local
-/// `cursor_x` holding the button `grab_x` from its left edge: the
-/// *followed button's* center decides, not the cursor's — the button is
-/// the thing on screen, so the release lands exactly where the row said
-/// it would.
-fn drop_from_followed(
-    buttons: &[ButtonGeometry],
-    dragged: usize,
-    cursor_x: f32,
-    grab_x: f32,
-) -> usize {
-    let Some(button) = buttons.get(dragged) else {
-        return dragged;
-    };
-    let row_width = buttons
-        .last()
-        .map_or(0.0, |last| last.bounds.x + last.bounds.width);
-    let followed = followed_x(row_width, button.bounds.width, cursor_x, grab_x);
-    drop_index(buttons, dragged, followed + button.bounds.width / 2.0)
-}
-
-/// An in-progress tab drag: the tab whose button the press landed
-/// on, where that press started, how far into the button the grab
-/// sits (so the button can follow the cursor at the point it was
-/// caught), and — once the press moved past [`DRAG_THRESHOLD`] — the
-/// last bar-local x the cursor was seen at. The state machine
-/// follows iced's own text editor (pinned rev `08a09e3`): record on
-/// press, drag on move, finish on release.
-struct Drag {
-    tab: TabId,
-    /// Bar-local press position.
-    origin: Point,
-    /// Whether the press has crossed the drag threshold yet.
-    started: bool,
-    /// Last bar-local cursor x, driving the followed button.
-    x: f32,
-    /// Cursor x minus the followed button's left edge at press: the
-    /// offset the button keeps while it follows the cursor.
-    grab_x: f32,
-}
-
-/// One button's horizontal slide toward the slot a drag opens or
-/// closes for it, cubic-eased over [`DRAG_ANIMATION`] — the same
-/// spring as libcosmic's reorderable row (pinned rev,
-/// `reorderable_flex_row/widget.rs`).
-struct SlotAnimation {
-    from: f32,
-    to: f32,
-    started_at: Option<Instant>,
-}
-
-impl SlotAnimation {
-    fn new(x: f32) -> Self {
-        Self {
-            from: x,
-            to: x,
-            started_at: None,
-        }
-    }
-
-    /// The eased x to paint this frame.
-    fn current(&self) -> f32 {
-        let Some(started_at) = self.started_at else {
-            return self.to;
-        };
-        let progress =
-            (started_at.elapsed().as_secs_f32() / DRAG_ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
-        let eased = 1.0 - (1.0 - progress).powi(3);
-        self.from + (self.to - self.from) * eased
-    }
-
-    fn is_animating(&self) -> bool {
-        self.started_at
-            .is_some_and(|started_at| started_at.elapsed() < DRAG_ANIMATION)
-    }
-
-    /// Snaps a finished slide onto its target.
-    fn settle(&mut self) {
-        if !self.is_animating() {
-            self.from = self.to;
-            self.started_at = None;
-        }
-    }
-
-    /// Starts (or restarts, from wherever it currently paints) a slide
-    /// toward `target`; a settled slot already there just snaps.
-    fn retarget(&mut self, target: f32) {
-        if (self.to - target).abs() < POSITION_EPSILON {
-            if !self.is_animating() {
-                self.from = target;
-                self.to = target;
-                self.started_at = None;
-            }
-            return;
-        }
-        self.from = self.current();
-        self.to = target;
-        self.started_at = Some(Instant::now());
-    }
 }
 
 /// Per-widget state: the title paragraphs, cached across frames and
