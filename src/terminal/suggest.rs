@@ -38,6 +38,10 @@ const RING_CAP: usize = 256;
 pub(crate) enum SuggestionSource {
     /// The tab's own scraped command ring.
     History,
+    /// The filesystem listing of the typed token's parent directory
+    /// (path-suggest spec) — local-machine knowledge, gated on the
+    /// spawn allowlist.
+    Path,
 }
 
 /// How much of the showing suffix an accept key writes (autosuggest
@@ -89,6 +93,12 @@ pub(crate) struct Observation<'a> {
     // test reads this when PS-3 lands.
     #[allow(dead_code)]
     pub(crate) paths_eligible: bool,
+    /// The path provider's config gate (path-suggest spec):
+    /// `autosuggestions_paths_enabled` as resolved into the
+    /// terminal's options — engine-`true` until the config key lands
+    /// (PS-4); a live flip applies at the next typed prefix. History
+    /// is unaffected: `false` restores phase-1 behavior exactly.
+    pub(crate) paths_enabled: bool,
     /// The path provider's reduced listing (path-suggest spec): the
     /// sorted (name, is-a-directory) entries of the trailing token's
     /// canonical parent directory, read engine-side and keyed by that
@@ -269,7 +279,7 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
     if typed.is_empty() {
         return None;
     }
-    let (suffix, source) = merged_candidate(typed, suggest)?;
+    let (suffix, source) = merged_candidate(typed, suggest, obs)?;
     // The fit is grid cells, not chars: the ghost starts one cell
     // past the cursor and must end inside the line.
     let remaining = obs.columns.saturating_sub(obs.cursor_column + 1);
@@ -287,6 +297,7 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
 fn source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::History => 0,
+        SuggestionSource::Path => 1,
     }
 }
 
@@ -303,13 +314,87 @@ fn history_candidate(typed: &str, ring: &VecDeque<String>) -> Option<String> {
     Some(entry[typed.len()..].to_string())
 }
 
+/// The path provider's candidate function (path-suggest spec):
+/// complete the trailing token's final component from the parent's
+/// reduced listing — first match in sorted order wins (directory
+/// order carries no length meaning; the ruled policy), directories
+/// suffixed `/`, the suffix stopping at the completed component.
+/// Dotfiles match only a `.`-prefixed typed component (the shell
+/// convention). Gated on the config toggle, the spawn allowlist, and
+/// the listing itself; the escape rule decides the rest — an entry
+/// that cannot be safely written is silence, never a wrong suffix.
+fn path_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.paths_enabled || !obs.paths_eligible {
+        return None;
+    }
+    let token = path_token(Some(typed))?;
+    let listing = obs.path_listing?;
+    // The final component: after the last `/` — or the empty
+    // component when the token is the `~` root alone.
+    let component = match token.rfind('/') {
+        Some(idx) => &token[idx + 1..],
+        None => "",
+    };
+    let (name, is_dir) = listing.iter().find(|(name, is_dir)| {
+        name.starts_with(component)
+            && (*is_dir || name.len() > component.len())
+            && (component.starts_with('.') || !name.starts_with('.'))
+    })?;
+    let mut remainder = name[component.len()..].to_string();
+    if *is_dir {
+        remainder.push('/');
+    }
+    escape_for_shell(&remainder)
+}
+
+/// The characters a suggested suffix backslash-escapes (path-suggest
+/// spec, ruled at clarification): whitespace and the POSIX-and-fish
+/// shell metacharacters — the bytes that are certainly safe to write
+/// once escaped.
+const ESCAPED_CHARS: [char; 19] = [
+    ' ', '\t', '(', ')', '&', ';', '<', '>', '*', '?', '[', ']', '#', '$', '~', '!', '"', '\'',
+    '\\',
+];
+
+/// The conservative printable whitelist's punctuation (path-suggest
+/// spec): alongside ASCII alphanumerics, these ride verbatim —
+/// neither the shells nor fish reinterprets them inside a word.
+const WHITELIST_PUNCT: &str = "-_./:=,+@%^{}";
+
+/// Escapes one matched entry's remainder for the shell (path-suggest
+/// spec): ASCII alphanumerics and the whitelist ride verbatim, the
+/// escapable set takes a backslash, and anything else — a newline, a
+/// control character, a byte outside the conservative sets — is not
+/// certainly safe to write, so the whole suggestion degrades to
+/// `None`. The suffix-fit rule measures this escaped form.
+fn escape_for_shell(raw: &str) -> Option<String> {
+    let mut escaped = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() || WHITELIST_PUNCT.contains(c) {
+            escaped.push(c);
+        } else if ESCAPED_CHARS.contains(&c) {
+            escaped.push('\\');
+            escaped.push(c);
+        } else {
+            return None;
+        }
+    }
+    Some(escaped)
+}
+
 /// One provider's candidate function, keyed by its variant — the
 /// dispatch table a later module extends with its arm (and its
 /// variant in the list `merged_candidate` walks) without touching
 /// any call site.
-fn provider_candidate(source: SuggestionSource, typed: &str, suggest: &Suggest) -> Option<String> {
+fn provider_candidate(
+    source: SuggestionSource,
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Option<String> {
     match source {
         SuggestionSource::History => history_candidate(typed, &suggest.ring),
+        SuggestionSource::Path => path_candidate(typed, obs),
     }
 }
 
@@ -318,11 +403,15 @@ fn provider_candidate(source: SuggestionSource, typed: &str, suggest: &Suggest) 
 /// order — and the first non-`None` candidate wins, its provenance
 /// carried in the pair. Exactly one suggestion or none (autosuggest
 /// spec).
-fn merged_candidate(typed: &str, suggest: &Suggest) -> Option<(String, SuggestionSource)> {
-    let mut providers = [SuggestionSource::History];
+fn merged_candidate(
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Option<(String, SuggestionSource)> {
+    let mut providers = [SuggestionSource::History, SuggestionSource::Path];
     providers.sort_by_key(|&source| source_rank(source));
     providers.into_iter().find_map(|source| {
-        provider_candidate(source, typed, suggest).map(|suffix| (suffix, source))
+        provider_candidate(source, typed, suggest, obs).map(|suffix| (suffix, source))
     })
 }
 
@@ -470,6 +559,7 @@ mod tests {
         Observation {
             enabled: true,
             paths_eligible: true,
+            paths_enabled: true,
             path_listing: None,
             focused: true,
             foreground_child: false,
@@ -987,8 +1077,9 @@ mod tests {
         // then the command catalog. Each later module appends its
         // variant here; the ranks must keep strictly increasing in
         // exactly this order.
-        let ruled_order = [SuggestionSource::History];
+        let ruled_order = [SuggestionSource::History, SuggestionSource::Path];
         assert_eq!(source_rank(SuggestionSource::History), 0);
+        assert_eq!(source_rank(SuggestionSource::Path), 1);
         for pair in ruled_order.windows(2) {
             assert!(
                 source_rank(pair[0]) < source_rank(pair[1]),
@@ -1001,8 +1092,258 @@ mod tests {
     fn the_dispatch_asks_history_and_carries_its_provenance() {
         let suggest = adopted();
         let (suffix, source) =
-            merged_candidate("gi", &suggest).expect("history answers the clear case");
+            merged_candidate("gi", &suggest, &obs()).expect("history answers the clear case");
         assert_eq!(suffix, "t status");
         assert_eq!(source, SuggestionSource::History);
+    }
+
+    // --- the path provider (path-suggest) ---
+
+    /// A reduced listing from (&str, is-dir) pairs.
+    fn listing(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
+        entries
+            .iter()
+            .map(|(name, dir)| (name.to_string(), *dir))
+            .collect()
+    }
+
+    /// One anchored step with `typed` after the "$ " anchor and the
+    /// given parent listing — the provider's end-to-end shape.
+    fn step_path(
+        typed: &str,
+        listing: Option<&[(String, bool)]>,
+        suggest: &mut Suggest,
+    ) -> Option<Showing> {
+        let mut before = String::from("$ ");
+        before.push_str(typed);
+        let observation = Observation {
+            before_cursor: &before,
+            cursor_column: before.len(),
+            path_listing: listing,
+            ..obs()
+        };
+        step(&observation, suggest)
+    }
+
+    #[test]
+    fn the_path_provider_completes_the_final_component_with_the_dir_slash() {
+        let mut suggest = adopted();
+        let entries = listing(&[("src", true), ("srv", true)]);
+        let shown = step_path("~/sr", Some(&entries), &mut suggest)
+            .expect("the first sorted match completes");
+        assert_eq!(shown.suffix, "c/");
+        assert_eq!(shown.source, SuggestionSource::Path);
+    }
+
+    #[test]
+    fn the_trailing_token_completes_from_any_word_of_the_line() {
+        // `~/sr`, `../co`, `./te`, `/usr/bi`, `sr/x` — the trailing
+        // token is what completes, wherever it sits; the listing is
+        // whatever the engine reduced for that token's parent.
+        let entries = listing(&[("xt", true)]);
+        let mut suggest = adopted();
+        let shown = step_path("cd sr/x", Some(&entries), &mut suggest)
+            .expect("the trailing token reaches the provider");
+        assert_eq!(shown.suffix, "t/");
+    }
+
+    #[test]
+    fn plain_words_and_flags_never_reach_the_path_provider() {
+        let entries = listing(&[("src", true), ("la", true)]);
+        let mut suggest = adopted();
+        assert_eq!(step_path("vim src", Some(&entries), &mut suggest), None);
+        assert_eq!(step_path("ls -la", Some(&entries), &mut suggest), None);
+    }
+
+    #[test]
+    fn a_file_match_carries_no_slash() {
+        let entries = listing(&[("alpha.txt", false), ("beta", true)]);
+        let mut suggest = adopted();
+        let file = step_path("/usr/a", Some(&entries), &mut suggest)
+            .expect("the file matches the component");
+        assert_eq!(file.suffix, "lpha.txt");
+        let dir = step_path("/usr/b", Some(&entries), &mut suggest)
+            .expect("the directory matches the component");
+        assert_eq!(dir.suffix, "eta/");
+    }
+
+    #[test]
+    fn a_fully_typed_directory_suggests_its_slash_a_file_suggests_nothing() {
+        let dirs = listing(&[("src", true)]);
+        let mut suggest = adopted();
+        assert_eq!(
+            step_path("~/src", Some(&dirs), &mut suggest).map(|s| s.suffix),
+            Some("/".to_string()),
+            "the slash alone completes a fully typed directory"
+        );
+        let files = listing(&[("src", false)]);
+        assert_eq!(
+            step_path("~/src", Some(&files), &mut suggest),
+            None,
+            "a fully typed file has nothing left to add"
+        );
+    }
+
+    #[test]
+    fn dotfiles_match_only_a_dot_prefixed_component() {
+        let entries = listing(&[(".hidden", true), ("afile", false)]);
+        let mut suggest = adopted();
+        let dot =
+            step_path("~/.", Some(&entries), &mut suggest).expect("the dot reaches the dotfile");
+        assert_eq!(dot.suffix, "hidden/");
+        let plain = step_path("~/a", Some(&entries), &mut suggest)
+            .expect("the plain component sees the plain entry");
+        assert_eq!(plain.suffix, "file");
+        assert_eq!(
+            step_path("~/h", Some(&entries), &mut suggest),
+            None,
+            "h cannot see .hidden without the leading dot"
+        );
+    }
+
+    #[test]
+    fn the_bare_home_root_completes_the_first_plain_entry() {
+        // The empty component honors the dotfile convention too: the
+        // first non-dot entry wins.
+        let entries = listing(&[(".config", true), ("Documents", true)]);
+        let mut suggest = adopted();
+        let shown =
+            step_path("~", Some(&entries), &mut suggest).expect("the HOME root lists its entries");
+        assert_eq!(shown.suffix, "Documents/");
+    }
+
+    #[test]
+    fn escapable_characters_take_a_backslash() {
+        let entries = listing(&[("my file.txt", false), ("a(b)c", true)]);
+        let mut suggest = adopted();
+        let spaced =
+            step_path("~/my", Some(&entries), &mut suggest).expect("a space escapes safely");
+        assert_eq!(spaced.suffix, "\\ file.txt");
+        let parens = step_path("~/a", Some(&entries), &mut suggest)
+            .expect("the metacharacters escape safely");
+        assert_eq!(parens.suffix, "\\(b\\)c/");
+    }
+
+    #[test]
+    fn the_whitelist_rides_verbatim() {
+        // Every whitelisted punctuation mark in one entry, plus the
+        // directory slash.
+        let entries = listing(&[("a-_./:=,+@%^{}z", true)]);
+        let mut suggest = adopted();
+        let shown = step_path("~/a", Some(&entries), &mut suggest)
+            .expect("whitelisted bytes are safe to write");
+        assert_eq!(shown.suffix, "-_./:=,+@%^{}z/");
+    }
+
+    #[test]
+    fn anything_outside_the_whitelist_and_the_escape_set_is_silence() {
+        // A newline, a control character, a backtick (deliberately
+        // not in the ruled sets), and non-ASCII: none is certainly
+        // safe to write, so the entry silences.
+        for (name, typed) in [
+            ("bad\nname", "~/bad"),
+            ("bad\x07bell", "~/bad"),
+            ("bad`tick", "~/bad"),
+            ("café", "~/caf"),
+        ] {
+            let entries = listing(&[(name, true)]);
+            let mut suggest = adopted();
+            assert_eq!(
+                step_path(typed, Some(&entries), &mut suggest),
+                None,
+                "{name:?} must not be suggested"
+            );
+        }
+    }
+
+    #[test]
+    fn history_outranks_the_path_provider_when_both_match() {
+        let mut suggest = adopted();
+        let mut ring = VecDeque::new();
+        ring.push_back("~/src/project".to_string());
+        suggest.ring = ring;
+        let entries = listing(&[("src", true)]);
+        let shown = step_path("~/sr", Some(&entries), &mut suggest)
+            .expect("someone answers the path token");
+        assert_eq!(shown.suffix, "c/project", "the tab's own truth first");
+        assert_eq!(shown.source, SuggestionSource::History);
+    }
+
+    #[test]
+    fn the_paths_config_gate_off_restores_phase_one_exactly() {
+        // One mutated field: the path provider stays silent for a
+        // path token — and history keeps suggesting "gi" exactly as
+        // phase 1 did, listing or not.
+        let entries = listing(&[("src", true)]);
+        let mut suggest = adopted();
+        let before = String::from("$ ~/sr");
+        let gated = Observation {
+            paths_enabled: false,
+            before_cursor: &before,
+            cursor_column: before.len(),
+            path_listing: Some(&entries),
+            ..obs()
+        };
+        assert_eq!(step(&gated, &mut suggest), None);
+        let mut suggest = adopted();
+        let history = Observation {
+            paths_enabled: false,
+            path_listing: Some(&entries),
+            ..obs()
+        };
+        let shown = step(&history, &mut suggest).expect("history is unaffected");
+        assert_eq!(shown.suffix, "t status");
+        assert_eq!(shown.source, SuggestionSource::History);
+    }
+
+    #[test]
+    fn a_spawn_gate_shut_silences_the_path_provider() {
+        // The ssh honesty line, model-side: an ineligible tab never
+        // suggests paths, whatever listing an observation carries.
+        let entries = listing(&[("src", true)]);
+        let mut suggest = adopted();
+        let before = String::from("$ ~/sr");
+        let gated = Observation {
+            paths_eligible: false,
+            before_cursor: &before,
+            cursor_column: before.len(),
+            path_listing: Some(&entries),
+            ..obs()
+        };
+        assert_eq!(step(&gated, &mut suggest), None);
+    }
+
+    #[test]
+    fn the_escaped_suffix_fits_in_grid_cells_or_drops() {
+        // "\ file.txt" is ten cells; the cursor sits at column 6, so
+        // seventeen columns fit and sixteen drop — the fit rule
+        // measures the escaped form.
+        let entries = listing(&[("my file.txt", false)]);
+        let mut suggest = adopted();
+        let before = String::from("$ ~/my");
+        let fits = Observation {
+            before_cursor: &before,
+            cursor_column: before.len(),
+            columns: 17,
+            path_listing: Some(&entries),
+            ..obs()
+        };
+        let drops = Observation {
+            columns: 16,
+            ..fits
+        };
+        assert_eq!(
+            step(&fits, &mut suggest).map(|s| s.suffix),
+            Some("\\ file.txt".to_string())
+        );
+        assert_eq!(step(&drops, &mut suggest), None);
+    }
+
+    #[test]
+    fn no_listing_is_no_path_context() {
+        // The engine reduces no listing (a plain word, an ineligible
+        // tab): the provider has nothing to say.
+        let mut suggest = adopted();
+        assert_eq!(step_path("~/sr", None, &mut suggest), None);
     }
 }

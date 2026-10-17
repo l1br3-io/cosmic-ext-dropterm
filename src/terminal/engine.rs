@@ -1428,6 +1428,10 @@ impl Terminal {
                     let observation = suggest::Observation {
                         enabled: self.autosuggestions_enabled,
                         paths_eligible,
+                        // The path provider's config gate: true until
+                        // PS-4 resolves `autosuggestions_paths_enabled`
+                        // into the options.
+                        paths_enabled: true,
                         path_listing,
                         focused: self.is_focused,
                         foreground_child,
