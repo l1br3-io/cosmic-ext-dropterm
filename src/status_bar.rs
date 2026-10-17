@@ -24,6 +24,7 @@
 //! elided display.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::alignment;
@@ -869,6 +870,98 @@ pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
             .try_into()
             .expect("a minute-boundary delay is 0..=60 s of nanoseconds"),
     )
+}
+
+// --- the command timer (command-lifecycle spec) ---
+
+/// The command timer's edge model (command-lifecycle spec): pure
+/// over the foreground diff `Terminal::update` already computes. A
+/// start sets `started_at` only when the diff witnessed the
+/// idle→running crossing — a timer born mid-run never learns that
+/// command's start, so it never reports a duration for it. A finish
+/// freezes the elapsed as the last command's duration; the next
+/// start clears the freeze.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the Task 1 model; Task 2's engine wiring consumes it"
+    )
+)]
+#[derive(Default)]
+pub struct CommandTimer {
+    /// The last observed foreground state — `None` until the first
+    /// observation, so a timer born mid-run knows its start went
+    /// unwitnessed.
+    last_foreground: Option<bool>,
+    /// The running command's witnessed start.
+    started_at: Option<Instant>,
+    /// The last finished command's duration, until the next start.
+    frozen: Option<Duration>,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the Task 1 model; Task 2's engine wiring consumes it"
+    )
+)]
+impl CommandTimer {
+    /// One update's observation. `foreground` is the honesty input:
+    /// the engine's own kernel truth at `update()` entry, not a
+    /// guess; consecutive same-state observations are no-ops.
+    pub fn step(&mut self, foreground: bool, now: Instant) {
+        match (self.last_foreground, foreground) {
+            // The witnessed idle→running crossing: the start.
+            (Some(false), true) => {
+                self.started_at = Some(now);
+                self.frozen = None;
+            }
+            // The witnessed running→idle crossing: freeze the
+            // elapsed of a witnessed start — an unwitnessed one has
+            // no duration to freeze (the both-edges honesty rule).
+            (Some(true), false) => {
+                if let Some(start) = self.started_at.take() {
+                    self.frozen = Some(now.saturating_duration_since(start));
+                }
+            }
+            // A first observation, or a same-state repeat: no edge.
+            _ => {}
+        }
+        self.last_foreground = Some(foreground);
+    }
+
+    /// The running command's elapsed, only while a witnessed start
+    /// runs — `None` for a command whose start went unwitnessed.
+    pub fn live_elapsed(&self, now: Instant) -> Option<Duration> {
+        self.started_at
+            .map(|start| now.saturating_duration_since(start))
+    }
+
+    /// The last finished command's duration, until the next start.
+    pub fn last_duration(&self) -> Option<Duration> {
+        self.frozen
+    }
+}
+
+/// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
+/// (command-lifecycle spec, OQ-3).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the Task 1 model; Task 2's engine wiring consumes it"
+    )
+)]
+pub fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let (hours, minutes, secs) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
+    }
 }
 
 /// The cwd's git branch — bounded file reads, never a subprocess.

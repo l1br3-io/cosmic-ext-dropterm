@@ -804,6 +804,111 @@ fn the_clock_ticks_only_while_both_gates_hold() {
     assert!(!clock_due(false, false));
 }
 
+// --- the command timer (command-lifecycle) ---
+//
+// Pure policy over the foreground diff the engine already computes:
+// a start counts only when the timer witnessed the idle→running
+// crossing, a finish freezes the elapsed, and a command born
+// mid-observation never yields a duration — the both-edges honesty
+// rule.
+
+#[test]
+fn a_witnessed_start_sets_the_start_and_the_elapsed_grows_with_now() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0 + Duration::from_secs(1));
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(3)),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(11)),
+        Some(Duration::from_secs(10))
+    );
+}
+
+#[test]
+fn a_witnessed_finish_freezes_the_elapsed_and_ends_the_live_read() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    assert_eq!(timer.last_duration(), Some(Duration::from_secs(3)));
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(10)), None);
+}
+
+#[test]
+fn the_next_start_clears_the_freeze_and_re_arms() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    timer.step(true, t0 + Duration::from_secs(10));
+    assert_eq!(
+        timer.last_duration(),
+        None,
+        "the next start clears the freeze"
+    );
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(12)),
+        Some(Duration::from_secs(2))
+    );
+}
+
+#[test]
+fn same_state_repeats_are_no_ops() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    // Idle repeats on a fresh timer arm nothing.
+    timer.step(false, t0);
+    timer.step(false, t0 + Duration::from_secs(5));
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(6)), None);
+    // Running repeats keep the original start — the elapsed measures
+    // from the crossing, not the last observation.
+    timer.step(true, t0 + Duration::from_secs(10));
+    timer.step(true, t0 + Duration::from_secs(15));
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(20)),
+        Some(Duration::from_secs(10))
+    );
+}
+
+#[test]
+fn a_timer_born_mid_run_never_reports_that_command() {
+    // The profile-tab spawn case: the first observation is already
+    // running, so the start went unwitnessed — no live elapsed, and
+    // the finish freezes nothing rather than guessing.
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(true, t0);
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(4)), None);
+    timer.step(false, t0 + Duration::from_secs(5));
+    assert_eq!(timer.last_duration(), None);
+}
+
+#[test]
+fn default_is_a_clean_idle_timer() {
+    let timer = CommandTimer::default();
+    assert_eq!(timer.live_elapsed(Instant::now()), None);
+    assert_eq!(timer.last_duration(), None);
+}
+
+#[test]
+fn format_duration_renders_mss_under_an_hour() {
+    assert_eq!(format_duration(Duration::from_secs(4)), "0:04");
+    assert_eq!(format_duration(Duration::from_secs(161)), "2:41");
+    assert_eq!(format_duration(Duration::from_secs(3599)), "59:59");
+}
+
+#[test]
+fn format_duration_renders_hmmss_at_and_over_an_hour() {
+    assert_eq!(format_duration(Duration::from_secs(3600)), "1:00:00");
+    assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
+}
+
 // --- the git branch (real fixture trees under temp) ---
 
 fn temp_root(label: &str) -> std::path::PathBuf {
