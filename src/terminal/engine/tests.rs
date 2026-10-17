@@ -1013,3 +1013,104 @@ fn closed_gates_and_plain_tokens_never_produce_a_listing() {
     assert!(cache.entries.is_empty());
     assert_eq!(cache.key, None);
 }
+
+// --- the command catalog's spawn-time snapshot (command-catalog) ---
+
+/// A fresh fixture directory under the temp root, unique per name —
+/// the listing-cache fixture convention, std-only.
+fn catalog_fixture(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("dropterm-catalog-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    dir
+}
+
+/// Marks `path` executable (0755) — `fs::write` creates 0644, and
+/// the catalog walks only executables.
+fn mark_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("fixture exec bit");
+}
+
+#[test]
+fn the_catalog_walks_regular_executables_sorted_and_deduped() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = catalog_fixture("walk");
+    std::fs::write(dir.join("git"), b"").expect("fixture file");
+    mark_executable(&dir.join("git"));
+    std::fs::write(dir.join("cargo"), b"").expect("fixture file");
+    mark_executable(&dir.join("cargo"));
+    // A file without the execute bit never lands in the catalog...
+    std::fs::write(dir.join("plain"), b"").expect("fixture file");
+    // ...nor does a directory (its 0755 carries the bit; regular-file
+    // is the filter), a broken symlink, or a non-UTF-8 name that
+    // could never be safely suggested.
+    std::fs::create_dir(dir.join("sub")).expect("fixture directory");
+    std::os::unix::fs::symlink("nowhere", dir.join("dead")).expect("broken symlink");
+    std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"bad\xffname")), b"")
+        .expect("non-UTF-8 fixture name");
+    // A symlink to an executable is an executable (the
+    // `python3` → `python3.11` shape PATH abuts in).
+    std::os::unix::fs::symlink("git", dir.join("gitlink")).expect("symlink");
+
+    let path = dir.to_string_lossy().into_owned();
+    assert_eq!(
+        command_catalog_from_path(Some(&path)),
+        [
+            "cargo".to_string(),
+            "git".to_string(),
+            "gitlink".to_string()
+        ],
+        "sorted, regular executables only, symlinks followed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_catalog_dedupes_across_path_directories() {
+    // A name in two PATH directories appears once: the set is keyed
+    // by basename, case-sensitively, per tab.
+    let first = catalog_fixture("dup-one");
+    let second = catalog_fixture("dup-two");
+    std::fs::write(first.join("dup"), b"").expect("fixture file");
+    mark_executable(&first.join("dup"));
+    std::fs::write(second.join("dup"), b"").expect("fixture file");
+    mark_executable(&second.join("dup"));
+    let path = format!("{}:{}", first.to_string_lossy(), second.to_string_lossy());
+    assert_eq!(
+        command_catalog_from_path(Some(&path)),
+        ["dup".to_string()],
+        "the duplicate name contributes one catalog entry"
+    );
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+}
+
+#[test]
+fn a_missing_path_directory_is_skipped_silently() {
+    // The walk never guesses and never fails: a PATH entry that does
+    // not exist contributes nothing, and the directories around it
+    // still walk.
+    let dir = catalog_fixture("missing");
+    std::fs::write(dir.join("only"), b"").expect("fixture file");
+    mark_executable(&dir.join("only"));
+    let missing = dir.join("does-not-exist");
+    let path = format!("{}:{}", missing.to_string_lossy(), dir.to_string_lossy());
+    assert_eq!(
+        command_catalog_from_path(Some(&path)),
+        ["only".to_string()],
+        "the missing directory contributes nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_path_at_all_is_the_empty_catalog() {
+    // `None` is no PATH anywhere (the options default); `""` is an
+    // empty PATH value. Both are silence — never a guess.
+    assert!(command_catalog_from_path(None).is_empty());
+    assert!(command_catalog_from_path(Some("")).is_empty());
+}

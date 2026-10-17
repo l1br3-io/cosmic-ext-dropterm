@@ -278,6 +278,19 @@ fn spawn_home(profile_env: &HashMap<String, String>) -> Option<String> {
         .or_else(|| std::env::var("HOME").ok())
 }
 
+/// The spawn-time PATH (command-catalog spec): a profile env
+/// override when the preset carries one, else this process's — the
+/// environment the pty exec inherits, the one the command catalog
+/// snapshots at spawn (resolved app-side so the catalog describes
+/// the same machine the shell sees). `None` (no PATH anywhere) is
+/// the empty catalog.
+fn spawn_path(profile_env: &HashMap<String, String>) -> Option<String> {
+    profile_env
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+}
+
 /// The program word the tab is *spawned as* (path-suggest spec): the
 /// shell for a plain spawn and every degradation that lands on one,
 /// the leading program of a `--cmd` line, and a profile command's
@@ -461,6 +474,8 @@ impl DropTerm {
         // The path provider's `~` root, resolved from the same env map
         // the pty is about to own.
         let spawn_home = spawn_home(&pty_env);
+        // The command catalog's PATH, from the same env map.
+        let spawn_path = spawn_path(&pty_env);
         let pty_options = PtyOptions {
             shell: Some(PtyShell::new(shell.clone(), args)),
             // Alacritty chdirs before exec and silently keeps this
@@ -490,6 +505,7 @@ impl DropTerm {
                 autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
+                spawn_path,
                 ..TerminalOptions::default()
             },
             &colors,
@@ -948,6 +964,21 @@ mod tests {
             Some("/srv/remote-home".to_string())
         );
         assert_eq!(spawn_home(&HashMap::new()), std::env::var("HOME").ok());
+    }
+
+    #[test]
+    fn spawn_path_prefers_the_profile_env_override_over_the_process_path() {
+        // The preset's PATH wins; without one the pty inherits this
+        // process's PATH — the environment the command catalog
+        // snapshots at spawn (command-catalog spec).
+        assert_eq!(
+            spawn_path(&HashMap::from([(
+                "PATH".to_string(),
+                "/srv/remote-bin".to_string()
+            )])),
+            Some("/srv/remote-bin".to_string())
+        );
+        assert_eq!(spawn_path(&HashMap::new()), std::env::var("PATH").ok());
     }
 
     #[test]

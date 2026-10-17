@@ -41,6 +41,7 @@ use cosmic_text::{
 use indexmap::IndexSet;
 use std::{
     borrow::Cow,
+    collections::BTreeSet,
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -94,6 +95,13 @@ pub struct TerminalOptions {
     /// reduce against it; `None` leaves them unresolvable (silence).
     /// Spawn truth, never rewritten by `set_config`.
     pub spawn_home: Option<String>,
+    /// The spawn-time PATH (command-catalog spec): the environment
+    /// the pty exec inherits — a profile env override when the preset
+    /// carries one, else this process's PATH. The command catalog's
+    /// snapshot walks it once at construction. Spawn truth, never
+    /// rewritten by `set_config` (a respawn is a fresh terminal, and
+    /// its catalog with it).
+    pub spawn_path: Option<String>,
     /// Whether the path provider joins the autosuggest merge
     /// (path-suggest spec): resolved from the app config's
     /// `autosuggestions_paths_enabled` — flips apply at the next
@@ -115,6 +123,7 @@ impl Default for TerminalOptions {
             autosuggestions_enabled: true,
             spawned_program: String::new(),
             spawn_home: None,
+            spawn_path: None,
             autosuggestions_paths_enabled: true,
         }
     }
@@ -411,6 +420,15 @@ pub struct Terminal {
     /// The spawn-time HOME (path-suggest spec) — the `~` root, read
     /// from spawn-resolved truth at every listing refresh.
     spawn_home: Option<String>,
+    /// The command catalog's spawn-time snapshot (command-catalog
+    /// spec): the sorted executable basenames of the spawn-time
+    /// `$PATH` — walked once at construction from the environment
+    /// the pty exec inherits, never rescanned (PATH changes
+    /// mid-session are rare; a rescan policy is ask-first forever).
+    // The snapshot ships before its consumer: the catalog candidate
+    // reads this when CC-2 lands.
+    #[allow(dead_code)]
+    command_catalog: Vec<String>,
     /// The path provider's listing cache (path-suggest spec) — see
     /// [`PathListingCache`]; refreshed inside the synchronous update
     /// flow, never from a thread.
@@ -583,6 +601,41 @@ fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
     entries
 }
 
+/// The command catalog's snapshot walk (command-catalog spec): every
+/// executable basename on `path` — regular files carrying an execute
+/// bit, symlinks followed (the `python3` → `python3.11` shape PATH
+/// abuts in) — deduplicated case-sensitively into one sorted set,
+/// the shape the candidate logic scans. A missing or unreadable PATH
+/// directory contributes nothing, never a guess; a non-UTF-8 name
+/// could never be safely suggested, so it is skipped too.
+fn command_catalog_from_path(path: Option<&str>) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let mut names = BTreeSet::new();
+    for dir in std::env::split_paths(path) {
+        let Ok(read_dir) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            // `DirEntry::metadata` does not follow symlinks; the
+            // joined path's stat does.
+            let Ok(meta) = fs::metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_file()
+                && meta.permissions().mode() & 0o111 != 0
+                && let Some(name) = entry.file_name().into_string().ok()
+            {
+                names.insert(name);
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 impl Terminal {
     // TODO: error handling
     #[expect(
@@ -711,6 +764,7 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             spawned_program: options.spawned_program.clone(),
             spawn_home: options.spawn_home.clone(),
+            command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
             path_cache: PathListingCache::default(),
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
