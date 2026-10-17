@@ -11,7 +11,13 @@ prefix := '/usr'
 
 base-dir := absolute_path(clean(rootdir / prefix))
 
-cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
+# Absolute by default (justfile_directory, not cwd, so a `just`
+# invoked from a subdirectory still resolves): `dev-install`
+# symlinks `dev-image` into `~/.local/bin`, and a relative symlink
+# target would resolve from the link's directory there — the
+# silently-dead-launcher F12 lesson. Every other consumer runs from
+# the justfile directory, where absolute paths work identically.
+cargo-target-dir := env('CARGO_TARGET_DIR', justfile_directory() / 'target')
 bin-src := cargo-target-dir / 'release' / name
 bin-dst := base-dir / 'bin' / name
 debug-bin := cargo-target-dir / 'debug' / name
