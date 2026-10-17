@@ -324,7 +324,7 @@ fn missing_profile_keys_load_as_empty_and_unset() {
 
     let loaded =
         DropTermConfig::get_entry(&config).expect("profile-less v1 config loads without error");
-    assert!(loaded.profiles.is_empty());
+    assert_eq!(loaded.profiles, Vec::new());
     assert_eq!(loaded.default_profile, None);
     // The directory is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
