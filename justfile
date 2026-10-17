@@ -332,7 +332,30 @@ dev-uninstall:
 clean:
     cargo clean
 
-# Installs files (build both artifacts first: just build-all)
+# Stops any release instance still running a binary this justfile
+# replaced or removed. A running process keeps its old inode alive
+# after `install` overwrites the file — /proc/<pid>/exe then reads
+# "<path> (deleted)", and the instance keeps serving the pre-install
+# code until manually restarted (the stale-instance footgun). The
+# exact-string exe check can never match the dev instance (its own
+# image path) or the applet (its own name); only genuinely replaced
+# release processes stop. The next summon — keybind, panel applet,
+# or `just act toggle` — starts the fresh binary. Running this
+# standalone (`just stop-stale-release`) is the one-command restart
+# after a manual binary swap. The panel applet refreshes on its own
+# schedule and is deliberately left alone.
+stop-stale-release:
+    #!/usr/bin/env sh
+    for pid in $(pgrep -f '{{bin-dst}}' || true); do
+        if [ "$(readlink /proc/"$pid"/exe 2>/dev/null)" = '{{bin-dst}} (deleted)' ]; then
+            kill "$pid"
+            echo "stopped stale release instance (pid $pid); the next summon starts the fresh binary"
+        fi
+    done
+
+# Installs files (build both artifacts first: just build-all). Ends
+# by stopping any instance still on the replaced binary, so what
+# runs after an install is always the installed code.
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
@@ -342,11 +365,14 @@ install:
     install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
     install -Dm0644 {{applet-metainfo-src}} {{applet-metainfo-dst}}
     install -Dm0644 {{applet-icon-src}} {{applet-icon-dst}}
+    @{{just_executable()}} stop-stale-release
 
-# Uninstalls installed files
+# Uninstalls installed files (and stops any instance left running
+# the removed binary)
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
     rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}} {{applet-metainfo-dst}}
+    @{{just_executable()}} stop-stale-release
 
 # Regenerate packaging/flatpak/cargo-sources.json from Cargo.lock with
 # flatpak-builder-tools' cargo generator (the pop-os/cosmic-flatpak
