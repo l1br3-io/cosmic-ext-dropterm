@@ -554,12 +554,16 @@ impl DropTerm {
     /// height, and an empty pin adopts immediately
     /// (`window_pin_due(None, ..)`), growing the grid once per
     /// toggle and pushing the grown lines into scrollback on the
-    /// shrink back. Armed, the echo is a changed height inside
-    /// [`geometry::WINDOW_PIN_INTERVAL`] and defers; the real grant
-    /// equals the armed height and re-adopts for free. A
-    /// compositor that grants something other than the request
-    /// still lands through the ordinary debounce — the pre-arm
-    /// only ever names the request, never overrides a grant.
+    /// shrink back. Armed, that echo matches neither the request
+    /// nor the adopted pin and drops at the stale-echo gate
+    /// ([`geometry::offer_is_stale_echo`]) whatever the clock says;
+    /// the real grant equals the armed height and re-adopts for
+    /// free. The pre-arm only ever names the request, never a
+    /// grant: under the gate, a grant that differed from the
+    /// request would drop as echo noise too — the compositor
+    /// grants each `set_size` exactly ([`geometry::DRAG_APPLY_INTERVAL`]'s
+    /// contract), and the pin would rest on the request until the
+    /// next show's measuring pass re-reads the output and re-arms.
     pub(super) fn prearm_show_pin(&mut self, output: (u32, u32), geom: Geometry) {
         #[expect(
             clippy::cast_precision_loss,
