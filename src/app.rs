@@ -483,6 +483,7 @@ impl DropTerm {
             font_size: profile::effective_font_size(profile, self.config.font_size),
             autosuggestions_enabled: self.config.autosuggestions_enabled,
             autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
+            autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
             ..TerminalOptions::default()
         }
     }

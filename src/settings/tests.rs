@@ -227,6 +227,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::BellNotificationEnabled(true),
         PlannedWrite::AutosuggestionsEnabled(true),
         PlannedWrite::AutosuggestionsPathsEnabled(true),
+        PlannedWrite::AutosuggestionsCommandsEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
@@ -297,6 +298,10 @@ fn key_names_match_the_config_file_fields() {
         (
             ConfigKey::AutosuggestionsPathsEnabled,
             "autosuggestions_paths_enabled",
+        ),
+        (
+            ConfigKey::AutosuggestionsCommandsEnabled,
+            "autosuggestions_commands_enabled",
         ),
         (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
         (ConfigKey::NewTabCwd, "new_tab_cwd"),
@@ -824,6 +829,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::BellNotificationEnabled,
             ConfigKey::AutosuggestionsEnabled,
             ConfigKey::AutosuggestionsPathsEnabled,
+            ConfigKey::AutosuggestionsCommandsEnabled,
         ]
     );
     assert_eq!(
@@ -840,6 +846,10 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
     assert_eq!(
         toggle_write(ConfigKey::AutosuggestionsPathsEnabled, false),
         Some(PlannedWrite::AutosuggestionsPathsEnabled(false))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::AutosuggestionsCommandsEnabled, false),
+        Some(PlannedWrite::AutosuggestionsCommandsEnabled(false))
     );
 }
 

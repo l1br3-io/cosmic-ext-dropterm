@@ -1704,3 +1704,73 @@ fn a_disabled_paths_toggle_round_trips_through_the_config_store() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn missing_autosuggestions_commands_key_loads_as_true() {
+    // A config from a version before command-name completion: no
+    // `autosuggestions_commands_enabled` key file. The entry derive
+    // backfills from the struct Default — `true` — so pre-existing
+    // configs see command completion, not a silently-off key.
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-missing-commands-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    }
+    .write_entry(&config)
+    .expect("write config keys");
+    std::fs::remove_file(
+        root.join("cosmic")
+            .join("dropterm-config-test")
+            .join(format!("v{CONFIG_VERSION}"))
+            .join("autosuggestions_commands_enabled"),
+    )
+    .expect("remove autosuggestions_commands_enabled key file");
+
+    let loaded = DropTermConfig::get_entry(&config).expect("key-less config loads without error");
+    assert!(loaded.autosuggestions_commands_enabled);
+    // The directory is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_disabled_commands_toggle_round_trips_through_the_config_store() {
+    // The off state persists — history-only behavior stays across a
+    // write→load cycle (a present `false` key is honored, not
+    // defaulted over).
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-commands-off-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    let stored = DropTermConfig {
+        autosuggestions_commands_enabled: false,
+        ..DropTermConfig::default()
+    };
+    stored.write_entry(&config).expect("write config keys");
+
+    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    assert_eq!(loaded, stored);
+    assert!(!loaded.autosuggestions_commands_enabled);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

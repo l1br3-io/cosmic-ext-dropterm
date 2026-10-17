@@ -396,6 +396,18 @@ pub struct DropTermConfig {
     /// restores history-only behavior exactly. Flips apply live on
     /// the next typed prefix.
     pub autosuggestions_paths_enabled: bool,
+    /// Whether the command-name provider joins the autosuggest merge
+    /// (command-catalog spec): the command word at the command
+    /// position completes from the executables on the tab's
+    /// spawn-time `$PATH` — shortest match wins, ties alphabetical,
+    /// the match must extend the word — so a fresh tab with an empty
+    /// history ring still finishes `gi` → `git`, and after one real
+    /// run history takes over invisibly. A snapshot taken at spawn,
+    /// never rescanned; local-machine knowledge, silent over ssh;
+    /// history suggestions are unaffected. Defaults to `true`;
+    /// `false` restores history-only behavior exactly. Flips apply
+    /// live at the next typed prefix.
+    pub autosuggestions_commands_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -447,6 +459,7 @@ impl Default for DropTermConfig {
             status_bar_border: true,
             autosuggestions_enabled: true,
             autosuggestions_paths_enabled: true,
+            autosuggestions_commands_enabled: true,
         }
     }
 }
