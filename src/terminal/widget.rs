@@ -41,7 +41,7 @@ use cosmic::{
     },
     iced::{
         Color, Element, Length, Padding, Point, Rectangle, Size, Vector,
-        advanced::graphics::text::Raw,
+        advanced::graphics::text::{Raw, font_system},
         event::Event,
         keyboard::{Event as KeyEvent, Key, Modifiers},
         mouse::{self, Button, Event as MouseEvent, ScrollDelta},
@@ -49,18 +49,19 @@ use cosmic::{
     theme::Theme,
 };
 use cosmic::{iced::core::SmolStr, widget::menu::key_bind::KeyBind};
-use cosmic_text::{Buffer, LayoutGlyph};
+use cosmic_text::{Buffer, LayoutGlyph, Metrics, Shaping, Wrap};
 use indexmap::IndexSet;
 use std::{
     array,
-    cell::Cell,
+    cell::{Cell, RefCell},
     cmp,
     collections::HashMap,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use super::engine::{Metadata, Terminal, TerminalScroll};
+use super::suggest::AcceptKind;
 
 /// Which app-level action a bound key triggers.
 ///
@@ -899,6 +900,71 @@ where
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
 
+        // The ghost-text overlay (autosuggest spec): the showing
+        // suffix as dim glyphs starting one cell past the cursor —
+        // an overlay like the cursor quad, never the grid and never
+        // the terminal's own buffer, so selection, search, scrollback,
+        // and copy see nothing. Cached in State keyed on suffix +
+        // metrics + cell width + tint (the paragraph-cache precedent);
+        // the columns guard already guarantees the fit, and the view
+        // clip is defensive.
+        {
+            let (cursor_point, display_offset) = {
+                let term = terminal.term.lock();
+                (
+                    term.renderable_content().cursor.point,
+                    term.grid().display_offset(),
+                )
+            };
+            if display_offset == 0
+                && let Some(suffix) = terminal.suggestion().map(str::to_string)
+            {
+                let size = terminal.size();
+                let metrics = terminal.with_buffer(Buffer::metrics);
+                let tint = terminal.ghost_color();
+                let key = (suffix.clone(), metrics, size.cell_width, tint);
+                let mut cache = state.ghost.borrow_mut();
+                let entry = match cache.take() {
+                    Some(entry) if entry.0 == key => entry,
+                    _ => (
+                        key,
+                        Arc::new(ghost_buffer(
+                            &suffix,
+                            metrics,
+                            size.cell_width,
+                            tint,
+                            terminal.default_attrs(),
+                        )),
+                    ),
+                };
+                let weak = Arc::downgrade(&entry.1);
+                *cache = Some(entry);
+                drop(cache);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "cell indices < 2^24, exact in f32"
+                )]
+                let position = view_position
+                    + Vector::new(
+                        ((cursor_point.column.0 + 1) as f32 * size.cell_width).floor(),
+                        (cursor_point.line.0 as f32 * size.cell_height).floor(),
+                    );
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "view px are < 2^24, exact in f32"
+                )]
+                renderer.fill_raw(Raw {
+                    buffer: weak,
+                    position,
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
+                    clip_bounds: Rectangle::new(
+                        view_position,
+                        Size::new(view_w as f32, view_h as f32),
+                    ),
+                });
+            }
+        }
+
         // Draw scrollbar
         if let Some((start, end)) = terminal.scrollbar() {
             #[expect(
@@ -1156,6 +1222,18 @@ where
                         shell.capture_event();
                         return;
                     }
+                }
+
+                // The autosuggest soft keys (autosuggest spec): accept
+                // only while the engine shows a suggestion — with
+                // nothing showing the arm falls through, and Right
+                // maps to its escape code exactly as before.
+                if let Some(kind) = accept_kind(*named, *modifiers)
+                    && terminal.suggestion().is_some()
+                {
+                    terminal.accept_suggestion(kind);
+                    shell.capture_event();
+                    return;
                 }
 
                 let mod_no = calculate_modifier_number(state);
@@ -2171,6 +2249,33 @@ fn update_buffer_drag(
     true
 }
 
+/// The ghost overlay's cache key: everything a rebuild depends on.
+type GhostKey = (String, Metrics, f32, cosmic_text::Color);
+
+/// Shapes the ghost overlay's one-line buffer (autosuggest spec): the
+/// suffix in the terminal's own font and metrics, monospaced to the
+/// cell width, tinted the engine's ghost color — inert pixels laid
+/// over the cells after the cursor, never the grid, never the
+/// terminal's own cosmic-text buffer.
+fn ghost_buffer(
+    suffix: &str,
+    metrics: Metrics,
+    cell_width: f32,
+    tint: cosmic_text::Color,
+    default_attrs: &cosmic_text::Attrs<'_>,
+) -> Buffer {
+    let attrs = default_attrs.clone().color(tint);
+    let mut buffer = Buffer::new_empty(metrics);
+    buffer.set_wrap(Wrap::None);
+    buffer.set_text(suffix, &attrs, Shaping::Advanced, None);
+    buffer.set_monospace_width(Some(cell_width));
+    {
+        let mut font_system = font_system().write().unwrap();
+        buffer.shape_until_scroll(font_system.raw(), true);
+    }
+    buffer
+}
+
 /// Cached per-widget interaction state: focus, click cadence, the
 /// active drag, scroll accumulators, and IME preedit.
 pub struct State {
@@ -2183,6 +2288,13 @@ pub struct State {
     scrollbar_rect: Cell<Rectangle<f32>>,
     autoscroll: DragAutoscroll,
     preedit: Option<input_method::Preedit>,
+    /// The ghost-text overlay's cache (autosuggest spec): the shaped
+    /// one-line buffer plus the key it was built for — suffix,
+    /// metrics, cell width, tint. Rebuilt only when the key changes;
+    /// `None` when nothing has shown yet. Interior-mutable because
+    /// `draw` receives the tree state by shared reference (the
+    /// scrollbar rect's `Cell` precedent).
+    ghost: RefCell<Option<(GhostKey, Arc<Buffer>)>>,
 }
 
 impl State {
@@ -2198,6 +2310,7 @@ impl State {
             scrollbar_rect: Cell::new(Rectangle::default()),
             autoscroll: DragAutoscroll::new(AUTOSCROLL_INTERVAL),
             preedit: None,
+            ghost: RefCell::new(None),
         }
     }
 }
@@ -2226,6 +2339,26 @@ meta      0b100000    (32)
 caps_lock 0b1000000   (64)
 num_lock  0b10000000  (128)
 */
+/// The autosuggest soft keys (autosuggest spec): bare Right accepts
+/// the whole showing suggestion, Alt+Right one fish-shaped word —
+/// only those two chords, and only while the engine actually shows a
+/// suggestion (checked by the caller). Every other Right chord —
+/// Ctrl/Shift/Super-bearing, the shells' word-jump family — and every
+/// other key reads `None` and falls through to the existing mapping
+/// untouched.
+fn accept_kind(named: Named, modifiers: Modifiers) -> Option<AcceptKind> {
+    if named != Named::ArrowRight {
+        return None;
+    }
+    if modifiers.is_empty() {
+        Some(AcceptKind::Full)
+    } else if modifiers == Modifiers::ALT {
+        Some(AcceptKind::Word)
+    } else {
+        None
+    }
+}
+
 fn calculate_modifier_number(state: &State) -> u8 {
     let mut mod_no = 0;
     if state.modifiers.shift() {
@@ -2295,7 +2428,56 @@ mod tests {
         DisabledFlow, EdgeScrollDirection, accumulate_wheel_lines, context_menu_press,
         disabled_forwards, edge_scroll_adjustment,
     };
+    use cosmic::iced::keyboard::{Modifiers, key::Named};
     use cosmic::iced::mouse::Button;
+
+    use super::accept_kind;
+    use crate::terminal::suggest::AcceptKind;
+
+    #[test]
+    fn bare_right_accepts_the_whole_suggestion() {
+        assert_eq!(
+            accept_kind(Named::ArrowRight, Modifiers::empty()),
+            Some(AcceptKind::Full)
+        );
+    }
+
+    #[test]
+    fn alt_right_accepts_one_word() {
+        assert_eq!(
+            accept_kind(Named::ArrowRight, Modifiers::ALT),
+            Some(AcceptKind::Word)
+        );
+    }
+
+    #[test]
+    fn every_other_right_chord_falls_through() {
+        // Ctrl+Right and Shift+Right are the shells' word-jump
+        // family: never stolen for accepting. Mixed chords and
+        // Super-bearing ones fall through the same way.
+        for modifiers in [
+            Modifiers::CTRL,
+            Modifiers::SHIFT,
+            Modifiers::CTRL | Modifiers::ALT,
+            Modifiers::LOGO,
+        ] {
+            assert_eq!(
+                accept_kind(Named::ArrowRight, modifiers),
+                None,
+                "{modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_right_is_a_soft_key() {
+        // Enter and Tab must keep reaching the shell verbatim — the
+        // project has reasoned once about never stealing completion
+        // keys, and the accept surface stays exactly two keys.
+        assert_eq!(accept_kind(Named::Enter, Modifiers::empty()), None);
+        assert_eq!(accept_kind(Named::Tab, Modifiers::empty()), None);
+        assert_eq!(accept_kind(Named::Home, Modifiers::ALT), None);
+    }
 
     #[test]
     fn a_disabled_terminal_still_forwards_window_focus() {

@@ -448,11 +448,14 @@ impl DropTerm {
     /// The terminal options a tab under `profile` renders with: the
     /// profile's font override, else the global pick —
     /// [`profile::effective_font_size`], the `profile ?? global`
-    /// rule's font arm. `None` (plain tabs, dangling ids) is the
-    /// pure global resolution.
+    /// rule's font arm — plus the global autosuggest flag (the
+    /// config→options flow's one flat addition, autosuggest spec).
+    /// `None` (plain tabs, dangling ids) is the pure global
+    /// resolution.
     fn terminal_options_for(&self, profile: Option<&profile::Profile>) -> TerminalOptions {
         TerminalOptions {
             font_size: profile::effective_font_size(profile, self.config.font_size),
+            autosuggestions_enabled: self.config.autosuggestions_enabled,
             ..TerminalOptions::default()
         }
     }

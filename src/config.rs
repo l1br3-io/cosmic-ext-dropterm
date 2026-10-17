@@ -369,6 +369,15 @@ pub struct DropTermConfig {
     /// the band's own enable — a hidden band renders nothing, and
     /// re-enabling it restores the border per this key.
     pub status_bar_border: bool,
+    /// Whether fish-style autosuggestions compute (autosuggest
+    /// spec): the rest of the most recent matching command from this
+    /// tab's own history, as dim ghost text after the cursor; Right
+    /// accepts it, Alt+Right takes one word, anything else dismisses
+    /// it, and nothing executes without an accept. Defaults to
+    /// `true` (the fish/Warp default-on precedent); `false` is the
+    /// kill switch — zero visual difference. Flips apply live on the
+    /// next update.
+    pub autosuggestions_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -417,6 +426,7 @@ impl Default for DropTermConfig {
             status_bar_show_clock: true,
             tab_bar_border: true,
             status_bar_border: true,
+            autosuggestions_enabled: true,
         }
     }
 }

@@ -442,6 +442,7 @@ impl DropTerm {
             &pty_options,
             &TerminalOptions {
                 font_size,
+                autosuggestions_enabled: self.config.autosuggestions_enabled,
                 ..TerminalOptions::default()
             },
             &colors,

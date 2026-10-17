@@ -17,7 +17,7 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 | Tab | Carries |
 |---|---|
 | **Appearance** | How the terminal looks: the Appearance card (font, size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
-| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications). |
+| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions). |
 | **Profiles** | The profile manager - its own section below. |
 | **Keybindings** | The shortcut editor - its own section below. |
 | **Advanced** | The power controls: `respect_panel`, `layer`, and `keyboard_mode`. |
@@ -94,6 +94,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched |
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
 | `close_confirmation_enabled` | next close - the key is read at request time |
+| `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 
