@@ -30,6 +30,8 @@ Every app-level shortcut and its default chords, in the same groups the settings
 | Open settings | `Ctrl+Shift+I` | `settings` |
 | Toggle the status bar | `Ctrl+Shift+B` | `toggle_status_bar` |
 
+Every default binds `Ctrl+Shift+<key>` - the only exceptions are the three sanctioned families: the zoom cluster (`Ctrl+=`/`Ctrl++`/`Ctrl+-`/`Ctrl+0`), tab cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`Ctrl+PageDown`), and `Shift+Insert` for primary paste. New defaults follow this standard; a bare `Ctrl+<letter>` is always the shell's byte, never the app's.
+
 The numbered activation binds are cosmic-term's exact rule: digits 1-8 activate that tab strictly, and 9 always takes the last tab. The cycling pair is browser-style - `Ctrl+Tab` / `Ctrl+Shift+Tab` walk the tab list alongside `Ctrl+PageUp`/`PageDown`. `copy_primary` ships unbound because middle-click already pastes the primary selection; it is still bindable like every other action.
 
 The per-profile verbs - New profile tab and Switch profile tab - are deliberately not keybindable: they act on a config-list index, which is not a stable user-facing id, so they live only in the context menus.
