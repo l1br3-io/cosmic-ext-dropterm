@@ -191,6 +191,8 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",
+            ConfigKey::CommandFinishNotificationEnabled => "Command finish notifications",
+            ConfigKey::CommandFinishNotificationAfterSecs => "Command finish threshold (seconds)",
             ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
@@ -1112,6 +1114,7 @@ fn toggle_control(
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
+        ConfigKey::CommandFinishNotificationEnabled => config.command_finish_notification_enabled,
         ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
@@ -1153,12 +1156,16 @@ fn text_control(
         ConfigKey::Shell => TextField::Shell,
         ConfigKey::Args => TextField::Args,
         ConfigKey::ScrollbackLines => TextField::ScrollbackLines,
+        ConfigKey::CommandFinishNotificationAfterSecs => {
+            TextField::CommandFinishNotificationAfterSecs
+        }
         ConfigKey::DefaultCwd => TextField::DefaultCwd,
         _ => return None,
     };
     let placeholder = match field {
         TextField::Shell => config.resolved_shell(),
         TextField::ScrollbackLines => "10000".to_string(),
+        TextField::CommandFinishNotificationAfterSecs => "5".to_string(),
         TextField::DefaultCwd => "optional".to_string(),
         _ => String::new(),
     };

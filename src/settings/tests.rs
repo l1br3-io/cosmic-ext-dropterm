@@ -225,6 +225,8 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::SessionPersistenceEnabled(true),
         PlannedWrite::SlideAnimationEnabled(true),
         PlannedWrite::BellNotificationEnabled(true),
+        PlannedWrite::CommandFinishNotificationEnabled(true),
+        PlannedWrite::CommandFinishNotificationAfterSecs(5),
         PlannedWrite::AutosuggestionsEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::NewTabAfterCurrent(true),
@@ -291,6 +293,14 @@ fn key_names_match_the_config_file_fields() {
         (
             ConfigKey::BellNotificationEnabled,
             "bell_notification_enabled",
+        ),
+        (
+            ConfigKey::CommandFinishNotificationEnabled,
+            "command_finish_notification_enabled",
+        ),
+        (
+            ConfigKey::CommandFinishNotificationAfterSecs,
+            "command_finish_notification_after_secs",
         ),
         (ConfigKey::AutosuggestionsEnabled, "autosuggestions_enabled"),
         (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
@@ -475,6 +485,33 @@ fn scrollback_text_rejects_garbage_and_emptiness() {
     assert_eq!(parse_scrollback("   "), None);
     assert_eq!(parse_scrollback("10k"), None);
     assert_eq!(parse_scrollback("1e4"), None);
+}
+
+#[test]
+fn command_notify_secs_parses_plain_numbers() {
+    // The threshold's numeric row — scrollback's parse shape: plain
+    // numbers land (0 = every finish notifies), whitespace trims.
+    assert_eq!(parse_command_notify_secs("5"), Some(5));
+    assert_eq!(parse_command_notify_secs(" 30 \n"), Some(30));
+    assert_eq!(parse_command_notify_secs("0"), Some(0));
+}
+
+#[test]
+fn command_notify_secs_clamps_negatives_and_overflow() {
+    // Clamp, don't reject — the scrollback call: a negative entry
+    // means "every finish", an absurd one saturates u16.
+    assert_eq!(parse_command_notify_secs("-1"), Some(0));
+    assert_eq!(parse_command_notify_secs("99999999"), Some(u16::MAX));
+}
+
+#[test]
+fn command_notify_secs_rejects_garbage_and_emptiness() {
+    // Nothing numeric to commit: no write at all (the draft stays
+    // for the user to fix).
+    assert_eq!(parse_command_notify_secs(""), None);
+    assert_eq!(parse_command_notify_secs("   "), None);
+    assert_eq!(parse_command_notify_secs("5s"), None);
+    assert_eq!(parse_command_notify_secs("1e2"), None);
 }
 
 #[test]
@@ -807,8 +844,8 @@ fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
 fn the_terminal_card_joins_the_bell_after_scrollback() {
     // The Terminal card: the global shell defaults every profile
     // falls back to — shell, arguments, and the plain spawn's
-    // default directory (default-spawn DS-1) — with the bell,
-    // terminal behavior, last.
+    // default directory (default-spawn DS-1) — with the bell and
+    // its finished-command sibling, terminal behavior, last.
     assert_eq!(
         Section::Terminal.keys(),
         &[
@@ -817,6 +854,8 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::DefaultCwd,
             ConfigKey::ScrollbackLines,
             ConfigKey::BellNotificationEnabled,
+            ConfigKey::CommandFinishNotificationEnabled,
+            ConfigKey::CommandFinishNotificationAfterSecs,
             ConfigKey::AutosuggestionsEnabled,
         ]
     );

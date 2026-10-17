@@ -128,6 +128,8 @@ impl Section {
                 ConfigKey::DefaultCwd,
                 ConfigKey::ScrollbackLines,
                 ConfigKey::BellNotificationEnabled,
+                ConfigKey::CommandFinishNotificationEnabled,
+                ConfigKey::CommandFinishNotificationAfterSecs,
                 ConfigKey::AutosuggestionsEnabled,
             ],
             Section::Advanced => &[
@@ -149,7 +151,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (28 — default-spawn's two rows included).
+/// count (41 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -164,6 +166,14 @@ pub enum ConfigKey {
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
     BellNotificationEnabled,
+    /// The finished-command notification's kill switch
+    /// (command-notify spec) — the Terminal card's toggle beside the
+    /// bell, honored at the next finish.
+    CommandFinishNotificationEnabled,
+    /// The finished-command notification's minimum duration in
+    /// seconds (command-notify spec, OQ-1) — the Terminal card's
+    /// numeric row, the scrollback parse shape.
+    CommandFinishNotificationAfterSecs,
     /// The autosuggest kill switch (autosuggest spec) — the Terminal
     /// card's toggle beside the bell, flipping live on the echo.
     AutosuggestionsEnabled,
@@ -294,6 +304,10 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
+            ConfigKey::CommandFinishNotificationEnabled => "command_finish_notification_enabled",
+            ConfigKey::CommandFinishNotificationAfterSecs => {
+                "command_finish_notification_after_secs"
+            }
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
@@ -347,6 +361,8 @@ pub enum PlannedWrite {
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
+    CommandFinishNotificationEnabled(bool),
+    CommandFinishNotificationAfterSecs(u16),
     AutosuggestionsEnabled(bool),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
@@ -415,6 +431,12 @@ impl PlannedWrite {
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
+            PlannedWrite::CommandFinishNotificationEnabled(_) => {
+                ConfigKey::CommandFinishNotificationEnabled
+            }
+            PlannedWrite::CommandFinishNotificationAfterSecs(_) => {
+                ConfigKey::CommandFinishNotificationAfterSecs
+            }
             PlannedWrite::AutosuggestionsEnabled(_) => ConfigKey::AutosuggestionsEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
@@ -500,6 +522,14 @@ impl PlannedWrite {
             PlannedWrite::BellNotificationEnabled(value) => {
                 handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
             }
+            PlannedWrite::CommandFinishNotificationEnabled(value) => handler.set(
+                ConfigKey::CommandFinishNotificationEnabled.key_name(),
+                *value,
+            ),
+            PlannedWrite::CommandFinishNotificationAfterSecs(value) => handler.set(
+                ConfigKey::CommandFinishNotificationAfterSecs.key_name(),
+                *value,
+            ),
             PlannedWrite::AutosuggestionsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsEnabled.key_name(), *value)
             }
@@ -624,6 +654,7 @@ pub enum TextField {
     Shell,
     Args,
     ScrollbackLines,
+    CommandFinishNotificationAfterSecs,
     DefaultCwd,
 }
 
@@ -657,6 +688,27 @@ pub fn parse_scrollback(raw: &str) -> Option<u32> {
     }
 }
 
+/// Parse a `command_finish_notification_after_secs` draft
+/// (command-notify spec): scrollback's parse shape over `u16` —
+/// plain numbers land, negatives clamp to zero (every finish
+/// notifies), an absurd entry saturates, and anything without a
+/// number in it rejects (`None` — no write, the draft stays).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to [0, u16::MAX] first, so the narrowing to u16 is lossless by construction"
+)]
+pub fn parse_command_notify_secs(raw: &str) -> Option<u16> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse::<i128>() {
+        Ok(n) => Some(n.clamp(0, i128::from(u16::MAX)) as u16),
+        Err(_) => None,
+    }
+}
+
 /// The write a submitted text input commits (text inputs commit on
 /// submit, never per keystroke). `None` means the draft did not parse
 /// and nothing is written.
@@ -669,6 +721,9 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
         TextField::Shell => Some(PlannedWrite::Shell(raw.trim().to_string())),
         TextField::Args => Some(PlannedWrite::Args(parse_args(raw))),
         TextField::ScrollbackLines => parse_scrollback(raw).map(PlannedWrite::ScrollbackLines),
+        TextField::CommandFinishNotificationAfterSecs => {
+            parse_command_notify_secs(raw).map(PlannedWrite::CommandFinishNotificationAfterSecs)
+        }
         // The profile form's `parse_cwd` rule: empty clears to `None`
         // (the pty default), any other path lands verbatim — a cwd can
         // never reject.
@@ -754,6 +809,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
         | ConfigKey::BellNotificationEnabled
+        | ConfigKey::CommandFinishNotificationEnabled
+        | ConfigKey::CommandFinishNotificationAfterSecs
         | ConfigKey::NewTabAfterCurrent
         | ConfigKey::CloseConfirmationEnabled
         | ConfigKey::SettingsDrawerClickClose => ApplyTiming::NextTrigger,
@@ -941,6 +998,9 @@ impl SettingsBuffer {
             TextField::Shell => config.shell.clone().unwrap_or_default(),
             TextField::Args => config.args.join(" "),
             TextField::ScrollbackLines => config.scrollback_lines.to_string(),
+            TextField::CommandFinishNotificationAfterSecs => {
+                config.command_finish_notification_after_secs.to_string()
+            }
             // The profile form's `cwd_text` shape: the path verbatim,
             // empty for `None`.
             TextField::DefaultCwd => config
@@ -2064,6 +2124,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
+        ConfigKey::CommandFinishNotificationEnabled => {
+            Some(PlannedWrite::CommandFinishNotificationEnabled(checked))
+        }
         ConfigKey::AutosuggestionsEnabled => Some(PlannedWrite::AutosuggestionsEnabled(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
