@@ -468,11 +468,16 @@ impl DropTerm {
             drag.applied = Some((std::time::Instant::now(), target));
             drag.anchor.applied_px = target;
         }
+        // Declare the request before offering it: the cadence-gated
+        // adoption below is the drag's own grant path, and the echo
+        // gate needs to know this height was asked for.
         #[expect(
             clippy::cast_precision_loss,
             reason = "surface px are < 2^24, exact in f32"
         )]
-        let pin_task = self.offer_window_height(target as f32);
+        let requested = target as f32;
+        self.requested_height = Some(requested);
+        let pin_task = self.offer_window_height(requested);
         let geom = Geometry::from_config(&self.config);
         let apply = geometry::apply_drag_geometry(id, geom, output, target);
         match pin_task {
@@ -490,6 +495,19 @@ impl DropTerm {
     /// applies — so the double-reported stream can never reflow the
     /// terminal at the apply rate.
     pub(super) fn offer_window_height(&mut self, height: f32) -> Option<Task<Message>> {
+        // The stale-echo gate (toggle-grid-stability, round 2): a
+        // granted height may only reach the debounce when it is the
+        // grant of a request we made or a re-report of the adopted
+        // pin. Anything else is the synthetic pre-request echo every
+        // `set_size` double-reports — the full-output stretch at
+        // show, an intermediate drag height after a release — and
+        // the interval debounce only defers it while it lands
+        // inside the window; on hardware the startup echo arrived
+        // after wgpu init, outwaited the interval, and the
+        // pre-armed pin adopted it. Dropped here, timing-free.
+        if geometry::offer_is_stale_echo(self.requested_height, self.window_height, height) {
+            return None;
+        }
         let now = std::time::Instant::now();
         if geometry::window_pin_due(self.pin_applied, now, height) {
             self.window_height = Some(height);
@@ -551,6 +569,25 @@ impl DropTerm {
         self.window_height = Some(height);
         self.pin_applied = Some((std::time::Instant::now(), height));
         self.pending_height = None;
+        self.requested_height = Some(height);
+    }
+
+    /// Record the height a geometry reshape (`set_size`) is about to
+    /// request, without touching the pin: the config-edit reshape
+    /// and the drag release call this beside their `apply_geometry`,
+    /// so the stale-echo gate can tell their grant from the
+    /// synthetic pre-request echo the double-report carries. The
+    /// show path pre-arms instead ([`Self::prearm_show_pin`]) —
+    /// arming the pin ahead of the request is what makes the show
+    /// pass inert; the later reshapes keep the live pin and only
+    /// declare their request.
+    pub(super) fn request_geometry_height(&mut self, output: (u32, u32), geom: Geometry) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
+        let height = geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
+        self.requested_height = Some(height);
     }
 
     /// The surface's current width in px: the value both the drawer

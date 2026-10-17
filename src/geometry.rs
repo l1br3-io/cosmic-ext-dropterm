@@ -338,6 +338,34 @@ pub fn window_pin_due(last: Option<(Instant, f32)>, now: Instant, height: f32) -
     }
 }
 
+/// Whether an offered granted height is a stale echo the pin must
+/// drop: it matches neither the height the app last requested
+/// from the compositor nor the height the pin already adopted.
+///
+/// The runtime double-reports every `set_size` — the stale
+/// synthetic configure carries the *pre-request* window height —
+/// and the interval debounce ([`window_pin_due`]) only defers
+/// such an echo while it lands inside [`WINDOW_PIN_INTERVAL`].
+/// That is a timing heuristic, not a correctness gate: on
+/// hardware the startup echo arrived after wgpu adapter init and
+/// a pre-armed 734 px pin adopted the 1440 px full-output
+/// stretch, growing the grid once and poisoning the pin so later
+/// passes oscillated (toggle-grid-stability, round 2). This is
+/// the structural rule instead: only a request's own grant — or
+/// a re-report of the adopted height, the config-edit echo that
+/// has always landed as a free no-op — may move the pin;
+/// everything else is echo noise, whatever the clock says.
+pub fn offer_is_stale_echo(requested: Option<f32>, adopted: Option<f32>, height: f32) -> bool {
+    match (requested, adopted) {
+        // Nothing requested and nothing adopted: the measuring
+        // gate already rejects such offers and every offer past
+        // `Measuring` follows a pre-arm, but a first offer here
+        // must adopt rather than drop forever.
+        (None, None) => false,
+        _ => Some(height) != requested && Some(height) != adopted,
+    }
+}
+
 /// How long after a grab-bar drag settles before its height percent is
 /// persisted to config: long enough that rapid
 /// re-drags coalesce into one write, short enough that a hide/show

@@ -405,6 +405,61 @@ fn changed_heights_adopt_once_the_interval_elapses() {
     assert!(window_pin_due(Some((at, 500.0)), now, 505.0));
 }
 
+// --- the stale-echo gate (toggle-grid-stability, round 2) ---
+//
+// The interval debounce above only defers a stale echo that
+// arrives inside the window; on hardware the startup echo
+// (wgpu init in front of it) outwaited the interval and the
+// pre-armed pin adopted the full-output stretch height. The
+// structural rule: only a request's own grant — or a re-report
+// of the adopted height — may reach the debounce; everything
+// else is echo noise and drops.
+
+#[test]
+fn the_stale_show_echo_drops_whenever_it_lands() {
+    // The reported bug's carrier: the synthetic configure after
+    // the show's set_size carries the measuring pass's
+    // full-output height (1440 against a requested 734). It
+    // must drop whatever the clock says.
+    assert!(offer_is_stale_echo(Some(734.0), Some(734.0), 1440.0));
+}
+
+#[test]
+fn the_requests_own_grant_passes_the_gate() {
+    // The grant of the height the app asked for is legitimate —
+    // it reaches the interval debounce below (equal here, so a
+    // free re-adopt).
+    assert!(!offer_is_stale_echo(Some(734.0), Some(734.0), 734.0));
+    // And a changed one still reaches the debounce's interval
+    // arm (a config edit's grant while the pin holds the old).
+    assert!(!offer_is_stale_echo(Some(500.0), Some(734.0), 500.0));
+}
+
+#[test]
+fn the_config_edit_echo_of_the_adopted_height_passes() {
+    // A config-edit reshape's stale echo carries the pre-edit
+    // height — which equals the adopted pin, so it lands as the
+    // free no-op it always was; the gate must not break that.
+    assert!(!offer_is_stale_echo(Some(500.0), Some(734.0), 734.0));
+}
+
+#[test]
+fn intermediate_drag_echoes_drop_after_the_release() {
+    // A release's set_size double-report can carry an
+    // intermediate cadence height from mid-drag: not the
+    // request, not the pin — noise.
+    assert!(offer_is_stale_echo(Some(800.0), Some(800.0), 650.0));
+}
+
+#[test]
+fn an_offer_before_any_request_adopts() {
+    // Defensive pair: nothing requested and nothing adopted —
+    // the measuring gate already rejects such offers, and every
+    // offer past Measuring follows a pre-arm, but a first offer
+    // here must adopt rather than drop forever.
+    assert!(!offer_is_stale_echo(None, None, 500.0));
+}
+
 #[test]
 fn release_schedules_one_write_due_at_its_generation() {
     // Release -> window -> write: the settled percent is captured

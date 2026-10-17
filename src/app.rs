@@ -344,6 +344,15 @@ pub struct DropTerm {
     /// A height the debounce skipped, landing via the trailing adopt
     /// (`WindowPinDue`) once the granted stream settles.
     pending_height: Option<f32>,
+    /// The height the app last asked the compositor for via
+    /// `set_size` (show pre-arm, drag applies and release, config
+    /// reshapes). With `window_height` it forms the stale-echo
+    /// gate (`geometry::offer_is_stale_echo`): an offered height
+    /// matching neither is the synthetic pre-request echo every
+    /// `set_size` double-reports, and must drop whatever the
+    /// debounce clock says — adopting it by timing luck grows the
+    /// grid once per toggle (toggle-grid-stability, round 2).
+    requested_height: Option<f32>,
     /// Whether the surface has received keyboard focus at least once since it
     /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
     /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
@@ -1324,6 +1333,7 @@ impl Application for DropTerm {
             window_height: None,
             pin_applied: None,
             pending_height: None,
+            requested_height: None,
             surface_focused: false,
             key_binds,
             keybind_capture: None,
@@ -2024,7 +2034,11 @@ impl DropTerm {
                 ) && let (SurfaceState::Shown(id), Some(output)) =
                     (&self.surface, self.output_size)
                 {
-                    return geometry::apply_geometry(*id, new_geom, output).chain(clock_task);
+                    let id = *id;
+                    // Declare the reshape's request for the
+                    // stale-echo gate before issuing it.
+                    self.request_geometry_height(output, new_geom);
+                    return geometry::apply_geometry(id, new_geom, output).chain(clock_task);
                 }
                 return clock_task;
             }
@@ -2499,21 +2513,25 @@ impl DropTerm {
                 if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
                     (self.drag.take(), &self.surface, self.output_size)
                 {
+                    let id = *id;
                     let geom = self.settled_geometry(&drag, output);
+                    // Declare the release's request for the
+                    // stale-echo gate before issuing it.
+                    self.request_geometry_height(output, geom);
                     // Write-only-if-changed: a drag that settles back
                     // on the config's current percent persists nothing.
                     if geom.height_percent != self.config.height_percent {
                         self.config.height_percent = geom.height_percent;
                         let generation = self.write_back.schedule(geom.height_percent).generation;
                         return Task::batch([
-                            geometry::apply_geometry(*id, geom, output),
+                            geometry::apply_geometry(id, geom, output),
                             Task::perform(
                                 tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
                                 move |()| cosmic::Action::App(Message::WriteDue(generation)),
                             ),
                         ]);
                     }
-                    return geometry::apply_geometry(*id, geom, output);
+                    return geometry::apply_geometry(id, geom, output);
                 }
             }
             Message::WriteDue(generation) => {
