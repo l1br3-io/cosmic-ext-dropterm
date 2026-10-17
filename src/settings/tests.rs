@@ -226,6 +226,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::SlideAnimationEnabled(true),
         PlannedWrite::BellNotificationEnabled(true),
         PlannedWrite::AutosuggestionsEnabled(true),
+        PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
@@ -293,6 +294,10 @@ fn key_names_match_the_config_file_fields() {
             "bell_notification_enabled",
         ),
         (ConfigKey::AutosuggestionsEnabled, "autosuggestions_enabled"),
+        (
+            ConfigKey::AutosuggestionsPathsEnabled,
+            "autosuggestions_paths_enabled",
+        ),
         (ConfigKey::NewTabAfterCurrent, "new_tab_after_current"),
         (ConfigKey::NewTabCwd, "new_tab_cwd"),
         (ConfigKey::DefaultCwd, "default_cwd"),
@@ -818,6 +823,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::ScrollbackLines,
             ConfigKey::BellNotificationEnabled,
             ConfigKey::AutosuggestionsEnabled,
+            ConfigKey::AutosuggestionsPathsEnabled,
         ]
     );
     assert_eq!(
@@ -825,10 +831,15 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
         Some(PlannedWrite::BellNotificationEnabled(false))
     );
     // The autosuggest kill switch rides the same card, flipping live
-    // through the same single planned-write path.
+    // through the same single planned-write path — and the path
+    // provider's own toggle rides beside it.
     assert_eq!(
         toggle_write(ConfigKey::AutosuggestionsEnabled, false),
         Some(PlannedWrite::AutosuggestionsEnabled(false))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::AutosuggestionsPathsEnabled, false),
+        Some(PlannedWrite::AutosuggestionsPathsEnabled(false))
     );
 }
 

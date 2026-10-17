@@ -94,6 +94,12 @@ pub struct TerminalOptions {
     /// reduce against it; `None` leaves them unresolvable (silence).
     /// Spawn truth, never rewritten by `set_config`.
     pub spawn_home: Option<String>,
+    /// Whether the path provider joins the autosuggest merge
+    /// (path-suggest spec): resolved from the app config's
+    /// `autosuggestions_paths_enabled` — flips apply at the next
+    /// `set_config` pass, so a showing path ghost disappears the
+    /// moment the toggle lands while history keeps suggesting.
+    pub autosuggestions_paths_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -109,6 +115,7 @@ impl Default for TerminalOptions {
             autosuggestions_enabled: true,
             spawned_program: String::new(),
             spawn_home: None,
+            autosuggestions_paths_enabled: true,
         }
     }
 }
@@ -393,6 +400,10 @@ pub struct Terminal {
     /// Whether autosuggestions compute (autosuggest spec) — the
     /// resolved options flag, re-read at every `set_config`.
     autosuggestions_enabled: bool,
+    /// Whether the path provider joins the merge (path-suggest spec)
+    /// — the resolved options flag, re-read at every `set_config`;
+    /// also stops the listing cache's reads when off.
+    autosuggestions_paths_enabled: bool,
     /// The program the tab is spawned as (path-suggest spec) — spawn
     /// truth fixed for the terminal's life; the path provider's
     /// allowlist gate reads it at every observation build.
@@ -697,6 +708,7 @@ impl Terminal {
             needs_update: true,
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
+            autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             spawned_program: options.spawned_program.clone(),
             spawn_home: options.spawn_home.clone(),
             path_cache: PathListingCache::default(),
@@ -1234,6 +1246,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_paths_enabled != options.autosuggestions_paths_enabled {
+            self.autosuggestions_paths_enabled = options.autosuggestions_paths_enabled;
+            update = true;
+        }
+
         // The ghost tint recomputes from the (possibly just-copied)
         // scheme — three channel averages, cheaper than the diff that
         // guards them.
@@ -1420,7 +1437,9 @@ impl Terminal {
                     // cache reads only behind both gates and only
                     // when the canonical parent changes.
                     let path_listing = self.path_cache.listing_for(
-                        self.autosuggestions_enabled && paths_eligible,
+                        self.autosuggestions_enabled
+                            && self.autosuggestions_paths_enabled
+                            && paths_eligible,
                         suggest::path_token(self.suggest.typed_segment(&before_cursor)),
                         self.spawn_home.as_deref(),
                         working_directory.as_deref(),
@@ -1428,10 +1447,7 @@ impl Terminal {
                     let observation = suggest::Observation {
                         enabled: self.autosuggestions_enabled,
                         paths_eligible,
-                        // The path provider's config gate: true until
-                        // PS-4 resolves `autosuggestions_paths_enabled`
-                        // into the options.
-                        paths_enabled: true,
+                        paths_enabled: self.autosuggestions_paths_enabled,
                         path_listing,
                         focused: self.is_focused,
                         foreground_child,

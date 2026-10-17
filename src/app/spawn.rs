@@ -495,6 +495,7 @@ impl DropTerm {
             &TerminalOptions {
                 font_size,
                 autosuggestions_enabled: self.config.autosuggestions_enabled,
+                autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
                 ..TerminalOptions::default()

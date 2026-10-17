@@ -129,6 +129,7 @@ impl Section {
                 ConfigKey::ScrollbackLines,
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::AutosuggestionsEnabled,
+                ConfigKey::AutosuggestionsPathsEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::RespectPanel,
@@ -149,7 +150,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (28 — default-spawn's two rows included).
+/// count (29 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -167,6 +168,11 @@ pub enum ConfigKey {
     /// The autosuggest kill switch (autosuggest spec) — the Terminal
     /// card's toggle beside the bell, flipping live on the echo.
     AutosuggestionsEnabled,
+    /// The path provider's own toggle (path-suggest spec) — the
+    /// Terminal card's row beside the kill switch, flipping live at
+    /// the next typed prefix; `false` restores history-only
+    /// suggestions exactly.
+    AutosuggestionsPathsEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -295,6 +301,7 @@ impl ConfigKey {
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
+            ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::NewTabCwd => "new_tab_cwd",
@@ -348,6 +355,7 @@ pub enum PlannedWrite {
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
     AutosuggestionsEnabled(bool),
+    AutosuggestionsPathsEnabled(bool),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
     NewTabCwd(NewTabCwd),
@@ -416,6 +424,7 @@ impl PlannedWrite {
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
             PlannedWrite::AutosuggestionsEnabled(_) => ConfigKey::AutosuggestionsEnabled,
+            PlannedWrite::AutosuggestionsPathsEnabled(_) => ConfigKey::AutosuggestionsPathsEnabled,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::NewTabCwd(_) => ConfigKey::NewTabCwd,
@@ -502,6 +511,9 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsPathsEnabled(value) => {
+                handler.set(ConfigKey::AutosuggestionsPathsEnabled.key_name(), *value)
             }
             PlannedWrite::TabTitleMode(value) => {
                 handler.set(ConfigKey::TabTitleMode.key_name(), value)
@@ -740,8 +752,11 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
         // chain yields None, and re-enabling suggests again at the
-        // next typed prefix (autosuggest spec).
+        // next typed prefix (autosuggest spec). The path provider's
+        // own toggle rides the same timing: a flip applies at the
+        // next typed prefix, history untouched either way.
         | ConfigKey::AutosuggestionsEnabled
+        | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::ThemePreference => ApplyTiming::Live,        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
@@ -2065,6 +2080,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
         ConfigKey::AutosuggestionsEnabled => Some(PlannedWrite::AutosuggestionsEnabled(checked)),
+        ConfigKey::AutosuggestionsPathsEnabled => {
+            Some(PlannedWrite::AutosuggestionsPathsEnabled(checked))
+        }
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))

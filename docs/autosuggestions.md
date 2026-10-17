@@ -9,3 +9,16 @@ The rest of the most recent matching command from *this tab's own history* rende
 - No shell integration, by construction: prompt detection reads the kernel's own foreground truth, so it works in any shell - no scripts shipped, no environment injected, no escape-sequence handling. Over ssh the truth is finer: typing `ssh` hands the foreground to the ssh client, so suggestions stay silent for the whole session; a tab spawned as ssh (a profile command) suggests from its own scraped history - the remote machine's commands, read off the grid.
 - Honest silence: no suggestion inside vim or htop (a child holds the foreground), on a `read -p` prompt or a multi-line / right-side prompt (the line no longer matches the prompt anchor), or while scrolled back. Uncertainty always degrades to no suggestion, never a wrong one.
 - Toggle with `autosuggestions_enabled` (default `true`, Behavior section in the [settings drawer](settings.md)); a flip applies live - a showing suggestion disappears the moment the switch lands, and re-enabling suggests again at the next typed prefix.
+
+## Paths
+
+Beyond history, a typed path token completes itself from the filesystem: `~/sr` ghosts the first sorted match in your home directory, `./do` ghosts `cs/`, `/usr/bi` ghosts `n/`. The same ghost, the same keys - Right accepts, Alt+Right takes a word, anything else dismisses. History still outranks paths: a command you have run before wins over the directory listing.
+
+The rules specific to paths:
+
+- Any path-shaped token completes: rooted at `~`, `.`, `..`, or `/`, or carrying a `/` anywhere (`sr/x` too). A bare word like `src` never triggers it - that stays history's (and, later, the command catalog's) territory.
+- The first match in sorted order wins, the matched entry minus what you typed, directories suffixed `/` and stopping there - one completion, never a menu.
+- Dotfiles (`.`-prefixed names) complete only when your typed component already starts with the dot, matching the shell's own convention.
+- Names the shell would mangle are backslash-escaped (`my file.txt` suggests `my\ file.txt`); a name containing anything outside the conservative safe sets - a newline, a control character, unusual bytes - suggests nothing at all rather than something wrong.
+- Paths are *local-machine* knowledge, so they only run on a tab whose spawned program is a shell (bash, zsh, fish, sh, dash, ksh, csh, tcsh). On a tab spawned as ssh the working directory DropTerm can read is the wrong machine's, so paths stay silent there - history keeps suggesting, being read off the screen; and typing `ssh` inside a tab is already silent end-to-end (above).
+- Toggle with `autosuggestions_paths_enabled` (default `true`); a flip applies at the next typed prefix, and `false` restores history-only suggestions exactly.

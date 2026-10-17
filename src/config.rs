@@ -386,6 +386,16 @@ pub struct DropTermConfig {
     /// kill switch — zero visual difference. Flips apply live on the
     /// next update.
     pub autosuggestions_enabled: bool,
+    /// Whether the path provider joins the autosuggest merge
+    /// (path-suggest spec): filesystem completion of the typed
+    /// token's final component — first sorted match in the parent's
+    /// listing, directories suffixed `/`, backslash-escaped where the
+    /// shell needs it, silent over ssh and on any entry that cannot
+    /// be safely written. Local-machine knowledge only; history
+    /// suggestions are unaffected. Defaults to `true`; `false`
+    /// restores history-only behavior exactly. Flips apply live on
+    /// the next typed prefix.
+    pub autosuggestions_paths_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -436,6 +446,7 @@ impl Default for DropTermConfig {
             tab_bar_border: true,
             status_bar_border: true,
             autosuggestions_enabled: true,
+            autosuggestions_paths_enabled: true,
         }
     }
 }
