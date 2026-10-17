@@ -8,17 +8,16 @@
 
 use std::collections::HashMap;
 
+use cosmic_ext_dropterm::dbus_state;
 use zbus::proxy;
 
 /// Client of the activation interface the terminal serves on its
-/// owned bus name. The attribute literals duplicate the root lib's
-/// `BUS_NAME`/`OBJECT_PATH` because proxy attributes take literals
-/// only; a test pins the two together so they cannot drift.
-#[proxy(
-    interface = "org.freedesktop.DbusActivation",
-    default_service = "io.github.l1br3_io.CosmicExtDropterm",
-    default_path = "/io/github/l1br3_io/CosmicExtDropterm"
-)]
+/// owned bus name. No `default_service`/`default_path`: proxy
+/// attributes take literals, which would pin the release identity
+/// into dev builds — the generated constructor instead demands the
+/// names, and [`send_toggle`] passes the root lib's consts (the
+/// single source of truth).
+#[proxy(interface = "org.freedesktop.DbusActivation")]
 pub(crate) trait DbusActivation {
     /// The argument split libcosmic itself uses: action name, its
     /// argument words, platform data. Signature-identical to the
@@ -37,7 +36,8 @@ pub(crate) trait DbusActivation {
 /// activation token; its layer surface takes keyboard focus itself).
 /// Fire-and-forget by design: debouncing is the terminal's job.
 pub(crate) async fn send_toggle(conn: &zbus::Connection) -> zbus::Result<()> {
-    let mut proxy = DbusActivationProxy::new(conn).await?;
+    let mut proxy =
+        DbusActivationProxy::new(conn, dbus_state::BUS_NAME, dbus_state::OBJECT_PATH).await?;
     proxy
         .activate_action("toggle", Vec::new(), HashMap::new())
         .await
@@ -142,18 +142,17 @@ mod tests {
         )
     }
 
-    /// The generated proxy's defaults must point at exactly the names
-    /// the terminal owns — the literals above cannot be consts, so
-    /// this pins them to the root lib's single source of truth.
+    /// The activation interface is the freedesktop well-known name
+    /// libcosmic's single-instance server implements — not ours to
+    /// reword; pinned so a refactor cannot drift it. The destination
+    /// and path carry no defaults to pin: they are passed as the
+    /// root lib's consts at [`send_toggle`]'s single construction
+    /// site, and the wire test below proves the delivery.
     #[test]
-    fn activation_defaults_pin_to_the_served_names() {
+    fn activation_interface_is_the_freedesktop_name() {
         assert_eq!(
-            DbusActivationProxy::DESTINATION.as_deref(),
-            Some(dbus_state::BUS_NAME)
-        );
-        assert_eq!(
-            DbusActivationProxy::PATH.as_deref(),
-            Some(dbus_state::OBJECT_PATH)
+            DbusActivationProxy::INTERFACE.as_deref(),
+            Some("org.freedesktop.DbusActivation")
         );
     }
 
@@ -269,9 +268,13 @@ mod tests {
                 }));
                 let (server, client) = p2p_pair(V1::new(shared.clone())).await;
 
-                let proxy = dbus_state::V1InterfaceProxy::new(&client)
-                    .await
-                    .expect("proxy");
+                let proxy = dbus_state::V1InterfaceProxy::new(
+                    &client,
+                    dbus_state::BUS_NAME,
+                    dbus_state::OBJECT_PATH,
+                )
+                .await
+                .expect("proxy");
                 let visible = proxy.visible().await.expect("Visible read");
                 let tab_count = proxy.tab_count().await.expect("TabCount read");
                 assert!(!visible);

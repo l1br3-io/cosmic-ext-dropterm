@@ -23,10 +23,21 @@ debug-bin := cargo-target-dir / 'debug' / name
 dev-bin-dir := env('XDG_BIN_HOME', home_directory() / '.local' / 'bin')
 dev-bin := dev-bin-dir / (name + '-dev')
 
-# `pkill -f` pattern with a bracketed first character, so it cannot match this
-# recipe's own `sh -c` command line. Update the name here if the binary is
-# renamed.
-dev-kill-pattern := '[c]osmic-ext-dropterm'
+# The dev recipes build the debug binaries re-identified as `.Dev`
+# (the dev-identity cargo feature): their own single-instance slot,
+# bus name, config file, and session, so a dev cycle never touches an
+# installed release's.
+dev-identity-args := '--features=dev-identity'
+
+# `pkill -f` pattern matching only the dev instance — the launcher's
+# `-dev` name, or the debug binary's target path with a `( |$)` guard
+# so it stops at the binary name instead of also matching the
+# applet's debug path (whose name extends cosmic-ext-dropterm with
+# `-applet`). Each alternative's first character is bracketed so the
+# pattern cannot match this recipe's own `sh -c` command line. The
+# installed release and its applet never match — leaving them running
+# through a dev cycle is the point of the dev-identity split.
+dev-kill-pattern := '[c]osmic-ext-dropterm-dev|[t]arget/debug/cosmic-ext-dropterm( |$)'
 
 desktop := appid + '.desktop'
 desktop-src := 'res' / desktop
@@ -67,7 +78,9 @@ dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 # `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` +
 # the docs link gate, all across the workspace. Union features are
 # fine here: nothing renders in tests or lints. Release/install
-# recipes stay per-package.
+# recipes stay per-package. clippy and test also run each package
+# once with `--features dev-identity`: cfg'd-out identity code
+# otherwise never compiles and breaks invisibly.
 check: fmt-check clippy test docs-check
 
 fmt:
@@ -78,9 +91,13 @@ fmt-check:
 
 clippy *args:
     cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings
+    cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings
+    cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings
 
 test *args:
     cargo test --workspace --locked {{args}}
+    cargo test -p {{name}} --locked --features dev-identity {{args}}
+    cargo test -p {{applet}} --locked --features dev-identity {{args}}
 
 # Docs drift gate: every internal markdown link — relative path and
 # in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
@@ -231,12 +248,14 @@ run *args:
 # Symlink the debug build into ~/.local/bin as `cosmic-ext-dropterm-dev`
 # so a COSMIC shortcut (and the act recipes) can run it; the `-dev` name
 # leaves an installed release's plain name untouched.
-dev-install: build-debug
+dev-install: (build-debug dev-identity-args)
     install -d {{dev-bin-dir}}
     ln -sfn {{justfile_directory() / debug-bin}} {{dev-bin}}
 
-# Kill the running instance and restart on the newly built binary.
-dev-reload: build-debug
+# Kill the running dev instance and restart on the newly built
+# binary. An installed release keeps running — the two identities
+# coexist, each answering its own launcher.
+dev-reload: (build-debug dev-identity-args)
     -pkill -f '{{dev-kill-pattern}}'
     sleep 0.3
     {{debug-bin}}
@@ -248,13 +267,32 @@ dev: dev-install dev-reload
 dev-watch:
     cargo watch -q -w src -w Cargo.toml -s 'just dev-reload'
 
-# Build the applet (debug) and install it, its desktop file, and its
-# icon under ~/.local so it can be added via COSMIC Settings → Panel.
-dev-applet:
-    cargo build -p {{applet}}
-    install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / applet}}
-    install -Dm0644 {{applet-desktop-src}} {{dev-data-dir / 'applications' / applet-desktop}}
+# The dev applet's desktop file: the res/ original with the dev name
+# and Exec, generated here so the panel contract has one source of
+# truth. The stem is the dev identity's app id — the panel matches
+# applets by stem, and the release stem must never collide with it.
+dev-applet-desktop := dev-data-dir / 'applications' / (applet-appid + '.Dev.desktop')
+
+# Build the applet (debug, dev identity) and install it, its dev
+# desktop file, and its icon under ~/.local — a second panel entry,
+# "DropTerm (Dev)", that coexists with an installed applet and tracks
+# the dev terminal only. Depends on dev-install because the dev
+# applet summons the dev launcher. Add it via COSMIC Settings →
+# Panel.
+dev-applet: dev-install
+    cargo build -p {{applet}} {{dev-identity-args}}
+    install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / (applet + '-dev')}}
+    install -d {{dev-data-dir / 'applications'}}
+    sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{applet}}-dev/' {{applet-desktop-src}} > {{dev-applet-desktop}}
     install -Dm0644 {{applet-icon-src}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
+
+# Removes the dev footprint — the launcher, the dev applet's binary,
+# desktop file, and icon. The dev identity's config and session files
+# (~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron,
+# ~/.local/state/io.github.l1br3_io.CosmicExtDropterm.Dev/) stay
+# behind for the user to keep or delete.
+dev-uninstall:
+    rm -f {{dev-bin}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
 
 clean:
     cargo clean

@@ -20,12 +20,19 @@ use std::sync::{Arc, Mutex};
 
 use zbus::{interface, proxy};
 
-/// Bus name the running instance owns (libcosmic single-instance).
-pub const BUS_NAME: &str = "io.github.l1br3_io.CosmicExtDropterm";
+/// Bus name the running instance owns (libcosmic single-instance) —
+/// this build's identity; the lib's [`crate::APP_ID`] is the single
+/// source of truth.
+pub const BUS_NAME: &str = crate::APP_ID;
 
-/// Object path libcosmic serves `org.freedesktop.DbusActivation` at; the
-/// V1 interface rides the same path.
+/// Object path libcosmic serves `org.freedesktop.DbusActivation` at;
+/// the V1 interface rides the same path. The app id's dot-to-slash
+/// form, exactly as libcosmic derives it (pinned by test).
+#[cfg(not(feature = "dev-identity"))]
 pub const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm";
+/// The dev build's twin (see [`BUS_NAME`]).
+#[cfg(feature = "dev-identity")]
+pub const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm/Dev";
 
 /// The V1 state interface name.
 pub const INTERFACE: &str = "io.github.l1br3_io.CosmicExtDropterm.V1";
@@ -137,12 +144,11 @@ impl V1 {
 
 /// Client side of the V1 interface, generated from the same contract.
 /// The CLI's `--is-visible` query and the panel applet both go through
-/// this proxy.
-#[proxy(
-    interface = "io.github.l1br3_io.CosmicExtDropterm.V1",
-    default_service = "io.github.l1br3_io.CosmicExtDropterm",
-    default_path = "/io/github/l1br3_io/CosmicExtDropterm"
-)]
+/// this proxy. No `default_service`/`default_path`: proxy attributes
+/// take literals, which would pin the release identity into dev
+/// builds — the generated constructor instead demands the names, and
+/// every caller passes [`BUS_NAME`]/[`OBJECT_PATH`].
+#[proxy(interface = "io.github.l1br3_io.CosmicExtDropterm.V1")]
 pub trait V1Interface {
     #[zbus(property)]
     fn visible(&self) -> zbus::Result<bool>;
@@ -156,7 +162,6 @@ mod tests {
     use super::*;
     use cosmic::iced::futures::{StreamExt, join};
     use zbus::connection;
-    use zbus::proxy::Defaults;
 
     #[test]
     fn surface_visible_is_true_while_measuring_or_shown() {
@@ -253,10 +258,30 @@ mod tests {
     }
 
     #[test]
-    fn proxy_defaults_match_the_served_names() {
-        assert_eq!(V1InterfaceProxy::INTERFACE.as_deref(), Some(INTERFACE));
-        assert_eq!(V1InterfaceProxy::PATH.as_deref(), Some(OBJECT_PATH));
-        assert_eq!(V1InterfaceProxy::DESTINATION.as_deref(), Some(BUS_NAME));
+    fn bus_name_is_the_app_id() {
+        // One identity string behind everything runtime-visible; the
+        // bus name is not allowed to drift from it.
+        assert_eq!(BUS_NAME, crate::APP_ID);
+    }
+
+    #[test]
+    fn object_path_is_the_app_id_slash_form() {
+        // libcosmic derives the activation path from the app id
+        // (dots to slashes); the V1 path must stay that exact form in
+        // both identity states.
+        assert_eq!(OBJECT_PATH, format!("/{}", crate::APP_ID.replace('.', "/")));
+    }
+
+    #[cfg(not(feature = "dev-identity"))]
+    #[test]
+    fn release_state_carries_the_plain_identity() {
+        assert_eq!(crate::APP_ID, "io.github.l1br3_io.CosmicExtDropterm");
+    }
+
+    #[cfg(feature = "dev-identity")]
+    #[test]
+    fn dev_state_carries_the_dev_identity() {
+        assert_eq!(crate::APP_ID, "io.github.l1br3_io.CosmicExtDropterm.Dev");
     }
 
     /// Headless test harness: serves [`V1`] over a peer-to-peer unix
@@ -316,7 +341,9 @@ mod tests {
                 }));
                 let (_server, client) = p2p_pair(state).await;
 
-                let proxy = V1InterfaceProxy::new(&client).await.expect("proxy");
+                let proxy = V1InterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
                 assert_eq!(proxy.visible().await, Ok(false));
                 assert_eq!(proxy.tab_count().await, Ok(3));
             })
@@ -338,6 +365,9 @@ mod tests {
                 // Uncached: every read below is a fresh Get on the wire,
                 // so assertions reflect the served state, not a cache.
                 let proxy = V1InterfaceProxy::builder(&client)
+                    .destination(BUS_NAME)
+                    .and_then(|builder| builder.path(OBJECT_PATH))
+                    .expect("identity names")
                     .cache_properties(zbus::proxy::CacheProperties::No)
                     .build()
                     .await

@@ -22,3 +22,24 @@
 //! one implementation.
 
 pub mod dbus_state;
+
+/// The terminal's desktop identity — the single string behind the
+/// single-instance key, the D-Bus bus name and object path, the
+/// `cosmic_config` namespace, the XDG state directory, the
+/// layer-shell namespace, and the wayland app id. One const, owned
+/// here, so no consumer can drift from another.
+///
+/// A cargo feature, not an environment variable: cargo does not
+/// fingerprint arbitrary env vars, so an `option_env!` identity would
+/// silently reuse stale binaries between identity flips.
+#[cfg(not(feature = "dev-identity"))]
+pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
+
+/// The dev build's identity (see the release const above): every
+/// runtime name carries the `.Dev` suffix, so a dev build owns its own
+/// single-instance slot, bus name, config file, and state directory —
+/// it never forwards to, or shares files with, an installed release.
+/// Enabled by the justfile's dev recipes and the applet's same-named
+/// feature; never by a release build.
+#[cfg(feature = "dev-identity")]
+pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm.Dev";

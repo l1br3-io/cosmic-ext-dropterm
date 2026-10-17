@@ -40,3 +40,11 @@ cosmic-ext-dropterm = { path = "..", default-features = false }
 [dependencies.libcosmic]
 workspace = true
 features = ["applet", "applet-token", "tokio", "wayland"]
+
+[features]
+# Re-identifies the applet as `io.github.l1br3_io.CosmicExtDropterm.Applet.Dev`
+# and switches its terminal summon to the dev launcher — a second
+# panel entry that coexists with an installed applet. Enables the root
+# crate's same-named feature so both ends of the D-Bus contract move
+# together. Never default: release artifacts carry the plain identity.
+dev-identity = ["cosmic-ext-dropterm/dev-identity"]

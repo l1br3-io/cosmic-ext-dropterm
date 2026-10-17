@@ -25,6 +25,16 @@ const ICON_NAME: &str = "io.github.l1br3_io.CosmicExtDropterm-symbolic";
 /// Identity for the xdg-activation-token subscription.
 const TOKEN_SUB_ID: &str = "io.github.l1br3_io.CosmicExtDropterm.Applet.token";
 
+/// The terminal binary this applet summons when none is running: the
+/// installed name, or — under `dev-identity` — the dev launcher
+/// `just dev-install` places beside it, so a dev applet never crowns
+/// an installed release.
+#[cfg(not(feature = "dev-identity"))]
+const TERMINAL_EXEC: &str = "cosmic-ext-dropterm";
+/// The dev build's twin (see [`dbus_state::BUS_NAME`]).
+#[cfg(feature = "dev-identity")]
+const TERMINAL_EXEC: &str = "cosmic-ext-dropterm-dev";
+
 /// The terminal's status as the applet models it: gone, or running
 /// with its drop-down surface in one of two legible states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +127,15 @@ impl cosmic::Application for Applet {
     type Executor = cosmic::SingleThreadExecutor;
     type Flags = ();
     type Message = Message;
+    /// The panel identity: the terminal's app id extended with
+    /// `.Applet`, so the desktop-file stem, the settings listing, and
+    /// this app id stay one string per identity.
+    #[cfg(not(feature = "dev-identity"))]
     const APP_ID: &'static str = "io.github.l1br3_io.CosmicExtDropterm.Applet";
+    /// The dev build's twin — a second panel entry beside the
+    /// installed applet, never in place of it.
+    #[cfg(feature = "dev-identity")]
+    const APP_ID: &'static str = "io.github.l1br3_io.CosmicExtDropterm.Applet.Dev";
 
     fn core(&self) -> &Core {
         &self.core
@@ -239,7 +257,7 @@ impl Applet {
                         // The terminal's app id — the same string as
                         // its bus name.
                         app_id: dbus_state::BUS_NAME.to_string(),
-                        exec: "cosmic-ext-dropterm".to_string(),
+                        exec: TERMINAL_EXEC.to_string(),
                     });
                 }
             }
@@ -268,6 +286,36 @@ impl Applet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "dev-identity"))]
+    #[test]
+    fn release_state_carries_the_installed_identity() {
+        // The three names a release applet must answer to: the
+        // terminal's bus name, the panel identity that extends it
+        // with `.Applet`, and the installed terminal on PATH.
+        assert_eq!(dbus_state::BUS_NAME, "io.github.l1br3_io.CosmicExtDropterm");
+        assert_eq!(
+            <Applet as cosmic::Application>::APP_ID,
+            "io.github.l1br3_io.CosmicExtDropterm.Applet"
+        );
+        assert_eq!(TERMINAL_EXEC, "cosmic-ext-dropterm");
+    }
+
+    #[cfg(feature = "dev-identity")]
+    #[test]
+    fn dev_state_carries_the_dev_identity() {
+        // The dev twins: every name gains its dev spelling, so the
+        // dev applet tracks and summons the dev terminal only.
+        assert_eq!(
+            dbus_state::BUS_NAME,
+            "io.github.l1br3_io.CosmicExtDropterm.Dev"
+        );
+        assert_eq!(
+            <Applet as cosmic::Application>::APP_ID,
+            "io.github.l1br3_io.CosmicExtDropterm.Applet.Dev"
+        );
+        assert_eq!(TERMINAL_EXEC, "cosmic-ext-dropterm-dev");
+    }
 
     #[test]
     fn appeared_seeds_running_state_from_initial_props() {

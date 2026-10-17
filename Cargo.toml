@@ -98,6 +98,13 @@ terminal = [
     "libcosmic/dbus-config",
     "libcosmic/single-instance",
 ]
+# Re-identifies the terminal as `io.github.l1br3_io.CosmicExtDropterm.Dev`
+# — its own single-instance slot, bus name, config file, state
+# directory, and namespace — so a dev build never shares runtime
+# identity with an installed release. Never default: release artifacts
+# carry the plain identity. The applet's same-named feature enables
+# this one so both ends of the D-Bus contract move together.
+dev-identity = []
 
 [dev-dependencies]
 # The config-key ↔ docs sync test enumerates `DropTermConfig`'s

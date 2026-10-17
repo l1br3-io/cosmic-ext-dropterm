@@ -188,7 +188,13 @@ pub(crate) fn watch() -> Subscription<Update> {
 /// lets `receive_*_changed` deliver at all.
 fn spawn_epoch(conn: zbus::Connection, mut tx: mpsc::Sender<Feed>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let v1 = match dbus_state::V1InterfaceProxy::new(&conn).await {
+        let v1 = match dbus_state::V1InterfaceProxy::new(
+            &conn,
+            dbus_state::BUS_NAME,
+            dbus_state::OBJECT_PATH,
+        )
+        .await
+        {
             Ok(v1) => v1,
             Err(err) => {
                 log::warn!("V1 proxy failed: {err}");

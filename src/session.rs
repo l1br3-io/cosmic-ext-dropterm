@@ -450,14 +450,11 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// The XDG state directory this app's session file lives in, named
-/// after the single-instance app id (must stay in sync with
-/// [`crate::app::APP_ID`], which owns the canonical value).
-const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
-
-/// `$XDG_STATE_HOME/io.github.l1br3_io.CosmicExtDropterm/session.ron`,
-/// defaulting to `~/.local/state/…` per the XDG base-directory
-/// specification (only an absolute `XDG_STATE_HOME` is honored).
+/// `$XDG_STATE_HOME/<app id>/session.ron`, defaulting to
+/// `~/.local/state/…` per the XDG base-directory specification (only
+/// an absolute `XDG_STATE_HOME` is honored). The directory is this
+/// build's app id ([`crate::app::APP_ID`]) — the dev identity gets
+/// its own session file.
 pub fn state_file_path() -> PathBuf {
     // XDG base-directory specification: only an absolute XDG_STATE_HOME
     // counts; anything else (unset, empty, relative) falls back to
@@ -467,9 +464,9 @@ pub fn state_file_path() -> PathBuf {
         .filter(|base| base.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
     match base {
-        Some(base) => base.join(APP_ID).join("session.ron"),
+        Some(base) => base.join(crate::app::APP_ID).join("session.ron"),
         None => PathBuf::from(".local/state")
-            .join(APP_ID)
+            .join(crate::app::APP_ID)
             .join("session.ron"),
     }
 }

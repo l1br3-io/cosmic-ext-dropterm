@@ -98,7 +98,7 @@ fn query_visibility() -> Option<bool> {
             return None;
         }
         let read = async {
-            dbus_state::V1InterfaceProxy::new(&conn)
+            dbus_state::V1InterfaceProxy::new(&conn, dbus_state::BUS_NAME, dbus_state::OBJECT_PATH)
                 .await?
                 .visible()
                 .await

@@ -22,15 +22,35 @@ installed release (from `sudo just install` or a release tarball) separate:
 plain `cosmic-ext-dropterm` on PATH is always the installed copy, and the two
 never shadow each other.
 
-One instance runs at a time, whichever owns the bus name: DropTerm is
-single-instance, so launching `cosmic-ext-dropterm` while the `-dev` instance
-runs just forwards the action to it (and vice versa) — the running instance
-parses every verb, whatever binary delivered it. `just dev-reload` kills the
-running instance (either one) before starting the new debug build; that is
-also how control passes back to the installed copy — exit or kill the dev
-instance, and the next press of a shortcut bound to the plain name starts the
-release. Config and sessions are shared (same app id), so settings carry
-across both.
+The dev build also carries its own runtime identity —
+`io.github.l1br3_io.CosmicExtDropterm.Dev`, selected by the `dev-identity`
+cargo feature the dev recipes build with: its own single-instance slot, bus
+name, config file, state directory, and wayland namespace. A dev instance and
+an installed release run at the same time without seeing each other —
+launching one while the other runs never forwards to it, and each answers
+only its own launcher and keybind. `just dev` (via `dev-reload`) kills only
+the dev instance before starting the new build; an installed release keeps
+running untouched, and `just act` / `just toggle` always drive the dev
+instance.
+
+The separation reaches the files: the dev build reads and writes
+`~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron` and
+`~/.local/state/io.github.l1br3_io.CosmicExtDropterm.Dev/`, so config-schema
+churn on main cannot migrate the daily driver's settings. To develop against
+your real settings, copy them over once:
+
+```sh
+cp ~/.config/io.github.l1br3_io.CosmicExtDropterm.ron \
+   ~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron
+```
+
+Deliberately a copy, not a share — dev experiments never write back to the
+real config.
+
+One caveat: the launcher always runs `target/debug/cosmic-ext-dropterm`,
+which carries whichever identity it was last built with. Build it through
+the `just dev*` recipes — a plain `cargo build` produces a release-identity
+debug binary that forwards to (and tugs at) the installed copy.
 
 The edit-build-see loop is then one command:
 
@@ -62,19 +82,20 @@ Which recipe targets what, in one table:
 
 | Recipe | Target |
 | --- | --- |
-| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build, launched as `cosmic-ext-dropterm-dev` |
-| `just act …`, `toggle`, `show`, `hide`, `new-tab …` | Whichever instance is running — the verbs ride the `-dev` launcher and the running instance executes them |
-| `just dev-applet` | Development — the panel applet's binary, desktop file, and icon under `~/.local` |
+| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `cosmic-ext-dropterm-dev` |
+| `just act …`, `toggle`, `show`, `hide`, `new-tab …` | The dev instance — the verbs ride the `-dev` launcher and the dev instance executes them |
+| `just dev-applet` | Development — a second panel entry ("DropTerm (Dev)") under `~/.local`, tracking the dev terminal only |
+| `just dev-uninstall` | Development — removes the `-dev` launcher and the dev applet's footprint |
 | `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
 | `just applet-flatpak-build` / `-install` / `-remove` | The flatpaked applet, built from the release manifest into the user flatpak installation |
-| `just check` | The gate — fmt + clippy + test across the workspace |
+| `just check` | The gate — fmt + clippy + test across the workspace, each package also once under `dev-identity` |
 | `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
 
 ## Running locally without a shortcut
 
 No COSMIC shortcut configured yet? You can still open and dismiss the overlay from a local run:
 
-- `just dev` builds, installs the launcher, and restart-launches the overlay; plain `cargo run` (or `just run`) just launches it.
+- `just dev` builds, installs the launcher, and restart-launches the overlay under the dev identity; plain `cargo run` (or `just run`) launches the release identity — it forwards to an installed copy's instance if one is running.
 - `Ctrl+Shift+Q` hides it.
 - Clicking another window hides it too (`hide_on_focus_loss` defaults to `true`).
 - Running the command a second time still toggles.
