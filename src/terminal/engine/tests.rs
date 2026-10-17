@@ -21,6 +21,59 @@ fn tagged_event_proxy_stamps_events_with_tab_id() {
     assert!(matches!(event, Event::Wakeup));
 }
 
+/// Poll the tagged-event channel until the next `Title` event
+/// arrives — skipping the wakeups and redraw requests that
+/// share the stream — and pin its payload.
+fn poll_until_title(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str, what: &str) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::Title(title) = event {
+                assert_eq!(title, want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for title {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
+    // The delivery half of the empty-report clear: OSC 0/2 with
+    // an empty payload — a TUI's only way to retract a title it
+    // set (opencode's Ctrl+C) — reaches the app as
+    // `Title("")`, neither swallowed nor turned into
+    // `ResetTitle`. The storage policy
+    // (`tabs::shell_title_from_report`) is what maps that bare
+    // event to the no-report state, so this delivery shape is
+    // the contract it stands on.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh test terminal");
+
+    // One printf, two reports: a set, then the empty clear.
+    terminal.input_no_scroll(&b"printf '\\033]0;titled\\007\\033]0;\\007'\r"[..]);
+    poll_until_title(&mut rx, "titled", "the set report arrives");
+    poll_until_title(&mut rx, "", "the empty clear arrives as a bare Title");
+}
+
 #[test]
 fn foreground_check_reads_false_without_a_master_handle() {
     // Fail-open pin (criterion 7): no dup'd fd → the check can
@@ -245,11 +298,13 @@ fn arming_a_settled_spawn_grid_is_a_no_op() {
 
 #[test]
 fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
-    // The zoom path re-fires `resize` through `update_cell_size`
-    // — scale-only today: `zoom_adj` moves the band's percent,
-    // not the cells — and a real metrics change (a profile's
-    // font size through `set_config`) re-fires it with new
-    // cells. A settled record must read neither as a
+    // A zoom press funnels through `set_config`: it recomputes
+    // metrics from the live `zoom_adj` and re-fires the cell
+    // resize. `update_cell_size` alone measures with the
+    // buffer's *current* metrics — the ported zoom arm once
+    // called only it, so the band's percent moved while the
+    // font stood (the scale-only bug). A settled record must
+    // read neither a zoom nor an options change as a
     // re-baseline: the grid segment narrates the deviation, and
     // the metrics' return restores the rest.
     let mut terminal = spawn_grid_terminal();
@@ -257,10 +312,13 @@ fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
     resize_cols(&mut terminal, 40);
     let resting = terminal.spawn_grid();
 
+    // The app's zoom sequence: adjust, then reapply *unchanged*
+    // options — `set_config` reads the live `zoom_adj`, so the
+    // zoom lands with no options edit at all.
     terminal.set_zoom_adj(2);
-    terminal.update_cell_size();
+    terminal.set_config(&TerminalOptions::default(), &Colors::default());
     assert_eq!(terminal.spawn_grid(), resting);
-    assert_eq!(terminal.grid().0, 40, "zoom is scale-only: cells stand");
+    assert_ne!(terminal.grid().0, 40, "zoomed cells deviate from rest");
 
     let enlarged = TerminalOptions {
         font_size: 24,

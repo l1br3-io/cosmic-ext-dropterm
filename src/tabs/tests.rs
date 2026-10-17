@@ -503,6 +503,33 @@ fn a_missing_report_shows_the_default_number() {
 }
 
 #[test]
+fn an_empty_report_stores_as_no_report() {
+    // A TUI clearing the title it set (opencode's Ctrl+C is the
+    // field report) has one move: OSC 0/2 with an empty payload.
+    // Stored as no report — never `Some("")` — the clear lands in
+    // the same state a shell reset returns to.
+    assert_eq!(
+        shell_title_from_report("OpenCode".to_owned()),
+        Some("OpenCode".to_owned())
+    );
+    assert_eq!(shell_title_from_report(String::new()), None);
+    // Composed as the Title handler stores then resolves: the
+    // cleared tab shows the default number again, never a blank.
+    let stored = shell_title_from_report(String::new());
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Shell,
+            stored.as_deref(),
+            None,
+            None,
+            TabId(4),
+            None
+        ),
+        "Terminal 5"
+    );
+}
+
+#[test]
 fn a_rename_wins_in_every_mode() {
     for mode in [
         TabTitleMode::Shell,

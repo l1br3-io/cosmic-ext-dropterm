@@ -359,9 +359,18 @@ impl DropTerm {
                         Action::ZoomOut => terminal.zoom_adj().saturating_sub(1),
                         _ => 0,
                     };
+                    // The metrics reapply *is* the zoom:
+                    // `update_cell_size` alone measures with the
+                    // buffer's current metrics, so the font never
+                    // moved — only the band's percent did (the
+                    // scale-only bug). `set_config` in the config
+                    // funnel below recomputes metrics from the live
+                    // `zoom_adj` and re-fires the cell resize from
+                    // there; at the clamp edges nothing moves, and
+                    // the equal-metrics comparison correctly skips.
                     terminal.set_zoom_adj(adj);
-                    terminal.update_cell_size();
                 }
+                self.apply_config_to_tabs();
                 // The zoom segment re-renders from the live
                 // adjustment; the process snapshot refresh rides the
                 // same listed piggyback point (status-bar criterion 5).
@@ -1107,10 +1116,13 @@ impl DropTerm {
                 terminal.input_no_scroll(text.into_bytes());
             }
             TermEvent::Title(title) => {
-                // The raw report is stored in every mode — retitle
+                // The report is stored in every mode — retitle
                 // inputs stay fresh, so a mode flip or a cleared
-                // rename re-resolves from current state.
-                self.tabs[tab_index].shell_title = Some(title);
+                // rename re-resolves from current state. An empty
+                // payload is a title clear, not a title: it stores
+                // no report, the same state a shell reset returns
+                // to, so the tab never blanks to its close icon.
+                self.tabs[tab_index].shell_title = tabs::shell_title_from_report(title);
                 // Title events double as the cwd-change sample point,
                 // and the path modes resolve against the fresh cwd:
                 // sample first, then re-resolve. The title itself is

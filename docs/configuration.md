@@ -55,7 +55,7 @@ A change never resizes anything - the strip reorders immediately on a shown surf
 
 | Mode | Tab name |
 |---|---|
-| `Shell` | The shell's own title (OSC 0/2), verbatim - `Terminal N` until it reports one. |
+| `Shell` | The shell's own title (OSC 0/2), verbatim - `Terminal N` until it reports one. An empty report (a program clearing the title it set, e.g. opencode on Ctrl+C) reads as no report, so the tab falls back to `Terminal N` instead of going blank. |
 | `AbbreviatedPath` | The title's trailing path, middle segments shortened: `~/src/l1br3/ced` renders `~/s/o/l/ced`. With no title yet, the cwd itself, abbreviated the same way. |
 | `LastSegment` | The cwd's final component - `ced`, or `(root)` at `/`. |
 | `Numbered` | Always `Terminal N`; shell titles never land. |
