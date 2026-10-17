@@ -1,4 +1,76 @@
+use cosmic::iced::keyboard::key::Code;
+
 use super::*;
+
+#[test]
+fn the_shift_held_plus_cluster_zooms_in() {
+    // Matching is exact on modifiers, and on US-style layouts typing
+    // `+` (or holding Shift out of habit) puts Shift in the press:
+    // without Shift-form chords the literal Ctrl+Plus press arrives
+    // dead — no zoom, nothing to the shell (zoom-shift-binds). The
+    // cluster owns four default chords: two unshifted, two held.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("+".into()),
+            Some(&Physical::Code(Code::Equal)),
+        ),
+        Some(Action::ZoomIn)
+    );
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("=".into()),
+            Some(&Physical::Code(Code::Equal)),
+        ),
+        Some(Action::ZoomIn)
+    );
+    assert_eq!(
+        binds
+            .values()
+            .filter(|action| **action == Action::ZoomIn)
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn the_shift_held_minus_zooms_out() {
+    // The minus cluster mirrors the plus one: numpad minus with
+    // Shift held, and the layouts where `-` survives Shift, arrive
+    // as their own chord — a dead press before this bind existed.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("-".into()),
+            Some(&Physical::Code(Code::Minus)),
+        ),
+        Some(Action::ZoomOut)
+    );
+}
+
+#[test]
+fn ctrl_shift_underscore_stays_free_for_the_terminal() {
+    // Ctrl+Shift+Minus on a US layout arrives as "_" and the widget
+    // sends the shell 0x1F (readline undo, xterm parity) — a byte
+    // the shell owns, so the chord is never bound: the same rule
+    // that keeps bare Ctrl+I/H/D/R/B free.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("_".into()),
+            Some(&Physical::Code(Code::Minus)),
+        ),
+        None
+    );
+}
 
 #[test]
 fn copy_and_paste_are_bound() {
@@ -454,9 +526,10 @@ fn empty_customs_degenerate_to_the_default_map() {
 
 #[test]
 fn a_custom_binding_replaces_all_of_an_actions_defaults() {
-    // ZoomIn owns two default chords (Ctrl+= and Ctrl+Plus); one
-    // custom binding retires both — it never sits beside them. An
-    // untouched action keeps its defaults verbatim.
+    // ZoomIn owns four default chords (Ctrl+=, Ctrl+Plus, and their
+    // Shift-held forms); one custom binding retires all four — it
+    // never sits beside them. An untouched action keeps its defaults
+    // verbatim.
     let customs = custom(&[("zoom_in", &[ModifierName::Ctrl, ModifierName::Alt], "q")]);
     let effective = effective_key_binds(&customs);
     assert_eq!(
@@ -465,6 +538,14 @@ fn a_custom_binding_replaces_all_of_an_actions_defaults() {
     );
     assert_eq!(effective.get(&bind(&[Modifier::Ctrl], "=")), None);
     assert_eq!(effective.get(&bind(&[Modifier::Ctrl], "+")), None);
+    assert_eq!(
+        effective.get(&bind(&[Modifier::Ctrl, Modifier::Shift], "+")),
+        None
+    );
+    assert_eq!(
+        effective.get(&bind(&[Modifier::Ctrl, Modifier::Shift], "=")),
+        None
+    );
     assert_eq!(
         effective.get(&bind(&[Modifier::Ctrl, Modifier::Shift], "c")),
         Some(&Action::Copy)
@@ -779,13 +860,18 @@ fn binding_text_shows_joined_defaults_custom_or_none() {
     // The row's binding text (keybinds-editor KE-4): a custom
     // binding replaces the display wholesale; uncustomized actions
     // show every default chord, sorted for determinism ("+" sorts
-    // before "="); an action with no bindings at all shows "None".
+    // before "=", and the unshifted chords before their Shift
+    // forms); an action with no bindings at all shows "None".
     let custom = custom(&[("zoom_in", &[ModifierName::Alt], "z")]);
     assert_eq!(
         action_binding_display(Action::ZoomIn, &BTreeMap::new()),
-        "Ctrl + + / Ctrl + ="
+        "Ctrl + + / Ctrl + = / Ctrl + Shift + + / Ctrl + Shift + ="
     );
     assert_eq!(action_binding_display(Action::ZoomIn, &custom), "Alt + Z");
+    assert_eq!(
+        action_binding_display(Action::ZoomOut, &BTreeMap::new()),
+        "Ctrl + - / Ctrl + Shift + -"
+    );
     assert_eq!(
         action_binding_display(Action::Copy, &BTreeMap::new()),
         "Ctrl + Shift + C"
