@@ -17,11 +17,11 @@
 //! process-state disc: filled while a foreground child runs, a hollow
 //! ring over the idle shell.
 //!
-//! The set is eight — process, path, branch in the left cluster;
-//! profile, grid, tab position, zoom, clock in the right — each
-//! individually toggleable (a hidden segment is never computed) and
-//! click-copyable through [`copy_text`]: the full value, never the
-//! elided display.
+//! The set is nine — process, duration, path, branch in the left
+//! cluster; profile, grid, tab position, zoom, clock in the right —
+//! each individually toggleable (a hidden segment is never computed)
+//! and click-copyable through [`copy_text`]: the full value, never
+//! the elided display.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -111,6 +111,10 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
 pub enum SegmentId {
     /// The state disc + the process name (one click target).
     Process,
+    /// The command timer's reading (command-lifecycle spec): live
+    /// elapsed while a witnessed start runs, the frozen
+    /// (name, duration) pair after it finishes.
+    Duration,
     /// The `~`-collapsed cwd.
     Path,
     /// The cwd's git branch (or detached sha).
@@ -127,8 +131,15 @@ pub enum SegmentId {
     Clock,
 }
 
-/// The left cluster's segments in draw order — full alpha.
-pub const LEFT_CLUSTER: [SegmentId; 3] = [SegmentId::Process, SegmentId::Path, SegmentId::Branch];
+/// The left cluster's segments in draw order — full alpha, except
+/// the duration's dimmed meta narration (OQ-2: the seat is the
+/// process's side; the alpha stays a notch down).
+pub const LEFT_CLUSTER: [SegmentId; 4] = [
+    SegmentId::Process,
+    SegmentId::Duration,
+    SegmentId::Path,
+    SegmentId::Branch,
+];
 
 /// The right cluster's segments in draw order — the dimmed alpha,
 /// the clock rightmost (the tmux seat).
@@ -145,28 +156,31 @@ pub const RIGHT_CLUSTER: [SegmentId; 5] = [
 /// yields, and the path elides before anything else gives way.
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
-/// branch stays beside its path, and the clock is last — tmux
-/// keeps time to the bitter end.
-pub const DROP_ORDER: [SegmentId; 6] = [
+/// branch stays beside its path, the duration follows its command,
+/// and the clock is last — tmux keeps time to the bitter end.
+pub const DROP_ORDER: [SegmentId; 7] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
+    SegmentId::Duration,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// eight `status_bar_show_*` bools. A hidden segment is absent
+/// nine `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "eight independent visibility switches — one per config key, by design"
+    reason = "nine independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
     /// The state disc + process name.
     pub process: bool,
+    /// The command timer's reading.
+    pub duration: bool,
     /// The `~`-collapsed cwd.
     pub path: bool,
     /// The git branch of the cwd.
@@ -184,11 +198,12 @@ pub struct StatusToggles {
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's eight
+    /// Every segment shown — the all-on default the config's nine
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
             process: true,
+            duration: true,
             path: true,
             branch: true,
             profile: true,
@@ -231,6 +246,17 @@ pub struct StatusSegments {
     /// The pre-formatted wall clock (`HH:MM`) — the widget never
     /// formats time; the app's tick stores the string.
     pub clock: Option<String>,
+    /// The running command's live elapsed (command-lifecycle spec),
+    /// from the engine's timer — absent when hidden, unwitnessed,
+    /// or idle. The display formats it ([`duration_display`]); no
+    /// wall clock is ever read here.
+    pub running_elapsed: Option<Duration>,
+    /// The last finished command's (name, duration) pair
+    /// (command-lifecycle spec, OQ-1): the app's last sampled
+    /// running comm beside its frozen duration, until the next
+    /// command starts. An empty name is the honest floor — the
+    /// duration without a name to lie about.
+    pub frozen: Option<(String, Duration)>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -268,6 +294,11 @@ pub struct StatusInputs<'a> {
     pub tab_position: Option<(u16, u16)>,
     /// The stored wall-clock string.
     pub clock: Option<&'a str>,
+    /// The running command's live elapsed (the engine's timer).
+    pub running_elapsed: Option<Duration>,
+    /// The last finished command's (name, duration) pair — the
+    /// name the app last sampled running on this tab.
+    pub frozen: Option<(&'a str, Duration)>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -317,6 +348,29 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.clock)
             .flatten()
             .map(str::to_string),
+        running_elapsed: toggles.duration.then_some(inputs.running_elapsed).flatten(),
+        frozen: toggles
+            .duration
+            .then(|| {
+                inputs
+                    .frozen
+                    .map(|(name, duration)| (name.to_string(), duration))
+            })
+            .flatten(),
+    }
+}
+
+/// The duration segment's display (command-lifecycle spec): the
+/// bare elapsed while running — the live name sits beside it in the
+/// process cluster, no duplication — and the frozen pair after the
+/// finish (OQ-1: `cargo 2:41`, never a bare duration the shell
+/// would own). Nothing when the timer has nothing honest.
+pub fn duration_display(segments: &StatusSegments) -> String {
+    match (&segments.running_elapsed, &segments.frozen) {
+        (Some(elapsed), _) => format_duration(*elapsed),
+        (None, Some((name, duration))) if name.is_empty() => format_duration(*duration),
+        (None, Some((name, duration))) => format!("{name} {}", format_duration(*duration)),
+        (None, None) => String::new(),
     }
 }
 
@@ -533,6 +587,7 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
             .map(|percent| format!("{percent:+}%"))
             .unwrap_or_default(),
         SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
+        SegmentId::Duration => duration_display(segments),
     }
 }
 
@@ -857,6 +912,27 @@ pub const fn clock_due(band_enabled: bool, show_clock: bool) -> bool {
     band_enabled && show_clock
 }
 
+/// Whether the duration's 1 s tick should exist (command-lifecycle
+/// spec): the band shown, the segment shown, the active tab running
+/// a foreground child, and the surface visible. `clock_due`'s shape
+/// with two more gates — the tick is the prior record's no-standing-
+/// timer verdict, so it sleeps only while a command actually runs on
+/// a shown surface. Evaluated at every wakeup sync, every config
+/// echo, and every fired tick: any gate dropping stands it down
+/// within a second.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the spec's truth-table signature: four independent gates, one bool each"
+)]
+pub const fn duration_due(
+    band_enabled: bool,
+    show_duration: bool,
+    running: bool,
+    surface_visible: bool,
+) -> bool {
+    band_enabled && show_duration && running && surface_visible
+}
+
 /// The duration from `now` to the next minute boundary — the tick's
 /// alignment; an on-boundary `now` waits a full minute.
 pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
@@ -933,13 +1009,8 @@ impl CommandTimer {
 
 /// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
 /// (command-lifecycle spec, OQ-3).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task 3's app tick stores the formatted string with it"
-    )
-)]
+/// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
+/// (command-lifecycle spec, OQ-3).
 pub fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     let (hours, minutes, secs) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
@@ -1029,6 +1100,7 @@ pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800
 #[derive(Default)]
 struct State {
     process: BandParagraph,
+    duration: BandParagraph,
     path: BandParagraph,
     branch: BandParagraph,
     profile: BandParagraph,
@@ -1081,6 +1153,7 @@ impl State {
     fn paragraph_of(&self, id: SegmentId) -> &BandParagraph {
         match id {
             SegmentId::Process => &self.process,
+            SegmentId::Duration => &self.duration,
             SegmentId::Path => &self.path,
             SegmentId::Branch => &self.branch,
             SegmentId::Profile => &self.profile,
@@ -1094,6 +1167,7 @@ impl State {
     fn paragraph_of_mut(&mut self, id: SegmentId) -> &mut BandParagraph {
         match id {
             SegmentId::Process => &mut self.process,
+            SegmentId::Duration => &mut self.duration,
             SegmentId::Path => &mut self.path,
             SegmentId::Branch => &mut self.branch,
             SegmentId::Profile => &mut self.profile,
@@ -1202,6 +1276,11 @@ impl<Message> StatusBar<Message> {
         let copied = self.copied;
         state.process.update(segment_text(
             display_text(copied, SegmentId::Process, &self.segments.process),
+            font,
+        ));
+        let duration_text = duration_display(&self.segments);
+        state.duration.update(segment_text(
+            display_text(copied, SegmentId::Duration, &duration_text),
             font,
         ));
         state.branch.update(segment_text(
@@ -1330,6 +1409,7 @@ impl<Message> StatusBar<Message> {
         let displayed = |id: SegmentId| -> String {
             let value = match id {
                 SegmentId::Process => self.segments.process.clone(),
+                SegmentId::Duration => duration_text.clone(),
                 SegmentId::Path => {
                     if armed {
                         state.path_armed_text.clone()
@@ -1426,7 +1506,7 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
         rects.push((SegmentId::Process, row(x, width)));
         x += width + SEGMENT_GAP;
     }
-    for id in [SegmentId::Path, SegmentId::Branch] {
+    for id in [SegmentId::Duration, SegmentId::Path, SegmentId::Branch] {
         let width = state.paragraph_of(id).min_width();
         if width > 0.0 {
             rects.push((id, row(x, width)));
@@ -1831,7 +1911,9 @@ where
 
         // Both clusters paint from the same rects hit-testing walks:
         // full alpha on the left, dimmed on the right — hierarchy by
-        // alpha and mass, never a new hue.
+        // alpha and mass, never a new hue. The duration carries the
+        // dim too (OQ-2): a left-cluster seat beside its process,
+        // but a meta narration, not identity.
         let text_y =
             |paragraph: &BandParagraph| bounds.y + (BAND_HEIGHT - paragraph.min_height()) / 2.0;
         let dimmed = Color {
@@ -1840,7 +1922,7 @@ where
         };
         for (id, rect) in segment_rects(state, bounds) {
             let paragraph = state.paragraph_of(id);
-            let color = if LEFT_CLUSTER.contains(&id) {
+            let color = if LEFT_CLUSTER.contains(&id) && id != SegmentId::Duration {
                 pane_fg
             } else {
                 dimmed

@@ -198,6 +198,10 @@ impl DropTerm {
         let old_id = target.id;
         target.id = tab_id;
         target.terminal = Mutex::new(terminal);
+        // The narration name dies with the terminal it paired with:
+        // the fresh terminal's timer is empty, so its frozen display
+        // must never meet the old life's name.
+        target.last_running_comm = None;
         // The cwd cache follows the id swap: drop the dead tab's
         // entry, seed the new one with the respawn cwd so the fresh
         // shell's first OSC title report reads as unchanged.
@@ -1163,6 +1167,15 @@ impl DropTerm {
                     tab.attention = tab.attention.on_activity();
                 }
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
+                // The duration tick's finest sync point too: a
+                // start arms here (the Enter echo's wakeup carries
+                // the first running snapshot) and a finish stands
+                // down here (the prompt-redraw wakeup) — every
+                // other gate re-evaluates at the tick's own fire,
+                // within a second.
+                if tab_index == self.active_tab {
+                    return self.sync_status_duration();
+                }
             }
             TermEvent::MouseCursorDirty => {
                 self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;

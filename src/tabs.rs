@@ -152,6 +152,13 @@ pub struct Tab {
     /// shell change never rewrites a live tab's shell, so a session
     /// save records what each tab actually runs.
     pub shell: String,
+    /// The app's last sampled running comm on this tab
+    /// (command-lifecycle spec, OQ-1): the name the frozen duration
+    /// pairs with after that command finishes. Updated only while
+    /// the tab is active (the snapshot's discipline); a respawn — a
+    /// fresh terminal — clears it with the timer it paired with.
+    /// Deliberately not serialized: it dies with the terminal.
+    pub last_running_comm: Option<String>,
     /// The tab's attention marker state. Markers
     /// accrue only while the tab is inactive and clear when it becomes
     /// active; the session schema deliberately ignores this field.
@@ -194,6 +201,7 @@ impl Tab {
             shell_title: None,
             title_override: None,
             shell,
+            last_running_comm: None,
             attention: Attention::None,
             ephemeral: false,
             profile: None,

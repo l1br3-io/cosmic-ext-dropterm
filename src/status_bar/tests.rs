@@ -29,6 +29,8 @@ fn resolve(
         spawn_grid: None,
         tab_position: None,
         clock: None,
+        running_elapsed: None,
+        frozen: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -226,12 +228,13 @@ fn a_starved_cluster_loses_the_path_entirely() {
 // rides `fixed`, the path elides.
 
 /// The standard fit fixture: 100 px of fixed disc cluster, a
-/// 20-char path at 10 px per char (200 px whole), and all six
-/// droppable segments measured (gap-inclusive costs 52/42/42/32/
-/// 42/42 with `SEGMENT_GAP` = 12).
+/// 20-char path at 10 px per char (200 px whole), and all seven
+/// droppable segments measured (gap-inclusive costs 42/42/52/42/32/
+/// 42/42 with `SEGMENT_GAP` = 12 — 294 total).
 fn fit_widths() -> Vec<(SegmentId, f32)> {
     vec![
         (SegmentId::Branch, 30.0),
+        (SegmentId::Duration, 30.0),
         (SegmentId::Profile, 40.0),
         (SegmentId::Grid, 30.0),
         (SegmentId::Tab, 20.0),
@@ -250,9 +253,10 @@ fn fit_path() -> PathMeasure {
 #[test]
 fn the_drop_order_pins_the_precedence() {
     // Facts the shell knows go first, then slow-moving identity,
-    // the branch beside its path, the clock to the bitter end.
-    // Process and path are absent by construction: the disc never
-    // yields, and the path elides before anything else gives way.
+    // the branch beside its path, the duration after its command,
+    // the clock to the bitter end. Process and path are absent by
+    // construction: the disc never yields, and the path elides
+    // before anything else gives way.
     assert_eq!(
         DROP_ORDER,
         [
@@ -261,41 +265,61 @@ fn the_drop_order_pins_the_precedence() {
             SegmentId::Zoom,
             SegmentId::Profile,
             SegmentId::Branch,
+            SegmentId::Duration,
             SegmentId::Clock,
         ]
     );
 }
 
 #[test]
+fn duration_drops_after_branch_and_before_clock() {
+    // The seat pin (command-lifecycle criterion 5): with only
+    // Branch, Duration, and Clock measured, starvation drops the
+    // branch first, the duration second, and the clock survives —
+    // DROP_ORDER's precedence restricted to the present.
+    let widths = vec![
+        (SegmentId::Branch, 30.0),
+        (SegmentId::Duration, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all three consumed 126 → room -74 past Gone; the
+    // branch's 42 and the duration's 42 free 10 px of room — one
+    // character's worth, beside the surviving clock.
+    let fit = band_fit(152.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Branch, SegmentId::Duration]);
+    assert_eq!(fit.path, PathFit::Elided(1));
+}
+
+#[test]
 fn zero_pressure_renders_everything() {
-    // 552 px of consumption (fixed + six gaps-and-widths + the
-    // whole path) under 600 px: nothing drops, nothing elides.
-    let fit = band_fit(600.0, 100.0, &fit_widths(), fit_path());
+    // 594 px of consumption (fixed + seven gaps-and-widths + the
+    // whole path) under 700 px: nothing drops, nothing elides.
+    let fit = band_fit(700.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
     assert_eq!(fit.dropped, Vec::new());
 }
 
 #[test]
 fn pressure_elides_the_path_before_any_segment_drops() {
-    // 500 px leaves 248 px of room for the 200 px path: elide to
-    // 14 chars — but nothing drops while any of the path survives.
+    // 500 px leaves 106 px of room for the 200 px path: elide to
+    // 10 chars — but nothing drops while any of the path survives.
     let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
-    assert_eq!(fit.path, PathFit::Elided(14));
+    assert_eq!(fit.path, PathFit::Elided(10));
     assert_eq!(fit.dropped, Vec::new());
 }
 
 #[test]
 fn past_full_elision_segments_drop_one_at_a_time_in_order() {
-    // 350 px cannot host even a fully elided path (room below one
+    // 385 px cannot host even a fully elided path (room below one
     // character): the grid goes first, and the path re-expands
-    // into the freed 42 px — four characters' worth.
-    let fit = band_fit(350.0, 100.0, &fit_widths(), fit_path());
+    // into the freed 42 px — three characters' worth.
+    let fit = band_fit(385.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid]);
-    assert_eq!(fit.path, PathFit::Elided(4));
+    assert_eq!(fit.path, PathFit::Elided(3));
 
-    // 300 px costs a second drop: tab follows grid, and the path
-    // re-expands again (22 px of room, two characters).
-    let fit = band_fit(300.0, 100.0, &fit_widths(), fit_path());
+    // 345 px costs a second drop: tab follows grid, and the path
+    // re-expands again (25 px of room, two characters).
+    let fit = band_fit(345.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
@@ -310,20 +334,20 @@ fn absent_segments_are_skipped_in_the_drop_order() {
         .filter(|(id, _)| *id != SegmentId::Grid)
         .collect();
     let fit = band_fit(300.0, 100.0, &widths, fit_path());
-    assert_eq!(fit.dropped, vec![SegmentId::Tab]);
+    assert_eq!(fit.dropped, vec![SegmentId::Tab, SegmentId::Zoom]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
 
 #[test]
 fn the_path_re_expands_monotonically_as_drops_free_width() {
     // Widths chosen so exactly `k` drops are forced (the k-th
-    // survivor's room sits at 10 + 8(k-1) px — one character plus
-    // a growing slack, while the (k-1)-th sits below one
-    // character): the path's char budget never shrinks as drops
-    // free width.
+    // survivor's room sits at 10 + 6(k-1) px — one character plus a
+    // growing slack that stays below the next drop's freed width,
+    // while the (k-1)-th sits below one character): the path's char
+    // budget never shrinks as drops free width.
     let mut prev_chars = 0;
     let fixture = fit_widths();
-    for k in 1..=6 {
+    for k in 1..=7 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -337,10 +361,10 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of six, exact in f32"
+            reason = "a loop index of seven, exact in f32"
         )]
-        let room = 10.0 + 8.0 * (k as f32 - 1.0);
-        let width = 100.0 + 252.0 + room - freed;
+        let room = 10.0 + 6.0 * (k as f32 - 1.0);
+        let width = 100.0 + 294.0 + room - freed;
         let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
         assert_eq!(
             fit.dropped.len(),
@@ -362,7 +386,7 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
 
 #[test]
 fn the_disc_never_yields_even_when_everything_drops() {
-    // Zero width: all six droppables give way in order and the
+    // Zero width: all seven droppables give way in order and the
     // path is gone — but `fixed` (the paddings and the disc
     // cluster) is untouchable by construction, and the path never
     // appears in the dropped set: the type has no say in it.
@@ -375,6 +399,7 @@ fn the_disc_never_yields_even_when_everything_drops() {
             SegmentId::Zoom,
             SegmentId::Profile,
             SegmentId::Branch,
+            SegmentId::Duration,
             SegmentId::Clock,
         ]
     );
@@ -550,6 +575,8 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         spawn_grid: None,
         tab_position: Some((2, 5)),
         clock: Some("14:32"),
+        running_elapsed: Some(Duration::from_secs(161)),
+        frozen: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -564,6 +591,7 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Tab => segments.tab_position.is_some(),
         SegmentId::Zoom => segments.zoom_percent.is_some(),
         SegmentId::Clock => segments.clock.is_some(),
+        SegmentId::Duration => segments.running_elapsed.is_some() || segments.frozen.is_some(),
     }
 }
 
@@ -577,15 +605,24 @@ fn hide(toggles: &mut StatusToggles, id: SegmentId) {
         SegmentId::Tab => &mut toggles.tab,
         SegmentId::Zoom => &mut toggles.zoom,
         SegmentId::Clock => &mut toggles.clock,
+        SegmentId::Duration => &mut toggles.duration,
     };
     *field = false;
 }
 
 #[test]
-fn the_clusters_pin_the_eight_segments_order() {
+fn the_clusters_pin_the_nine_segments_order() {
+    // The duration sits in the left cluster's second seat — right
+    // beside the process it times (OQ-2) — but carries the dimmed
+    // alpha of a meta narration, not identity (the draw's rule).
     assert_eq!(
         LEFT_CLUSTER,
-        [SegmentId::Process, SegmentId::Path, SegmentId::Branch]
+        [
+            SegmentId::Process,
+            SegmentId::Duration,
+            SegmentId::Path,
+            SegmentId::Branch
+        ]
     );
     assert_eq!(
         RIGHT_CLUSTER,
@@ -642,6 +679,141 @@ fn the_new_segments_resolve_from_their_inputs() {
     assert_eq!(segments.grid, Some((80, 24)));
     assert_eq!(segments.tab_position, Some((2, 5)));
     assert_eq!(segments.clock.as_deref(), Some("14:32"));
+    assert_eq!(segments.running_elapsed, Some(Duration::from_secs(161)));
+}
+
+// --- the duration segment (command-lifecycle) ---
+//
+// The ninth segment: live elapsed beside the process name while a
+// witnessed start runs, the frozen (name, duration) pair after it
+// finishes (OQ-1), and nothing when the timer has nothing honest —
+// the both-edges rule, resolved like every other segment.
+
+fn resolve_duration(
+    foreground: Option<&str>,
+    running_elapsed: Option<Duration>,
+    frozen: Option<(&str, Duration)>,
+    toggles: StatusToggles,
+) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed,
+        frozen,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn a_running_command_resolves_its_live_elapsed() {
+    let segments = resolve_duration(
+        Some("cargo"),
+        Some(Duration::from_secs(161)),
+        None,
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.running_elapsed, Some(Duration::from_secs(161)));
+    assert_eq!(segments.frozen, None);
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "2:41");
+}
+
+#[test]
+fn a_finished_command_resolves_the_frozen_pair() {
+    // OQ-1's pairing: after the finish the process segment shows the
+    // shell again, so the frozen duration carries the finished
+    // command's name — `cargo 2:41`, never a bare duration that
+    // would read as the shell's.
+    let segments = resolve_duration(
+        None,
+        None,
+        Some(("cargo", Duration::from_secs(161))),
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.running_elapsed, None);
+    assert_eq!(
+        segments
+            .frozen
+            .as_ref()
+            .map(|(name, duration)| (name.as_str(), *duration)),
+        Some(("cargo", Duration::from_secs(161)))
+    );
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "cargo 2:41");
+}
+
+#[test]
+fn an_unnamed_frozen_command_degrades_to_the_bare_duration() {
+    // The pairing's honest floor: a tab whose run was never sampled
+    // (a background tab's finished command, first shown on switch)
+    // still reports its duration — the engine timed it — with no
+    // name to lie about.
+    let segments = resolve_duration(
+        None,
+        None,
+        Some(("", Duration::from_secs(4))),
+        StatusToggles::all(),
+    );
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "0:04");
+}
+
+#[test]
+fn an_unwitnessed_start_resolves_no_duration_segment() {
+    // Born mid-run (the profile-tab spawn case): the tab runs and
+    // the disc fills, but the timer never learned that command's
+    // start — no elapsed, no frozen pair, never a guess.
+    let segments = resolve_duration(Some("cargo"), None, None, StatusToggles::all());
+    assert!(segments.running);
+    assert_eq!(segments.running_elapsed, None);
+    assert_eq!(segments.frozen, None);
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "");
+}
+
+#[test]
+fn the_duration_toggle_hides_the_segment_and_a_mid_run_on_shows_live() {
+    // Hidden ≡ absent, like every segment; the engine's timestamps
+    // keep running regardless (Task 2's always-on assumption), so a
+    // mid-command toggle-on resolves the live elapsed immediately —
+    // the resolver's inputs are fresh at the echo's view pass.
+    let mut toggles = StatusToggles::all();
+    toggles.duration = false;
+    let hidden = resolve_duration(Some("cargo"), Some(Duration::from_secs(4)), None, toggles);
+    assert_eq!(hidden.running_elapsed, None);
+    assert_eq!(hidden.frozen, None);
+    let shown = resolve_duration(
+        Some("cargo"),
+        Some(Duration::from_secs(4)),
+        None,
+        StatusToggles::all(),
+    );
+    assert_eq!(shown.running_elapsed, Some(Duration::from_secs(4)));
+}
+
+#[test]
+fn the_duration_tick_exists_only_while_every_gate_holds() {
+    // The truth table (criterion 4): band × segment × active tab
+    // running × surface visible — any false kills the tick.
+    for band in [false, true] {
+        for show in [false, true] {
+            for running in [false, true] {
+                for visible in [false, true] {
+                    assert_eq!(
+                        duration_due(band, show, running, visible),
+                        band && show && running && visible,
+                        "duration_due({band}, {show}, {running}, {visible})"
+                    );
+                }
+            }
+        }
+    }
 }
 
 // --- the grid condition (status-glance) ---
@@ -664,6 +836,8 @@ fn resolve_grid(
         spawn_grid,
         tab_position: None,
         clock: None,
+        running_elapsed: None,
+        frozen: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -728,6 +902,7 @@ fn copy_text_carries_each_segments_full_value() {
     assert_eq!(copy_text(SegmentId::Tab, &segments), "2/5");
     assert_eq!(copy_text(SegmentId::Zoom, &segments), "+200%");
     assert_eq!(copy_text(SegmentId::Clock, &segments), "14:32");
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "2:41");
 }
 
 #[test]
@@ -1009,6 +1184,8 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         grid: None,
         tab_position: None,
         clock: None,
+        running_elapsed: None,
+        frozen: None,
     };
     let band: StatusBar<()> = StatusBar::new(
         segments.clone(),
@@ -1087,14 +1264,14 @@ fn a_missing_path_rect_never_arms() {
 
 #[test]
 fn the_armed_display_borrows_the_branchs_seat() {
-    // 520 px: the resting fit elides the path to 16 chars beside
+    // 560 px: the resting fit elides the path to 16 chars beside
     // the branch; lending the branch's 42 px frees the whole value
     // — the armed display is the un-elided path.
-    let resting = band_fit(520.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(560.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(resting.path, PathFit::Elided(16));
     let display = reveal_display(
         "~/src/oss/l1br3/ced2",
-        520.0,
+        560.0,
         100.0,
         &fit_widths(),
         fit_path(),
@@ -1104,18 +1281,22 @@ fn the_armed_display_borrows_the_branchs_seat() {
 
 #[test]
 fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
-    // 320 px: the resting fit drops the grid and elides to one
-    // character; the armed fit — the branch's seat lent on top of
-    // the resting drops — still shows only a longer elision, never
-    // an overflow.
+    // 320 px: the resting fit drops the grid, tab, and zoom and
+    // elides to four characters; the armed fit — the branch's seat
+    // lent on top of the resting drops — still shows only a longer
+    // elision, never an overflow.
     let resting = band_fit(320.0, 100.0, &fit_widths(), fit_path());
-    assert_eq!(resting.path, PathFit::Elided(1));
+    assert_eq!(
+        resting.dropped,
+        vec![SegmentId::Grid, SegmentId::Tab, SegmentId::Zoom]
+    );
+    assert_eq!(resting.path, PathFit::Elided(4));
     let survivors: Vec<(SegmentId, f32)> = fit_widths()
         .into_iter()
         .filter(|(id, _)| !resting.dropped.contains(id))
         .collect();
     let display = reveal_display("~/src/oss/l1br3/ced2", 320.0, 100.0, &survivors, fit_path());
-    assert_eq!(display, "…ced2");
+    assert_eq!(display, "…r3/ced2");
 }
 
 #[test]
@@ -1272,6 +1453,8 @@ fn rich_segments() -> StatusSegments {
         grid: Some((120, 30)),
         tab_position: Some((1, 3)),
         clock: Some("14:32".to_string()),
+        running_elapsed: Some(Duration::from_secs(161)),
+        frozen: None,
     }
 }
 
@@ -1397,7 +1580,7 @@ fn copy_all_joins_every_present_full_value_with_single_spaces() {
     // then right — never displays, empties skipped.
     assert_eq!(
         copy_all_text(&rich_segments()),
-        "cargo ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
+        "cargo 2:41 ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
     );
 }
 
