@@ -68,6 +68,14 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         Action::ZoomIn,
     );
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
+    // The minus cluster's Shift-held form (numpad minus with Shift;
+    // the layouts where `-` survives it) — a dead press without
+    // this chord. Never the "_" form: on US layouts that press is
+    // the shell's 0x1F (readline undo), the Ctrl+I/H/D rule.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "-"),
+        Action::ZoomOut,
+    );
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
     // Settings. Bare Ctrl+I must stay unbound: in a terminal it is

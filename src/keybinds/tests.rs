@@ -38,6 +38,41 @@ fn the_shift_held_plus_cluster_zooms_in() {
 }
 
 #[test]
+fn the_shift_held_minus_zooms_out() {
+    // The minus cluster mirrors the plus one: numpad minus with
+    // Shift held, and the layouts where `-` survives Shift, arrive
+    // as their own chord — a dead press before this bind existed.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("-".into()),
+            Some(&Physical::Code(Code::Minus)),
+        ),
+        Some(Action::ZoomOut)
+    );
+}
+
+#[test]
+fn ctrl_shift_underscore_stays_free_for_the_terminal() {
+    // Ctrl+Shift+Minus on a US layout arrives as "_" and the widget
+    // sends the shell 0x1F (readline undo, xterm parity) — a byte
+    // the shell owns, so the chord is never bound: the same rule
+    // that keeps bare Ctrl+I/H/D/R/B free.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("_".into()),
+            Some(&Physical::Code(Code::Minus)),
+        ),
+        None
+    );
+}
+
+#[test]
 fn copy_and_paste_are_bound() {
     let binds = default_key_binds();
     assert_eq!(
@@ -833,6 +868,10 @@ fn binding_text_shows_joined_defaults_custom_or_none() {
         "Ctrl + + / Ctrl + = / Ctrl + Shift + + / Ctrl + Shift + ="
     );
     assert_eq!(action_binding_display(Action::ZoomIn, &custom), "Alt + Z");
+    assert_eq!(
+        action_binding_display(Action::ZoomOut, &BTreeMap::new()),
+        "Ctrl + - / Ctrl + Shift + -"
+    );
     assert_eq!(
         action_binding_display(Action::Copy, &BTreeMap::new()),
         "Ctrl + Shift + C"
