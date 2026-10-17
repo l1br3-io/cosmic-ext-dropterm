@@ -708,3 +708,145 @@ fn autosuggest_accept_with_nothing_showing_writes_nothing() {
     );
     assert_eq!(terminal.suggestion(), None);
 }
+
+// --- the command timer (command-lifecycle spec) ---
+//
+// The live pins ride the foreground_check harness: a real /bin/sh
+// whose foreground edges update() itself observes at its diff site.
+// The engine owns the timing beside the diff that feeds it (the
+// status-glance lesson), a fresh Terminal carries a fresh timer (the
+// respawn reset by construction), and the timestamps always run —
+// the autosuggest toggle gates nothing here.
+
+#[test]
+fn command_timer_freezes_a_bounded_duration_and_drains_the_latch_once() {
+    let mut terminal = autosuggest_terminal();
+    // The fresh-terminal shape (the respawn note): nothing running
+    // the timer witnessed, nothing frozen, nothing latched.
+    let (running, elapsed) = terminal.command_live();
+    assert!(!running);
+    assert_eq!(elapsed, None);
+    assert_eq!(terminal.command_frozen(), None);
+    assert_eq!(terminal.take_command_finished(), None);
+
+    // Witness idle first — the honesty input the start edge diffs
+    // against.
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0,
+        "the idle shell holds the foreground",
+    );
+
+    let started = Instant::now();
+    terminal.input_no_scroll(&b"sleep 0.3\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.command_live().1.is_some(),
+        "the witnessed start runs a live elapsed",
+    );
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0 && t.command_frozen().is_some(),
+        "the finish freezes the duration",
+    );
+
+    // Bounded window (in-run ruling, recorded in the chunk): the
+    // witnessed start lands after the fork and the finish after the
+    // exit, so the measured window is the sleep's own 0.3 s plus
+    // the finish's observation latency minus the start's — the 50 ms
+    // poll cadence can shave ~50 ms per edge. 200 ms floors the
+    // run's signal (never 0, never garbage); 5 s caps it; the wall
+    // time since Enter bounds it above.
+    let duration = terminal.command_frozen().expect("the frozen duration");
+    assert!(duration >= std::time::Duration::from_millis(200));
+    assert!(duration < std::time::Duration::from_secs(5));
+    assert!(duration <= started.elapsed() + std::time::Duration::from_secs(1));
+
+    // The latch drains exactly once; the frozen display keeps
+    // serving until the next start.
+    assert_eq!(terminal.take_command_finished(), Some(duration));
+    assert_eq!(terminal.take_command_finished(), None);
+    assert_eq!(terminal.command_frozen(), Some(duration));
+}
+
+#[test]
+fn command_timer_re_freezes_a_second_command_fresh() {
+    let mut terminal = autosuggest_terminal();
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0,
+        "the idle shell holds the foreground",
+    );
+
+    terminal.input_no_scroll(&b"sleep 0.3\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0 && t.command_frozen().is_some(),
+        "the first finish freezes",
+    );
+    let first = terminal
+        .command_frozen()
+        .expect("the first frozen duration");
+    assert_eq!(terminal.take_command_finished(), Some(first));
+
+    // The next witnessed start clears the freeze and re-arms — the
+    // window between proves the second freeze is the second
+    // command's own, never the first's survivor.
+    terminal.input_no_scroll(&b"sleep 0.3\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.command_frozen().is_none() && t.command_live().1.is_some(),
+        "the next start clears the freeze and re-arms",
+    );
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0 && t.command_frozen().is_some(),
+        "the second finish freezes",
+    );
+    let second = terminal
+        .command_frozen()
+        .expect("the second frozen duration");
+    assert!(second >= std::time::Duration::from_millis(200));
+    assert!(second < std::time::Duration::from_secs(5));
+    assert_eq!(terminal.take_command_finished(), Some(second));
+    assert_eq!(terminal.take_command_finished(), None);
+}
+
+#[test]
+fn command_timer_steps_with_autosuggestions_disabled() {
+    // Toggle independence: the timer rides the engine's own
+    // foreground diff, never suggest's — a disabled kill switch
+    // changes nothing about the edges or the freeze.
+    use alacritty_terminal::tty::Shell as PtyShell;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            autosuggestions_enabled: false,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh test terminal");
+
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0,
+        "the idle shell holds the foreground",
+    );
+    terminal.input_no_scroll(&b"sleep 0.3\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.command_live().0 && t.command_frozen().is_some(),
+        "the finish freezes with suggestions off",
+    );
+    let duration = terminal.command_frozen().expect("the frozen duration");
+    assert_eq!(terminal.take_command_finished(), Some(duration));
+}

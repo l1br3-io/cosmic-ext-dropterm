@@ -881,13 +881,6 @@ pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
 /// command's start, so it never reports a duration for it. A finish
 /// freezes the elapsed as the last command's duration; the next
 /// start clears the freeze.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the Task 1 model; Task 2's engine wiring consumes it"
-    )
-)]
 #[derive(Default)]
 pub struct CommandTimer {
     /// The last observed foreground state — `None` until the first
@@ -900,13 +893,6 @@ pub struct CommandTimer {
     frozen: Option<Duration>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the Task 1 model; Task 2's engine wiring consumes it"
-    )
-)]
 impl CommandTimer {
     /// One update's observation. `foreground` is the honesty input:
     /// the engine's own kernel truth at `update()` entry, not a
@@ -951,7 +937,7 @@ impl CommandTimer {
     not(test),
     expect(
         dead_code,
-        reason = "the Task 1 model; Task 2's engine wiring consumes it"
+        reason = "Task 3's app tick stores the formatted string with it"
     )
 )]
 pub fn format_duration(duration: Duration) -> String {
