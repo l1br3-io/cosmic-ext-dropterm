@@ -42,7 +42,7 @@ use indexmap::IndexSet;
 use std::{
     borrow::Cow,
     fs, io, mem,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Weak,
         atomic::{AtomicU32, Ordering},
@@ -88,6 +88,12 @@ pub struct TerminalOptions {
     /// a fresh terminal), so a mid-run config change cannot repaint a
     /// spawned-as-ssh tab into a shell tab.
     pub spawned_program: String,
+    /// The spawn-time HOME (path-suggest spec): the environment the
+    /// pty exec inherits — a profile env override when the preset
+    /// carries one, else this process's HOME. `~`-rooted path tokens
+    /// reduce against it; `None` leaves them unresolvable (silence).
+    /// Spawn truth, never rewritten by `set_config`.
+    pub spawn_home: Option<String>,
 }
 
 impl Default for TerminalOptions {
@@ -102,6 +108,7 @@ impl Default for TerminalOptions {
             font_size_zoom_step_mul_100: 100,
             autosuggestions_enabled: true,
             spawned_program: String::new(),
+            spawn_home: None,
         }
     }
 }
@@ -390,6 +397,13 @@ pub struct Terminal {
     /// truth fixed for the terminal's life; the path provider's
     /// allowlist gate reads it at every observation build.
     spawned_program: String,
+    /// The spawn-time HOME (path-suggest spec) — the `~` root, read
+    /// from spawn-resolved truth at every listing refresh.
+    spawn_home: Option<String>,
+    /// The path provider's listing cache (path-suggest spec) — see
+    /// [`PathListingCache`]; refreshed inside the synchronous update
+    /// flow, never from a thread.
+    path_cache: PathListingCache,
     /// The ghost tint (autosuggest spec, OQ-2): the scheme fg→bg
     /// blend, computed at construction and every `set_config` —
     /// never per frame.
@@ -454,6 +468,108 @@ enum SpawnSettle {
     /// The resting grid is recorded; every later resize is a
     /// deviation for the band to report.
     Settled,
+}
+
+/// The path provider's engine-side listing cache (path-suggest
+/// spec): the canonical parent directory of the token being
+/// completed — the cache key — paired with its sorted (name,
+/// is-a-directory) entries. Refreshed inside the synchronous update
+/// flow, only when the key changes (never per keystroke within one
+/// parent) and only on an eligible, enabled tab; any read error
+/// caches an empty listing, so IO failure degrades to silence,
+/// never a panic and never a stale entry after the key changes.
+#[derive(Default)]
+struct PathListingCache {
+    /// The canonical parent the entries belong to; `None` until a
+    /// first resolvable path token arrives.
+    key: Option<PathBuf>,
+    /// The key's entries, sorted by name; empty on any read error.
+    entries: Vec<(String, bool)>,
+}
+
+impl PathListingCache {
+    /// The reduced listing for `token`'s canonical parent
+    /// (path-suggest spec): the observation's `path_listing` input.
+    /// `gates_open` is the master toggle and the spawn allowlist
+    /// together — a closed gate returns before any filesystem touch —
+    /// and `token: None` (no path-shaped word being entered) is no
+    /// path-completion context. The filesystem read happens only when
+    /// the resolved parent differs from the cached key.
+    fn listing_for<'a>(
+        &'a mut self,
+        gates_open: bool,
+        token: Option<&str>,
+        home: Option<&str>,
+        cwd: Option<&Path>,
+    ) -> Option<&'a [(String, bool)]> {
+        if !gates_open {
+            return None;
+        }
+        let token = token?;
+        let parent = resolve_token_parent(token, home, cwd)?;
+        // The canonical parent is the key — same directory under two
+        // spellings reads once; the resolved spelling keys the
+        // silence when canonicalization itself fails (the directory
+        // does not exist, or cannot be walked).
+        let key = fs::canonicalize(&parent).unwrap_or(parent);
+        if self.key.as_ref() != Some(&key) {
+            self.entries = read_sorted_entries(&key);
+            self.key = Some(key);
+        }
+        Some(&self.entries)
+    }
+}
+
+/// The token's parent directory, resolved absolute (path-suggest
+/// spec): everything through the last `/` — or the whole `~` when
+/// the token is the HOME root alone — with `~` expanded through the
+/// spawn-time HOME and a relative parent joined onto the tab's
+/// working directory. `None` when the parent cannot resolve (`~`
+/// with no HOME, a relative parent with no cwd): silence, never a
+/// guess.
+fn resolve_token_parent(token: &str, home: Option<&str>, cwd: Option<&Path>) -> Option<PathBuf> {
+    // The parent is everything through the last `/` — or the whole
+    // `~` when the token is the HOME root alone.
+    let parent = match token.rfind('/') {
+        Some(idx) => &token[..=idx],
+        None => token,
+    };
+    let path = if parent == "~" || parent.starts_with("~/") {
+        let home = home?;
+        let trimmed = home.trim_end_matches('/');
+        PathBuf::from(format!("{trimmed}{}", &parent[1..]))
+    } else {
+        PathBuf::from(parent)
+    };
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        cwd.map(|cwd| cwd.join(path))
+    }
+}
+
+/// One directory's sorted (name, is-a-directory) entries
+/// (path-suggest spec): all-or-nothing — any error along the way
+/// (unreadable directory, a failed stat, a non-UTF-8 name that could
+/// never be safely suggested) yields the empty listing. The
+/// is-a-directory bit is readdir's own `d_type` truth: a symlink to
+/// a directory completes without the `/`, the honest no-follow
+/// answer.
+fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
+    let Some(read_dir) = fs::read_dir(dir).ok() else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(String, bool)> = read_dir
+        .map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            let is_dir = entry.file_type().ok()?.is_dir();
+            Some((name, is_dir))
+        })
+        .collect::<Option<Vec<(String, bool)>>>()
+        .unwrap_or_default();
+    entries.sort_unstable();
+    entries
 }
 
 impl Terminal {
@@ -582,6 +698,8 @@ impl Terminal {
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
             spawned_program: options.spawned_program.clone(),
+            spawn_home: options.spawn_home.clone(),
+            path_cache: PathListingCache::default(),
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
             timer: CommandTimer::default(),
@@ -1209,6 +1327,10 @@ impl Terminal {
         // sits inside: spawn truth, so it never changes mid-life —
         // but the read must still not borrow `self` in there.
         let paths_eligible = self.paths_eligible();
+        // The tab's working directory (the `/proc/{shell_pid}/cwd`
+        // truth), hoisted for the same borrow reason: relative path
+        // parents resolve against it.
+        let working_directory = self.working_directory();
         let fresh_by_finish = self.last_foreground_child && !foreground_child;
         self.last_foreground_child = foreground_child;
         // The command timer rides the engine's own diff
@@ -1291,9 +1413,22 @@ impl Terminal {
                             }
                         }
                     }
+                    // The path provider's data source (path-suggest
+                    // spec): the trailing token's parent listing,
+                    // engine-side IO reduced into the observation —
+                    // the model never touches the filesystem. The
+                    // cache reads only behind both gates and only
+                    // when the canonical parent changes.
+                    let path_listing = self.path_cache.listing_for(
+                        self.autosuggestions_enabled && paths_eligible,
+                        suggest::path_token(self.suggest.typed_segment(&before_cursor)),
+                        self.spawn_home.as_deref(),
+                        working_directory.as_deref(),
+                    );
                     let observation = suggest::Observation {
                         enabled: self.autosuggestions_enabled,
                         paths_eligible,
+                        path_listing,
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),

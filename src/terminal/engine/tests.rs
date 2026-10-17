@@ -883,3 +883,133 @@ fn the_path_spawn_gate_reads_spawn_resolved_truth_from_the_options() {
     assert!(gate("/bin/bash"), "a spawned bash tab may suggest paths");
     assert!(!gate("ssh"), "a spawned-as-ssh tab never does");
 }
+
+// --- the path provider's listing cache (path-suggest) ---
+
+/// A fresh fixture directory under the temp root, unique per name —
+/// the spawn.rs fixture convention, std-only.
+fn path_fixture(name: &str) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("dropterm-path-cache-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    dir
+}
+
+#[test]
+fn the_listing_cache_reads_once_per_parent_not_per_keystroke() {
+    let dir = path_fixture("lazy");
+    std::fs::write(dir.join("a.txt"), b"").expect("fixture file");
+    std::fs::create_dir(dir.join("sub")).expect("fixture directory");
+    let prefix = dir.to_string_lossy().into_owned();
+    let mut cache = PathListingCache::default();
+    let first = cache
+        .listing_for(true, Some(&format!("{prefix}/a")), None, None)
+        .expect("the first token lists its parent")
+        .to_vec();
+    assert_eq!(
+        first,
+        &[("a.txt".to_string(), false), ("sub".to_string(), true)],
+        "entries sorted by name, directories flagged"
+    );
+    // A file created between two tokens in the SAME parent stays
+    // invisible: the second call is not a re-read.
+    std::fs::write(dir.join("c.new"), b"").expect("fixture file");
+    let second = cache
+        .listing_for(true, Some(&format!("{prefix}/b")), None, None)
+        .expect("the same parent still lists");
+    assert_eq!(
+        second, first,
+        "same parent, cached listing — never per keystroke"
+    );
+    // A different parent refreshes; coming back re-reads, and c.new
+    // is there.
+    cache.listing_for(true, Some(&format!("{prefix}/sub/x")), None, None);
+    let back = cache
+        .listing_for(true, Some(&format!("{prefix}/a")), None, None)
+        .expect("the returned parent lists again");
+    assert!(back.contains(&("c.new".to_string(), false)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unreadable_directory_yields_an_empty_listing_never_a_stale_one() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = path_fixture("unreadable");
+    std::fs::write(dir.join("here.txt"), b"").expect("fixture file");
+    let other = path_fixture("unreadable-other");
+    let prefix = dir.to_string_lossy().into_owned();
+    let other_prefix = other.to_string_lossy().into_owned();
+    let mut cache = PathListingCache::default();
+    let good = cache
+        .listing_for(true, Some(&format!("{prefix}/h")), None, None)
+        .expect("the readable parent lists")
+        .to_vec();
+    assert_eq!(good, &[("here.txt".to_string(), false)]);
+    // Unreadable now: a later visit — the key changed away and back —
+    // reads silence, never the stale list.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000))
+        .expect("drop read permission");
+    cache.listing_for(true, Some(&format!("{other_prefix}/x")), None, None);
+    let reread = cache
+        .listing_for(true, Some(&format!("{prefix}/h")), None, None)
+        .expect("the now-unreadable parent still yields a listing shape");
+    assert!(reread.is_empty(), "unreadable → silence, never stale");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+        .expect("restore permission for cleanup");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+fn tilde_rooted_tokens_resolve_against_the_spawn_time_home() {
+    let home = path_fixture("home");
+    std::fs::write(home.join("notes.md"), b"").expect("fixture file");
+    let home_str = home.to_string_lossy().into_owned();
+    let mut cache = PathListingCache::default();
+    let listing = cache
+        .listing_for(true, Some("~/no"), Some(&home_str), None)
+        .expect("~ expands through the spawn HOME")
+        .to_vec();
+    assert_eq!(listing, &[("notes.md".to_string(), false)]);
+    // The bare HOME root is the same parent — the cached listing.
+    let root = cache
+        .listing_for(true, Some("~"), Some(&home_str), None)
+        .expect("the bare ~ is the HOME root");
+    assert_eq!(root, listing);
+    // No HOME: unresolvable — no listing context at all.
+    let mut no_home = PathListingCache::default();
+    assert_eq!(no_home.listing_for(true, Some("~/no"), None, None), None);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relative_parents_resolve_against_the_tab_cwd() {
+    let base = path_fixture("cwd");
+    std::fs::create_dir_all(base.join("src")).expect("fixture directory");
+    std::fs::write(base.join("src/main.rs"), b"").expect("fixture file");
+    let mut cache = PathListingCache::default();
+    let listing = cache
+        .listing_for(true, Some("src/ma"), None, Some(&base))
+        .expect("a relative parent joins the cwd");
+    assert_eq!(listing, &[("main.rs".to_string(), false)]);
+    // No cwd: a relative parent is unresolvable — silence.
+    let mut no_cwd = PathListingCache::default();
+    assert_eq!(no_cwd.listing_for(true, Some("src/ma"), None, None), None);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn closed_gates_and_plain_tokens_never_produce_a_listing() {
+    // The spawn gate closed: a perfectly valid token returns None
+    // before any resolution — the filesystem is never touched.
+    let mut cache = PathListingCache::default();
+    let real = format!("{}/a", std::env::temp_dir().to_string_lossy());
+    assert_eq!(cache.listing_for(false, Some(&real), None, None), None);
+    // No path-shaped word being entered: equally None.
+    assert_eq!(cache.listing_for(true, None, None, None), None);
+    // Nothing cached behind either.
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache.key, None);
+}

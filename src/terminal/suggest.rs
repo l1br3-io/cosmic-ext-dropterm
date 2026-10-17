@@ -89,6 +89,17 @@ pub(crate) struct Observation<'a> {
     // test reads this when PS-3 lands.
     #[allow(dead_code)]
     pub(crate) paths_eligible: bool,
+    /// The path provider's reduced listing (path-suggest spec): the
+    /// sorted (name, is-a-directory) entries of the trailing token's
+    /// canonical parent directory, read engine-side and keyed by that
+    /// parent — present only for a path-shaped token on an eligible
+    /// tab; `None` is no path-completion context (silence). Borrowed
+    /// from the engine's cache; the model never touches the
+    /// filesystem.
+    // The listing ships before its consumer: the path provider's
+    // candidate logic reads this when PS-3 lands.
+    #[allow(dead_code)]
+    pub(crate) path_listing: Option<&'a [(String, bool)]>,
     /// The terminal's focus state.
     pub(crate) focused: bool,
     /// A foreground child holds the PTY (`tcgetpgrp` vs the shell's
@@ -165,6 +176,15 @@ impl Suggest {
     pub(crate) fn take_suffix(&mut self) -> Option<String> {
         let showing = self.showing.take()?;
         Some(showing.suffix)
+    }
+
+    /// The typed segment of `before_cursor` — the line minus the
+    /// adopted anchor — when the line still starts with it
+    /// (path-suggest spec): the engine's carve for the path listing,
+    /// the same strip the guard chain performs, so both sides key on
+    /// one token.
+    pub(crate) fn typed_segment<'a>(&self, before_cursor: &'a str) -> Option<&'a str> {
+        before_cursor.strip_prefix(self.anchor.as_deref()?)
     }
 }
 
@@ -342,9 +362,6 @@ fn is_command_position(typed: &str) -> bool {
 /// `git\ myp` carves itself (the escaped space keeps the word open);
 /// leading whitespace never survives the carve. The path provider
 /// completes this token.
-// The seam's vocabulary ships before its consumers: path-suggest
-// cites this when its module lands.
-#[allow(dead_code)]
 fn trailing_token(typed: &str) -> &str {
     let mut token_start = 0;
     let mut escaped = false;
@@ -363,11 +380,18 @@ fn trailing_token(typed: &str) -> &str {
 /// shows its slash. A lone `.`/`..`, a `~user` reference, and a
 /// dotfile name are plain words until a slash appears; flags
 /// (`-la`, `--flag`) never are.
-// The seam's vocabulary ships before its consumers: path-suggest
-// cites this when its module lands.
-#[allow(dead_code)]
 fn is_path_shaped(token: &str) -> bool {
     token == "~" || token.contains('/')
+}
+
+/// The path provider's input token (path-suggest spec): the typed
+/// segment's trailing token when it is path-shaped — the one word
+/// whose parent directory the engine lists. `None` is no
+/// path-completion context: a plain word, a flag, or nothing typed.
+pub(crate) fn path_token(typed: Option<&str>) -> Option<&str> {
+    typed
+        .map(trailing_token)
+        .filter(|token| is_path_shaped(token))
 }
 
 /// The shells whose tabs may suggest local paths (path-suggest
@@ -446,6 +470,7 @@ mod tests {
         Observation {
             enabled: true,
             paths_eligible: true,
+            path_listing: None,
             focused: true,
             foreground_child: false,
             display_offset: 0,

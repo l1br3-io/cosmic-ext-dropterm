@@ -274,6 +274,26 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
 /// [`SpawnParts::program`]: a profile's pty wraps its command in a
 /// shell preamble, but the tab is still *spawned as* that command
 /// (`ssh web` is an ssh tab), so the path provider's allowlist gates
+/// The spawn-time HOME (path-suggest spec): a profile env override
+/// when the preset carries one, else this process's — the environment
+/// the pty exec inherits, resolved app-side so `~` reduces against
+/// the same HOME the shell sees. `None` (no HOME anywhere) leaves
+/// `~`-rooted tokens unresolvable: silence.
+fn spawn_home(profile_env: &HashMap<String, String>) -> Option<String> {
+    profile_env
+        .get("HOME")
+        .cloned()
+        .or_else(|| std::env::var("HOME").ok())
+}
+
+/// The program word the tab is *spawned as* (path-suggest spec): the
+/// shell for a plain spawn and every degradation that lands on one,
+/// the leading program of a `--cmd` line, and a profile command's
+/// leading program — spawn truth resolved app-side, never a
+/// process-name heuristic. The one deliberate divergence from
+/// [`SpawnParts::program`]: a profile's pty wraps its command in a
+/// shell preamble, but the tab is still *spawned as* that command
+/// (`ssh web` is an ssh tab), so the path provider's allowlist gates
 /// on the command's program, never the wrapper.
 fn spawned_as_program(command: &SpawnCommand, config: &DropTermConfig) -> String {
     let plain = || config.resolved_shell();
@@ -446,6 +466,9 @@ impl DropTerm {
             scrolling_history: scrollback as usize,
             ..TermConfig::default()
         };
+        // The path provider's `~` root, resolved from the same env map
+        // the pty is about to own.
+        let spawn_home = spawn_home(&pty_env);
         let pty_options = PtyOptions {
             shell: Some(PtyShell::new(shell.clone(), args)),
             // Alacritty chdirs before exec and silently keeps this
@@ -473,6 +496,7 @@ impl DropTerm {
                 font_size,
                 autosuggestions_enabled: self.config.autosuggestions_enabled,
                 spawned_program: spawned_as_program(command, &self.config),
+                spawn_home,
                 ..TerminalOptions::default()
             },
             &colors,
@@ -918,6 +942,20 @@ mod tests {
     }
 
     // --- the path provider's spawn truth (path-suggest) ---
+
+    #[test]
+    fn spawn_home_prefers_the_profile_env_override_over_the_process_home() {
+        // The preset's HOME wins; without one the pty inherits this
+        // process's HOME — the same merge the exec applies.
+        assert_eq!(
+            spawn_home(&HashMap::from([(
+                "HOME".to_string(),
+                "/srv/remote-home".to_string()
+            )])),
+            Some("/srv/remote-home".to_string())
+        );
+        assert_eq!(spawn_home(&HashMap::new()), std::env::var("HOME").ok());
+    }
 
     #[test]
     fn spawned_as_program_resolves_shell_and_degraded_spawns_to_the_shell() {
