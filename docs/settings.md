@@ -30,7 +30,7 @@ Commits are per control kind: toggles and dropdowns write on change, sliders wri
 
 ## Keybindings tab
 
-The editor is a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other). Each row shows its effective binding: the custom chord if one is set, otherwise every default chord joined (`Ctrl + Plus / Ctrl + Equal` for zoom-in), or `None` for actions that ship unbound. The full default table lives in [keybindings](keybindings.md).
+The editor is a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other). Each row shows its effective binding: the custom chord if one is set, otherwise every default chord joined (`Ctrl + + / Ctrl + = / Ctrl + Shift + + / Ctrl + Shift + =` for zoom-in), or `None` for actions that ship unbound. The full default table lives in [keybindings](keybindings.md).
 
 Rebinding is two presses: press the row's binding to arm the capture, then press the chord. While armed, the capture owns every key press - nothing reaches the terminal. Escape or the hint's Cancel ends it without changes; capturing a chord another action already holds shows an inline error naming the holder and writes nothing.
 

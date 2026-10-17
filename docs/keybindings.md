@@ -22,8 +22,8 @@ Every app-level shortcut and its default chords, in the same groups the settings
 | Move tab right | `Ctrl+Shift+PageDown` | `move_tab_right` |
 | Activate tab 1-8 | `Ctrl+Shift+1` … `Ctrl+Shift+8` | `activate_tab_1` … `activate_tab_8` |
 | Activate last tab | `Ctrl+Shift+9` | `activate_last_tab` |
-| Zoom in | `Ctrl+=` / `Ctrl++` | `zoom_in` |
-| Zoom out | `Ctrl+-` | `zoom_out` |
+| Zoom in | `Ctrl+=` / `Ctrl++` / `Ctrl+Shift+=` / `Ctrl+Shift++` | `zoom_in` |
+| Zoom out | `Ctrl+-` / `Ctrl+Shift+-` | `zoom_out` |
 | Zoom reset | `Ctrl+0` | `zoom_reset` |
 | Clear scrollback | `Ctrl+Shift+K` | `clear_scrollback` |
 | Hide the overlay | `Ctrl+Shift+Q` | `hide` |
@@ -36,7 +36,9 @@ The per-profile verbs - New profile tab and Switch profile tab - are deliberatel
 
 ## Why some bare keys stay free
 
-Several shortcuts sit behind `Ctrl+Shift+` because the bare `Ctrl+` chord is a byte the shell owns: `Ctrl+I` is the TAB byte (0x09, tab completion), `Ctrl+H` the backspace byte (0x08), `Ctrl+B` readline's cursor-back, `Ctrl+R` reverse history search, and `Ctrl+D` end-of-file. Swallowing any of them would break the shell it runs in, so the app never binds them. Likewise bare `Ctrl+digit` stays free - only `Ctrl+=`/`-`/`0` zoom.
+Several shortcuts sit behind `Ctrl+Shift+` because the bare `Ctrl+` chord is a byte the shell owns: `Ctrl+I` is the TAB byte (0x09, tab completion), `Ctrl+H` the backspace byte (0x08), `Ctrl+B` readline's cursor-back, `Ctrl+R` reverse history search, and `Ctrl+D` end-of-file. Swallowing any of them would break the shell it runs in, so the app never binds them. Likewise bare `Ctrl+digit` stays free - only the `Ctrl+=`/`-`/`0` zoom cluster and its Shift-held forms bind.
+
+The zoom chords come in Shift-optional pairs because matching is exact on modifiers and typing `+` holds Shift on US-style layouts: without the Shift-held forms the literal `Ctrl++` press would arrive dead. `Ctrl+Shift+_` is the one form deliberately left unbound - on those layouts it is how a Shift-held `Ctrl+-` arrives, and that byte belongs to the shell (0x1F, readline undo).
 
 ## Customizing
 
