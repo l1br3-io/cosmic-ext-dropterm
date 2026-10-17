@@ -266,14 +266,6 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
     }
 }
 
-/// The program word the tab is *spawned as* (path-suggest spec): the
-/// shell for a plain spawn and every degradation that lands on one,
-/// the leading program of a `--cmd` line, and a profile command's
-/// leading program — spawn truth resolved app-side, never a
-/// process-name heuristic. The one deliberate divergence from
-/// [`SpawnParts::program`]: a profile's pty wraps its command in a
-/// shell preamble, but the tab is still *spawned as* that command
-/// (`ssh web` is an ssh tab), so the path provider's allowlist gates
 /// The spawn-time HOME (path-suggest spec): a profile env override
 /// when the preset carries one, else this process's — the environment
 /// the pty exec inherits, resolved app-side so `~` reduces against
