@@ -816,6 +816,21 @@ pub fn selection_is_click(anchor: Point, release: Point) -> bool {
     (dx * dx + dy * dy) < SELECTION_THRESHOLD * SELECTION_THRESHOLD
 }
 
+/// The double-click window (status-select spec, OQ-1): 500 ms, the
+/// common toolkit default, retunable at the pass.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
+
+/// Whether a left press completes a double-click (status-select
+/// spec): within the window and a few px of the previous press —
+/// the terminal word-select rhythm, derived from raw presses (iced
+/// offers no double-click event at the widget layer). The px
+/// tolerance is the drag threshold's own value, one constant fewer.
+pub fn is_double_click(prev: (Instant, Point), now: Instant, at: Point) -> bool {
+    now.duration_since(prev.0) <= DOUBLE_CLICK_WINDOW
+        && (at.x - prev.1.x).abs() <= SELECTION_THRESHOLD
+        && (at.y - prev.1.y).abs() <= SELECTION_THRESHOLD
+}
+
 /// The normalized horizontal span of a selection drag.
 fn selection_span(anchor: Point, focus: Point) -> (f32, f32) {
     if anchor.x <= focus.x {
@@ -1241,6 +1256,10 @@ pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800
 /// paragraphs' text on arming transitions only — between
 /// transitions, every read (draw, hit-testing, pressing) sees the
 /// same laid display.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent widget flags, one per interaction: reveal armed, path elided, menu open, span press"
+)]
 #[derive(Default)]
 struct State {
     process: BandParagraph,
@@ -1277,6 +1296,19 @@ struct State {
     /// The live-or-persisting selection: anchor and focus. Persists
     /// highlighted after release until the next press.
     selection: Option<(Point, Point)>,
+    /// The last left press, for double-click discrimination
+    /// (status-select spec): `None` until the first, so a fresh
+    /// band never pairs with a phantom press. Set on every left
+    /// press the band sees; a right press clears it (a press is a
+    /// press).
+    last_left_press: Option<(Instant, Point)>,
+    /// Whether the live press armed a double-click's segment span
+    /// (status-select spec): the release must ride the selection
+    /// branch — the click discrimination cannot tell a
+    /// double-click's still press from a single click's, so the
+    /// flag routes it, not the distance. Press metadata only: the
+    /// selection itself stays the one `(Point, Point)` machinery.
+    span_press: bool,
     /// Whether the context menu is open. Band-local by the
     /// dropdown's rule — the open state dies with the band's tree
     /// on hide/show.
@@ -1872,6 +1904,8 @@ where
                 state.menu_open = true;
                 state.press = None;
                 state.selection = None;
+                state.span_press = false;
+                state.last_left_press = None;
                 shell.invalidate_layout();
                 shell.capture_event();
                 shell.request_redraw();
@@ -1888,8 +1922,37 @@ where
                 else {
                     return;
                 };
+                // Double-click (status-select spec): a second left
+                // press within the window and px tolerance of the
+                // previous arms the pressed segment's whole span as
+                // the selection — the display text, selected and
+                // copied WYSIWYG through the drag release's exact
+                // path. The span rides the real press point (a
+                // double-click's hand jitters; anchoring the span's
+                // own origin would let any 1 px motion redraw it as
+                // a partial drag from the segment's edge), and
+                // `span_press` keeps the release off the click verb.
+                // A first press, a press past the window, or one too
+                // far away takes today's path unchanged.
+                let now = Instant::now();
+                let double = state
+                    .last_left_press
+                    .is_some_and(|prev| is_double_click(prev, now, position));
+                state.last_left_press = Some((now, position));
                 state.press = Some(position);
+                state.span_press = false;
                 state.selection = None;
+                if double
+                    && let Some((_, rect)) = segment_rects(state, layout.bounds())
+                        .into_iter()
+                        .find(|(_, rect)| rect.contains(position))
+                {
+                    state.span_press = true;
+                    state.selection = Some((
+                        Point::new(rect.x, rect.y),
+                        Point::new(rect.x + rect.width, rect.y),
+                    ));
+                }
                 shell.capture_event();
                 shell.request_redraw();
             }
@@ -1913,9 +1976,15 @@ where
                 let Some(anchor) = state.press.take() else {
                     return;
                 };
+                // A double-click's second release rides the selection
+                // branch (status-select spec): the click discrimination
+                // cannot tell its still press from a single click's,
+                // so the span flag routes it, not the distance —
+                // `copy_text` and the ✓ never fire.
+                let span_press = std::mem::take(&mut state.span_press);
                 shell.capture_event();
                 shell.request_redraw();
-                if selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
+                if !span_press && selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
                     // The click verb, branched ahead of the copy
                     // path: the scrolled chip is the band's one
                     // action chip (status-scrolled spec) — its

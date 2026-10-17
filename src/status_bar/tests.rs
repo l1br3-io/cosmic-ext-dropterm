@@ -1800,6 +1800,113 @@ fn selection_copies_the_display_wysiwyg_click_copies_the_full_value() {
     );
 }
 
+// --- double-click select (status-select spec) ---
+//
+// A second left press within the 500 ms window and 4 px of the
+// previous (the drag threshold's own value, one constant fewer)
+// completes a double-click: the pressed segment's whole span
+// becomes the selection, and the release copies its display text
+// WYSIWYG through the drag release's exact path — the click verb
+// (full value plus ✓) never fires. The verbs compose by order: the
+// double-click's first release is still a click.
+
+#[test]
+fn a_second_press_within_the_window_and_px_is_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let soon = first.0 + Duration::from_millis(300);
+    assert!(is_double_click(first, soon, Point::new(102.0, 15.0)));
+}
+
+#[test]
+fn a_press_past_the_window_is_not_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let late = first.0 + Duration::from_millis(501);
+    assert!(!is_double_click(first, late, Point::new(100.0, 14.0)));
+}
+
+#[test]
+fn a_press_too_far_from_the_previous_is_not_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let soon = first.0 + Duration::from_millis(100);
+    assert!(!is_double_click(first, soon, Point::new(106.0, 14.0)));
+    assert!(!is_double_click(first, soon, Point::new(100.0, 20.0)));
+}
+
+#[test]
+fn the_window_and_px_boundaries_are_inclusive() {
+    // The rulings' exact edges: 500 ms on the dot and 4 px on the
+    // dot (either axis) still complete the double-click.
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let at_the_window = first.0 + Duration::from_millis(500);
+    assert!(is_double_click(
+        first,
+        at_the_window,
+        Point::new(100.0, 14.0)
+    ));
+    let soon = first.0 + Duration::from_millis(100);
+    assert!(is_double_click(first, soon, Point::new(104.0, 14.0)));
+    assert!(is_double_click(first, soon, Point::new(100.0, 18.0)));
+}
+
+#[test]
+fn a_double_click_span_selects_the_whole_segment_wysiwyg() {
+    // The span a double-click arms is the pressed segment's laid
+    // rect end to end: through the existing selection functions it
+    // highlights exactly that rect and copies exactly its display
+    // text — no new selection code, the row is the source.
+    let row = row_segments();
+    let rect = row[1].rect;
+    let span = (
+        Point::new(rect.x, rect.y),
+        Point::new(rect.x + rect.width, rect.y),
+    );
+    assert_eq!(
+        selection_rects(span.0, span.1, &row),
+        vec![Rectangle::new(
+            Point::new(64.0, 0.0),
+            Size::new(100.0, BAND_HEIGHT)
+        )]
+    );
+    assert_eq!(selection_text(span.0, span.1, &row), "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn the_span_over_an_armed_revealed_path_selects_the_expanded_display() {
+    // While the inline reveal holds the path expanded, the row text
+    // is the expanded display — the span selects it verbatim, no
+    // special case.
+    let row = vec![RowSegment {
+        rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(100.0, BAND_HEIGHT)),
+        text: "~/src/oss/l1br3/ced2".to_string(),
+    }];
+    let span = (Point::new(64.0, 14.0), Point::new(164.0, 14.0));
+    assert_eq!(selection_text(span.0, span.1, &row), "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn a_double_click_release_copies_the_display_never_the_click_value() {
+    // The routing, pinned by construction: the span-armed press
+    // keeps the release off the click verb, so its payload comes
+    // from `selection_text` — the *display* text — never
+    // `copy_text`'s full un-elided value, and no ✓ flashes (the
+    // flash is the click verb's acknowledgment alone).
+    let row = vec![RowSegment {
+        rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(50.0, BAND_HEIGHT)),
+        text: "…/l1br3/ced2".to_string(),
+    }];
+    let span = (Point::new(64.0, 14.0), Point::new(114.0, 14.0));
+    assert_eq!(selection_text(span.0, span.1, &row), "…/l1br3/ced2");
+    let segments = StatusSegments {
+        path: Some("~/src/oss/l1br3/ced2".to_string()),
+        ..StatusSegments::default()
+    };
+    assert_ne!(
+        selection_text(span.0, span.1, &row),
+        copy_text(SegmentId::Path, &segments),
+        "the double-click's payload is the display, not the click value"
+    );
+}
+
 // --- the context menu (the per-tab menu's pattern) ---
 
 /// A rich band — every segment present — the menu pins' fixture.
