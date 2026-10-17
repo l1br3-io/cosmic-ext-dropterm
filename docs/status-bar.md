@@ -11,6 +11,8 @@ Segments are values without labels - a path reads as a path - separated by gaps,
 
 The band always takes the slot adjacent to the grab bar, whatever the `edge` × `tab_position` stacking - it never trades places with the tab strip. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame.
 
+While `ssh` owns the foreground, the path's seat stops lying: the local cwd froze the moment ssh started, so the seat shows the ssh command's own destination token instead - `user@host`, a bare alias, exactly as typed, read from the process's argv with the option values skipped (`ssh -p 2222 box` shows `box`). The branch hides for the same staleness (the local repo is as stale as the path was), and a click copies the token. No toggle of its own governs this: the path and branch rules (`status_bar_show_path` / `status_bar_show_branch`) cover it, and when the argv cannot certify a destination the band keeps the local path rather than guess a host.
+
 ## Command time
 
 While a foreground command runs, the duration segment beside the process name counts it once per second (`0:04`, `2:41`; `1:00:00` past the hour) - the tick alone drives it, so a command that prints nothing (`sleep 30`) still counts. When the command finishes the reading freezes as the last command's cost, paired with its name - `cargo 2:41` - because by then the process segment already shows the shell again; the pair stands until the next command starts.
