@@ -527,6 +527,32 @@ impl DropTerm {
         None
     }
 
+    /// Pre-arm the terminal-height pin at the height the show just
+    /// requested: [`SurfaceOpened`] calls this before its reshape
+    /// tasks run, so the granted-size echoes those tasks produce
+    /// meet an armed pin, not an empty one. The load-bearing case
+    /// is the stale synthetic configure every `set_size` carries —
+    /// at show time it reports the measuring pass's full-output
+    /// height, and an empty pin adopts immediately
+    /// (`window_pin_due(None, ..)`), growing the grid once per
+    /// toggle and pushing the grown lines into scrollback on the
+    /// shrink back. Armed, the echo is a changed height inside
+    /// [`geometry::WINDOW_PIN_INTERVAL`] and defers; the real grant
+    /// equals the armed height and re-adopts for free. A
+    /// compositor that grants something other than the request
+    /// still lands through the ordinary debounce — the pre-arm
+    /// only ever names the request, never overrides a grant.
+    pub(super) fn prearm_show_pin(&mut self, output: (u32, u32), geom: Geometry) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
+        let height = geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
+        self.window_height = Some(height);
+        self.pin_applied = Some((std::time::Instant::now(), height));
+        self.pending_height = None;
+    }
+
     /// The surface's current width in px: the value both the drawer
     /// width policy (render + drag) and the height drag target
     /// against. 480 while no output has reported a size — the same

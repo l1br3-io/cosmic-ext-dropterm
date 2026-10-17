@@ -252,6 +252,12 @@ pub struct TerminalBox<'a, Message> {
     /// space inside the fixed-size layer surface regardless of how the
     /// surrounding flex distributes leftovers.
     height: Length,
+    /// Cross-axis width strategy — the height pin's mirror. Defaults to
+    /// `Fill` (the library behavior any other host expects); the
+    /// drop-down pins a `Fixed` width so a `width_percent < 100` config
+    /// never bounces the grid's columns through the full-output width
+    /// of the measuring probe (toggle-grid-stability).
+    width: Length,
 }
 
 impl<'a, Message> TerminalBox<'a, Message>
@@ -280,6 +286,7 @@ where
             sharp_corners: false,
             disabled: false,
             height: Length::Fill,
+            width: Length::Fill,
         }
     }
 
@@ -352,6 +359,12 @@ where
     /// Pins the widget's height strategy. See the field docs.
     pub fn height(mut self, height: Length) -> Self {
         self.height = height;
+        self
+    }
+
+    /// Pins the widget's width strategy. See the field docs.
+    pub fn width(mut self, width: Length) -> Self {
+        self.width = width;
         self
     }
 
@@ -452,7 +465,7 @@ where
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, self.height)
+        Size::new(self.width, self.height)
     }
 
     fn layout(
@@ -461,7 +474,7 @@ where
         _renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.width(Length::Fill).height(self.height);
+        let limits = limits.width(self.width).height(self.height);
 
         let mut terminal = self.terminal.lock().unwrap();
 
@@ -489,7 +502,7 @@ where
             let height = layout_lines as f32 * buffer.metrics().line_height;
             let size = Size::new(limits.max().width, height);
 
-            layout::Node::new(limits.resolve(Length::Fill, self.height, size))
+            layout::Node::new(limits.resolve(self.width, self.height, size))
         })
     }
 
