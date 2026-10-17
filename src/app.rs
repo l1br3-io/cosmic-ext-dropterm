@@ -616,19 +616,31 @@ impl DropTerm {
             .profile
             .as_deref()
             .and_then(|id| profile::find(&self.config.profiles, id));
-        // The grid and its spawn record ride the same in-memory
-        // lock as the zoom — resize-fresh by construction, no
-        // snapshot of its own; the record is the engine-owned
-        // resting grid (status-glance criterion 1). The scrolled
-        // chip's count joins them (status-scrolled spec): a
-        // `display_offset` read, zero fs, the same lock.
-        let (zoom_adj, grid, spawn_grid, scrolled_back) = {
+        // Every engine read the inputs need, under one guard: the
+        // grid and its spawn record ride the same in-memory lock as
+        // the zoom — resize-fresh by construction, no snapshot of
+        // its own; the record is the engine-owned resting grid
+        // (status-glance criterion 1). The scrolled chip's count
+        // joins them (status-scrolled spec): a `display_offset`
+        // read, zero fs. And the command timer's two
+        // (command-lifecycle spec): the live elapsed while a
+        // witnessed start runs, and the frozen pair — OQ-1 pairs
+        // the app's last sampled running comm (kept per-tab) with
+        // the engine's frozen duration. The unnamed floor: a run
+        // that was never sampled (a background tab's finished
+        // command) keeps its duration with no name to lie about.
+        let (zoom_adj, grid, spawn_grid, scrolled_back, running_elapsed, frozen) = {
             let terminal = tab.terminal.lock().unwrap();
+            let frozen = terminal
+                .command_frozen()
+                .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
             (
                 terminal.zoom_adj(),
                 terminal.grid(),
                 terminal.spawn_grid(),
                 Some(terminal.scrolled_back_lines()),
+                terminal.command_live().1,
+                frozen,
             )
         };
         // The step the tab's terminal actually zooms by: the same
@@ -636,22 +648,6 @@ impl DropTerm {
         let zoom_step = self
             .terminal_options_for(resolved)
             .font_size_zoom_step_mul_100;
-        // The command timer's two reads (command-lifecycle spec):
-        // the live elapsed while a witnessed start runs, and the
-        // frozen pair — OQ-1 pairs the app's last sampled running
-        // comm (kept per-tab) with the engine's frozen duration.
-        // Under the same lock the zoom/grid reads already take.
-        let (running_elapsed, frozen) = {
-            let terminal = tab.terminal.lock().unwrap();
-            let elapsed = terminal.command_live().1;
-            // The unnamed floor: a run that was never sampled (a
-            // background tab's finished command) keeps its duration
-            // with no name to lie about.
-            let frozen = terminal
-                .command_frozen()
-                .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
-            (elapsed, frozen)
-        };
         let inputs = status_bar::StatusInputs {
             home: home.as_deref(),
             cwd,

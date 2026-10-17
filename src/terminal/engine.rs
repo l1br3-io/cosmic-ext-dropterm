@@ -367,6 +367,15 @@ fn read_ssh_destination(pid: i32) -> Option<String> {
         return None;
     }
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    // The comm gate and this read are not atomic: an ssh that
+    // exited in between can hand a recycled pid's argv to the
+    // parser — an unrelated process's operands. The re-check
+    // certifies the read before anything parses it, so the worst
+    // case stays the ruled degrade (the local path), never a
+    // wrong host.
+    if read_comm(pid).as_deref() != Some("ssh") {
+        return None;
+    }
     // cmdline is NUL-separated with a trailing NUL; the bytes are
     // another process's own — strict UTF-8, degrading on anything
     // else rather than rendering a half-read token.

@@ -811,7 +811,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // chain yields None, and re-enabling suggests again at the
         // next typed prefix (autosuggest spec).
         | ConfigKey::AutosuggestionsEnabled
-        | ConfigKey::ThemePreference => ApplyTiming::Live,        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
+        | ConfigKey::ThemePreference => ApplyTiming::Live,
+        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
         ConfigKey::Shell

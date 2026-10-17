@@ -1168,8 +1168,6 @@ impl CommandTimer {
 
 /// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
 /// (command-lifecycle spec, OQ-3).
-/// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
-/// (command-lifecycle spec, OQ-3).
 pub fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     let (hours, minutes, secs) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);

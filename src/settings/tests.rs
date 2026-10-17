@@ -883,9 +883,9 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_and_nine_show_rows() {
+fn the_status_bar_card_hosts_the_master_toggle_border_and_ten_show_rows() {
     // status-segments Task 3 + bar-borders BB-3 + status-scrolled
-    // Task 2: the Status bar card grows to eleven rows, in band
+    // Task 2: the Status bar card grows to twelve rows, in band
     // order — the master toggle, the border toggle, then one
     // "Show …" row per segment — each under its exact file
     // spelling, each flipping through the single planned-write
