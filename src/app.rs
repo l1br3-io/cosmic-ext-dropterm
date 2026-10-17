@@ -1533,6 +1533,20 @@ impl Application for DropTerm {
             return widget::text("").into();
         }
 
+        // No grid without a settled size (toggle-grid-stability):
+        // the Measuring surface is the full-output probe, and a
+        // `Fill`-height TerminalBox rendered into it would realize
+        // the full-output grid the pass exists only to read. With
+        // a settled pin (every re-show) the box renders at that
+        // height inside the stretched window, byte-identical to
+        // the settled frame; without one (first launch) the
+        // placeholder holds the measuring round-trip, so the
+        // terminal's first realized size is the configured
+        // geometry — one opening resize, never the probe.
+        if matches!(self.surface, SurfaceState::Measuring(_)) && self.window_height.is_none() {
+            return widget::text("").into();
+        }
+
         let opacity = f32::from(self.config.opacity) / 100.0;
         // Pin the terminal's height to the granted window minus the bars'
         // strips — both always reserved, so the 1↔2 tab crossing never
@@ -1543,9 +1557,22 @@ impl Application for DropTerm {
                 self.config.status_bar_enabled,
             ))
         });
+        // The height pin's mirror (toggle-grid-stability, OQ-2):
+        // while an output is known the box renders at the settled
+        // surface width — during Measuring that keeps a
+        // `width_percent < 100` config from bouncing the grid's
+        // columns through the full-output probe width. At rest the
+        // pin equals the grant, so Shown rendering is
+        // byte-identical to Fill.
+        let terminal_width = if self.output_size.is_some() {
+            Length::Fixed(self.current_surface_width())
+        } else {
+            Length::Fill
+        };
         let terminal: Element<'_, Message> = TerminalBox::new(&tab.terminal, &self.key_binds)
             .id(self.terminal_id.clone())
             .height(terminal_height)
+            .width(terminal_width)
             .opacity(opacity)
             .show_headerbar(false)
             // Inert while the settings drawer is open (spec
@@ -2031,6 +2058,14 @@ impl DropTerm {
                     self.output_size = Some(output);
                     let geom = Geometry::from_config(&self.config);
                     self.surface = SurfaceState::Shown(id);
+                    // Arm the pin at the height the reshape below
+                    // requests — before the tasks run, so their
+                    // granted-size echoes meet an armed pin. The
+                    // stale echo carries the measuring pass's
+                    // full-output height; onto an empty pin it
+                    // adopts immediately and grows the grid once
+                    // per toggle (toggle-grid-stability).
+                    self.prearm_show_pin(output, geom);
                     // The show arm's refresh (status-glance criterion
                     // 4): a landing surface narrates the present, not
                     // whatever the last piggyback point saw — the

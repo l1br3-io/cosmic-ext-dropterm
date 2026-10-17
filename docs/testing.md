@@ -139,6 +139,11 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] During the slide the surface's size and position never change (no visible resize or jump), and the content's opacity never fades
 - [ ] Keyboard focus is grabbed the instant the surface shows, and returns to the previously focused window the moment a hide *starts* - not when the surface disappears
 - [ ] A focus-reporting program (fish; or vim/tmux in any shell) never repaints per toggle: hotkey hide/show leaves its display untouched, while a real focus loss and regain (click another window, then the overlay) still reports - the dropdown's own toggle is not a focus event
+- [ ] Toggle grid stability - steady toggle (the reported repro): `clear` the shell, toggle hide/show five times - zero new prompt entries appear above the live prompt and the screen stays exactly the cleared prompt (before the fix each toggle added one dead prompt entry and pushed it into scrollback)
+- [ ] Toggle grid stability - no intermediate grid: at first launch the prompt renders at the configured rows from its first appearance (no full-output flash then shrink), and a re-show renders the content at its settled size from the first frame
+- [ ] Toggle grid stability - genuine changes land once: a grab-bar drag release, a `height_percent` edit, and a `width_percent` edit each reflow the terminal exactly once at the settled size - no bounce through an intermediate size
+- [ ] Toggle grid stability - narrow width: with `width_percent: 60` and a wrapped command on screen, toggle hide/show three times - the wrap is identical and no new scrollback entries appear
+- [ ] Toggle grid stability - scrollback stays buried: run a few commands, `clear`, toggle several times - nothing previously cleared resurrects, and `Shift+PageUp` after the toggles shows no duplicated prompt pairs
 - [ ] `Ctrl+Shift+Q` and click-away (focus loss) hides animate exactly like the hotkey hide
 - [ ] A background job (`sleep 100 &`) survives a hide/show cycle toggled mid-animation (toggle again within the 130 ms)
 - [ ] Rapid-toggle spam (10+ toggles inside 1 s): the surface always ends in the state the last toggle implies - no teleports between endpoints, no stuck or half-animated surfaces, focus correct at rest - and a toggle arriving mid-hide visibly reverses the slide on the same surface

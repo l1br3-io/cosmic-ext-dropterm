@@ -208,15 +208,17 @@ pub(super) fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) ->
 }
 
 /// Whether a `WindowResized` event for `id` may feed the
-/// terminal-height pin: only the tracked layer surface's granted
-/// sizes count — a foreign window (the clipboard anchor) must never
-/// pin the terminal's. Pure, in the same style
-/// as [`layer_unfocused_acts_on`].
+/// terminal-height pin: the tracked layer surface's granted sizes
+/// alone — never a `Measuring` probe's (the full-output stretch
+/// the pass exists to *read*, whose sizes must never become the
+/// terminal's — adopting them grows the grid once per toggle and
+/// returns every grown line as scrollback rot on the shrink) and
+/// never a foreign window's (the clipboard anchor). Pure, in the
+/// same style as [`layer_unfocused_acts_on`].
 pub(super) fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(
         surface,
-        SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) | SurfaceState::Hiding(shown)
-            if *shown == id
+        SurfaceState::Shown(shown) | SurfaceState::Hiding(shown) if *shown == id
     )
 }
 
@@ -523,6 +525,32 @@ impl DropTerm {
             ));
         }
         None
+    }
+
+    /// Pre-arm the terminal-height pin at the height the show just
+    /// requested: [`SurfaceOpened`] calls this before its reshape
+    /// tasks run, so the granted-size echoes those tasks produce
+    /// meet an armed pin, not an empty one. The load-bearing case
+    /// is the stale synthetic configure every `set_size` carries —
+    /// at show time it reports the measuring pass's full-output
+    /// height, and an empty pin adopts immediately
+    /// (`window_pin_due(None, ..)`), growing the grid once per
+    /// toggle and pushing the grown lines into scrollback on the
+    /// shrink back. Armed, the echo is a changed height inside
+    /// [`geometry::WINDOW_PIN_INTERVAL`] and defers; the real grant
+    /// equals the armed height and re-adopts for free. A
+    /// compositor that grants something other than the request
+    /// still lands through the ordinary debounce — the pre-arm
+    /// only ever names the request, never overrides a grant.
+    pub(super) fn prearm_show_pin(&mut self, output: (u32, u32), geom: Geometry) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
+        let height = geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
+        self.window_height = Some(height);
+        self.pin_applied = Some((std::time::Instant::now(), height));
+        self.pending_height = None;
     }
 
     /// The surface's current width in px: the value both the drawer
@@ -987,14 +1015,25 @@ mod tests {
     }
 
     #[test]
-    fn resize_from_the_tracked_surface_feeds_the_pin() {
+    fn resize_from_the_shown_and_hiding_surface_feeds_the_pin() {
         // The granted-size stream that pins the terminal height
-        // belongs to the layer surface alone: every state tracking
-        // that surface accepts its resizes.
+        // belongs to the layer surface alone: the settled states
+        // tracking that surface accept its resizes.
         let id = window::Id::unique();
-        assert!(resize_acts_on(&SurfaceState::Measuring(id), id));
         assert!(resize_acts_on(&SurfaceState::Shown(id), id));
         assert!(resize_acts_on(&SurfaceState::Hiding(id), id));
+    }
+
+    #[test]
+    fn resize_while_measuring_never_feeds_the_pin() {
+        // The measuring surface is the probe that exists to READ
+        // the output size — stretched full-output by design, never
+        // a geometry the terminal should adopt. Its sizes must
+        // never reach the pin: adopting them grows the grid once
+        // per toggle, and every grown line returns as scrollback
+        // rot on the shrink (toggle-grid-stability).
+        let id = window::Id::unique();
+        assert!(!resize_acts_on(&SurfaceState::Measuring(id), id));
     }
 
     #[test]
