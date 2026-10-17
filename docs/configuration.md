@@ -30,7 +30,7 @@ Geometry applies live: a shown surface is reshaped in place, a hidden one picks 
 
 | Key | Values | Default | What it does |
 |---|---|---|---|
-| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. |
+| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The settings drawer's picker lists the installed monospace families; a name the renderer cannot resolve falls back to its default while keeping your value in the file. |
 | `font_size` | points | `14` | The terminal's font size. |
 | `opacity` | 0-100 | `100` | Background opacity. |
 | `color_scheme_dark` | scheme name | `COSMIC Dark` | Scheme used while the system is in dark mode. |

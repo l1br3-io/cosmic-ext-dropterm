@@ -16,7 +16,7 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 
 | Tab | Carries |
 |---|---|
-| **Appearance** | How the terminal looks: the Appearance card (font, size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
+| **Appearance** | How the terminal looks: the Appearance card (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
 | **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions). |
 | **Profiles** | The profile manager - its own section below. |
 | **Keybindings** | The shortcut editor - its own section below. |
@@ -26,7 +26,7 @@ Every exposed control appears exactly once across the tabs - none lost, none dup
 
 Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives (start typing in a field, flip tabs, flip back - the text is still there). Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab; an explicit close resets it to Appearance, while a focus-loss hide preserves the open tab and its drafts.
 
-Commits are per control kind: toggles and dropdowns write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The profile form is the one buffered island - its writes collect behind an explicit Save.
+Commits are per control kind: toggles, dropdowns, and the pickers write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The profile form is the one buffered island - its writes collect behind an explicit Save.
 
 ## Keybindings tab
 
@@ -71,7 +71,7 @@ A draft is page-local: a focus-loss hide preserves it with the drawer, while lea
 
 ## While the drawer is open
 
-Terminal input is inert - keyboard and pointer never reach the shell; the drawer's own inputs type normally. Escape peels one layer at a time: an open scheme-picker popover closes first, then an open profile draft cancels, and only with neither does Escape close the drawer (the surface stays). The drawer's Close button and a repeat `Ctrl+Shift+I` close it too. Focus loss keeps working as configured: the surface hides with the drawer preserved exactly as it was, drafts and all.
+Terminal input is inert - keyboard and pointer never reach the shell; the drawer's own inputs type normally. Escape peels one layer at a time: an open picker popover (scheme or font) closes first, then an open profile draft cancels, and only with neither does Escape close the drawer (the surface stays). The drawer's Close button and a repeat `Ctrl+Shift+I` close it too. Focus loss keeps working as configured: the surface hides with the drawer preserved exactly as it was, drafts and all.
 
 ## When each edit takes effect
 
