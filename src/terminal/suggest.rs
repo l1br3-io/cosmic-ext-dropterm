@@ -268,6 +268,56 @@ fn commit(ring: &mut VecDeque<String>, command: &str) {
     }
 }
 
+/// Whether the typed segment is still in command position — the
+/// first shell word is being entered: after leading whitespace, no
+/// unescaped whitespace remains. The two-character escape `\ ` does
+/// not end a word, so `git\ myp` is still one open first word. The
+/// command-catalog provider keys on this; history does not care.
+// The seam's vocabulary ships before its consumers: command-catalog
+// cites this when its module lands.
+#[allow(dead_code)]
+fn is_command_position(typed: &str) -> bool {
+    let mut escaped = false;
+    !typed.trim_start().chars().any(|c| {
+        let ends_the_word = c.is_whitespace() && !escaped;
+        escaped = c == '\\';
+        ends_the_word
+    })
+}
+
+/// The trailing token — the typed segment after its last unescaped
+/// whitespace, the word being entered: `git che` carves `che`;
+/// `git\ myp` carves itself (the escaped space keeps the word open);
+/// leading whitespace never survives the carve. The path provider
+/// completes this token.
+// The seam's vocabulary ships before its consumers: path-suggest
+// cites this when its module lands.
+#[allow(dead_code)]
+fn trailing_token(typed: &str) -> &str {
+    let mut token_start = 0;
+    let mut escaped = false;
+    for (idx, c) in typed.char_indices() {
+        if c.is_whitespace() && !escaped {
+            token_start = idx + c.len_utf8();
+        }
+        escaped = c == '\\';
+    }
+    &typed[token_start..]
+}
+
+/// Whether a token is path-shaped — the shape the path provider
+/// completes: `~` alone (the HOME root), or any token that roots at
+/// `~` / `.` / `..` / `/` or otherwise carries a `/` — every rooting
+/// shows its slash. A lone `.`/`..`, a `~user` reference, and a
+/// dotfile name are plain words until a slash appears; flags
+/// (`-la`, `--flag`) never are.
+// The seam's vocabulary ships before its consumers: path-suggest
+// cites this when its module lands.
+#[allow(dead_code)]
+fn is_path_shaped(token: &str) -> bool {
+    token == "~" || token.contains('/')
+}
+
 /// The accept splitter (autosuggest spec): fish's forward-word shape
 /// — one word carries the suffix's leading whitespace plus the next
 /// non-whitespace run, and the remainder stays suggestable for the
@@ -747,5 +797,49 @@ mod tests {
         let ghost = ghost_color(&colors);
         assert_eq!(ghost.as_rgba(), [100, 60, 45, 255]);
         assert_ne!(ghost, cosmic_text::Color::rgb(0, 20, 40));
+    }
+
+    // --- the token shape (the merged seam's input vocabulary) ---
+
+    #[test]
+    fn command_position_holds_while_the_first_word_is_open() {
+        assert!(is_command_position("gi"));
+        // Leading whitespace never starts an argument.
+        assert!(is_command_position("  car"));
+        // The escaped space keeps the word open — still command
+        // position.
+        assert!(is_command_position("git\\ myp"));
+    }
+
+    #[test]
+    fn command_position_ends_at_the_first_unescaped_whitespace() {
+        assert!(!is_command_position("git che"));
+        assert!(!is_command_position("echo he"));
+    }
+
+    #[test]
+    fn the_trailing_token_carves_the_word_being_entered() {
+        assert_eq!(trailing_token("git che"), "che");
+        // The escaped space keeps the word open: the carve yields the
+        // whole still-open word.
+        assert_eq!(trailing_token("git\\ myp"), "git\\ myp");
+        assert_eq!(trailing_token("  car"), "car");
+        assert_eq!(trailing_token("git che -la"), "-la");
+    }
+
+    #[test]
+    fn a_path_shaped_token_is_the_home_root_or_carries_a_slash() {
+        for token in ["~", "~/sr", "../co", "./te", "/usr/bi", "sr/x"] {
+            assert!(is_path_shaped(token), "{token:?} is path-shaped");
+        }
+    }
+
+    #[test]
+    fn a_plain_word_or_flag_is_not_path_shaped() {
+        // A lone `.`/`..`, a `~user` reference, and a dotfile name
+        // are plain words until a slash appears; flags never are.
+        for token in ["src", "-la", "--flag", "che", ".", "..", ".hidden", "~jpt"] {
+            assert!(!is_path_shaped(token), "{token:?} is not path-shaped");
+        }
     }
 }
