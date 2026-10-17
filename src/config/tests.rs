@@ -37,6 +37,61 @@ fn bell_notifications_default_to_on() {
 }
 
 #[test]
+fn command_finish_notifications_default_on_at_five_seconds() {
+    // OQ-1's ruling (command-notify spec): the finished-command
+    // notification ships enabled at Ghostty's 5 s threshold — a
+    // hidden `ls` never pings, and a finish exactly at 5 s counts
+    // (the gate's `>=`, OQ-3).
+    let config = DropTermConfig::default();
+    assert!(config.command_finish_notification_enabled);
+    assert_eq!(config.command_finish_notification_after_secs, 5);
+}
+
+#[test]
+fn missing_command_notify_keys_load_as_defaults() {
+    // A config directory from a version that did not yet write the
+    // command-notify keys loads them as the defaults — the key list
+    // is additive, `CONFIG_VERSION` stays 1.
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-missing-command-notify-keys-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    }
+    .write_entry(&config)
+    .expect("write config keys");
+    // Simulate the pre-command-notify version by deleting the two
+    // keys it never wrote.
+    let version_dir = root
+        .join("cosmic")
+        .join("dropterm-config-test")
+        .join(format!("v{CONFIG_VERSION}"));
+    std::fs::remove_file(version_dir.join("command_finish_notification_enabled"))
+        .expect("remove command_finish_notification_enabled key file");
+    std::fs::remove_file(version_dir.join("command_finish_notification_after_secs"))
+        .expect("remove command_finish_notification_after_secs key file");
+
+    let loaded =
+        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    assert!(loaded.command_finish_notification_enabled);
+    assert_eq!(loaded.command_finish_notification_after_secs, 5);
+    // The directory is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn new_tabs_after_current_default_on() {
     // The shipped behavior — insert after the active tab — is the
     // default, so existing users keep it; turning the toggle off

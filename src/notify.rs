@@ -57,9 +57,6 @@ pub fn post_bell_notification(tab_title: String) {
 /// parity — visible tabs carry the frozen-duration segment or the
 /// activity marker), only past the threshold (a hidden `ls` never
 /// pings), and only once per tab per hide period (the bell latch).
-// Dead until the Wakeup wiring lands (this chunk's Task 2); the
-// attribute goes with it.
-#[cfg_attr(not(test), expect(dead_code))]
 pub fn should_notify_command(
     surface_hidden: bool,
     enabled: bool,
@@ -76,9 +73,6 @@ pub fn should_notify_command(
 /// with the duration in the band's own `m:ss`/`h:mm:ss` shape
 /// (command-lifecycle spec, OQ-3), so the notification and the
 /// frozen segment never disagree.
-// Dead until the Wakeup wiring lands (this chunk's Task 2); the
-// attribute goes with it.
-#[cfg_attr(not(test), expect(dead_code))]
 fn command_body(name: Option<&str>, duration: Duration) -> String {
     let name = name.unwrap_or("Command");
     format!(
@@ -91,9 +85,6 @@ fn command_body(name: Option<&str>, duration: Duration) -> String {
 /// (the bell post's reasoning: a D-Bus round-trip must never stall
 /// the UI thread). A failed post (no notification daemon) logs a
 /// warning and vanishes — the terminal is unaffected.
-// Dead until the Wakeup wiring lands (this chunk's Task 2); the
-// attribute goes with it.
-#[expect(dead_code)]
 pub fn post_command_notification(tab_title: String, name: Option<&str>, duration: Duration) {
     let body = command_body(name, duration);
     std::thread::spawn(move || {

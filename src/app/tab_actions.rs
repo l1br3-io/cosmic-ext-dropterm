@@ -188,6 +188,7 @@ impl DropTerm {
         target.title_override = plan.title_override;
         target.attention = plan.attention;
         target.bell_notified = plan.bell_notified;
+        target.command_notified = plan.command_notified;
         target.ephemeral = plan.ephemeral;
         target.profile = plan.profile;
         target.shell = shell;
@@ -1166,7 +1167,39 @@ impl DropTerm {
                     let tab = &mut self.tabs[tab_index];
                     tab.attention = tab.attention.on_activity();
                 }
-                self.tabs[tab_index].terminal.lock().unwrap().needs_update = true;
+                // The engine's drain-once finish latch (command-notify
+                // spec): drained here for every tab, not just the
+                // active — a background tab's command finishes hidden
+                // too. The band's snapshot reads never touch it, so
+                // the frozen segment and this notification coexist.
+                let finished = {
+                    let mut terminal = self.tabs[tab_index].terminal.lock().unwrap();
+                    terminal.needs_update = true;
+                    terminal.take_command_finished()
+                };
+                // A finished command while hidden posts one desktop
+                // notification per tab per hide period (the latch
+                // arms here and clears on every show, the bell's
+                // exact shape); the threshold keeps a hidden `ls`
+                // silent. While visible the frozen-duration segment
+                // and the activity marker carry the signal.
+                if let Some(duration) = finished {
+                    let tab = &mut self.tabs[tab_index];
+                    if notify::should_notify_command(
+                        matches!(self.surface, SurfaceState::Hidden),
+                        self.config.command_finish_notification_enabled,
+                        duration,
+                        std::time::Duration::from_secs(u64::from(
+                            self.config.command_finish_notification_after_secs,
+                        )),
+                        tab.command_notified,
+                    ) {
+                        tab.command_notified = true;
+                        let title = tab.title.clone();
+                        let name = tab.last_running_comm.clone();
+                        notify::post_command_notification(title, name.as_deref(), duration);
+                    }
+                }
                 // The duration tick's finest sync point too: a
                 // start arms here (the Enter echo's wakeup carries
                 // the first running snapshot) and a finish stands

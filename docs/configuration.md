@@ -120,6 +120,8 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 | `session_persistence_enabled` | `true` | Save the session on change and restore it on launch ([sessions](sessions.md)). `false` stops saves and skips restore; the saved file is never deleted, so re-enabling resumes over it. |
 | `slide_animation_enabled` | `true` | Animate show/hide with the 130 ms slide ([animation](animation.md)). `false` restores instant transitions. |
 | `bell_notification_enabled` | `true` | Post a desktop notification when a bell rings while the terminal is hidden ([bell](bell.md)). |
+| `command_finish_notification_enabled` | `true` | Post a desktop notification when a command finishes while the terminal is hidden, carrying its duration and its name when one was sampled ([bell](bell.md)). One notification per tab per hide period; `false` silences them. |
+| `command_finish_notification_after_secs` | `5` | Minimum command duration, in seconds, that posts the finished-command notification. A hidden `ls` never pings; a finish exactly at the threshold counts. |
 | `autosuggestions_enabled` | `true` | Fish-style autosuggestions: dim ghost text after the cursor completing the most recent matching command from this tab's own history ([autosuggestions](autosuggestions.md)). Right accepts it, Alt+Right takes one word, anything else dismisses it - nothing executes without an accept. `false` is the kill switch. |
 | `new_tab_after_current` | `true` | New tabs land directly after the active tab. `false` appends at the end of the list (Guake's ordering); `duplicate-tab` always lands after the active tab. |
 | `scrollback_lines` | `10000` | Scrollback capacity per terminal. Applies to the next spawn - capacity is fixed when a terminal is created. |

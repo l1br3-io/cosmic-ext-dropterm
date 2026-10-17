@@ -260,6 +260,18 @@ pub struct DropTermConfig {
     /// notification interface. Defaults to `true`; `false` silences
     /// notifications (the tab-bar 🔔 marker is unaffected).
     pub bell_notification_enabled: bool,
+    /// Post a desktop notification when a command finishes while the
+    /// terminal is hidden (command-notify spec) — one notification per
+    /// tab per hide period, carrying the command's duration and its
+    /// name when one was sampled. Defaults to `true`; `false` silences
+    /// them (the frozen-duration segment and the activity marker are
+    /// unaffected).
+    pub command_finish_notification_enabled: bool,
+    /// The minimum command duration, in seconds, that posts a
+    /// finished-command notification (command-notify spec, OQ-1) — a
+    /// hidden `ls` never pings. A finish exactly at the threshold
+    /// counts (the gate's `>=`, OQ-3). Defaults to 5 s.
+    pub command_finish_notification_after_secs: u16,
     /// Whether a new tab lands directly after the active tab (`true`,
     /// the default — `DropTerm`'s shipped behavior, so existing users
     /// keep it) or at the end of the tab list (Guake's default, its
@@ -413,6 +425,8 @@ impl Default for DropTermConfig {
             session_persistence_enabled: true,
             slide_animation_enabled: true,
             bell_notification_enabled: true,
+            command_finish_notification_enabled: true,
+            command_finish_notification_after_secs: 5,
             new_tab_after_current: true,
             close_confirmation_enabled: true,
             settings_drawer_click_close: true,
