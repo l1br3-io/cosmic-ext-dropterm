@@ -208,15 +208,17 @@ pub(super) fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) ->
 }
 
 /// Whether a `WindowResized` event for `id` may feed the
-/// terminal-height pin: only the tracked layer surface's granted
-/// sizes count — a foreign window (the clipboard anchor) must never
-/// pin the terminal's. Pure, in the same style
-/// as [`layer_unfocused_acts_on`].
+/// terminal-height pin: the tracked layer surface's granted sizes
+/// alone — never a `Measuring` probe's (the full-output stretch
+/// the pass exists to *read*, whose sizes must never become the
+/// terminal's — adopting them grows the grid once per toggle and
+/// returns every grown line as scrollback rot on the shrink) and
+/// never a foreign window's (the clipboard anchor). Pure, in the
+/// same style as [`layer_unfocused_acts_on`].
 pub(super) fn resize_acts_on(surface: &SurfaceState, id: window::Id) -> bool {
     matches!(
         surface,
-        SurfaceState::Measuring(shown) | SurfaceState::Shown(shown) | SurfaceState::Hiding(shown)
-            if *shown == id
+        SurfaceState::Shown(shown) | SurfaceState::Hiding(shown) if *shown == id
     )
 }
 
@@ -987,14 +989,25 @@ mod tests {
     }
 
     #[test]
-    fn resize_from_the_tracked_surface_feeds_the_pin() {
+    fn resize_from_the_shown_and_hiding_surface_feeds_the_pin() {
         // The granted-size stream that pins the terminal height
-        // belongs to the layer surface alone: every state tracking
-        // that surface accepts its resizes.
+        // belongs to the layer surface alone: the settled states
+        // tracking that surface accept its resizes.
         let id = window::Id::unique();
-        assert!(resize_acts_on(&SurfaceState::Measuring(id), id));
         assert!(resize_acts_on(&SurfaceState::Shown(id), id));
         assert!(resize_acts_on(&SurfaceState::Hiding(id), id));
+    }
+
+    #[test]
+    fn resize_while_measuring_never_feeds_the_pin() {
+        // The measuring surface is the probe that exists to READ
+        // the output size — stretched full-output by design, never
+        // a geometry the terminal should adopt. Its sizes must
+        // never reach the pin: adopting them grows the grid once
+        // per toggle, and every grown line returns as scrollback
+        // rot on the shrink (toggle-grid-stability).
+        let id = window::Id::unique();
+        assert!(!resize_acts_on(&SurfaceState::Measuring(id), id));
     }
 
     #[test]
