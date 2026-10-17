@@ -114,6 +114,12 @@ pub enum Message {
     /// The status band's minute tick fired: refresh the stored clock
     /// and re-arm while the gate holds.
     StatusClockTick,
+    /// The status band's 1 s duration tick fired (command-lifecycle
+    /// spec): drive the engine update that steps the timer, then
+    /// re-arm while the gate holds. The tick is the only observer of
+    /// a silent runner's start — nothing else wakes between output
+    /// events.
+    StatusDurationTick,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -306,6 +312,11 @@ pub struct DropTerm {
     /// guard that keeps repeated config echoes from stacking tick
     /// loops (each fired tick clears it before re-syncing).
     clock_armed: bool,
+    /// Whether a 1 s duration tick sleeps in the task queue — the
+    /// `clock_armed` shape for the command timer's scoped tick: one
+    /// outstanding sleep at most, re-armed only while
+    /// `status_bar::duration_due` holds.
+    duration_armed: bool,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -498,6 +509,13 @@ impl DropTerm {
             .flatten();
         self.active_process_name = process;
         self.active_branch = branch;
+        // The narration name for the frozen pairing (command-lifecycle
+        // spec, OQ-1): the last comm sampled running on this tab —
+        // per-tab, so a switch can never pair one tab's name with
+        // another's duration.
+        if let Some(name) = &self.active_process_name {
+            self.tabs[self.active_tab].last_running_comm = Some(name.clone());
+        }
     }
 
     /// Sync the stored clock to the gate: set the text and arm the
@@ -524,6 +542,37 @@ impl DropTerm {
         Task::perform(
             tokio::time::sleep(status_bar::next_tick_delay(&now)),
             |()| cosmic::Action::App(Message::StatusClockTick),
+        )
+    }
+
+    /// Sync the duration's 1 s tick to the gate (command-lifecycle
+    /// spec): arm when the band, the segment, a running active tab,
+    /// and a visible surface all hold — stand down otherwise. A
+    /// fired tick clears the arm and re-syncs, so the loop survives
+    /// while the gate holds and dies within a second of any input
+    /// dropping (a finish's prompt-redraw wakeup stands it down
+    /// immediately). The elapsed never lives here — the tick only
+    /// lands the re-render; the view reads the engine's timer fresh
+    /// ([`Self::active_status_segments`]), one source of truth.
+    fn sync_status_duration(&mut self) -> Task<Message> {
+        let running = self.active_process_name.is_some();
+        let surface_visible = matches!(self.surface, SurfaceState::Shown(_));
+        if !status_bar::duration_due(
+            self.config.status_bar_enabled,
+            self.config.status_bar_show_duration,
+            running,
+            surface_visible,
+        ) {
+            self.duration_armed = false;
+            return Task::none();
+        }
+        if self.duration_armed {
+            return Task::none();
+        }
+        self.duration_armed = true;
+        Task::perform(
+            tokio::time::sleep(std::time::Duration::from_secs(1)),
+            |()| cosmic::Action::App(Message::StatusDurationTick),
         )
     }
 
@@ -556,6 +605,22 @@ impl DropTerm {
         let zoom_step = self
             .terminal_options_for(resolved)
             .font_size_zoom_step_mul_100;
+        // The command timer's two reads (command-lifecycle spec):
+        // the live elapsed while a witnessed start runs, and the
+        // frozen pair — OQ-1 pairs the app's last sampled running
+        // comm (kept per-tab) with the engine's frozen duration.
+        // Under the same lock the zoom/grid reads already take.
+        let (running_elapsed, frozen) = {
+            let terminal = tab.terminal.lock().unwrap();
+            let elapsed = terminal.command_live().1;
+            // The unnamed floor: a run that was never sampled (a
+            // background tab's finished command) keeps its duration
+            // with no name to lie about.
+            let frozen = terminal
+                .command_frozen()
+                .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
+            (elapsed, frozen)
+        };
         let inputs = status_bar::StatusInputs {
             home: home.as_deref(),
             cwd,
@@ -569,6 +634,10 @@ impl DropTerm {
             spawn_grid: Some(spawn_grid),
             tab_position: self.active_tab_position(),
             clock: self.status_clock.as_deref(),
+            running_elapsed,
+            frozen: frozen
+                .as_ref()
+                .map(|(name, duration)| (name.as_str(), *duration)),
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -1322,6 +1391,7 @@ impl Application for DropTerm {
             copied_segment: None,
             status_clock: None,
             clock_armed: false,
+            duration_armed: false,
             rename: None,
             pending_close: None,
             drag: None,
@@ -1969,8 +2039,10 @@ impl DropTerm {
                 self.refresh_status_snapshot();
                 // The clock's gate can flip on any echo; sync (arm or
                 // stand down) before the echo's own exits, chaining
-                // the task onto whichever return it takes.
-                let clock_task = self.sync_status_clock();
+                // the task onto whichever return it takes. The
+                // duration's gate rides the same echo — a segment or
+                // band toggle flips it here.
+                let ticks_task = self.sync_status_clock().chain(self.sync_status_duration());
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -1996,7 +2068,7 @@ impl DropTerm {
                 // for the one global-reading consumer, the
                 // window-background derivation.
                 if let Some(kind) = theme_override(old_preference, self.config.theme_preference) {
-                    return theme_override_task(kind).chain(clock_task);
+                    return theme_override_task(kind).chain(ticks_task);
                 }
                 // Our own write's echo: geometry matching the last
                 // write is absorbed — the in-memory config already
@@ -2008,7 +2080,7 @@ impl DropTerm {
                     && geometry::is_own_write(written, new_geom)
                 {
                     self.last_written = None;
-                    return clock_task;
+                    return ticks_task;
                 }
                 // Geometry edits reshape a shown surface in place —
                 // no destroy/recreate; a hidden surface just opens
@@ -2038,9 +2110,9 @@ impl DropTerm {
                     // Declare the reshape's request for the
                     // stale-echo gate before issuing it.
                     self.request_geometry_height(output, new_geom);
-                    return geometry::apply_geometry(id, new_geom, output).chain(clock_task);
+                    return geometry::apply_geometry(id, new_geom, output).chain(ticks_task);
                 }
-                return clock_task;
+                return ticks_task;
             }
             Message::ReapplyColors => self.reapply_colors(),
             Message::TermEventTx(tx) => {
@@ -2091,7 +2163,12 @@ impl DropTerm {
                     // runs while hidden too, so `sync_status_clock`
                     // only re-stores the text).
                     self.refresh_status_snapshot();
-                    let clock_task = self.sync_status_clock();
+                    // The clock re-stores and the duration sync runs
+                    // its gate — the surface is `Shown` now, so a
+                    // command already running on the landing tab arms
+                    // the tick (the show-arm refresh picks the state
+                    // up for free, criterion 6).
+                    let clock_task = self.sync_status_clock().chain(self.sync_status_duration());
                     // The slide-in starts here, with the shown
                     // surface: the full surface height is both the
                     // from-offset and the distance — deterministic
@@ -2339,6 +2416,19 @@ impl DropTerm {
                 // loop die within one minute of it dropping.
                 self.clock_armed = false;
                 return self.sync_status_clock();
+            }
+            Message::StatusDurationTick => {
+                // The fired tick consumed its sleep. The engine
+                // update it drives is the point: the timer steps at
+                // update()'s diff site, so a silent runner's start
+                // gets witnessed (nothing else wakes between output
+                // events) and the elapsed the view then reads is
+                // fresh. The re-sync re-arms while the gate holds.
+                self.duration_armed = false;
+                if let Some(tab) = self.active() {
+                    tab.terminal.lock().unwrap().needs_update = true;
+                }
+                return self.sync_status_duration();
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();

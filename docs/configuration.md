@@ -77,8 +77,9 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 | `status_bar_show_tab` | Tab position (`2/5`). | `true` |
 | `status_bar_show_zoom` | Zoom delta (`+200%`) while the font is off its base size. | `true` |
 | `status_bar_show_clock` | Wall clock (`HH:MM`). | `true` |
+| `status_bar_show_duration` | Command time (`2:41` while a command runs, `cargo 2:41` after it finishes) - derived from the foreground edges the engine already diffs, no shell integration. Hiding it stops its 1 s tick. | `true` |
 
-All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick.
+All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs.
 
 ## Bar borders
 

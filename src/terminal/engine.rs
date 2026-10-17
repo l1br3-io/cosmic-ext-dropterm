@@ -47,12 +47,13 @@ use std::{
         Arc, Weak,
         atomic::{AtomicU32, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
+use crate::status_bar::CommandTimer;
 use crate::tabs::TabId;
 use crate::terminal::mouse_reporter::MouseReporter;
 use crate::terminal::suggest::{self, AcceptKind, Suggest};
@@ -385,6 +386,19 @@ pub struct Terminal {
     /// running→idle edge is the finish that marks the next
     /// observation a fresh prompt.
     last_foreground_child: bool,
+    /// The command timer (command-lifecycle spec): engine-owned
+    /// beside the diff that feeds it, timing always on — an
+    /// `Option` write per update, display and tick gated downstream.
+    /// A fresh terminal (a respawn) carries a fresh timer: no
+    /// duration survives either.
+    timer: CommandTimer,
+    /// The drain-once finish latch (command-lifecycle spec):
+    /// `command-notify`'s seam — armed with the just-frozen duration
+    /// on the same edge that froze it, read exactly once
+    /// ([`Self::take_command_finished`]). The band's frozen display
+    /// is unaffected by the drain: it reads
+    /// [`Self::command_frozen`], which serves until the next start.
+    command_finished: Option<Duration>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -556,6 +570,8 @@ impl Terminal {
             autosuggestions_enabled: options.autosuggestions_enabled,
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
+            timer: CommandTimer::default(),
+            command_finished: None,
             settle_prompt_pending: false,
             suggest: Suggest::new(),
             search_regex_opt: None,
@@ -714,6 +730,34 @@ impl Terminal {
     /// band falls back to the recorded shell's basename.
     pub fn foreground_process_name(&self) -> Option<String> {
         foreground_process_name(self.master_fd.as_ref(), self.shell_pid)
+    }
+
+    /// The running command's state (command-lifecycle spec): whether
+    /// a foreground child holds the PTY — the engine's cached kernel
+    /// truth from the last update, no syscall here — and its live
+    /// elapsed when the timer witnessed the start. A command born
+    /// mid-observation runs with no elapsed: the both-edges honesty
+    /// rule, never a guessed duration.
+    pub fn command_live(&self) -> (bool, Option<Duration>) {
+        (
+            self.last_foreground_child,
+            self.timer.live_elapsed(Instant::now()),
+        )
+    }
+
+    /// The last finished command's duration (command-lifecycle
+    /// spec), served until the next command starts (OQ-5).
+    pub fn command_frozen(&self) -> Option<Duration> {
+        self.timer.last_duration()
+    }
+
+    /// Drains the finish latch once (command-lifecycle spec): the
+    /// frozen duration of the most recently finished command,
+    /// returned exactly once per finish — `command-notify`'s seam.
+    /// The band's frozen display reads [`Self::command_frozen`] and
+    /// is unaffected by the drain.
+    pub fn take_command_finished(&mut self) -> Option<Duration> {
+        self.command_finished.take()
     }
 
     pub fn input_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
@@ -1140,6 +1184,16 @@ impl Terminal {
         let foreground_child = self.foreground_child_running();
         let fresh_by_finish = self.last_foreground_child && !foreground_child;
         self.last_foreground_child = foreground_child;
+        // The command timer rides the engine's own diff
+        // (command-lifecycle spec) — timestamps always run, one
+        // `Option` write per update; never suggest's, which lives
+        // behind the autosuggest toggle. The finish edge arms the
+        // notify latch with the just-frozen duration (unwitnessed
+        // starts freeze nothing, so they latch nothing either).
+        self.timer.step(foreground_child, instant);
+        if fresh_by_finish && let Some(duration) = self.timer.last_duration() {
+            self.command_finished = Some(duration);
+        }
 
         // Only keep default
         self.metadata_set.truncate(1);

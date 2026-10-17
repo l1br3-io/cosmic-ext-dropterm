@@ -340,8 +340,8 @@ pub struct DropTermConfig {
     /// its own key file, all defaulting `true` — a hidden segment
     /// is never computed (no `.git` read, no clock tick). Flips
     /// apply live on the config echo. In band order: process,
-    /// working directory, git branch, profile, terminal size, tab
-    /// position, zoom level, clock.
+    /// command duration, working directory, git branch, profile,
+    /// terminal size, tab position, zoom level, clock.
     pub status_bar_show_process: bool,
     /// The `~`-collapsed cwd segment.
     pub status_bar_show_path: bool,
@@ -357,6 +357,14 @@ pub struct DropTermConfig {
     pub status_bar_show_zoom: bool,
     /// The wall clock (`HH:MM`).
     pub status_bar_show_clock: bool,
+    /// The command-duration segment (command-lifecycle spec): the
+    /// live elapsed while a foreground child runs, the frozen
+    /// `(name, duration)` pair after it finishes — computed from
+    /// the two foreground edges the engine already diffs, no shell
+    /// integration. The toggle gates the segment and its 1 s tick
+    /// alike; the engine's timestamps keep running either way, so a
+    /// mid-command re-enable shows the live elapsed immediately.
+    pub status_bar_show_duration: bool,
     /// Whether the tab strip renders its border hairline
     /// (bar-borders spec): a 1 px line on the strip's
     /// terminal-facing edge, in the pane-derived foreground at low
@@ -424,6 +432,7 @@ impl Default for DropTermConfig {
             status_bar_show_tab: true,
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
+            status_bar_show_duration: true,
             tab_bar_border: true,
             status_bar_border: true,
             autosuggestions_enabled: true,
@@ -433,10 +442,11 @@ impl Default for DropTermConfig {
 
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
-    /// eight additive bools — the resolver's toggle set.
+    /// nine additive bools — the resolver's toggle set.
     pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
+            duration: self.status_bar_show_duration,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,

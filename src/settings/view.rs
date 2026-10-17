@@ -222,6 +222,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowTab => "Show the tab position",
             ConfigKey::StatusBarShowZoom => "Show the zoom level",
             ConfigKey::StatusBarShowClock => "Show the clock",
+            ConfigKey::StatusBarShowDuration => "Show the command duration",
             ConfigKey::TabBarBorder => "Show the tab bar border",
             ConfigKey::StatusBarBorder => "Show the status band border",
         }
@@ -1127,6 +1128,7 @@ fn toggle_control(
         ConfigKey::StatusBarShowTab => config.status_bar_show_tab,
         ConfigKey::StatusBarShowZoom => config.status_bar_show_zoom,
         ConfigKey::StatusBarShowClock => config.status_bar_show_clock,
+        ConfigKey::StatusBarShowDuration => config.status_bar_show_duration,
         _ => return None,
     };
     Some(

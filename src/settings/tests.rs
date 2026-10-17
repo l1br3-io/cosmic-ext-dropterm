@@ -251,6 +251,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarShowTab(true),
         PlannedWrite::StatusBarShowZoom(true),
         PlannedWrite::StatusBarShowClock(true),
+        PlannedWrite::StatusBarShowDuration(true),
     ];
     let keys = section_keys();
     assert_eq!(keys.len(), writers.len());
@@ -561,6 +562,7 @@ fn apply_timing_states_each_field_s_documented_semantics() {
         ConfigKey::StatusBarShowTab,
         ConfigKey::StatusBarShowZoom,
         ConfigKey::StatusBarShowClock,
+        ConfigKey::StatusBarShowDuration,
     ] {
         assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
     }
@@ -871,6 +873,7 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
             ConfigKey::StatusBarShowTab,
             ConfigKey::StatusBarShowZoom,
             ConfigKey::StatusBarShowClock,
+            ConfigKey::StatusBarShowDuration,
         ]
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
@@ -911,12 +914,24 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
         "status_bar_show_clock"
     );
     assert_eq!(
+        ConfigKey::StatusBarShowDuration.key_name(),
+        "status_bar_show_duration"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowDuration.label(),
+        "Show the command duration"
+    );
+    assert_eq!(
         toggle_write(ConfigKey::StatusBarShowBranch, false),
         Some(PlannedWrite::StatusBarShowBranch(false))
     );
     assert_eq!(
         toggle_write(ConfigKey::StatusBarShowBranch, true),
         Some(PlannedWrite::StatusBarShowBranch(true))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::StatusBarShowDuration, false),
+        Some(PlannedWrite::StatusBarShowDuration(false))
     );
 }
 
