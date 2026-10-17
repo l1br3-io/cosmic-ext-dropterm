@@ -41,6 +41,12 @@ dev-image := cargo-target-dir / 'debug' / (name + '-dev-image')
 # an installed release's.
 dev-identity-args := '--features=dev-identity'
 
+# Show all recipes when `just` is run with no arguments (without a
+# default recipe, just runs the first one — dev-image-install —
+# silently, under `set quiet`).
+default:
+    just --list --unsorted
+
 # Installs the freshly built dev-identity debug binary to the dev
 # image path. Every consumer of the dev identity (the launcher
 # symlink, `dev-reload`, the `act` recipes) runs the image, never
