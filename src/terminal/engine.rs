@@ -67,6 +67,10 @@ use crate::terminal::suggest::{self, AcceptKind, Suggest};
 /// theme, rather than cosmic-term's full serialized app config with its
 /// profiles and per-scheme-kind theme map.
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "options are independent config facts, one field per resolved flag — bright-bold plus one per provider toggle; not a state machine to reshape"
+)]
 pub struct TerminalOptions {
     pub font_stretch: Stretch,
     pub font_weight: u16,
@@ -108,6 +112,13 @@ pub struct TerminalOptions {
     /// `set_config` pass, so a showing path ghost disappears the
     /// moment the toggle lands while history keeps suggesting.
     pub autosuggestions_paths_enabled: bool,
+    /// Whether the command-name provider joins the autosuggest merge
+    /// (command-catalog spec): resolved from the app config's
+    /// `autosuggestions_commands_enabled` — engine-`true` until the
+    /// config key lands (CC-3); flips apply at the next
+    /// `set_config` pass, so a showing catalog ghost disappears the
+    /// moment the toggle lands while history keeps suggesting.
+    pub autosuggestions_commands_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -125,6 +136,7 @@ impl Default for TerminalOptions {
             spawn_home: None,
             spawn_path: None,
             autosuggestions_paths_enabled: true,
+            autosuggestions_commands_enabled: true,
         }
     }
 }
@@ -413,6 +425,11 @@ pub struct Terminal {
     /// — the resolved options flag, re-read at every `set_config`;
     /// also stops the listing cache's reads when off.
     autosuggestions_paths_enabled: bool,
+    /// Whether the command-name provider joins the merge
+    /// (command-catalog spec) — the resolved options flag, re-read
+    /// at every `set_config`. The snapshot itself is spawn truth and
+    /// never re-walks.
+    autosuggestions_commands_enabled: bool,
     /// The program the tab is spawned as (path-suggest spec) — spawn
     /// truth fixed for the terminal's life; the path provider's
     /// allowlist gate reads it at every observation build.
@@ -425,9 +442,6 @@ pub struct Terminal {
     /// `$PATH` — walked once at construction from the environment
     /// the pty exec inherits, never rescanned (PATH changes
     /// mid-session are rare; a rescan policy is ask-first forever).
-    // The snapshot ships before its consumer: the catalog candidate
-    // reads this when CC-2 lands.
-    #[allow(dead_code)]
     command_catalog: Vec<String>,
     /// The path provider's listing cache (path-suggest spec) — see
     /// [`PathListingCache`]; refreshed inside the synchronous update
@@ -762,6 +776,7 @@ impl Terminal {
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
+            autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             spawned_program: options.spawned_program.clone(),
             spawn_home: options.spawn_home.clone(),
             command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
@@ -1012,10 +1027,11 @@ impl Terminal {
             .map(|showing| showing.suffix.as_str())
     }
 
-    /// The path provider's spawn gate (path-suggest spec): the
-    /// spawned program is an allowlisted shell — computed from
+    /// The shared spawn gate (path-suggest + command-catalog specs):
+    /// the spawned program is an allowlisted shell — computed from
     /// spawn-resolved truth that never changes over the terminal's
-    /// life, read at every observation build.
+    /// life, read at every observation build. Every static local
+    /// provider (paths, catalog) gates on it; history never does.
     fn paths_eligible(&self) -> bool {
         suggest::is_allowlisted_shell(&self.spawned_program)
     }
@@ -1305,6 +1321,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_commands_enabled != options.autosuggestions_commands_enabled {
+            self.autosuggestions_commands_enabled = options.autosuggestions_commands_enabled;
+            update = true;
+        }
+
         // The ghost tint recomputes from the (possibly just-copied)
         // scheme — three channel averages, cheaper than the diff that
         // guards them.
@@ -1503,6 +1524,8 @@ impl Terminal {
                         paths_eligible,
                         paths_enabled: self.autosuggestions_paths_enabled,
                         path_listing,
+                        commands_enabled: self.autosuggestions_commands_enabled,
+                        command_catalog: &self.command_catalog,
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),

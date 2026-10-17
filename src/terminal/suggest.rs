@@ -42,6 +42,10 @@ pub(crate) enum SuggestionSource {
     /// (path-suggest spec) — local-machine knowledge, gated on the
     /// spawn allowlist.
     Path,
+    /// The executable names of the spawn-time `$PATH`
+    /// (command-catalog spec) — local-machine knowledge, gated on
+    /// the same spawn allowlist.
+    Catalog,
 }
 
 /// How much of the showing suffix an accept key writes (autosuggest
@@ -80,18 +84,15 @@ pub(crate) struct Observation<'a> {
     /// `autosuggestions_enabled` as resolved into the terminal's
     /// options.
     pub(crate) enabled: bool,
-    /// The path provider's spawn gate (path-suggest spec): the
-    /// spawned program is an allowlisted shell. Static local path
-    /// knowledge describes the *local* machine — on a tab spawned as
-    /// ssh, `/proc/{shell_pid}/cwd` is the wrong machine's truth, so
-    /// paths stay silent there and only grid-scraped history keeps
+    /// The shared spawn gate (path-suggest spec, ruled for every
+    /// static local provider): the spawned program is an allowlisted
+    /// shell. Static local knowledge — path listings, PATH
+    /// executables — describes the *local* machine: on a tab spawned
+    /// as ssh, `/proc/{shell_pid}/cwd` and this process's `$PATH`
+    /// are the wrong machine's truth, so the providers behind this
+    /// gate stay silent there and only grid-scraped history keeps
     /// suggesting (remote-truthful). A typed ssh session is already
-    /// silent end-to-end via the foreground guard. The gate, not the
-    /// provider: the listing and candidates land behind it in later
-    /// tasks.
-    // The gate ships before its consumer: the path provider's guard
-    // test reads this when PS-3 lands.
-    #[allow(dead_code)]
+    /// silent end-to-end via the foreground guard.
     pub(crate) paths_eligible: bool,
     /// The path provider's config gate (path-suggest spec):
     /// `autosuggestions_paths_enabled` as resolved into the
@@ -106,10 +107,19 @@ pub(crate) struct Observation<'a> {
     /// tab; `None` is no path-completion context (silence). Borrowed
     /// from the engine's cache; the model never touches the
     /// filesystem.
-    // The listing ships before its consumer: the path provider's
-    // candidate logic reads this when PS-3 lands.
-    #[allow(dead_code)]
     pub(crate) path_listing: Option<&'a [(String, bool)]>,
+    /// The command-name provider's config gate (command-catalog
+    /// spec): `autosuggestions_commands_enabled` as resolved into
+    /// the terminal's options — engine-`true` until the config key
+    /// lands (CC-3); a live flip applies at the next typed prefix.
+    /// History is unaffected: `false` restores phase-1 behavior
+    /// exactly.
+    pub(crate) commands_enabled: bool,
+    /// The command-name provider's reduced snapshot (command-catalog
+    /// spec): the sorted executable basenames of the spawn-time
+    /// `$PATH`, walked once at spawn — borrowed from the engine's
+    /// per-tab state; the model never touches the filesystem.
+    pub(crate) command_catalog: &'a [String],
     /// The terminal's focus state.
     pub(crate) focused: bool,
     /// A foreground child holds the PTY (`tcgetpgrp` vs the shell's
@@ -298,6 +308,10 @@ fn source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::History => 0,
         SuggestionSource::Path => 1,
+        // The specs variant (flag-specs) slots between path and
+        // catalog when it lands, renumbering there — never
+        // reordering.
+        SuggestionSource::Catalog => 2,
     }
 }
 
@@ -347,6 +361,38 @@ fn path_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     escape_for_shell(&remainder)
 }
 
+/// The command-name provider's candidate function (command-catalog
+/// spec): complete the command word at the command position from the
+/// spawn-time PATH snapshot — among names with the typed word as a
+/// strict prefix, the shortest wins, ties broken alphabetically (the
+/// ruled policy: `gi` suggests `git` ahead of `giftopnm`); the match
+/// must extend the word, so an exactly-typed name yields nothing.
+/// The suffix rides the same escape rule as paths: a name the shell
+/// would mangle escapes, one outside the safe sets silences. Gated
+/// on the config toggle and the shared spawn allowlist (the catalog
+/// describes the local machine); argument position and path-shaped
+/// words never consult it.
+fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.commands_enabled || !obs.paths_eligible {
+        return None;
+    }
+    if !is_command_position(typed) {
+        return None;
+    }
+    let word = typed.trim_start();
+    if word.is_empty() || is_path_shaped(word) {
+        return None;
+    }
+    // The snapshot is sorted, so `min_by_key` over the length keeps
+    // the alphabetically-first of equal-length ties.
+    let name = obs
+        .command_catalog
+        .iter()
+        .filter(|name| name.starts_with(word) && name.len() > word.len())
+        .min_by_key(|name| name.len())?;
+    escape_for_shell(&name[word.len()..])
+}
+
 /// The characters a suggested suffix backslash-escapes (path-suggest
 /// spec, ruled at clarification): whitespace and the POSIX-and-fish
 /// shell metacharacters — the bytes that are certainly safe to write
@@ -361,8 +407,9 @@ const ESCAPED_CHARS: [char; 19] = [
 /// neither the shells nor fish reinterprets them inside a word.
 const WHITELIST_PUNCT: &str = "-_./:=,+@%^{}";
 
-/// Escapes one matched entry's remainder for the shell (path-suggest
-/// spec): ASCII alphanumerics and the whitelist ride verbatim, the
+/// Escapes one matched entry's remainder for the shell (the ruled
+/// escape sets; the path and command-name providers ride it alike):
+/// ASCII alphanumerics and the whitelist ride verbatim, the
 /// escapable set takes a backslash, and anything else — a newline, a
 /// control character, a byte outside the conservative sets — is not
 /// certainly safe to write, so the whole suggestion degrades to
@@ -395,6 +442,7 @@ fn provider_candidate(
     match source {
         SuggestionSource::History => history_candidate(typed, &suggest.ring),
         SuggestionSource::Path => path_candidate(typed, obs),
+        SuggestionSource::Catalog => catalog_candidate(typed, obs),
     }
 }
 
@@ -408,7 +456,11 @@ fn merged_candidate(
     suggest: &Suggest,
     obs: &Observation<'_>,
 ) -> Option<(String, SuggestionSource)> {
-    let mut providers = [SuggestionSource::History, SuggestionSource::Path];
+    let mut providers = [
+        SuggestionSource::History,
+        SuggestionSource::Path,
+        SuggestionSource::Catalog,
+    ];
     providers.sort_by_key(|&source| source_rank(source));
     providers.into_iter().find_map(|source| {
         provider_candidate(source, typed, suggest, obs).map(|suffix| (suffix, source))
@@ -434,9 +486,6 @@ fn commit(ring: &mut VecDeque<String>, command: &str) {
 /// unescaped whitespace remains. The two-character escape `\ ` does
 /// not end a word, so `git\ myp` is still one open first word. The
 /// command-catalog provider keys on this; history does not care.
-// The seam's vocabulary ships before its consumers: command-catalog
-// cites this when its module lands.
-#[allow(dead_code)]
 fn is_command_position(typed: &str) -> bool {
     let mut escaped = false;
     !typed.trim_start().chars().any(|c| {
@@ -561,6 +610,8 @@ mod tests {
             paths_eligible: true,
             paths_enabled: true,
             path_listing: None,
+            commands_enabled: true,
+            command_catalog: &[],
             focused: true,
             foreground_child: false,
             display_offset: 0,
@@ -1074,12 +1125,19 @@ mod tests {
     fn source_rank_pins_the_ruled_priority() {
         // The ruled priority, stated as data: history answers first —
         // the tab's own truth — then path, then the curated specs,
-        // then the command catalog. Each later module appends its
-        // variant here; the ranks must keep strictly increasing in
-        // exactly this order.
-        let ruled_order = [SuggestionSource::History, SuggestionSource::Path];
+        // then the command catalog. The specs variant lands with the
+        // flag-specs module and slots between path and catalog
+        // (renumbering there, never reordering). Each later module
+        // appends its variant here; the ranks must keep strictly
+        // increasing in exactly this order.
+        let ruled_order = [
+            SuggestionSource::History,
+            SuggestionSource::Path,
+            SuggestionSource::Catalog,
+        ];
         assert_eq!(source_rank(SuggestionSource::History), 0);
         assert_eq!(source_rank(SuggestionSource::Path), 1);
+        assert_eq!(source_rank(SuggestionSource::Catalog), 2);
         for pair in ruled_order.windows(2) {
             assert!(
                 source_rank(pair[0]) < source_rank(pair[1]),
@@ -1345,5 +1403,162 @@ mod tests {
         // tab): the provider has nothing to say.
         let mut suggest = adopted();
         assert_eq!(step_path("~/sr", None, &mut suggest), None);
+    }
+
+    // --- the command-name provider (command-catalog) ---
+
+    /// A catalog snapshot from names — sorted, as the engine's walk
+    /// leaves it.
+    fn catalog(names: &[&str]) -> Vec<String> {
+        names.iter().map(ToString::to_string).collect()
+    }
+
+    /// The catalog provider's anchored suggest: adopted with a ring
+    /// that never matches, so history's seat stays empty and the
+    /// catalog is the one answering.
+    fn catalog_suggest() -> Suggest {
+        let mut suggest = adopted();
+        let mut ring = VecDeque::new();
+        ring.push_back("vim notes".to_string());
+        suggest.ring = ring;
+        suggest
+    }
+
+    /// One anchored step with `typed` after the "$ " anchor and a
+    /// catalog snapshot — the provider's end-to-end shape.
+    fn step_word(typed: &str, names: &[String], suggest: &mut Suggest) -> Option<Showing> {
+        let mut before = String::from("$ ");
+        before.push_str(typed);
+        let observation = Observation {
+            before_cursor: &before,
+            cursor_column: before.len(),
+            command_catalog: names,
+            ..obs()
+        };
+        step(&observation, suggest)
+    }
+
+    #[test]
+    fn the_catalog_completes_a_command_word_at_command_position() {
+        // The empty-ring story: `gi` finishes to the shortest local
+        // match with the catalog's provenance, and leading
+        // whitespace never starts an argument.
+        let names = catalog(&["cargo", "git", "giftopnm", "gitk"]);
+        let mut suggest = catalog_suggest();
+        let shown =
+            step_word("gi", &names, &mut suggest).expect("the catalog answers the command word");
+        assert_eq!(shown.suffix, "t");
+        assert_eq!(shown.source, SuggestionSource::Catalog);
+        let mut suggest = catalog_suggest();
+        let spaced = step_word("  car", &names, &mut suggest)
+            .expect("a space-led line is still command position");
+        assert_eq!(spaced.suffix, "go");
+    }
+
+    #[test]
+    fn argument_position_never_reaches_the_catalog() {
+        // The catalog completes the command word only: once a second
+        // word is open, nothing it knows applies.
+        let names = catalog(&["git", "echo"]);
+        let mut suggest = catalog_suggest();
+        assert_eq!(step_word("git che", &names, &mut suggest), None);
+        assert_eq!(step_word("echo he", &names, &mut suggest), None);
+    }
+
+    #[test]
+    fn the_shortest_match_wins_ties_alphabetical() {
+        // The ruled policy: `gi` suggests `git` ahead of `giftopnm`
+        // (shortest wins), and equal lengths order alphabetically.
+        let names = catalog(&["giftopnm", "git", "gitk"]);
+        let mut suggest = catalog_suggest();
+        let shown = step_word("gi", &names, &mut suggest).expect("someone matches");
+        assert_eq!(shown.suffix, "t", "git is the shortest match");
+        let tied = catalog(&["gita", "gitb"]);
+        let mut suggest = catalog_suggest();
+        let won = step_word("gi", &tied, &mut suggest).expect("a tie still answers");
+        assert_eq!(won.suffix, "ta", "the alphabetically-first of equal length");
+    }
+
+    #[test]
+    fn an_exactly_typed_command_word_yields_no_catalog_candidate() {
+        // The match must extend the word: `git` with `git` present
+        // suggests nothing — and a bare space is no word at all.
+        let names = catalog(&["git"]);
+        let mut suggest = catalog_suggest();
+        assert_eq!(step_word("git", &names, &mut suggest), None);
+        let mut suggest = catalog_suggest();
+        assert_eq!(step_word(" ", &names, &mut suggest), None);
+    }
+
+    #[test]
+    fn history_outranks_the_catalog_when_both_match() {
+        // The merge's ruled priority: the tab's own past answers
+        // first — after one real `git status`, the catalog's `gitk`
+        // never gets a seat.
+        let mut suggest = adopted();
+        let names = catalog(&["gitk"]);
+        let shown = step_word("gi", &names, &mut suggest).expect("someone answers");
+        assert_eq!(shown.suffix, "t status", "the tab's own truth first");
+        assert_eq!(shown.source, SuggestionSource::History);
+    }
+
+    #[test]
+    fn the_catalog_rides_the_same_spawn_gate_as_paths() {
+        // The ssh honesty line, model-side: an ineligible tab never
+        // suggests command names, whatever catalog an observation
+        // carries — the catalog describes the local machine.
+        let names = catalog(&["git"]);
+        let mut suggest = catalog_suggest();
+        let before = String::from("$ gi");
+        let gated = Observation {
+            paths_eligible: false,
+            before_cursor: &before,
+            cursor_column: before.len(),
+            command_catalog: &names,
+            ..obs()
+        };
+        assert_eq!(step(&gated, &mut suggest), None);
+    }
+
+    #[test]
+    fn the_commands_gate_off_restores_phase_one_exactly() {
+        // One mutated field: the catalog stays silent for a command
+        // word — and history keeps suggesting "gi" exactly as phase 1
+        // did, catalog or not.
+        let names = catalog(&["git"]);
+        let mut suggest = catalog_suggest();
+        let before = String::from("$ gi");
+        let gated = Observation {
+            commands_enabled: false,
+            before_cursor: &before,
+            cursor_column: before.len(),
+            command_catalog: &names,
+            ..obs()
+        };
+        assert_eq!(step(&gated, &mut suggest), None);
+        let mut suggest = adopted();
+        let history = Observation {
+            commands_enabled: false,
+            command_catalog: &names,
+            ..obs()
+        };
+        let shown = step(&history, &mut suggest).expect("history is unaffected");
+        assert_eq!(shown.suffix, "t status");
+        assert_eq!(shown.source, SuggestionSource::History);
+    }
+
+    #[test]
+    fn a_catalog_name_the_shell_would_mangle_escapes_or_silences() {
+        // The suffix rides the path provider's escape rule: a
+        // spaces-named executable completes to its backslashed form,
+        // and a name outside the safe sets is silence, never a wrong
+        // write.
+        let spaced = catalog(&["my cmd"]);
+        let mut suggest = catalog_suggest();
+        let shown = step_word("my", &spaced, &mut suggest).expect("the space escapes safely");
+        assert_eq!(shown.suffix, "\\ cmd");
+        let odd = catalog(&["caf\u{e9}"]);
+        let mut suggest = catalog_suggest();
+        assert_eq!(step_word("caf", &odd, &mut suggest), None);
     }
 }
