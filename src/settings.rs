@@ -119,6 +119,7 @@ impl Section {
                 ConfigKey::StatusBarShowTab,
                 ConfigKey::StatusBarShowZoom,
                 ConfigKey::StatusBarShowClock,
+                ConfigKey::StatusBarShowDuration,
             ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
@@ -194,6 +195,11 @@ pub enum ConfigKey {
     StatusBarShowTab,
     StatusBarShowZoom,
     StatusBarShowClock,
+    /// The command-duration segment (command-lifecycle spec): the
+    /// toggle hides the segment and stands down its 1 s tick — the
+    /// engine's timestamps keep running, so re-enabling mid-command
+    /// shows the live elapsed immediately.
+    StatusBarShowDuration,
     /// The strip's border hairline (bar-borders spec) — one per
     /// bar, each flipping live through the single planned-write
     /// path.
@@ -314,6 +320,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowTab => "status_bar_show_tab",
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
+            ConfigKey::StatusBarShowDuration => "status_bar_show_duration",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
         }
@@ -382,6 +389,8 @@ pub enum PlannedWrite {
     StatusBarShowTab(bool),
     StatusBarShowZoom(bool),
     StatusBarShowClock(bool),
+    /// The duration segment's own row (command-lifecycle spec).
+    StatusBarShowDuration(bool),
     /// The bars' border hairlines (bar-borders spec): pure display
     /// flips — the echo's next view pass rebuilds each widget with
     /// its flag, no reshape anywhere.
@@ -432,6 +441,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowTab(_) => ConfigKey::StatusBarShowTab,
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
+            PlannedWrite::StatusBarShowDuration(_) => ConfigKey::StatusBarShowDuration,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
         }
@@ -563,6 +573,9 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarShowClock(value) => {
                 handler.set(ConfigKey::StatusBarShowClock.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowDuration(value) => {
+                handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
             }
             PlannedWrite::TabBarBorder(value) => {
                 handler.set(ConfigKey::TabBarBorder.key_name(), *value)
@@ -723,13 +736,13 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowTab
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
+        | ConfigKey::StatusBarShowDuration
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
         // chain yields None, and re-enabling suggests again at the
         // next typed prefix (autosuggest spec).
         | ConfigKey::AutosuggestionsEnabled
-        | ConfigKey::ThemePreference => ApplyTiming::Live,
-        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
+        | ConfigKey::ThemePreference => ApplyTiming::Live,        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
         ConfigKey::Shell
@@ -2071,6 +2084,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarShowTab => Some(PlannedWrite::StatusBarShowTab(checked)),
         ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
         ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
+        ConfigKey::StatusBarShowDuration => Some(PlannedWrite::StatusBarShowDuration(checked)),
         _ => None,
     }
 }
