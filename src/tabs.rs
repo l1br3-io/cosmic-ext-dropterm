@@ -131,6 +131,10 @@ pub fn sweep_targets<T>(
 /// [`next_default_title`]); `title_override` is a user rename, which
 /// resolution never lets a shell report clobber (see
 /// [`resolve_title`]).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own independently-lifecycle'd tab flag — session-persisted marks (ephemeral, pinned) beside per-hide-period notification latches (bell_notified, command_notified); no state machine spans them"
+)]
 pub struct Tab {
     pub id: TabId,
     /// The tab's current title: the value [`resolve_title`] produced
@@ -187,6 +191,12 @@ pub struct Tab {
     /// is shown — so a bell storm yields one notification per tab per
     /// hide, and the next bell after a show notifies again.
     pub bell_notified: bool,
+    /// Whether this tab already posted a finished-command
+    /// notification during the current hide period (command-notify
+    /// spec): the bell latch's exact lifecycle — armed at post,
+    /// cleared on every show — so a run of hidden long commands
+    /// yields one notification per tab per hide period.
+    pub command_notified: bool,
     pub terminal: Mutex<Terminal>,
 }
 
@@ -207,6 +217,7 @@ impl Tab {
             profile: None,
             pinned: false,
             bell_notified: false,
+            command_notified: false,
             terminal: Mutex::new(terminal),
         }
     }
@@ -634,6 +645,7 @@ pub struct RespawnFields {
     pub title_override: Option<String>,
     pub attention: Attention,
     pub bell_notified: bool,
+    pub command_notified: bool,
     pub ephemeral: bool,
     pub profile: Option<String>,
 }
@@ -661,6 +673,7 @@ pub fn plan_respawn(
         title_override: old_override.map(str::to_owned),
         attention: Attention::None,
         bell_notified: false,
+        command_notified: false,
         ephemeral: false,
         profile: Some(profile_name.to_owned()),
     }

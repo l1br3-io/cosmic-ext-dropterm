@@ -31,6 +31,8 @@ fn resolve(
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -228,9 +230,9 @@ fn a_starved_cluster_loses_the_path_entirely() {
 // rides `fixed`, the path elides.
 
 /// The standard fit fixture: 100 px of fixed disc cluster, a
-/// 20-char path at 10 px per char (200 px whole), and all seven
+/// 20-char path at 10 px per char (200 px whole), and all eight
 /// droppable segments measured (gap-inclusive costs 42/42/52/42/32/
-/// 42/42 with `SEGMENT_GAP` = 12 — 294 total).
+/// 42/42/42 with `SEGMENT_GAP` = 12 — 336 total).
 fn fit_widths() -> Vec<(SegmentId, f32)> {
     vec![
         (SegmentId::Branch, 30.0),
@@ -239,6 +241,7 @@ fn fit_widths() -> Vec<(SegmentId, f32)> {
         (SegmentId::Grid, 30.0),
         (SegmentId::Tab, 20.0),
         (SegmentId::Zoom, 30.0),
+        (SegmentId::Scrolled, 30.0),
         (SegmentId::Clock, 30.0),
     ]
 }
@@ -254,9 +257,11 @@ fn fit_path() -> PathMeasure {
 fn the_drop_order_pins_the_precedence() {
     // Facts the shell knows go first, then slow-moving identity,
     // the branch beside its path, the duration after its command,
-    // the clock to the bitter end. Process and path are absent by
-    // construction: the disc never yields, and the path elides
-    // before anything else gives way.
+    // the scrolled chip after the duration (it answers "what's
+    // happening now" — it must survive while the command's own
+    // narration stands), the clock to the bitter end. Process and
+    // path are absent by construction: the disc never yields, and
+    // the path elides before anything else gives way.
     assert_eq!(
         DROP_ORDER,
         [
@@ -266,6 +271,7 @@ fn the_drop_order_pins_the_precedence() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
@@ -291,8 +297,28 @@ fn duration_drops_after_branch_and_before_clock() {
 }
 
 #[test]
+fn scrolled_drops_after_duration_and_before_clock() {
+    // The seat pin (status-scrolled criterion 3): with only
+    // Duration, Scrolled, and Clock measured, starvation drops the
+    // duration first, the chip second, and the clock survives —
+    // DROP_ORDER's precedence restricted to the present (the chip
+    // rides the order only when present, like every segment).
+    let widths = vec![
+        (SegmentId::Duration, 30.0),
+        (SegmentId::Scrolled, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all three consumed 126 → room -74 past Gone; the
+    // duration's 42 and the chip's 42 free 10 px of room — one
+    // character's worth, beside the surviving clock.
+    let fit = band_fit(152.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Duration, SegmentId::Scrolled]);
+    assert_eq!(fit.path, PathFit::Elided(1));
+}
+
+#[test]
 fn zero_pressure_renders_everything() {
-    // 594 px of consumption (fixed + seven gaps-and-widths + the
+    // 636 px of consumption (fixed + eight gaps-and-widths + the
     // whole path) under 700 px: nothing drops, nothing elides.
     let fit = band_fit(700.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
@@ -301,39 +327,39 @@ fn zero_pressure_renders_everything() {
 
 #[test]
 fn pressure_elides_the_path_before_any_segment_drops() {
-    // 500 px leaves 106 px of room for the 200 px path: elide to
-    // 10 chars — but nothing drops while any of the path survives.
+    // 500 px leaves 64 px of room for the 200 px path: elide to
+    // 6 chars — but nothing drops while any of the path survives.
     let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
-    assert_eq!(fit.path, PathFit::Elided(10));
+    assert_eq!(fit.path, PathFit::Elided(6));
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn past_full_elision_segments_drop_one_at_a_time_in_order() {
-    // 385 px cannot host even a fully elided path (room below one
+    // 427 px cannot host even a fully elided path (room below one
     // character): the grid goes first, and the path re-expands
     // into the freed 42 px — three characters' worth.
-    let fit = band_fit(385.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(427.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid]);
     assert_eq!(fit.path, PathFit::Elided(3));
 
-    // 345 px costs a second drop: tab follows grid, and the path
+    // 387 px costs a second drop: tab follows grid, and the path
     // re-expands again (25 px of room, two characters).
-    let fit = band_fit(345.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(387.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
 
 #[test]
 fn absent_segments_are_skipped_in_the_drop_order() {
-    // No grid segment (toggle off, or at spawn dimensions): 300 px
+    // No grid segment (toggle off, or at spawn dimensions): 342 px
     // starves the band past full elision, and the first yield is
     // the tab — the absent grid is skipped, not waited on.
     let widths: Vec<(SegmentId, f32)> = fit_widths()
         .into_iter()
         .filter(|(id, _)| *id != SegmentId::Grid)
         .collect();
-    let fit = band_fit(300.0, 100.0, &widths, fit_path());
+    let fit = band_fit(342.0, 100.0, &widths, fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Tab, SegmentId::Zoom]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
@@ -341,13 +367,13 @@ fn absent_segments_are_skipped_in_the_drop_order() {
 #[test]
 fn the_path_re_expands_monotonically_as_drops_free_width() {
     // Widths chosen so exactly `k` drops are forced (the k-th
-    // survivor's room sits at 10 + 6(k-1) px — one character plus a
+    // survivor's room sits at 10 + 5(k-1) px — one character plus a
     // growing slack that stays below the next drop's freed width,
     // while the (k-1)-th sits below one character): the path's char
     // budget never shrinks as drops free width.
     let mut prev_chars = 0;
     let fixture = fit_widths();
-    for k in 1..=7 {
+    for k in 1..=8 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -361,10 +387,10 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of seven, exact in f32"
+            reason = "a loop index of eight, exact in f32"
         )]
-        let room = 10.0 + 6.0 * (k as f32 - 1.0);
-        let width = 100.0 + 294.0 + room - freed;
+        let room = 10.0 + 5.0 * (k as f32 - 1.0);
+        let width = 100.0 + 336.0 + room - freed;
         let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
         assert_eq!(
             fit.dropped.len(),
@@ -386,7 +412,7 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
 
 #[test]
 fn the_disc_never_yields_even_when_everything_drops() {
-    // Zero width: all seven droppables give way in order and the
+    // Zero width: all eight droppables give way in order and the
     // path is gone — but `fixed` (the paddings and the disc
     // cluster) is untouchable by construction, and the path never
     // appears in the dropped set: the type has no say in it.
@@ -400,6 +426,7 @@ fn the_disc_never_yields_even_when_everything_drops() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
@@ -577,6 +604,8 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         clock: Some("14:32"),
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
+        scrolled_back: Some(12),
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -592,6 +621,7 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Zoom => segments.zoom_percent.is_some(),
         SegmentId::Clock => segments.clock.is_some(),
         SegmentId::Duration => segments.running_elapsed.is_some() || segments.frozen.is_some(),
+        SegmentId::Scrolled => segments.scrolled.is_some(),
     }
 }
 
@@ -606,15 +636,18 @@ fn hide(toggles: &mut StatusToggles, id: SegmentId) {
         SegmentId::Zoom => &mut toggles.zoom,
         SegmentId::Clock => &mut toggles.clock,
         SegmentId::Duration => &mut toggles.duration,
+        SegmentId::Scrolled => &mut toggles.scrolled,
     };
     *field = false;
 }
 
 #[test]
-fn the_clusters_pin_the_nine_segments_order() {
+fn the_clusters_pin_the_ten_segments_order() {
     // The duration sits in the left cluster's second seat — right
     // beside the process it times (OQ-2) — but carries the dimmed
     // alpha of a meta narration, not identity (the draw's rule).
+    // The scrolled chip sits between Zoom and Clock
+    // (status-scrolled OQ-2): state of the view, beside time.
     assert_eq!(
         LEFT_CLUSTER,
         [
@@ -631,6 +664,7 @@ fn the_clusters_pin_the_nine_segments_order() {
             SegmentId::Grid,
             SegmentId::Tab,
             SegmentId::Zoom,
+            SegmentId::Scrolled,
             SegmentId::Clock
         ]
     );
@@ -680,6 +714,7 @@ fn the_new_segments_resolve_from_their_inputs() {
     assert_eq!(segments.tab_position, Some((2, 5)));
     assert_eq!(segments.clock.as_deref(), Some("14:32"));
     assert_eq!(segments.running_elapsed, Some(Duration::from_secs(161)));
+    assert_eq!(segments.scrolled, Some(12));
 }
 
 // --- the duration segment (command-lifecycle) ---
@@ -710,6 +745,8 @@ fn resolve_duration(
         clock: None,
         running_elapsed,
         frozen,
+        scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -838,6 +875,8 @@ fn resolve_grid(
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -884,6 +923,85 @@ fn an_absent_spawn_record_shows_the_live_grid() {
     assert_eq!(segments.grid, Some((80, 24)));
 }
 
+// --- the scrolled chip (status-scrolled) ---
+//
+// The tenth segment: the viewport's lines back from the bottom —
+// `↑12` — absent at the bottom (the same indistinguishable `None`
+// as hidden), and the band's one deliberate action chip: its
+// click jumps to the bottom instead of copying (a ruling
+// recorded, not an erosion — the chunk's boundary).
+
+fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back,
+        ssh_destination: None,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn an_at_bottom_viewport_resolves_no_chip_even_toggle_on() {
+    // The filter: zero lines back is the bottom — the resting
+    // state shows nothing, the conditional-appearance rule the
+    // zoom and grid segments already follow.
+    let segments = resolve_scrolled(Some(0), StatusToggles::all());
+    assert_eq!(segments.scrolled, None);
+}
+
+#[test]
+fn an_off_bottom_viewport_resolves_its_line_count() {
+    let segments = resolve_scrolled(Some(12), StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(12));
+    // The display (OQ-1): the arrow, then the count — "12 up".
+    assert_eq!(scrolled_display(12), "↑12");
+}
+
+#[test]
+fn the_scrolled_toggle_hides_the_chip_whatever_the_offset() {
+    // Hidden ≡ absent, like every segment.
+    let mut toggles = StatusToggles::all();
+    toggles.scrolled = false;
+    let segments = resolve_scrolled(Some(12), toggles);
+    assert_eq!(segments.scrolled, None);
+}
+
+#[test]
+fn an_absurd_saturated_offset_still_resolves() {
+    // The getter saturates into `u16`; a count at the ceiling (a
+    // scrollback no human made) still resolves — the filter only
+    // ever rejects zero.
+    let segments = resolve_scrolled(Some(u16::MAX), StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(u16::MAX));
+    assert_eq!(scrolled_display(u16::MAX), format!("↑{}", u16::MAX));
+}
+
+#[test]
+fn only_the_scrolled_chip_is_an_action_chip() {
+    // The click routing (criterion 2): the chip's press takes the
+    // jump branch ahead of the copy path; every other segment
+    // keeps the copy verb.
+    assert!(click_jumps(SegmentId::Scrolled));
+    for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
+        if *id != SegmentId::Scrolled {
+            assert!(!click_jumps(*id), "{id:?} must keep the copy verb");
+        }
+    }
+}
+
 #[test]
 fn copy_text_carries_each_segments_full_value() {
     // Copy pays no attention to display: the payload is the
@@ -903,6 +1021,9 @@ fn copy_text_carries_each_segments_full_value() {
     assert_eq!(copy_text(SegmentId::Zoom, &segments), "+200%");
     assert_eq!(copy_text(SegmentId::Clock, &segments), "14:32");
     assert_eq!(copy_text(SegmentId::Duration, &segments), "2:41");
+    // The action chip has no copyable value — the jump is the verb
+    // (status-scrolled spec); the empty payload is defensive.
+    assert_eq!(copy_text(SegmentId::Scrolled, &segments), "");
 }
 
 #[test]
@@ -911,6 +1032,16 @@ fn copy_text_of_an_absent_segment_is_empty() {
     for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
         assert_eq!(copy_text(*id, &empty), String::new());
     }
+}
+
+#[test]
+fn the_scrolled_chip_press_never_reaches_copy_text() {
+    // The branch-order pin from the payload side: even a present,
+    // counted chip carries no copy value, so a mis-routed press
+    // would still write nothing — the jump is the only verb.
+    let segments = resolve_full(StatusToggles::all());
+    assert_eq!(segments.scrolled, Some(12));
+    assert_eq!(copy_text(SegmentId::Scrolled, &segments), "");
 }
 
 #[test]
@@ -939,6 +1070,235 @@ fn segment_at_hits_only_the_rect_containing_the_point() {
     assert_eq!(segment_at(&rects, Point::new(65.0, 14.0)), None);
     assert_eq!(segment_at(&rects, Point::new(-1.0, 14.0)), None);
     assert_eq!(segment_at(&rects, Point::new(10.0, BAND_HEIGHT)), None);
+}
+
+// --- the ssh stand-in (status-remote) ---
+
+/// The stand-in's resolver shape: the path seat and branch fed
+/// beside the token the engine's argv read produced (or `None` —
+/// not ssh, unreadable, unparseable — the states the band cannot
+/// tell apart, by design).
+fn resolve_ssh(
+    ssh_destination: Option<&str>,
+    cwd: Option<&Path>,
+    branch: Option<&str>,
+    toggles: StatusToggles,
+) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: Some(&home()),
+        cwd,
+        shell: "/bin/bash",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: Some("ssh"),
+        branch,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+#[test]
+fn a_bare_host_token_wins() {
+    assert_eq!(ssh_destination(&["ssh", "box"]), Some("box".to_string()));
+}
+
+#[test]
+fn a_user_at_host_token_wins() {
+    assert_eq!(
+        ssh_destination(&["ssh", "git@github.com"]),
+        Some("git@github.com".to_string())
+    );
+}
+
+#[test]
+fn a_separate_option_value_is_consumed_not_won() {
+    assert_eq!(
+        ssh_destination(&["ssh", "-p", "2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_key_option_leaves_the_destination_standing() {
+    assert_eq!(
+        ssh_destination(&["ssh", "-i", "key", "git@host"]),
+        Some("git@host".to_string())
+    );
+}
+
+#[test]
+fn options_after_the_host_let_it_still_win() {
+    // The pinned trailing-options shape: `-W`'s `%h:%p` is a
+    // consumed value — the %-pattern class never wins (the spec's
+    // own rule).
+    assert_eq!(
+        ssh_destination(&["ssh", "box", "-W", "%h:%p"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_url_shaped_token_passes_verbatim() {
+    assert_eq!(
+        ssh_destination(&["ssh", "ssh://user@host:22"]),
+        Some("ssh://user@host:22".to_string())
+    );
+}
+
+#[test]
+fn options_only_yields_none() {
+    assert_eq!(ssh_destination(&["ssh", "-v", "-A", "-4"]), None);
+}
+
+#[test]
+fn a_program_only_or_empty_argv_yields_none() {
+    assert_eq!(ssh_destination(&["ssh"]), None);
+    assert_eq!(ssh_destination(&[]), None);
+}
+
+#[test]
+fn an_attached_option_value_never_wins() {
+    // `-p2222` carries its value inside the cluster: one option
+    // token, nothing separate consumed, the host still stands.
+    assert_eq!(
+        ssh_destination(&["ssh", "-p2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn every_value_taking_short_consumes_its_argument() {
+    // The grounded ssh(1) set (9.6's usage line — the superset the
+    // chunk's table rides in): any of these ahead of the host
+    // leaves the host standing; a miss would let the option's
+    // value masquerade as the destination when options trail.
+    for flag in [
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-P", "-p", "-Q", "-R", "-S", "-W", "-w",
+    ] {
+        let argv = ["ssh", flag, "value", "box"];
+        assert_eq!(
+            ssh_destination(&argv),
+            Some("box".to_string()),
+            "the consuming flag {flag}"
+        );
+    }
+}
+
+#[test]
+fn an_equals_long_form_is_self_contained() {
+    assert_eq!(
+        ssh_destination(&["ssh", "--port=2222", "box"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_bare_long_form_consumes_rather_than_misreads_its_value() {
+    // This ssh (9.6) has no long forms; 9.8's flag-form spellings
+    // are unknown from here — the degrade-safe bias consumes, so an
+    // uncertifiable value is never shown as the host (the spec's
+    // floor: None, the local path stands).
+    assert_eq!(ssh_destination(&["ssh", "--no-such-flag", "value"]), None);
+    // A host ahead of the long form still wins — nothing follows
+    // for it to consume.
+    assert_eq!(
+        ssh_destination(&["ssh", "box", "--verbose"]),
+        Some("box".to_string())
+    );
+}
+
+#[test]
+fn a_double_dash_ends_the_option_walk() {
+    // The argv convention: after `--`, every token is an operand —
+    // even one shaped like a flag (a host literally named `-x`).
+    assert_eq!(
+        ssh_destination(&["ssh", "--", "box"]),
+        Some("box".to_string())
+    );
+    assert_eq!(
+        ssh_destination(&["ssh", "--", "-x"]),
+        Some("-x".to_string())
+    );
+}
+
+#[test]
+fn a_stood_in_path_seat_shows_and_copies_the_token() {
+    let segments = resolve_ssh(
+        Some("box"),
+        Some(Path::new("/home/jpt/src")),
+        Some("main"),
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("box"));
+    // The full-value rule holds: the token is the value.
+    assert_eq!(copy_text(SegmentId::Path, &segments), "box");
+    assert_eq!(
+        segments.branch, None,
+        "the branch hides while stood-in (OQ-1: the stale-name rule)"
+    );
+}
+
+#[test]
+fn the_stood_in_token_passes_verbatim_no_tilde_collapse() {
+    // OQ-2: the token exactly as typed — the `~` collapse is the
+    // local path's treatment, never the stand-in's.
+    let segments = resolve_ssh(
+        Some("/home/jpt"),
+        Some(Path::new("/srv")),
+        None,
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("/home/jpt"));
+}
+
+#[test]
+fn an_unparseable_argv_degrades_to_todays_path_and_branch() {
+    // Not-ssh is the same inputs — indistinguishable from a failed
+    // read, which is the point: degradation is today's exact
+    // resolution, never a wrong host.
+    let segments = resolve_ssh(
+        None,
+        Some(Path::new("/home/jpt/src")),
+        Some("main"),
+        StatusToggles::all(),
+    );
+    assert_eq!(segments.path.as_deref(), Some("~/src"));
+    assert_eq!(segments.branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_path_toggle_off_tab_hides_the_stand_in_and_keeps_the_branch_hidden() {
+    // Hidden means never computed: the app's read gate keeps this
+    // state unreachable (no token can arrive while the path seat is
+    // off), and the resolver's suppression keys on the ssh fact —
+    // the branch data is stale whether or not the seat displays.
+    let toggles = StatusToggles {
+        path: false,
+        ..StatusToggles::all()
+    };
+    let segments = resolve_ssh(Some("box"), Some(Path::new("/home/jpt/src")), None, toggles);
+    assert_eq!(segments.path, None);
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn the_ssh_read_gate_requires_band_path_and_an_ssh_comm() {
+    // `clock_due`'s shape with the comm gate: each gate alone drops
+    // the read — hidden means never gathered, and only the ssh comm
+    // certifies a destination exists to read.
+    assert!(ssh_read_due(true, true, true));
+    assert!(!ssh_read_due(false, true, true));
+    assert!(!ssh_read_due(true, false, true));
+    assert!(!ssh_read_due(true, true, false));
 }
 
 // --- the clock helpers ---
@@ -1186,6 +1546,7 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         clock: None,
         running_elapsed: None,
         frozen: None,
+        scrolled: None,
     };
     let band: StatusBar<()> = StatusBar::new(
         segments.clone(),
@@ -1264,14 +1625,14 @@ fn a_missing_path_rect_never_arms() {
 
 #[test]
 fn the_armed_display_borrows_the_branchs_seat() {
-    // 560 px: the resting fit elides the path to 16 chars beside
+    // 602 px: the resting fit elides the path to 16 chars beside
     // the branch; lending the branch's 42 px frees the whole value
     // — the armed display is the un-elided path.
-    let resting = band_fit(560.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(602.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(resting.path, PathFit::Elided(16));
     let display = reveal_display(
         "~/src/oss/l1br3/ced2",
-        560.0,
+        602.0,
         100.0,
         &fit_widths(),
         fit_path(),
@@ -1281,11 +1642,11 @@ fn the_armed_display_borrows_the_branchs_seat() {
 
 #[test]
 fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
-    // 320 px: the resting fit drops the grid, tab, and zoom and
+    // 362 px: the resting fit drops the grid, tab, and zoom and
     // elides to four characters; the armed fit — the branch's seat
     // lent on top of the resting drops — still shows only a longer
     // elision, never an overflow.
-    let resting = band_fit(320.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(362.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(
         resting.dropped,
         vec![SegmentId::Grid, SegmentId::Tab, SegmentId::Zoom]
@@ -1295,7 +1656,7 @@ fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
         .into_iter()
         .filter(|(id, _)| !resting.dropped.contains(id))
         .collect();
-    let display = reveal_display("~/src/oss/l1br3/ced2", 320.0, 100.0, &survivors, fit_path());
+    let display = reveal_display("~/src/oss/l1br3/ced2", 362.0, 100.0, &survivors, fit_path());
     assert_eq!(display, "…r3/ced2");
 }
 
@@ -1439,6 +1800,113 @@ fn selection_copies_the_display_wysiwyg_click_copies_the_full_value() {
     );
 }
 
+// --- double-click select (status-select spec) ---
+//
+// A second left press within the 500 ms window and 4 px of the
+// previous (the drag threshold's own value, one constant fewer)
+// completes a double-click: the pressed segment's whole span
+// becomes the selection, and the release copies its display text
+// WYSIWYG through the drag release's exact path — the click verb
+// (full value plus ✓) never fires. The verbs compose by order: the
+// double-click's first release is still a click.
+
+#[test]
+fn a_second_press_within_the_window_and_px_is_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let soon = first.0 + Duration::from_millis(300);
+    assert!(is_double_click(first, soon, Point::new(102.0, 15.0)));
+}
+
+#[test]
+fn a_press_past_the_window_is_not_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let late = first.0 + Duration::from_millis(501);
+    assert!(!is_double_click(first, late, Point::new(100.0, 14.0)));
+}
+
+#[test]
+fn a_press_too_far_from_the_previous_is_not_a_double_click() {
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let soon = first.0 + Duration::from_millis(100);
+    assert!(!is_double_click(first, soon, Point::new(106.0, 14.0)));
+    assert!(!is_double_click(first, soon, Point::new(100.0, 20.0)));
+}
+
+#[test]
+fn the_window_and_px_boundaries_are_inclusive() {
+    // The rulings' exact edges: 500 ms on the dot and 4 px on the
+    // dot (either axis) still complete the double-click.
+    let first = (Instant::now(), Point::new(100.0, 14.0));
+    let at_the_window = first.0 + Duration::from_millis(500);
+    assert!(is_double_click(
+        first,
+        at_the_window,
+        Point::new(100.0, 14.0)
+    ));
+    let soon = first.0 + Duration::from_millis(100);
+    assert!(is_double_click(first, soon, Point::new(104.0, 14.0)));
+    assert!(is_double_click(first, soon, Point::new(100.0, 18.0)));
+}
+
+#[test]
+fn a_double_click_span_selects_the_whole_segment_wysiwyg() {
+    // The span a double-click arms is the pressed segment's laid
+    // rect end to end: through the existing selection functions it
+    // highlights exactly that rect and copies exactly its display
+    // text — no new selection code, the row is the source.
+    let row = row_segments();
+    let rect = row[1].rect;
+    let span = (
+        Point::new(rect.x, rect.y),
+        Point::new(rect.x + rect.width, rect.y),
+    );
+    assert_eq!(
+        selection_rects(span.0, span.1, &row),
+        vec![Rectangle::new(
+            Point::new(64.0, 0.0),
+            Size::new(100.0, BAND_HEIGHT)
+        )]
+    );
+    assert_eq!(selection_text(span.0, span.1, &row), "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn the_span_over_an_armed_revealed_path_selects_the_expanded_display() {
+    // While the inline reveal holds the path expanded, the row text
+    // is the expanded display — the span selects it verbatim, no
+    // special case.
+    let row = vec![RowSegment {
+        rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(100.0, BAND_HEIGHT)),
+        text: "~/src/oss/l1br3/ced2".to_string(),
+    }];
+    let span = (Point::new(64.0, 14.0), Point::new(164.0, 14.0));
+    assert_eq!(selection_text(span.0, span.1, &row), "~/src/oss/l1br3/ced2");
+}
+
+#[test]
+fn a_double_click_release_copies_the_display_never_the_click_value() {
+    // The routing, pinned by construction: the span-armed press
+    // keeps the release off the click verb, so its payload comes
+    // from `selection_text` — the *display* text — never
+    // `copy_text`'s full un-elided value, and no ✓ flashes (the
+    // flash is the click verb's acknowledgment alone).
+    let row = vec![RowSegment {
+        rect: Rectangle::new(Point::new(64.0, 0.0), Size::new(50.0, BAND_HEIGHT)),
+        text: "…/l1br3/ced2".to_string(),
+    }];
+    let span = (Point::new(64.0, 14.0), Point::new(114.0, 14.0));
+    assert_eq!(selection_text(span.0, span.1, &row), "…/l1br3/ced2");
+    let segments = StatusSegments {
+        path: Some("~/src/oss/l1br3/ced2".to_string()),
+        ..StatusSegments::default()
+    };
+    assert_ne!(
+        selection_text(span.0, span.1, &row),
+        copy_text(SegmentId::Path, &segments),
+        "the double-click's payload is the display, not the click value"
+    );
+}
+
 // --- the context menu (the per-tab menu's pattern) ---
 
 /// A rich band — every segment present — the menu pins' fixture.
@@ -1455,6 +1923,7 @@ fn rich_segments() -> StatusSegments {
         clock: Some("14:32".to_string()),
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
+        scrolled: Some(7),
     }
 }
 
@@ -1541,6 +2010,18 @@ fn copy_all_mutes_when_nothing_is_present() {
     assert!(!rows[1].enabled, "an empty band has nothing to Copy All");
     let rich = menu_rows(&rich_segments(), None);
     assert!(rich[1].enabled);
+}
+
+#[test]
+fn paste_never_mutes_so_gaps_middle_click_paste_too() {
+    // The middle-click verb rides the menu's own Paste funnel
+    // (status-select spec) — the one row that never mutes, not on
+    // an empty band, not on a gap press — so the verb pastes
+    // anywhere on the band: the band is chrome, and its Paste is
+    // the terminal's own, always live.
+    let rows = menu_rows(&StatusSegments::default(), None);
+    assert_eq!(rows[2].pick, Some(MenuPick::Action(Action::Paste)));
+    assert!(rows[2].enabled, "Paste never mutes — the band is chrome");
 }
 
 #[test]

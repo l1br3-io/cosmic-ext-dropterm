@@ -227,11 +227,13 @@ impl DropTerm {
         if !matches!(self.surface, SurfaceState::Hidden) {
             return Task::none();
         }
-        // The user can see the terminal again: re-arm every tab's bell
-        // notification latch, so a bell from here on is fresh news
+        // The user can see the terminal again: re-arm every tab's
+        // notification latches — bell and finished-command — so a
+        // bell or a finished long command from here on is fresh news
         // worth one notification per tab again.
         for tab in &mut self.tabs {
             tab.bell_notified = false;
+            tab.command_notified = false;
         }
         self.ensure_tabs();
         let id = window::Id::unique();

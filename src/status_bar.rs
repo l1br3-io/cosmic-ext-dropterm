@@ -17,11 +17,14 @@
 //! process-state disc: filled while a foreground child runs, a hollow
 //! ring over the idle shell.
 //!
-//! The set is nine — process, duration, path, branch in the left
-//! cluster; profile, grid, tab position, zoom, clock in the right —
-//! each individually toggleable (a hidden segment is never computed)
-//! and click-copyable through [`copy_text`]: the full value, never
-//! the elided display.
+//! The set is ten — process, duration, path, branch in the left
+//! cluster; profile, grid, tab position, zoom, scrolled-back chip,
+//! clock in the right — each individually toggleable (a hidden
+//! segment is never computed) and click-copyable through
+//! [`copy_text`]: the full value, never the elided display. The
+//! scrolled chip bends the copy rule exactly once (status-scrolled
+//! spec): its click jumps the viewport to the bottom — it has no
+//! copyable value, and the jump is the verb.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -127,6 +130,9 @@ pub enum SegmentId {
     Tab,
     /// The signed zoom percent.
     Zoom,
+    /// The viewport's lines scrolled back from the bottom
+    /// (status-scrolled spec) — the off-bottom chip, `↑12`.
+    Scrolled,
     /// The pre-formatted wall clock.
     Clock,
 }
@@ -142,12 +148,15 @@ pub const LEFT_CLUSTER: [SegmentId; 4] = [
 ];
 
 /// The right cluster's segments in draw order — the dimmed alpha,
-/// the clock rightmost (the tmux seat).
-pub const RIGHT_CLUSTER: [SegmentId; 5] = [
+/// the clock rightmost (the tmux seat). The scrolled chip sits
+/// between Zoom and Clock (status-scrolled OQ-2): state of the
+/// view, beside time.
+pub const RIGHT_CLUSTER: [SegmentId; 6] = [
     SegmentId::Profile,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
+    SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
@@ -157,23 +166,27 @@ pub const RIGHT_CLUSTER: [SegmentId; 5] = [
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
-/// and the clock is last — tmux keeps time to the bitter end.
-pub const DROP_ORDER: [SegmentId; 7] = [
+/// the scrolled chip follows the duration (it answers "what's
+/// happening now" — it must survive while the command's own
+/// narration stands), and the clock is last — tmux keeps time to
+/// the bitter end.
+pub const DROP_ORDER: [SegmentId; 8] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
     SegmentId::Duration,
+    SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// nine `status_bar_show_*` bools. A hidden segment is absent
+/// ten `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "nine independent visibility switches — one per config key, by design"
+    reason = "ten independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -193,12 +206,14 @@ pub struct StatusToggles {
     pub tab: bool,
     /// The zoom percent.
     pub zoom: bool,
+    /// The scrolled-back chip.
+    pub scrolled: bool,
     /// The wall clock.
     pub clock: bool,
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's nine
+    /// Every segment shown — the all-on default the config's ten
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
@@ -210,6 +225,7 @@ impl StatusToggles {
             grid: true,
             tab: true,
             zoom: true,
+            scrolled: true,
             clock: true,
         }
     }
@@ -257,6 +273,13 @@ pub struct StatusSegments {
     /// command starts. An empty name is the honest floor — the
     /// duration without a name to lie about.
     pub frozen: Option<(String, Duration)>,
+    /// The viewport's lines scrolled back from the bottom
+    /// (status-scrolled spec) — absent at the bottom (and when
+    /// hidden): the same indistinguishable `None`, so the chip
+    /// exists only when the viewport is somewhere it shouldn't
+    /// rest. The display is [`scrolled_display`]; the click is the
+    /// jump, never a copy.
+    pub scrolled: Option<u16>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -299,6 +322,16 @@ pub struct StatusInputs<'a> {
     /// The last finished command's (name, duration) pair — the
     /// name the app last sampled running on this tab.
     pub frozen: Option<(&'a str, Duration)>,
+    /// The viewport's lines scrolled back from the bottom — the
+    /// engine's `scrolled_back_lines()` read at the same lock the
+    /// grid and zoom take.
+    pub scrolled_back: Option<u16>,
+    /// The foreground ssh command's destination token (status-remote
+    /// spec) — the engine's cmdline read, gathered only at the
+    /// snapshot points and only under [`ssh_read_due`]'s gate;
+    /// `None` (not ssh, unreadable, unparseable) keeps today's
+    /// local path and branch.
+    pub ssh_destination: Option<&'a str>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -317,10 +350,26 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         },
         path: toggles
             .path
-            .then(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+            .then(|| {
+                // The ssh stand-in (status-remote spec): while ssh
+                // owns the foreground and its argv certifies a
+                // destination, the path's own seat shows that token
+                // verbatim — the local cwd froze when ssh started,
+                // and the band never narrates a stale seat. The
+                // copy payload rides the same field: the token is
+                // the full value.
+                inputs
+                    .ssh_destination
+                    .map(str::to_string)
+                    .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+            })
             .flatten(),
-        branch: toggles
-            .branch
+        // The branch hides while stood-in (status-remote OQ-1): the
+        // token's presence is the ssh fact — the local repo's branch
+        // is as stale as the path was. Keyed on the fact, not the
+        // seat's visibility; the app's read gate keeps the two
+        // reachable states one and the same.
+        branch: (toggles.branch && inputs.ssh_destination.is_none())
             .then_some(inputs.branch)
             .flatten()
             .map(str::to_string),
@@ -357,6 +406,15 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
                     .map(|(name, duration)| (name.to_string(), duration))
             })
             .flatten(),
+        // Absent at bottom — the same indistinguishable None a
+        // hidden or zoomed-at-base segment resolves to
+        // (status-scrolled spec); the chip exists only when the
+        // viewport is somewhere it shouldn't rest.
+        scrolled: toggles
+            .scrolled
+            .then_some(inputs.scrolled_back)
+            .flatten()
+            .filter(|&lines| lines > 0),
     }
 }
 
@@ -372,6 +430,68 @@ pub fn duration_display(segments: &StatusSegments) -> String {
         (None, Some((name, duration))) => format!("{name} {}", format_duration(*duration)),
         (None, None) => String::new(),
     }
+}
+
+/// The scrolled chip's display (status-scrolled spec, OQ-1):
+/// `↑12` — the arrow, then the count, reading "12 up". The chip's
+/// click is the jump, not a copy; this display is the whole value.
+pub fn scrolled_display(lines: u16) -> String {
+    format!("↑{lines}")
+}
+
+/// The ssh command's destination token (status-remote spec): the
+/// last argument that is neither an option nor a value an option
+/// consumed — `ssh -p 2222 box`, `ssh -i key git@host`, and
+/// `ssh host -W %h:%p` all yield their host token, because the
+/// value-taking options' arguments are skipped and a bare `--`
+/// ends the option walk. `None` when nothing survives: the local
+/// path stands, never a wrong host.
+pub fn ssh_destination(argv: &[&str]) -> Option<String> {
+    /// The short options whose *separate* next argument is a value,
+    /// not an operand — ssh(1)'s own consuming set (the 9.6 usage
+    /// line: every option that names what follows it). Attached
+    /// spellings (`-p2222`) and bundles (`-vA`) carry their values
+    /// inside or take none: the token itself is the option either
+    /// way, and only the exact single-letter spellings consume.
+    const VALUE_SHORTS: [char; 22] = [
+        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
+        'R', 'S', 'W', 'w',
+    ];
+
+    let mut destination = None;
+    let mut consume_next = false;
+    let mut options_done = false;
+    for &token in argv.iter().skip(1) {
+        if consume_next {
+            consume_next = false;
+            continue;
+        }
+        if !options_done && token.starts_with("--") {
+            if token == "--" {
+                options_done = true;
+            } else if token.contains('=') {
+                // `--name=value` carries its value inside.
+            } else {
+                // A bare long form consumes what follows: this ssh
+                // (9.6) has no long spellings, and 9.8's flag-forms
+                // are unknown from here — consuming is the
+                // degrade-safe bias, because an uncertifiable value
+                // must never be shown as the host.
+                consume_next = true;
+            }
+            continue;
+        }
+        if !options_done && token.starts_with('-') {
+            consume_next = token
+                .strip_prefix('-')
+                .filter(|rest| rest.chars().count() == 1)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|flag| VALUE_SHORTS.contains(&flag));
+            continue;
+        }
+        destination = Some(token.to_string());
+    }
+    destination
 }
 
 /// Collapse a `home`-prefixed path to `~` plus its remainder — on
@@ -588,7 +708,21 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
             .unwrap_or_default(),
         SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
         SegmentId::Duration => duration_display(segments),
+        // The action chip has no copyable value — the jump is the
+        // verb (status-scrolled spec). The widget's press routing
+        // never reaches this arm; empty is defensive.
+        SegmentId::Scrolled => String::new(),
     }
+}
+
+/// Whether a segment's click is the band's jump verb rather than
+/// the copy verb — the one deliberate action chip (status-scrolled
+/// spec): the scrolled chip's click jumps the viewport to the
+/// bottom through the app callback, ahead of the copy path and
+/// never reaching [`copy_text`] (whose payload for it is empty
+/// besides, defensive).
+pub fn click_jumps(id: SegmentId) -> bool {
+    id == SegmentId::Scrolled
 }
 
 /// The segment whose rect contains `point`, if any — the pure half
@@ -680,6 +814,21 @@ pub fn selection_is_click(anchor: Point, release: Point) -> bool {
     let dx = release.x - anchor.x;
     let dy = release.y - anchor.y;
     (dx * dx + dy * dy) < SELECTION_THRESHOLD * SELECTION_THRESHOLD
+}
+
+/// The double-click window (status-select spec, OQ-1): 500 ms, the
+/// common toolkit default, retunable at the pass.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
+
+/// Whether a left press completes a double-click (status-select
+/// spec): within the window and a few px of the previous press —
+/// the terminal word-select rhythm, derived from raw presses (iced
+/// offers no double-click event at the widget layer). The px
+/// tolerance is the drag threshold's own value, one constant fewer.
+pub fn is_double_click(prev: (Instant, Point), now: Instant, at: Point) -> bool {
+    now.duration_since(prev.0) <= DOUBLE_CLICK_WINDOW
+        && (at.x - prev.1.x).abs() <= SELECTION_THRESHOLD
+        && (at.y - prev.1.y).abs() <= SELECTION_THRESHOLD
 }
 
 /// The normalized horizontal span of a selection drag.
@@ -933,6 +1082,16 @@ pub const fn duration_due(
     band_enabled && show_duration && running && surface_visible
 }
 
+/// Whether the ssh stand-in's cmdline read should happen
+/// (status-remote spec): the band shown, the path seat shown, and
+/// the foreground comm `ssh` — `clock_due`'s shape with the comm
+/// gate. Evaluated at every snapshot refresh: hidden means never
+/// gathered (the read stops before `/proc`), and a non-ssh
+/// foreground never pays it.
+pub const fn ssh_read_due(band_enabled: bool, show_path: bool, foreground_is_ssh: bool) -> bool {
+    band_enabled && show_path && foreground_is_ssh
+}
+
 /// The duration from `now` to the next minute boundary — the tick's
 /// alignment; an on-boundary `now` waits a full minute.
 pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
@@ -1007,8 +1166,6 @@ impl CommandTimer {
     }
 }
 
-/// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
-/// (command-lifecycle spec, OQ-3).
 /// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen
 /// (command-lifecycle spec, OQ-3).
 pub fn format_duration(duration: Duration) -> String {
@@ -1097,6 +1254,10 @@ pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800
 /// paragraphs' text on arming transitions only — between
 /// transitions, every read (draw, hit-testing, pressing) sees the
 /// same laid display.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent widget flags, one per interaction: reveal armed, path elided, menu open, span press"
+)]
 #[derive(Default)]
 struct State {
     process: BandParagraph,
@@ -1107,6 +1268,7 @@ struct State {
     grid: BandParagraph,
     tab: BandParagraph,
     zoom: BandParagraph,
+    scrolled: BandParagraph,
     clock: BandParagraph,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
@@ -1132,6 +1294,19 @@ struct State {
     /// The live-or-persisting selection: anchor and focus. Persists
     /// highlighted after release until the next press.
     selection: Option<(Point, Point)>,
+    /// The last left press, for double-click discrimination
+    /// (status-select spec): `None` until the first, so a fresh
+    /// band never pairs with a phantom press. Set on every left
+    /// press the band sees; a right press clears it (a press is a
+    /// press).
+    last_left_press: Option<(Instant, Point)>,
+    /// Whether the live press armed a double-click's segment span
+    /// (status-select spec): the release must ride the selection
+    /// branch — the click discrimination cannot tell a
+    /// double-click's still press from a single click's, so the
+    /// flag routes it, not the distance. Press metadata only: the
+    /// selection itself stays the one `(Point, Point)` machinery.
+    span_press: bool,
     /// Whether the context menu is open. Band-local by the
     /// dropdown's rule — the open state dies with the band's tree
     /// on hide/show.
@@ -1160,6 +1335,7 @@ impl State {
             SegmentId::Grid => &self.grid,
             SegmentId::Tab => &self.tab,
             SegmentId::Zoom => &self.zoom,
+            SegmentId::Scrolled => &self.scrolled,
             SegmentId::Clock => &self.clock,
         }
     }
@@ -1174,6 +1350,7 @@ impl State {
             SegmentId::Grid => &mut self.grid,
             SegmentId::Tab => &mut self.tab,
             SegmentId::Zoom => &mut self.zoom,
+            SegmentId::Scrolled => &mut self.scrolled,
             SegmentId::Clock => &mut self.clock,
         }
     }
@@ -1204,6 +1381,10 @@ pub struct StatusBar<Message> {
     copied: Option<SegmentId>,
     /// Maps a clicked segment to the app's message.
     on_copy: Box<dyn Fn(SegmentId) -> Message>,
+    /// Publishes the scrolled chip's click (status-scrolled spec):
+    /// the app routes it to the existing scroll-to-bottom funnel —
+    /// the one deliberate action chip, ahead of the copy path.
+    on_scroll_bottom: Option<Box<dyn Fn() -> Message>>,
     /// Maps a context-menu action pick to the app's message — the
     /// app routes it through the same `perform_action` funnel the
     /// keybind map uses (the menu introduces no behavior).
@@ -1234,10 +1415,21 @@ impl<Message> StatusBar<Message> {
             font,
             copied,
             on_copy: Box::new(on_copy),
+            on_scroll_bottom: None,
             on_menu_action: None,
             menu_side: TooltipSide::default(),
             border: false,
         }
+    }
+
+    /// Sets the message published when the scrolled chip is
+    /// clicked — the jump to the bottom through the app's existing
+    /// scroll funnel (status-scrolled spec: no new scroll
+    /// behavior; without the callback the chip renders but its
+    /// click publishes nothing).
+    pub fn on_scroll_bottom(mut self, on_scroll_bottom: impl Fn() -> Message + 'static) -> Self {
+        self.on_scroll_bottom = Some(Box::new(on_scroll_bottom));
+        self
     }
 
     /// Sets the message published when an action row of the
@@ -1321,6 +1513,15 @@ impl<Message> StatusBar<Message> {
             .map(|percent| format!("{percent:+}%"));
         state.zoom.update(segment_text(
             display_text(copied, SegmentId::Zoom, zoom.as_deref().unwrap_or("")),
+            font,
+        ));
+        let scrolled = self.segments.scrolled.map(scrolled_display);
+        state.scrolled.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Scrolled,
+                scrolled.as_deref().unwrap_or(""),
+            ),
             font,
         ));
         state.clock.update(segment_text(
@@ -1428,6 +1629,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Grid => grid.clone().unwrap_or_default(),
                 SegmentId::Tab => tab.clone().unwrap_or_default(),
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
+                SegmentId::Scrolled => scrolled.clone().unwrap_or_default(),
                 SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
             };
             display_text(copied, id, &value).to_string()
@@ -1700,9 +1902,34 @@ where
                 state.menu_open = true;
                 state.press = None;
                 state.selection = None;
+                state.span_press = false;
+                state.last_left_press = None;
                 shell.invalidate_layout();
                 shell.capture_event();
                 shell.request_redraw();
+            }
+            Event::Mouse(MouseEvent::ButtonPressed(Button::Middle)) => {
+                // Middle-click pastes into the narrated terminal
+                // (status-select spec): the context menu's own Paste
+                // funnel verbatim — the same `on_menu_action(
+                // Action::Paste)` route the Paste row publishes, no
+                // new paste path. Gaps paste too (the band is
+                // chrome; the menu's Paste never mutes), and the
+                // press leaves selection and copy state untouched.
+                if !cursor
+                    .position()
+                    .is_some_and(|point| layout.bounds().contains(point))
+                {
+                    return;
+                }
+                if let Some(message) = self
+                    .on_menu_action
+                    .as_ref()
+                    .map(|on_menu_action| on_menu_action(Action::Paste))
+                {
+                    shell.publish(message);
+                }
+                shell.capture_event();
             }
             Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
                 // The anchor is window-absolute — the space
@@ -1716,8 +1943,37 @@ where
                 else {
                     return;
                 };
+                // Double-click (status-select spec): a second left
+                // press within the window and px tolerance of the
+                // previous arms the pressed segment's whole span as
+                // the selection — the display text, selected and
+                // copied WYSIWYG through the drag release's exact
+                // path. The span rides the real press point (a
+                // double-click's hand jitters; anchoring the span's
+                // own origin would let any 1 px motion redraw it as
+                // a partial drag from the segment's edge), and
+                // `span_press` keeps the release off the click verb.
+                // A first press, a press past the window, or one too
+                // far away takes today's path unchanged.
+                let now = Instant::now();
+                let double = state
+                    .last_left_press
+                    .is_some_and(|prev| is_double_click(prev, now, position));
+                state.last_left_press = Some((now, position));
                 state.press = Some(position);
+                state.span_press = false;
                 state.selection = None;
+                if double
+                    && let Some((_, rect)) = segment_rects(state, layout.bounds())
+                        .into_iter()
+                        .find(|(_, rect)| rect.contains(position))
+                {
+                    state.span_press = true;
+                    state.selection = Some((
+                        Point::new(rect.x, rect.y),
+                        Point::new(rect.x + rect.width, rect.y),
+                    ));
+                }
                 shell.capture_event();
                 shell.request_redraw();
             }
@@ -1741,19 +1997,35 @@ where
                 let Some(anchor) = state.press.take() else {
                     return;
                 };
+                // A double-click's second release rides the selection
+                // branch (status-select spec): the click discrimination
+                // cannot tell its still press from a single click's,
+                // so the span flag routes it, not the distance —
+                // `copy_text` and the ✓ never fire.
+                let span_press = std::mem::take(&mut state.span_press);
                 shell.capture_event();
                 shell.request_redraw();
-                if selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
-                    // The click verb: the segment's full value
-                    // through `copy_text` — never the elided
-                    // display.
+                if !span_press && selection_is_click(anchor, cursor.position().unwrap_or(anchor)) {
+                    // The click verb, branched ahead of the copy
+                    // path: the scrolled chip is the band's one
+                    // action chip (status-scrolled spec) — its
+                    // press publishes the jump through the app
+                    // callback and never reaches `copy_text`. Every
+                    // other segment copies its full value through
+                    // `copy_text` — never the elided display.
                     let rects = segment_rects(state, layout.bounds());
                     if let Some(id) = cursor
                         .position()
                         .and_then(|point| segment_at(&rects, point))
                     {
-                        clipboard.write(Kind::Standard, copy_text(id, &self.segments));
-                        shell.publish((self.on_copy)(id));
+                        if click_jumps(id) {
+                            if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
+                                shell.publish(on_scroll_bottom());
+                            }
+                        } else {
+                            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
+                            shell.publish((self.on_copy)(id));
+                        }
                     }
                 } else if let Some((from, to)) = state.selection {
                     let text = selection_text(from, to, &row_segments(state, layout.bounds()));

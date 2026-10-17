@@ -47,7 +47,7 @@ use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
-use crate::terminal::{Action, TerminalBox, TerminalOptions};
+use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
 pub(crate) mod remote;
 mod spawn;
@@ -109,6 +109,10 @@ pub enum Message {
     /// A status-band segment was click-copied — the widget already
     /// wrote the clipboard; the app flashes the segment's `✓`.
     StatusSegmentCopied(status_bar::SegmentId),
+    /// The scrolled chip was clicked (status-scrolled spec): the
+    /// active terminal's viewport jumps to the bottom through the
+    /// engine's own scroll funnel — the band's one action chip.
+    StatusScrollJump,
     /// The copy flash elapsed: the `✓` yields back to the value.
     StatusCopyFlashLapse,
     /// The status band's minute tick fired: refresh the stored clock
@@ -300,6 +304,13 @@ pub struct DropTerm {
     /// the band's master toggle. `None` reads outside a repo,
     /// unreadable, or hidden.
     active_branch: Option<String>,
+    /// The foreground ssh command's destination token (status-remote
+    /// spec) — the engine's cmdline read at the same snapshot
+    /// points, gated by [`status_bar::ssh_read_due`]: one extra
+    /// `/proc` read, and only while the band, the path seat, and an
+    /// ssh foreground all hold. `None` keeps the local path and
+    /// branch — the stand-in never guesses a host.
+    active_ssh_destination: Option<String>,
     /// The band segment currently flashing its `✓` after a
     /// click-to-copy — set on the copied message, cleared by the
     /// flash-lapse task (`status_bar::COPY_FLASH`).
@@ -392,7 +403,14 @@ pub struct DropTerm {
     /// drawer. An open picker owns the first Escape (the popover
     /// first, then the draft, then the drawer — the ordering the
     /// profile-manager spec pinned).
-    scheme_picker: Option<settings::SchemePickerId>,
+    open_picker: Option<settings::PickerId>,
+    /// The system's monospace families (font-picker spec): scanned
+    /// once here — the renderer loads its own system fonts at
+    /// startup, so a mid-run rescan could list families iced cannot
+    /// yet draw (dishonest previews). Process-stable for the
+    /// lifetime; the picker's rows and `font_pick_write`'s picks
+    /// resolve against it.
+    font_families: Vec<String>,
     last_toggle: Option<std::time::Instant>,
     /// The live slide: the eased content offset while the surface
     /// animates — in from the anchored edge after a show, out toward
@@ -500,16 +518,29 @@ impl DropTerm {
         let Some(tab) = self.active() else {
             self.active_process_name = None;
             self.active_branch = None;
+            self.active_ssh_destination = None;
             return;
         };
         let cwd = self.tab_cwds.get(&tab.id).and_then(Option::as_deref);
         let process = tab.terminal.lock().unwrap().foreground_process_name();
+        // Hidden means never gathered (status-remote spec): the
+        // cmdline read waits for the band, the path seat, and an ssh
+        // foreground — and the engine re-verifies the comm before
+        // the read itself, so the gate is honesty, not just economy.
+        let ssh_destination = status_bar::ssh_read_due(
+            self.config.status_bar_enabled,
+            self.config.status_bar_show_path,
+            process.as_deref() == Some("ssh"),
+        )
+        .then(|| tab.terminal.lock().unwrap().ssh_destination())
+        .flatten();
         // Hidden means never gathered: the `.git` walk stops at the
         // gate, before the filesystem.
         let branch = (self.config.status_bar_enabled && self.config.status_bar_show_branch)
             .then(|| status_bar::git_branch(cwd))
             .flatten();
         self.active_process_name = process;
+        self.active_ssh_destination = ssh_destination;
         self.active_branch = branch;
         // The narration name for the frozen pairing (command-lifecycle
         // spec, OQ-1): the last comm sampled running on this tab —
@@ -594,35 +625,38 @@ impl DropTerm {
             .profile
             .as_deref()
             .and_then(|id| profile::find(&self.config.profiles, id));
-        // The grid and its spawn record ride the same in-memory
-        // lock as the zoom — resize-fresh by construction, no
-        // snapshot of its own; the record is the engine-owned
-        // resting grid (status-glance criterion 1).
-        let (zoom_adj, grid, spawn_grid) = {
+        // Every engine read the inputs need, under one guard: the
+        // grid and its spawn record ride the same in-memory lock as
+        // the zoom — resize-fresh by construction, no snapshot of
+        // its own; the record is the engine-owned resting grid
+        // (status-glance criterion 1). The scrolled chip's count
+        // joins them (status-scrolled spec): a `display_offset`
+        // read, zero fs. And the command timer's two
+        // (command-lifecycle spec): the live elapsed while a
+        // witnessed start runs, and the frozen pair — OQ-1 pairs
+        // the app's last sampled running comm (kept per-tab) with
+        // the engine's frozen duration. The unnamed floor: a run
+        // that was never sampled (a background tab's finished
+        // command) keeps its duration with no name to lie about.
+        let (zoom_adj, grid, spawn_grid, scrolled_back, running_elapsed, frozen) = {
             let terminal = tab.terminal.lock().unwrap();
-            (terminal.zoom_adj(), terminal.grid(), terminal.spawn_grid())
+            let frozen = terminal
+                .command_frozen()
+                .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
+            (
+                terminal.zoom_adj(),
+                terminal.grid(),
+                terminal.spawn_grid(),
+                Some(terminal.scrolled_back_lines()),
+                terminal.command_live().1,
+                frozen,
+            )
         };
         // The step the tab's terminal actually zooms by: the same
         // options construction every spawn builds from.
         let zoom_step = self
             .terminal_options_for(resolved)
             .font_size_zoom_step_mul_100;
-        // The command timer's two reads (command-lifecycle spec):
-        // the live elapsed while a witnessed start runs, and the
-        // frozen pair — OQ-1 pairs the app's last sampled running
-        // comm (kept per-tab) with the engine's frozen duration.
-        // Under the same lock the zoom/grid reads already take.
-        let (running_elapsed, frozen) = {
-            let terminal = tab.terminal.lock().unwrap();
-            let elapsed = terminal.command_live().1;
-            // The unnamed floor: a run that was never sampled (a
-            // background tab's finished command) keeps its duration
-            // with no name to lie about.
-            let frozen = terminal
-                .command_frozen()
-                .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
-            (elapsed, frozen)
-        };
         let inputs = status_bar::StatusInputs {
             home: home.as_deref(),
             cwd,
@@ -640,6 +674,8 @@ impl DropTerm {
             frozen: frozen
                 .as_ref()
                 .map(|(name, duration)| (name.as_str(), *duration)),
+            scrolled_back,
+            ssh_destination: self.active_ssh_destination.as_deref(),
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -761,11 +797,11 @@ impl DropTerm {
     /// page it closed on.
     fn close_settings_drawer(&mut self) -> Task<Message> {
         self.settings_open = false;
-        // The scheme popover dies with the drawer: the explicit close
+        // The open popover dies with the drawer: the explicit close
         // clears transient UI state (the keybind search and capture
         // rule below); the landing turn stays on Appearance, so the
         // page-turn clear would not catch it.
-        self.scheme_picker = None;
+        self.open_picker = None;
         self.turn_settings_page(home_settings_page());
         // The Keybindings tab's search and capture state are drawer
         // buffer state: cleared on the explicit close, preserved
@@ -849,12 +885,12 @@ impl DropTerm {
                 settings::ProfileDraftTransition::Clear,
             );
         }
-        // A turn away from the hosting page closes the scheme popover
+        // A turn away from the hosting page closes the open popover
         // with its anchor — a stale open flag must not resurrect it on
-        // return (the keybind-capture page-turn rule). Both hosting
+        // return (the keybind-capture page-turn rule). The hosting
         // pages turn through here, so every non-self turn clears.
         if tab != self.settings_page {
-            self.scheme_picker = None;
+            self.open_picker = None;
         }
         self.settings_page = tab;
         self.sync_settings_tab_strip();
@@ -1239,7 +1275,7 @@ fn band_menu_side(edge: Edge) -> TooltipSide {
 /// requires — interned per distinct name, libcosmic's own
 /// `FontConfig → Font` conversion leaks-and-caches the same way, so
 /// config echo's constant re-renders never grow the intern set.
-fn interned_font_family(name: &str) -> &'static str {
+pub(crate) fn interned_font_family(name: &str) -> &'static str {
     static FAMILY_MAP: std::sync::LazyLock<
         std::sync::RwLock<std::collections::BTreeSet<&'static str>>,
     > = std::sync::LazyLock::new(std::sync::RwLock::default);
@@ -1390,6 +1426,7 @@ impl Application for DropTerm {
             tab_cwds: HashMap::new(),
             active_process_name: None,
             active_branch: None,
+            active_ssh_destination: None,
             copied_segment: None,
             status_clock: None,
             clock_armed: false,
@@ -1410,7 +1447,8 @@ impl Application for DropTerm {
             key_binds,
             keybind_capture: None,
             keybind_search: String::new(),
-            scheme_picker: None,
+            open_picker: None,
+            font_families: cosmic_ext_dropterm::font_list::load_monospace_families(),
             keybind_conflict: None,
             last_toggle: None,
             slide: None,
@@ -1809,6 +1847,10 @@ impl Application for DropTerm {
         // side of the band (the band hugs the free edge, so that
         // side is the strip's own tooltip side inverted).
         .on_menu_action(Message::Action)
+        // The scrolled chip's click — the one action chip
+        // (status-scrolled spec): the jump routes to the engine's
+        // scroll-to-bottom funnel, never the copy verb.
+        .on_scroll_bottom(|| Message::StatusScrollJump)
         .menu_side(band_menu_side(self.config.edge))
         // The border hairline rides the same side the menu pops to
         // — the band's side away from the grab bar — off the
@@ -1908,7 +1950,8 @@ impl Application for DropTerm {
             SettingsTab::Appearance => settings::view::appearance_view(
                 &self.config,
                 &self.settings_buffer,
-                self.scheme_picker,
+                self.open_picker,
+                &self.font_families,
             ),
             SettingsTab::Behavior => {
                 settings::view::behavior_view(&self.config, &self.settings_buffer)
@@ -1924,7 +1967,10 @@ impl Application for DropTerm {
                     self.profile_selection,
                     self.profile_draft.as_ref(),
                     self.profile_delete_armed,
-                    self.scheme_picker == Some(settings::SchemePickerId::ProfileForm),
+                    self.open_picker
+                        == Some(settings::PickerId::Scheme(
+                            settings::SchemePickerId::ProfileForm,
+                        )),
                     is_dark,
                 )
             }
@@ -2340,7 +2386,7 @@ impl DropTerm {
                 // (the draft-first rule): the draft cancels — no
                 // write, the selection kept — and the drawer stays
                 // open for the plain close on a later press.
-                let drawer_escapable = self.settings_open && self.scheme_picker.is_none();
+                let drawer_escapable = self.settings_open && self.open_picker.is_none();
                 match drawer_escape_routing(drawer_escapable, self.profile_draft.is_some(), &key) {
                     DrawerKeyRouting::CancelDraft => {
                         self.profile_draft = None;
@@ -2408,6 +2454,16 @@ impl DropTerm {
                 return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
                     cosmic::Action::App(Message::StatusCopyFlashLapse)
                 });
+            }
+            Message::StatusScrollJump => {
+                // The chip's whole verb (status-scrolled spec): the
+                // existing scroll-to-bottom funnel every keystroke's
+                // own `input_scroll` takes — no new scroll behavior.
+                // The message's view pass re-reads the offset at the
+                // bottom, so the chip vanishes the same frame.
+                if let Some(tab) = self.active() {
+                    tab.terminal.lock().unwrap().scroll(TerminalScroll::Bottom);
+                }
             }
             Message::StatusCopyFlashLapse => {
                 self.copied_segment = None;
@@ -2763,37 +2819,46 @@ impl DropTerm {
                         }
                     }
                     settings::view::SettingsEvent::Picked(key, index) => {
-                        // Shell's dropdown is dynamic — its options are
-                        // built per view from `/etc/shells` — so the
-                        // pick resolves through the dynamic planner,
-                        // which rebuilds the list rather than trusting
-                        // the open dropdown's snapshot.
+                        // The dynamic-list pickers — the shell dropdown
+                        // (options rebuilt per view from `/etc/shells`)
+                        // and the font picker (the startup family scan)
+                        // — resolve through their own planners against
+                        // the authoritative list, never the open
+                        // popover's snapshot, so a stale index rejects
+                        // instead of writing the wrong value.
                         let write = if key == settings::ConfigKey::Shell {
                             settings::shell_pick_write(index)
+                        } else if key == settings::ConfigKey::FontName {
+                            settings::font_pick_write(
+                                &self.font_families,
+                                &self.config.font_name,
+                                index,
+                            )
                         } else {
                             settings::dropdown_write(key, index)
                         };
                         if let Some(write) = write {
                             self.write_config(settings::WriteKind::Bare, &write);
                         }
-                        // A scheme pick closes its picker: the
+                        // A picker's pick closes its picker: the
                         // popover's dismissal contract, applied where
                         // the pick lands.
                         if matches!(
                             key,
                             settings::ConfigKey::ColorSchemeDark
                                 | settings::ConfigKey::ColorSchemeLight
+                                | settings::ConfigKey::FontName
                         ) {
-                            self.scheme_picker = None;
+                            self.open_picker = None;
                         }
                     }
-                    settings::view::SettingsEvent::ToggleSchemePicker(id) => {
-                        // One picker at most: pressing another scheme
+                    settings::view::SettingsEvent::TogglePicker(id) => {
+                        // One picker at most: pressing another picker's
                         // control swaps, pressing the open one closes.
-                        self.scheme_picker = (self.scheme_picker != Some(id)).then_some(id);
+                        self.open_picker = (self.open_picker != Some(id)).then_some(id);
                     }
-                    settings::view::SettingsEvent::CloseSchemePicker => {
-                        self.scheme_picker = None;
+                    settings::view::SettingsEvent::ClosePicker => {
+                        self.open_picker = None;
                     }
                     settings::view::SettingsEvent::Toggled(key, checked) => {
                         if let Some(write) = settings::toggle_write(key, checked) {
@@ -3030,10 +3095,12 @@ impl DropTerm {
                                 .retain(|(at, _)| *at != settings::ProfileField::Scheme);
                         }
                         if matches!(
-                            self.scheme_picker,
-                            Some(settings::SchemePickerId::ProfileForm)
+                            self.open_picker,
+                            Some(settings::PickerId::Scheme(
+                                settings::SchemePickerId::ProfileForm
+                            ))
                         ) {
-                            self.scheme_picker = None;
+                            self.open_picker = None;
                         }
                     }
                     settings::view::SettingsEvent::AddProfileEnvRow => {

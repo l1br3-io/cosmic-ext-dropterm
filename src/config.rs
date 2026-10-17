@@ -260,6 +260,18 @@ pub struct DropTermConfig {
     /// notification interface. Defaults to `true`; `false` silences
     /// notifications (the tab-bar 🔔 marker is unaffected).
     pub bell_notification_enabled: bool,
+    /// Post a desktop notification when a command finishes while the
+    /// terminal is hidden (command-notify spec) — one notification per
+    /// tab per hide period, carrying the command's duration and its
+    /// name when one was sampled. Defaults to `true`; `false` silences
+    /// them (the frozen-duration segment and the activity marker are
+    /// unaffected).
+    pub command_finish_notification_enabled: bool,
+    /// The minimum command duration, in seconds, that posts a
+    /// finished-command notification (command-notify spec, OQ-1) — a
+    /// hidden `ls` never pings. A finish exactly at the threshold
+    /// counts (the gate's `>=`, OQ-3). Defaults to 5 s.
+    pub command_finish_notification_after_secs: u16,
     /// Whether a new tab lands directly after the active tab (`true`,
     /// the default — `DropTerm`'s shipped behavior, so existing users
     /// keep it) or at the end of the tab list (Guake's default, its
@@ -365,6 +377,12 @@ pub struct DropTermConfig {
     /// alike; the engine's timestamps keep running either way, so a
     /// mid-command re-enable shows the live elapsed immediately.
     pub status_bar_show_duration: bool,
+    /// The scrolled-back chip (status-scrolled spec): the
+    /// viewport's lines back from the bottom — `↑12` — shown only
+    /// off-bottom, its click jumping to the bottom (the band's one
+    /// action chip). An in-memory grid read at view assembly; the
+    /// toggle hides the chip outright.
+    pub status_bar_show_scrollback: bool,
     /// Whether the tab strip renders its border hairline
     /// (bar-borders spec): a 1 px line on the strip's
     /// terminal-facing edge, in the pane-derived foreground at low
@@ -435,6 +453,8 @@ impl Default for DropTermConfig {
             session_persistence_enabled: true,
             slide_animation_enabled: true,
             bell_notification_enabled: true,
+            command_finish_notification_enabled: true,
+            command_finish_notification_after_secs: 5,
             new_tab_after_current: true,
             close_confirmation_enabled: true,
             settings_drawer_click_close: true,
@@ -455,6 +475,7 @@ impl Default for DropTermConfig {
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
             status_bar_show_duration: true,
+            status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
             autosuggestions_enabled: true,
@@ -466,7 +487,7 @@ impl Default for DropTermConfig {
 
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
-    /// nine additive bools — the resolver's toggle set.
+    /// ten additive bools — the resolver's toggle set.
     pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
@@ -477,6 +498,7 @@ impl DropTermConfig {
             grid: self.status_bar_show_grid,
             tab: self.status_bar_show_tab,
             zoom: self.status_bar_show_zoom,
+            scrolled: self.status_bar_show_scrollback,
             clock: self.status_bar_show_clock,
         }
     }

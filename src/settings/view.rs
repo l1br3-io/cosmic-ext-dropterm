@@ -3,10 +3,11 @@
 use cosmic::iced::{Background, Color, Length};
 use cosmic::{Element, theme, widget};
 
+use super::font_picker::font_picker_control;
 use super::scheme_picker::{profile_scheme_control, scheme_chip, scheme_picker_control};
 use super::{
     ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS, KEYBOARD_MODE_OPTIONS,
-    LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileDraft, ProfileDraftMode, ProfileField,
+    LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, PickerId, ProfileDraft, ProfileDraftMode, ProfileField,
     ReorderDirection, SchemePickerId, Section, SettingsBuffer, SettingsTab, TAB_POSITION_OPTIONS,
     TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField, apply_timing, can_move,
     default_picker_options, default_picker_selected, dropdown_selected, effective_default_row,
@@ -76,16 +77,15 @@ pub enum SettingsEvent {
     SliderReleased(ConfigKey),
     /// A dropdown option was picked: commit on change.
     Picked(ConfigKey, usize),
-    /// A scheme picker's closed control was pressed: flip that
-    /// picker's popover open state (the app owns the flag; one
-    /// picker is open at most — the two global controls and the
-    /// profile form's picker share the one-open rule and the
-    /// Escape ordering).
-    ToggleSchemePicker(SchemePickerId),
-    /// The open scheme picker should close without picking — Escape
-    /// or a press outside its bubble (the dropdown's dismissal
-    /// contract).
-    CloseSchemePicker,
+    /// A picker's closed control was pressed: flip that picker's
+    /// popover open state (the app owns the flag; one picker is open
+    /// at most — the scheme controls, the profile form's picker, and
+    /// the font picker share the one-open rule and the Escape
+    /// ordering).
+    TogglePicker(PickerId),
+    /// The open picker should close without picking — Escape or a
+    /// press outside its bubble (the dropdown's dismissal contract).
+    ClosePicker,
     /// A toggler flipped: commit on change.
     Toggled(ConfigKey, bool),
     /// The Keybindings tab's search box changed — display only; the
@@ -191,6 +191,8 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",
+            ConfigKey::CommandFinishNotificationEnabled => "Command finish notifications",
+            ConfigKey::CommandFinishNotificationAfterSecs => "Command finish threshold (seconds)",
             ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
@@ -225,6 +227,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowZoom => "Show the zoom level",
             ConfigKey::StatusBarShowClock => "Show the clock",
             ConfigKey::StatusBarShowDuration => "Show the command duration",
+            ConfigKey::StatusBarShowScrollback => "Show the scrolled-back lines",
             ConfigKey::TabBarBorder => "Show the tab bar border",
             ConfigKey::StatusBarBorder => "Show the status band border",
         }
@@ -260,18 +263,26 @@ pub(crate) fn drawer_with_handle(
 
 /// The Appearance tab's page: how the terminal looks — the look
 /// card (font, size, opacity, the two scheme pickers, theme) and the
-/// Window card (the surface's shape). `scheme_picker` names the
-/// scheme control whose popover is open (view state the app owns).
-/// Every control renders from `config` with a buffered draft winning
-/// while one exists and emits [`SettingsEvent`]s — nothing here
-/// applies anything itself; commits land through the app's write
-/// path and the `ConfigChanged` echo.
+/// Window card (the surface's shape). `open_picker` names the picker
+/// whose popover is open (view state the app owns); `families` is the
+/// app-owned monospace family scan the font picker lists. Every
+/// control renders from `config` with a buffered draft winning while
+/// one exists and emits [`SettingsEvent`]s — nothing here applies
+/// anything itself; commits land through the app's write path and
+/// the `ConfigChanged` echo.
 pub(crate) fn appearance_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<SchemePickerId>,
+    open_picker: Option<PickerId>,
+    families: &[String],
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Appearance, config, buffer, scheme_picker)
+    tab_page(
+        SettingsTab::Appearance,
+        config,
+        buffer,
+        open_picker,
+        families,
+    )
 }
 
 /// The Behavior tab's page: how `DropTerm` acts — the Tabs card (the
@@ -282,7 +293,7 @@ pub(crate) fn behavior_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Behavior, config, buffer, None)
+    tab_page(SettingsTab::Behavior, config, buffer, None, &[])
 }
 
 /// The Advanced tab's page: exactly the Advanced card as it hosted
@@ -291,7 +302,7 @@ pub(crate) fn advanced_view(
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
 ) -> Element<'static, SettingsEvent> {
-    tab_page(SettingsTab::Advanced, config, buffer, None)
+    tab_page(SettingsTab::Advanced, config, buffer, None, &[])
 }
 
 /// The Keybindings tab's page: the search input on top, then one
@@ -418,11 +429,12 @@ fn tab_page(
     tab: SettingsTab,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<SchemePickerId>,
+    open_picker: Option<PickerId>,
+    families: &[String],
 ) -> Element<'static, SettingsEvent> {
     let cards: Vec<Element<'static, SettingsEvent>> = tab_sections(tab)
         .iter()
-        .map(|section| drawer_section(*section, config, buffer, scheme_picker))
+        .map(|section| drawer_section(*section, config, buffer, open_picker, families))
         .collect();
     widget::settings::view_column(cards).into()
 }
@@ -925,11 +937,12 @@ fn drawer_section(
     section: Section,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<SchemePickerId>,
+    open_picker: Option<PickerId>,
+    families: &[String],
 ) -> Element<'static, SettingsEvent> {
     let mut built = widget::settings::section().title(section.title());
     for key in section.keys() {
-        built = built.add(drawer_item(*key, config, buffer, scheme_picker));
+        built = built.add(drawer_item(*key, config, buffer, open_picker, families));
     }
     built.into()
 }
@@ -957,9 +970,10 @@ fn drawer_item(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<SchemePickerId>,
+    open_picker: Option<PickerId>,
+    families: &[String],
 ) -> Element<'static, SettingsEvent> {
-    let control = drawer_control(key, config, buffer, scheme_picker)
+    let control = drawer_control(key, config, buffer, open_picker, families)
         .expect("every exposed key has exactly one control (section map)");
     widget::settings::item::builder(key.label())
         .description(drawer_description(key))
@@ -976,7 +990,8 @@ fn drawer_control(
     key: ConfigKey,
     config: &DropTermConfig,
     buffer: &SettingsBuffer,
-    scheme_picker: Option<SchemePickerId>,
+    open_picker: Option<PickerId>,
+    families: &[String],
 ) -> Option<Element<'static, SettingsEvent>> {
     // The two scheme controls are pickers, not stock dropdowns: the
     // palette is the preview (see the scheme-picker section).
@@ -987,7 +1002,17 @@ fn drawer_control(
         return Some(scheme_picker_control(
             key,
             config,
-            scheme_picker == Some(SchemePickerId::Global(key)),
+            open_picker == Some(PickerId::Scheme(SchemePickerId::Global(key))),
+        ));
+    }
+    // The Font control is the scheme picker's sibling: the family
+    // list is the preview (see the font-picker section) — the
+    // free-text field is retired.
+    if key == ConfigKey::FontName {
+        return Some(font_picker_control(
+            config,
+            families,
+            open_picker == Some(PickerId::Font),
         ));
     }
     // The Shell item is the one two-control setting (default-spawn
@@ -1114,6 +1139,7 @@ fn toggle_control(
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
+        ConfigKey::CommandFinishNotificationEnabled => config.command_finish_notification_enabled,
         ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
         ConfigKey::AutosuggestionsPathsEnabled => config.autosuggestions_paths_enabled,
         ConfigKey::AutosuggestionsCommandsEnabled => config.autosuggestions_commands_enabled,
@@ -1133,6 +1159,7 @@ fn toggle_control(
         ConfigKey::StatusBarShowZoom => config.status_bar_show_zoom,
         ConfigKey::StatusBarShowClock => config.status_bar_show_clock,
         ConfigKey::StatusBarShowDuration => config.status_bar_show_duration,
+        ConfigKey::StatusBarShowScrollback => config.status_bar_show_scrollback,
         _ => return None,
     };
     Some(
@@ -1153,18 +1180,21 @@ fn text_control(
     buffer: &SettingsBuffer,
 ) -> Option<Element<'static, SettingsEvent>> {
     let field = match key {
-        ConfigKey::FontName => TextField::FontName,
         ConfigKey::Shell => TextField::Shell,
         ConfigKey::Args => TextField::Args,
         ConfigKey::ScrollbackLines => TextField::ScrollbackLines,
+        ConfigKey::CommandFinishNotificationAfterSecs => {
+            TextField::CommandFinishNotificationAfterSecs
+        }
         ConfigKey::DefaultCwd => TextField::DefaultCwd,
         _ => return None,
     };
     let placeholder = match field {
         TextField::Shell => config.resolved_shell(),
         TextField::ScrollbackLines => "10000".to_string(),
+        TextField::CommandFinishNotificationAfterSecs => "5".to_string(),
         TextField::DefaultCwd => "optional".to_string(),
-        _ => String::new(),
+        TextField::Args => String::new(),
     };
     Some(
         widget::text_input(placeholder, buffer.text(field, config))
@@ -1179,6 +1209,13 @@ mod tests {
     use super::super::tests::{env_row, profile, sourced_profile};
     use super::*;
     use std::collections::BTreeMap;
+
+    /// A families slice shaped like a real scan: a couple of
+    /// installed families the default config's `Noto Sans Mono`
+    /// matches — the font picker's rows come from it.
+    fn families_fixture() -> Vec<String> {
+        vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()]
+    }
 
     // --- the drawer's migrated content (settings-drawer Task 1) ---
 
@@ -1195,16 +1232,21 @@ mod tests {
         // across the pages is tab_sections' partition, pinned below.
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
-        buffer.set_text(TextField::FontName, "Draft Font".to_string());
         buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
         buffer.set_text(TextField::Args, "-l -i".to_string());
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
+        buffer.set_text(
+            TextField::CommandFinishNotificationAfterSecs,
+            "garbage".to_string(),
+        );
         buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
-        let _ = appearance_view(&config, &buffer, None);
+        let _ = appearance_view(&config, &buffer, None, &[]);
+        let _ = appearance_view(&config, &buffer, None, &families_fixture());
+        let _ = appearance_view(&config, &buffer, Some(PickerId::Font), &families_fixture());
         let _ = behavior_view(&config, &buffer);
         let _ = advanced_view(&config, &buffer);
-        let _ = appearance_view(&config, &SettingsBuffer::default(), None);
+        let _ = appearance_view(&config, &SettingsBuffer::default(), None, &[]);
         let _ = behavior_view(&config, &SettingsBuffer::default());
         let _ = advanced_view(&config, &SettingsBuffer::default());
     }
@@ -1219,13 +1261,12 @@ mod tests {
         // renders; rejection is the update path's job).
         let config = DropTermConfig::default();
         let mut buffer = SettingsBuffer::default();
-        buffer.set_text(TextField::FontName, "Draft Font".to_string());
         buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
         buffer.set_text(TextField::Args, "-l -i".to_string());
         buffer.set_text(TextField::ScrollbackLines, "garbage".to_string());
         for section in Section::ALL {
             for key in section.keys() {
-                let _ = drawer_item(*key, &config, &buffer, None);
+                let _ = drawer_item(*key, &config, &buffer, None, &families_fixture());
             }
         }
     }
@@ -1233,15 +1274,20 @@ mod tests {
     #[test]
     fn the_appearance_page_builds_with_a_picker_open_and_closed() {
         // The open flag is view state threaded through the page
-        // builder; the page must construct in both states.
+        // builder; the page must construct in both states — a scheme
+        // picker and the font picker alike.
         let config = DropTermConfig::default();
         let buffer = SettingsBuffer::default();
         let _ = appearance_view(
             &config,
             &buffer,
-            Some(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
+            Some(PickerId::Scheme(SchemePickerId::Global(
+                ConfigKey::ColorSchemeDark,
+            ))),
+            &families_fixture(),
         );
-        let _ = appearance_view(&config, &buffer, None);
+        let _ = appearance_view(&config, &buffer, Some(PickerId::Font), &families_fixture());
+        let _ = appearance_view(&config, &buffer, None, &[]);
     }
 
     #[test]

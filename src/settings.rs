@@ -24,6 +24,7 @@ use crate::profile::Profile;
 use crate::tabs::command_line_parts;
 use crate::terminal::theme_source::{SchemePreview, scheme_names, scheme_previews};
 
+mod font_picker;
 mod scheme_picker;
 
 pub mod view;
@@ -120,6 +121,7 @@ impl Section {
                 ConfigKey::StatusBarShowZoom,
                 ConfigKey::StatusBarShowClock,
                 ConfigKey::StatusBarShowDuration,
+                ConfigKey::StatusBarShowScrollback,
             ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
@@ -128,6 +130,8 @@ impl Section {
                 ConfigKey::DefaultCwd,
                 ConfigKey::ScrollbackLines,
                 ConfigKey::BellNotificationEnabled,
+                ConfigKey::CommandFinishNotificationEnabled,
+                ConfigKey::CommandFinishNotificationAfterSecs,
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
@@ -151,7 +155,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (30 — default-spawn's two rows included).
+/// count (44 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -166,6 +170,14 @@ pub enum ConfigKey {
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
     BellNotificationEnabled,
+    /// The finished-command notification's kill switch
+    /// (command-notify spec) — the Terminal card's toggle beside the
+    /// bell, honored at the next finish.
+    CommandFinishNotificationEnabled,
+    /// The finished-command notification's minimum duration in
+    /// seconds (command-notify spec, OQ-1) — the Terminal card's
+    /// numeric row, the scrollback parse shape.
+    CommandFinishNotificationAfterSecs,
     /// The autosuggest kill switch (autosuggest spec) — the Terminal
     /// card's toggle beside the bell, flipping live on the echo.
     AutosuggestionsEnabled,
@@ -212,6 +224,11 @@ pub enum ConfigKey {
     /// engine's timestamps keep running, so re-enabling mid-command
     /// shows the live elapsed immediately.
     StatusBarShowDuration,
+    /// The scrolled-back chip (status-scrolled spec): the toggle
+    /// hides the chip outright — the offset read rides the same
+    /// view-assembly lock either way, so the flip costs nothing
+    /// beyond the absent segment.
+    StatusBarShowScrollback,
     /// The strip's border hairline (bar-borders spec) — one per
     /// bar, each flipping live through the single planned-write
     /// path.
@@ -306,6 +323,10 @@ impl ConfigKey {
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
+            ConfigKey::CommandFinishNotificationEnabled => "command_finish_notification_enabled",
+            ConfigKey::CommandFinishNotificationAfterSecs => {
+                "command_finish_notification_after_secs"
+            }
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
@@ -335,6 +356,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
             ConfigKey::StatusBarShowDuration => "status_bar_show_duration",
+            ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
         }
@@ -361,6 +383,8 @@ pub enum PlannedWrite {
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
+    CommandFinishNotificationEnabled(bool),
+    CommandFinishNotificationAfterSecs(u16),
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
@@ -407,6 +431,8 @@ pub enum PlannedWrite {
     StatusBarShowClock(bool),
     /// The duration segment's own row (command-lifecycle spec).
     StatusBarShowDuration(bool),
+    /// The scrolled chip's own row (status-scrolled spec).
+    StatusBarShowScrollback(bool),
     /// The bars' border hairlines (bar-borders spec): pure display
     /// flips — the echo's next view pass rebuilds each widget with
     /// its flag, no reshape anywhere.
@@ -431,6 +457,12 @@ impl PlannedWrite {
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
+            PlannedWrite::CommandFinishNotificationEnabled(_) => {
+                ConfigKey::CommandFinishNotificationEnabled
+            }
+            PlannedWrite::CommandFinishNotificationAfterSecs(_) => {
+                ConfigKey::CommandFinishNotificationAfterSecs
+            }
             PlannedWrite::AutosuggestionsEnabled(_) => ConfigKey::AutosuggestionsEnabled,
             PlannedWrite::AutosuggestionsPathsEnabled(_) => ConfigKey::AutosuggestionsPathsEnabled,
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
@@ -462,6 +494,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
             PlannedWrite::StatusBarShowDuration(_) => ConfigKey::StatusBarShowDuration,
+            PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
         }
@@ -520,6 +553,14 @@ impl PlannedWrite {
             PlannedWrite::BellNotificationEnabled(value) => {
                 handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
             }
+            PlannedWrite::CommandFinishNotificationEnabled(value) => handler.set(
+                ConfigKey::CommandFinishNotificationEnabled.key_name(),
+                *value,
+            ),
+            PlannedWrite::CommandFinishNotificationAfterSecs(value) => handler.set(
+                ConfigKey::CommandFinishNotificationAfterSecs.key_name(),
+                *value,
+            ),
             PlannedWrite::AutosuggestionsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsEnabled.key_name(), *value)
             }
@@ -603,6 +644,9 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowDuration(value) => {
                 handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
             }
+            PlannedWrite::StatusBarShowScrollback(value) => {
+                handler.set(ConfigKey::StatusBarShowScrollback.key_name(), *value)
+            }
             PlannedWrite::TabBarBorder(value) => {
                 handler.set(ConfigKey::TabBarBorder.key_name(), *value)
             }
@@ -643,13 +687,15 @@ pub fn bare_write_cancels_pending_drag(key: ConfigKey, drag_write_pending: bool)
 // copy, and the in-window buffer ---
 
 /// Which text input a settings draft belongs to. Drafts live in
-/// [`SettingsBuffer`] display-only until the input is submitted.
+/// [`SettingsBuffer`] display-only until the input is submitted. The
+/// font control is a picker now (font-picker spec): `FontName` has no
+/// text field, its write rides `font_pick_write`'s rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextField {
-    FontName,
     Shell,
     Args,
     ScrollbackLines,
+    CommandFinishNotificationAfterSecs,
     DefaultCwd,
 }
 
@@ -683,18 +729,41 @@ pub fn parse_scrollback(raw: &str) -> Option<u32> {
     }
 }
 
+/// Parse a `command_finish_notification_after_secs` draft
+/// (command-notify spec): scrollback's parse shape over `u16` —
+/// plain numbers land, negatives clamp to zero (every finish
+/// notifies), an absurd entry saturates, and anything without a
+/// number in it rejects (`None` — no write, the draft stays).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to [0, u16::MAX] first, so the narrowing to u16 is lossless by construction"
+)]
+pub fn parse_command_notify_secs(raw: &str) -> Option<u16> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse::<i128>() {
+        Ok(n) => Some(n.clamp(0, i128::from(u16::MAX)) as u16),
+        Err(_) => None,
+    }
+}
+
 /// The write a submitted text input commits (text inputs commit on
 /// submit, never per keystroke). `None` means the draft did not parse
 /// and nothing is written.
 pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
     match field {
-        TextField::FontName => Some(PlannedWrite::FontName(raw.trim().to_string())),
         // Empty shell text commits `""` — `resolved_shell` filters it
         // back to the `$SHELL` fallback, same effect as a hand-edited
         // empty value in the file.
         TextField::Shell => Some(PlannedWrite::Shell(raw.trim().to_string())),
         TextField::Args => Some(PlannedWrite::Args(parse_args(raw))),
         TextField::ScrollbackLines => parse_scrollback(raw).map(PlannedWrite::ScrollbackLines),
+        TextField::CommandFinishNotificationAfterSecs => {
+            parse_command_notify_secs(raw).map(PlannedWrite::CommandFinishNotificationAfterSecs)
+        }
         // The profile form's `parse_cwd` rule: empty clears to `None`
         // (the pty default), any other path lands verbatim — a cwd can
         // never reject.
@@ -763,6 +832,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
         | ConfigKey::StatusBarShowDuration
+        | ConfigKey::StatusBarShowScrollback
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
         // chain yields None, and re-enabling suggests again at the
@@ -773,7 +843,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
-        | ConfigKey::ThemePreference => ApplyTiming::Live,        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
+        | ConfigKey::ThemePreference => ApplyTiming::Live,
+        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
         ConfigKey::Shell
@@ -785,6 +856,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
         | ConfigKey::BellNotificationEnabled
+        | ConfigKey::CommandFinishNotificationEnabled
+        | ConfigKey::CommandFinishNotificationAfterSecs
         | ConfigKey::NewTabAfterCurrent
         | ConfigKey::CloseConfirmationEnabled
         | ConfigKey::SettingsDrawerClickClose => ApplyTiming::NextTrigger,
@@ -968,10 +1041,12 @@ impl SettingsBuffer {
             return draft.clone();
         }
         match field {
-            TextField::FontName => config.font_name.clone(),
             TextField::Shell => config.shell.clone().unwrap_or_default(),
             TextField::Args => config.args.join(" "),
             TextField::ScrollbackLines => config.scrollback_lines.to_string(),
+            TextField::CommandFinishNotificationAfterSecs => {
+                config.command_finish_notification_after_secs.to_string()
+            }
             // The profile form's `cwd_text` shape: the path verbatim,
             // empty for `None`.
             TextField::DefaultCwd => config
@@ -1912,15 +1987,27 @@ pub fn default_picker_write(profiles: &[Profile], index: usize) -> Option<Profil
 // with a leading Inherit row ---
 
 /// Which scheme picker the app holds open — the two global controls
-/// (Appearance) and the profile form's override picker (Profiles),
-/// so the one-open-picker rule and the Escape ordering (popover
-/// first, then draft, then drawer) cover all three through one flag.
+/// (Appearance) and the profile form's override picker (Profiles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemePickerId {
     /// A global scheme control — dark or light.
     Global(ConfigKey),
     /// The profile form's override picker.
     ProfileForm,
+}
+
+/// Which picker the app holds open — the scheme pickers (the two
+/// global Appearance controls and the profile form's override picker)
+/// and the Appearance card's font picker — so the one-open-picker
+/// rule and the Escape ordering (popover first, then draft, then
+/// drawer) cover every popover through one flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerId {
+    /// A scheme picker — a global Appearance control or the profile
+    /// form's override picker.
+    Scheme(SchemePickerId),
+    /// The Appearance card's font picker.
+    Font,
 }
 
 /// The Inherit row's swatch: the global scheme the terminal renders
@@ -2086,6 +2173,50 @@ pub fn shell_pick_write(index: usize) -> Option<PlannedWrite> {
     )
 }
 
+// --- the font picker's planner trio: the shell dropdown's
+// dynamic-list pattern over the app-owned family scan ---
+
+/// The picker's rows under a stored `font_name`: the families in
+/// list order, preceded by the stored name itself when no family
+/// matches — a hand-edited or uninstalled value stays visible and
+/// selectable, never an empty picker.
+pub fn font_picker_rows(families: &[String], stored: &str) -> Vec<String> {
+    if families.iter().any(|family| family == stored) {
+        return families.to_vec();
+    }
+    // The synthetic leader: the stored value's own row.
+    let mut rows = Vec::with_capacity(families.len() + 1);
+    rows.push(stored.to_string());
+    rows.extend(families.iter().cloned());
+    rows
+}
+
+/// The picker's selection row for a stored `font_name`: the matching
+/// family's row, else the synthetic leading row — the stored value is
+/// always the selected one. The match is exact and case-sensitive
+/// (`Family::Name`'s own match is exact; a case variant is a
+/// different family).
+pub fn font_picker_selected(families: &[String], stored: &str) -> usize {
+    // A match selects its family's row (no leader exists to offset
+    // past); anything else selects the leader at 0 — one expression
+    // covers both row spaces.
+    families
+        .iter()
+        .position(|family| family == stored)
+        .unwrap_or(0)
+}
+
+/// The write a font-picker pick commits: the synthetic leading row
+/// commits the stored name itself, a family row its family. An index
+/// past the rows (the system's list changed under the open popover)
+/// rejects — the [`dropdown_write`] rule, [`shell_pick_write`]'s
+/// dynamic-list edition over the app-owned family scan.
+pub fn font_pick_write(families: &[String], stored: &str, index: usize) -> Option<PlannedWrite> {
+    font_picker_rows(families, stored)
+        .get(index)
+        .map(|family| PlannedWrite::FontName(family.clone()))
+}
+
 /// The write a toggle flip commits. `None` for keys without a toggle.
 pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite> {
     match key {
@@ -2095,6 +2226,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::SlideAnimationEnabled => Some(PlannedWrite::SlideAnimationEnabled(checked)),
         ConfigKey::BellNotificationEnabled => Some(PlannedWrite::BellNotificationEnabled(checked)),
+        ConfigKey::CommandFinishNotificationEnabled => {
+            Some(PlannedWrite::CommandFinishNotificationEnabled(checked))
+        }
         ConfigKey::AutosuggestionsEnabled => Some(PlannedWrite::AutosuggestionsEnabled(checked)),
         ConfigKey::AutosuggestionsPathsEnabled => {
             Some(PlannedWrite::AutosuggestionsPathsEnabled(checked))
@@ -2122,6 +2256,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
         ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
         ConfigKey::StatusBarShowDuration => Some(PlannedWrite::StatusBarShowDuration(checked)),
+        ConfigKey::StatusBarShowScrollback => Some(PlannedWrite::StatusBarShowScrollback(checked)),
         _ => None,
     }
 }

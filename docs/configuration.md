@@ -30,7 +30,7 @@ Geometry applies live: a shown surface is reshaped in place, a hidden one picks 
 
 | Key | Values | Default | What it does |
 |---|---|---|---|
-| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. |
+| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The settings drawer's picker lists the installed monospace families; a name the renderer cannot resolve falls back to its default while keeping your value in the file. |
 | `font_size` | points | `14` | The terminal's font size. |
 | `opacity` | 0-100 | `100` | Background opacity. |
 | `color_scheme_dark` | scheme name | `COSMIC Dark` | Scheme used while the system is in dark mode. |
@@ -78,6 +78,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 | `status_bar_show_zoom` | Zoom delta (`+200%`) while the font is off its base size. | `true` |
 | `status_bar_show_clock` | Wall clock (`HH:MM`). | `true` |
 | `status_bar_show_duration` | Command time (`2:41` while a command runs, `cargo 2:41` after it finishes) - derived from the foreground edges the engine already diffs, no shell integration. Hiding it stops its 1 s tick. | `true` |
+| `status_bar_show_scrollback` | Lines scrolled back from the bottom (`↑12`) - shown only while the viewport is off-bottom; clicking the chip jumps to the bottom. | `true` |
 
 All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs.
 
@@ -120,6 +121,8 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 | `session_persistence_enabled` | `true` | Save the session on change and restore it on launch ([sessions](sessions.md)). `false` stops saves and skips restore; the saved file is never deleted, so re-enabling resumes over it. |
 | `slide_animation_enabled` | `true` | Animate show/hide with the 130 ms slide ([animation](animation.md)). `false` restores instant transitions. |
 | `bell_notification_enabled` | `true` | Post a desktop notification when a bell rings while the terminal is hidden ([bell](bell.md)). |
+| `command_finish_notification_enabled` | `true` | Post a desktop notification when a command finishes while the terminal is hidden, carrying its duration and its name when one was sampled ([bell](bell.md)). One notification per tab per hide period; `false` silences them. |
+| `command_finish_notification_after_secs` | `5` | Minimum command duration, in seconds, that posts the finished-command notification. A hidden `ls` never pings; a finish exactly at the threshold counts. |
 | `autosuggestions_enabled` | `true` | Fish-style autosuggestions: dim ghost text after the cursor completing the most recent matching command from this tab's own history ([autosuggestions](autosuggestions.md)). Right accepts it, Alt+Right takes one word, anything else dismisses it - nothing executes without an accept. `false` is the kill switch. |
 | `autosuggestions_paths_enabled` | `true` | Path completion joins the autosuggestions: a typed path token (`~/sr`, `../co`, `./te`, `/usr/bi`) ghosts its first sorted match from the parent directory, directories suffixed `/`, names the shell would mangle backslash-escaped or not suggested at all ([autosuggestions](autosuggestions.md)). Local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |
 | `autosuggestions_commands_enabled` | `true` | Command-name completion joins the autosuggestions: at the command position the typed word ghosts its shortest match among the executables on the tab's spawn-time `$PATH` (ties alphabetical; the match must extend the word) - so a fresh tab with an empty history finishes `gi` → `git`, and after one real run history takes over invisibly ([autosuggestions](autosuggestions.md)). A spawn-time snapshot, never rescanned; local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |

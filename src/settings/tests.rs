@@ -225,6 +225,8 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::SessionPersistenceEnabled(true),
         PlannedWrite::SlideAnimationEnabled(true),
         PlannedWrite::BellNotificationEnabled(true),
+        PlannedWrite::CommandFinishNotificationEnabled(true),
+        PlannedWrite::CommandFinishNotificationAfterSecs(5),
         PlannedWrite::AutosuggestionsEnabled(true),
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
@@ -254,6 +256,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarShowZoom(true),
         PlannedWrite::StatusBarShowClock(true),
         PlannedWrite::StatusBarShowDuration(true),
+        PlannedWrite::StatusBarShowScrollback(true),
     ];
     let keys = section_keys();
     assert_eq!(keys.len(), writers.len());
@@ -293,6 +296,14 @@ fn key_names_match_the_config_file_fields() {
         (
             ConfigKey::BellNotificationEnabled,
             "bell_notification_enabled",
+        ),
+        (
+            ConfigKey::CommandFinishNotificationEnabled,
+            "command_finish_notification_enabled",
+        ),
+        (
+            ConfigKey::CommandFinishNotificationAfterSecs,
+            "command_finish_notification_after_secs",
         ),
         (ConfigKey::AutosuggestionsEnabled, "autosuggestions_enabled"),
         (
@@ -488,16 +499,39 @@ fn scrollback_text_rejects_garbage_and_emptiness() {
 }
 
 #[test]
+fn command_notify_secs_parses_plain_numbers() {
+    // The threshold's numeric row — scrollback's parse shape: plain
+    // numbers land (0 = every finish notifies), whitespace trims.
+    assert_eq!(parse_command_notify_secs("5"), Some(5));
+    assert_eq!(parse_command_notify_secs(" 30 \n"), Some(30));
+    assert_eq!(parse_command_notify_secs("0"), Some(0));
+}
+
+#[test]
+fn command_notify_secs_clamps_negatives_and_overflow() {
+    // Clamp, don't reject — the scrollback call: a negative entry
+    // means "every finish", an absurd one saturates u16.
+    assert_eq!(parse_command_notify_secs("-1"), Some(0));
+    assert_eq!(parse_command_notify_secs("99999999"), Some(u16::MAX));
+}
+
+#[test]
+fn command_notify_secs_rejects_garbage_and_emptiness() {
+    // Nothing numeric to commit: no write at all (the draft stays
+    // for the user to fix).
+    assert_eq!(parse_command_notify_secs(""), None);
+    assert_eq!(parse_command_notify_secs("   "), None);
+    assert_eq!(parse_command_notify_secs("5s"), None);
+    assert_eq!(parse_command_notify_secs("1e2"), None);
+}
+
+#[test]
 fn scrollback_text_clamps_above_u32_range() {
     assert_eq!(parse_scrollback("99999999999999999999"), Some(u32::MAX));
 }
 
 #[test]
 fn submitted_text_fields_commit_trimmed_values() {
-    assert_eq!(
-        submit_write(TextField::FontName, " Fira Code "),
-        Some(PlannedWrite::FontName("Fira Code".to_string()))
-    );
     assert_eq!(
         submit_write(TextField::Shell, " /usr/bin/fish "),
         Some(PlannedWrite::Shell("/usr/bin/fish".to_string()))
@@ -766,6 +800,90 @@ fn shell_labels_are_bare_basenames() {
     assert_eq!(shell_label("/"), "/");
 }
 
+// --- the font picker's planner trio (font-picker T1) ---
+
+#[test]
+fn font_picker_rows_lead_with_the_stored_name_only_when_no_family_matches() {
+    // The scheme fallback rule, family edition: the families list in
+    // scan order, and a stored name no family carries (hand-edited
+    // config, font since removed) leads as a synthetic row of its
+    // own — visible and selectable, never an empty picker.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(
+        font_picker_rows(&families, "Noto Sans Mono"),
+        vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()]
+    );
+    assert_eq!(
+        font_picker_rows(&families, "JetBrainsMono Nerd Font Mono"),
+        vec![
+            "JetBrainsMono Nerd Font Mono".to_string(),
+            "DejaVu Sans Mono".to_string(),
+            "Noto Sans Mono".to_string(),
+        ]
+    );
+    // A barren scan offers the stored value alone — the picker is
+    // never empty whatever the system's font state.
+    assert_eq!(
+        font_picker_rows(&[], "Noto Sans Mono"),
+        vec!["Noto Sans Mono".to_string()]
+    );
+}
+
+#[test]
+fn font_picker_selection_is_exact_case_sensitive_and_falls_to_the_leader() {
+    // `Family::Name`'s own match is exact, so the row model's is too:
+    // the stored name selects its family row — position, no leader —
+    // and anything else (a case variant included: a different family
+    // to an exact match) selects the synthetic leading row that
+    // holds it.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(font_picker_selected(&families, "Noto Sans Mono"), 1);
+    assert_eq!(font_picker_selected(&families, "DejaVu Sans Mono"), 0);
+    assert_eq!(font_picker_selected(&families, "noto sans mono"), 0);
+    assert_eq!(font_picker_selected(&families, "Gone Font"), 0);
+    assert_eq!(font_picker_selected(&[], "Anything At All"), 0);
+}
+
+#[test]
+fn font_picker_picks_commit_their_row_and_reject_stale_indices() {
+    // A family row commits its family; the synthetic leader commits
+    // the stored name itself (a re-pick of an uninstalled value is a
+    // no-change write, not a silent correction); an index past the
+    // rows — the system's list changed under the open popover —
+    // rejects rather than writing a wrong name.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(
+        font_pick_write(&families, "Noto Sans Mono", 0),
+        Some(PlannedWrite::FontName("DejaVu Sans Mono".to_string()))
+    );
+    assert_eq!(
+        font_pick_write(&families, "Noto Sans Mono", 1),
+        Some(PlannedWrite::FontName("Noto Sans Mono".to_string()))
+    );
+    assert_eq!(
+        font_pick_write(&families, "JetBrainsMono Nerd Font Mono", 0),
+        Some(PlannedWrite::FontName(
+            "JetBrainsMono Nerd Font Mono".to_string()
+        ))
+    );
+    assert_eq!(font_pick_write(&families, "Noto Sans Mono", 2), None);
+    assert_eq!(font_pick_write(&families, "Noto Sans Mono", 99), None);
+}
+
+#[test]
+fn font_popover_scroll_clamps_at_both_ends() {
+    // Criterion 5's clamp: the wheel offset lives in
+    // [0, content − viewport] px, so every listed family is
+    // reachable and neither end runs past — and a list shorter than
+    // its viewport (nothing to scroll into) pins at 0.
+    assert_eq!(font_picker::clamp_scroll(-40.0, 600.0, 300.0), 0.0);
+    assert_eq!(font_picker::clamp_scroll(0.0, 600.0, 300.0), 0.0);
+    assert_eq!(font_picker::clamp_scroll(120.0, 600.0, 300.0), 120.0);
+    assert_eq!(font_picker::clamp_scroll(300.0, 600.0, 300.0), 300.0);
+    assert_eq!(font_picker::clamp_scroll(320.0, 600.0, 300.0), 300.0);
+    assert_eq!(font_picker::clamp_scroll(120.0, 200.0, 300.0), 0.0);
+}
+
 #[test]
 fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
     // Ruling 4: the picker, the mode dropdown, and the default
@@ -817,8 +935,8 @@ fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
 fn the_terminal_card_joins_the_bell_after_scrollback() {
     // The Terminal card: the global shell defaults every profile
     // falls back to — shell, arguments, and the plain spawn's
-    // default directory (default-spawn DS-1) — with the bell,
-    // terminal behavior, last.
+    // default directory (default-spawn DS-1) — with the bell and
+    // its finished-command sibling, terminal behavior, last.
     assert_eq!(
         Section::Terminal.keys(),
         &[
@@ -827,6 +945,8 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::DefaultCwd,
             ConfigKey::ScrollbackLines,
             ConfigKey::BellNotificationEnabled,
+            ConfigKey::CommandFinishNotificationEnabled,
+            ConfigKey::CommandFinishNotificationAfterSecs,
             ConfigKey::AutosuggestionsEnabled,
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
@@ -864,12 +984,13 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
-    // status-segments Task 3 + bar-borders BB-3: the Status bar card
-    // grows to ten rows, in band order — the master toggle, the
-    // border toggle, then one "Show …" row per segment — each under
-    // its exact file spelling, each flipping through the single
-    // planned-write path, all Live.
+fn the_status_bar_card_hosts_the_master_toggle_border_and_ten_show_rows() {
+    // status-segments Task 3 + bar-borders BB-3 + status-scrolled
+    // Task 2: the Status bar card grows to twelve rows, in band
+    // order — the master toggle, the border toggle, then one
+    // "Show …" row per segment — each under its exact file
+    // spelling, each flipping through the single planned-write
+    // path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -895,6 +1016,7 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
             ConfigKey::StatusBarShowZoom,
             ConfigKey::StatusBarShowClock,
             ConfigKey::StatusBarShowDuration,
+            ConfigKey::StatusBarShowScrollback,
         ]
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
@@ -943,6 +1065,14 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
         "Show the command duration"
     );
     assert_eq!(
+        ConfigKey::StatusBarShowScrollback.key_name(),
+        "status_bar_show_scrollback"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowScrollback.label(),
+        "Show the scrolled-back lines"
+    );
+    assert_eq!(
         toggle_write(ConfigKey::StatusBarShowBranch, false),
         Some(PlannedWrite::StatusBarShowBranch(false))
     );
@@ -953,6 +1083,10 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
     assert_eq!(
         toggle_write(ConfigKey::StatusBarShowDuration, false),
         Some(PlannedWrite::StatusBarShowDuration(false))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::StatusBarShowScrollback, false),
+        Some(PlannedWrite::StatusBarShowScrollback(false))
     );
 }
 
@@ -1430,7 +1564,7 @@ fn slider_release_rejects_keys_without_sliders() {
 fn buffer_text_falls_back_to_the_config_value() {
     let config = DropTermConfig::default();
     let buffer = SettingsBuffer::default();
-    assert_eq!(buffer.text(TextField::FontName, &config), "Noto Sans Mono");
+    assert_eq!(buffer.text(TextField::Args, &config), "");
     assert_eq!(buffer.text(TextField::ScrollbackLines, &config), "10000");
 }
 
@@ -1438,10 +1572,10 @@ fn buffer_text_falls_back_to_the_config_value() {
 fn buffer_text_draft_wins_until_it_is_cleared() {
     let config = DropTermConfig::default();
     let mut buffer = SettingsBuffer::default();
-    buffer.set_text(TextField::FontName, "JetBrains Mono".to_string());
-    assert_eq!(buffer.text(TextField::FontName, &config), "JetBrains Mono");
-    buffer.clear_text(TextField::FontName);
-    assert_eq!(buffer.text(TextField::FontName, &config), "Noto Sans Mono");
+    buffer.set_text(TextField::Args, "-l -i".to_string());
+    assert_eq!(buffer.text(TextField::Args, &config), "-l -i");
+    buffer.clear_text(TextField::Args);
+    assert_eq!(buffer.text(TextField::Args, &config), "");
 }
 
 #[test]
@@ -2799,9 +2933,12 @@ fn list_mutations_and_draft_switches_are_unreachable_while_a_draft_is_open() {
         SettingsEvent::SliderMoved(ConfigKey::Opacity, 50.0),
         SettingsEvent::SliderReleased(ConfigKey::Opacity),
         SettingsEvent::Picked(ConfigKey::Edge, 0),
-        SettingsEvent::ToggleSchemePicker(SchemePickerId::Global(ConfigKey::ColorSchemeDark)),
-        SettingsEvent::ToggleSchemePicker(SchemePickerId::ProfileForm),
-        SettingsEvent::CloseSchemePicker,
+        SettingsEvent::TogglePicker(PickerId::Scheme(SchemePickerId::Global(
+            ConfigKey::ColorSchemeDark,
+        ))),
+        SettingsEvent::TogglePicker(PickerId::Scheme(SchemePickerId::ProfileForm)),
+        SettingsEvent::TogglePicker(PickerId::Font),
+        SettingsEvent::ClosePicker,
         SettingsEvent::Toggled(ConfigKey::RespectPanel, true),
         SettingsEvent::KeybindSearchChanged(String::new()),
         SettingsEvent::CaptureStart(crate::terminal::Action::Copy),

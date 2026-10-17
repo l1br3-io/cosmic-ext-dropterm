@@ -417,6 +417,125 @@ fn poll_until_process_name(terminal: &Terminal, want: Option<&str>, what: &str) 
     }
 }
 
+// --- the ssh stand-in's getter (status-remote spec) ---
+//
+// The live pins ride the same foreground harness as the comm read:
+// a real /bin/sh PTY whose foreground the dup'd master observes.
+// The getter's own gate is the pin — only the `ssh` comm reaches a
+// cmdline read — so the positive path renames a copy of sleep into
+// an `ssh`-comm'd foreground without any network.
+
+#[test]
+fn ssh_destination_reads_none_without_inputs() {
+    // The fail-open shape, mirrored from the name read: missing
+    // inputs read as "nothing to stand in" — the local path stands.
+    assert_eq!(foreground_ssh_destination(None, Some(1234)), None);
+    let master = fs::File::open("/dev/null").expect("open a non-pty fd");
+    assert_eq!(foreground_ssh_destination(Some(&master), None), None);
+}
+
+#[test]
+fn a_non_ssh_foreground_comm_yields_no_destination() {
+    // The getter's gate (status-remote criterion 3): a live
+    // non-ssh foreground — here `sleep`, the harness's own child —
+    // never reaches the cmdline read, and an idle shell has no
+    // foreground to read at all.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh test terminal");
+
+    assert_eq!(terminal.ssh_destination(), None);
+
+    terminal.input_no_scroll(&b"sleep 30\r"[..]);
+    poll_until_process_name(&terminal, Some("sleep"), "the child's comm names it");
+    assert_eq!(
+        terminal.ssh_destination(),
+        None,
+        "a non-ssh comm never reads cmdline"
+    );
+
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_until_process_name(
+        &terminal,
+        None,
+        "SIGINT returns the foreground to the shell",
+    );
+    assert_eq!(terminal.ssh_destination(), None);
+}
+
+#[test]
+fn a_live_ssh_comm_reads_its_cmdline_destination() {
+    // The positive path: a foreground process whose kernel comm is
+    // `ssh` — a copy of sleep renamed, so the name is the kernel's
+    // own, no network — reaches the cmdline read, and the pure
+    // parser's token stands in. argv ["<path>/ssh", "30"] yields
+    // the operand "30".
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let dir = std::env::temp_dir().join(format!("dropterm-ssh-pin-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("make the pin's temp dir");
+    let ssh = dir.join("ssh");
+    fs::copy("/bin/sleep", &ssh).expect("copy sleep as an ssh-named binary");
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh test terminal");
+
+    let launch = format!("{} 30\r", ssh.display());
+    terminal.input_no_scroll(launch.into_bytes());
+    poll_until_ssh_destination(&terminal, Some("30"), "the ssh comm's argv token stands in");
+
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_until_process_name(
+        &terminal,
+        None,
+        "SIGINT returns the foreground to the shell",
+    );
+    terminal.input_no_scroll(&b"exit\r"[..]);
+    poll_until_process_name(&terminal, None, "shell exit reads as no process");
+    fs::remove_dir_all(&dir).expect("clean the pin's temp dir");
+}
+
+/// Poll a live terminal's ssh stand-in until it reads `want`,
+/// bounded at 10s (the foreground harness's own flake guard).
+fn poll_until_ssh_destination(terminal: &Terminal, want: Option<&str>, what: &str) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if terminal.ssh_destination().as_deref() == want {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the destination to read {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 // --- autosuggest (autosuggest spec) ---
 //
 // The live pins ride the foreground_check harness: a real
@@ -1113,4 +1232,38 @@ fn no_path_at_all_is_the_empty_catalog() {
     // empty PATH value. Both are silence — never a guess.
     assert!(command_catalog_from_path(None).is_empty());
     assert!(command_catalog_from_path(Some("")).is_empty());
+}
+
+// --- the scrolled-back getter (status-scrolled spec) ---
+//
+// The band's chip reads `display_offset` — state only the grid
+// owns — saturated into `u16` under the same term lock the grid
+// and scrollbar reads take. Pinned live: a fresh terminal sits at
+// the bottom, a scroll up counts its lines, Bottom returns to
+// zero (the click funnel the chip routes through).
+
+#[test]
+fn scrolled_back_lines_reads_the_display_offset() {
+    let mut terminal = autosuggest_terminal();
+    // Construction: no history, the viewport at the bottom.
+    assert_eq!(terminal.scrolled_back_lines(), 0);
+
+    // Build scrollback (40 numbered lines on the 24-row grid),
+    // then scroll up five — the same scroll_display call the
+    // wheel's Delta(lines) funnels through.
+    terminal.input_no_scroll(&b"seq 1 40\r"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| {
+            let term = t.term.lock();
+            term.grid().history_size() > 5
+        },
+        "the seq output builds scrollback",
+    );
+    terminal.scroll(TerminalScroll::Delta(5));
+    assert_eq!(terminal.scrolled_back_lines(), 5);
+
+    // The chip's own click funnel: Bottom clears the offset.
+    terminal.scroll(TerminalScroll::Bottom);
+    assert_eq!(terminal.scrolled_back_lines(), 0);
 }
