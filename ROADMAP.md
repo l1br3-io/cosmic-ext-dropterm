@@ -40,15 +40,12 @@ High-level feature list.
 - [x] Settings in sidebar instead of separate modal
 - [x] CLI actions (`new-tab [--cwd] [--cmd]`, `close-tab`/`rename-tab`/`duplicate-tab` with `[--tab-index]`, `switch-profile-tab --profile NAME [--tab-index]` respawning a live tab under a profile, and strict `select-tab N`, over the single-instance D-Bus seam; indices 1-based; `--is-visible` queries the read-only `Visible` property on the `…CosmicExtDropterm.V1` state interface)
 
-## Later
-- [x] Pin tab (per-tab menu Pin/Unpin after Duplicate Tab; a pinned tab prefixes 📌 to its title, refuses every user close path, and is skipped by the close sweeps; drags and moves refuse it while other tabs reorder around it; the pin persists through save/restore, `SESSION_VERSION` unchanged)
-- [ ] test profile and add improvements
-- [x] Configurable new-tab placement (`new_tab_after_current`, default after the active tab, Behavior-card toggle; the keybinds (`Ctrl+Shift+T`, `Ctrl+Shift+H`), tab-bar `+`, and remote `new-tab` follow it, `duplicate-tab` stays after-active, session restore keeps saved order)
-- [ ] Session restore on login
-- [ ] Clean up unnecessary comments
-- [ ] Monitor selection (cursor, focused, or fixed output) — blocked: the pinned
-      libcosmic rev exposes no focused/fixed output targeting (`IcedOutput` is
-      `All | Active | Output(WlOutput)`, no output events or by-name handles)
+## V4
+
+- [ ] improve tab bar ux
+- [ ] improve docs
+- [ ] improve autocomplete feature
+- [ ] make app version and cross platform, currently its only serve as an applet. 
 
 ## Non-goals
 
