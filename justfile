@@ -216,6 +216,18 @@ hide:
 new-tab *args:
     {{dev-bin}} new-tab {{args}}
 
+# Release-build load caps: one cargo job = one rustc pinning a core
+# through LLVM, and the `lto = true` release profile adds a link-time
+# pass over the whole merged dependency graph — uncapped on a big
+# machine that starves the desktop for the build's duration. The
+# caps keep a release build gentle: few enough jobs to leave cores
+# free, at the lowest scheduler priority so anything interactive
+# preempts instantly. Override per invocation with the env vars —
+# `DROPTERM_BUILD_JOBS=32 DROPTERM_BUILD_NICE=0 just build-release`
+# is the old full-speed build.
+build-jobs := env('DROPTERM_BUILD_JOBS', '8')
+build-nice := env('DROPTERM_BUILD_NICE', '19')
+
 # Compiles with the debug profile. Per-package on purpose — a plain
 # `cargo build` now spans the workspace and unifies features across
 # both crates (see build-applet for why that must not produce
@@ -223,15 +235,17 @@ new-tab *args:
 build-debug *args:
     cargo build -p {{name}} {{args}}
 
-# Compiles with the release profile
-build-release *args: (build-debug '--release' args)
+# Compiles with the release profile, throttled (see build-jobs).
+build-release *args:
+    nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}
 
-# Compiles the applet with the release profile. Per-package on
-# purpose: a unified workspace release build would hand the applet a
-# wgpu-enabled libcosmic through feature unification, and the wgpu
-# renderer falls back to llvmpipe on panel surfaces.
+# Compiles the applet with the release profile, throttled like
+# build-release. Per-package on purpose: a unified workspace release
+# build would hand the applet a wgpu-enabled libcosmic through
+# feature unification, and the wgpu renderer falls back to llvmpipe
+# on panel surfaces.
 build-applet *args:
-    cargo build -p {{applet}} --release {{args}}
+    nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}
 
 # Both release artifacts, each per-package, in the shape `install`
 # expects. Exists as one recipe because `build-release` takes
