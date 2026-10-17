@@ -1910,6 +1910,29 @@ where
                 shell.capture_event();
                 shell.request_redraw();
             }
+            Event::Mouse(MouseEvent::ButtonPressed(Button::Middle)) => {
+                // Middle-click pastes into the narrated terminal
+                // (status-select spec): the context menu's own Paste
+                // funnel verbatim — the same `on_menu_action(
+                // Action::Paste)` route the Paste row publishes, no
+                // new paste path. Gaps paste too (the band is
+                // chrome; the menu's Paste never mutes), and the
+                // press leaves selection and copy state untouched.
+                if !cursor
+                    .position()
+                    .is_some_and(|point| layout.bounds().contains(point))
+                {
+                    return;
+                }
+                if let Some(message) = self
+                    .on_menu_action
+                    .as_ref()
+                    .map(|on_menu_action| on_menu_action(Action::Paste))
+                {
+                    shell.publish(message);
+                }
+                shell.capture_event();
+            }
             Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
                 // The anchor is window-absolute — the space
                 // CursorMoved and the release already speak — so

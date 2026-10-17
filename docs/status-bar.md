@@ -31,6 +31,10 @@ The chip is the band's one **action chip**: clicking it jumps the viewport to th
 
 Press-and-drag across the band instead selects the covered characters of the row's display text, and the release copies the selection to both the clipboard and the primary selection (so the terminal's own middle-click paste serves it). The selection is WYSIWYG - the elided display included, segments joined by single spaces - while the click verb stays the full un-elided value. A highlight persists after release, like terminal selection, and clears on the next press; a press that never crosses the 4 px drag threshold is a click, past it a selection.
 
+Double-click selects a whole segment: a second press within 500 ms and 4 px of the first arms that segment's entire display text as the selection, and its release copies it WYSIWYG to the clipboard and the primary selection - the highlight persisting until the next press is the feedback, no `✓` flashes (the flash means "copied the full value", and this verb copies the display). The verbs compose in the terminal's own order: a double-click's first release is still a click - full value plus `✓` - and its second press-and-release selects.
+
+Middle-click anywhere on the band - segment or gap alike - pastes into the narrated terminal through the context menu's own Paste funnel: the band is terminal chrome, and middle-click-paste is the terminal's native verb.
+
 ## The context menu
 
 A right-press on the band opens its menu: **Copy** (the pressed segment's value - muted when the press scoped a gap or an empty segment), **Copy All** (every present segment's value), **Paste**, then a zoom cluster - **Zoom In**, **Zoom Out**, **Reset Zoom** (muted at base size) - and the band's lifecycle rows, **Hide Status Bar** and **Settings…**. Enablement is live, re-derived every frame, so a keybind passing through an open menu cannot leave a stale row; muted rows render disabled and never publish.

@@ -2013,6 +2013,18 @@ fn copy_all_mutes_when_nothing_is_present() {
 }
 
 #[test]
+fn paste_never_mutes_so_gaps_middle_click_paste_too() {
+    // The middle-click verb rides the menu's own Paste funnel
+    // (status-select spec) — the one row that never mutes, not on
+    // an empty band, not on a gap press — so the verb pastes
+    // anywhere on the band: the band is chrome, and its Paste is
+    // the terminal's own, always live.
+    let rows = menu_rows(&StatusSegments::default(), None);
+    assert_eq!(rows[2].pick, Some(MenuPick::Action(Action::Paste)));
+    assert!(rows[2].enabled, "Paste never mutes — the band is chrome");
+}
+
+#[test]
 fn reset_zoom_mutes_at_base_size_and_lives_while_zoomed() {
     // `zoom_percent`'s own condition, restated as the row's
     // enablement — Reset at base size would always no-op.
