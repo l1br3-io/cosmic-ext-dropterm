@@ -216,9 +216,11 @@ pub(crate) fn step(obs: &Observation<'_>, suggest: &mut Suggest) -> Option<Showi
 /// The guard chain (autosuggest spec): every condition must hold, and
 /// each one's failure alone means silence — config off, unfocused, a
 /// foreground child, scrolled back, off the bottom row, unanchored, a
-/// line that left the anchor, an empty typed segment, no most-recent
-/// prefix match, an empty suffix, or a suffix that would cross the
-/// line end (clip-don't-wrap drops it).
+/// line that left the anchor, an empty typed segment, no candidate
+/// from any provider, or a suffix that would cross the line end
+/// (clip-don't-wrap drops it). The candidate itself comes from the
+/// merged seam's dispatch; the guards and the fit rule apply after
+/// the merge, unchanged.
 fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
     if !obs.enabled
         || !obs.focused
@@ -233,24 +235,60 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
     if typed.is_empty() {
         return None;
     }
-    // The most recent history entry with the typed line as a strict
-    // prefix — fish's backbone, zsh-autosuggestions' default history
-    // strategy.
-    let entry = suggest
-        .ring
-        .iter()
-        .rev()
-        .find(|entry| entry.starts_with(typed) && entry.len() > typed.len())?;
-    let suffix = entry[typed.len()..].to_string();
+    let (suffix, source) = merged_candidate(typed, suggest)?;
     // The fit is grid cells, not chars: the ghost starts one cell
     // past the cursor and must end inside the line.
     let remaining = obs.columns.saturating_sub(obs.cursor_column + 1);
     if cell_width(&suffix) > remaining {
         return None;
     }
-    Some(Showing {
-        suffix,
-        source: SuggestionSource::History,
+    Some(Showing { suffix, source })
+}
+
+/// The merge policy, ruled at clarification: history answers first —
+/// the tab's own truth — then path, then the curated specs, then the
+/// command catalog. One pure function of the provider variant,
+/// pinned by its test, so the dispatch derives its order here and
+/// later modules cannot reorder the merge by accident.
+fn source_rank(source: SuggestionSource) -> usize {
+    match source {
+        SuggestionSource::History => 0,
+    }
+}
+
+/// History's candidate function — the exact phase-1 ring walk,
+/// unchanged, moved behind the provider seam: the most recent entry
+/// with the typed line as a strict prefix, its remainder the
+/// candidate suffix (fish's backbone, zsh-autosuggestions' default
+/// history strategy).
+fn history_candidate(typed: &str, ring: &VecDeque<String>) -> Option<String> {
+    let entry = ring
+        .iter()
+        .rev()
+        .find(|entry| entry.starts_with(typed) && entry.len() > typed.len())?;
+    Some(entry[typed.len()..].to_string())
+}
+
+/// One provider's candidate function, keyed by its variant — the
+/// dispatch table a later module extends with its arm (and its
+/// variant in the list `merged_candidate` walks) without touching
+/// any call site.
+fn provider_candidate(source: SuggestionSource, typed: &str, suggest: &Suggest) -> Option<String> {
+    match source {
+        SuggestionSource::History => history_candidate(typed, &suggest.ring),
+    }
+}
+
+/// The merged seam's dispatch (suggest-merge): every provider, in
+/// `source_rank` order — the sort is the priority, never a hand
+/// order — and the first non-`None` candidate wins, its provenance
+/// carried in the pair. Exactly one suggestion or none (autosuggest
+/// spec).
+fn merged_candidate(typed: &str, suggest: &Suggest) -> Option<(String, SuggestionSource)> {
+    let mut providers = [SuggestionSource::History];
+    providers.sort_by_key(|&source| source_rank(source));
+    providers.into_iter().find_map(|source| {
+        provider_candidate(source, typed, suggest).map(|suffix| (suffix, source))
     })
 }
 
@@ -841,5 +879,33 @@ mod tests {
         for token in ["src", "-la", "--flag", "che", ".", "..", ".hidden", "~jpt"] {
             assert!(!is_path_shaped(token), "{token:?} is not path-shaped");
         }
+    }
+
+    // --- the merged seam's dispatch ---
+
+    #[test]
+    fn source_rank_pins_the_ruled_priority() {
+        // The ruled priority, stated as data: history answers first —
+        // the tab's own truth — then path, then the curated specs,
+        // then the command catalog. Each later module appends its
+        // variant here; the ranks must keep strictly increasing in
+        // exactly this order.
+        let ruled_order = [SuggestionSource::History];
+        assert_eq!(source_rank(SuggestionSource::History), 0);
+        for pair in ruled_order.windows(2) {
+            assert!(
+                source_rank(pair[0]) < source_rank(pair[1]),
+                "the order above is the merge's order"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dispatch_asks_history_and_carries_its_provenance() {
+        let suggest = adopted();
+        let (suffix, source) =
+            merged_candidate("gi", &suggest).expect("history answers the clear case");
+        assert_eq!(suffix, "t status");
+        assert_eq!(source, SuggestionSource::History);
     }
 }
