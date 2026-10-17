@@ -359,9 +359,18 @@ impl DropTerm {
                         Action::ZoomOut => terminal.zoom_adj().saturating_sub(1),
                         _ => 0,
                     };
+                    // The metrics reapply *is* the zoom:
+                    // `update_cell_size` alone measures with the
+                    // buffer's current metrics, so the font never
+                    // moved — only the band's percent did (the
+                    // scale-only bug). `set_config` in the config
+                    // funnel below recomputes metrics from the live
+                    // `zoom_adj` and re-fires the cell resize from
+                    // there; at the clamp edges nothing moves, and
+                    // the equal-metrics comparison correctly skips.
                     terminal.set_zoom_adj(adj);
-                    terminal.update_cell_size();
                 }
+                self.apply_config_to_tabs();
                 // The zoom segment re-renders from the live
                 // adjustment; the process snapshot refresh rides the
                 // same listed piggyback point (status-bar criterion 5).

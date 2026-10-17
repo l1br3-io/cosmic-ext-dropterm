@@ -1801,11 +1801,13 @@ mod tests {
 
     #[test]
     fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
-        // The zoom path re-fires `resize` through `update_cell_size`
-        // — scale-only today: `zoom_adj` moves the band's percent,
-        // not the cells — and a real metrics change (a profile's
-        // font size through `set_config`) re-fires it with new
-        // cells. A settled record must read neither as a
+        // A zoom press funnels through `set_config`: it recomputes
+        // metrics from the live `zoom_adj` and re-fires the cell
+        // resize. `update_cell_size` alone measures with the
+        // buffer's *current* metrics — the ported zoom arm once
+        // called only it, so the band's percent moved while the
+        // font stood (the scale-only bug). A settled record must
+        // read neither a zoom nor an options change as a
         // re-baseline: the grid segment narrates the deviation, and
         // the metrics' return restores the rest.
         let mut terminal = spawn_grid_terminal();
@@ -1813,10 +1815,13 @@ mod tests {
         resize_cols(&mut terminal, 40);
         let resting = terminal.spawn_grid();
 
+        // The app's zoom sequence: adjust, then reapply *unchanged*
+        // options — `set_config` reads the live `zoom_adj`, so the
+        // zoom lands with no options edit at all.
         terminal.set_zoom_adj(2);
-        terminal.update_cell_size();
+        terminal.set_config(&TerminalOptions::default(), &Colors::default());
         assert_eq!(terminal.spawn_grid(), resting);
-        assert_eq!(terminal.grid().0, 40, "zoom is scale-only: cells stand");
+        assert_ne!(terminal.grid().0, 40, "zoomed cells deviate from rest");
 
         let enlarged = TerminalOptions {
             font_size: 24,
