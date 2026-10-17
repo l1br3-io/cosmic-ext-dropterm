@@ -420,9 +420,12 @@ fn a_bare_width_write_leaves_a_pending_height_settle_alone() {
 
 #[test]
 fn empty_args_text_parses_to_no_arguments() {
-    assert!(parse_args("").is_empty());
-    assert!(parse_args("   ").is_empty());
-    assert!(parse_args("\t \n").is_empty());
+    let args = parse_args("");
+    assert!(args.is_empty(), "not empty: {args:?}");
+    let args = parse_args("   ");
+    assert!(args.is_empty(), "not empty: {args:?}");
+    let args = parse_args("\t \n");
+    assert!(args.is_empty(), "not empty: {args:?}");
 }
 
 #[test]
@@ -1843,7 +1846,8 @@ fn env_rows_seed_from_the_stored_map_in_btree_order() {
         seeded
     );
     assert_eq!(ProfileDraft::edit(0, &source).env_rows, seeded);
-    assert!(ProfileDraft::add().env_rows.is_empty());
+    let draft = ProfileDraft::add();
+    assert!(draft.env_rows.is_empty(), "not empty: {:?}", draft.env_rows);
 }
 
 #[test]
@@ -1855,7 +1859,7 @@ fn typing_into_an_env_row_buffers_and_clears_the_stale_error() {
     draft.errors = vec![(ProfileField::EnvKey(1), ProfileFieldError::EnvKeyEquals)];
     draft.set_field_text(ProfileField::EnvKey(1), "TERM".to_string());
     assert_eq!(draft.env_rows[1].key, "TERM");
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
     draft.set_field_text(ProfileField::EnvValue(0), "prod".to_string());
     assert_eq!(draft.env_rows[0].value, "prod");
 }
@@ -1880,7 +1884,7 @@ fn an_add_draft_opens_empty() {
     assert_eq!(draft.name, "");
     assert_eq!(draft.command, "");
     assert_eq!(draft.cwd, "");
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
 }
 
 #[test]
@@ -1892,7 +1896,7 @@ fn a_clone_draft_seeds_from_the_source_with_a_unique_name() {
     assert_eq!(draft.name, "web-prod (copy)");
     assert_eq!(draft.command, "ssh web-prod");
     assert_eq!(draft.cwd, "/srv/web");
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
 }
 
 #[test]
@@ -1911,7 +1915,7 @@ fn typing_into_a_draft_field_clears_the_stale_error() {
     let mut draft = ProfileDraft::add();
     draft.errors = vec![(ProfileField::Name, ProfileFieldError::DuplicateName)];
     draft.set_field_text(ProfileField::Name, "server".to_string());
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
     assert_eq!(draft.name, "server");
 }
 
@@ -2568,14 +2572,14 @@ fn typing_into_an_override_field_buffers_and_clears_the_stale_error() {
     draft.errors = vec![(ProfileField::FontSize, ProfileFieldError::FontOutOfRange)];
     draft.set_field_text(ProfileField::FontSize, "12".to_string());
     assert_eq!(draft.font_size, "12");
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
     draft.errors = vec![(
         ProfileField::Scrollback,
         ProfileFieldError::UnparsableScrollback,
     )];
     draft.set_field_text(ProfileField::Scrollback, String::new());
     assert_eq!(draft.scrollback, "");
-    assert!(draft.errors.is_empty());
+    assert!(draft.errors.is_empty(), "not empty: {:?}", draft.errors);
 }
 
 #[test]

@@ -272,7 +272,7 @@ fn zero_pressure_renders_everything() {
     // whole path) under 600 px: nothing drops, nothing elides.
     let fit = band_fit(600.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
-    assert!(fit.dropped.is_empty());
+    assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn pressure_elides_the_path_before_any_segment_drops() {
     // 14 chars — but nothing drops while any of the path survives.
     let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Elided(14));
-    assert!(fit.dropped.is_empty());
+    assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn an_absent_path_never_forces_a_drop() {
         },
     );
     assert_eq!(fit.path, PathFit::Full);
-    assert!(fit.dropped.is_empty());
+    assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]

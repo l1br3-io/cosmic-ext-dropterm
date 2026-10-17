@@ -277,7 +277,7 @@ fn an_all_ephemeral_layout_saves_an_empty_session() {
         pinned: false,
     }];
     let state = capture(&snapshots, 0);
-    assert!(state.tabs.is_empty());
+    assert!(state.tabs.is_empty(), "not empty: {:?}", state.tabs);
 }
 
 #[test]

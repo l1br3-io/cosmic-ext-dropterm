@@ -88,7 +88,7 @@ fn close_tab_after_active_keeps_active() {
 fn close_tab_last_tab_decides_to_respawn() {
     let mut list = vec![10];
     let decision = close_tab(&mut list, 0, 0).expect("tab should close");
-    assert!(list.is_empty());
+    assert!(list.is_empty(), "not empty: {list:?}");
     assert_eq!(decision.next_active, 0);
     assert!(decision.respawn);
 }
