@@ -7,7 +7,7 @@ A 28 px strip at the surface's free edge, beside the grab bar, narrating the act
 Segments are values without labels - a path reads as a path - separated by gaps, never punctuation. Two clusters:
 
 - **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories).
-- **Right, dimmed**: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, and the wall clock (`HH:MM`, local time, ticking on the minute).
+- **Right, dimmed**: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, the scrolled-back chip, and the wall clock (`HH:MM`, local time, ticking on the minute).
 
 The band always takes the slot adjacent to the grab bar, whatever the `edge` × `tab_position` stacking - it never trades places with the tab strip. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame.
 
@@ -16,6 +16,12 @@ The band always takes the slot adjacent to the grab bar, whatever the `edge` × 
 While a foreground command runs, the duration segment beside the process name counts it once per second (`0:04`, `2:41`; `1:00:00` past the hour) - the tick alone drives it, so a command that prints nothing (`sleep 30`) still counts. When the command finishes the reading freezes as the last command's cost, paired with its name - `cargo 2:41` - because by then the process segment already shows the shell again; the pair stands until the next command starts.
 
 The timing is derived, never guessed: it comes from the two moments the terminal itself observes the foreground change (a process taking the terminal over from the shell, and handing it back), with no shell integration. A command whose start was never observed - the initial command of a profile tab, wrapping into its shell at spawn - shows no duration at all rather than a wrong one, and a respawned tab starts clean. The 1-second tick exists only while the active tab actually runs a command on a visible surface with the segment shown; it stands down within a second of the command finishing, the surface hiding, or the toggle flipping - hiding the segment (`status_bar_show_duration`) is the kill switch, and because the timing itself always runs, re-enabling it mid-command shows the live count immediately.
+
+## The scrolled-back chip
+
+When the viewport rests somewhere other than the bottom, a dim chip between the zoom and the clock says how far up it sits - `↑12` for twelve lines back. At the bottom it is absent entirely: the chip exists only while there is somewhere to return to, the one glance question a drop-down asks on every re-landing - am I looking at the end, or at what scrolled past while I was away? It drops under width pressure after the command duration and before the clock.
+
+The chip is the band's one **action chip**: clicking it jumps the viewport to the bottom and the chip vanishes the same frame. Every other segment copies its value on click - this one has nothing to copy, so its click is the jump; a deliberate, one-time bend of the copy rule, not a precedent (there is no menu row for it either - the click is the whole verb). The count rides the same in-memory read as the terminal size, taken whenever the band re-renders. Hide it with `status_bar_show_scrollback`.
 
 ## Reading and copying
 

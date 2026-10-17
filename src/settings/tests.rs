@@ -254,6 +254,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarShowZoom(true),
         PlannedWrite::StatusBarShowClock(true),
         PlannedWrite::StatusBarShowDuration(true),
+        PlannedWrite::StatusBarShowScrollback(true),
     ];
     let keys = section_keys();
     assert_eq!(keys.len(), writers.len());
@@ -882,12 +883,13 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
-    // status-segments Task 3 + bar-borders BB-3: the Status bar card
-    // grows to ten rows, in band order — the master toggle, the
-    // border toggle, then one "Show …" row per segment — each under
-    // its exact file spelling, each flipping through the single
-    // planned-write path, all Live.
+fn the_status_bar_card_hosts_the_master_toggle_border_and_nine_show_rows() {
+    // status-segments Task 3 + bar-borders BB-3 + status-scrolled
+    // Task 2: the Status bar card grows to eleven rows, in band
+    // order — the master toggle, the border toggle, then one
+    // "Show …" row per segment — each under its exact file
+    // spelling, each flipping through the single planned-write
+    // path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -913,6 +915,7 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
             ConfigKey::StatusBarShowZoom,
             ConfigKey::StatusBarShowClock,
             ConfigKey::StatusBarShowDuration,
+            ConfigKey::StatusBarShowScrollback,
         ]
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
@@ -961,6 +964,14 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
         "Show the command duration"
     );
     assert_eq!(
+        ConfigKey::StatusBarShowScrollback.key_name(),
+        "status_bar_show_scrollback"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowScrollback.label(),
+        "Show the scrolled-back lines"
+    );
+    assert_eq!(
         toggle_write(ConfigKey::StatusBarShowBranch, false),
         Some(PlannedWrite::StatusBarShowBranch(false))
     );
@@ -971,6 +982,10 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_eight_show_rows() {
     assert_eq!(
         toggle_write(ConfigKey::StatusBarShowDuration, false),
         Some(PlannedWrite::StatusBarShowDuration(false))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::StatusBarShowScrollback, false),
+        Some(PlannedWrite::StatusBarShowScrollback(false))
     );
 }
 

@@ -120,6 +120,7 @@ impl Section {
                 ConfigKey::StatusBarShowZoom,
                 ConfigKey::StatusBarShowClock,
                 ConfigKey::StatusBarShowDuration,
+                ConfigKey::StatusBarShowScrollback,
             ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
@@ -151,7 +152,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (41 — default-spawn's two rows included).
+/// count (42 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -210,6 +211,11 @@ pub enum ConfigKey {
     /// engine's timestamps keep running, so re-enabling mid-command
     /// shows the live elapsed immediately.
     StatusBarShowDuration,
+    /// The scrolled-back chip (status-scrolled spec): the toggle
+    /// hides the chip outright — the offset read rides the same
+    /// view-assembly lock either way, so the flip costs nothing
+    /// beyond the absent segment.
+    StatusBarShowScrollback,
     /// The strip's border hairline (bar-borders spec) — one per
     /// bar, each flipping live through the single planned-write
     /// path.
@@ -335,6 +341,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
             ConfigKey::StatusBarShowDuration => "status_bar_show_duration",
+            ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
         }
@@ -407,6 +414,8 @@ pub enum PlannedWrite {
     StatusBarShowClock(bool),
     /// The duration segment's own row (command-lifecycle spec).
     StatusBarShowDuration(bool),
+    /// The scrolled chip's own row (status-scrolled spec).
+    StatusBarShowScrollback(bool),
     /// The bars' border hairlines (bar-borders spec): pure display
     /// flips — the echo's next view pass rebuilds each widget with
     /// its flag, no reshape anywhere.
@@ -464,6 +473,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
             PlannedWrite::StatusBarShowDuration(_) => ConfigKey::StatusBarShowDuration,
+            PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
         }
@@ -606,6 +616,9 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarShowDuration(value) => {
                 handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowScrollback(value) => {
+                handler.set(ConfigKey::StatusBarShowScrollback.key_name(), *value)
             }
             PlannedWrite::TabBarBorder(value) => {
                 handler.set(ConfigKey::TabBarBorder.key_name(), *value)
@@ -792,6 +805,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
         | ConfigKey::StatusBarShowDuration
+        | ConfigKey::StatusBarShowScrollback
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
         // chain yields None, and re-enabling suggests again at the
@@ -2148,6 +2162,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
         ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
         ConfigKey::StatusBarShowDuration => Some(PlannedWrite::StatusBarShowDuration(checked)),
+        ConfigKey::StatusBarShowScrollback => Some(PlannedWrite::StatusBarShowScrollback(checked)),
         _ => None,
     }
 }
