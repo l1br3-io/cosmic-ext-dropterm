@@ -1116,10 +1116,13 @@ impl DropTerm {
                 terminal.input_no_scroll(text.into_bytes());
             }
             TermEvent::Title(title) => {
-                // The raw report is stored in every mode — retitle
+                // The report is stored in every mode — retitle
                 // inputs stay fresh, so a mode flip or a cleared
-                // rename re-resolves from current state.
-                self.tabs[tab_index].shell_title = Some(title);
+                // rename re-resolves from current state. An empty
+                // payload is a title clear, not a title: it stores
+                // no report, the same state a shell reset returns
+                // to, so the tab never blanks to its close icon.
+                self.tabs[tab_index].shell_title = tabs::shell_title_from_report(title);
                 // Title events double as the cwd-change sample point,
                 // and the path modes resolve against the fresh cwd:
                 // sample first, then re-resolve. The title itself is

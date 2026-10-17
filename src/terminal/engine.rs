@@ -1577,6 +1577,59 @@ mod tests {
         assert!(matches!(event, Event::Wakeup));
     }
 
+    /// Poll the tagged-event channel until the next `Title` event
+    /// arrives — skipping the wakeups and redraw requests that
+    /// share the stream — and pin its payload.
+    fn poll_until_title(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str, what: &str) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            while let Ok((_, event)) = rx.try_recv() {
+                if let Event::Title(title) = event {
+                    assert_eq!(title, want, "{what}");
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for title {want:?}: {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
+        // The delivery half of the empty-report clear: OSC 0/2 with
+        // an empty payload — a TUI's only way to retract a title it
+        // set (opencode's Ctrl+C) — reaches the app as
+        // `Title("")`, neither swallowed nor turned into
+        // `ResetTitle`. The storage policy
+        // (`tabs::shell_title_from_report`) is what maps that bare
+        // event to the no-report state, so this delivery shape is
+        // the contract it stands on.
+        use alacritty_terminal::tty::Shell as PtyShell;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let terminal = Terminal::new(
+            TabId(0),
+            tx,
+            Config::default(),
+            &Options {
+                shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+                drain_on_exit: true,
+                ..Options::default()
+            },
+            &TerminalOptions::default(),
+            &Colors::default(),
+        )
+        .expect("spawn a /bin/sh test terminal");
+
+        // One printf, two reports: a set, then the empty clear.
+        terminal.input_no_scroll(&b"printf '\\033]0;titled\\007\\033]0;\\007'\r"[..]);
+        poll_until_title(&mut rx, "titled", "the set report arrives");
+        poll_until_title(&mut rx, "", "the empty clear arrives as a bare Title");
+    }
+
     #[test]
     fn foreground_check_reads_false_without_a_master_handle() {
         // Fail-open pin (criterion 7): no dup'd fd → the check can

@@ -141,6 +141,8 @@ pub struct Tab {
     /// retitle inputs stay fresh: a mode flip or a cleared rename
     /// re-resolves from current state instead of a stale snapshot.
     /// `None` until the first report; a shell reset (RIS) clears it.
+    /// Never `Some("")` — an empty report is a title clear and
+    /// stores `None` too ([`shell_title_from_report`]).
     /// Deliberately not serialized — the session saves the resolved
     /// `title`, not its inputs.
     pub shell_title: Option<String>,
@@ -470,6 +472,16 @@ pub fn resolve_title(
 /// report, else the `Terminal N` default.
 fn raw_report_or_default(shell_title: Option<&str>, id: TabId) -> String {
     shell_title.map_or_else(|| next_default_title(id), str::to_owned)
+}
+
+/// The stored form of an OSC 0/2 report: the report itself — except
+/// an empty payload, which is a program clearing the title it set
+/// (the only retraction the protocol offers; opencode's Ctrl+C does
+/// exactly this) and stores `None`, the same no-report state a fresh
+/// spawn starts from and a shell reset returns to. Rendering an
+/// empty report verbatim would blank the tab to its close icon.
+pub fn shell_title_from_report(report: String) -> Option<String> {
+    (!report.is_empty()).then_some(report)
 }
 
 /// Guake's Last Segment value for a cwd: its final path component,
