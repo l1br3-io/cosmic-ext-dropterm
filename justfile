@@ -19,25 +19,45 @@ debug-bin := cargo-target-dir / 'debug' / name
 # Where the dev launcher lives. The launcher carries a `-dev` suffix
 # so it never shadows an installed release: `cosmic-ext-dropterm` on
 # PATH is always the installed copy, `cosmic-ext-dropterm-dev` always
-# the debug build.
+# the dev build.
 dev-bin-dir := env('XDG_BIN_HOME', home_directory() / '.local' / 'bin')
 dev-bin := dev-bin-dir / (name + '-dev')
 
+# The dev identity's own binary image. The feature-flagged build is
+# COPIED here (never symlinked to the shared debug bin): a plain
+# `cargo build`/`cargo test` — including inside `just check` —
+# rebuilds `target/debug/cosmic-ext-dropterm` WITHOUT the
+# `dev-identity` feature, and a launcher pointing at that shared
+# path would silently flip to release identity: its next launch
+# would activate (and toggle) the installed release instead of the
+# dev instance. The image only ever changes through `dev-install` /
+# `dev-reload`, so the dev identity cannot be overridden by an
+# unrelated build.
+dev-image := cargo-target-dir / 'debug' / (name + '-dev-image')
+
 # The dev recipes build the debug binaries re-identified as `.Dev`
 # (the dev-identity cargo feature): their own single-instance slot,
-# bus name, config file, and session, so a dev cycle never touches an
-# installed release's.
+# bus name, config file, and session, so a dev cycle never touches
+# an installed release's.
 dev-identity-args := '--features=dev-identity'
 
+# Installs the freshly built dev-identity debug binary to the dev
+# image path. Every consumer of the dev identity (the launcher
+# symlink, `dev-reload`, the `act` recipes) runs the image, never
+# the shared debug bin.
+dev-image-install:
+    install -Dm0755 {{debug-bin}} {{dev-image}}
+
 # `pkill -f` pattern matching only the dev instance — the launcher's
-# `-dev` name, or the debug binary's target path with a `( |$)` guard
-# so it stops at the binary name instead of also matching the
-# applet's debug path (whose name extends cosmic-ext-dropterm with
-# `-applet`). Each alternative's first character is bracketed so the
-# pattern cannot match this recipe's own `sh -c` command line. The
-# installed release and its applet never match — leaving them running
-# through a dev cycle is the point of the dev-identity split.
-dev-kill-pattern := '[c]osmic-ext-dropterm-dev|[t]arget/debug/cosmic-ext-dropterm( |$)'
+# `-dev` name, the dev image's target path, or the debug binary's
+# target path with a `( |$)` guard so it stops at the binary name
+# instead of also matching the applet's debug path (whose name
+# extends cosmic-ext-dropterm with `-applet`). Each alternative's
+# first character is bracketed so the pattern cannot match this
+# recipe's own `sh -c` command line. The installed release and its
+# applet never match — leaving them running through a dev cycle is
+# the point of the dev-identity split.
+dev-kill-pattern := '[c]osmic-ext-dropterm-dev|[t]arget/debug/cosmic-ext-dropterm-dev-image( |$)|[t]arget/debug/cosmic-ext-dropterm( |$)'
 
 desktop := appid + '.desktop'
 desktop-src := 'res' / desktop
@@ -245,20 +265,21 @@ build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args)
 run *args:
     cargo run {{args}}
 
-# Symlink the debug build into ~/.local/bin as `cosmic-ext-dropterm-dev`
-# so a COSMIC shortcut (and the act recipes) can run it; the `-dev` name
-# leaves an installed release's plain name untouched.
-dev-install: (build-debug dev-identity-args)
+# Symlinks the dev launcher at `~/.local/bin/cosmic-ext-dropterm-dev`
+# to the dev image (see `dev-image-install`) so a COSMIC shortcut
+# (and the act recipes) can run it; the `-dev` name leaves an
+# installed release's plain name untouched.
+dev-install: (build-debug dev-identity-args) dev-image-install
     install -d {{dev-bin-dir}}
-    ln -sfn {{justfile_directory() / debug-bin}} {{dev-bin}}
+    ln -sfn {{dev-image}} {{dev-bin}}
 
-# Kill the running dev instance and restart on the newly built
-# binary. An installed release keeps running — the two identities
-# coexist, each answering its own launcher.
-dev-reload: (build-debug dev-identity-args)
+# Kill the running dev instance and restart on the dev image. An
+# installed release keeps running — the two identities coexist, each
+# answering its own launcher.
+dev-reload: (build-debug dev-identity-args) dev-image-install
     -pkill -f '{{dev-kill-pattern}}'
     sleep 0.3
-    {{debug-bin}}
+    {{dev-image}}
 
 # Build, install the launcher, and restart on the latest code in one step.
 dev: dev-install dev-reload
