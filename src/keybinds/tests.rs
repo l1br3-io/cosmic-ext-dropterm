@@ -500,6 +500,74 @@ fn bare_tab_stays_free_for_the_terminal() {
     );
 }
 
+// --- the default-map standard (bind-standard BS-1) ---
+
+/// The eight chords the default standard sanctions outside full
+/// `Ctrl+Shift`, spelled as exact modifier+key pairs: the zoom
+/// cluster (`Ctrl` + `=`/`+`/`-`/`0` — the physical zoom keys, `0`
+/// reset's only chord), browser-style tab cycling (`Ctrl` + `Tab`/
+/// `PageUp`/`PageDown` — convention, not shell bytes), and
+/// `Shift+Insert` for primary paste (the deep Unix convention, the
+/// action's only chord). Key halves stay in descriptor form because
+/// `Key::Character` is not const-constructible; the test compares
+/// them as built `KeyBind`s.
+const SANCTIONED: [(&[Modifier], SanctionedKey); 8] = [
+    (&[Modifier::Ctrl], SanctionedKey::Character("=")),
+    (&[Modifier::Ctrl], SanctionedKey::Character("+")),
+    (&[Modifier::Ctrl], SanctionedKey::Character("-")),
+    (&[Modifier::Ctrl], SanctionedKey::Character("0")),
+    (&[Modifier::Ctrl], SanctionedKey::Named(Named::Tab)),
+    (&[Modifier::Ctrl], SanctionedKey::Named(Named::PageUp)),
+    (&[Modifier::Ctrl], SanctionedKey::Named(Named::PageDown)),
+    (&[Modifier::Shift], SanctionedKey::Named(Named::Insert)),
+];
+
+/// The const-able key half of a [`SANCTIONED`] entry.
+enum SanctionedKey {
+    Character(&'static str),
+    Named(Named),
+}
+
+impl SanctionedKey {
+    fn key_bind(&self, modifiers: &[Modifier]) -> KeyBind {
+        match self {
+            Self::Character(key) => bind(modifiers, key),
+            Self::Named(key) => bind_named(modifiers, *key),
+        }
+    }
+}
+
+/// Set equality for modifier slices — order-insensitive, since
+/// `KeyBind::modifiers` is a `Vec` whose order is an insertion
+/// artifact, not a semantic one.
+fn same_modifier_set(a: &[Modifier], b: &[Modifier]) -> bool {
+    a.iter().all(|modifier| b.contains(modifier)) && b.iter().all(|modifier| a.contains(modifier))
+}
+
+#[test]
+fn every_default_chord_is_ctrl_shift_or_sanctioned() {
+    // The map-wide standard, generalizing the per-letter pins above
+    // (each pin keeps its byte's why; this walks the whole map):
+    // whatever chord joins the defaults must hold both Ctrl and
+    // Shift, or be one of the eight sanctioned pairs — a future bare
+    // Ctrl+N would pass every pin and fail exactly here, named.
+    let sanctioned: Vec<KeyBind> = SANCTIONED
+        .iter()
+        .map(|(modifiers, key)| key.key_bind(modifiers))
+        .collect();
+    for (chord, _action) in default_key_binds() {
+        let ctrl_and_shift =
+            chord.modifiers.contains(&Modifier::Ctrl) && chord.modifiers.contains(&Modifier::Shift);
+        let is_sanctioned = sanctioned.iter().any(|allowed| {
+            allowed.key == chord.key && same_modifier_set(&allowed.modifiers, &chord.modifiers)
+        });
+        assert!(
+            ctrl_and_shift || is_sanctioned,
+            "{chord} is neither Ctrl+Shift nor one of the eight sanctioned chords"
+        );
+    }
+}
+
 // --- the customization overlay (keybinds-editor KE-1) ---
 
 use std::collections::BTreeMap;

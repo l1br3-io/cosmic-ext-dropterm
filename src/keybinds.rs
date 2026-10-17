@@ -36,6 +36,15 @@ fn bind_named(modifiers: &[Modifier], key: Named) -> KeyBind {
 }
 
 /// The default app-level bindings, mapped to the [`Action`] they trigger.
+///
+/// The standard every chord here follows: `Ctrl+Shift`-modified, with
+/// three sanctioned exceptions — the zoom cluster (`Ctrl` + `=`/`+`/
+/// `-`/`0`: the physical zoom keys, `0` reset's only chord), tab
+/// cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`PageDown`: the browser
+/// convention, not shell bytes), and `Shift+Insert` for primary
+/// paste. New defaults follow the standard: a bare `Ctrl+<letter>`
+/// is always a byte the shell owns — see the stay-free pins in the
+/// tests — never an app chord.
 pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     let mut map = HashMap::new();
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "c"), Action::Copy);
