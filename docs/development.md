@@ -16,11 +16,12 @@ just dev-install
 ```
 
 That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm-dev`
-to `target/debug/cosmic-ext-dropterm`. Set the development shortcut's Command
-to `cosmic-ext-dropterm-dev` once and leave it. The `-dev` suffix keeps an
-installed release (from `sudo just install` or a release tarball) separate:
-plain `cosmic-ext-dropterm` on PATH is always the installed copy, and the two
-never shadow each other.
+to the dev image `target/debug/cosmic-ext-dropterm-dev-image` — a copy of the
+dev-identity build that only the `just dev*` recipes ever rewrite. Set the
+development shortcut's Command to `cosmic-ext-dropterm-dev` once and leave it.
+The `-dev` suffix keeps an installed release (from `sudo just install` or a
+release tarball) separate: plain `cosmic-ext-dropterm` on PATH is always the
+installed copy, and the two never shadow each other.
 
 The dev build also carries its own runtime identity —
 `io.github.l1br3_io.CosmicExtDropterm.Dev`, selected by the `dev-identity`
@@ -32,6 +33,14 @@ only its own launcher and keybind. `just dev` (via `dev-reload`) kills only
 the dev instance before starting the new build; an installed release keeps
 running untouched, and `just act` / `just toggle` always drive the dev
 instance.
+
+The identity reaches the desktop integration too: `just dev-install` also
+writes `~/.local/share/applications/io.github.l1br3_io.CosmicExtDropterm.Dev.desktop`
+(hidden from the app grid, like the release's own entry), so the window
+switcher labels the dev build's anchor window "DropTerm (Dev)" instead of
+"unknown" — and a hidden-tab bell notification from the dev build says
+"DropTerm (Dev)" as its app name, so with both instances running you can
+always tell which one rang.
 
 The separation reaches the files: the dev build reads and writes
 `~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron` and
@@ -47,10 +56,13 @@ cp ~/.config/io.github.l1br3_io.CosmicExtDropterm.ron \
 Deliberately a copy, not a share — dev experiments never write back to the
 real config.
 
-One caveat: the launcher always runs `target/debug/cosmic-ext-dropterm`,
-which carries whichever identity it was last built with. Build it through
-the `just dev*` recipes — a plain `cargo build` produces a release-identity
-debug binary that forwards to (and tugs at) the installed copy.
+One caveat: the launcher runs the dev image, whose identity only the
+`just dev*` recipes can change. A plain `cargo build` (or `cargo test`, or
+`just check`) refreshes the *shared* debug bin `target/debug/cosmic-ext-dropterm`
+without the `dev-identity` feature — the launcher ignores it. Running that
+shared bin directly (`cargo run`, `just run`) is still a release-identity
+launch that forwards to (and tugs at) the installed copy; the dev loop always
+goes through the launcher or the `just dev*` recipes.
 
 The edit-build-see loop is then one command:
 
@@ -82,10 +94,10 @@ Which recipe targets what, in one table:
 
 | Recipe | Target |
 | --- | --- |
-| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `cosmic-ext-dropterm-dev` |
+| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `cosmic-ext-dropterm-dev`, plus its (app-grid-hidden) desktop file |
 | `just act …`, `toggle`, `show`, `hide`, `new-tab …` | The dev instance — the verbs ride the `-dev` launcher and the dev instance executes them |
 | `just dev-applet` | Development — a second panel entry ("DropTerm (Dev)") under `~/.local`, tracking the dev terminal only |
-| `just dev-uninstall` | Development — removes the `-dev` launcher and the dev applet's footprint |
+| `just dev-uninstall` | Development — removes the `-dev` launcher, the dev desktop files, and the dev applet's footprint |
 | `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
 | `just applet-flatpak-build` / `-install` / `-remove` | The flatpaked applet, built from the release manifest into the user flatpak installation |
 | `just check` | The gate — fmt + clippy + test across the workspace, each package also once under `dev-identity` |
