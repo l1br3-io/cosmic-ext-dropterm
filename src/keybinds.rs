@@ -54,6 +54,19 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     );
     map.insert(bind(&[Modifier::Ctrl], "="), Action::ZoomIn);
     map.insert(bind(&[Modifier::Ctrl], "+"), Action::ZoomIn);
+    // The Shift-held plus chords: matching is exact on modifiers,
+    // so the literal Ctrl+Plus press (Shift held to type `+` on
+    // US-style layouts) is its own chord or it arrives dead, and
+    // "=" covers the layouts where it survives Shift (kitty's
+    // bind).
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "+"),
+        Action::ZoomIn,
+    );
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "="),
+        Action::ZoomIn,
+    );
     map.insert(bind(&[Modifier::Ctrl], "-"), Action::ZoomOut);
     map.insert(bind(&[Modifier::Ctrl], "0"), Action::ZoomReset);
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "q"), Action::Hide);
