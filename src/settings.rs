@@ -2130,6 +2130,71 @@ pub fn shell_pick_write(index: usize) -> Option<PlannedWrite> {
     )
 }
 
+// --- the font picker's planner trio: the shell dropdown's
+// dynamic-list pattern over the app-owned family scan ---
+
+/// The picker's rows under a stored `font_name`: the families in
+/// list order, preceded by the stored name itself when no family
+/// matches — a hand-edited or uninstalled value stays visible and
+/// selectable, never an empty picker.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
+    )
+)]
+pub fn font_picker_rows(families: &[String], stored: &str) -> Vec<String> {
+    if families.iter().any(|family| family == stored) {
+        return families.to_vec();
+    }
+    // The synthetic leader: the stored value's own row.
+    let mut rows = Vec::with_capacity(families.len() + 1);
+    rows.push(stored.to_string());
+    rows.extend(families.iter().cloned());
+    rows
+}
+
+/// The picker's selection row for a stored `font_name`: the matching
+/// family's row, else the synthetic leading row — the stored value is
+/// always the selected one. The match is exact and case-sensitive
+/// (`Family::Name`'s own match is exact; a case variant is a
+/// different family).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
+    )
+)]
+pub fn font_picker_selected(families: &[String], stored: &str) -> usize {
+    // A match selects its family's row (no leader exists to offset
+    // past); anything else selects the leader at 0 — one expression
+    // covers both row spaces.
+    families
+        .iter()
+        .position(|family| family == stored)
+        .unwrap_or(0)
+}
+
+/// The write a font-picker pick commits: the synthetic leading row
+/// commits the stored name itself, a family row its family. An index
+/// past the rows (the system's list changed under the open popover)
+/// rejects — the [`dropdown_write`] rule, [`shell_pick_write`]'s
+/// dynamic-list edition over the app-owned family scan.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the font-picker pins' seam; the picker control consumes it in Task 2"
+    )
+)]
+pub fn font_pick_write(families: &[String], stored: &str, index: usize) -> Option<PlannedWrite> {
+    font_picker_rows(families, stored)
+        .get(index)
+        .map(|family| PlannedWrite::FontName(family.clone()))
+}
+
 /// The write a toggle flip commits. `None` for keys without a toggle.
 pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite> {
     match key {

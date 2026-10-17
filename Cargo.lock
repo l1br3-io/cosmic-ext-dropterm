@@ -1059,6 +1059,7 @@ dependencies = [
  "cosmic-text",
  "enumflags2",
  "env_logger",
+ "fontdb",
  "indexmap",
  "jiff",
  "libc",

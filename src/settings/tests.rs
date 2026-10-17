@@ -794,6 +794,76 @@ fn shell_labels_are_bare_basenames() {
     assert_eq!(shell_label("/"), "/");
 }
 
+// --- the font picker's planner trio (font-picker T1) ---
+
+#[test]
+fn font_picker_rows_lead_with_the_stored_name_only_when_no_family_matches() {
+    // The scheme fallback rule, family edition: the families list in
+    // scan order, and a stored name no family carries (hand-edited
+    // config, font since removed) leads as a synthetic row of its
+    // own — visible and selectable, never an empty picker.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(
+        font_picker_rows(&families, "Noto Sans Mono"),
+        vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()]
+    );
+    assert_eq!(
+        font_picker_rows(&families, "JetBrainsMono Nerd Font Mono"),
+        vec![
+            "JetBrainsMono Nerd Font Mono".to_string(),
+            "DejaVu Sans Mono".to_string(),
+            "Noto Sans Mono".to_string(),
+        ]
+    );
+    // A barren scan offers the stored value alone — the picker is
+    // never empty whatever the system's font state.
+    assert_eq!(
+        font_picker_rows(&[], "Noto Sans Mono"),
+        vec!["Noto Sans Mono".to_string()]
+    );
+}
+
+#[test]
+fn font_picker_selection_is_exact_case_sensitive_and_falls_to_the_leader() {
+    // `Family::Name`'s own match is exact, so the row model's is too:
+    // the stored name selects its family row — position, no leader —
+    // and anything else (a case variant included: a different family
+    // to an exact match) selects the synthetic leading row that
+    // holds it.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(font_picker_selected(&families, "Noto Sans Mono"), 1);
+    assert_eq!(font_picker_selected(&families, "DejaVu Sans Mono"), 0);
+    assert_eq!(font_picker_selected(&families, "noto sans mono"), 0);
+    assert_eq!(font_picker_selected(&families, "Gone Font"), 0);
+    assert_eq!(font_picker_selected(&[], "Anything At All"), 0);
+}
+
+#[test]
+fn font_picker_picks_commit_their_row_and_reject_stale_indices() {
+    // A family row commits its family; the synthetic leader commits
+    // the stored name itself (a re-pick of an uninstalled value is a
+    // no-change write, not a silent correction); an index past the
+    // rows — the system's list changed under the open popover —
+    // rejects rather than writing a wrong name.
+    let families = vec!["DejaVu Sans Mono".to_string(), "Noto Sans Mono".to_string()];
+    assert_eq!(
+        font_pick_write(&families, "Noto Sans Mono", 0),
+        Some(PlannedWrite::FontName("DejaVu Sans Mono".to_string()))
+    );
+    assert_eq!(
+        font_pick_write(&families, "Noto Sans Mono", 1),
+        Some(PlannedWrite::FontName("Noto Sans Mono".to_string()))
+    );
+    assert_eq!(
+        font_pick_write(&families, "JetBrainsMono Nerd Font Mono", 0),
+        Some(PlannedWrite::FontName(
+            "JetBrainsMono Nerd Font Mono".to_string()
+        ))
+    );
+    assert_eq!(font_pick_write(&families, "Noto Sans Mono", 2), None);
+    assert_eq!(font_pick_write(&families, "Noto Sans Mono", 99), None);
+}
+
 #[test]
 fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
     // Ruling 4: the picker, the mode dropdown, and the default

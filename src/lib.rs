@@ -22,6 +22,7 @@
 //! one implementation.
 
 pub mod dbus_state;
+pub mod font_list;
 
 /// The terminal's desktop identity — the single string behind the
 /// single-instance key, the D-Bus bus name and object path, the
