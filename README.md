@@ -34,13 +34,15 @@ DropTerm v0.2.0 is released — see [Installing](#installing). Development conti
 
 ## Building
 
-### Build dependencies (Pop!_OS / Ubuntu)
+### Build dependencies
+
+Nothing to install by hand: the build and install recipes run a prerequisite gate first (`just deps` runs it standalone) — it checks the C toolchain, `pkg-config`, the system libraries, and cargo, and installs whatever is missing, through apt, dnf, pacman, or zypper. Rust comes via [rustup](https://rustup.rs/) (stable, minimal profile) when `cargo` is absent — never as root, so `sudo just install` never writes a root-owned toolchain. With everything already present the gate is a silent no-op that touches neither `sudo` nor the network, so CI and packaging environments are unaffected. Only `just` itself must be present up front — the official installer at [just.systems](https://just.systems/) is the reliable source (Ubuntu 24.04's apt `just` predates this justfile's `set quiet`).
+
+The manual equivalent on Pop!_OS / Ubuntu, for reference:
 
 ```sh
-sudo apt install just libxkbcommon-dev libwayland-dev libfontconfig-dev libfreetype-dev pkg-config
+sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libfontconfig-dev libfreetype-dev libexpat1-dev
 ```
-
-Rust via [rustup](https://rustup.rs/) (stable).
 
 ### Build and install
 

@@ -22,6 +22,15 @@ bin-src := cargo-target-dir / 'release' / name
 bin-dst := base-dir / 'bin' / name
 debug-bin := cargo-target-dir / 'debug' / name
 
+# rustup installs cargo into CARGO_HOME/bin, which is not on PATH in
+# the shell that first bootstraps it — and recipes each run their own
+# shell, so an install by one recipe does not carry to the next.
+# Prepending it for every recipe lets the same `just build-all` that
+# just installed the toolchain immediately run it. A nonexistent PATH
+# entry is harmless: under `sudo just` the home is root's and the
+# entry simply never matches anything.
+export PATH := env('CARGO_HOME', home_directory() / '.cargo') / 'bin' + ':' + env('PATH', '')
+
 # Where the dev launcher lives. The launcher carries a `-dev` suffix
 # so it never shadows an installed release: `cosmic-ext-dropterm` on
 # PATH is always the installed copy, `cosmic-ext-dropterm-dev` always
@@ -249,15 +258,96 @@ new-tab *args:
 build-jobs := env('DROPTERM_BUILD_JOBS', '8')
 build-nice := env('DROPTERM_BUILD_NICE', '19')
 
+# The prerequisite gate. The build recipes and `install` depend on it,
+# and `just deps` runs it alone: it checks everything a build needs —
+# the C toolchain, pkg-config, the pkg-config modules behind the
+# system libraries (the union of the README's and CI's package
+# lists), and cargo — and installs only what is missing, through the
+# distro's package manager (apt/dnf/pacman/zypper) and, for Rust,
+# rustup's minimal stable profile. Check-first on purpose: with
+# everything present — the dev machine, CI (which declares its own
+# build-deps), packaging chroots — the gate is a silent no-op that
+# never touches sudo or the network. Two deliberate limits: `just`
+# itself is out of scope (chicken and egg — it is already running),
+# and the rustup bootstrap never runs as root — a root invocation
+# (`sudo just install`, a `rootdir=` staging install) never runs
+# cargo, and a toolchain installed under sudo would sit root-owned
+# in /root where the user cannot update it; the user-side build
+# recipes bootstrap it for themselves instead.
+deps:
+    #!/usr/bin/env sh
+    set -eu
+
+    # System side: each module is what the build asks pkg-config for,
+    # and each maps to a -dev/-devel package in the lists below. A
+    # missing pkg-config or cc means the whole toolchain package is
+    # needed, not one module.
+    missing=""
+    if command -v pkg-config >/dev/null 2>&1; then
+        for module in xkbcommon wayland-client fontconfig freetype2 expat; do
+            pkg-config --exists "$module" 2>/dev/null || missing="$missing $module"
+        done
+    else
+        missing=" pkg-config"
+    fi
+    command -v cc >/dev/null 2>&1 || missing="$missing cc"
+
+    if [ -n "$missing" ]; then
+        echo "deps: missing:$missing — installing via the system package manager"
+        if [ "$(id -u)" -eq 0 ]; then
+            sudo=""
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo="sudo"
+        else
+            echo "deps: not root and sudo not found — install the above by hand and re-run" >&2
+            exit 1
+        fi
+        # $sudo is deliberately unquoted: it must word-split away when
+        # empty (already root).
+        if command -v apt-get >/dev/null 2>&1; then
+            $sudo apt-get update -qq
+            $sudo apt-get install -y build-essential pkg-config \
+                libxkbcommon-dev libwayland-dev libfontconfig-dev \
+                libfreetype-dev libexpat1-dev
+        elif command -v dnf >/dev/null 2>&1; then
+            $sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config \
+                libxkbcommon-devel wayland-devel fontconfig-devel \
+                freetype-devel expat-devel
+        elif command -v pacman >/dev/null 2>&1; then
+            $sudo pacman -S --needed --noconfirm base-devel pkgconf \
+                libxkbcommon wayland fontconfig freetype2 expat
+        elif command -v zypper >/dev/null 2>&1; then
+            $sudo zypper --non-interactive install gcc gcc-c++ make pkg-config \
+                libxkbcommon-devel wayland-devel fontconfig-devel \
+                freetype2-devel libexpat-devel
+        else
+            echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
+            echo "deps: install the equivalents of:$missing and re-run" >&2
+            exit 1
+        fi
+    fi
+
+    # Rust side (never as root — see the recipe comment above).
+    if [ "$(id -u)" -ne 0 ] && ! command -v cargo >/dev/null 2>&1; then
+        echo "deps: cargo not found — installing Rust (rustup, stable, minimal profile)"
+        if command -v rustup >/dev/null 2>&1; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+        else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain stable
+        fi
+    fi
+
 # Compiles with the debug profile. Per-package on purpose — a plain
 # `cargo build` now spans the workspace and unifies features across
 # both crates (see build-applet for why that must not produce
 # release artifacts).
-build-debug *args:
+build-debug *args: deps
     cargo build -p {{name}} {{args}}
 
 # Compiles with the release profile, throttled (see build-jobs).
-build-release *args:
+build-release *args: deps
     nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}
 
 # Compiles the applet with the release profile, throttled like
@@ -265,7 +355,7 @@ build-release *args:
 # build would hand the applet a wgpu-enabled libcosmic through
 # feature unification, and the wgpu renderer falls back to llvmpipe
 # on panel surfaces.
-build-applet *args:
+build-applet *args: deps
     nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}
 
 # Both release artifacts, each per-package, in the shape `install`
@@ -378,10 +468,11 @@ stop-stale-release:
         fi
     done
 
-# Installs files (build both artifacts first: just build-all). Ends
-# by stopping any instance still on the replaced binary, so what
+# Installs files (build both artifacts first: just build-all). Checks
+# the build prerequisites first (see deps) — a no-op once they exist.
+# Ends by stopping any instance still on the replaced binary, so what
 # runs after an install is always the installed code.
-install:
+install: deps
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
