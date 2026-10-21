@@ -585,11 +585,40 @@ fn step_path(
 #[test]
 fn the_path_provider_completes_the_final_component_with_the_dir_slash() {
     let mut suggest = adopted();
-    let entries = listing(&[("src", true), ("srv", true)]);
-    let shown = step_path("~/sr", Some(&entries), &mut suggest)
-        .expect("the first sorted match completes");
+    let unique = listing(&[("src", true)]);
+    let shown = step_path("~/sr", Some(&unique), &mut suggest).expect("the unique match completes");
     assert_eq!(shown.suffix, "c/");
     assert_eq!(shown.source, SuggestionSource::Path);
+}
+
+#[test]
+fn an_ambiguous_field_completes_its_shared_prefix_not_a_guess() {
+    // src and srv both live ahead of `~/sr`: guessing `c/` is wrong
+    // half the time, so the shared prefix answers — nothing new at
+    // `sr`, `r` at `s` (no slash: the boundary itself is ambiguous).
+    let entries = listing(&[("src", true), ("srv", true)]);
+    let mut suggest = adopted();
+    assert_eq!(
+        step_path("~/sr", Some(&entries), &mut suggest),
+        None,
+        "no shared extension beyond the typed component"
+    );
+    let mut suggest = adopted();
+    let shown =
+        step_path("~/s", Some(&entries), &mut suggest).expect("the shared prefix completes");
+    assert_eq!(shown.suffix, "r");
+}
+
+#[test]
+fn a_name_that_prefixes_another_extends_only_to_the_prefix() {
+    // `src` and `src-cache`: the shared prefix is `src`, so `~/sr`
+    // completes `c` — without the slash, since the boundary between
+    // the two names is ambiguous.
+    let entries = listing(&[("src", true), ("src-cache", false)]);
+    let mut suggest = adopted();
+    let shown =
+        step_path("~/sr", Some(&entries), &mut suggest).expect("the shared prefix completes");
+    assert_eq!(shown.suffix, "c");
 }
 
 #[test]
@@ -616,8 +645,8 @@ fn plain_words_and_flags_never_reach_the_path_provider() {
 fn a_file_match_carries_no_slash() {
     let entries = listing(&[("alpha.txt", false), ("beta", true)]);
     let mut suggest = adopted();
-    let file = step_path("/usr/a", Some(&entries), &mut suggest)
-        .expect("the file matches the component");
+    let file =
+        step_path("/usr/a", Some(&entries), &mut suggest).expect("the file matches the component");
     assert_eq!(file.suffix, "lpha.txt");
     let dir = step_path("/usr/b", Some(&entries), &mut suggest)
         .expect("the directory matches the component");
@@ -645,8 +674,7 @@ fn a_fully_typed_directory_suggests_its_slash_a_file_suggests_nothing() {
 fn dotfiles_match_only_a_dot_prefixed_component() {
     let entries = listing(&[(".hidden", true), ("afile", false)]);
     let mut suggest = adopted();
-    let dot =
-        step_path("~/.", Some(&entries), &mut suggest).expect("the dot reaches the dotfile");
+    let dot = step_path("~/.", Some(&entries), &mut suggest).expect("the dot reaches the dotfile");
     assert_eq!(dot.suffix, "hidden/");
     let plain = step_path("~/a", Some(&entries), &mut suggest)
         .expect("the plain component sees the plain entry");
@@ -673,11 +701,10 @@ fn the_bare_home_root_completes_the_first_plain_entry() {
 fn escapable_characters_take_a_backslash() {
     let entries = listing(&[("my file.txt", false), ("a(b)c", true)]);
     let mut suggest = adopted();
-    let spaced =
-        step_path("~/my", Some(&entries), &mut suggest).expect("a space escapes safely");
+    let spaced = step_path("~/my", Some(&entries), &mut suggest).expect("a space escapes safely");
     assert_eq!(spaced.suffix, "\\ file.txt");
-    let parens = step_path("~/a", Some(&entries), &mut suggest)
-        .expect("the metacharacters escape safely");
+    let parens =
+        step_path("~/a", Some(&entries), &mut suggest).expect("the metacharacters escape safely");
     assert_eq!(parens.suffix, "\\(b\\)c/");
 }
 
@@ -693,15 +720,15 @@ fn the_whitelist_rides_verbatim() {
 }
 
 #[test]
-fn anything_outside_the_whitelist_and_the_escape_set_is_silence() {
-    // A newline, a control character, a backtick (deliberately
-    // not in the ruled sets), and non-ASCII: none is certainly
-    // safe to write, so the entry silences.
+fn anything_the_quote_tier_cannot_save_is_silence() {
+    // A newline and a control character stay unwritable in every
+    // form — backslash, quote — so the entry silences.
     for (name, typed) in [
         ("bad\nname", "~/bad"),
         ("bad\x07bell", "~/bad"),
-        ("bad`tick", "~/bad"),
-        ("café", "~/caf"),
+        // A name needing the quote tier that itself carries a quote:
+        // the `\''` dance is voodoo, so silence.
+        ("it's naïve", "~/i"),
     ] {
         let entries = listing(&[(name, true)]);
         let mut suggest = adopted();
@@ -714,14 +741,31 @@ fn anything_outside_the_whitelist_and_the_escape_set_is_silence() {
 }
 
 #[test]
+fn printable_unusual_bytes_complete_single_quoted() {
+    // The quote tier: a remainder reaching past the backslash sets,
+    // all printable and quote-free, rides whole inside single quotes
+    // — certainly safe to write in the POSIX shells and fish alike.
+    let files = listing(&[("café", false)]);
+    let mut suggest = adopted();
+    let shown =
+        step_path("~/caf", Some(&files), &mut suggest).expect("the printable name quotes safely");
+    assert_eq!(shown.suffix, "'é'");
+    let dirs = listing(&[("bad`tick", true)]);
+    let mut suggest = adopted();
+    let ticked =
+        step_path("~/bad", Some(&dirs), &mut suggest).expect("a backtick is literal inside quotes");
+    assert_eq!(ticked.suffix, "'`tick/'");
+}
+
+#[test]
 fn history_outranks_the_path_provider_when_both_match() {
     let mut suggest = adopted();
     let mut ring = VecDeque::new();
     ring.push_back("~/src/project".to_string());
     suggest.ring = ring;
     let entries = listing(&[("src", true)]);
-    let shown = step_path("~/sr", Some(&entries), &mut suggest)
-        .expect("someone answers the path token");
+    let shown =
+        step_path("~/sr", Some(&entries), &mut suggest).expect("someone answers the path token");
     assert_eq!(shown.suffix, "c/project", "the tab's own truth first");
     assert_eq!(shown.source, SuggestionSource::History);
 }
@@ -947,16 +991,137 @@ fn the_commands_gate_off_restores_phase_one_exactly() {
 }
 
 #[test]
-fn a_catalog_name_the_shell_would_mangle_escapes_or_silences() {
+fn a_catalog_name_the_shell_would_mangle_escapes_quotes_or_silences() {
     // The suffix rides the path provider's escape rule: a
-    // spaces-named executable completes to its backslashed form,
-    // and a name outside the safe sets is silence, never a wrong
-    // write.
+    // spaces-named executable completes to its backslashed form, a
+    // printable non-ASCII name rides the quote tier, and a name
+    // neither tier saves is silence, never a wrong write.
     let spaced = catalog(&["my cmd"]);
     let mut suggest = catalog_suggest();
     let shown = step_word("my", &spaced, &mut suggest).expect("the space escapes safely");
     assert_eq!(shown.suffix, "\\ cmd");
     let odd = catalog(&["caf\u{e9}"]);
     let mut suggest = catalog_suggest();
-    assert_eq!(step_word("caf", &odd, &mut suggest), None);
+    let quoted = step_word("caf", &odd, &mut suggest).expect("the printable name quotes safely");
+    assert_eq!(quoted.suffix, "'é'");
+}
+
+// --- the common-prefix helper ---
+
+#[test]
+fn the_shared_prefix_cuts_on_a_char_boundary() {
+    // "café" and "cafe" share only "caf": the é's lead byte never
+    // survives the cut.
+    assert_eq!(shared_prefix("café", "cafe"), "caf");
+    assert_eq!(shared_prefix("src", "src-cache"), "src");
+    assert_eq!(shared_prefix("src", "srv"), "sr");
+    assert_eq!(shared_prefix("alpha", "beta"), "");
+}
+
+// --- the history seed (history-seed) ---
+
+#[test]
+fn only_the_three_persistent_shells_map_a_history_file() {
+    // The spawn truth arrives basename-shaped: the three shells
+    // with a standard persistent file seed; the rest — the
+    // allowlist's sh family included, plus non-shells — stay
+    // scrape-only.
+    assert_eq!(
+        shell_history_file("/bin/bash").as_deref(),
+        Some(std::path::Path::new(".bash_history"))
+    );
+    assert_eq!(
+        shell_history_file("zsh").as_deref(),
+        Some(std::path::Path::new(".zsh_history"))
+    );
+    assert_eq!(
+        shell_history_file("fish").as_deref(),
+        Some(std::path::Path::new(".local/share/fish/fish_history"))
+    );
+    for program in ["sh", "dash", "ksh", "csh", "tcsh", "ssh", "python3", ""] {
+        assert_eq!(
+            shell_history_file(program),
+            None,
+            "{program} has no default history file to read"
+        );
+    }
+}
+
+#[test]
+fn bash_history_parses_plain_lines_skipping_hash_led_ones() {
+    // The `#`-led lines are HISTTIMEFORMAT timestamps (or
+    // comments): never commands. Blank lines never seed.
+    assert_eq!(
+        parse_shell_history("bash", "git status\n#1690000000\necho hi\n\n   \nls -la\n"),
+        ["git status", "echo hi", "ls -la"]
+    );
+}
+
+#[test]
+fn zsh_history_strips_the_extended_metadata_prefix_and_passes_plain_lines() {
+    // Extended history writes `: <start>:<elapsed>;command`; a
+    // plain-format file has bare lines, and a pathological
+    // `: `-led command without the exact meta shape passes whole.
+    assert_eq!(
+        parse_shell_history(
+            "zsh",
+            ": 1690000000:5;git push\nls -la\n: not meta;echo hi\n"
+        ),
+        ["git push", "ls -la", ": not meta;echo hi"]
+    );
+}
+
+#[test]
+fn fish_history_takes_cmd_records_and_drops_multiline_heads() {
+    // A `- cmd:` record is one command; an indented continuation
+    // marks a multiline command whose head would be half a
+    // command, so the whole entry is dropped. `paths:` blocks
+    // never match the prefix.
+    assert_eq!(
+        parse_shell_history(
+            "fish",
+            "- cmd: git status\n  paths:\n    - foo\n- cmd: ls\n- cmd: echo done\n"
+        ),
+        ["ls", "echo done"]
+    );
+}
+
+#[test]
+fn an_unknown_shell_parses_to_nothing() {
+    assert!(parse_shell_history("nu", "git status").is_empty());
+    assert!(parse_shell_history("", "git status").is_empty());
+}
+
+#[test]
+fn the_parse_dedupes_keeping_the_most_recent_and_caps_the_tail() {
+    // A re-run command sits once, at its newest position; past
+    // the cap the oldest tail drops (file order is oldest first).
+    let contents = "first\nsecond\nfirst\nthird\n";
+    assert_eq!(
+        parse_shell_history("bash", contents),
+        ["second", "first", "third"]
+    );
+    let many = (0..=RING_CAP)
+        .map(|i| format!("cmd-{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let seeded = parse_shell_history("bash", &many);
+    assert_eq!(seeded.len(), RING_CAP);
+    assert_eq!(seeded.first().map(String::as_str), Some("cmd-1"));
+    assert_eq!(seeded.last().map(String::as_str), Some("cmd-256"));
+}
+
+#[test]
+fn seed_history_commits_in_order_deduping_and_capping() {
+    // Seeding is committing: oldest first lands newest at the
+    // back, duplicates never double-seat, the cap holds.
+    let mut suggest = Suggest::new();
+    suggest.seed_history(["ls".to_string(), "git status".to_string(), "ls".to_string()]);
+    assert_eq!(suggest.ring.len(), 2);
+    assert_eq!(suggest.ring.front().map(String::as_str), Some("git status"));
+    assert_eq!(suggest.ring.back().map(String::as_str), Some("ls"));
+    let seeded: Vec<String> = (0..=RING_CAP).map(|i| format!("cmd-{i}")).collect();
+    let mut suggest = Suggest::new();
+    suggest.seed_history(seeded);
+    assert_eq!(suggest.ring.len(), RING_CAP);
 }

@@ -716,6 +716,24 @@ fn command_catalog_from_path(path: Option<&str>) -> Vec<String> {
     names.into_iter().collect()
 }
 
+/// The history seed's one-time read (history-seed spec): the shell's
+/// own persistent history file under the spawn-time HOME — the
+/// per-shell default location, read once at spawn and never written,
+/// any IO failure degrading to an empty seed (silence, never a
+/// guess). The allowlist is implicit in the file mapping: a program
+/// with no standard history file seeds nothing.
+fn shell_history_seed(program: &str, home: Option<&str>) -> Vec<String> {
+    let Some(file) = suggest::shell_history_file(program) else {
+        return Vec::new();
+    };
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    fs::read_to_string(Path::new(home).join(file))
+        .map(|contents| suggest::parse_shell_history(program, &contents))
+        .unwrap_or_default()
+}
+
 impl Terminal {
     // TODO: error handling
     #[expect(
@@ -852,7 +870,20 @@ impl Terminal {
             timer: CommandTimer::default(),
             command_finished: None,
             settle_prompt_pending: false,
-            suggest: Suggest::new(),
+            suggest: {
+                // The history seed (history-seed spec): read once at
+                // spawn, only on a tab whose autosuggestions are on —
+                // a disabled feature never touches the file — and
+                // only via the shell-gated default location.
+                let mut suggest = Suggest::new();
+                if options.autosuggestions_enabled {
+                    suggest.seed_history(shell_history_seed(
+                        &options.spawned_program,
+                        options.spawn_home.as_deref(),
+                    ));
+                }
+                suggest
+            },
             search_regex_opt: None,
             search_value: String::new(),
             shell_pid,

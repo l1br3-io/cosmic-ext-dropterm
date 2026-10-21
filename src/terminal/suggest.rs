@@ -18,8 +18,8 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
-use std::collections::VecDeque;
-use std::path::Path;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use super::engine::WINDOW_BG_COLOR;
@@ -206,6 +206,17 @@ impl Suggest {
     pub(crate) fn typed_segment<'a>(&self, before_cursor: &'a str) -> Option<&'a str> {
         before_cursor.strip_prefix(self.anchor.as_deref()?)
     }
+
+    /// Seeds the ring before the first update (history-seed spec):
+    /// each entry commits in order, so the caller feeds oldest first
+    /// and the most recent lands at the back — the same seat live
+    /// captures take. Reuses [`commit`]'s dedupe, promote, and cap, so
+    /// a seeded ring is indistinguishable from a well-lived-in one.
+    pub(crate) fn seed_history(&mut self, entries: impl IntoIterator<Item = String>) {
+        for entry in entries {
+            commit(&mut self.ring, &entry);
+        }
+    }
 }
 
 impl Default for Suggest {
@@ -330,9 +341,11 @@ fn history_candidate(typed: &str, ring: &VecDeque<String>) -> Option<String> {
 
 /// The path provider's candidate function (path-suggest spec):
 /// complete the trailing token's final component from the parent's
-/// reduced listing — first match in sorted order wins (directory
-/// order carries no length meaning; the ruled policy), directories
-/// suffixed `/`, the suffix stopping at the completed component.
+/// reduced listing — a unique match completes fully (directories
+/// suffixed `/`), an ambiguous field completes the **longest prefix
+/// every match shares** (the fish common-prefix rule: a guess among
+/// live alternatives is a wrong suffix half the time, the shared
+/// prefix is right always), and no shared extension is silence.
 /// Dotfiles match only a `.`-prefixed typed component (the shell
 /// convention). Gated on the config toggle, the spawn allowlist, and
 /// the listing itself; the escape rule decides the rest — an entry
@@ -349,16 +362,45 @@ fn path_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
         Some(idx) => &token[idx + 1..],
         None => "",
     };
-    let (name, is_dir) = listing.iter().find(|(name, is_dir)| {
-        name.starts_with(component)
-            && (*is_dir || name.len() > component.len())
-            && (component.starts_with('.') || !name.starts_with('.'))
-    })?;
-    let mut remainder = name[component.len()..].to_string();
-    if *is_dir {
-        remainder.push('/');
+    let matches: Vec<&(String, bool)> = listing
+        .iter()
+        .filter(|(name, is_dir)| {
+            name.starts_with(component)
+                && (*is_dir || name.len() > component.len())
+                && (component.starts_with('.') || !name.starts_with('.'))
+        })
+        .collect();
+    if matches.is_empty() {
+        return None;
     }
-    escape_for_shell(&remainder)
+    let completion = if matches.len() == 1 {
+        let (name, is_dir) = matches[0];
+        let mut remainder = name[component.len()..].to_string();
+        if *is_dir {
+            remainder.push('/');
+        }
+        remainder
+    } else {
+        // The listing is sorted, so the first and last matches bound
+        // every match: their shared prefix is the field's shared
+        // prefix.
+        let prefix = shared_prefix(&matches[0].0, &matches[matches.len() - 1].0);
+        if prefix.len() <= component.len() {
+            return None;
+        }
+        prefix[component.len()..].to_string()
+    };
+    escape_for_shell(&completion)
+}
+
+/// The longest prefix two names share, cut on a char boundary — the
+/// ambiguous field's common completion.
+fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
+    let mut end = first.len().min(last.len());
+    while end > 0 && (!first.is_char_boundary(end) || !last.starts_with(&first[..end])) {
+        end -= 1;
+    }
+    &first[..end]
 }
 
 /// The command-name provider's candidate function (command-catalog
@@ -408,25 +450,39 @@ const ESCAPED_CHARS: [char; 19] = [
 const WHITELIST_PUNCT: &str = "-_./:=,+@%^{}";
 
 /// Escapes one matched entry's remainder for the shell (the ruled
-/// escape sets; the path and command-name providers ride it alike):
-/// ASCII alphanumerics and the whitelist ride verbatim, the
-/// escapable set takes a backslash, and anything else — a newline, a
-/// control character, a byte outside the conservative sets — is not
-/// certainly safe to write, so the whole suggestion degrades to
-/// `None`. The suffix-fit rule measures this escaped form.
+/// escape sets, extended by the quote tier; the path and command-name
+/// providers ride it alike), in two tiers: ASCII alphanumerics and
+/// the whitelist ride verbatim with the escapable set backslashed —
+/// byte-identical to the phase-1 form for everything it covered —
+/// and a remainder that reaches past both sets, when every character
+/// is printable and quote-free, rides whole inside single quotes
+/// instead (`café` becomes `'café'`). Single quotes are literal to
+/// the POSIX shells and fish alike, so the quoted form is certainly
+/// safe to write where a bare one is not. What still silences: a
+/// control character (a newline, a bell), and a name needing the
+/// quote tier that itself contains a quote — never a wrong suffix.
+/// The suffix-fit rule measures whichever escaped form wins.
 fn escape_for_shell(raw: &str) -> Option<String> {
-    let mut escaped = String::with_capacity(raw.len());
-    for c in raw.chars() {
-        if c.is_ascii_alphanumeric() || WHITELIST_PUNCT.contains(c) {
-            escaped.push(c);
-        } else if ESCAPED_CHARS.contains(&c) {
-            escaped.push('\\');
-            escaped.push(c);
-        } else {
-            return None;
+    let verbatim = |c: char| c.is_ascii_alphanumeric() || WHITELIST_PUNCT.contains(c);
+    if raw
+        .chars()
+        .all(|c| verbatim(c) || ESCAPED_CHARS.contains(&c))
+    {
+        let mut escaped = String::with_capacity(raw.len());
+        for c in raw.chars() {
+            if verbatim(c) {
+                escaped.push(c);
+            } else {
+                escaped.push('\\');
+                escaped.push(c);
+            }
         }
+        return Some(escaped);
     }
-    Some(escaped)
+    if raw.chars().all(|c| !c.is_control() && c != '\'') {
+        return Some(format!("'{raw}'"));
+    }
+    None
 }
 
 /// One provider's candidate function, keyed by its variant — the
@@ -550,6 +606,122 @@ pub(crate) fn is_allowlisted_shell(program: &str) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| SHELL_ALLOWLIST.contains(&name))
+}
+
+/// One seeded history line's length bound (history-seed spec): a
+/// pasted blob's enormous line is not a completion's working set, so
+/// it never takes a ring seat.
+const HISTORY_ENTRY_MAX: usize = 4096;
+
+/// The shell's own persistent history file (history-seed spec): the
+/// per-shell default location under the spawn-time HOME, relative so
+/// the engine joins it. Only the three shells with a standard
+/// persistent file seed — `sh`, `dash`, `ksh`, `csh`, and `tcsh` have
+/// no default everyone agrees on, so they stay scrape-only, and a
+/// non-allowlisted program is silence as everywhere. The user's own
+/// `HISTFILE` override is not visible at spawn (only HOME and PATH
+/// are), so the default location is the honest truth read.
+pub(crate) fn shell_history_file(program: &str) -> Option<PathBuf> {
+    match Path::new(program).file_name()?.to_str()? {
+        "bash" => Some(PathBuf::from(".bash_history")),
+        "zsh" => Some(PathBuf::from(".zsh_history")),
+        "fish" => Some(PathBuf::from(".local/share/fish/fish_history")),
+        _ => None,
+    }
+}
+
+/// Parses a shell history file's bytes into seed entries
+/// (history-seed spec): the per-shell format's conservative read —
+/// bash's plain lines (its `#`-led timestamp/comment lines skipped),
+/// zsh's plain lines with the extended-history `: <start>:<elapsed>;`
+/// prefix stripped when a line carries the exact shape, and fish's
+/// `- cmd: ` records with multiline commands' heads dropped whole
+/// (their indented tails would seed half a command). Blank and
+/// oversized lines never seed. The result is oldest-first, deduped
+/// keeping each command's most recent occurrence, capped to the last
+/// [`RING_CAP`] entries — exactly the shape a well-lived-in ring
+/// would have arrived at on its own.
+pub(crate) fn parse_shell_history(program: &str, contents: &str) -> Vec<String> {
+    let shell = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut parsed: Vec<String> = match shell {
+        "bash" => contents
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(ToString::to_string)
+            .collect(),
+        "zsh" => contents
+            .lines()
+            .map(|line| zsh_command(line).to_string())
+            .collect(),
+        "fish" => parse_fish_history(contents),
+        _ => return Vec::new(),
+    };
+    parsed.retain(|entry| !entry.trim().is_empty() && entry.chars().count() <= HISTORY_ENTRY_MAX);
+    // Newest-last dedupe: walk backwards keeping first sightings, then
+    // restore file order — the same seat a live re-type promotes to.
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for entry in parsed.iter().rev() {
+        if seen.insert(entry.as_str()) {
+            unique.push(entry.clone());
+            if unique.len() == RING_CAP {
+                break;
+            }
+        }
+    }
+    unique.reverse();
+    unique
+}
+
+/// One zsh history line's command: the extended-history metadata
+/// prefix (`: <start>:<elapsed>;`) stripped when the line carries the
+/// exact digits-colon-digits shape, the line itself otherwise — a
+/// plain-format file and a pathological `: `-led command both pass
+/// through whole.
+fn zsh_command(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix(": ") else {
+        return line;
+    };
+    let Some((meta, command)) = rest.split_once(';') else {
+        return line;
+    };
+    let shaped = meta.split_once(':').is_some_and(|(start, elapsed)| {
+        !start.is_empty()
+            && !elapsed.is_empty()
+            && start.chars().all(|c| c.is_ascii_digit())
+            && elapsed.chars().all(|c| c.is_ascii_digit())
+    });
+    if shaped { command } else { line }
+}
+
+/// fish's YAML-ish history records: one command per `- cmd: ` line,
+/// with a multiline command's head dropped when its indented
+/// continuation follows (seeding half a command is seeding a wrong
+/// one). The `paths:` blocks and other records never match the
+/// prefix and contribute nothing.
+fn parse_fish_history(contents: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut pending: Option<String> = None;
+    for line in contents.lines() {
+        if let Some(command) = line.strip_prefix("- cmd: ") {
+            if let Some(head) = pending.take() {
+                entries.push(head);
+            }
+            pending = Some(command.to_string());
+        } else if line.starts_with(char::is_whitespace) {
+            // An indented tail: the pending head is half a command.
+            pending = None;
+        } else if let Some(head) = pending.take() {
+            entries.push(head);
+        }
+    }
+    if let Some(head) = pending {
+        entries.push(head);
+    }
+    entries
 }
 
 /// The accept splitter (autosuggest spec): fish's forward-word shape

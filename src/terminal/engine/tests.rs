@@ -1234,6 +1234,34 @@ fn no_path_at_all_is_the_empty_catalog() {
     assert!(command_catalog_from_path(Some("")).is_empty());
 }
 
+// --- the history seed's one-time read (history-seed) ---
+
+#[test]
+fn the_history_seed_reads_the_shells_default_file_under_home() {
+    let home = catalog_fixture("histfile");
+    std::fs::write(home.join(".bash_history"), "old\n#1234\ngit status\n")
+        .expect("fixture history");
+    assert_eq!(
+        shell_history_seed("bash", Some(home.to_string_lossy().as_ref())),
+        ["old".to_string(), "git status".to_string()],
+        "the default location under HOME, parsed by the shell's format"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_history_seed_silences_on_unknown_shell_no_home_or_missing_file() {
+    // Never a guess: a shell without a standard history file, no
+    // HOME to join onto, or a file that does not read — all empty.
+    let home = catalog_fixture("histfile-silent");
+    assert!(shell_history_seed("ssh", Some(home.to_string_lossy().as_ref())).is_empty());
+    assert!(shell_history_seed("bash", None).is_empty());
+    assert!(
+        shell_history_seed("bash", Some(home.join("absent").to_string_lossy().as_ref())).is_empty()
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 // --- the scrolled-back getter (status-scrolled spec) ---
 //
 // The band's chip reads `display_offset` — state only the grid
