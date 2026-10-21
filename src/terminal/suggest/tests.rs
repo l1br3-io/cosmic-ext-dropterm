@@ -1123,6 +1123,113 @@ fn a_bare_trailing_space_is_no_subcommand_word_at_all() {
     assert_eq!(step_typed("git ", &mut suggest), None);
 }
 
+#[test]
+fn a_flag_prefixed_token_completes_from_any_argument_seat() {
+    // OQ 2: git genuinely accepts flags before and after
+    // subcommands alike, so a `--`-prefixed trailing token consults
+    // the command's flag list from any argument seat — and the
+    // hyphens ride verbatim through the escape rule's whitelist.
+    let mut suggest = specs_suggest();
+    let after = step_typed("git checkout --dr", &mut suggest)
+        .expect("the flag seat answers past a subcommand");
+    assert_eq!(after.suffix, "y-run");
+    assert_eq!(after.source, SuggestionSource::Specs);
+    let mut suggest = specs_suggest();
+    let before =
+        step_typed("git --dr", &mut suggest).expect("the flag seat answers at the first seat");
+    assert_eq!(before.suffix, "y-run");
+}
+
+#[test]
+fn flag_matches_follow_the_ruled_policy() {
+    // The same policy the subcommand seat pins: `--v` lands on the
+    // alphabetically-first of git's equal-length --verbose and
+    // --version (shortest wins, ties alphabetical), and a fully
+    // typed --dry-run has nothing left to add (the match must
+    // extend).
+    let mut suggest = specs_suggest();
+    let tied = step_typed("git checkout --v", &mut suggest).expect("a tie still answers");
+    assert_eq!(tied.suffix, "erbose");
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed("git checkout --dry-run", &mut suggest),
+        None,
+        "the exactly-typed flag suggests nothing"
+    );
+}
+
+#[test]
+fn the_five_commands_subcommands_answer_their_seats() {
+    // One behavioral sample per command beyond git — the table pin
+    // below holds the membership; these prove the entries reach the
+    // seat (`docker p` also re-pins the tie rule on fresh data:
+    // pull and push tie, pull wins alphabetically).
+    let mut suggest = specs_suggest();
+    let tied = step_typed("docker p", &mut suggest).expect("docker's seat answers");
+    assert_eq!(tied.suffix, "ull");
+    let mut suggest = specs_suggest();
+    let stopped = step_typed("systemctl st", &mut suggest).expect("systemctl's seat answers");
+    assert_eq!(
+        stopped.suffix, "op",
+        "stop is the shortest of start/status/stop"
+    );
+    let mut suggest = specs_suggest();
+    let installed = step_typed("npm i", &mut suggest).expect("npm's seat answers");
+    assert_eq!(installed.suffix, "nstall");
+}
+
+#[test]
+fn a_command_outside_the_table_stays_silent() {
+    // The provider is silent, never a guess: python3 is not one of
+    // the five, so its argument seats answer nothing.
+    let mut suggest = specs_suggest();
+    assert_eq!(step_typed("python3 wha", &mut suggest), None);
+}
+
+#[test]
+fn the_table_pins_the_five_curated_commands_and_their_shape() {
+    // The ruled v1 set, pinned as data: exactly the five, no
+    // others. Every entry ASCII, non-empty, trimmed — safe to
+    // write by construction, so a careless future entry fails
+    // here, never a shell — every list strictly sorted (which is
+    // what makes ties-alphabetical hold), and every flag
+    // `--`-shaped while no subcommand is dash-led.
+    let mut commands: Vec<_> = SPECS.iter().map(|spec| spec.command).collect();
+    commands.sort_unstable();
+    assert_eq!(commands, ["cargo", "docker", "git", "npm", "systemctl"]);
+    for spec in SPECS {
+        pin_shape(spec.command, spec.subcommands, "subcommand");
+        pin_shape(spec.command, spec.flags, "flag");
+    }
+}
+
+/// One table list's shape pin: ASCII, non-empty, trimmed, strictly
+/// sorted, and `--`-shaped exactly when it is a flag list.
+fn pin_shape(command: &str, entries: &[&str], list: &str) {
+    for entry in entries {
+        assert!(!entry.is_empty(), "{command} {list}: an empty entry");
+        assert!(entry.is_ascii(), "{command} {list}: {entry} leaves ASCII");
+        assert_eq!(
+            entry.trim(),
+            *entry,
+            "{command} {list}: {entry} carries whitespace"
+        );
+        assert_eq!(
+            entry.starts_with("--"),
+            list == "flag",
+            "{command} {list}: {entry} sits in the wrong list"
+        );
+    }
+    for pair in entries.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{command} {list}: {} must sort ahead of {}",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
 // --- the common-prefix helper ---
 
 #[test]

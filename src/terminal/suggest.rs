@@ -456,20 +456,53 @@ struct CommandSpec {
     command: &'static str,
     /// Its high-traffic subcommands.
     subcommands: &'static [&'static str],
+    /// Its long flags — uniform across subcommands in v1 (the flat
+    /// table; per-subcommand flag trees are the growth path's, not
+    /// v1's). No short flags, ruled: a single-choice ghost pays a
+    /// wrong accept for a wrong guess.
+    flags: &'static [&'static str],
 }
 
-/// The curated-specs table (flag-specs spec, OQ 5): v1's curated
-/// command set — seeded with git and cargo, grown to the ruled
-/// five when the flag seat lands. Static in-code data by ruling:
-/// no runtime derivation from `--help`, no user-editable file;
-/// the lookup sits behind `specs_candidate` alone, so the growth
-/// path (a loadable data file) touches neither merge nor guards.
+/// The curated-specs table (flag-specs spec, OQ 5): the ruled v1
+/// five — git, cargo, docker, systemctl, npm. Curated means
+/// curated: no attempt at completeness. Static in-code data by
+/// ruling: no runtime derivation from `--help`, no user-editable
+/// file; the lookup sits behind `specs_candidate` alone, so the
+/// growth path (a loadable data file) touches neither merge nor
+/// guards.
 const SPECS: &[CommandSpec] = &[
     CommandSpec {
         command: "cargo",
         subcommands: &[
             "build", "check", "clean", "doc", "fetch", "fix", "fmt", "init", "install", "publish",
             "run", "test", "update",
+        ],
+        flags: &[
+            "--bin",
+            "--frozen",
+            "--lib",
+            "--locked",
+            "--manifest-path",
+            "--offline",
+            "--quiet",
+            "--release",
+            "--verbose",
+        ],
+    },
+    CommandSpec {
+        command: "docker",
+        subcommands: &[
+            "build", "commit", "cp", "create", "exec", "images", "inspect", "logs", "pull", "push",
+            "rm", "rmi", "run", "start", "stop", "version",
+        ],
+        flags: &[
+            "--detach",
+            "--env",
+            "--interactive",
+            "--name",
+            "--publish",
+            "--tty",
+            "--volume",
         ],
     },
     CommandSpec {
@@ -500,26 +533,83 @@ const SPECS: &[CommandSpec] = &[
             "switch",
             "tag",
         ],
+        flags: &[
+            "--all",
+            "--amend",
+            "--branch",
+            "--dry-run",
+            "--force",
+            "--global",
+            "--help",
+            "--interactive",
+            "--message",
+            "--quiet",
+            "--set-upstream",
+            "--verbose",
+            "--version",
+        ],
+    },
+    CommandSpec {
+        command: "npm",
+        subcommands: &[
+            "ci",
+            "config",
+            "install",
+            "publish",
+            "run",
+            "test",
+            "uninstall",
+            "update",
+        ],
+        flags: &[
+            "--global",
+            "--legacy-peer-deps",
+            "--prefix",
+            "--registry",
+            "--save-dev",
+            "--save-exact",
+            "--verbose",
+        ],
+    },
+    CommandSpec {
+        command: "systemctl",
+        subcommands: &[
+            "daemon-reload",
+            "disable",
+            "enable",
+            "restart",
+            "start",
+            "status",
+            "stop",
+        ],
+        flags: &["--force", "--host", "--no-pager", "--quiet", "--type"],
     },
 ];
 
 /// The specs provider's context carve (flag-specs spec): the line's
-/// command word and the trailing token, when the trailing token
-/// holds the subcommand seat — the **first** argument seat, ruled:
-/// once any argument holds it, a later word never consults the
-/// subcommand table. `None` is no specs context: the command word
-/// itself being entered (the catalog's seat) or a later argument
-/// seat.
+/// command word and the trailing token, when the token holds a
+/// seat the table answers. A `--`-prefixed token is the **flag
+/// seat**, consulted from any argument seat (OQ 2: git accepts
+/// flags before and after subcommands alike — the flat table's
+/// approximation of fish's per-subcommand gating, which is where
+/// the growth path refines if the table ever grows flags worth
+/// separating). Any other token is the **subcommand seat**, the
+/// first argument seat only (ruled: once an argument holds it, a
+/// later word never consults the subcommand table). `None` is no
+/// specs context: the command word itself being entered (the
+/// catalog's seat) or a later non-flag argument seat.
 fn specs_context(typed: &str) -> Option<(&str, &str)> {
     if is_command_position(typed) {
         return None;
     }
     let token = trailing_token(typed);
     let completed = completed_words(&typed[..typed.len() - token.len()]);
-    if completed.len() != 1 {
-        return None;
+    let command = *completed.first()?;
+    if token.starts_with("--") || completed.len() == 1 {
+        Some((command, token))
+    } else {
+        None
     }
-    Some((completed[0], token))
 }
 
 /// The typed segment's completed shell words (flag-specs spec):
@@ -547,10 +637,13 @@ fn completed_words(typed: &str) -> Vec<&str> {
 }
 
 /// The curated-specs provider's candidate function (flag-specs
-/// spec): complete the trailing token from the curated table's
-/// subcommand list — strict prefix, must extend, shortest wins,
-/// ties alphabetical, the catalog's ruled match policy reused
-/// verbatim (the table's sorted lists make `min_by_key` keep the
+/// spec): complete the trailing token from the curated table —
+/// subcommands at the subcommand seat, `--`-prefixed long flags
+/// from any argument seat (no short flags, ruled: the collision
+/// space with bundled short flags is guesswork in a single-choice
+/// ghost). Strict prefix, must extend, shortest wins, ties
+/// alphabetical — the catalog's ruled match policy reused verbatim
+/// (the table's sorted lists make `min_by_key` keep the
 /// alphabetically-first of equal-length ties). A bare trailing
 /// space is no word at all (the catalog's empty-word rule, one
 /// policy across providers), and the suffix rides
@@ -567,8 +660,12 @@ fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
         return None;
     }
     let spec = SPECS.iter().find(|spec| spec.command == command)?;
-    let entry = spec
-        .subcommands
+    let entries = if token.starts_with("--") {
+        spec.flags
+    } else {
+        spec.subcommands
+    };
+    let entry = entries
         .iter()
         .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
         .min_by_key(|entry| entry.len())?;
