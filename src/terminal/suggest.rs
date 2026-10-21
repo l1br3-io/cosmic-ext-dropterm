@@ -42,6 +42,10 @@ pub(crate) enum SuggestionSource {
     /// (path-suggest spec) — local-machine knowledge, gated on the
     /// spawn allowlist.
     Path,
+    /// The curated-specs table (flag-specs spec): subcommands and
+    /// long flags of a hand-curated command set — universal
+    /// knowledge, riding the same spawn allowlist gate by ruling.
+    Specs,
     /// The executable names of the spawn-time `$PATH`
     /// (command-catalog spec) — local-machine knowledge, gated on
     /// the same spawn allowlist.
@@ -115,6 +119,13 @@ pub(crate) struct Observation<'a> {
     /// History is unaffected: `false` restores phase-1 behavior
     /// exactly.
     pub(crate) commands_enabled: bool,
+    /// The curated-specs provider's config gate (flag-specs spec):
+    /// `autosuggestions_specs_enabled` as resolved into the
+    /// terminal's options — engine-`true` until the config key
+    /// lands (the catalog's CC-3 precedent, ruled OQ 4); a live
+    /// flip applies at the next typed prefix. History is
+    /// unaffected: `false` restores the provider's absence exactly.
+    pub(crate) specs_enabled: bool,
     /// The command-name provider's reduced snapshot (command-catalog
     /// spec): the sorted executable basenames of the spawn-time
     /// `$PATH`, walked once at spawn — borrowed from the engine's
@@ -319,10 +330,8 @@ fn source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::History => 0,
         SuggestionSource::Path => 1,
-        // The specs variant (flag-specs) slots between path and
-        // catalog when it lands, renumbering there — never
-        // reordering.
-        SuggestionSource::Catalog => 2,
+        SuggestionSource::Specs => 2,
+        SuggestionSource::Catalog => 3,
     }
 }
 
@@ -435,6 +444,137 @@ fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     escape_for_shell(&name[word.len()..])
 }
 
+/// One curated command's completion table (flag-specs spec): the
+/// hand-curated high-traffic subcommands and long flags — every
+/// entry ASCII, non-empty, and trimmed by construction, pinned by
+/// test, so a table entry is safe to write by construction. The
+/// lists are sorted, which is what makes the ruled tiebreak
+/// (shortest wins, ties alphabetical) fall out of `min_by_key` the
+/// same way the sorted catalog's does.
+struct CommandSpec {
+    /// The command word this entry completes.
+    command: &'static str,
+    /// Its high-traffic subcommands.
+    subcommands: &'static [&'static str],
+}
+
+/// The curated-specs table (flag-specs spec, OQ 5): v1's curated
+/// command set — seeded with git and cargo, grown to the ruled
+/// five when the flag seat lands. Static in-code data by ruling:
+/// no runtime derivation from `--help`, no user-editable file;
+/// the lookup sits behind `specs_candidate` alone, so the growth
+/// path (a loadable data file) touches neither merge nor guards.
+const SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        command: "cargo",
+        subcommands: &[
+            "build", "check", "clean", "doc", "fetch", "fix", "fmt", "init", "install", "publish",
+            "run", "test", "update",
+        ],
+    },
+    CommandSpec {
+        command: "git",
+        subcommands: &[
+            "add",
+            "branch",
+            "checkout",
+            "cherry-pick",
+            "clone",
+            "commit",
+            "diff",
+            "fetch",
+            "init",
+            "log",
+            "merge",
+            "mv",
+            "pull",
+            "push",
+            "rebase",
+            "reset",
+            "restore",
+            "revert",
+            "rm",
+            "show",
+            "stash",
+            "status",
+            "switch",
+            "tag",
+        ],
+    },
+];
+
+/// The specs provider's context carve (flag-specs spec): the line's
+/// command word and the trailing token, when the trailing token
+/// holds the subcommand seat — the **first** argument seat, ruled:
+/// once any argument holds it, a later word never consults the
+/// subcommand table. `None` is no specs context: the command word
+/// itself being entered (the catalog's seat) or a later argument
+/// seat.
+fn specs_context(typed: &str) -> Option<(&str, &str)> {
+    if is_command_position(typed) {
+        return None;
+    }
+    let token = trailing_token(typed);
+    let completed = completed_words(&typed[..typed.len() - token.len()]);
+    if completed.len() != 1 {
+        return None;
+    }
+    Some((completed[0], token))
+}
+
+/// The typed segment's completed shell words (flag-specs spec):
+/// split on unescaped whitespace — a backslash-escaped space keeps
+/// its word open, the same carve `is_command_position` and
+/// `trailing_token` perform. The trailing (still-open) word is not
+/// included.
+fn completed_words(typed: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (idx, c) in typed.char_indices() {
+        if c.is_whitespace() && !escaped {
+            if idx > start {
+                words.push(&typed[start..idx]);
+            }
+            start = idx + c.len_utf8();
+        }
+        escaped = c == '\\';
+    }
+    if start < typed.len() {
+        words.push(&typed[start..]);
+    }
+    words
+}
+
+/// The curated-specs provider's candidate function (flag-specs
+/// spec): complete the trailing token from the curated table's
+/// subcommand list — strict prefix, must extend, shortest wins,
+/// ties alphabetical, the catalog's ruled match policy reused
+/// verbatim (the table's sorted lists make `min_by_key` keep the
+/// alphabetically-first of equal-length ties). A bare trailing
+/// space is no word at all (the catalog's empty-word rule, one
+/// policy across providers), and the suffix rides
+/// `escape_for_shell` like every provider even though the table is
+/// safe by construction. Gated on the config toggle and the shared
+/// spawn allowlist (OQ 1: one gate is simpler to explain); an
+/// unknown command is silence, never a guess.
+fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.specs_enabled || !obs.paths_eligible {
+        return None;
+    }
+    let (command, token) = specs_context(typed)?;
+    if token.is_empty() {
+        return None;
+    }
+    let spec = SPECS.iter().find(|spec| spec.command == command)?;
+    let entry = spec
+        .subcommands
+        .iter()
+        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .min_by_key(|entry| entry.len())?;
+    escape_for_shell(&entry[token.len()..])
+}
+
 /// The characters a suggested suffix backslash-escapes (path-suggest
 /// spec, ruled at clarification): whitespace and the POSIX-and-fish
 /// shell metacharacters — the bytes that are certainly safe to write
@@ -498,6 +638,7 @@ fn provider_candidate(
     match source {
         SuggestionSource::History => history_candidate(typed, &suggest.ring),
         SuggestionSource::Path => path_candidate(typed, obs),
+        SuggestionSource::Specs => specs_candidate(typed, obs),
         SuggestionSource::Catalog => catalog_candidate(typed, obs),
     }
 }
@@ -515,6 +656,7 @@ fn merged_candidate(
     let mut providers = [
         SuggestionSource::History,
         SuggestionSource::Path,
+        SuggestionSource::Specs,
         SuggestionSource::Catalog,
     ];
     providers.sort_by_key(|&source| source_rank(source));

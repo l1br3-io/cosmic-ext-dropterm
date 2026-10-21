@@ -10,6 +10,7 @@ fn obs() -> Observation<'static> {
         paths_enabled: true,
         path_listing: None,
         commands_enabled: true,
+        specs_enabled: true,
         command_catalog: &[],
         focused: true,
         foreground_child: false,
@@ -524,19 +525,20 @@ fn the_spawn_gate_rejects_non_shells_unknown_shells_and_nothing_at_all() {
 fn source_rank_pins_the_ruled_priority() {
     // The ruled priority, stated as data: history answers first —
     // the tab's own truth — then path, then the curated specs,
-    // then the command catalog. The specs variant lands with the
-    // flag-specs module and slots between path and catalog
-    // (renumbering there, never reordering). Each later module
-    // appends its variant here; the ranks must keep strictly
-    // increasing in exactly this order.
+    // then the command catalog (the specs variant slots between
+    // path and catalog, renumbering there, never reordering). Each
+    // later module appends its variant here; the ranks must keep
+    // strictly increasing in exactly this order.
     let ruled_order = [
         SuggestionSource::History,
         SuggestionSource::Path,
+        SuggestionSource::Specs,
         SuggestionSource::Catalog,
     ];
     assert_eq!(source_rank(SuggestionSource::History), 0);
     assert_eq!(source_rank(SuggestionSource::Path), 1);
-    assert_eq!(source_rank(SuggestionSource::Catalog), 2);
+    assert_eq!(source_rank(SuggestionSource::Specs), 2);
+    assert_eq!(source_rank(SuggestionSource::Catalog), 3);
     for pair in ruled_order.windows(2) {
         assert!(
             source_rank(pair[0]) < source_rank(pair[1]),
@@ -901,10 +903,15 @@ fn the_catalog_completes_a_command_word_at_command_position() {
 #[test]
 fn argument_position_never_reaches_the_catalog() {
     // The catalog completes the command word only: once a second
-    // word is open, nothing it knows applies.
+    // word is open, nothing it knows applies. `git che` does
+    // answer — from the specs table (flag-specs' headline case),
+    // never the catalog; `echo he` stays silent end to end.
     let names = catalog(&["git", "echo"]);
     let mut suggest = catalog_suggest();
-    assert_eq!(step_word("git che", &names, &mut suggest), None);
+    let shown = step_word("git che", &names, &mut suggest).expect("the specs table answers");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    let mut suggest = catalog_suggest();
     assert_eq!(step_word("echo he", &names, &mut suggest), None);
 }
 
@@ -1004,6 +1011,116 @@ fn a_catalog_name_the_shell_would_mangle_escapes_quotes_or_silences() {
     let mut suggest = catalog_suggest();
     let quoted = step_word("caf", &odd, &mut suggest).expect("the printable name quotes safely");
     assert_eq!(quoted.suffix, "'é'");
+}
+
+// --- the curated-specs provider (flag-specs) ---
+
+/// The specs provider's suggest: adopted with a ring that never
+/// matches, so history's seat stays empty and the specs table is
+/// the one answering.
+fn specs_suggest() -> Suggest {
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("vim notes".to_string());
+    suggest.ring = ring;
+    suggest
+}
+
+/// One anchored step with `typed` after the "$ " anchor — the
+/// specs provider's end-to-end shape (no listing, no catalog: the
+/// specs table is the only provider that can answer).
+fn step_typed(typed: &str, suggest: &mut Suggest) -> Option<Showing> {
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+#[test]
+fn the_specs_complete_a_subcommand_prefix_with_provenance() {
+    // `git che` finishes to the table's checkout — the strict
+    // prefix, the must-extend, and shortest-wins all met — with
+    // the specs provenance the merge carries. The suffix rides
+    // `escape_for_shell` like every provider; the table's
+    // alphanumeric entries pass it verbatim.
+    let mut suggest = specs_suggest();
+    let shown = step_typed("git che", &mut suggest).expect("the specs answer the subcommand seat");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn the_command_word_stays_the_catalogs_seat() {
+    // `gi` is the command word being entered: the specs table
+    // never completes it — the spawn catalog answers as before.
+    let names = catalog(&["git"]);
+    let mut suggest = specs_suggest();
+    let shown = step_word("gi", &names, &mut suggest).expect("the catalog answers its seat");
+    assert_eq!(shown.suffix, "t");
+    assert_eq!(shown.source, SuggestionSource::Catalog);
+}
+
+#[test]
+fn the_specs_gates_each_silence_the_provider() {
+    // One mutated field each: the config gate off, and the spawn
+    // gate shut — the ssh honesty line, riding the same gate as
+    // paths and catalog by ruling (OQ 1).
+    let before = String::from("$ git che");
+    let gated = Observation {
+        specs_enabled: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        ..obs()
+    };
+    let mut suggest = specs_suggest();
+    assert_eq!(step(&gated, &mut suggest), None);
+    let ineligible = Observation {
+        paths_eligible: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        ..obs()
+    };
+    let mut suggest = specs_suggest();
+    assert_eq!(step(&ineligible, &mut suggest), None);
+}
+
+#[test]
+fn history_outranks_specs_when_both_match() {
+    // The merge's ruled priority: after one real `git checkout
+    // main`, the specs table never gets the seat.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("git checkout main".to_string());
+    suggest.ring = ring;
+    let shown = step_typed("git che", &mut suggest).expect("someone answers");
+    assert_eq!(shown.suffix, "ckout main", "the tab's own truth first");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
+fn subcommands_complete_only_at_the_first_argument_seat() {
+    // Once a subcommand (or any argument) holds the first seat, a
+    // later trailing word never consults the subcommand table.
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed("git checkout che", &mut suggest),
+        None,
+        "a later argument seat never consults subcommands"
+    );
+    let mut suggest = specs_suggest();
+    assert_eq!(step_typed("git stash dr", &mut suggest), None);
+}
+
+#[test]
+fn a_bare_trailing_space_is_no_subcommand_word_at_all() {
+    // The catalog's empty-word rule, one policy across providers:
+    // `git ` with the space echoed carries no word to match.
+    let mut suggest = specs_suggest();
+    assert_eq!(step_typed("git ", &mut suggest), None);
 }
 
 // --- the common-prefix helper ---

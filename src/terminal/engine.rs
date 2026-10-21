@@ -119,6 +119,13 @@ pub struct TerminalOptions {
     /// `set_config` pass, so a showing catalog ghost disappears the
     /// moment the toggle lands while history keeps suggesting.
     pub autosuggestions_commands_enabled: bool,
+    /// Whether the curated-specs provider joins the autosuggest
+    /// merge (flag-specs spec): `autosuggestions_specs_enabled` —
+    /// engine-`true` until the config key lands (the catalog's
+    /// CC-3 precedent, ruled OQ 4); flips apply at the next
+    /// `set_config` pass, so a showing specs ghost disappears the
+    /// moment the toggle lands while history keeps suggesting.
+    pub autosuggestions_specs_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -137,6 +144,7 @@ impl Default for TerminalOptions {
             spawn_path: None,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
+            autosuggestions_specs_enabled: true,
         }
     }
 }
@@ -496,6 +504,11 @@ pub struct Terminal {
     /// at every `set_config`. The snapshot itself is spawn truth and
     /// never re-walks.
     autosuggestions_commands_enabled: bool,
+    /// Whether the curated-specs provider joins the merge
+    /// (flag-specs spec) — the resolved options flag, re-read at
+    /// every `set_config`. The table itself is static universal
+    /// knowledge; only the gate is state.
+    autosuggestions_specs_enabled: bool,
     /// The program the tab is spawned as (path-suggest spec) — spawn
     /// truth fixed for the terminal's life; the path provider's
     /// allowlist gate reads it at every observation build.
@@ -861,6 +874,7 @@ impl Terminal {
             autosuggestions_enabled: options.autosuggestions_enabled,
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
+            autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
             spawned_program: options.spawned_program.clone(),
             spawn_home: options.spawn_home.clone(),
             command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
@@ -1442,6 +1456,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_specs_enabled != options.autosuggestions_specs_enabled {
+            self.autosuggestions_specs_enabled = options.autosuggestions_specs_enabled;
+            update = true;
+        }
+
         // The ghost tint recomputes from the (possibly just-copied)
         // scheme — three channel averages, cheaper than the diff that
         // guards them.
@@ -1641,6 +1660,7 @@ impl Terminal {
                         paths_enabled: self.autosuggestions_paths_enabled,
                         path_listing,
                         commands_enabled: self.autosuggestions_commands_enabled,
+                        specs_enabled: self.autosuggestions_specs_enabled,
                         command_catalog: &self.command_catalog,
                         focused: self.is_focused,
                         foreground_child,
