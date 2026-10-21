@@ -35,3 +35,15 @@ The rules specific to command names:
 - The catalog is *local-machine* knowledge (it lists the spawn-time `$PATH`), so it rides the same shell gate as paths: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting. A profile's env-map `PATH` is the PATH it completes from.
 - Names the shell would mangle are backslash-escaped (`my cmd` suggests `my\ cmd`); a printable name past those sets rides single-quoted, and a name neither form can save suggests nothing at all.
 - Toggle with `autosuggestions_commands_enabled` (default `true`); a flip applies at the next typed prefix, and `false` restores history-only suggestions exactly.
+
+## Subcommands and flags
+
+`git che` ghosts `ckout`. The second word of a command line - the subcommand - and a `--`-prefixed long flag complete from a small curated table: five commands (git, cargo, docker, systemctl, npm), their high-traffic subcommands and long flags, hand-curated and built in. The same ghost, the same keys - and history still outranks the table: a command you have run before wins over any curated entry.
+
+The rules specific to the curated table:
+
+- Subcommands complete only at the first argument seat - the word right after the command. Once a subcommand (or any argument) holds that seat (`git checkout che`), the table has nothing to say; a later word stays history's (and paths') territory.
+- Long flags complete from any argument seat: `git --dr` and `git checkout --dr` ghost the same flag, because git genuinely accepts flags before and after subcommands alike. Short flags (`-x`) never complete - the collision space with bundled short flags is guesswork, and a single-choice ghost pays a wrong accept for a wrong guess.
+- The match policy is the command catalog's: strict prefix, must extend, shortest match wins, ties broken alphabetically. `git che` suggests `checkout` (the shortest of the table's `che` entries), `docker p` suggests `pull` ahead of `push`, and a fully typed entry suggests nothing.
+- Commands outside the five are silent - the provider never guesses. The table is universal knowledge (it describes git, not this machine), but it rides the same shell gate as paths and the catalog: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting. `python3 wha` ghosts nothing.
+- The table is curated, not derived: nothing runs `--help`, nothing reads man pages, and there is no data file to edit. No toggle yet - the provider is always on wherever its shell gate holds, and its config key is a planned follow-up.
