@@ -1139,12 +1139,15 @@ impl Terminal {
         }
     }
 
-    /// The showing suggestion's suffix (autosuggest spec) — the only
-    /// thing the widget renders; `None` renders nothing.
+    /// The showing suggestion's visible string (autosuggest +
+    /// ghost-fit specs) — the clipped display the widget shapes;
+    /// `None` renders nothing, and an empty visible (below the
+    /// three-column draw threshold) renders nothing while the showing
+    /// still accepts. The accept path carries the full suffix.
     pub fn suggestion(&self) -> Option<&str> {
         self.suggest
             .showing()
-            .map(|showing| showing.suffix.as_str())
+            .map(|showing| showing.visible.as_str())
     }
 
     /// The shared spawn gate (path-suggest + command-catalog specs):

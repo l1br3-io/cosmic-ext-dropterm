@@ -913,14 +913,16 @@ where
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
 
-        // The ghost-text overlay (autosuggest spec): the showing
-        // suffix as dim glyphs starting one cell past the cursor —
-        // an overlay like the cursor quad, never the grid and never
-        // the terminal's own buffer, so selection, search, scrollback,
-        // and copy see nothing. Cached in State keyed on suffix +
-        // metrics + cell width + tint (the paragraph-cache precedent);
-        // the columns guard already guarantees the fit, and the view
-        // clip is defensive.
+        // The ghost-text overlay (autosuggest + ghost-fit specs): the
+        // showing's visible string as dim glyphs starting one cell
+        // past the cursor — an overlay like the cursor quad, never
+        // the grid and never the terminal's own buffer, so selection,
+        // search, scrollback, and copy see nothing. The clip already
+        // guaranteed the fit, and an empty visible (below the
+        // three-column draw threshold) fills nothing while the showing
+        // still accepts. Cached in State keyed on the visible string
+        // + metrics + cell width + tint (the paragraph-cache
+        // precedent); the view clip is defensive.
         {
             let (cursor_point, display_offset) = {
                 let term = terminal.term.lock();
@@ -930,19 +932,20 @@ where
                 )
             };
             if display_offset == 0
-                && let Some(suffix) = terminal.suggestion().map(str::to_string)
+                && let Some(visible) = terminal.suggestion().map(str::to_string)
+                && !visible.is_empty()
             {
                 let size = terminal.size();
                 let metrics = terminal.with_buffer(Buffer::metrics);
                 let tint = terminal.ghost_color();
-                let key = (suffix.clone(), metrics, size.cell_width, tint);
+                let key = (visible.clone(), metrics, size.cell_width, tint);
                 let mut cache = state.ghost.borrow_mut();
                 let entry = match cache.take() {
                     Some(entry) if entry.0 == key => entry,
                     _ => (
                         key,
                         Arc::new(ghost_buffer(
-                            &suffix,
+                            &visible,
                             metrics,
                             size.cell_width,
                             tint,
@@ -2265,13 +2268,14 @@ fn update_buffer_drag(
 /// The ghost overlay's cache key: everything a rebuild depends on.
 type GhostKey = (String, Metrics, f32, cosmic_text::Color);
 
-/// Shapes the ghost overlay's one-line buffer (autosuggest spec): the
-/// suffix in the terminal's own font and metrics, monospaced to the
-/// cell width, tinted the engine's ghost color — inert pixels laid
-/// over the cells after the cursor, never the grid, never the
+/// Shapes the ghost overlay's one-line buffer (autosuggest +
+/// ghost-fit specs): the visible string — the clipped display, whole
+/// when it fits — in the terminal's own font and metrics, monospaced
+/// to the cell width, tinted the engine's ghost color — inert pixels
+/// laid over the cells after the cursor, never the grid, never the
 /// terminal's own cosmic-text buffer.
 fn ghost_buffer(
-    suffix: &str,
+    visible: &str,
     metrics: Metrics,
     cell_width: f32,
     tint: cosmic_text::Color,
@@ -2280,7 +2284,7 @@ fn ghost_buffer(
     let attrs = default_attrs.clone().color(tint);
     let mut buffer = Buffer::new_empty(metrics);
     buffer.set_wrap(Wrap::None);
-    buffer.set_text(suffix, &attrs, Shaping::Advanced, None);
+    buffer.set_text(visible, &attrs, Shaping::Advanced, None);
     buffer.set_monospace_width(Some(cell_width));
     {
         let mut font_system = font_system().write().unwrap();
@@ -2302,11 +2306,11 @@ pub struct State {
     autoscroll: DragAutoscroll,
     preedit: Option<input_method::Preedit>,
     /// The ghost-text overlay's cache (autosuggest spec): the shaped
-    /// one-line buffer plus the key it was built for — suffix,
-    /// metrics, cell width, tint. Rebuilt only when the key changes;
-    /// `None` when nothing has shown yet. Interior-mutable because
-    /// `draw` receives the tree state by shared reference (the
-    /// scrollbar rect's `Cell` precedent).
+    /// one-line buffer plus the key it was built for — the visible
+    /// string it shapes, metrics, cell width, tint. Rebuilt only when
+    /// the key changes; `None` when nothing has shown yet.
+    /// Interior-mutable because `draw` receives the tree state by
+    /// shared reference (the scrollbar rect's `Cell` precedent).
     ghost: RefCell<Option<(GhostKey, Arc<Buffer>)>>,
 }
 

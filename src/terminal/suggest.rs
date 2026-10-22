@@ -70,8 +70,14 @@ pub enum AcceptKind {
 /// cosmic-text buffer; inert pixels until an accept key sends it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Showing {
-    /// Bytes after the cursor, sent verbatim on accept.
+    /// The full escaped suffix an accept key writes — whole, even
+    /// when only a prefix renders.
     pub(crate) suffix: String,
+    /// What the widget draws: the longest prefix of `suffix` fitting
+    /// the free columns minus two, followed by `…` — or, with fewer
+    /// than three free columns, empty (nothing draws; the showing
+    /// survives for accept).
+    pub(crate) visible: String,
     /// Provenance.
     pub(crate) source: SuggestionSource,
 }
@@ -292,11 +298,11 @@ pub(crate) fn step(obs: &Observation<'_>, suggest: &mut Suggest) -> Option<Showi
 /// The guard chain (autosuggest spec): every condition must hold, and
 /// each one's failure alone means silence — config off, unfocused, a
 /// foreground child, scrolled back, off the bottom row, unanchored, a
-/// line that left the anchor, an empty typed segment, no candidate
-/// from any provider, or a suffix that would cross the line end
-/// (clip-don't-wrap drops it). The candidate itself comes from the
-/// merged seam's dispatch; the guards and the fit rule apply after
-/// the merge, unchanged.
+/// line that left the anchor, an empty typed segment, or no candidate
+/// from any provider. The candidate itself comes from the merged
+/// seam's dispatch; the guards apply after the merge, unchanged. A
+/// too-wide suffix no longer silences (ghost-fit spec): the display
+/// clips to the free columns, and the accept stays whole.
 fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
     if !obs.enabled
         || !obs.focused
@@ -313,12 +319,15 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
     }
     let (suffix, source) = merged_candidate(typed, suggest, obs)?;
     // The fit is grid cells, not chars: the ghost starts one cell
-    // past the cursor and must end inside the line.
+    // past the cursor, and a too-wide one clips to what fits rather
+    // than wrapping onto a grid row it does not own.
     let remaining = obs.columns.saturating_sub(obs.cursor_column + 1);
-    if cell_width(&suffix) > remaining {
-        return None;
-    }
-    Some(Showing { suffix, source })
+    let visible = clip_visible(&suffix, remaining);
+    Some(Showing {
+        suffix,
+        visible,
+        source,
+    })
 }
 
 /// The merge policy, ruled at clarification: history answers first —
@@ -984,6 +993,39 @@ pub(crate) fn split_word(suffix: &str) -> (&str, &str) {
 /// (autosuggest spec).
 fn cell_width(text: &str) -> usize {
     text.chars().map(|c| usize::from(!c.is_ascii()) + 1).sum()
+}
+
+/// The clip-to-fit display (ghost-fit spec, fish 3.7.1 parity): what
+/// the widget draws of a too-wide suffix — the longest prefix fitting
+/// `remaining − 2` cells under `cell_width`'s estimate (so a
+/// two-cell character at the cut drops whole, never half-drawn),
+/// followed by the two-cell `…`. With fewer than three free columns
+/// nothing draws at all — `…` needs its two reserved cells plus one
+/// cell of suffix, and a cut with no marker is never shipped, because
+/// the whole accept path depends on the user knowing there is more
+/// than they can see. A suffix that fits draws whole: `visible ==
+/// suffix`, marker-free.
+fn clip_visible(suffix: &str, remaining: usize) -> String {
+    if cell_width(suffix) <= remaining {
+        return suffix.to_string();
+    }
+    if remaining < 3 {
+        return String::new();
+    }
+    let budget = remaining - 2;
+    let mut end = 0;
+    let mut used = 0;
+    for (idx, c) in suffix.char_indices() {
+        let width = usize::from(!c.is_ascii()) + 1;
+        if used + width > budget {
+            break;
+        }
+        used += width;
+        end = idx + c.len_utf8();
+    }
+    let mut visible = suffix[..end].to_string();
+    visible.push('…');
+    visible
 }
 
 /// The ghost tint (autosuggest spec, OQ-2): the scheme's foreground

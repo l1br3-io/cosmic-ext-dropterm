@@ -147,16 +147,54 @@ fn guard_empty_suffix_yields_none() {
 }
 
 #[test]
-fn guard_suffix_crossing_the_line_end_yields_none() {
-    // Three columns remain after the cursor; "t status" needs
-    // eight. Clip, don't wrap — wrong-cell ghost text is worse
-    // than none.
+fn a_suffix_crossing_the_line_end_clips_to_fit_with_an_ellipsis() {
+    // Five columns remain after the cursor; "t status" needs eight.
+    // Fish's exact rule (ghost-fit spec): the display clips to the
+    // longest prefix fitting free-minus-two — "t s" at three cells —
+    // then the two-cell `…`, and the accept still writes the whole
+    // suffix. The old drop rule never survives this test.
     let mut suggest = adopted();
     let o = Observation {
-        columns: 8,
+        columns: 10,
         ..obs()
     };
-    assert_eq!(step(&o, &mut suggest), None);
+    let shown = step(&o, &mut suggest).expect("a too-wide suffix still shows, clipped");
+    assert_eq!(shown.suffix, "t status");
+    assert_eq!(shown.visible, "t s…");
+}
+
+#[test]
+fn below_three_free_columns_nothing_draws_but_the_showing_survives_for_accept() {
+    // Two columns remain: below fish's three-column threshold the
+    // ghost renders not at all (a cut with no marker is never
+    // shipped), yet the showing stays alive — Right still writes the
+    // full suffix; the widget skips the empty fill.
+    let mut suggest = adopted();
+    let o = Observation {
+        columns: 7,
+        ..obs()
+    };
+    let shown = step(&o, &mut suggest).expect("the showing survives below the draw threshold");
+    assert_eq!(shown.suffix, "t status");
+    assert_eq!(shown.visible, "");
+    assert_eq!(suggest.take_suffix().as_deref(), Some("t status"));
+}
+
+#[test]
+fn an_accept_stays_whole_when_only_a_prefix_renders() {
+    // The clip is display-only: with the visible part truncated,
+    // `take_suffix` still answers the full suffix and the word
+    // splitter splits the real one — Right writes everything, and
+    // Alt+Right takes a fish-shaped word of what is actually there.
+    let mut suggest = adopted();
+    let o = Observation {
+        columns: 10,
+        ..obs()
+    };
+    let shown = step(&o, &mut suggest).expect("the clipped showing exists");
+    assert_eq!(shown.visible, "t s…");
+    assert_eq!(suggest.take_suffix().as_deref(), Some("t status"));
+    assert_eq!(split_word("t status"), ("t", " status"));
 }
 
 #[test]
@@ -171,7 +209,13 @@ fn clear_case_yields_the_most_recent_match_suffix() {
 #[test]
 fn suffix_fit_measures_grid_cells_not_chars() {
     // "中文" is two chars but four cells: it fits four remaining
-    // columns and drops at three — by chars both would fit.
+    // columns whole — and at three the clip's budget is one cell, so
+    // the two-cell 中 drops whole rather than half-drawn: the
+    // visible is the two-cell `…` alone, and the accept still
+    // carries both characters. (In-run ruling: this test's drops
+    // case is the third flip beyond the chunk's two — its remaining
+    // columns sit at exactly three, where the ruled clip draws the
+    // marker instead of nothing.)
     let mut suggest = adopted();
     let mut ring = VecDeque::new();
     ring.push_back("echo中文".to_string());
@@ -185,13 +229,19 @@ fn suffix_fit_measures_grid_cells_not_chars() {
         columns: 11,
         ..typing
     };
-    let drops = Observation {
+    let clips = Observation {
         columns: 10,
         ..typing
     };
-    let shown = step(&fits, &mut suggest).expect("four cells fit four columns");
-    assert_eq!(shown.suffix, "中文");
-    assert_eq!(step(&drops, &mut suggest), None);
+    let whole = step(&fits, &mut suggest).expect("four cells fit four columns");
+    assert_eq!(whole.suffix, "中文");
+    assert_eq!(
+        whole.visible, "中文",
+        "an exact fit draws whole, marker-free"
+    );
+    let clipped = step(&clips, &mut suggest).expect("a too-wide suffix still shows, clipped");
+    assert_eq!(clipped.suffix, "中文");
+    assert_eq!(clipped.visible, "…");
 }
 
 #[test]
@@ -817,10 +867,11 @@ fn a_spawn_gate_shut_silences_the_path_provider() {
 }
 
 #[test]
-fn the_escaped_suffix_fits_in_grid_cells_or_drops() {
+fn the_clip_measures_the_escaped_form() {
     // "\ file.txt" is ten cells; the cursor sits at column 6, so
-    // seventeen columns fit and sixteen drop — the fit rule
-    // measures the escaped form.
+    // seventeen columns fit it whole and sixteen clip it — the clip
+    // measures the escaped form, budgeting seven cells of prefix
+    // plus the two-cell `…`.
     let entries = listing(&[("my file.txt", false)]);
     let mut suggest = adopted();
     let before = String::from("$ ~/my");
@@ -831,15 +882,17 @@ fn the_escaped_suffix_fits_in_grid_cells_or_drops() {
         path_listing: Some(&entries),
         ..obs()
     };
-    let drops = Observation {
+    let clips = Observation {
         columns: 16,
         ..fits
     };
-    assert_eq!(
-        step(&fits, &mut suggest).map(|s| s.suffix),
-        Some("\\ file.txt".to_string())
-    );
-    assert_eq!(step(&drops, &mut suggest), None);
+    let whole = step(&fits, &mut suggest).expect("the escaped suffix fits whole");
+    assert_eq!(whole.suffix, "\\ file.txt");
+    assert_eq!(whole.visible, "\\ file.txt");
+    let clipped =
+        step(&clips, &mut suggest).expect("a too-wide escaped suffix still shows, clipped");
+    assert_eq!(clipped.suffix, "\\ file.txt");
+    assert_eq!(clipped.visible, "\\ file.…");
 }
 
 #[test]
