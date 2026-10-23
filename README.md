@@ -30,7 +30,7 @@ See [Building](#building) below.
 
 ## Status
 
-DropTerm v0.2.0 is released — see [Installing](#installing). Development continues toward the next release on the [roadmap](ROADMAP.md)'s v3 and Later lines; the feature list below describes the current main build.
+DropTerm v0.2.0 is released — see [Installing](#installing); [release notes](docs/releases.md) curate what each version changed. Development continues toward the next release on the [roadmap](ROADMAP.md)'s v3 and Later lines; the feature list below describes the current main build.
 
 ## Building
 
@@ -76,8 +76,9 @@ No COSMIC shortcut configured yet? You can still open and dismiss the overlay fr
 
 The details live in the `docs/` directory:
 
+- [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
-- [Configuration](docs/configuration.md) - all 43 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 50 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
@@ -87,7 +88,9 @@ The details live in the `docs/` directory:
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
+- [FAQ](docs/faq.md) - the recurring questions, answered directly
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
+- [Release notes](docs/releases.md) - what each tagged release changed, curated and linked
 - [Research & decision log](docs/research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives
 - [Development](docs/development.md) - the dev loop and running without a shortcut
 - [Testing](docs/testing.md) - the manual test checklist every change answers to
@@ -111,6 +114,10 @@ A few known rough edges — the clipboard's invisible anchor window, the surface
 - Flatpak packaging (until COSMIC exposes layer-shell/toplevel protocols to sandboxes)
 - Built-in global hotkey registration (no GlobalShortcuts portal on COSMIC yet)
 - Wrapping an external terminal emulator (may be reconsidered later; see the ROADMAP)
+
+## Contributing
+
+The dev loop, the verification bar, and the module map: [Development](docs/development.md), [Testing](docs/testing.md), [Architecture](docs/architecture.md). Runtime behavior is only testable on real COSMIC hardware, so the manual checklist is the contract every change answers to.
 
 ## Credits
 

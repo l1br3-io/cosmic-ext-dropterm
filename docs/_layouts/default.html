@@ -227,6 +227,7 @@
         <h2>Overview</h2>
         <ul>
           <li><a href="{{ '/' | relative_url }}" {% if cur == '/' or cur == '/index.html' %}class="active"{% endif %}>Introduction</a></li>
+          <li><a href="{{ '/howto/' | relative_url }}" {% if cur == '/howto/' or cur == '/howto.html' %}class="active"{% endif %}>Common tasks</a></li>
         </ul>
       </section>
       <section class="nav-group">
@@ -237,6 +238,8 @@
           <li><a href="{{ '/cli/' | relative_url }}" {% if cur == '/cli/' or cur == '/cli.html' %}class="active"{% endif %}>CLI reference</a></li>
           <li><a href="{{ '/applet/' | relative_url }}" {% if cur == '/applet/' or cur == '/applet.html' %}class="active"{% endif %}>Panel applet</a></li>
           <li><a href="{{ '/known-issues/' | relative_url }}" {% if cur == '/known-issues/' or cur == '/known-issues.html' %}class="active"{% endif %}>Known issues</a></li>
+          <li><a href="{{ '/faq/' | relative_url }}" {% if cur == '/faq/' or cur == '/faq.html' %}class="active"{% endif %}>FAQ</a></li>
+          <li><a href="{{ '/releases/' | relative_url }}" {% if cur == '/releases/' or cur == '/releases.html' %}class="active"{% endif %}>Release notes</a></li>
         </ul>
       </section>
       <section class="nav-group">

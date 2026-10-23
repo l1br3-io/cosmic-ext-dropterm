@@ -44,13 +44,12 @@ High-level feature list.
 
 - [x] improve tab bar ux
 - [ ] improve docs
+- [ ] hide app to tray
 - [ ] improve autocomplete feature
-- [ ] make app version and cross platform, currently its only serve as an applet. 
 
-## Non-goals
+# bugs
 
-- Non-COSMIC compositors
-- X11 support
-- Flatpak packaging
-- Built-in global hotkey registration
-- Wrapping an external terminal emulator
+- when toggling to show the terminal, it should focus on the editor
+
+- editable default profile
+- app is not hidden from alt tab

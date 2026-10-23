@@ -10,10 +10,12 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 
 ## Start here
 
-- [Configuration](configuration.md) - all 43 config keys, profiles, and direct editing
+- [Common tasks](howto.md) - the task-shaped entry point: the exact key or verb for what you want to do
+- [Configuration](configuration.md) - all 50 config keys, profiles, and direct editing
 - [Keybindings](keybindings.md) - every default chord and how to rebind
 - [CLI reference](cli.md) - scripting the running instance: new tabs, the tab verbs, `--is-visible`
 - [Panel applet](applet.md) - toggling DropTerm and reading its state from the COSMIC panel
+- [FAQ](faq.md) - the recurring questions, answered directly
 
 ## In depth
 
@@ -23,6 +25,7 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 - [Theming](theming.md) - the Application theme pin and the 12 built-in color schemes
 - [Slide animation](animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](bell.md) - hidden-terminal bells and the per-tab latch
+- [Release notes](releases.md) - what each tagged release changed, curated and linked
 
 ## Building and contributing
 

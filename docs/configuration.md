@@ -6,7 +6,7 @@ DropTerm keeps every setting in RON files under one directory and reloads them l
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each of the 43 keys is its own file in that directory. Edit one directly:
+Each of the 50 keys is its own file in that directory. Edit one directly:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -14,6 +14,57 @@ echo 'Left' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/h_align
 ```
 
 Most keys are editable in the [settings drawer](settings.md); the exceptions write themselves (`settings_drawer_width`) or wait for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
+
+## The default config directory
+
+What a fresh configuration carries - every key that has a default, with the file's whole content as its value (a genuine string quoted; an enum, a number, or a bool bare). Pinned to the code by a test, so it cannot drift:
+
+| Key file | Content |
+|---|---|
+| `height_percent` | `40` |
+| `width_percent` | `100` |
+| `h_align` | `Center` |
+| `edge` | `Top` |
+| `tab_position` | `Auto` |
+| `tab_title_mode` | `Shell` |
+| `layer` | `Overlay` |
+| `keyboard_mode` | `Exclusive` |
+| `respect_panel` | `false` |
+| `font_name` | `"Noto Sans Mono"` |
+| `font_size` | `14` |
+| `color_scheme_dark` | `"COSMIC Dark"` |
+| `color_scheme_light` | `"COSMIC Light"` |
+| `opacity` | `100` |
+| `scrollback_lines` | `10000` |
+| `hide_on_focus_loss` | `true` |
+| `session_persistence_enabled` | `true` |
+| `slide_animation_enabled` | `true` |
+| `bell_notification_enabled` | `true` |
+| `command_finish_notification_enabled` | `true` |
+| `command_finish_notification_after_secs` | `5` |
+| `new_tab_after_current` | `true` |
+| `close_confirmation_enabled` | `true` |
+| `settings_drawer_click_close` | `true` |
+| `theme_preference` | `System` |
+| `new_tab_cwd` | `Inherit` |
+| `status_bar_enabled` | `true` |
+| `status_bar_show_process` | `true` |
+| `status_bar_show_path` | `true` |
+| `status_bar_show_branch` | `true` |
+| `status_bar_show_profile` | `true` |
+| `status_bar_show_grid` | `true` |
+| `status_bar_show_tab` | `true` |
+| `status_bar_show_zoom` | `true` |
+| `status_bar_show_clock` | `true` |
+| `status_bar_show_duration` | `true` |
+| `status_bar_show_scrollback` | `true` |
+| `tab_bar_border` | `true` |
+| `status_bar_border` | `true` |
+| `autosuggestions_enabled` | `true` |
+| `autosuggestions_paths_enabled` | `true` |
+| `autosuggestions_commands_enabled` | `true` |
+
+The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
 
 ## Geometry
 

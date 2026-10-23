@@ -1700,6 +1700,56 @@ fn every_config_key_is_documented() {
     }
 }
 
+/// The pristine-config sample in docs/configuration.md is drift-gated
+/// the same way: every serialized key must appear in the "The default
+/// config directory" section, and every scalar default must ride its
+/// key's row as the exact file content the docs claim (enums bare,
+/// genuine strings quoted, numbers and bools literal). Keys whose
+/// default is unset (`None`) or an empty container belong to the
+/// section's no-file list instead — presence there satisfies the
+/// row lookup. A default changed in code fails here until the sample
+/// follows; the sample can never drift from the struct.
+#[test]
+fn every_config_keys_default_is_sampled() {
+    let defaults = serde_json::to_value(DropTermConfig::default())
+        .expect("config serializes")
+        .as_object()
+        .expect("config serializes to a map")
+        .clone();
+    assert!(!defaults.is_empty(), "default enumeration came back empty");
+
+    let docs = include_str!("../../docs/configuration.md");
+    let (_, rest) = docs
+        .split_once("## The default config directory")
+        .expect("docs/configuration.md carries the default-config sample section");
+    let section = rest
+        .split_once("\n## ")
+        .map_or(rest, |(section, _)| section);
+
+    for (key, default) in &defaults {
+        let row = section
+            .lines()
+            .find(|line| line.contains(&format!("`{key}`")))
+            .unwrap_or_else(|| {
+                panic!(
+                    "config key `{key}` is missing from the default-config sample in docs/configuration.md"
+                )
+            });
+        let literal = match default {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => default.to_string(),
+            serde_json::Value::Null => continue,
+            serde_json::Value::Array(items) if items.is_empty() => continue,
+            serde_json::Value::Object(map) if map.is_empty() => continue,
+            other => panic!("config key `{key}` has an unsupported sample default: {other}"),
+        };
+        assert!(
+            row.contains(&literal),
+            "the sample row for `{key}` must carry its default `{literal}`"
+        );
+    }
+}
+
 #[test]
 fn missing_autosuggestions_paths_key_loads_as_true() {
     // A config from a version before path completion: no
