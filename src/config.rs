@@ -216,6 +216,16 @@ pub struct DropTermConfig {
     /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
     /// Applies on the next show. Default: cover.
     pub respect_panel: bool,
+    /// Whether the app keeps a presence in the dock and window
+    /// switcher (shell-presence spec): `true` holds a mapped 1×1
+    /// anchor toplevel open for the process lifetime — the entry the
+    /// switcher and dock list; `false` (the default) swaps the anchor
+    /// for an invisible never-destroyed layer surface, leaving the
+    /// panel applet, the toggle shortcut, and the CLI as the summon
+    /// paths. The anchor's clipboard duty holds in both bodies; a
+    /// mid-session flip swaps them live and drops whatever is on the
+    /// clipboard once (the old binding dies with the old body).
+    pub show_in_dock: bool,
     /// Name of the Wayland output to show on. `None` follows the
     /// compositor's notion of the "active" output (usually the one under
     /// the cursor).
@@ -440,6 +450,7 @@ impl Default for DropTermConfig {
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
             respect_panel: false,
+            show_in_dock: false,
             output: None,
             shell: None,
             args: Vec::new(),

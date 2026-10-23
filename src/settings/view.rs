@@ -204,6 +204,7 @@ impl ConfigKey {
                 "Close the settings drawer by clicking the terminal"
             }
             ConfigKey::RespectPanel => "Respect panel",
+            ConfigKey::ShowInDock => "Show in dock and window switcher",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
             ConfigKey::DefaultCwd => "Default directory",
@@ -1147,6 +1148,7 @@ fn toggle_control(
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
+        ConfigKey::ShowInDock => config.show_in_dock,
         ConfigKey::StatusBarEnabled => config.status_bar_enabled,
         ConfigKey::TabBarBorder => config.tab_bar_border,
         ConfigKey::StatusBarBorder => config.status_bar_border,

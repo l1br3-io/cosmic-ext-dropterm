@@ -11,7 +11,7 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 ## Start here
 
 - [Common tasks](howto.md) - the task-shaped entry point: the exact key or verb for what you want to do
-- [Configuration](configuration.md) - all 50 config keys, profiles, and direct editing
+- [Configuration](configuration.md) - all 51 config keys, profiles, and direct editing
 - [Keybindings](keybindings.md) - every default chord and how to rebind
 - [CLI reference](cli.md) - scripting the running instance: new tabs, the tab verbs, `--is-visible`
 - [Panel applet](applet.md) - toggling DropTerm and reading its state from the COSMIC panel

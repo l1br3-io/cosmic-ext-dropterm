@@ -137,6 +137,7 @@ impl Section {
                 ConfigKey::AutosuggestionsCommandsEnabled,
             ],
             Section::Advanced => &[
+                ConfigKey::ShowInDock,
                 ConfigKey::RespectPanel,
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
@@ -155,7 +156,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (44 — default-spawn's two rows included).
+/// count (45 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -203,6 +204,11 @@ pub enum ConfigKey {
     Layer,
     KeyboardMode,
     RespectPanel,
+    /// The shell-presence toggle (shell-presence spec) — the Advanced
+    /// card's leading row: on keeps a dock and switcher entry, off
+    /// swaps the clipboard anchor for an invisible layer surface. The
+    /// flip applies live (the anchor swaps on the echo).
+    ShowInDock,
     ColorSchemeDark,
     ColorSchemeLight,
     ThemePreference,
@@ -342,6 +348,7 @@ impl ConfigKey {
             ConfigKey::Layer => "layer",
             ConfigKey::KeyboardMode => "keyboard_mode",
             ConfigKey::RespectPanel => "respect_panel",
+            ConfigKey::ShowInDock => "show_in_dock",
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
@@ -404,6 +411,10 @@ pub enum PlannedWrite {
     Layer(Layer),
     KeyboardMode(KeyboardMode),
     RespectPanel(bool),
+    /// The shell-presence flip (shell-presence spec): the clipboard
+    /// anchor swaps bodies live on the echo — whatever is on the
+    /// clipboard at flip time is lost once, the documented cost.
+    ShowInDock(bool),
     ColorSchemeDark(String),
     ColorSchemeLight(String),
     ThemePreference(ThemePreference),
@@ -480,6 +491,7 @@ impl PlannedWrite {
             PlannedWrite::Layer(_) => ConfigKey::Layer,
             PlannedWrite::KeyboardMode(_) => ConfigKey::KeyboardMode,
             PlannedWrite::RespectPanel(_) => ConfigKey::RespectPanel,
+            PlannedWrite::ShowInDock(_) => ConfigKey::ShowInDock,
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
@@ -598,6 +610,9 @@ impl PlannedWrite {
             }
             PlannedWrite::RespectPanel(value) => {
                 handler.set(ConfigKey::RespectPanel.key_name(), *value)
+            }
+            PlannedWrite::ShowInDock(value) => {
+                handler.set(ConfigKey::ShowInDock.key_name(), *value)
             }
             PlannedWrite::ColorSchemeDark(value) => {
                 handler.set(ConfigKey::ColorSchemeDark.key_name(), value)
@@ -843,7 +858,10 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
-        | ConfigKey::ThemePreference => ApplyTiming::Live,
+        | ConfigKey::ThemePreference
+        // The presence flip swaps the anchor on the echo itself
+        // (shell-presence spec): destroy, reopen, rebind — live.
+        | ConfigKey::ShowInDock => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
             ApplyTiming::NextShow
         }
@@ -2244,6 +2262,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SettingsDrawerClickClose(checked))
         }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
+        ConfigKey::ShowInDock => Some(PlannedWrite::ShowInDock(checked)),
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),

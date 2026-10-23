@@ -27,6 +27,9 @@ Each in its own way. Hiding preserves the *live* session - only the surface is d
 **Does copied text survive hiding the terminal?**
 Yes - DropTerm keeps an invisible anchor window alive for exactly this reason, so the clipboard binding (and your last copy) outlives every hide/show cycle. The mechanics are in [Known issues](known-issues.md).
 
+**Why doesn't DropTerm appear in the dock or Alt-Tab? Can I get it back?**
+That is the default: the app hides from both, and you summon it with your shortcut, the [panel applet](applet.md), or the CLI. If you would rather have a DropTerm entry to click, write `show_in_dock: true` - the trade is that the entry also joins Alt-Tab, because the dock icon and the switcher window are the same mapped window underneath ([configuration](configuration.md#layer-focus-and-panels)).
+
 **Why does the window flash or recreate when it hides?**
 Hiding destroys the layer surface and the next show builds a fresh one - deliberately, to sidestep a cosmic-comp bug other layer-shell clients hit when a surface is updated after its role is destroyed. You are seeing the designed path, not a glitch ([Known issues](known-issues.md)).
 
