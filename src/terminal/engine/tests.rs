@@ -1295,3 +1295,34 @@ fn scrolled_back_lines_reads_the_display_offset() {
     terminal.scroll(TerminalScroll::Bottom);
     assert_eq!(terminal.scrolled_back_lines(), 0);
 }
+
+// The caret is painted by the buffer build — the cursor cell's
+// fg/bg swap keys on the engine's focus flag — so the flag
+// flipping must arm a rebuild (the fix for the caret-less show:
+// a re-shown surface painted typed text but no cursor until
+// unrelated pty output happened to rebuild the lines, and a
+// non-focus-reporting shell like bash never emits any).
+
+#[test]
+fn a_real_focus_change_arms_the_buffer_rebuild_and_a_repeat_does_not() {
+    let mut terminal = spawn_grid_terminal();
+    // Construction leaves the engine focused; drain the spawn
+    // churn's arming so the assertions read only set_focused.
+    terminal.needs_update = false;
+
+    terminal.set_focused(false);
+    assert!(
+        terminal.needs_update,
+        "a real focus change must arm the rebuild that repaints the caret"
+    );
+
+    terminal.needs_update = false;
+    terminal.set_focused(false);
+    assert!(
+        !terminal.needs_update,
+        "a repeated focus report changes nothing and arms nothing"
+    );
+
+    terminal.set_focused(true);
+    assert!(terminal.needs_update, "flipping back is a real change");
+}

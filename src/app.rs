@@ -2239,6 +2239,20 @@ impl DropTerm {
                                 active,
                             },
                         );
+                    // The shown surface takes the caret with it: the
+                    // engine's focus flag — and the cursor cell's
+                    // paint, which only a buffer rebuild applies —
+                    // must be true for the first shown frame, not
+                    // whenever the compositor's `LayerFocused`
+                    // happens to land. `set_focused` no-ops when the
+                    // flag never dropped (the plain toggle cycle
+                    // reports no focus events to the pty), so this
+                    // only acts after a real focus loss left the
+                    // flag false and the caret unpainted — the
+                    // mirror of `focus_lost`'s `set_focused(false)`.
+                    if let Some(tab) = self.active() {
+                        tab.terminal.lock().unwrap().set_focused(true);
+                    }
                     return Task::batch([
                         geometry::apply_geometry(id, geom, output),
                         set_layer(id, surface::wlr_layer(self.config.layer)),

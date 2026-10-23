@@ -3,6 +3,7 @@
 How DropTerm is verified: headless unit tests for everything that needs no compositor, and this manual checklist for everything that does - runtime behavior is only testable on real COSMIC hardware. After building, check:
 - [ ] First launch shows the overlay at the configured edge, focused and ready for input
 - [ ] The bound shortcut hides and re-shows it
+- [ ] Caret on show: every toggle-show paints the block cursor at the prompt in the first shown frame - before any keystroke; the same after a focus-loss hide (click another app with `hide_on_focus_loss` on, then re-toggle) and in a bash tab (no focus reporting - nothing else repaints the caret), and switching tabs paints the newly active tab's caret the same way
 - [ ] A background job (`sleep 100 &`, shell history) survives a hide/show cycle
 - [ ] Alt-Tab identity: Wayland cannot unmap the clipboard-anchor toplevel, so the switcher (and the dock) list one DropTerm window - it carries the DropTerm name and icon via its application_id, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
 - [ ] Rapid repeated toggles (double key-press) don't crash or duplicate the surface
