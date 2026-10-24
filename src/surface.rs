@@ -58,12 +58,21 @@ pub fn uncapped_size_limits() -> Limits {
 /// Settings for the one-shot measuring surface (see the module docs).
 ///
 /// Always targets [`IcedOutput::Active`]: pinning to a named output is
-/// not configurable.
-pub fn measuring(id: window::Id) -> SctkLayerSurfaceSettings {
+/// not configurable. The configured [`KeyboardMode`] rides creation
+/// rather than the post-open re-assert in `SurfaceOpened`: the
+/// compositor hands a layer surface keyboard focus at map time only
+/// when it maps asking for it (cosmic-comp's `map_layer` →
+/// `Shell::set_focus`), and its later focus fixup is skipped outright
+/// when no window holds focus and the workspace's focus stack is
+/// empty — an empty desktop, exactly the session a drop-terminal
+/// exists for. Mapping with `None` and committing `Exclusive` after
+/// the first configure therefore never focused on an empty desktop;
+/// mapping with the mode grabs focus on the first frame everywhere.
+pub fn measuring(id: window::Id, mode: KeyboardMode) -> SctkLayerSurfaceSettings {
     SctkLayerSurfaceSettings {
         id,
         layer: WlrLayer::Overlay,
-        keyboard_interactivity: KeyboardInteractivity::None,
+        keyboard_interactivity: keyboard_interactivity(mode),
         anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
         output: IcedOutput::Active,
         // The app id, unadorned: the measuring surface is reshaped in
@@ -171,8 +180,28 @@ mod tests {
         // components resolve against desktop files — the app id, never a
         // placeholder, or the surface names as "unknown".
         assert_eq!(
-            measuring(window::Id::unique()).namespace,
+            measuring(window::Id::unique(), KeyboardMode::default()).namespace,
             crate::app::APP_ID
+        );
+    }
+
+    #[test]
+    fn measuring_maps_asking_for_the_configured_keyboard_focus() {
+        // The empty-desktop focus bug: a surface that maps with `None`
+        // and only commits `Exclusive` after the first configure is
+        // never focused when no other window holds focus — the
+        // compositor's map-time grant only fires for a surface asking
+        // at map, and its later focus fixup is skipped when the focus
+        // stack is empty. The configured mode must therefore ride
+        // creation, both modes pinning it (proven failing against the
+        // old `None`).
+        assert_eq!(
+            measuring(window::Id::unique(), KeyboardMode::default()).keyboard_interactivity,
+            KeyboardInteractivity::Exclusive
+        );
+        assert_eq!(
+            measuring(window::Id::unique(), KeyboardMode::OnDemand).keyboard_interactivity,
+            KeyboardInteractivity::OnDemand
         );
     }
 
