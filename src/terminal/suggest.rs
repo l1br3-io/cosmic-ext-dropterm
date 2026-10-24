@@ -163,13 +163,29 @@ pub(crate) struct Observation<'a> {
     /// closed the spawn settle, or the first update after a
     /// running→idle transition (the settle+finish ruling).
     pub(crate) fresh_prompt: bool,
+    /// The idle-delay display gate (suggest-delay spec):
+    /// `autosuggestions_delay_ms` as resolved into the terminal's
+    /// options — a qualifying candidate is withheld until the typed
+    /// segment has been stable this many milliseconds. `0` (the
+    /// default) is today's behavior bit-for-bit: fish parity, the
+    /// record's twice-proven ruling (VS Code's `minShowDelay`,
+    /// ble.sh's `complete_auto_delay`), the remedy opt-in.
+    pub(crate) delay_ms: u16,
+    /// How long the typed segment has been stable, engine-resolved
+    /// against the last `before_cursor` change (suggest-delay spec):
+    /// the model never touches a clock, so stability arrives as a
+    /// number. Any keystroke that changes the line restarts it, and
+    /// a fresh-prompt anchor adoption resets it (a new line is new
+    /// typing).
+    pub(crate) typed_idle_ms: u16,
 }
 
 /// The engine-owned autosuggest state (autosuggest spec): the adopted
 /// prompt anchor, the bounded history ring, the continuous idle-line
-/// capture, the foreground-diff flag, and the current showing. One
-/// per terminal — it dies with the terminal, so a respawn (a fresh
-/// terminal) resets history by construction.
+/// capture, the foreground-diff flag, the current showing, and the
+/// idle-delay withheld fact. One per terminal — it dies with the
+/// terminal, so a respawn (a fresh terminal) resets history by
+/// construction.
 pub(crate) struct Suggest {
     anchor: Option<String>,
     adopt_armed: bool,
@@ -177,6 +193,10 @@ pub(crate) struct Suggest {
     last_foreground_child: bool,
     ring: VecDeque<String>,
     showing: Option<Showing>,
+    /// A qualifying candidate is waiting out the idle-delay gate
+    /// (suggest-delay spec) — the engine's cue to expose a reveal
+    /// deadline and arm the one-shot tick.
+    withheld: bool,
 }
 
 impl Suggest {
@@ -191,6 +211,7 @@ impl Suggest {
             last_foreground_child: false,
             ring: VecDeque::new(),
             showing: None,
+            withheld: false,
         }
     }
 
@@ -198,6 +219,21 @@ impl Suggest {
     /// only thing the widget renders.
     pub(crate) fn showing(&self) -> Option<&Showing> {
         self.showing.as_ref()
+    }
+
+    /// Whether a qualifying candidate is waiting out the idle-delay
+    /// gate (suggest-delay spec) — the engine's cue that a reveal
+    /// deadline exists (its last-change Instant plus the resolved
+    /// delay); the model stays clock-free.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "transient: the engine's reveal-deadline reader consumes this with the engine wiring; the expect errors out the moment it does"
+        )
+    )]
+    pub(crate) fn withheld(&self) -> bool {
+        self.withheld
     }
 
     /// Whether an anchor is adopted — the engine's settle-prompt
@@ -291,8 +327,44 @@ pub(crate) fn step(obs: &Observation<'_>, suggest: &mut Suggest) -> Option<Showi
         suggest.capture = typed.to_string();
     }
 
-    suggest.showing = showing(obs, suggest);
+    let outcome = showing(obs, suggest);
+    suggest.showing = outcome.shown().cloned();
+    suggest.withheld = outcome.is_withheld();
     suggest.showing.clone()
+}
+
+/// The guard chain's outcome (suggest-delay spec): silence, a
+/// qualifying candidate the idle-delay gate holds back, or a showing
+/// the widget may draw. The withheld fact is the model's whole answer
+/// to "does a candidate wait?" — the engine pairs it with its own
+/// last-change Instant to expose the reveal deadline, keeping every
+/// clock out of the model.
+enum Outcome {
+    /// A guard failed or no provider answered: nothing exists to
+    /// show, now or at any deadline.
+    Silent,
+    /// A candidate qualified under the whole chain — provenance
+    /// known, only the reveal waits: the typed segment has not been
+    /// stable for `delay_ms` milliseconds.
+    Withheld,
+    /// A showing past every gate, the delay included.
+    Shown(Showing),
+}
+
+impl Outcome {
+    /// The showing past every gate — `None` while a candidate waits
+    /// or nothing qualifies.
+    fn shown(&self) -> Option<&Showing> {
+        match self {
+            Outcome::Shown(showing) => Some(showing),
+            _ => None,
+        }
+    }
+
+    /// Whether a qualifying candidate waits out the idle delay.
+    fn is_withheld(&self) -> bool {
+        matches!(self, Outcome::Withheld)
+    }
 }
 
 /// The guard chain (autosuggest spec): every condition must hold, and
@@ -301,29 +373,47 @@ pub(crate) fn step(obs: &Observation<'_>, suggest: &mut Suggest) -> Option<Showi
 /// line that left the anchor, an empty typed segment, or no candidate
 /// from any provider. The candidate itself comes from the merged
 /// seam's dispatch; the guards apply after the merge, unchanged. A
-/// too-wide suffix no longer silences (ghost-fit spec): the display
-/// clips to the free columns, and the accept stays whole.
-fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Option<Showing> {
+/// candidate younger than the idle delay is withheld, not silent
+/// (suggest-delay spec) — the outcome carries the difference so the
+/// engine can expose a reveal deadline. A too-wide suffix no longer
+/// silences (ghost-fit spec): the display clips to the free columns,
+/// and the accept stays whole.
+fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
     if !obs.enabled
         || !obs.focused
         || obs.foreground_child
         || obs.display_offset != 0
         || !obs.cursor_on_bottom_row
     {
-        return None;
+        return Outcome::Silent;
     }
-    let anchor = suggest.anchor.as_ref()?;
-    let typed = obs.before_cursor.strip_prefix(anchor)?;
+    let Some(anchor) = suggest.anchor.as_ref() else {
+        return Outcome::Silent;
+    };
+    let Some(typed) = obs.before_cursor.strip_prefix(anchor) else {
+        return Outcome::Silent;
+    };
     if typed.is_empty() {
-        return None;
+        return Outcome::Silent;
     }
-    let (suffix, source) = merged_candidate(typed, suggest, obs)?;
+    let Some((suffix, source)) = merged_candidate(typed, suggest, obs) else {
+        return Outcome::Silent;
+    };
+    // The display gate (suggest-delay spec): the candidate still
+    // computes — the model is pure and free — but a nonzero delay
+    // withholds the showing until the typed segment has been stable
+    // for that many milliseconds; any keystroke restarts the wait by
+    // resetting the engine-resolved idle fact. Default 0 is today's
+    // behavior bit-for-bit (fish parity, the record's ruling).
+    if obs.typed_idle_ms < obs.delay_ms {
+        return Outcome::Withheld;
+    }
     // The fit is grid cells, not chars: the ghost starts one cell
     // past the cursor, and a too-wide one clips to what fits rather
     // than wrapping onto a grid row it does not own.
     let remaining = obs.columns.saturating_sub(obs.cursor_column + 1);
     let visible = clip_visible(&suffix, remaining);
-    Some(Showing {
+    Outcome::Shown(Showing {
         suffix,
         visible,
         source,

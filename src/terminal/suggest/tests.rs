@@ -21,6 +21,10 @@ fn obs() -> Observation<'static> {
         before_cursor: "$ gi",
         after_cursor_blank: true,
         fresh_prompt: false,
+        // The idle-delay gate's clear case (suggest-delay spec):
+        // no delay, a line stable forever — today, bit-for-bit.
+        delay_ms: 0,
+        typed_idle_ms: u16::MAX,
     }
 }
 
@@ -259,6 +263,94 @@ fn take_suffix_yields_once_and_clears_the_showing_state() {
     assert_eq!(suggest.take_suffix(), None, "the suffix is spent");
     assert_eq!(suggest.showing(), None);
     assert_eq!(shown.suffix, "t status");
+}
+
+// --- the idle-delay display gate (suggest-delay) ---
+
+#[test]
+fn delay_zero_shows_on_the_same_update_as_today() {
+    // The default is fish parity, bit-for-bit: delay 0 opens the
+    // gate on the same update the candidate appears — even a
+    // zero-idle observation (the keystroke's own echo update)
+    // shows, and nothing is ever withheld.
+    let mut suggest = adopted();
+    let just_typed = Observation {
+        delay_ms: 0,
+        typed_idle_ms: 0,
+        ..obs()
+    };
+    let shown = step(&just_typed, &mut suggest).expect("delay 0 shows immediately");
+    assert_eq!(shown.suffix, "t status");
+    assert!(!suggest.withheld());
+}
+
+#[test]
+fn a_candidate_younger_than_the_delay_is_withheld_not_shown() {
+    // The gate's silence: 100 ms into a 300 ms wait the ghost is
+    // None — yet the withheld fact tells the engine a candidate
+    // waits, so it can expose a reveal deadline. Silence with no
+    // candidate at all carries no such fact.
+    let mut suggest = adopted();
+    let young = Observation {
+        delay_ms: 300,
+        typed_idle_ms: 100,
+        ..obs()
+    };
+    assert_eq!(step(&young, &mut suggest), None);
+    assert_eq!(suggest.showing(), None);
+    assert!(suggest.withheld(), "a qualifying candidate waits");
+    let mut silent = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("vim notes".to_string());
+    silent.ring = ring;
+    let no_match = Observation {
+        delay_ms: 300,
+        typed_idle_ms: 100,
+        ..obs()
+    };
+    assert_eq!(step(&no_match, &mut silent), None);
+    assert!(!silent.withheld(), "no candidate exists to withhold");
+}
+
+#[test]
+fn the_withheld_candidate_shows_once_idle_reaches_the_delay() {
+    // The gate opens at idle == delay — the same candidate, whole:
+    // the delay changes when the ghost is seen, never which
+    // suggestion wins.
+    let mut suggest = adopted();
+    let mature = Observation {
+        delay_ms: 300,
+        typed_idle_ms: 300,
+        ..obs()
+    };
+    let shown = step(&mature, &mut suggest).expect("the deadline opens the gate");
+    assert_eq!(shown.suffix, "t status");
+    assert_eq!(shown.source, SuggestionSource::History);
+    assert!(!suggest.withheld());
+}
+
+#[test]
+fn a_keystroke_on_an_established_showing_dismisses_instantly() {
+    // No grace period: the ghost shown at the pause dismisses on
+    // the very update whose line turned young again — and the new
+    // candidate starts its own wait.
+    let mut suggest = adopted();
+    let paused = Observation {
+        delay_ms: 300,
+        typed_idle_ms: 400,
+        ..obs()
+    };
+    assert!(step(&paused, &mut suggest).is_some());
+    let typed_again = Observation {
+        before_cursor: "$ git",
+        cursor_column: 5,
+        delay_ms: 300,
+        typed_idle_ms: 10,
+        ..obs()
+    };
+    assert_eq!(step(&typed_again, &mut suggest), None);
+    assert_eq!(suggest.showing(), None);
+    assert!(suggest.withheld(), "the new candidate waits its delay");
 }
 
 // --- the ring ---

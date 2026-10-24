@@ -1688,6 +1688,11 @@ impl Terminal {
                         before_cursor: &before_cursor,
                         after_cursor_blank,
                         fresh_prompt: fresh_by_finish || self.settle_prompt_pending,
+                        // Idle-delay stopgaps (suggest-delay spec): no
+                        // delay over a line stable forever keeps today
+                        // bit-for-bit until the engine resolves both.
+                        delay_ms: 0,
+                        typed_idle_ms: u16::MAX,
                     };
                     suggest::step(&observation, &mut self.suggest);
                     // TEMPORARY AUTOSUGGEST DEBUG TRACE: one line per
