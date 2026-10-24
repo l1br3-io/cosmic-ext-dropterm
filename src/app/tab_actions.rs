@@ -1205,9 +1205,15 @@ impl DropTerm {
                 // the first running snapshot) and a finish stands
                 // down here (the prompt-redraw wakeup) — every
                 // other gate re-evaluates at the tick's own fire,
-                // within a second.
+                // within a second. The reveal tick arms here as
+                // well (suggest-delay spec): the damage-driven
+                // arm covers the state lag the precise sync cannot
+                // bridge at this point (the model re-steps in the
+                // render this handler schedules).
                 if tab_index == self.active_tab {
-                    return self.sync_status_duration();
+                    return self
+                        .sync_status_duration()
+                        .chain(self.arm_suggest_reveal_after_damage());
                 }
             }
             TermEvent::MouseCursorDirty => {

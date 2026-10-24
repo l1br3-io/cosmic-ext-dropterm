@@ -125,6 +125,13 @@ pub enum Message {
     /// a silent runner's start — nothing else wakes between output
     /// events.
     StatusDurationTick,
+    /// The autosuggest reveal tick fired (suggest-delay spec): the
+    /// one-shot sleep until a withheld suggestion's deadline — drive
+    /// the engine update that resolves the idle fact (the ghost
+    /// appears at the pause with no new keystroke), then re-sync:
+    /// re-arm at the next deadline or stand down. Never periodic;
+    /// it exists only while the active tab reports a deadline.
+    SuggestRevealTick,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -329,6 +336,12 @@ pub struct DropTerm {
     /// outstanding sleep at most, re-armed only while
     /// `status_bar::duration_due` holds.
     duration_armed: bool,
+    /// Whether a suggest reveal tick sleeps in the task queue
+    /// (suggest-delay spec) — the `clock_armed` shape again: one
+    /// outstanding one-shot at most, armed only while the active tab
+    /// may hold a withheld suggestion, cleared by each fire before
+    /// the re-sync re-evaluates.
+    reveal_armed: bool,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -614,6 +627,67 @@ impl DropTerm {
         Task::perform(
             tokio::time::sleep(std::time::Duration::from_secs(1)),
             |()| cosmic::Action::App(Message::StatusDurationTick),
+        )
+    }
+
+    /// Sync the reveal tick to the active tab's withheld suggestion
+    /// (suggest-delay spec): arm a one-shot sleep until the deadline
+    /// the engine reports, stand down when nothing waits. Called
+    /// where the engine state is settled — the config echo (the
+    /// engine's `set_config` ran its own update synchronously) and
+    /// the tick's own fire (which re-syncs after driving the update
+    /// that resolves the wait, so the loop survives while a
+    /// candidate waits and dies within one fire of it not). A
+    /// hidden surface never arms: no draw runs to consume the
+    /// update, so a fired tick would re-arm against unmoving state
+    /// — the duration tick's `surface_visible` lesson. The armed
+    /// guard keeps the sleeps unstacked.
+    fn sync_suggest_reveal(&mut self) -> Task<Message> {
+        let deadline = self
+            .active()
+            .and_then(|tab| tab.terminal.lock().unwrap().suggest_reveal_deadline());
+        let Some(deadline) = deadline else {
+            self.reveal_armed = false;
+            return Task::none();
+        };
+        if self.reveal_armed {
+            return Task::none();
+        }
+        self.reveal_armed = true;
+        Task::perform(
+            tokio::time::sleep(deadline.saturating_duration_since(std::time::Instant::now())),
+            |()| cosmic::Action::App(Message::SuggestRevealTick),
+        )
+    }
+
+    /// The reveal arm for the Wakeup point (suggest-delay spec):
+    /// damage just landed on the active tab, but the render that
+    /// re-steps the suggest model runs after this handler — the
+    /// precise sync would read one state behind, and the first
+    /// keystroke after a pause (previous state: a shown, unwithheld
+    /// ghost) would never arm. So arm on the config alone: a
+    /// nonzero delay with suggestions on, the surface shown, and no
+    /// foreground child (output while a command runs can never
+    /// withhold) arms the full-delay one-shot; the fire drives one
+    /// update and re-syncs against then-current truth, standing
+    /// down within one fire when nothing waits. An early fire (the
+    /// deadline moved with later keystrokes) costs one update the
+    /// damage was causing anyway.
+    fn arm_suggest_reveal_after_damage(&mut self) -> Task<Message> {
+        if self.reveal_armed
+            || !self.config.autosuggestions_enabled
+            || self.config.autosuggestions_delay_ms == 0
+            || self.active_process_name.is_some()
+            || !matches!(self.surface, SurfaceState::Shown(_))
+        {
+            return Task::none();
+        }
+        self.reveal_armed = true;
+        Task::perform(
+            tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                self.config.autosuggestions_delay_ms,
+            ))),
+            |()| cosmic::Action::App(Message::SuggestRevealTick),
         )
     }
 
@@ -1507,6 +1581,7 @@ impl Application for DropTerm {
             status_clock: None,
             clock_armed: false,
             duration_armed: false,
+            reveal_armed: false,
             rename: None,
             pending_close: None,
             drag: None,
@@ -2176,7 +2251,8 @@ impl DropTerm {
                 // band toggle flips it here.
                 let ticks_task = anchor_task
                     .chain(self.sync_status_clock())
-                    .chain(self.sync_status_duration());
+                    .chain(self.sync_status_duration())
+                    .chain(self.sync_suggest_reveal());
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -2587,6 +2663,23 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().needs_update = true;
                 }
                 return self.sync_status_duration();
+            }
+            Message::SuggestRevealTick => {
+                // The fired sleep consumed itself — the deadline
+                // arrived (or an early fire caught a moved deadline).
+                // The engine update it drives is the point: the idle
+                // fact resolves at update()'s step site, so the ghost
+                // appears with no new keystroke — one extra cycle at
+                // most when the reveal lands (the update runs in the
+                // draw this message schedules, the re-sync reads the
+                // state before it, and the next fire stands down).
+                // The re-sync re-arms at the next deadline or stands
+                // down.
+                self.reveal_armed = false;
+                if let Some(tab) = self.active() {
+                    tab.terminal.lock().unwrap().needs_update = true;
+                }
+                return self.sync_suggest_reveal();
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();
