@@ -59,6 +59,11 @@ use crate::tabs::TabId;
 use crate::terminal::mouse_reporter::MouseReporter;
 use crate::terminal::suggest::{self, AcceptKind, Suggest};
 
+// TEMPORARY AUTOSUGGEST DEBUG TRACE (dropterm debugging, remove after
+// diagnosis): the last printed state line, so the trace prints only on
+// change and stays readable across 60 Hz updates.
+static ASDBG_LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Runtime font and rendering options for a [`Terminal`].
 ///
 /// This is dropterm's local replacement for cosmic-term's `Config`: it
@@ -1676,6 +1681,48 @@ impl Terminal {
                         fresh_prompt: fresh_by_finish || self.settle_prompt_pending,
                     };
                     suggest::step(&observation, &mut self.suggest);
+                    // TEMPORARY AUTOSUGGEST DEBUG TRACE: one line per
+                    // changed state, gated on the env var, appended to
+                    // /tmp/dropterm-asdbg.log and echoed to stderr.
+                    if std::env::var_os("DROPTERM_AUTOSUGGEST_DEBUG").is_some() {
+                        let line = format!(
+                            "en={} foc={} fg={} off={} bottom={} cl={} cc={} cols={} fresh={} anch={} ab={} b4={:?} show={:?}",
+                            observation.enabled,
+                            observation.focused,
+                            observation.foreground_child,
+                            observation.display_offset,
+                            observation.cursor_on_bottom_row,
+                            cursor.line.0,
+                            cursor.column.0,
+                            columns,
+                            observation.fresh_prompt,
+                            self.suggest.anchored(),
+                            observation.after_cursor_blank,
+                            &observation.before_cursor[observation
+                                .before_cursor
+                                .char_indices()
+                                .rev()
+                                .nth(40)
+                                .map_or(0, |(i, _)| i)..],
+                            self.suggest
+                                .showing()
+                                .map(|s| (s.visible.as_str(), s.source)),
+                        );
+                        if let Ok(mut last) = ASDBG_LAST.lock()
+                            && *last != Some(line.clone())
+                        {
+                            *last = Some(line.clone());
+                            eprintln!("ASDBG {line}");
+                            let _ = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open("/tmp/dropterm-asdbg.log")
+                                .and_then(|mut f| {
+                                    use std::io::Write;
+                                    writeln!(f, "{line}")
+                                });
+                        }
+                    }
                     // The settle latch drains once a prompt exists
                     // (or a child runs): until then every update may
                     // be the one that finds the shell's first prompt.
