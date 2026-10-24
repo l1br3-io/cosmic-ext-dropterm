@@ -18,6 +18,12 @@
   <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-10-24">
+      <description>
+        <p>Autosuggestions, computed entirely terminal-side with no shell integration: the rest of the most recent matching command from this tab's own history shows as dim ghost text while you type — Right accepts it, Alt+Right takes one word, and nothing runs without an explicit accept. Path tokens complete from the filesystem, command names from the spawn-time PATH snapshot, and git, cargo, docker, systemctl, and npm gain subcommand and long-flag completion; an optional idle delay holds a suggestion back until typing pauses, and every provider carries its own toggle in the settings drawer. The status band gained a command-lifecycle tier — a live duration segment, a finished-command notification, and a scrolled-back chip that jumps to the bottom on click — plus double-click to select a whole segment and middle-click paste. The settings drawer gained a font picker with every monospace family previewed in its own face, and the app now hides from the dock and window switcher by default, with a show_in_dock key to restore a presence.</p>
+        <p>Fixes: toggle-show on an empty desktop lands focused with keybinds live, the block caret paints in the first shown frame after every re-show, font zoom applies immediately, and an empty terminal title report clears the title instead of ignoring it.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-17">
       <description>
         <p>New status band beneath the terminal — segments for the working path, git branch, profile, and more, with click-to-copy, text selection, and a right-click menu. The Profiles page gained explicit, transactional editing (Save/Cancel, a two-step delete, per-profile overrides), and the tab strip and status band each grew an optional hairline border.</p>

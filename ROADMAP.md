@@ -50,4 +50,3 @@ High-level feature list.
 # bugs
 
 - editable default profile
-- when there is no other windows or apps currently running, toggle-show doesn't focus on terminal, even keybinds doesnt work
