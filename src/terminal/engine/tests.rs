@@ -297,6 +297,35 @@ fn arming_a_settled_spawn_grid_is_a_no_op() {
 }
 
 #[test]
+fn settling_after_the_grant_applied_records_the_grid_already_held() {
+    // The fresh-start hardware shape (2026-10-24 trace): the
+    // granted size applies first (the draw resized), and the pin
+    // funnel's adoption lands after — but `resize` no-ops on
+    // unchanged sizes, so an arm at that point waits for a changed
+    // resize that never comes: the settle (and its fresh-prompt
+    // latch) never closed, the anchor never adopted, and the tab
+    // never suggested. `settle_spawn_grid_now` closes at the grid
+    // already held; a settled record still never re-snapshots.
+    let mut terminal = spawn_grid_terminal();
+    resize_cols(&mut terminal, 45); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    assert_eq!(terminal.spawn_grid().0, 45);
+    resize_cols(&mut terminal, 70);
+    assert_eq!(
+        terminal.spawn_grid().0,
+        45,
+        "settled: later resizes deviate"
+    );
+    terminal.settle_spawn_grid_now(); // every re-show adoption: no-op
+    resize_cols(&mut terminal, 80);
+    assert_eq!(
+        terminal.spawn_grid().0,
+        45,
+        "a settled record never re-snapshots"
+    );
+}
+
+#[test]
 fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
     // A zoom press funnels through `set_config`: it recomputes
     // metrics from the live `zoom_adj` and re-fires the cell
@@ -663,6 +692,35 @@ fn autosuggest_records_a_run_command_and_suggests_its_prefix() {
         &mut terminal,
         |t| t.suggestion() == Some("p 30"),
         "the prefix suggests the remainder",
+    );
+}
+
+#[test]
+fn a_fresh_terminal_suggests_without_pushing_the_prompt_off_the_top() {
+    // The hardware report (2026-10-24): a fresh app start's tabs
+    // never suggested at all. Two stacked causes, both exercised
+    // here: the pin funnel's settle close lands AFTER the granted
+    // size is applied (resize no-ops on unchanged sizes, so waiting
+    // for the next changed resize waits forever — settle_spawn_grid_
+    // now closes at the grid already held), and a fresh prompt sits
+    // near the top of an empty grid, where the old bottom-row guard
+    // silenced it. No `seq` push, no scrolled output: the prompt
+    // stays exactly where the shell drew it, the ring is seeded the
+    // documented spawn-time way, and a typed prefix suggests.
+    let mut terminal = autosuggest_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors at the top of the empty grid",
+    );
+    terminal.suggest.seed_history(["sleep 30".to_string()]);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion() == Some("p 30"),
+        "a prefix at a fresh top-of-grid prompt suggests",
     );
 }
 

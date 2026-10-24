@@ -89,13 +89,23 @@ fn guard_scrolled_back_yields_none() {
 }
 
 #[test]
-fn guard_cursor_off_bottom_row_yields_none() {
+fn a_prompt_above_the_bottom_row_still_suggests() {
+    // The fresh-terminal ruling (hardware trace, 2026-10-24): a new
+    // tab's first prompt sits near the TOP of an empty grid — the
+    // cursor is nowhere near the bottom row until a screen of output
+    // scrolls it there — and the widget draws the ghost at the
+    // cursor's own row (cursor-relative, widget.rs), so the
+    // bottom-row guard silenced every fresh (and `clear`-ed)
+    // terminal for no drawing reason. The chain's real geometry
+    // needs are the not-scrolled-back fact (display_offset) and the
+    // cursor-at-line-end fact (after_cursor_blank), both checked.
     let mut suggest = adopted();
     let o = Observation {
         cursor_on_bottom_row: false,
         ..obs()
     };
-    assert_eq!(step(&o, &mut suggest), None);
+    let shown = step(&o, &mut suggest).expect("a mid-grid prompt suggests");
+    assert_eq!(shown.suffix, "t status");
 }
 
 #[test]

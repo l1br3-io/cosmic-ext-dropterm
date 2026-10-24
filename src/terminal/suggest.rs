@@ -146,7 +146,11 @@ pub(crate) struct Observation<'a> {
     /// The grid's display offset: non-zero means the user is scrolled
     /// back into history.
     pub(crate) display_offset: usize,
-    /// The cursor sits on the viewport's bottom row.
+    /// The cursor sits on the viewport's bottom row — a grid fact the
+    /// debug trace prints. No longer a showing guard (the 2026-10-24
+    /// fresh-terminal ruling): a new tab's first prompt sits at the
+    /// top of an empty grid, and the widget draws the ghost at the
+    /// cursor's own row.
     pub(crate) cursor_on_bottom_row: bool,
     /// The grid's column count.
     pub(crate) columns: usize,
@@ -369,22 +373,21 @@ impl Outcome {
 
 /// The guard chain (autosuggest spec): every condition must hold, and
 /// each one's failure alone means silence — config off, unfocused, a
-/// foreground child, scrolled back, off the bottom row, unanchored, a
-/// line that left the anchor, an empty typed segment, or no candidate
-/// from any provider. The candidate itself comes from the merged
-/// seam's dispatch; the guards apply after the merge, unchanged. A
-/// candidate younger than the idle delay is withheld, not silent
-/// (suggest-delay spec) — the outcome carries the difference so the
-/// engine can expose a reveal deadline. A too-wide suffix no longer
-/// silences (ghost-fit spec): the display clips to the free columns,
-/// and the accept stays whole.
+/// foreground child, scrolled back, unanchored, a line that left the
+/// anchor, an empty typed segment, or no candidate from any provider.
+/// The candidate itself comes from the merged seam's dispatch; the
+/// guards apply after the merge, unchanged. A candidate younger than
+/// the idle delay is withheld, not silent (suggest-delay spec) — the
+/// outcome carries the difference so the engine can expose a reveal
+/// deadline. A too-wide suffix no longer silences (ghost-fit spec):
+/// the display clips to the free columns, and the accept stays whole.
+/// No bottom-row requirement (the 2026-10-24 fresh-terminal ruling):
+/// a new tab's first prompt sits near the top of an empty grid, the
+/// widget draws the ghost at the cursor's own row, and the chain's
+/// geometry needs — not scrolled back, the cursor at line end — are
+/// both still checked.
 fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
-    if !obs.enabled
-        || !obs.focused
-        || obs.foreground_child
-        || obs.display_offset != 0
-        || !obs.cursor_on_bottom_row
-    {
+    if !obs.enabled || !obs.focused || obs.foreground_child || obs.display_offset != 0 {
         return Outcome::Silent;
     }
     let Some(anchor) = suggest.anchor.as_ref() else {

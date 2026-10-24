@@ -1028,6 +1028,31 @@ impl Terminal {
         }
     }
 
+    /// Closes the spawn-grid settle at the grid the terminal already
+    /// holds — records the resting grid, freezes the record, and
+    /// marks the settle's close a fresh-prompt moment (autosuggest
+    /// spec) so the next update may adopt the shell's first prompt.
+    /// For the adoption-after-apply shape the pin funnel runs: the
+    /// granted size applies first (the draw resized before the
+    /// granted-size echo arrived), and `resize` no-ops on unchanged
+    /// sizes — so an arm at that point would wait for a changed
+    /// resize that never comes, the settle would never close, and
+    /// the fresh-prompt latch would never arm (the 2026-10-24
+    /// fresh-start trace: no tab ever adopted its anchor). A no-op
+    /// on settled records, so a re-show's adoption can never
+    /// re-snapshot a frozen record.
+    pub fn settle_spawn_grid_now(&mut self) {
+        if matches!(self.spawn_settle, SpawnSettle::Settled) {
+            return;
+        }
+        self.spawn_grid = self.grid();
+        self.spawn_settle = SpawnSettle::Settled;
+        // The settle's close is a fresh-prompt moment (autosuggest
+        // spec): the update that follows may adopt the shell's
+        // first prompt.
+        self.settle_prompt_pending = true;
+    }
+
     pub fn zoom_adj(&self) -> i8 {
         self.zoom_adj
     }
