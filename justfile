@@ -670,3 +670,63 @@ release-flatpak-pin version:
     git add {{applet-manifest}}
     git commit -m "chore: the applet manifest pins the v$ver archive"
     echo "pinned and committed. To publish: git push origin main"
+
+# ── Release: the catalog leg ──
+#
+# The applet lists in pop-os/cosmic-flatpak (the COSMIC app store's
+# source); the listing ships as a branch on the maintainer's fork and
+# a PR from there. Everything up to the PR is mechanical and lives
+# here: `just release-catalog X.Y.Z` regenerates cargo-sources.json
+# from the current lockfile, re-cuts the fork's dropterm-applet branch
+# as one clean commit on current pop-os master (manifest + sources),
+# force-pushes it (safe by construction: the branch is always a
+# single commit over upstream master; a re-run while a PR is open
+# updates that PR in place and re-runs its CI), and prints the
+# compare URL. The PR click and the review stay human — a third-party
+# repo, and no gh token on this machine to assume either.
+#
+# The fork is an SSH remote (the recipe pushes to it); override per
+# invocation with DROPTERM_CATALOG_FORK. Run after
+# `just release-flatpak-pin`.
+catalog-upstream := 'https://github.com/pop-os/cosmic-flatpak'
+catalog-fork := env('DROPTERM_CATALOG_FORK', 'git@github.com:kulapoo/cosmic-flatpak.git')
+catalog-branch := 'dropterm-applet'
+catalog-dir := 'app' / applet-appid
+
+release-catalog version:
+    #!/usr/bin/env sh
+    set -eu
+    ver='{{version}}'
+    ver="${ver#v}"
+    # The repo's manifest must already pin vX — the release ran and
+    # its archive pin landed.
+    grep -q "releases/download/v$ver/v$ver.tar.gz" {{applet-manifest}} || {
+        echo "release-catalog: {{applet-manifest}} does not pin v$ver — run just release-flatpak-pin $ver first" >&2
+        exit 1
+    }
+    # Fresh cargo-sources.json from the current Cargo.lock (the flatpak
+    # catalog checks it in; ours is gitignored, theirs is generated
+    # per submission). The generator's per-package INFO log goes to
+    # /dev/null — this recipe stays silent on success like the rest.
+    {{just_executable()}} applet-flatpak-sources >/dev/null
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    git clone --quiet {{catalog-fork}} "$work/catalog"
+    cd "$work/catalog"
+    git remote add upstream {{catalog-upstream}}
+    git fetch --quiet upstream master
+    git checkout --quiet -B {{catalog-branch}} upstream/master
+    mkdir -p {{catalog-dir}}
+    cp "{{justfile_directory()}}/{{applet-manifest}}" "{{catalog-dir}}/{{applet-appid}}.json"
+    cp "{{justfile_directory()}}/{{flatpak-dir}}/cargo-sources.json" "{{catalog-dir}}/"
+    git add "{{catalog-dir}}"
+    # The fresh clone has no identity of its own and this machine sets
+    # none globally — carry the dropterm repo's configured author.
+    git -c "user.name=$(git -C '{{justfile_directory()}}' config user.name)" \
+        -c "user.email=$(git -C '{{justfile_directory()}}' config user.email)" \
+        commit --quiet -m "Add DropTerm v$ver"
+    git push --quiet --force origin {{catalog-branch}}
+    owner="$(printf '%s\n' '{{catalog-fork}}' | sed 's|.*github.com[:/]||; s|/.*||')"
+    echo "{{catalog-branch}} pushed at $(git rev-parse --short HEAD), based on pop-os master $(git rev-parse --short upstream/master)."
+    echo "Open the PR (the one human step left):"
+    echo "  {{catalog-upstream}}/compare/master...${owner}:{{catalog-branch}}?expand=1"

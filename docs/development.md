@@ -123,10 +123,11 @@ concerns stay in `#[cfg(test)]` module tests - `just test` runs them, and
 
 ## Releasing
 
-A release is two recipes and a push, split because one edit is necessarily
+A release is three recipes and a push, split because one edit is necessarily
 post-publish: the applet's flatpak manifest pins the *published* source
 archive (URL + sha256), and neither exists until CI has published the
-release.
+release. The store listing rides a third repo altogether -
+pop-os/cosmic-flatpak, via the maintainer's fork.
 
 1. **Curate the release content** (uncommitted or committed, the recipe
    takes either):
@@ -150,7 +151,14 @@ release.
    `sha256sums`.
 4. **`just release-flatpak-pin X.Y.Z`** - once the release page exists:
    downloads the source archive, records its hash, and commits the applet
-   manifest's re-pin. Push that commit and the release is whole.
+   manifest's re-pin. Push that commit.
+5. **`just release-catalog X.Y.Z`** - the store listing: regenerates
+   `cargo-sources.json` from the current lockfile, re-cuts the fork's
+   `dropterm-applet` branch as one clean commit on current pop-os
+   master, and force-pushes it (needs SSH keys for the fork). Then open
+   the PR from the printed compare URL - the click and the review are
+   the catalog's two human steps; there is no gh token on this machine
+   to assume either.
 
 The version is semver: additive features take the minor, fixes the patch.
 A failed gate mid-recipe leaves the version bumps uncommitted in the tree;
