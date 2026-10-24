@@ -121,6 +121,41 @@ checklist every change answers to lives in [testing.md](testing.md). Headless
 concerns stay in `#[cfg(test)]` module tests - `just test` runs them, and
 `just check` (format, clippy, test) is the change Definition of Done.
 
+## Releasing
+
+A release is two recipes and a push, split because one edit is necessarily
+post-publish: the applet's flatpak manifest pins the *published* source
+archive (URL + sha256), and neither exists until CI has published the
+release.
+
+1. **Curate the release content** (uncommitted or committed, the recipe
+   takes either):
+   - [releases.md](releases.md) - a `## vX.Y.Z (date)` section for today,
+     house style; the "Next (unreleased)" pointer, if any, is consumed by it
+   - both `res/*.metainfo.xml` - a `<release version="X.Y.Z" date="…">`
+     entry each
+   - [README.md](../README.md) - the Status line and every
+     `releases/download/v…` install URL re-pointed at the new version
+   - [testing.md](testing.md) - the release-walk rows re-versioned
+   - [ROADMAP.md](../ROADMAP.md) - fixed bugs retired from the bugs list
+2. **`just release X.Y.Z`** - verifies all of the above exists for today's
+   date, bumps both crates' versions, refreshes `Cargo.lock`, runs
+   `just check` plus the appstream validation CI enforces, commits
+   everything as one release-hygiene commit, and tags `vX.Y.Z`. It never
+   pushes - the push is the publish.
+3. **Publish**: `git push origin main && git push origin vX.Y.Z`.
+   [release.yml](../.github/workflows/release.yml) builds the per-arch
+   tarballs and `vendor.tar`, proves the vendored offline build, guards
+   tag against `Cargo.toml`, and publishes the GitHub release with
+   `sha256sums`.
+4. **`just release-flatpak-pin X.Y.Z`** - once the release page exists:
+   downloads the source archive, records its hash, and commits the applet
+   manifest's re-pin. Push that commit and the release is whole.
+
+The version is semver: additive features take the minor, fixes the patch.
+A failed gate mid-recipe leaves the version bumps uncommitted in the tree;
+fix and re-run.
+
 ## Architecture
 
 The module map - the two crates, the module inventory, the load-bearing seams,

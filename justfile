@@ -521,3 +521,152 @@ applet-flatpak-install:
 # Uninstall the applet flatpak from the user installation.
 applet-flatpak-remove:
     flatpak uninstall --user -y {{applet-appid}}
+
+# ── Release ──
+#
+# The release is two commands and a push, because one part of it is
+# necessarily post-publish: the applet's flatpak manifest pins the
+# *published* source archive (URL + sha256), and neither exists until
+# release.yml has run. The whole runbook lives at
+# docs/development.md#releasing.
+#
+# `just release X.Y.Z` cuts the release: it verifies the curated
+# release edits (the releases.md section, both metainfo entries, the
+# re-pointed install URLs — all written first, committed or left in
+# the tree), bumps both crates' versions, refreshes Cargo.lock (the
+# --locked recipes would otherwise fail), runs the full gate (`just
+# check` plus the appstream validation CI enforces), commits
+# everything as one release-hygiene commit (the v0.2.0 shape), and
+# tags. It never pushes: the push IS the publish (release.yml fires
+# on the tag), so it stays the maintainer's explicit act.
+#
+# The version may be given with or without the leading `v`. A failed
+# gate leaves the version bumps uncommitted in the tree — fix, re-run.
+release version:
+    #!/usr/bin/env sh
+    set -eu
+
+    ver='{{version}}'
+    ver="${ver#v}"
+    echo "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+        echo "release: version must be MAJOR.MINOR.PATCH, got '$ver'" >&2
+        exit 1
+    }
+
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    [ "$branch" = "main" ] || {
+        echo "release: cut releases from main, currently on '$branch'" >&2
+        exit 1
+    }
+    git rev-parse -q --verify "refs/tags/v$ver" >/dev/null && {
+        echo "release: tag v$ver already exists" >&2
+        exit 1
+    }
+
+    # Only release files may be in flight — anything else would ride
+    # into the release commit silently. Untracked files are fine;
+    # they are never added.
+    bad=$(git diff --name-only HEAD | grep -v -E '^(Cargo\.toml|applet/Cargo\.toml|Cargo\.lock|README\.md|ROADMAP\.md|docs/releases\.md|docs/testing\.md|res/[^/]+\.metainfo\.xml)$' || true)
+    [ -z "$bad" ] || {
+        echo "release: unrelated changes in the tree — commit or stash them first:" >&2
+        echo "$bad" | sed 's/^/  /' >&2
+        exit 1
+    }
+
+    old="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+    [ "$ver" != "$old" ] || {
+        echo "release: Cargo.toml already reads $ver" >&2
+        exit 1
+    }
+    today="$(date +%Y-%m-%d)"
+
+    # The curated pieces must already exist, in today's dated shape —
+    # fail before touching anything so a half-release is never left
+    # behind by missing notes.
+    for f in {{metainfo-src}} {{applet-metainfo-src}}; do
+        grep -q "<release version=\"$ver\" date=\"$today\">" "$f" || {
+            echo "release: $f carries no <release version=\"$ver\" date=\"$today\"> entry — write it first (docs/development.md#releasing)" >&2
+            exit 1
+        }
+    done
+    grep -q "^## v$ver ($today)$" docs/releases.md || {
+        echo "release: docs/releases.md carries no '## v$ver ($today)' section — write it first" >&2
+        exit 1
+    }
+    # Every living download URL must already point at the new version.
+    # releases.md keeps its history sections, and packaging/flatpak
+    # deliberately pins the last PUBLISHED release until
+    # release-flatpak-pin runs — both are excluded.
+    stale=$(grep -rn --exclude-dir=_site 'releases/download/v[0-9]' README.md docs res 2>/dev/null \
+        | grep -v "releases/download/v$ver/" | grep -v '^docs/releases\.md:' || true)
+    [ -z "$stale" ] || {
+        echo "release: stale release URLs still point elsewhere than v$ver:" >&2
+        echo "$stale" | sed 's/^/  /' >&2
+        exit 1
+    }
+
+    # Both crates bump together (first `version =` line only — the
+    # manifests carry dependency versions too), and the lock follows
+    # so every --locked recipe keeps holding.
+    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" Cargo.toml
+    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" applet/Cargo.toml
+    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)" = "$ver" ] || {
+        echo "release: Cargo.toml's package version no longer reads $old — bump it by hand" >&2
+        exit 1
+    }
+    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' applet/Cargo.toml | head -n1)" = "$ver" ] || {
+        echo "release: applet/Cargo.toml's package version no longer reads $old — bump it by hand" >&2
+        exit 1
+    }
+    cargo update -w
+    cargo metadata --locked --format-version 1 >/dev/null
+
+    # The gate: everything CI checks on a PR, plus the appstream
+    # validation (skipped silently where appstreamcli is absent — CI
+    # is the backstop).
+    {{just_executable()}} check
+    if command -v appstreamcli >/dev/null 2>&1; then
+        appstreamcli validate --no-net {{metainfo-src}} {{applet-metainfo-src}}
+    fi
+
+    git add Cargo.toml applet/Cargo.toml Cargo.lock README.md ROADMAP.md \
+        docs/releases.md docs/testing.md {{metainfo-src}} {{applet-metainfo-src}}
+    git commit -m "chore: release hygiene for v$ver — versions, release notes, install URLs"
+    git tag -a "v$ver" -m "Release $ver"
+
+    echo "v$ver committed and tagged. To publish:"
+    echo "  git push origin main && git push origin v$ver"
+    echo "release.yml then builds both arches + vendor.tar, guards tag == Cargo.toml, and publishes the GitHub release."
+    echo "Once the release page exists: just release-flatpak-pin $ver"
+
+# Re-pins the applet flatpak manifest to an already-PUBLISHED release:
+# downloads the release's source archive, records its sha256, and
+# commits the manifest's URL + hash pair (the one release edit that
+# cannot ride the release commit — neither the URL nor the hash
+# exists before publish). Runs after `just release` and the push.
+release-flatpak-pin version:
+    #!/usr/bin/env sh
+    set -eu
+    ver='{{version}}'
+    ver="${ver#v}"
+    url="https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v$ver/v$ver.tar.gz"
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    curl -fsSL -o "$tmp" "$url" || {
+        echo "release-flatpak-pin: $url is not downloadable yet — publish the release first" >&2
+        exit 1
+    }
+    sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    sed -i "s|releases/download/v[0-9.]*/v[0-9.]*\.tar\.gz|releases/download/v$ver/v$ver.tar.gz|" {{applet-manifest}}
+    sed -i "s|\"sha256\": \"[0-9a-f]\{64\}\"|\"sha256\": \"$sha\"|" {{applet-manifest}}
+    [ "$(grep -c "releases/download/v$ver/v$ver\.tar\.gz" {{applet-manifest}})" = "1" ] || {
+        echo "release-flatpak-pin: manifest's archive URL did not re-pin exactly once — pin by hand" >&2
+        exit 1
+    }
+    [ "$(grep -c "\"sha256\": \"$sha\"" {{applet-manifest}})" = "1" ] || {
+        echo "release-flatpak-pin: manifest's sha256 did not re-pin exactly once — pin by hand" >&2
+        exit 1
+    }
+    git add {{applet-manifest}}
+    git commit -m "chore: the applet manifest pins the v$ver archive"
+    echo "pinned and committed. To publish: git push origin main"
