@@ -52,3 +52,4 @@ High-level feature list.
 - when toggling to show the terminal, it should focus on the editor
 
 - editable default profile
+- when there is no other windows or apps currently running, toggle-show doesn't focus on terminal, even keybinds doesnt work

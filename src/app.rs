@@ -1440,11 +1440,10 @@ fn anchor_matches(anchor: &Anchor, show_in_dock: bool) -> bool {
 fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
     if show_in_dock {
         let (id, open) = window::open(clipboard_anchor_settings());
-        (Anchor::Dock(id), open.then(|_| Task::none()))
+        (Anchor::Dock(id), open.discard())
     } else {
         let id = window::Id::unique();
-        let open: Task<Message> = get_layer_surface(surface::anchor(id));
-        (Anchor::Hidden(id), open.then(|_| Task::none()))
+        (Anchor::Hidden(id), get_layer_surface(surface::anchor(id)))
     }
 }
 
@@ -1465,10 +1464,12 @@ fn swap_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
     };
     let (next, open_new) = open_anchor(show_in_dock);
     *anchor = next;
-    // `then` wants `FnMut`; the open runs once, so it rides an Option
-    // the single call drains.
-    let mut open_new = Some(open_new);
-    close_old.then(move |_| open_new.take().unwrap_or_else(Task::none))
+    // `chain`, never `then`: these commands are effects that carry no
+    // output, and `then` runs its continuation only on an output — a
+    // `then`-chained open never fires (the flip-needs-restart bug).
+    // `chain` streams the close's action strictly before the open's,
+    // preserving the destroy-before-create order.
+    close_old.chain(open_new)
 }
 
 impl Application for DropTerm {
