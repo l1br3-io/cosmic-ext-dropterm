@@ -225,13 +225,6 @@ impl Suggest {
     /// gate (suggest-delay spec) — the engine's cue that a reveal
     /// deadline exists (its last-change Instant plus the resolved
     /// delay); the model stays clock-free.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "transient: the engine's reveal-deadline reader consumes this with the engine wiring; the expect errors out the moment it does"
-        )
-    )]
     pub(crate) fn withheld(&self) -> bool {
         self.withheld
     }
@@ -240,6 +233,13 @@ impl Suggest {
     /// latch clears once a prompt exists.
     pub(crate) fn anchored(&self) -> bool {
         self.anchor.is_some()
+    }
+
+    /// The adopted anchor, if one exists — the engine's
+    /// typed-stability tracking reads it (a changed anchor is a
+    /// fresh adoption: a new line, new typing).
+    pub(crate) fn anchor(&self) -> Option<&str> {
+        self.anchor.as_deref()
     }
 
     /// Takes the showing's suffix and clears the showing state: an

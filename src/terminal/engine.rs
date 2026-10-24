@@ -131,6 +131,14 @@ pub struct TerminalOptions {
     /// `set_config` pass, so a showing specs ghost disappears the
     /// moment the toggle lands while history keeps suggesting.
     pub autosuggestions_specs_enabled: bool,
+    /// The idle-delay display gate (suggest-delay spec):
+    /// `autosuggestions_delay_ms` as resolved from the app config —
+    /// a qualifying suggestion is withheld until the typed segment
+    /// has been stable this many milliseconds. Resolved per update
+    /// like the toggles: a `set_config` pass applies it live (a
+    /// lowered delay can reveal a withheld suggestion at the next
+    /// update). `0` is fish parity — nothing is ever withheld.
+    pub autosuggestions_delay_ms: u16,
 }
 
 impl Default for TerminalOptions {
@@ -150,6 +158,7 @@ impl Default for TerminalOptions {
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
             autosuggestions_specs_enabled: true,
+            autosuggestions_delay_ms: 0,
         }
     }
 }
@@ -514,6 +523,26 @@ pub struct Terminal {
     /// every `set_config`. The table itself is static universal
     /// knowledge; only the gate is state.
     autosuggestions_specs_enabled: bool,
+    /// The idle-delay display gate (suggest-delay spec) — the
+    /// resolved options value, re-read at every `set_config`: the
+    /// observation carries it per update, so a live flip applies
+    /// without a respawn.
+    autosuggestions_delay_ms: u16,
+    /// When the typed segment last changed (suggest-delay spec) —
+    /// the idle clock the observation's `typed_idle_ms` resolves
+    /// from. Reset before the step whenever this update's
+    /// `before_cursor` differs from the last seen (a keystroke's
+    /// own update reads as just-typed — instant dismiss) and after
+    /// the step whenever the model adopted a fresh anchor (a new
+    /// line is new typing). An unchanged line keeps its accumulated
+    /// idle: the user's typing is the fact, the viewport is not.
+    suggest_typed_at: Instant,
+    /// The last update's bottom-row text — the change detector the
+    /// idle clock resets on.
+    suggest_last_before_cursor: String,
+    /// The anchor as of the last update — the adoption detector
+    /// (first adoption and every re-adoption both change it).
+    suggest_last_anchor: Option<String>,
     /// The program the tab is spawned as (path-suggest spec) — spawn
     /// truth fixed for the terminal's life; the path provider's
     /// allowlist gate reads it at every observation build.
@@ -880,6 +909,10 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
+            autosuggestions_delay_ms: options.autosuggestions_delay_ms,
+            suggest_typed_at: Instant::now(),
+            suggest_last_before_cursor: String::new(),
+            suggest_last_anchor: None,
             spawned_program: options.spawned_program.clone(),
             spawn_home: options.spawn_home.clone(),
             command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
@@ -1162,6 +1195,22 @@ impl Terminal {
         self.suggest
             .showing()
             .map(|showing| showing.visible.as_str())
+    }
+
+    /// The active reveal deadline (suggest-delay spec): the instant
+    /// a withheld suggestion may show — the typed segment's last
+    /// change plus the resolved delay. `None` when nothing waits (no
+    /// qualifying candidate is withheld) or the delay is zero
+    /// (nothing is ever withheld). The app sleeps until this instant
+    /// and then drives one update, so the ghost appears at the pause
+    /// with no new keystroke.
+    pub fn suggest_reveal_deadline(&self) -> Option<Instant> {
+        if !self.suggest.withheld() || self.autosuggestions_delay_ms == 0 {
+            return None;
+        }
+        Some(
+            self.suggest_typed_at + Duration::from_millis(u64::from(self.autosuggestions_delay_ms)),
+        )
     }
 
     /// The shared spawn gate (path-suggest + command-catalog specs):
@@ -1478,6 +1527,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_delay_ms != options.autosuggestions_delay_ms {
+            self.autosuggestions_delay_ms = options.autosuggestions_delay_ms;
+            update = true;
+        }
+
         // The ghost tint recomputes from the (possibly just-copied)
         // scheme — three channel averages, cheaper than the diff that
         // guards them.
@@ -1671,6 +1725,26 @@ impl Terminal {
                         self.spawn_home.as_deref(),
                         working_directory.as_deref(),
                     );
+                    // The idle-delay gate's engine side
+                    // (suggest-delay spec): the typed segment's
+                    // stability. A changed line restarts the clock
+                    // BEFORE the observation resolves its idle fact —
+                    // the keystroke's own update must read as
+                    // just-typed (instant dismiss, no grace) — while
+                    // a fresh-prompt anchor adoption (detected after
+                    // the step that adopts) restarts it for the
+                    // updates that follow: a new line is new typing.
+                    // An unchanged line (scroll away and back) keeps
+                    // its accumulated idle: the user's typing is the
+                    // fact, the viewport is not.
+                    let now = Instant::now();
+                    if before_cursor != self.suggest_last_before_cursor {
+                        self.suggest_typed_at = now;
+                        self.suggest_last_before_cursor = before_cursor.clone();
+                    }
+                    let typed_idle_ms =
+                        u16::try_from(now.duration_since(self.suggest_typed_at).as_millis())
+                            .unwrap_or(u16::MAX);
                     let observation = suggest::Observation {
                         enabled: self.autosuggestions_enabled,
                         paths_eligible,
@@ -1688,13 +1762,19 @@ impl Terminal {
                         before_cursor: &before_cursor,
                         after_cursor_blank,
                         fresh_prompt: fresh_by_finish || self.settle_prompt_pending,
-                        // Idle-delay stopgaps (suggest-delay spec): no
-                        // delay over a line stable forever keeps today
-                        // bit-for-bit until the engine resolves both.
-                        delay_ms: 0,
-                        typed_idle_ms: u16::MAX,
+                        delay_ms: self.autosuggestions_delay_ms,
+                        typed_idle_ms,
                     };
                     suggest::step(&observation, &mut self.suggest);
+                    // The adoption reset (suggest-delay spec): a
+                    // fresh anchor — the first adoption or a
+                    // post-finish re-adoption — is a new line, so
+                    // the updates that follow count their idle from
+                    // this moment.
+                    if self.suggest.anchor() != self.suggest_last_anchor.as_deref() {
+                        self.suggest_last_anchor = self.suggest.anchor().map(str::to_owned);
+                        self.suggest_typed_at = now;
+                    }
                     // TEMPORARY AUTOSUGGEST DEBUG TRACE: one line per
                     // changed state, gated on the env var, appended to
                     // /tmp/dropterm-asdbg.log and echoed to stderr.

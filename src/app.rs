@@ -509,6 +509,7 @@ impl DropTerm {
             autosuggestions_enabled: self.config.autosuggestions_enabled,
             autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
+            autosuggestions_delay_ms: self.config.autosuggestions_delay_ms,
             ..TerminalOptions::default()
         }
     }
