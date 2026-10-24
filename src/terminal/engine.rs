@@ -1740,7 +1740,7 @@ impl Terminal {
                     let now = Instant::now();
                     if before_cursor != self.suggest_last_before_cursor {
                         self.suggest_typed_at = now;
-                        self.suggest_last_before_cursor = before_cursor.clone();
+                        self.suggest_last_before_cursor.clone_from(&before_cursor);
                     }
                     let typed_idle_ms =
                         u16::try_from(now.duration_since(self.suggest_typed_at).as_millis())
