@@ -64,6 +64,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `autosuggestions_enabled` | `true` |
 | `autosuggestions_paths_enabled` | `true` |
 | `autosuggestions_commands_enabled` | `true` |
+| `autosuggestions_delay_ms` | `0` |
 
 The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
 
@@ -178,6 +179,7 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 | `autosuggestions_enabled` | `true` | Fish-style autosuggestions: dim ghost text after the cursor completing the most recent matching command from this tab's own history ([autosuggestions](autosuggestions.md)). Right accepts it, Alt+Right takes one word, anything else dismisses it - nothing executes without an accept. `false` is the kill switch. |
 | `autosuggestions_paths_enabled` | `true` | Path completion joins the autosuggestions: a typed path token (`~/sr`, `../co`, `./te`, `/usr/bi`) ghosts its first sorted match from the parent directory, directories suffixed `/`, names the shell would mangle backslash-escaped or not suggested at all ([autosuggestions](autosuggestions.md)). Local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |
 | `autosuggestions_commands_enabled` | `true` | Command-name completion joins the autosuggestions: at the command position the typed word ghosts its shortest match among the executables on the tab's spawn-time `$PATH` (ties alphabetical; the match must extend the word) - so a fresh tab with an empty history finishes `gi` → `git`, and after one real run history takes over invisibly ([autosuggestions](autosuggestions.md)). A spawn-time snapshot, never rescanned; local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |
+| `autosuggestions_delay_ms` | `0` | The autosuggest idle delay, in milliseconds: a qualifying suggestion is withheld until the typed segment has been stable this long - so no ghost churns while you type fast, it appears once at the pause (200-300 suits that complaint; `0` is fish parity, today's behavior). Any keystroke restarts the wait and dismisses a showing ghost instantly; Right/Alt+Right are unchanged the moment the ghost shows, and the knob changes *when* a suggestion is seen, never *which* one wins ([autosuggestions](autosuggestions.md)). Applies live. |
 | `new_tab_after_current` | `true` | New tabs land directly after the active tab. `false` appends at the end of the list (Guake's ordering); `duplicate-tab` always lands after the active tab. |
 | `scrollback_lines` | `10000` | Scrollback capacity per terminal. Applies to the next spawn - capacity is fixed when a terminal is created. |
 

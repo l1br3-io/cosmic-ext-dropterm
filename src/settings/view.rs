@@ -196,6 +196,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
+            ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
             ConfigKey::NewTabCwd => "New tab directory",
@@ -1188,6 +1189,7 @@ fn text_control(
         ConfigKey::CommandFinishNotificationAfterSecs => {
             TextField::CommandFinishNotificationAfterSecs
         }
+        ConfigKey::AutosuggestionsDelayMs => TextField::AutosuggestionsDelayMs,
         ConfigKey::DefaultCwd => TextField::DefaultCwd,
         _ => return None,
     };
@@ -1195,6 +1197,7 @@ fn text_control(
         TextField::Shell => config.resolved_shell(),
         TextField::ScrollbackLines => "10000".to_string(),
         TextField::CommandFinishNotificationAfterSecs => "5".to_string(),
+        TextField::AutosuggestionsDelayMs => "0".to_string(),
         TextField::DefaultCwd => "optional".to_string(),
         TextField::Args => String::new(),
     };
@@ -1241,6 +1244,7 @@ mod tests {
             TextField::CommandFinishNotificationAfterSecs,
             "garbage".to_string(),
         );
+        buffer.set_text(TextField::AutosuggestionsDelayMs, "garbage".to_string());
         buffer.set_text(TextField::DefaultCwd, "/srv/work".to_string());
         buffer.set_slider(ConfigKey::Opacity, 42.0);
         let _ = appearance_view(&config, &buffer, None, &[]);

@@ -95,6 +95,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
 | `close_confirmation_enabled` | next close - the key is read at request time |
 | `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
+| `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 
@@ -105,4 +106,4 @@ These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly 
 
 ## Input ranges and limitations
 
-Controls constrain input to the same ranges as the config (`height_percent` 10-100, `width_percent` 30-100, `opacity` 0-100, `scrollback_lines` non-negative); the write path never persists an out-of-range value. One known limitation: the `args` input splits on whitespace with no quoting support - arguments containing spaces stay config-file-only.
+Controls constrain input to the same ranges as the config (`height_percent` 10-100, `width_percent` 30-100, `opacity` 0-100, `scrollback_lines` non-negative, `autosuggestions_delay_ms` a plain 0-65535 milliseconds - an out-of-band entry rejects rather than clamps); the write path never persists an out-of-range value. One known limitation: the `args` input splits on whitespace with no quoting support - arguments containing spaces stay config-file-only.

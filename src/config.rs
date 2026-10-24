@@ -436,6 +436,19 @@ pub struct DropTermConfig {
     /// `false` restores history-only behavior exactly. Flips apply
     /// live at the next typed prefix.
     pub autosuggestions_commands_enabled: bool,
+    /// The idle-delay display gate for autosuggestions (suggest-delay
+    /// spec): a qualifying suggestion is withheld until the typed
+    /// segment has been stable this many milliseconds — the
+    /// twice-proven ghost-text knob (VS Code's `minShowDelay`,
+    /// ble.sh's `complete_auto_delay`), fish parity at `0` (the
+    /// default, today's behavior bit-for-bit: the ghost appears on
+    /// the same update the candidate computes). Any keystroke
+    /// restarts the wait and dismisses a showing ghost instantly;
+    /// Right/Alt+Right are unchanged the moment the ghost shows. The
+    /// knob changes *when* a suggestion is seen, never *which*
+    /// suggestion wins. Applies live; 200–300 ms suits the churn
+    /// complaint.
+    pub autosuggestions_delay_ms: u16,
 }
 
 impl Default for DropTermConfig {
@@ -492,6 +505,7 @@ impl Default for DropTermConfig {
             autosuggestions_enabled: true,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
+            autosuggestions_delay_ms: 0,
         }
     }
 }

@@ -135,6 +135,7 @@ impl Section {
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
+                ConfigKey::AutosuggestionsDelayMs,
             ],
             Section::Advanced => &[
                 ConfigKey::ShowInDock,
@@ -192,6 +193,14 @@ pub enum ConfigKey {
     /// at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsCommandsEnabled,
+    /// The autosuggest idle-delay display gate (suggest-delay spec) —
+    /// the Terminal card's numeric row beside the provider toggles:
+    /// a qualifying suggestion waits until the typed segment has
+    /// been stable this many milliseconds. `0` is fish parity (the
+    /// ghost appears the moment it computes); the knob applies live,
+    /// and it changes *when* a suggestion is seen, never *which* one
+    /// wins.
+    AutosuggestionsDelayMs,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -336,6 +345,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
+            ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::NewTabCwd => "new_tab_cwd",
@@ -395,6 +405,7 @@ pub enum PlannedWrite {
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
+    AutosuggestionsDelayMs(u16),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
     NewTabCwd(NewTabCwd),
@@ -479,6 +490,7 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
             }
+            PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::NewTabCwd(_) => ConfigKey::NewTabCwd,
@@ -581,6 +593,9 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsDelayMs(value) => {
+                handler.set(ConfigKey::AutosuggestionsDelayMs.key_name(), *value)
             }
             PlannedWrite::TabTitleMode(value) => {
                 handler.set(ConfigKey::TabTitleMode.key_name(), value)
@@ -711,6 +726,7 @@ pub enum TextField {
     Args,
     ScrollbackLines,
     CommandFinishNotificationAfterSecs,
+    AutosuggestionsDelayMs,
     DefaultCwd,
 }
 
@@ -765,6 +781,16 @@ pub fn parse_command_notify_secs(raw: &str) -> Option<u16> {
     }
 }
 
+/// Parse an `autosuggestions_delay_ms` draft (suggest-delay spec): a
+/// plain `u16` parse, ruled no-clamp — the knob's band is the type's
+/// band, so an entry outside it (a negative, an absurd value) rejects
+/// and the draft stays for the user to fix; saturation or a zero
+/// floor would invent a value the user never typed. An empty field
+/// is no write, the text-input contract.
+pub fn parse_autosuggestions_delay_ms(raw: &str) -> Option<u16> {
+    raw.trim().parse::<u16>().ok()
+}
+
 /// The write a submitted text input commits (text inputs commit on
 /// submit, never per keystroke). `None` means the draft did not parse
 /// and nothing is written.
@@ -778,6 +804,9 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
         TextField::ScrollbackLines => parse_scrollback(raw).map(PlannedWrite::ScrollbackLines),
         TextField::CommandFinishNotificationAfterSecs => {
             parse_command_notify_secs(raw).map(PlannedWrite::CommandFinishNotificationAfterSecs)
+        }
+        TextField::AutosuggestionsDelayMs => {
+            parse_autosuggestions_delay_ms(raw).map(PlannedWrite::AutosuggestionsDelayMs)
         }
         // The profile form's `parse_cwd` rule: empty clears to `None`
         // (the pty default), any other path lands verbatim — a cwd can
@@ -858,6 +887,11 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
+        // The delay resolves per update like the toggles
+        // (suggest-delay spec): a lowered value can reveal a
+        // withheld suggestion at the next update, a raised one
+        // re-arms the wait — no restart needed.
+        | ConfigKey::AutosuggestionsDelayMs
         | ConfigKey::ThemePreference
         // The presence flip swaps the anchor on the echo itself
         // (shell-presence spec): destroy, reopen, rebind — live.
@@ -1065,6 +1099,7 @@ impl SettingsBuffer {
             TextField::CommandFinishNotificationAfterSecs => {
                 config.command_finish_notification_after_secs.to_string()
             }
+            TextField::AutosuggestionsDelayMs => config.autosuggestions_delay_ms.to_string(),
             // The profile form's `cwd_text` shape: the path verbatim,
             // empty for `None`.
             TextField::DefaultCwd => config
