@@ -10,6 +10,12 @@ The rest of the most recent matching command from *this tab's own history* rende
 - Honest silence: no suggestion inside vim or htop (a child holds the foreground), on a `read -p` prompt or a multi-line / right-side prompt (the line no longer matches the prompt anchor), or while scrolled back. Uncertainty always degrades to no suggestion, never a wrong one. Width is the one place where showing less beats showing nothing: a ghost too wide for the columns left on the line clips to what fits with a trailing `…` - fish's own rule - and with fewer than three columns free nothing is drawn while the suggestion stays live for accepting. The clip is display-only: an accept always writes the full text.
 - Toggle with `autosuggestions_enabled` (default `true`, Behavior section in the [settings drawer](settings.md)); a flip applies live - a showing suggestion disappears the moment the switch lands, and re-enabling suggests again at the next typed prefix.
 
+## The delay
+
+Every keystroke past the first character flips a guess onto the screen the instant it computes - and while typing fast those guesses are the feature's weakest. `autosuggestions_delay_ms` (default `0`, fish parity - today's behavior exactly) holds a qualifying suggestion back until your typing has been stable for that many milliseconds: no ghost churning while you type, one ghost appearing at the pause. 200-300 ms suits the churn complaint; the settings drawer's Terminal card takes the number and applies it live.
+
+The honesty clause: the delay changes *when* a suggestion is seen, never *which* suggestion wins - the same candidates compute under the same merge order either way, and at `0` the two behaviors are indistinguishable. Any keystroke restarts the wait and dismisses a showing ghost instantly, and Right / Alt+Right are unchanged the moment a ghost shows.
+
 ## Paths
 
 Beyond history, a typed path token completes itself from the filesystem: `~/sr` ghosts its completion when one is certain, `./do` ghosts `cs/`, `/usr/bi` ghosts `n/`. The same ghost, the same keys - Right accepts, Alt+Right takes a word, anything else dismisses. History still outranks paths: a command you have run before wins over the directory listing.
