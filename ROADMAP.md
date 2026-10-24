@@ -49,7 +49,5 @@ High-level feature list.
 
 # bugs
 
-- when toggling to show the terminal, it should focus on the editor
-
 - editable default profile
 - app is not hidden from alt tab

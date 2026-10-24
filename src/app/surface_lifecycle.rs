@@ -239,7 +239,10 @@ impl DropTerm {
         let id = window::Id::unique();
         self.surface = SurfaceState::Measuring(id);
         self.surface_focused = false;
-        get_layer_surface(surface::measuring(id))
+        // The configured keyboard mode rides creation (see
+        // `surface::measuring`): the map-time focus grant is the one
+        // path that focuses the surface on an empty desktop.
+        get_layer_surface(surface::measuring(id, self.config.keyboard_mode))
     }
 
     pub(super) fn hide(&mut self) -> Task<Message> {
