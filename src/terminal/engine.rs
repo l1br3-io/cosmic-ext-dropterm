@@ -1008,6 +1008,15 @@ impl Terminal {
         self.is_focused = is_focused;
 
         if focus_changed {
+            // The caret rides the buffer build — the cursor cell's
+            // fg/bg swap keys on this flag — so a real focus change
+            // must arm a rebuild, or the swap only lands when
+            // unrelated pty output next rebuilds the lines and a
+            // re-shown surface paints no caret at all until then
+            // (a non-focus-reporting shell like bash never emits
+            // any).
+            self.needs_update = true;
+
             let report_focus = self.term.lock().mode().contains(TermMode::FOCUS_IN_OUT);
             if report_focus {
                 const FOCUS_IN: &[u8] = b"\x1b[I";

@@ -3,6 +3,7 @@
 How DropTerm is verified: headless unit tests for everything that needs no compositor, and this manual checklist for everything that does - runtime behavior is only testable on real COSMIC hardware. After building, check:
 - [ ] First launch shows the overlay at the configured edge, focused and ready for input
 - [ ] The bound shortcut hides and re-shows it
+- [ ] Caret on show: every toggle-show paints the block cursor at the prompt in the first shown frame - before any keystroke; the same after a focus-loss hide (click another app with `hide_on_focus_loss` on, then re-toggle) and in a bash tab (no focus reporting - nothing else repaints the caret), and switching tabs paints the newly active tab's caret the same way
 - [ ] A background job (`sleep 100 &`, shell history) survives a hide/show cycle
 - [ ] Shell presence - hidden (the default): while DropTerm runs, shown or hidden, the window switcher and the dock list no DropTerm entry at all (the anchor is a layer surface no toplevel listing can see); the shortcut, the panel applet, and the CLI each summon it, and it never takes focus or input by itself
 - [ ] Shell presence - dock mode: with `show_in_dock: true` (file or the Advanced toggle), the switcher and dock list one DropTerm window carrying the DropTerm name and icon, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
