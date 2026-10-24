@@ -241,6 +241,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::Layer(Layer::Overlay),
         PlannedWrite::KeyboardMode(KeyboardMode::Exclusive),
         PlannedWrite::RespectPanel(true),
+        PlannedWrite::ShowInDock(false),
         PlannedWrite::ColorSchemeDark(String::new()),
         PlannedWrite::ColorSchemeLight(String::new()),
         PlannedWrite::ThemePreference(ThemePreference::System),
@@ -607,6 +608,9 @@ fn apply_timing_states_each_field_s_documented_semantics() {
         ConfigKey::StatusBarShowZoom,
         ConfigKey::StatusBarShowClock,
         ConfigKey::StatusBarShowDuration,
+        // The presence flip swaps the anchor live (shell-presence
+        // spec).
+        ConfigKey::ShowInDock,
     ] {
         assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
     }
@@ -908,8 +912,9 @@ fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
 
 #[test]
 fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
-    // The two scheme rows land in Appearance after Opacity;
-    // Advanced keeps only the compositor-negotiation knobs.
+    // The two scheme rows land in Appearance after Opacity; Advanced
+    // opens with the shell-presence toggle and keeps the
+    // compositor-negotiation knobs behind it.
     assert_eq!(
         Section::Appearance.keys(),
         &[
@@ -924,6 +929,7 @@ fn scheme_keys_sit_in_appearance_after_opacity_and_leave_advanced() {
     assert_eq!(
         Section::Advanced.keys(),
         &[
+            ConfigKey::ShowInDock,
             ConfigKey::RespectPanel,
             ConfigKey::Layer,
             ConfigKey::KeyboardMode,

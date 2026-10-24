@@ -6,7 +6,7 @@ DropTerm keeps every setting in RON files under one directory and reloads them l
 ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
 ```
 
-Each of the 50 keys is its own file in that directory. Edit one directly:
+Each of the 51 keys is its own file in that directory. Edit one directly:
 
 ```sh
 echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
@@ -30,6 +30,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `layer` | `Overlay` |
 | `keyboard_mode` | `Exclusive` |
 | `respect_panel` | `false` |
+| `show_in_dock` | `false` |
 | `font_name` | `"Noto Sans Mono"` |
 | `font_size` | `14` |
 | `color_scheme_dark` | `"COSMIC Dark"` |
@@ -189,6 +190,9 @@ The toggles apply at their next natural trigger - the session toggle at the next
 | `layer` | `Overlay`, `Top` | `Overlay` | `Overlay` sits above fullscreen windows; `Top` sits below them but behaves better with input methods. |
 | `keyboard_mode` | `Exclusive`, `OnDemand` | `Exclusive` | How the surface asks for keyboard focus. `Exclusive` always grabs the keyboard while shown; `OnDemand` is gentler but not auto-focused by every compositor. |
 | `respect_panel` | `true`/`false` | `false` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies on the next show. |
+| `show_in_dock` | `true`/`false` | `false` | Whether the app keeps a presence in the dock and the window switcher. The invisible clipboard anchor that holds your copies across every hide is, on Wayland, always a mapped window — `false` makes it a layer surface no switcher or dock can list (summon by shortcut, the [panel applet](applet.md), or the CLI); `true` keeps it a normal window, so DropTerm shows in both. A flip applies immediately; whatever is on the clipboard at that moment is lost once. |
+
+The anchor itself never takes input or focus in either mode — it exists to keep a copied selection alive while the drop-down is hidden.
 
 With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
 

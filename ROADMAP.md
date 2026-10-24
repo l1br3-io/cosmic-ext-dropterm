@@ -44,7 +44,7 @@ High-level feature list.
 
 - [x] improve tab bar ux
 - [ ] improve docs
-- [ ] hide app to tray
+- [x] hide app to tray (the shell-presence pass: the default hides the app from the dock and the window switcher — the clipboard anchor becomes an invisible layer surface — and the panel applet is the persistent handle; `show_in_dock` restores a dock presence for users who summon by clicking it)
 - [ ] improve autocomplete feature
 
 # bugs
@@ -52,4 +52,3 @@ High-level feature list.
 - when toggling to show the terminal, it should focus on the editor
 
 - editable default profile
-- app is not hidden from alt tab

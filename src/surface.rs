@@ -97,6 +97,32 @@ pub fn terminal_view_height(window_height: f32, status_bar_enabled: bool) -> f32
     (window_height - crate::tab_bar::BAR_HEIGHT - crate::grab_bar::GRAB_BAR_HEIGHT - band).max(1.0)
 }
 
+/// Settings for the clipboard anchor's hidden body (shell-presence
+/// spec): a never-destroyed 1×1 layer surface. Layer surfaces are not
+/// xdg toplevels, so no switcher or dock listing built on toplevels —
+/// COSMIC's toplevel-info protocol exists for exactly those clients —
+/// can ever see it. The empty input zone is the no-input guarantee:
+/// the runtime turns `Some(vec![])` into an empty `wl_surface` input
+/// region, so the single pixel accepts no pointer events, and
+/// keyboard `None` asks for no focus. `Bottom` composites below every
+/// normal window, and the namespace suffix keeps namespace-keyed
+/// shell rules from matching the anchor itself.
+pub fn anchor(id: window::Id) -> SctkLayerSurfaceSettings {
+    SctkLayerSurfaceSettings {
+        id,
+        layer: WlrLayer::Bottom,
+        keyboard_interactivity: KeyboardInteractivity::None,
+        input_zone: Some(Vec::new()),
+        anchor: Anchor::empty(),
+        output: IcedOutput::Active,
+        namespace: format!("{NAMESPACE}.anchor"),
+        size: Some((Some(1), Some(1))),
+        exclusive_zone: -1,
+        size_limits: uncapped_size_limits(),
+        ..SctkLayerSurfaceSettings::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +184,40 @@ mod tests {
     #[test]
     fn exclusive_zone_respects_reserved_space_when_enabled() {
         assert_eq!(exclusive_zone(true), 0);
+    }
+
+    // --- the clipboard anchor's hidden body (shell-presence spec) ---
+
+    #[test]
+    fn anchor_is_a_one_pixel_bottom_layer_surface() {
+        // Invisible to the shell by construction: layer surfaces are
+        // not toplevels, and `Bottom` composites below every normal
+        // window, so even the single pixel never covers anything.
+        let settings = anchor(window::Id::unique());
+        assert_eq!(settings.layer, WlrLayer::Bottom);
+        assert_eq!(settings.size, Some((Some(1), Some(1))));
+        assert_eq!(settings.exclusive_zone, -1);
+        assert_eq!(settings.anchor, Anchor::empty());
+    }
+
+    #[test]
+    fn anchor_never_takes_input_or_focus() {
+        // The no-footprint pair: an empty input zone is an empty
+        // `wl_surface` input region (no pointer events at all), and
+        // keyboard `None` asks the compositor for no focus.
+        let settings = anchor(window::Id::unique());
+        assert_eq!(settings.keyboard_interactivity, KeyboardInteractivity::None);
+        assert_eq!(settings.input_zone, Some(Vec::new()));
+    }
+
+    #[test]
+    fn anchor_namespace_extends_the_app_id() {
+        // The suffix keeps the anchor resolvable to this app while
+        // never matching the bare namespace a shell rule keys on —
+        // and the dev identity rides the same prefix.
+        assert_eq!(
+            anchor(window::Id::unique()).namespace,
+            format!("{}.anchor", crate::app::APP_ID)
+        );
     }
 }

@@ -4,7 +4,9 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] First launch shows the overlay at the configured edge, focused and ready for input
 - [ ] The bound shortcut hides and re-shows it
 - [ ] A background job (`sleep 100 &`, shell history) survives a hide/show cycle
-- [ ] Alt-Tab identity: Wayland cannot unmap the clipboard-anchor toplevel, so the switcher (and the dock) list one DropTerm window - it carries the DropTerm name and icon via its application_id, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
+- [ ] Shell presence - hidden (the default): while DropTerm runs, shown or hidden, the window switcher and the dock list no DropTerm entry at all (the anchor is a layer surface no toplevel listing can see); the shortcut, the panel applet, and the CLI each summon it, and it never takes focus or input by itself
+- [ ] Shell presence - dock mode: with `show_in_dock: true` (file or the Advanced toggle), the switcher and dock list one DropTerm window carrying the DropTerm name and icon, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
+- [ ] Shell presence - the clipboard across both modes: copy in DropTerm, hide, focus another app, paste - the selection survives in hidden mode and in dock mode alike (the anchor's whole duty), and a mid-session flip costs exactly the selection on the clipboard at flip time, with copies made after the flip persisting across hide/show again
 - [ ] Rapid repeated toggles (double key-press) don't crash or duplicate the surface
 - [ ] It appears correctly above a fullscreen window
 - [ ] `Ctrl+Shift+C` / `Ctrl+Shift+V` copy/paste, and middle-click / `Shift+Insert` paste the primary selection

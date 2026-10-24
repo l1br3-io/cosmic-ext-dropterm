@@ -20,7 +20,8 @@ use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::mouse;
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, set_exclusive_zone, set_keyboard_interactivity, set_layer,
+    destroy_layer_surface, get_layer_surface, set_exclusive_zone, set_keyboard_interactivity,
+    set_layer,
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
@@ -351,6 +352,12 @@ pub struct DropTerm {
     last_written: Option<Geometry>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
+    /// The live clipboard-anchor body and its window id
+    /// (shell-presence spec): the mapped xdg toplevel while
+    /// `show_in_dock` is on, the invisible 1×1 layer surface while it
+    /// is off. Never destroyed outside a presence flip — its whole
+    /// job is to own the clipboard binding for the process lifetime.
+    anchor: Anchor,
     surface: SurfaceState,
     /// The output size measured by the last `SurfaceOpened`, kept so
     /// later reshapes (config edits, drag) can recompute pixels without
@@ -1287,22 +1294,25 @@ pub(crate) fn interned_font_family(name: &str) -> &'static str {
     leaked
 }
 
-/// Settings for the clipboard-anchor window.
+/// Settings for the clipboard-anchor window — the **dock body**
+/// (shell-presence spec, `show_in_dock = true`).
 ///
 /// libcosmic binds its single runtime [`Clipboard`] to the first
 /// window created, and when that surface is destroyed the binding is
 /// dropped — taking the smithay-clipboard connection, and with it
-/// any selection this app copied, down with it. `DropTerm`'s only
-/// other surface is the layer shell, which every hide destroys, so
+/// any selection this app copied, down with it. `DropTerm`'s own
+/// surface is the layer shell, which every hide destroys, so
 /// copying out could never survive the focus switch to the paste
-/// target. This window — never closed, created before any layer
+/// target. The anchor — never closed, created before any layer
 /// surface — owns the binding for the whole process lifetime instead,
 /// exempt from close requests, so nothing the user or the runtime
 /// does can drop the connection mid-session.
 ///
 /// Wayland cannot honor `visible: false` (winit's `set_visible` is a
-/// no-op there), so the anchor is mapped after all and the shell's
-/// window switcher lists it. Its `application_id` is the only name
+/// no-op there), so this body is a mapped toplevel and the shell's
+/// window switcher and dock list it — the presence `show_in_dock`
+/// buys; the hidden body (`surface::anchor`) is a layer surface no
+/// toplevel listing can see. Its `application_id` is the only name
 /// that toplevel carries — the runtime does not derive it from
 /// `Application::APP_ID` — and with the empty default the switcher
 /// matches no desktop file and labels the window "unknown". Pinned
@@ -1321,6 +1331,69 @@ fn clipboard_anchor_settings() -> window::Settings {
         settings.platform_specific.application_id = APP_ID.to_string();
     }
     settings
+}
+
+/// Which clipboard-anchor body is live (shell-presence spec): the
+/// mapped xdg toplevel that keeps a dock and switcher presence
+/// (`show_in_dock = true`), or the never-destroyed 1×1 layer surface
+/// that is invisible to both. Each variant carries its window id —
+/// the presence swap destroys the old body and needs it.
+#[derive(Debug, Clone, PartialEq)]
+enum Anchor {
+    Dock(window::Id),
+    Hidden(window::Id),
+}
+
+/// Whether the live anchor body matches the configured presence: the
+/// dock body belongs to `show_in_dock = true`, the layer body to
+/// `false`. Pure — the `ConfigChanged` swap's gate, keyed on the live
+/// anchor rather than the old config so a missed echo heals on the
+/// next one.
+fn anchor_matches(anchor: &Anchor, show_in_dock: bool) -> bool {
+    matches!(
+        (anchor, show_in_dock),
+        (Anchor::Dock(_), true) | (Anchor::Hidden(_), false)
+    )
+}
+
+/// Opens the configured clipboard-anchor body and returns it with its
+/// open task (shell-presence spec). The task must run before any
+/// terminal layer surface is created: the runtime binds its
+/// clipboard to the first window created — either body qualifies —
+/// and the anchor exists to win that race and hold the binding for
+/// the process lifetime.
+fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
+    if show_in_dock {
+        let (id, open) = window::open(clipboard_anchor_settings());
+        (Anchor::Dock(id), open.then(|_| Task::none()))
+    } else {
+        let id = window::Id::unique();
+        let open: Task<Message> = get_layer_surface(surface::anchor(id));
+        (Anchor::Hidden(id), open.then(|_| Task::none()))
+    }
+}
+
+/// Swaps the clipboard anchor to the configured body (shell-presence
+/// spec): destroys the live body first — the runtime drops the
+/// clipboard binding with it, so whatever is on the clipboard dies
+/// once, the documented cost of a live flip — then opens the other,
+/// whose creation event rebinds the clipboard immediately (the
+/// destroy-before-create order is what heals it without waiting for
+/// the next surface). A no-op when the live body already matches.
+fn swap_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
+    if anchor_matches(anchor, show_in_dock) {
+        return Task::none();
+    }
+    let close_old: Task<Message> = match anchor {
+        Anchor::Dock(id) => window::close(*id),
+        Anchor::Hidden(id) => destroy_layer_surface(*id),
+    };
+    let (next, open_new) = open_anchor(show_in_dock);
+    *anchor = next;
+    // `then` wants `FnMut`; the open runs once, so it rides an Option
+    // the single call drains.
+    let mut open_new = Some(open_new);
+    close_old.then(move |_| open_new.take().unwrap_or_else(Task::none))
 }
 
 impl Application for DropTerm {
@@ -1394,11 +1467,13 @@ impl Application for DropTerm {
         // runtime binds its clipboard to the first window created, so
         // the anchor — not the terminal's layer surface — must win
         // that binding, or every hide would destroy the connection
-        // owning whatever the user copied. Its id is deliberately
-        // not kept: nothing references the window again (view events
-        // for it fall through the foreign-window guards), and it is
-        // never closed.
-        let (_anchor_window, open_anchor) = window::open(clipboard_anchor_settings());
+        // owning whatever the user copied. Which body opens is the
+        // `show_in_dock` choice (shell-presence spec): the dock
+        // body's mapped toplevel, or the hidden body's invisible
+        // never-destroyed layer surface. The live body is kept — a
+        // presence flip closes it by id; view events for either body
+        // fall through the foreign-window guards.
+        let (anchor, open_anchor_task) = open_anchor(config.show_in_dock);
 
         // The tab strip's model, built once (criterion 7); its
         // selection starts in lockstep with the initial page.
@@ -1437,6 +1512,7 @@ impl Application for DropTerm {
             write_back: geometry::WriteBack::default(),
             last_written: None,
             rename_input_id: widget::Id::unique(),
+            anchor,
             surface: SurfaceState::Hidden,
             output_size: None,
             window_height: None,
@@ -1505,7 +1581,7 @@ impl Application for DropTerm {
             log::info!("{} with no running instance: starting plain", flags.action);
         }
         let task = Task::batch([
-            open_anchor.then(|_| Task::none()),
+            open_anchor_task,
             app.debounced_toggle(startup),
             theme_task,
             // The clock starts with the config's gate — armed here,
@@ -2085,12 +2161,21 @@ impl DropTerm {
                 // for the band's process snapshot (criterion 5) — the
                 // band's own visibility/font ride this same echo.
                 self.refresh_status_snapshot();
+                // A shell-presence flip swaps the anchor live
+                // (shell-presence spec), folded ahead of the tick
+                // sync so every exit below — the theme return, the
+                // own-write absorption, the geometry reshape —
+                // carries it. Same-value echoes never touch the
+                // anchor (`swap_anchor`'s no-op gate).
+                let anchor_task = swap_anchor(&mut self.anchor, self.config.show_in_dock);
                 // The clock's gate can flip on any echo; sync (arm or
                 // stand down) before the echo's own exits, chaining
                 // the task onto whichever return it takes. The
                 // duration's gate rides the same echo — a segment or
                 // band toggle flips it here.
-                let ticks_task = self.sync_status_clock().chain(self.sync_status_duration());
+                let ticks_task = anchor_task
+                    .chain(self.sync_status_clock())
+                    .chain(self.sync_status_duration());
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a

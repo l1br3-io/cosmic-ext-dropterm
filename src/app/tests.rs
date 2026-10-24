@@ -335,12 +335,15 @@ fn a_respawn_starts_from_the_new_profile_s_effective_values() {
 // libcosmic binds its single runtime Clipboard to the first
 // window created and drops that binding — and with it the
 // smithay-clipboard connection holding any copied selection —
-// when the owning surface is destroyed. DropTerm's only surface
+// when the owning surface is destroyed. DropTerm's own surface
 // is the layer shell, which every hide destroys, so a copy could
 // never survive the focus switch to wherever it would be pasted.
-// An invisible, never-closed normal window created first owns
-// the binding forever; these pin the two invariants that keep it
-// both invisible and immortal.
+// The anchor is a window created first and never closed, so it
+// owns the binding for the process lifetime. It has two bodies
+// (shell-presence spec): an invisible never-closed normal window
+// while `show_in_dock` is on — the mapped toplevel the dock and
+// switcher list — and a never-destroyed 1×1 layer surface while
+// it is off, which no toplevel listing can see at all.
 
 #[test]
 fn clipboard_anchor_window_is_invisible() {
@@ -355,6 +358,27 @@ fn clipboard_anchor_window_cannot_be_closed() {
     // in main means the runtime cannot exit through it either),
     // so the binding outlives every hide/show cycle.
     assert!(!clipboard_anchor_settings().exit_on_close_request);
+}
+
+#[test]
+fn the_hidden_anchor_body_matches_show_in_dock_false() {
+    // The swap's gate: the layer body is the hidden-mode body, and
+    // it never matches a dock-presence config (a flip must swap).
+    assert!(anchor_matches(&Anchor::Hidden(window::Id::unique()), false));
+    assert!(!anchor_matches(&Anchor::Hidden(window::Id::unique()), true));
+}
+
+#[test]
+fn the_dock_anchor_body_matches_show_in_dock_true() {
+    assert!(anchor_matches(&Anchor::Dock(window::Id::unique()), true));
+    assert!(!anchor_matches(&Anchor::Dock(window::Id::unique()), false));
+}
+
+#[test]
+fn the_default_config_hides_the_app_from_the_shell() {
+    // OQ 1: the reported bug becomes the fixed default — hidden
+    // mode, the layer-surface anchor; the dock body is opt-in.
+    assert!(!crate::config::DropTermConfig::default().show_in_dock);
 }
 
 // --- the pure theme-preference decisions ---
@@ -555,7 +579,7 @@ fn bar_border_lines_never_share_a_seam() {
 #[cfg(target_os = "linux")]
 #[test]
 fn clipboard_anchor_carries_the_app_id() {
-    // The anchor is the app's only mapped xdg toplevel — Wayland
+    // The dock body is the app's only mapped xdg toplevel — Wayland
     // cannot unmap it — so the shell's window switcher names it by
     // this application_id alone. With the empty default the switcher
     // matched no desktop file and labeled the window "unknown"; the
