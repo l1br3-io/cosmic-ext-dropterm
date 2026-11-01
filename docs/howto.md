@@ -29,6 +29,7 @@ The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: wha
 
 ## Behavior and feedback
 
+- **Copy text out of a program that grabs the mouse (vim, tmux, htop)** - hold Shift: Shift+drag selects, Shift+right-click opens the context menu, and `Ctrl+Shift+C` copies the selection; without Shift the program owns the pointer, and the wheel stays its either way ([FAQ](faq.md)).
 - **Stop it hiding when I click another window** - that is `hide_on_focus_loss` (default `true`, the hotkey-driven interaction model); write `false` to keep the overlay up ([configuration](configuration.md#behavior-toggles)).
 - **Silence the bell - or its desktop notifications** - `bell_notification_enabled` gates the hidden-terminal notification and `command_finish_notification_enabled` the finished-command one; a visible terminal never notifies, it only marks the tab ([bell](bell.md)).
 - **Get fish-style suggestions - or turn them off** - new on main, shipping in the release after v0.2.0: dim ghost text after the cursor completes the most recent matching command from this tab's own history - Right accepts it, Alt+Right takes one word; path, command-name, and flag completion ride the same gate, and `autosuggestions_enabled` is the kill switch ([autosuggestions](autosuggestions.md)).

@@ -9,10 +9,15 @@
 // drop-down — no panes, profiles, or cosmic-term `Config` coupling
 // (see `terminal/mod.rs` and `engine.rs` for the full picture) — plus
 // a configurable height strategy (`height`, pinning the terminal
-// inside the fixed-size layer surface) and the context-menu publish
+// inside the fixed-size layer surface), the context-menu publish
 // seam: `context_menu_open` / `on_context_menu`, driven by
 // `context_menu_press` from the default-mode branch only, so
-// mouse-reporting applications keep every press.
+// mouse-reporting applications keep every press — and the Shift
+// escape hatch over that reporting (`child_owns_pointer`): Shift (or
+// an in-flight bypassed drag) routes press, drag, and release to the
+// terminal's own selection, the standard bypass alacritty, kitty,
+// and gnome-terminal offer, so a mouse-grabbing editor can't starve
+// Copy of a selection.
 
 use alacritty_terminal::{
     grid::Dimensions,
@@ -1203,7 +1208,11 @@ where
         let is_mouse_mode = terminal.term.lock().mode().intersects(TermMode::MOUSE_MODE);
         match event {
             Event::Window(cosmic::iced::window::Event::RedrawRequested(_)) => {
-                if is_mouse_mode {
+                if child_owns_pointer(
+                    is_mouse_mode,
+                    state.dragging.is_some(),
+                    state.modifiers.shift(),
+                ) {
                     state.autoscroll.stop();
                 } else {
                     if let Some((pointer, multiplier)) = state.autoscroll.next_due()
@@ -1535,7 +1544,11 @@ where
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
 
-                    if is_mouse_mode {
+                    if child_owns_pointer(
+                        is_mouse_mode,
+                        state.dragging.is_some(),
+                        state.modifiers.shift(),
+                    ) {
                         state.autoscroll.stop();
                         #[expect(
                             clippy::cast_possible_truncation,
@@ -1668,6 +1681,9 @@ where
             }
             Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
                 state.autoscroll.stop();
+                // Read before the take below: the release's ownership
+                // question is about the gesture that is ending.
+                let drag_was_in_flight = state.dragging.is_some();
                 if let Some(dragging) = state.dragging.take()
                     && let Dragging::Buffer {
                         last_point,
@@ -1705,7 +1721,11 @@ where
                         shell.capture_event();
                     }
 
-                    if is_mouse_mode {
+                    if child_owns_pointer(
+                        is_mouse_mode,
+                        drag_was_in_flight,
+                        state.modifiers.shift(),
+                    ) {
                         #[expect(
                             clippy::cast_possible_truncation,
                             clippy::cast_sign_loss,
@@ -1725,7 +1745,11 @@ where
                     // TODO: better calculation of position
                     let col = x / terminal.size().cell_width;
                     let row = y / terminal.size().cell_height;
-                    if is_mouse_mode {
+                    if child_owns_pointer(
+                        is_mouse_mode,
+                        state.dragging.is_some(),
+                        state.modifiers.shift(),
+                    ) {
                         #[expect(
                             clippy::cast_possible_truncation,
                             clippy::cast_sign_loss,
@@ -1776,7 +1800,11 @@ where
                         None
                     };
 
-                    if is_mouse_mode {
+                    if child_owns_pointer(
+                        is_mouse_mode,
+                        state.dragging.is_some(),
+                        state.modifiers.shift(),
+                    ) {
                         if let Some((col, row)) = col_row_opt {
                             #[expect(
                                 clippy::cast_possible_truncation,
@@ -2393,6 +2421,18 @@ fn no_ctrl_input(character: Option<char>, alt: bool) -> Option<Vec<u8>> {
     Some(input)
 }
 
+/// Whether a mouse-reporting child owns the pointer event: reporting
+/// is on, no Shift escape hatch is held, and no default-mode drag is
+/// mid-flight. Shift is the standard terminal bypass (alacritty,
+/// kitty, gnome-terminal); without it a program that grabs the mouse
+/// (vim `mouse=a`, tmux `mouse on`) swallows every press, so no
+/// terminal selection can form and Copy has nothing to grab. A drag
+/// that started bypassed keeps the bypass to its release — handing
+/// the child a release for a press it never saw is a protocol wart.
+fn child_owns_pointer(mouse_reporting: bool, drag_in_flight: bool, shift: bool) -> bool {
+    mouse_reporting && !drag_in_flight && !shift
+}
+
 fn calculate_modifier_number(state: &State) -> u8 {
     let mut mod_no = 0;
     if state.modifiers.shift() {
@@ -2466,6 +2506,7 @@ mod tests {
     use cosmic::iced::mouse::Button;
 
     use super::accept_kind;
+    use super::child_owns_pointer;
     use super::no_ctrl_input;
     use crate::terminal::suggest::AcceptKind;
 
@@ -2493,6 +2534,29 @@ mod tests {
             Some(b"\x1b\x03".to_vec())
         );
         assert_eq!(no_ctrl_input(Some('\u{7f}'), false), Some(b"\x7f".to_vec()));
+    }
+
+    #[test]
+    fn child_owns_pointer_honors_the_shift_escape_hatch() {
+        // Mouse reporting on with nothing held: every press is the
+        // child's (the pre-bypass behavior, unchanged).
+        assert!(child_owns_pointer(true, false, false));
+        // Shift held takes the pointer back — the standard terminal
+        // bypass, so a selection can form under a mouse-grabbing
+        // editor.
+        assert!(!child_owns_pointer(true, false, true));
+        // Default mode never reports the pointer.
+        assert!(!child_owns_pointer(false, false, false));
+        assert!(!child_owns_pointer(false, false, true));
+    }
+
+    #[test]
+    fn child_owns_pointer_keeps_a_bypassed_gesture_whole() {
+        // A drag that started bypassed stays bypassed even after
+        // Shift is released mid-gesture: handing the child a release
+        // for a press it never saw is a protocol wart.
+        assert!(!child_owns_pointer(true, true, false));
+        assert!(!child_owns_pointer(true, true, true));
     }
 
     #[test]
