@@ -321,8 +321,18 @@ deps:
                 libxkbcommon-devel wayland-devel fontconfig-devel \
                 freetype2-devel libexpat-devel
         else
-            echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
-            echo "deps: install the equivalents of:$missing and re-run" >&2
+            # Not a package-manager gap on non-Linux: DropTerm targets
+            # the COSMIC desktop, so name the real reason instead of a
+            # package guessing game.
+            case "$(uname -s)" in
+                Darwin)
+                    echo "deps: DropTerm targets the COSMIC desktop — build on Linux; macOS has neither the compositor nor its libraries" >&2
+                    ;;
+                *)
+                    echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
+                    echo "deps: install the equivalents of:$missing and re-run" >&2
+                    ;;
+            esac
             exit 1
         fi
     fi
