@@ -129,6 +129,16 @@ archive (URL + sha256), and neither exists until CI has published the
 release. The store listing rides a third repo altogether -
 pop-os/cosmic-flatpak, via the maintainer's fork.
 
+The whole sequence is driven by `/release` (the `release-orchestration`
+skill): it derives the version from the commits since the last tag, drafts
+the step-1 curation for your review, runs the recipes, and hands you each
+push as an exact command — the agent never pushes, and every outward act
+(tag push, pin commit, catalog branch) sits behind a confirmation gate.
+Before the tag push it can offer a full-pipeline dry-run rehearsal: push
+main alone, dispatch release.yml's dry-run on it, and only push the tag
+once the artifact set assembles green. The steps below are what the command
+does; they remain the manual path.
+
 1. **Curate the release content** (uncommitted or committed, the recipe
    takes either):
    - [releases.md](releases.md) - a `## vX.Y.Z (date)` section for today,
@@ -145,10 +155,10 @@ pop-os/cosmic-flatpak, via the maintainer's fork.
    everything as one release-hygiene commit, and tags `vX.Y.Z`. It never
    pushes - the push is the publish.
 3. **Publish**: `git push origin main && git push origin vX.Y.Z`.
-   [release.yml](../.github/workflows/release.yml) builds the per-arch
-   tarballs and `vendor.tar`, proves the vendored offline build, guards
-   tag against `Cargo.toml`, and publishes the GitHub release with
-   `sha256sums`.
+   [release.yml](../.github/workflows/release.yml) runs the test suite on
+   the release bits, builds the per-arch tarballs and `vendor.tar`, proves
+   the vendored offline build, guards tag against `Cargo.toml`, and
+   publishes the GitHub release with `sha256sums`.
 4. **`just release-flatpak-pin X.Y.Z`** - once the release page exists:
    downloads the source archive, records its hash, and commits the applet
    manifest's re-pin. Push that commit.

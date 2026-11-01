@@ -56,6 +56,35 @@ jobs:
           path: vendor.tar
           if-no-files-found: error
 
+  # The published bits are tested, not just built (alacritty's release
+  # workflow runs its Test step in every matrix job before upload; here
+  # one x86_64 run of the same `just test` CI and the local gate use is
+  # enough — the per-arch jobs below prove each arch compiles). Blocks
+  # publish through the release job's needs.
+  test:
+    name: test the release bits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libfontconfig-dev \
+            libfreetype-dev libexpat1-dev pkg-config
+
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | bash -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: just test --locked
+
   # Per-arch release tarballs: per-package release builds (never a
   # unified workspace build — feature unification would hand the
   # applet the wgpu renderer), staged via `just rootdir=… install`,
@@ -112,7 +141,7 @@ jobs:
   # after the tag ↔ Cargo.toml version guard.
   release:
     name: assemble + publish
-    needs: [vendor, build]
+    needs: [vendor, build, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
