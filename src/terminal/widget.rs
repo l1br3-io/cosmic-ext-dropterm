@@ -1448,10 +1448,8 @@ where
                         return;
                     }
                 }
-                let character = text
-                    .as_ref()
-                    .and_then(|c| c.chars().next())
-                    .unwrap_or_default();
+                let text_char = text.as_ref().and_then(|c| c.chars().next());
+                let character = text_char.unwrap_or_default();
                 match (
                     modifiers.logo(),
                     modifiers.control(),
@@ -1494,23 +1492,14 @@ where
                         }
                     }
                     (false, false, true, _) => {
-                        if !character.is_control() {
-                            // Handle alt for non-control characters
-                            let mut buf = [0x1B, 0, 0, 0, 0];
-                            let len = {
-                                let str = character.encode_utf8(&mut buf[1..]);
-                                str.len() + 1
-                            };
-                            terminal.input_scroll(buf[..len].to_vec());
+                        if let Some(input) = no_ctrl_input(text_char, true) {
+                            terminal.input_scroll(input);
                             shell.capture_event();
                         }
                     }
                     (false, false, false, _) => {
-                        // Handle no modifiers for non-control characters
-                        if !character.is_control() {
-                            let mut buf = [0, 0, 0, 0];
-                            let str = character.encode_utf8(&mut buf);
-                            terminal.input_scroll(str.as_bytes().to_vec());
+                        if let Some(input) = no_ctrl_input(text_char, false) {
+                            terminal.input_scroll(input);
                             shell.capture_event();
                         }
                     }
@@ -2376,6 +2365,34 @@ fn accept_kind(named: Named, modifiers: Modifiers) -> Option<AcceptKind> {
     }
 }
 
+/// The shell bytes a no-Ctrl character arm delivers for a press whose
+/// `text` carries `character`: the character's UTF-8, `\x1B`-prefixed
+/// under Alt. `None` — a press with no text, a dead key
+/// mid-composition — delivers nothing. Control characters are
+/// delivered by design: with no Ctrl in the modifier flags, one in
+/// `text` can only mean the keyboard state that shaped `text` and the
+/// event's flags disagree (the modifier-tracking seam the hide/show
+/// surface churn can leave split — `text` encodes the Ctrl the flags
+/// no longer claim), and the guard that dropped such a press read as
+/// "Ctrl+C stopped working until restart". Deliver the byte the
+/// keyboard actually produced and name the disagreement.
+fn no_ctrl_input(character: Option<char>, alt: bool) -> Option<Vec<u8>> {
+    let character = character?;
+    if character.is_control() {
+        log::warn!(
+            "control character U+{:04X} with no Ctrl in the modifier flags: keyboard state and event flags disagree; sending the byte anyway",
+            u32::from(character)
+        );
+    }
+    let mut input = Vec::with_capacity(if alt { 5 } else { 4 });
+    if alt {
+        input.push(0x1B);
+    }
+    let mut buf = [0; 4];
+    input.extend_from_slice(character.encode_utf8(&mut buf).as_bytes());
+    Some(input)
+}
+
 fn calculate_modifier_number(state: &State) -> u8 {
     let mut mod_no = 0;
     if state.modifiers.shift() {
@@ -2449,7 +2466,34 @@ mod tests {
     use cosmic::iced::mouse::Button;
 
     use super::accept_kind;
+    use super::no_ctrl_input;
     use crate::terminal::suggest::AcceptKind;
+
+    #[test]
+    fn no_ctrl_input_delivers_the_character_text_carries() {
+        assert_eq!(no_ctrl_input(Some('c'), false), Some(b"c".to_vec()));
+        assert_eq!(no_ctrl_input(Some('c'), true), Some(b"\x1bc".to_vec()));
+        // A press with no text — a dead key mid-composition — is not
+        // an input; nothing is sent (the old guard read missing text
+        // as NUL and dropped it here for the wrong reason).
+        assert_eq!(no_ctrl_input(None, false), None);
+        assert_eq!(no_ctrl_input(None, true), None);
+    }
+
+    #[test]
+    fn no_ctrl_input_rescues_control_characters_the_flags_no_longer_claim() {
+        // The desync shape: `text` encodes the Ctrl the modifier flags
+        // lost, so Ctrl+C arrives as U+0003 with no Ctrl claimed.
+        // Dropping the press (the old guard) read as "Ctrl+C stopped
+        // working until restart"; the byte the keyboard produced goes
+        // through instead.
+        assert_eq!(no_ctrl_input(Some('\u{3}'), false), Some(b"\x03".to_vec()));
+        assert_eq!(
+            no_ctrl_input(Some('\u{3}'), true),
+            Some(b"\x1b\x03".to_vec())
+        );
+        assert_eq!(no_ctrl_input(Some('\u{7f}'), false), Some(b"\x7f".to_vec()));
+    }
 
     #[test]
     fn bare_right_accepts_the_whole_suggestion() {
