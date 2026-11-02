@@ -77,6 +77,22 @@ The rules specific to aliases:
 - The map is *local-machine* truth you declared for your local shell, so it rides the same shell gate as paths, the catalog, and the curated table: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting.
 - Applies live: a map written, edited, or emptied takes effect at the next typed prefix - a running tab needs no respawn, and a fresh tab picks the map up at spawn.
 
+## Git generators
+
+`git checkout ma` ghosts `in` from the repository's `main`: when you type an argument where a branch, tag, or working-tree change belongs, the generator provider completes it from the repo the tab's shell sits in. `git switch` takes branches, `git checkout` branches and tags, `git add` and `git restore` take your changed files - and the completions menu lists the whole matching set where the ghost settles for one.
+
+The names come from git itself, read under a contract stricter than any peer ships:
+
+- **Fixed, reviewed, read-only commands**: DropTerm runs three exact `git` invocations of its own - local branches, tags, and the short status - the same argv in the source, reviewed and versioned like any code. Nothing you configure - no config key, no data file - can add, alter, or script a generator; there is no knob that could run something on your behalf.
+- **Nothing leaves the machine**: the commands read the repo in the tab's own working directory. No network, no telemetry, no external service - a branch name is not data that travels.
+- **A scrubbed, reproducible environment**: the `git` binary is resolved once from the tab's spawn-time `$PATH` and run by absolute path in the tab's working directory, with an environment reduced to `HOME` and a pinned `C` locale - DropTerm's own environment never leaks into a generator, and the output stays parseable whatever your desktop locale.
+- **Five seconds, then kill, then silence**: a hung generator is killed at the deadline and drops to no candidates. A missing git, a directory that is not a repo, a failing command - every failure is silence, never a dialog, never a wrong completion. VS Code warns; DropTerm stays quiet.
+- **Never over ssh**: on a tab spawned as ssh or any non-shell program, the readable working directory is the wrong machine's - generators never run there at all, while scraped history keeps suggesting.
+- **Typing never spawns anything**: results cache and serve instantly; the cache refreshes when the completions menu opens and at the tab's spawn. Plain typing - even fast, even long - runs no command.
+- A cached name suggests only when no live provider answers: your history always wins, and path and table completions outrank the cache.
+
+Toggle the provider with `autosuggestions_generators_enabled` (default `true`, the Behavior section's Terminal card - "Git completions"). `false` stops every spawn and serves nothing from the cache; a flip applies live, and re-enabling refreshes at the next menu open.
+
 ## The menu
 
 `Ctrl+Space` opens a second surface beside the ghost: a candidate list over what you have typed, built from every provider at once - every matching history line, every matching path entry, every matching `$PATH` name, every matching curated subcommand and flag - where the ghost must settle for one choice. `git st` shows the history line *and* `stash` *and* `status`; `~/s` over `src` and `srv` shows both entries, where the ghost settles for the shared `r`.
