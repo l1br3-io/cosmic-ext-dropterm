@@ -33,7 +33,13 @@ const RING_CAP: usize = 256;
 /// variant, and the pipeline — eligibility, rendering, acceptance —
 /// talks to this enum, never to history matching directly, so `Ai`
 /// and external providers join additively behind the same match
-/// later. Never a plugin registry; never async machinery.
+/// later. Never a plugin registry; never async machinery — a phase-1
+/// line the generators record superseded **for the model's inputs
+/// only** (suggest-generators spec): the [`Generator`] variant joins
+/// additively like every other, reading cached candidates
+/// synchronously through [`Observation`]; every spawn, timeout, and
+/// cache population stays engine-side, outside the model, so the
+/// model itself still spawns nothing and never clocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SuggestionSource {
     /// The tab's own scraped command ring.
@@ -50,6 +56,12 @@ pub(crate) enum SuggestionSource {
     /// (command-catalog spec) — local-machine knowledge, gated on
     /// the same spawn allowlist.
     Catalog,
+    /// The spawn-based git value sets (suggest-generators spec):
+    /// cached branch/tag/working-tree names, engine-populated under
+    /// the record's stricter-than-any-peer contract — DropTerm-owned
+    /// argv, scrubbed env, 5s kill, stale-while-revalidate — and
+    /// served to the model as one more pure input.
+    Generator,
 }
 
 /// How much of the showing suffix an accept key writes (autosuggest
@@ -80,6 +92,24 @@ pub(crate) struct Showing {
     pub(crate) visible: String,
     /// Provenance.
     pub(crate) source: SuggestionSource,
+}
+
+/// The generator provider's cached sets (suggest-generators spec):
+/// the post-processed, already-escaped names of the tab's git
+/// context — local branches, tags, and working-tree changes — keyed
+/// to the cwd the runner resolved (`/proc/{shell_pid}/cwd`) and
+/// cached stale-while-revalidate engine-side. Every name rode the
+/// shared escape tier at post-filter time; the model carves suffixes
+/// from the escaped forms verbatim and never escapes again.
+#[derive(Clone, Copy)]
+pub(crate) struct GeneratorSets<'a> {
+    /// Local branch short names (`for-each-ref` over `refs/heads/`),
+    /// newest-commit-first — the runner's own argv-pinned order.
+    pub(crate) branches: &'a [String],
+    /// Tag names (`tag --list`), newest-first.
+    pub(crate) tags: &'a [String],
+    /// Working-tree change paths (`status --short`).
+    pub(crate) files: &'a [String],
 }
 
 /// One update's snapshot of everything the model may look at
@@ -147,6 +177,14 @@ pub(crate) struct Observation<'a> {
     /// `$PATH`, walked once at spawn — borrowed from the engine's
     /// per-tab state; the model never touches the filesystem.
     pub(crate) command_catalog: &'a [String],
+    /// The generator provider's cached sets (suggest-generators
+    /// spec): post-processed, already-escaped branch/tag/file names
+    /// for the tab's git context, borrowed from the engine's
+    /// stale-while-revalidate cache — present only where the runner
+    /// has cached something for an eligible tab; `None` is no
+    /// generator context (silence). The cache is the model's whole
+    /// truth about the repo: no spawn, no clock, no process state.
+    pub(crate) generator_candidates: Option<GeneratorSets<'a>>,
     /// The terminal's focus state.
     pub(crate) focused: bool,
     /// A foreground child holds the PTY (`tcgetpgrp` vs the shell's
@@ -435,15 +473,20 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
 
 /// The merge policy, ruled at clarification: history answers first —
 /// the tab's own truth — then path, then the curated specs, then the
-/// command catalog. One pure function of the provider variant,
-/// pinned by its test, so the dispatch derives its order here and
-/// later modules cannot reorder the merge by accident.
+/// command catalog, then the generator's cached sets
+/// (suggest-generators spec: ranked with the local providers,
+/// history on top, and yielding to every live provider — a cached
+/// name may be stale, so nothing fresh ever defers to it). One pure
+/// function of the provider variant, pinned by its test, so the
+/// dispatch derives its order here and later modules cannot reorder
+/// the merge by accident.
 fn source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::History => 0,
         SuggestionSource::Path => 1,
         SuggestionSource::Specs => 2,
         SuggestionSource::Catalog => 3,
+        SuggestionSource::Generator => 4,
     }
 }
 
@@ -847,6 +890,130 @@ fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     escape_for_shell(&entry[token.len()..])
 }
 
+/// The generator seat's set choice (suggest-generators spec): which
+/// cached set answers the git subcommand whose argument token is
+/// being entered — checkout takes a branch or a tag, switch a local
+/// branch, add/restore a working-tree change. The mapping is this
+/// crate's own reviewed carve of the git set; every other subcommand
+/// is silence.
+#[derive(Clone, Copy)]
+enum GeneratorSeat {
+    /// `git checkout` — a branch or a tag alike, branches first.
+    Refs,
+    /// `git switch` — a local branch only.
+    Branches,
+    /// `git add` / `git restore` — a working-tree change.
+    Files,
+}
+
+/// The generator provider's context carve (suggest-generators spec):
+/// the trailing token when it holds the argument seat directly after
+/// a git subcommand — exactly two completed words, the command word
+/// resolved through the alias map to `git` (the argv set is git-only,
+/// the record's first slice; docker/systemctl are named later slices,
+/// same contract, own change). Command position, a third completed
+/// word (`git checkout -b <name>` names something new rather than
+/// completing a cached ref), an unknown subcommand, and an empty
+/// token are all silence.
+fn generator_context<'a>(
+    typed: &'a str,
+    aliases: &'a HashMap<String, String>,
+) -> Option<GeneratorSeat> {
+    if is_command_position(typed) {
+        return None;
+    }
+    let token = trailing_token(typed);
+    if token.is_empty() {
+        return None;
+    }
+    let completed = completed_words(&typed[..typed.len() - token.len()]);
+    if completed.len() != 2 || resolve_alias(completed[0], aliases) != "git" {
+        return None;
+    }
+    match completed[1] {
+        "checkout" => Some(GeneratorSeat::Refs),
+        "switch" => Some(GeneratorSeat::Branches),
+        "add" | "restore" => Some(GeneratorSeat::Files),
+        _ => None,
+    }
+}
+
+/// The seat's concatenated names, deduped across sets (a branch and
+/// a tag may share a short name legally) — branches first, tags
+/// after, the runner's own order kept: recency is the ordering the
+/// argv pins, so the ghost's equal-length tie falls to the newest
+/// name, not the alphabetically first (the shortest-wins ruling's
+/// tiebreak was pinned to the sorted tables; these sets are
+/// recency-sorted by construction).
+fn generator_names<'a>(seat: GeneratorSeat, sets: &GeneratorSets<'a>) -> Vec<&'a str> {
+    let (first, second): (&'a [String], &'a [String]) = match seat {
+        GeneratorSeat::Refs => (sets.branches, sets.tags),
+        GeneratorSeat::Branches => (sets.branches, &[]),
+        GeneratorSeat::Files => (sets.files, &[]),
+    };
+    let mut seen = HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .map(String::as_str)
+        .filter(|name| seen.insert(*name))
+        .collect()
+}
+
+/// The generator provider's candidate function (suggest-generators
+/// spec): complete the argument token from the seat's cached,
+/// already-escaped names — strict prefix, must extend, shortest wins
+/// (the ruled match policy the catalog and specs ride), ties falling
+/// to the runner's recency order. The carve is the typed token's own
+/// bytes against the escaped form, so the suffix completes exactly
+/// what the user typed; the names rode the escape tier
+/// engine-side, so the remainder rides verbatim. Gated on the shared
+/// spawn allowlist (the standing ssh gate) and the cache itself.
+fn generator_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.paths_eligible {
+        return None;
+    }
+    let sets = obs.generator_candidates.as_ref()?;
+    let seat = generator_context(typed, obs.aliases)?;
+    let token = trailing_token(typed);
+    let entry = generator_names(seat, sets)
+        .into_iter()
+        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .min_by_key(|entry| entry.len())?;
+    Some(entry[token.len()..].to_string())
+}
+
+/// The generator provider's whole set (suggest-menu spec): every
+/// cached name matching the argument token, in the seat's
+/// concatenated order — branches before tags, the runner's recency
+/// order kept, no shortest-wins tiebreak a list does not need.
+/// Labels are the escaped names the cache holds; descriptions are a
+/// later module's to supply (suggest-specs-data is the named
+/// supplier). Each provider's own gates hold: the ssh gate, the
+/// cache, the seat.
+fn generator_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some(sets) = obs.generator_candidates.as_ref() else {
+        return Vec::new();
+    };
+    let Some(seat) = generator_context(typed, obs.aliases) else {
+        return Vec::new();
+    };
+    let token = trailing_token(typed);
+    generator_names(seat, sets)
+        .into_iter()
+        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .map(|entry| MenuCandidate {
+            label: entry.to_string(),
+            suffix: entry[token.len()..].to_string(),
+            description: None,
+            source: SuggestionSource::Generator,
+        })
+        .collect()
+}
+
 /// The characters a suggested suffix backslash-escapes (path-suggest
 /// spec, ruled at clarification): whitespace and the POSIX-and-fish
 /// shell metacharacters — the bytes that are certainly safe to write
@@ -912,6 +1079,7 @@ fn provider_candidate(
         SuggestionSource::Path => path_candidate(typed, obs),
         SuggestionSource::Specs => specs_candidate(typed, obs),
         SuggestionSource::Catalog => catalog_candidate(typed, obs),
+        SuggestionSource::Generator => generator_candidate(typed, obs),
     }
 }
 
@@ -930,6 +1098,7 @@ fn merged_candidate(
         SuggestionSource::Path,
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
+        SuggestionSource::Generator,
     ];
     providers.sort_by_key(|&source| source_rank(source));
     providers.into_iter().find_map(|source| {
@@ -974,6 +1143,7 @@ pub(crate) fn candidates(
         SuggestionSource::Path,
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
+        SuggestionSource::Generator,
     ];
     providers.sort_by_key(|&source| source_rank(source));
     providers
@@ -995,6 +1165,7 @@ fn source_candidates(
         SuggestionSource::Path => path_candidates(typed, obs),
         SuggestionSource::Specs => specs_candidates(typed, obs),
         SuggestionSource::Catalog => catalog_candidates(typed, obs),
+        SuggestionSource::Generator => generator_candidates(typed, obs),
     }
 }
 

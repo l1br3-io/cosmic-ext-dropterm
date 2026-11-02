@@ -19,6 +19,10 @@ fn obs() -> Observation<'static> {
         specs_enabled: true,
         aliases: &NO_ALIASES,
         command_catalog: &[],
+        // The generator stopgap (suggest-generators spec): no cached
+        // sets by default — every pre-existing test rides today's
+        // bit-for-bit silence.
+        generator_candidates: None,
         focused: true,
         foreground_child: false,
         display_offset: 0,
@@ -693,11 +697,13 @@ fn source_rank_pins_the_ruled_priority() {
         SuggestionSource::Path,
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
+        SuggestionSource::Generator,
     ];
     assert_eq!(source_rank(SuggestionSource::History), 0);
     assert_eq!(source_rank(SuggestionSource::Path), 1);
     assert_eq!(source_rank(SuggestionSource::Specs), 2);
     assert_eq!(source_rank(SuggestionSource::Catalog), 3);
+    assert_eq!(source_rank(SuggestionSource::Generator), 4);
     for pair in ruled_order.windows(2) {
         assert!(
             source_rank(pair[0]) < source_rank(pair[1]),
@@ -1589,6 +1595,374 @@ fn the_ssh_gate_silences_the_alias_tier() {
     };
     let mut suggest = specs_suggest();
     assert_eq!(step(&observation, &mut suggest), None);
+}
+
+// --- the generator provider (suggest-generators) ---
+
+/// One anchored step with `typed` after the "$ " anchor and injected
+/// generator caches — the provider's end-to-end shape, the sets
+/// arriving exactly as the engine-side runner will cache them:
+/// post-processed, already-escaped names, in the runner's own
+/// (recency) order.
+fn step_generator(
+    typed: &str,
+    branches: &[&str],
+    tags: &[&str],
+    files: &[&str],
+    suggest: &mut Suggest,
+) -> Option<Showing> {
+    let branches: Vec<String> = branches.iter().map(|s| (*s).to_string()).collect();
+    let tags: Vec<String> = tags.iter().map(|s| (*s).to_string()).collect();
+    let files: Vec<String> = files.iter().map(|s| (*s).to_string()).collect();
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &files,
+    };
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+#[test]
+fn the_generator_ghosts_a_cached_branch_at_the_checkout_seat() {
+    // The spec's flagship: `git checkout ma` ghosts `in` from a
+    // cached `main` — the fifth source surfacing through the same
+    // seam, provenance carried.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout ma",
+        &["feature/x", "main"],
+        &[],
+        &[],
+        &mut suggest,
+    )
+    .expect("the cached branch answers its prefix");
+    assert_eq!(shown.suffix, "in");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+}
+
+#[test]
+fn history_outranks_the_generator() {
+    // The merge's ruling holds for the fifth source: the tab's own
+    // ring answers first, the cached sets only when history cannot.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("git checkout maintain".to_string());
+    suggest.ring = ring;
+    let shown = step_generator("git checkout ma", &["main"], &[], &[], &mut suggest)
+        .expect("someone answers the prefix");
+    assert_eq!(shown.suffix, "intain");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
+fn the_generator_stays_silent_without_a_cache() {
+    // The engine stopgap (Task 1): no runner exists yet, the
+    // observation carries no sets, and today's behavior holds
+    // bit-for-bit — silence, never a guess.
+    let mut suggest = adopted();
+    let before = String::from("$ git checkout ma");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: None,
+        ..obs()
+    };
+    assert_eq!(step(&observation, &mut suggest), None);
+}
+
+#[test]
+fn the_generator_rides_the_shell_gate() {
+    // The standing ssh gate: cached or not, a tab spawned as ssh (or
+    // any non-shell program) never serves generator candidates — the
+    // readable cwd is the wrong machine's.
+    let mut suggest = adopted();
+    let branches: Vec<String> = vec!["main".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &[],
+        files: &[],
+    };
+    let before = String::from("$ git checkout ma");
+    let observation = Observation {
+        paths_eligible: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    assert_eq!(step(&observation, &mut suggest), None);
+}
+
+#[test]
+fn switch_consults_branches_only() {
+    // `git switch` takes a local branch, never a tag — the seat
+    // picks its set, and a tag the token would match stays silent.
+    let mut suggest = adopted();
+    assert_eq!(
+        step_generator("git switch v", &["main"], &["v2"], &[], &mut suggest),
+        None,
+        "a tag never answers the switch seat"
+    );
+    let shown = step_generator("git switch ma", &["main"], &["v2"], &[], &mut suggest)
+        .expect("the branch answers its own seat");
+    assert_eq!(shown.suffix, "in");
+}
+
+#[test]
+fn checkout_consults_branches_then_tags() {
+    // `git checkout` takes either a branch or a tag: branches first
+    // (the common case), tags after, and an equal-length tie falls to
+    // the first name in that order — the newest branch, then the
+    // newest tag.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout v1.",
+        &["main"],
+        &["v1.1", "v1.0"],
+        &[],
+        &mut suggest,
+    )
+    .expect("the tag set answers when no branch does");
+    assert_eq!(shown.suffix, "1", "the first tag of the tie wins");
+}
+
+#[test]
+fn add_and_restore_consult_the_changed_files() {
+    // The working-tree file seat: `status --short` names answer the
+    // argument token of the commands that take changed files.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git add src/ma",
+        &["main"],
+        &[],
+        &["src/main.rs", "readme"],
+        &mut suggest,
+    )
+    .expect("a changed file answers its prefix");
+    assert_eq!(shown.suffix, "in.rs");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+    let shown = step_generator(
+        "git restore rea",
+        &["main"],
+        &[],
+        &["src/main.rs", "readme"],
+        &mut suggest,
+    )
+    .expect("restore takes changed files too");
+    assert_eq!(shown.suffix, "dme");
+}
+
+#[test]
+fn command_position_and_later_words_never_consult_the_generator() {
+    // The seat is exactly the first argument token after the git
+    // subcommand: the command word itself is the catalog's seat, and
+    // a third completed word (`git checkout -b <name>`) is naming
+    // something new, not completing a cached ref. An empty ring
+    // keeps every other provider out of the assertion's way.
+    let mut suggest = adopted();
+    suggest.ring = VecDeque::new();
+    assert_eq!(
+        step_generator("gi", &["main"], &[], &[], &mut suggest),
+        None,
+        "the command word is not the generator's seat"
+    );
+    assert_eq!(
+        step_generator("git checkout -b ma", &["main"], &[], &[], &mut suggest),
+        None,
+        "a later word never consults the ref sets"
+    );
+}
+
+#[test]
+fn an_unknown_subcommand_or_empty_token_is_silence() {
+    // Only the ruled seats map to sets (`checkout`, `switch`, `add`,
+    // `restore`); a bare trailing space is no token at all — the
+    // specs provider's own empty-word rule, one policy across
+    // providers.
+    let mut suggest = adopted();
+    assert_eq!(
+        step_generator("git commit ma", &["main"], &[], &[], &mut suggest),
+        None,
+        "an unmapped subcommand consults nothing"
+    );
+    assert_eq!(
+        step_generator("git checkout ", &["main"], &[], &[], &mut suggest),
+        None,
+        "an empty token matches every name equally — the floor"
+    );
+}
+
+#[test]
+fn a_non_git_command_never_consults_the_generator() {
+    // The argv set is git-only (the record's first slice); every
+    // other command's arguments are another provider's or nobody's.
+    // `zzz bu` is a shape no other provider answers, so any answer
+    // here could only be the generator's.
+    let mut suggest = adopted();
+    suggest.ring = VecDeque::new();
+    assert_eq!(
+        step_generator("zzz bu", &["main"], &[], &["build.rs"], &mut suggest),
+        None,
+        "the generator has no program beyond git"
+    );
+}
+
+#[test]
+fn an_aliased_git_re_targets_the_generator_seat() {
+    // Re-target, never rewrite (the aliases ruling): a declared
+    // `gc = "git checkout"` makes `gc checkout ma` a generator seat,
+    // while `gc ma` alone keeps the specs subcommand seat the map
+    // already rules.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let run = |typed: &str, suggest: &mut Suggest| {
+        let branches: Vec<String> = vec!["main".to_string()];
+        let sets = GeneratorSets {
+            branches: &branches,
+            tags: &[],
+            files: &[],
+        };
+        let mut before = String::from("$ ");
+        before.push_str(typed);
+        let observation = Observation {
+            before_cursor: &before,
+            cursor_column: before.len(),
+            aliases: &aliases,
+            generator_candidates: Some(sets),
+            ..obs()
+        };
+        step(&observation, suggest)
+    };
+    let mut suggest = adopted();
+    let shown = run("gc checkout ma", &mut suggest)
+        .expect("the alias's expansion command re-targets the seat");
+    assert_eq!(shown.suffix, "in");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+    assert_eq!(
+        run("gc ma", &mut suggest),
+        None,
+        "the alias alone is the specs seat, not a ref seat"
+    );
+}
+
+#[test]
+fn escaped_generator_names_carve_their_typed_suffix() {
+    // The runner caches already-escaped names (the record's
+    // post-filter): the typed token prefix-matches the escaped form
+    // itself — the user typed their own backslash — and the carved
+    // remainder is exactly the completion of what they typed. A
+    // quote-tier name rides whole: `'c` completes inside the quotes.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout my\\ b",
+        &["my\\ branch"],
+        &[],
+        &[],
+        &mut suggest,
+    )
+    .expect("the escaped form matches its typed prefix");
+    assert_eq!(shown.suffix, "ranch");
+    let shown = step_generator("git checkout 'c", &["'café'"], &[], &[], &mut suggest)
+        .expect("the quote tier rides whole");
+    assert_eq!(shown.suffix, "afé'");
+}
+
+#[test]
+fn the_menu_lists_the_whole_generator_set_in_set_order() {
+    // The menu's whole-set rule: every cached name matching the
+    // token, in the runner's own (recency) order — no shortest-wins
+    // tiebreak for the ghost to impose on a list.
+    let mut suggest = adopted();
+    let branches: Vec<String> = vec!["feature/x".to_string()];
+    let tags: Vec<String> = vec!["v1".to_string()];
+    let files: Vec<String> = vec!["readme".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &files,
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout f",
+        cursor_column: 16,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout f", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| (row.label.as_str(), row.suffix.as_str(), row.source))
+            .collect::<Vec<_>>(),
+        vec![("feature/x", "eature/x", SuggestionSource::Generator)],
+    );
+    assert!(menu[0].description.is_none());
+}
+
+#[test]
+fn checkout_menu_rows_dedupe_across_branches_and_tags() {
+    // refs/heads/release and refs/tags/release share a short name:
+    // the checkout seat concatenates the sets, and the same escaped
+    // name never lists twice.
+    let mut suggest = adopted();
+    let branches: Vec<String> = vec!["release".to_string()];
+    let tags: Vec<String> = vec!["release".to_string(), "v1".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &[],
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout re",
+        cursor_column: 17,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout re", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["release"],
+    );
+}
+
+#[test]
+fn generator_rows_follow_the_local_providers_in_the_menu() {
+    // The collection's source order is the display order: history's
+    // rows first, the generator's after — the merge's ruled priority
+    // in list form.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("git checkout main2".to_string());
+    suggest.ring = ring;
+    let branches: Vec<String> = vec!["main".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &[],
+        files: &[],
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout ma",
+        cursor_column: 17,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout ma", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| (row.label.as_str(), row.source))
+            .collect::<Vec<_>>(),
+        vec![
+            ("git checkout main2", SuggestionSource::History),
+            ("main", SuggestionSource::Generator),
+        ],
+    );
 }
 
 // --- the common-prefix helper ---

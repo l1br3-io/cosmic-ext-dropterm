@@ -1420,6 +1420,10 @@ impl Terminal {
             specs_enabled: self.autosuggestions_specs_enabled,
             aliases: &self.autosuggestions_aliases,
             command_catalog: &self.command_catalog,
+            // The generator stopgap (suggest-generators spec, Task 1):
+            // the runner does not exist yet, so no tab carries cached
+            // sets — bit-for-bit today until Task 3 wires the cache in.
+            generator_candidates: None,
             focused: self.is_focused,
             foreground_child: false,
             display_offset: 0,
@@ -2030,6 +2034,12 @@ impl Terminal {
                         specs_enabled: self.autosuggestions_specs_enabled,
                         aliases: &self.autosuggestions_aliases,
                         command_catalog: &self.command_catalog,
+                        // The generator stopgap (suggest-generators
+                        // spec, Task 1): the runner does not exist
+                        // yet — the observation carries no cached
+                        // sets, and the fifth source stays silent
+                        // until Task 3 wires the cache in.
+                        generator_candidates: None,
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),
