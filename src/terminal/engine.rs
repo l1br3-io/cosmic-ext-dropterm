@@ -131,6 +131,13 @@ pub struct TerminalOptions {
     /// `set_config` pass, so a showing specs ghost disappears the
     /// moment the toggle lands while history keeps suggesting.
     pub autosuggestions_specs_enabled: bool,
+    /// Whether the completion menu computes (suggest-menu spec):
+    /// resolved from the app config's
+    /// `autosuggestions_menu_enabled` — a flip applies at the next
+    /// `set_config` pass, and an off flip closes a showing menu on
+    /// the spot while the ghost keeps suggesting (the ghost and the
+    /// trigger are separable).
+    pub autosuggestions_menu_enabled: bool,
     /// The idle-delay display gate (suggest-delay spec):
     /// `autosuggestions_delay_ms` as resolved from the app config —
     /// a qualifying suggestion is withheld until the typed segment
@@ -158,6 +165,7 @@ impl Default for TerminalOptions {
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
             autosuggestions_specs_enabled: true,
+            autosuggestions_menu_enabled: true,
             autosuggestions_delay_ms: 0,
         }
     }
@@ -523,6 +531,10 @@ pub struct Terminal {
     /// every `set_config`. The table itself is static universal
     /// knowledge; only the gate is state.
     autosuggestions_specs_enabled: bool,
+    /// Whether the completion menu computes (suggest-menu spec) —
+    /// the resolved options flag, re-read at every `set_config`;
+    /// an off flip closes a showing menu on the spot.
+    autosuggestions_menu_enabled: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
     /// observation carries it per update, so a live flip applies
@@ -914,6 +926,7 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
+            autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
             suggest_typed_at: Instant::now(),
             suggest_last_before_cursor: String::new(),
@@ -1296,7 +1309,7 @@ impl Terminal {
     /// frame) so the ghost's own path stays untouched. Ineligible is
     /// the empty set: the soft trigger's decline.
     fn menu_candidates(&mut self) -> Vec<suggest::MenuCandidate> {
-        if !self.autosuggestions_enabled || !self.is_focused {
+        if !self.autosuggestions_menu_enabled || !self.autosuggestions_enabled || !self.is_focused {
             return Vec::new();
         }
         if self.foreground_child_running() {
@@ -1727,6 +1740,15 @@ impl Terminal {
 
         if self.autosuggestions_specs_enabled != options.autosuggestions_specs_enabled {
             self.autosuggestions_specs_enabled = options.autosuggestions_specs_enabled;
+            update = true;
+        }
+
+        if self.autosuggestions_menu_enabled != options.autosuggestions_menu_enabled {
+            self.autosuggestions_menu_enabled = options.autosuggestions_menu_enabled;
+            // The live close (suggest-menu spec): an off flip spends
+            // a showing menu the moment the switch lands; an on flip
+            // only arms the chord (opens stay press-driven).
+            self.menu.close();
             update = true;
         }
 

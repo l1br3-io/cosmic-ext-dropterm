@@ -96,6 +96,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `close_confirmation_enabled` | next close - the key is read at request time |
 | `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
 | `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |
+| `autosuggestions_menu_enabled` | live - a showing menu closes the moment the switch lands; re-enabling arms the chord again at its next press |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 

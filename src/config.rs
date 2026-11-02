@@ -436,6 +436,18 @@ pub struct DropTermConfig {
     /// `false` restores history-only behavior exactly. Flips apply
     /// live at the next typed prefix.
     pub autosuggestions_commands_enabled: bool,
+    /// Whether the Ctrl+Space completion menu computes (suggest-menu
+    /// spec): the explicit-trigger candidate list over the tab's
+    /// current input — every provider's whole match set where the
+    /// ghost must settle for one choice, Up/Down to navigate,
+    /// Tab/Enter to accept while it shows (bare Tab stays the
+    /// shell's own completion key whenever no menu shows). Defaults
+    /// to `true` — the ghost and the trigger are separable; `false`
+    /// removes the menu surface exactly: the chord forwards to the
+    /// shell verbatim and the ghost is untouched. Flips apply live
+    /// on the config echo — a showing menu closes the moment the
+    /// switch lands.
+    pub autosuggestions_menu_enabled: bool,
     /// The idle-delay display gate for autosuggestions (suggest-delay
     /// spec): a qualifying suggestion is withheld until the typed
     /// segment has been stable this many milliseconds — the
@@ -505,6 +517,7 @@ impl Default for DropTermConfig {
             autosuggestions_enabled: true,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
+            autosuggestions_menu_enabled: true,
             autosuggestions_delay_ms: 0,
         }
     }

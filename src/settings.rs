@@ -135,6 +135,7 @@ impl Section {
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
+                ConfigKey::AutosuggestionsMenuEnabled,
                 ConfigKey::AutosuggestionsDelayMs,
             ],
             Section::Advanced => &[
@@ -157,7 +158,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (45 — default-spawn's two rows included).
+/// count (47 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -193,6 +194,13 @@ pub enum ConfigKey {
     /// at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsCommandsEnabled,
+    /// The completion menu's own toggle (suggest-menu spec) — the
+    /// Terminal card's row beside its siblings: `Ctrl+Space`'s
+    /// candidate list over the tab's current input. An off flip
+    /// closes a showing menu on the echo's `set_config` pass while
+    /// the ghost keeps suggesting (the ghost and the trigger are
+    /// separable); on arms the chord again at its next press.
+    AutosuggestionsMenuEnabled,
     /// The autosuggest idle-delay display gate (suggest-delay spec) —
     /// the Terminal card's numeric row beside the provider toggles:
     /// a qualifying suggestion waits until the typed segment has
@@ -345,6 +353,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
+            ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
@@ -405,6 +414,7 @@ pub enum PlannedWrite {
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
+    AutosuggestionsMenuEnabled(bool),
     AutosuggestionsDelayMs(u16),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
@@ -490,6 +500,7 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
             }
+            PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
@@ -593,6 +604,9 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsMenuEnabled(value) => {
+                handler.set(ConfigKey::AutosuggestionsMenuEnabled.key_name(), *value)
             }
             PlannedWrite::AutosuggestionsDelayMs(value) => {
                 handler.set(ConfigKey::AutosuggestionsDelayMs.key_name(), *value)
@@ -887,6 +901,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
+        | ConfigKey::AutosuggestionsMenuEnabled
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2288,6 +2303,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::AutosuggestionsCommandsEnabled => {
             Some(PlannedWrite::AutosuggestionsCommandsEnabled(checked))
+        }
+        ConfigKey::AutosuggestionsMenuEnabled => {
+            Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))
         }
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
