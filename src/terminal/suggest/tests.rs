@@ -1720,3 +1720,176 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
         "the bare `--` lists the whole flag table"
     );
 }
+
+// --- the menu state machine (suggest-menu) ---
+
+/// Menu rows from (label, suffix) pairs — the state machine's
+/// fixtures; Specs provenance throughout (the source is not the
+/// state machine's business).
+fn menu_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
+    entries
+        .iter()
+        .map(|(label, suffix)| MenuCandidate {
+            label: (*label).to_string(),
+            suffix: (*suffix).to_string(),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect()
+}
+
+#[test]
+fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
+    // The record's ruled contents: the merged collection's own
+    // source order — history on top — is the display order, the
+    // selection at the top, no re-ranking at open. An empty
+    // collection declines to open: no candidates, no menu.
+    let mut menu = MenuState::new();
+    assert!(!menu.is_open());
+    assert!(
+        !menu.open(menu_rows(&[])),
+        "an empty collection never opens the menu"
+    );
+    assert!(!menu.is_open());
+    let rows = menu_rows(&[("git status", "atus"), ("stash", "ash")]);
+    assert!(menu.open(rows.clone()));
+    assert!(menu.is_open());
+    assert_eq!(menu.rows(), rows.as_slice());
+    assert_eq!(menu.selected(), 0, "selection lands at the top");
+    assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn move_clamps_at_the_edges_and_the_scroll_window_follows() {
+    // Ten rows over the eight-row budget (OQ-2, locked): walking
+    // past the bottom clamps at the last row while the scroll
+    // window follows (the selection always visible), and walking
+    // past the top clamps at the first with the window back at the
+    // top.
+    let rows: Vec<MenuCandidate> = (0..10)
+        .map(|i| MenuCandidate {
+            label: format!("row-{i}"),
+            suffix: format!("-{i}"),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect();
+    let mut menu = MenuState::new();
+    menu.open(rows);
+    for _ in 0..12 {
+        menu.press(MenuKey::Down);
+    }
+    assert_eq!(menu.selected(), 9, "clamped at the last row");
+    assert_eq!(menu.scroll(), 2, "the window follows: rows 2..10 visible");
+    for _ in 0..12 {
+        menu.press(MenuKey::Up);
+    }
+    assert_eq!(menu.selected(), 0);
+    assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn accept_returns_only_the_selected_suffix_then_closes() {
+    // The accept's whole payload is the suffix string — the exact
+    // bytes input_no_scroll writes; the label never reaches the
+    // PTY. After the accept the menu is closed and spent.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git status", "atus"), ("stash", "ash")]));
+    menu.press(MenuKey::Down);
+    assert_eq!(menu.press(MenuKey::Accept).as_deref(), Some("ash"));
+    assert!(!menu.is_open());
+    assert!(menu.rows().is_empty());
+    assert_eq!(
+        menu.press(MenuKey::Accept),
+        None,
+        "a closed menu accepts nothing"
+    );
+}
+
+#[test]
+fn any_other_key_closes_the_menu() {
+    // The any-other-key rule (suggest-menu spec): a press the menu
+    // does not claim closes it — the press itself then flows on
+    // through the normal handler (the widget's routing, Task 3).
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("stash", "ash")]));
+    assert_eq!(menu.press(MenuKey::Other), None);
+    assert!(!menu.is_open());
+}
+
+#[test]
+fn the_ranker_puts_prefix_hits_above_subsequence_hits() {
+    // Warp's pinned policy: case-insensitive prefix first, the
+    // subsequence fallback second — `drill` (prefix) outranks
+    // `--dry-run`, `--dream`, and `--dr` (subsequence) whatever the
+    // collection order, and the subsequence ties keep their
+    // provenance order (the stable sort).
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[
+        ("--dry-run", "y-run"),
+        ("--dream", "eam"),
+        ("--dr", "r"),
+        ("drill", "ill"),
+    ]));
+    menu.filter("dr");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["drill", "--dry-run", "--dream", "--dr"]);
+    assert_eq!(menu.selected(), 0, "a re-rank resets the selection");
+}
+
+#[test]
+fn the_ranker_matches_case_insensitively() {
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git", "it"), ("--dry-run", "y-run")]));
+    menu.filter("GI");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["git"], "the uppercase query still prefixes");
+}
+
+#[test]
+fn the_ranker_prefers_contiguous_runs_over_scattered_matches() {
+    // Contiguity-aware: `--dyx` matches d-then-y adjacently (a
+    // two-character run), `--day` matches scattered — the contiguous
+    // run outranks, provenance order notwithstanding.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("--day", "ay"), ("--dyx", "yx")]));
+    menu.filter("dy");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["--dyx", "--day"]);
+}
+
+#[test]
+fn a_punctuation_only_query_never_falls_back_to_subsequence() {
+    // Warp's own gate (matchers.rs): the subsequence fallback exists
+    // only for a query with at least one alphanumeric — fuzzy
+    // matches on punctuation produce poor results. At the bare `--`
+    // flag seat the prefix tier answers alone.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("x--y", "y"), ("--all", "ll")]));
+    menu.filter("--");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["--all"]);
+}
+
+#[test]
+fn a_filter_that_empties_the_set_closes_the_menu() {
+    // An open menu with no rows is a state the machine refuses: a
+    // query nothing matches closes rather than showing an empty box.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("stash", "ash")]));
+    menu.filter("zzz");
+    assert!(!menu.is_open());
+    assert!(menu.rows().is_empty());
+}
+
+#[test]
+fn an_empty_query_keeps_the_collection_order() {
+    // The vacuous prefix: an empty filter query matches everything
+    // as a prefix hit, and the stable sort keeps the merge's source
+    // order untouched.
+    let rows = menu_rows(&[("git status", "atus"), ("stash", "ash")]);
+    let mut menu = MenuState::new();
+    menu.open(rows.clone());
+    menu.filter("");
+    assert_eq!(menu.rows(), rows.as_slice());
+}

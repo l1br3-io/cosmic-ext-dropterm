@@ -1117,6 +1117,263 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
         .collect()
 }
 
+/// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
+/// eight rows with a scroll offset — Warp/VS Code show ~10; eight
+/// fits the drop-down's short surface.
+const MENU_VISIBLE_ROWS: usize = 8;
+
+/// One menu-scoped press (suggest-menu spec): the widget's scoped
+/// routing maps the keys the menu claims while open onto these —
+/// Up/Down navigate, Tab/Enter accept — and every press it does not
+/// claim arrives as [`MenuKey::Other`], whose transition closes the
+/// menu before the press flows on through the normal handler.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the widget's routing lands in Task 3")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuKey {
+    Up,
+    Down,
+    Accept,
+    Other,
+}
+
+/// The completion menu's state (suggest-menu spec): the open fact,
+/// the displayed rows, the selected index, and the scroll offset —
+/// pure transitions over [`MenuCandidate`] lists, never the grid,
+/// the PTY, or the clock. Invariant: open implies non-empty rows
+/// (an empty collection declines to open; a filter that empties the
+/// set closes), so a closed menu is always a spent one.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the widget's routing lands in Task 3")
+)]
+#[derive(Debug, Default)]
+pub(crate) struct MenuState {
+    open: bool,
+    rows: Vec<MenuCandidate>,
+    selected: usize,
+    scroll: usize,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the accessors beyond is_open feed Task 4's renderer"
+    )
+)]
+impl MenuState {
+    /// A closed, spent menu — the state a fresh terminal carries.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the menu shows.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The displayed rows, in display order.
+    pub(crate) fn rows(&self) -> &[MenuCandidate] {
+        &self.rows
+    }
+
+    /// The selected row's index into [`Self::rows`].
+    pub(crate) fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// The first visible row's index — the scroll offset the
+    /// renderer's window starts at.
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Opens over the merged collection (the record's ruled
+    /// contents): the collection's own source order — history on
+    /// top — is the display order, the selection at the top, no
+    /// re-ranking here. An empty collection declines to open and
+    /// answers `false`: no candidates, no menu. Returns whether the
+    /// menu is open.
+    pub(crate) fn open(&mut self, rows: Vec<MenuCandidate>) -> bool {
+        if rows.is_empty() {
+            self.close();
+            return false;
+        }
+        self.rows = rows;
+        self.selected = 0;
+        self.scroll = 0;
+        self.open = true;
+        true
+    }
+
+    /// Closes and spends the menu — the transition for Escape,
+    /// Ctrl+Space's toggle, and any press the menu does not claim.
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+        self.rows.clear();
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// Re-ranks the displayed rows under a filter query — Warp's
+    /// pinned policy via [`filter_rank`]: prefix hits above
+    /// subsequence hits, contiguity-aware, ties in provenance
+    /// order. The selection and scroll reset to the top; a query
+    /// nothing matches closes the menu (an open menu with no rows
+    /// is a state the machine refuses).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the auto-popup feeding lands in Task 6")
+    )]
+    pub(crate) fn filter(&mut self, query: &str) {
+        self.rows = filter_rank(query, std::mem::take(&mut self.rows));
+        if self.rows.is_empty() {
+            self.close();
+            return;
+        }
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// One menu-scoped press's transition: navigate, accept (the
+    /// exact suffix string an accept writes), or close on any other
+    /// key. A closed menu answers `None` to everything and stays
+    /// closed.
+    pub(crate) fn press(&mut self, key: MenuKey) -> Option<String> {
+        if !self.open {
+            return None;
+        }
+        match key {
+            MenuKey::Up => {
+                self.move_up();
+                None
+            }
+            MenuKey::Down => {
+                self.move_down();
+                None
+            }
+            MenuKey::Accept => self.accept(),
+            MenuKey::Other => {
+                self.close();
+                None
+            }
+        }
+    }
+
+    /// Takes the selected row's suffix and closes: the exact string
+    /// `Terminal::input_no_scroll` writes — the label, the
+    /// description, the provenance never reach the PTY.
+    fn accept(&mut self) -> Option<String> {
+        let suffix = self.rows.get(self.selected).map(|row| row.suffix.clone());
+        self.close();
+        suffix
+    }
+
+    /// Moves the selection up one row, clamping at the top, the
+    /// scroll window following so the selection stays visible.
+    fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+        self.follow_scroll();
+    }
+
+    /// Moves the selection down one row, clamping at the last, the
+    /// scroll window following so the selection stays visible.
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.rows.len() {
+            self.selected += 1;
+        }
+        self.follow_scroll();
+    }
+
+    /// Keeps the selected row inside the visible window after a
+    /// move: scrolled past the top edge pulls the window up, past
+    /// the bottom edge pushes it down.
+    fn follow_scroll(&mut self) {
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + MENU_VISIBLE_ROWS {
+            self.scroll = self.selected + 1 - MENU_VISIBLE_ROWS;
+        }
+    }
+}
+
+/// One label's verdict under the menu's fuzzy filter: the tier, and
+/// within the subsequence tier the contiguity facts
+/// [`filter_rank`]'s sort key orders by — longer contiguous runs
+/// first (via [`std::cmp::Reverse`]), then earlier first matches.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum MatchTier {
+    /// The label starts with the query, case-insensitively — the
+    /// vacuous hit when the query is empty, which keeps every row.
+    Prefix,
+    /// The query's characters appear in the label in order:
+    /// `run` the longest contiguous run of query characters the
+    /// greedy walk matched adjacently, `first` the first match's
+    /// position.
+    Subsequence { run: usize, first: usize },
+}
+
+/// The menu's fuzzy filter and ranker (suggest-menu spec; Warp's
+/// pinned policy, `matchers.rs`): case-insensitive prefix hits
+/// first, then subsequence hits — engaged only when the query
+/// carries at least one alphanumeric character (Warp's own gate:
+/// fuzzy matches on punctuation produce poor results) —
+/// contiguity-aware (a longer contiguous matched run outranks a
+/// scattered one), earlier matches outranking later. Hand-rolled,
+/// zero dependencies; a stable sort, so every tie falls back to the
+/// collection's provenance order. Rows that match nothing drop.
+fn filter_rank(query: &str, rows: Vec<MenuCandidate>) -> Vec<MenuCandidate> {
+    let sort_key = |tier: &MatchTier| match tier {
+        MatchTier::Prefix => (0, std::cmp::Reverse(0), 0),
+        MatchTier::Subsequence { run, first } => (1, std::cmp::Reverse(*run), *first),
+    };
+    let mut ranked: Vec<_> = rows
+        .into_iter()
+        .filter_map(|row| match_tier(query, &row.label).map(|tier| (row, tier)))
+        .collect();
+    ranked.sort_by_key(|(_, tier)| sort_key(tier));
+    ranked.into_iter().map(|(row, _)| row).collect()
+}
+
+/// One query's verdict against one label, case-insensitively — the
+/// filter's match half; `None` drops the row. The subsequence walk
+/// is greedy left-to-right (the fzf-family approximation):
+/// contiguity is measured on the greedy match, which is
+/// deterministic and exact for the short menu labels it serves.
+fn match_tier(query: &str, label: &str) -> Option<MatchTier> {
+    let query: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let label: Vec<char> = label.chars().flat_map(char::to_lowercase).collect();
+    if query.is_empty() || label.starts_with(&query[..]) {
+        return Some(MatchTier::Prefix);
+    }
+    // Warp's own gate: the subsequence fallback exists only for a
+    // query with at least one alphanumeric.
+    if !query.iter().copied().any(char::is_alphanumeric) {
+        return None;
+    }
+    let mut query_idx = 0;
+    let mut first = None;
+    let mut run = 0;
+    let mut best_run = 0;
+    for (idx, c) in label.iter().enumerate() {
+        if query_idx < query.len() && *c == query[query_idx] {
+            first.get_or_insert(idx);
+            run += 1;
+            best_run = best_run.max(run);
+            query_idx += 1;
+        } else {
+            run = 0;
+        }
+    }
+    (query_idx == query.len()).then(|| MatchTier::Subsequence {
+        run: best_run,
+        first: first.unwrap_or(0),
+    })
+}
+
 /// Commits one command to the ring: empty and whitespace-only lines
 /// never record, a re-typed command promotes to most-recent (fish's
 /// effective order), and the oldest entry evicts past the cap.
