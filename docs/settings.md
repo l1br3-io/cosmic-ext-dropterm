@@ -97,6 +97,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
 | `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |
 | `autosuggestions_menu_enabled` | live - a showing menu closes the moment the switch lands; re-enabling arms the chord again at its next press |
+| `autosuggestions_menu_auto` | live - the next typed prefix pops (or declines) the menu on its own; off restores the chord as the only opener |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 

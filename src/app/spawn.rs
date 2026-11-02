@@ -505,6 +505,7 @@ impl DropTerm {
                 autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
                 autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
                 autosuggestions_menu_enabled: self.config.autosuggestions_menu_enabled,
+                autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
                 spawn_path,

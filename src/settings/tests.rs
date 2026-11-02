@@ -231,6 +231,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
         PlannedWrite::AutosuggestionsMenuEnabled(true),
+        PlannedWrite::AutosuggestionsMenuAuto(false),
         PlannedWrite::AutosuggestionsDelayMs(0),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::NewTabAfterCurrent(true),
@@ -963,6 +964,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
             ConfigKey::AutosuggestionsMenuEnabled,
+            ConfigKey::AutosuggestionsMenuAuto,
             ConfigKey::AutosuggestionsDelayMs,
         ]
     );

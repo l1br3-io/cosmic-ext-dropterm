@@ -55,3 +55,17 @@ The rules specific to the curated table:
 - The match policy is the command catalog's: strict prefix, must extend, shortest match wins, ties broken alphabetically. `git che` suggests `checkout` (the shortest of the table's `che` entries), `docker p` suggests `pull` ahead of `push`, and a fully typed entry suggests nothing.
 - Commands outside the five are silent - the provider never guesses. The table is universal knowledge (it describes git, not this machine), but it rides the same shell gate as paths and the catalog: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting. `python3 wha` ghosts nothing.
 - The table is curated, not derived: nothing runs `--help`, nothing reads man pages, and there is no data file to edit. No toggle yet - the provider is always on wherever its shell gate holds, and its config key is a planned follow-up.
+
+## The menu
+
+`Ctrl+Space` opens a second surface beside the ghost: a candidate list over what you have typed, built from every provider at once - every matching history line, every matching path entry, every matching `$PATH` name, every matching curated subcommand and flag - where the ghost must settle for one choice. `git st` shows the history line *and* `stash` *and* `status`; `~/s` over `src` and `srv` shows both entries, where the ghost settles for the shared `r`.
+
+The rules:
+
+- **Open**: `Ctrl+Space` at an eligible prompt - idle, not scrolled back, something typed. At every ineligible state (inside vim or htop, scrolled back, nothing typed) the chord forwards to the shell verbatim: `Ctrl+Space`'s own NUL byte, no menu. The chord is customizable like every keybind (Settings → Keybindings, "Show completions").
+- **Filter**: the menu does not need a chord once open - it lists what matches your typed token, re-collected as your line changes. Ranking inside the list follows the merge's own order: history lines on top (this tab's own truth), then paths, then the curated table, then command names.
+- **Keys**: Up/Down move the highlight (the list scrolls past eight rows); **Tab and Enter accept the highlighted entry only while the menu shows**; Escape and `Ctrl+Space` close it; any other key closes it first and then reaches the shell normally - the ghost's Right/Alt+Right accepts included. An accept writes the entry's completion at the prompt: typed characters, nothing executes.
+- **The bare-Tab promise**: with no menu showing, Tab is the shell's own completion key, byte-for-byte as always - `\x09`, shell tab-completion intact. Tab belongs to the menu only while a menu shows; it is never bound otherwise.
+- **Descriptions**: entries render a description beside them when their source carries one (right-aligned, dimmed). No source carries one yet; the curated table grows them as the data-file follow-up lands.
+- Toggle the surface with `autosuggestions_menu_enabled` (default `true`, the Behavior section's Terminal card - "Completions menu"); a flip applies live, a showing menu closing the moment the switch lands. The ghost is untouched by either position.
+- **Auto-popup, opt-in**: `autosuggestions_menu_auto` (default `false`, the same card - "Open the menu as you type") makes the menu open on its own once your typed input collects two or more candidates, closing again when narrowing leaves one or nothing. No surveyed terminal ships auto-popup on by default - a persistent popup over a grid the terminal does not own buys its keep only for people who ask for it - so `false` keeps `Ctrl+Space` the only opener, exactly today's behavior.

@@ -448,6 +448,18 @@ pub struct DropTermConfig {
     /// on the config echo — a showing menu closes the moment the
     /// switch lands.
     pub autosuggestions_menu_enabled: bool,
+    /// Whether the completion menu also opens on its own as you type
+    /// (suggest-menu spec, the auto-popup opt-in): with the key on,
+    /// an idle prompt whose typed segment collects two or more
+    /// candidates pops the menu without the chord, closing again
+    /// when narrowing leaves one or nothing and on every ineligibility
+    /// (a foreground child, scroll-away, focus loss). Defaults to
+    /// `false` — no surveyed peer ships auto-popup on, and a
+    /// persistent popup over a grid the terminal does not own is the
+    /// hostility the warp-parity record priced exactly so; `false`
+    /// is today byte-for-bit (the chord is the only opener). Flips
+    /// apply live on the config echo.
+    pub autosuggestions_menu_auto: bool,
     /// The idle-delay display gate for autosuggestions (suggest-delay
     /// spec): a qualifying suggestion is withheld until the typed
     /// segment has been stable this many milliseconds — the
@@ -518,6 +530,7 @@ impl Default for DropTermConfig {
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
             autosuggestions_menu_enabled: true,
+            autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
         }
     }

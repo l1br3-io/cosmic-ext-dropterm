@@ -1181,7 +1181,10 @@ impl MenuState {
     /// is a state the machine refuses).
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the auto-popup feeding lands in Task 6")
+        expect(
+            dead_code,
+            reason = "no caller yet by ruling: the auto-popup re-collects fresh prefix sets per keystroke, so the fuzzy re-rank stays a pinned model primitive for the surface that wants it"
+        )
     )]
     pub(crate) fn filter(&mut self, query: &str) {
         self.rows = filter_rank(query, std::mem::take(&mut self.rows));

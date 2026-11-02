@@ -138,6 +138,12 @@ pub struct TerminalOptions {
     /// the spot while the ghost keeps suggesting (the ghost and the
     /// trigger are separable).
     pub autosuggestions_menu_enabled: bool,
+    /// The auto-popup opt-in (suggest-menu spec, Task 6): resolved
+    /// from the app config's `autosuggestions_menu_auto` — with it
+    /// on, an idle update whose typed segment collects two or more
+    /// candidates opens the menu without the chord. `false` (the
+    /// default) is today byte-for-bit: the block never runs.
+    pub autosuggestions_menu_auto: bool,
     /// The idle-delay display gate (suggest-delay spec):
     /// `autosuggestions_delay_ms` as resolved from the app config —
     /// a qualifying suggestion is withheld until the typed segment
@@ -166,6 +172,7 @@ impl Default for TerminalOptions {
             autosuggestions_commands_enabled: true,
             autosuggestions_specs_enabled: true,
             autosuggestions_menu_enabled: true,
+            autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
         }
     }
@@ -535,6 +542,15 @@ pub struct Terminal {
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
     autosuggestions_menu_enabled: bool,
+    /// The auto-popup opt-in (suggest-menu spec) — the resolved
+    /// options flag, re-read at every `set_config`.
+    autosuggestions_menu_auto: bool,
+    /// Whether the open menu's session is auto-managed
+    /// (suggest-menu spec): an auto-opened menu closes itself when
+    /// narrowing leaves one or nothing; a chord-opened one obeys
+    /// only its own rules (the press, the lifecycle moments). Reset
+    /// on every open, either kind.
+    menu_auto_opened: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
     /// observation carries it per update, so a live flip applies
@@ -927,6 +943,8 @@ impl Terminal {
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
+            autosuggestions_menu_auto: options.autosuggestions_menu_auto,
+            menu_auto_opened: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
             suggest_typed_at: Instant::now(),
             suggest_last_before_cursor: String::new(),
@@ -1255,6 +1273,7 @@ impl Terminal {
     /// decline — ineligible, or no candidate answered — and the
     /// caller forwards the chord to the shell verbatim.
     pub fn menu_open(&mut self) -> bool {
+        self.menu_auto_opened = false;
         let rows = self.menu_candidates();
         self.menu.open(rows)
     }
@@ -1752,6 +1771,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_menu_auto != options.autosuggestions_menu_auto {
+            self.autosuggestions_menu_auto = options.autosuggestions_menu_auto;
+            update = true;
+        }
+
         if self.autosuggestions_delay_ms != options.autosuggestions_delay_ms {
             self.autosuggestions_delay_ms = options.autosuggestions_delay_ms;
             update = true;
@@ -1998,6 +2022,34 @@ impl Terminal {
                     // out from under it.
                     if observation.display_offset != 0 && self.menu.is_open() {
                         self.menu.close();
+                    }
+                    // The auto-popup opt-in (suggest-menu spec, the
+                    // OQ-1 condition decided in the module's final
+                    // task): with the key on, this idle update's
+                    // typed segment collects the providers' full
+                    // sets — two or more candidates pops the menu
+                    // without the chord, narrowing past the boundary
+                    // (or any ineligibility, which collects nothing)
+                    // closes an auto-opened one. A chord-opened
+                    // session is the user's: only its own rules
+                    // close it. Default off never runs a byte of
+                    // this — the chord is today's only opener.
+                    if self.autosuggestions_menu_auto
+                        && self.autosuggestions_menu_enabled
+                        && self.autosuggestions_enabled
+                        && observation.focused
+                        && !observation.foreground_child
+                        && observation.display_offset == 0
+                        && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
+                        && !typed.is_empty()
+                    {
+                        let collected = suggest::candidates(typed, &self.suggest, &observation);
+                        if collected.len() >= 2 {
+                            self.menu_auto_opened = true;
+                            self.menu.open(collected);
+                        } else if self.menu.is_open() && self.menu_auto_opened {
+                            self.menu.close();
+                        }
                     }
                     // The adoption reset (suggest-delay spec): a
                     // fresh anchor — the first adoption or a
