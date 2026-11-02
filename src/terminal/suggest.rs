@@ -884,6 +884,239 @@ fn merged_candidate(
     })
 }
 
+/// One completion-menu row (suggest-menu spec): the label the menu
+/// displays — the completed whole, a full history line or a whole
+/// table entry or PATH name — beside the suffix an accept writes
+/// through `Terminal::input_no_scroll` (the one funnel, the same
+/// escaped bytes the ghost's accepts carry), a description when a
+/// source carries one (none today; the specs data file in
+/// suggest-specs-data is the supplier), and the provenance the
+/// merge ranking orders by.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "caller-less until Task 3's key routing lands")
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MenuCandidate {
+    pub(crate) label: String,
+    pub(crate) suffix: String,
+    pub(crate) description: Option<String>,
+    pub(crate) source: SuggestionSource,
+}
+
+/// The menu's candidate collection (suggest-menu spec): every
+/// provider's **whole** strict-prefix set — where the single-choice
+/// ghost must settle for one answer (the newest match, the shared
+/// prefix, the shortest name), the menu carries every match —
+/// concatenated under the merge's ruled priority ([`source_rank`],
+/// history on top). Each provider rides its own gates unchanged
+/// (config toggles, the spawn allowlist, the seat rules); pure, like
+/// every seam here. Empty input is silence — no token, no list.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the menu's open path lands in Task 3; tests consume it today"
+    )
+)]
+pub(crate) fn candidates(
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Vec<MenuCandidate> {
+    if typed.is_empty() {
+        return Vec::new();
+    }
+    let mut providers = [
+        SuggestionSource::History,
+        SuggestionSource::Path,
+        SuggestionSource::Specs,
+        SuggestionSource::Catalog,
+    ];
+    providers.sort_by_key(|&source| source_rank(source));
+    providers
+        .into_iter()
+        .flat_map(|source| source_candidates(source, typed, suggest, obs))
+        .collect()
+}
+
+/// One provider's whole candidate set, keyed by its variant — the
+/// menu-side twin of [`provider_candidate`]'s dispatch.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached only through candidates; live at Task 3")
+)]
+fn source_candidates(
+    source: SuggestionSource,
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Vec<MenuCandidate> {
+    match source {
+        SuggestionSource::History => history_candidates(typed, &suggest.ring),
+        SuggestionSource::Path => path_candidates(typed, obs),
+        SuggestionSource::Specs => specs_candidates(typed, obs),
+        SuggestionSource::Catalog => catalog_candidates(typed, obs),
+    }
+}
+
+/// History's whole set: every ring entry with the typed line as a
+/// strict prefix, most recent first — the ghost's own walk continued
+/// past the first hit, bounded by the ring's own cap.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached only through candidates; live at Task 3")
+)]
+fn history_candidates(typed: &str, ring: &VecDeque<String>) -> Vec<MenuCandidate> {
+    ring.iter()
+        .rev()
+        .filter(|entry| entry.starts_with(typed) && entry.len() > typed.len())
+        .map(|entry| MenuCandidate {
+            label: entry.clone(),
+            suffix: entry[typed.len()..].to_string(),
+            description: None,
+            source: SuggestionSource::History,
+        })
+        .collect()
+}
+
+/// The path provider's whole set (suggest-menu spec): every listing
+/// entry matching the typed token's final component under the
+/// ghost's own rules — the same gates, the same component carve, the
+/// same dotfile convention — each completing to its own escaped
+/// remainder (directories suffixed `/`), where the ghost must settle
+/// for the one shared prefix. An entry whose remainder cannot be
+/// safely written drops alone (the per-entry silence rule), never
+/// poisons the set.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached only through candidates; live at Task 3")
+)]
+fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.paths_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some(token) = path_token(Some(typed)) else {
+        return Vec::new();
+    };
+    let Some(listing) = obs.path_listing else {
+        return Vec::new();
+    };
+    // The final component: after the last `/` — or the empty
+    // component when the token is the `~` root alone.
+    let component = match token.rfind('/') {
+        Some(idx) => &token[idx + 1..],
+        None => "",
+    };
+    listing
+        .iter()
+        .filter(|(name, is_dir)| {
+            name.starts_with(component)
+                && (*is_dir || name.len() > component.len())
+                && (component.starts_with('.') || !name.starts_with('.'))
+        })
+        .filter_map(|(name, is_dir)| {
+            let mut remainder = name[component.len()..].to_string();
+            if *is_dir {
+                remainder.push('/');
+            }
+            let suffix = escape_for_shell(&remainder)?;
+            Some(MenuCandidate {
+                label: if *is_dir {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                },
+                suffix,
+                description: None,
+                source: SuggestionSource::Path,
+            })
+        })
+        .collect()
+}
+
+/// The curated-specs provider's whole set (suggest-menu spec): every
+/// table entry with the trailing token as a strict prefix —
+/// subcommands at the subcommand seat, long flags from any argument
+/// seat. The bare `--` floor is the single-choice ghost's alone (a
+/// list of every flag is information, not a guess), so the flag seat
+/// lists the table whole. Each remainder rides the escape rule like
+/// every provider's.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached only through candidates; live at Task 3")
+)]
+fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.specs_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some((command, token)) = specs_context(typed) else {
+        return Vec::new();
+    };
+    if token.is_empty() {
+        return Vec::new();
+    }
+    let Some(spec) = SPECS.iter().find(|spec| spec.command == command) else {
+        return Vec::new();
+    };
+    let entries = if token.starts_with("--") {
+        spec.flags
+    } else {
+        spec.subcommands
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .filter_map(|entry| {
+            let suffix = escape_for_shell(&entry[token.len()..])?;
+            Some(MenuCandidate {
+                label: (*entry).to_string(),
+                suffix,
+                description: None,
+                source: SuggestionSource::Specs,
+            })
+        })
+        .collect()
+}
+
+/// The command-name provider's whole set (suggest-menu spec): every
+/// catalog name with the typed command word as a strict prefix — no
+/// shortest-wins and no one-character floor, both tiebreak-shaped
+/// rulings for the single-choice ghost that a list dissolves (a
+/// listing of every `g`-word is information, not a coin flip). The
+/// seat rules hold: command position, not path-shaped, non-empty.
+/// Each remainder rides the escape rule; an unwritable name drops
+/// alone.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached only through candidates; live at Task 3")
+)]
+fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.commands_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    if !is_command_position(typed) {
+        return Vec::new();
+    }
+    let word = typed.trim_start();
+    if word.is_empty() || is_path_shaped(word) {
+        return Vec::new();
+    }
+    obs.command_catalog
+        .iter()
+        .filter(|name| name.starts_with(word) && name.len() > word.len())
+        .filter_map(|name| {
+            let suffix = escape_for_shell(&name[word.len()..])?;
+            Some(MenuCandidate {
+                label: name.clone(),
+                suffix,
+                description: None,
+                source: SuggestionSource::Catalog,
+            })
+        })
+        .collect()
+}
+
 /// Commits one command to the ring: empty and whitespace-only lines
 /// never record, a re-typed command promotes to most-recent (fish's
 /// effective order), and the oldest entry evicts past the cap.

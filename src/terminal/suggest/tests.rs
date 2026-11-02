@@ -1567,3 +1567,156 @@ fn seed_history_commits_in_order_deduping_and_capping() {
     suggest.seed_history(seeded);
     assert_eq!(suggest.ring.len(), RING_CAP);
 }
+
+// --- the menu's full candidate collection (suggest-menu) ---
+
+#[test]
+fn a_two_match_path_token_lists_both_entries_where_the_ghost_yields_the_common_prefix() {
+    // The menu's reason to exist (suggest-menu spec): at `~/s` over
+    // src and srv the ghost must settle for the one shared prefix
+    // `r`, but the menu carries both entries whole — each with the
+    // exact escaped suffix an accept writes, and no description (no
+    // source carries one yet; the specs-data file is the supplier).
+    let entries = listing(&[("src", true), ("srv", true)]);
+    let mut suggest = adopted();
+    let ghost =
+        step_path("~/s", Some(&entries), &mut suggest).expect("the ghost answers the field");
+    assert_eq!(
+        ghost.suffix, "r",
+        "the single-choice ghost settles for the shared prefix"
+    );
+    let observation = Observation {
+        path_listing: Some(&entries),
+        ..obs()
+    };
+    let menu = candidates("~/s", &suggest, &observation);
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["src/", "srv/"], "the menu lists both entries");
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["rc/", "rv/"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::Path));
+    assert!(menu.iter().all(|c| c.description.is_none()));
+}
+
+#[test]
+fn the_menu_ranks_history_on_top_under_the_merge_priority() {
+    // The merge's ruled priority orders the menu too (suggest-menu
+    // spec): history first — the tab's own truth — then the rest by
+    // source_rank. One token cannot seat every provider at once (the
+    // seats are mutually exclusive), so the pin composes two tokens
+    // that each seat two: `git st` (history + specs) and `~/s`
+    // (history + path).
+    let suggest = adopted();
+    let history_and_specs = candidates("git st", &suggest, &obs());
+    let sources: Vec<SuggestionSource> = history_and_specs.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::History,
+            SuggestionSource::Specs,
+            SuggestionSource::Specs
+        ]
+    );
+    let labels: Vec<&str> = history_and_specs.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["git status", "stash", "status"]);
+    assert!(
+        history_and_specs
+            .windows(2)
+            .all(|pair| source_rank(pair[0].source) <= source_rank(pair[1].source)),
+        "the whole list is non-decreasing in source_rank"
+    );
+
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("~/src/project".to_string());
+    suggest.ring = ring;
+    let entries = listing(&[("src", true), ("srv", true)]);
+    let observation = Observation {
+        path_listing: Some(&entries),
+        ..obs()
+    };
+    let history_and_path = candidates("~/s", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = history_and_path.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::History,
+            SuggestionSource::Path,
+            SuggestionSource::Path
+        ]
+    );
+    let labels: Vec<&str> = history_and_path.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["~/src/project", "src/", "srv/"]);
+}
+
+#[test]
+fn empty_typed_input_collects_no_menu_candidates() {
+    // A bare prompt has no token to complete: the collection is
+    // silence — even a ring that would prefix-match everything stays
+    // quiet (the open path treats an empty set as ineligible).
+    let suggest = adopted();
+    assert!(candidates("", &suggest, &obs()).is_empty());
+}
+
+#[test]
+fn the_menu_lists_every_history_prefix_match_most_recent_first() {
+    // The ghost answers with the newest match alone; the menu carries
+    // the whole set, most recent first — the ring walked backwards,
+    // bounded by the ring's own cap. `echo h` seats history alone
+    // (echo is outside the curated table, the word is past the
+    // command seat), so the order pin reads without composition.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("echo hello".to_string());
+    ring.push_back("echo hi".to_string());
+    suggest.ring = ring;
+    let menu = candidates("echo h", &suggest, &obs());
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["echo hi", "echo hello"], "most recent first");
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["i", "ello"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::History));
+}
+
+#[test]
+fn the_menu_lists_every_catalog_prefix_name() {
+    // No shortest-wins at the menu (suggest-menu spec): the
+    // tiebreak exists to pick one of many for the single-choice
+    // ghost, and a list needs no tiebreak — `gi` carries giftopnm,
+    // git, and gitk whole, in the snapshot's sorted order.
+    let names = catalog(&["giftopnm", "git", "gitk"]);
+    let suggest = catalog_suggest();
+    let observation = Observation {
+        command_catalog: &names,
+        ..obs()
+    };
+    let menu = candidates("gi", &suggest, &observation);
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["giftopnm", "git", "gitk"]);
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["ftopnm", "t", "tk"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::Catalog));
+}
+
+#[test]
+fn the_menu_lists_every_spec_entry_for_the_seat() {
+    // The specs table's whole strict-prefix set at each seat — and
+    // the bare `--` the single-choice ghost floors to silence lists
+    // the flag table whole (a list is information, not a guess; the
+    // floor is the ghost's alone).
+    let suggest = specs_suggest();
+    let subcommands = candidates("git st", &suggest, &obs());
+    let labels: Vec<&str> = subcommands.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["stash", "status"]);
+    let suggest = specs_suggest();
+    let flags = candidates("git --", &suggest, &obs());
+    let git = SPECS
+        .iter()
+        .find(|spec| spec.command == "git")
+        .expect("git is curated");
+    let labels: Vec<&str> = flags.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels, git.flags,
+        "the bare `--` lists the whole flag table"
+    );
+}
