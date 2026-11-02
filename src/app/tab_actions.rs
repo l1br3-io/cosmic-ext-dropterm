@@ -248,6 +248,18 @@ impl DropTerm {
             );
             return Task::none();
         }
+        // The completion menu's trigger is widget-owned
+        // (suggest-menu spec): the soft trigger must forward the
+        // chord's own shell bytes — Ctrl+Space's NUL — when the menu
+        // declines, and only the terminal widget's key handler,
+        // where those bytes live, can do that. The widget matches
+        // the chord and performs the toggle against the active
+        // terminal itself; this arm keeps `perform_action` total for
+        // the subscription's `matched_action`, which lands here as a
+        // no-op after the widget already acted.
+        if action == Action::ShowCompletions {
+            return Task::none();
+        }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
         // and never reach the per-terminal actions.
@@ -274,6 +286,7 @@ impl DropTerm {
             Action::Hide
             | Action::Settings
             | Action::ToggleStatusBar
+            | Action::ShowCompletions
             | Action::NewTab
             | Action::NewTabHome
             | Action::NewProfileTab(_)

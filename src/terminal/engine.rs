@@ -591,6 +591,11 @@ pub struct Terminal {
     /// the status-glance lesson: it dies with the terminal, so a
     /// respawn (a fresh terminal) resets history by construction.
     suggest: Suggest,
+    /// The completion menu's state (suggest-menu spec): the pure
+    /// model, owned beside `suggest` so the collection, the scoped
+    /// presses, and the accept funnel share one truth — and die with
+    /// the terminal, like the ring.
+    menu: suggest::MenuState,
     search_regex_opt: Option<RegexSearch>,
     search_value: String,
     shell_pid: Option<u32>,
@@ -936,6 +941,7 @@ impl Terminal {
                 }
                 suggest
             },
+            menu: suggest::MenuState::new(),
             search_regex_opt: None,
             search_value: String::new(),
             shell_pid,
@@ -1220,6 +1226,138 @@ impl Terminal {
         self.suggest
             .showing()
             .map(|showing| showing.visible.as_str())
+    }
+
+    /// The completion menu's open attempt (suggest-menu spec, the
+    /// soft trigger): the ghost's own eligibility chain minus its
+    /// single-choice display gates, a fresh observation, and the
+    /// merged providers' full candidate sets. `false` is the
+    /// decline — ineligible, or no candidate answered — and the
+    /// caller forwards the chord to the shell verbatim.
+    pub fn menu_open(&mut self) -> bool {
+        let rows = self.menu_candidates();
+        self.menu.open(rows)
+    }
+
+    /// Whether the completion menu shows.
+    pub fn menu_is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// Closes the menu: Escape, the chord's toggle, any press the
+    /// menu does not claim.
+    pub fn menu_close(&mut self) {
+        self.menu.close();
+    }
+
+    /// One menu-scoped press (suggest-menu spec): the pure
+    /// transition, with an accept's suffix written straight through
+    /// the one funnel — typed characters via `input_no_scroll`,
+    /// never a paste.
+    pub fn menu_press(&mut self, key: suggest::MenuKey) {
+        if let Some(suffix) = self.menu.press(key)
+            && !suffix.is_empty()
+        {
+            self.input_no_scroll(suffix.into_bytes());
+        }
+    }
+
+    /// The menu's candidate collection (suggest-menu spec): a fresh
+    /// observation under the ghost's eligibility chain minus its
+    /// single-choice display gates — the same reduced facts
+    /// `update()` builds each damage cycle, mirrored here as a
+    /// second cursor-line scrape at key-press frequency (never per
+    /// frame) so the ghost's own path stays untouched. Ineligible is
+    /// the empty set: the soft trigger's decline.
+    fn menu_candidates(&mut self) -> Vec<suggest::MenuCandidate> {
+        if !self.autosuggestions_enabled || !self.is_focused {
+            return Vec::new();
+        }
+        if self.foreground_child_running() {
+            return Vec::new();
+        }
+        let (before_cursor, after_cursor_blank, display_offset, columns, cursor_column) = {
+            let term = self.term.lock();
+            let grid = term.grid();
+            let cursor = grid.cursor.point;
+            let columns = grid.columns();
+            let row = &grid[cursor.line];
+            let mut before_cursor = String::new();
+            let mut after_cursor_blank = true;
+            for column in 0..columns {
+                let cell = &row[Column(column)];
+                if Column(column) < cursor.column {
+                    if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                        continue;
+                    }
+                    before_cursor.push(match cell.c {
+                        '\t' => ' ',
+                        c => c,
+                    });
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        for &c in zerowidth {
+                            before_cursor.push(c);
+                        }
+                    }
+                } else {
+                    let blank = cell.c == ' '
+                        && !cell
+                            .flags
+                            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                        && cell.zerowidth().is_none();
+                    if !blank {
+                        after_cursor_blank = false;
+                    }
+                }
+            }
+            (
+                before_cursor,
+                after_cursor_blank,
+                grid.display_offset(),
+                columns,
+                cursor.column.0,
+            )
+        };
+        if display_offset != 0 {
+            return Vec::new();
+        }
+        // The anchor carve doubles as two of the ghost's guards:
+        // `None` is unanchored or a line that left the anchor.
+        let Some(typed) = self.suggest.typed_segment(&before_cursor) else {
+            return Vec::new();
+        };
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let paths_eligible = self.paths_eligible();
+        let working_directory = self.working_directory();
+        let path_listing = self.path_cache.listing_for(
+            self.autosuggestions_paths_enabled && paths_eligible,
+            suggest::path_token(Some(typed)),
+            self.spawn_home.as_deref(),
+            working_directory.as_deref(),
+        );
+        let observation = suggest::Observation {
+            enabled: self.autosuggestions_enabled,
+            paths_eligible,
+            paths_enabled: self.autosuggestions_paths_enabled,
+            path_listing,
+            commands_enabled: self.autosuggestions_commands_enabled,
+            specs_enabled: self.autosuggestions_specs_enabled,
+            command_catalog: &self.command_catalog,
+            focused: self.is_focused,
+            foreground_child: false,
+            display_offset: 0,
+            cursor_on_bottom_row: false,
+            columns,
+            cursor_column,
+            before_cursor: &before_cursor,
+            after_cursor_blank,
+            fresh_prompt: false,
+            delay_ms: self.autosuggestions_delay_ms,
+            typed_idle_ms: 0,
+        };
+        suggest::candidates(typed, &self.suggest, &observation)
     }
 
     /// The active reveal deadline (suggest-delay spec): the instant

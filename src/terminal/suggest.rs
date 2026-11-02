@@ -892,10 +892,6 @@ fn merged_candidate(
 /// source carries one (none today; the specs data file in
 /// suggest-specs-data is the supplier), and the provenance the
 /// merge ranking orders by.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "caller-less until Task 3's key routing lands")
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MenuCandidate {
     pub(crate) label: String,
@@ -912,13 +908,6 @@ pub(crate) struct MenuCandidate {
 /// history on top). Each provider rides its own gates unchanged
 /// (config toggles, the spawn allowlist, the seat rules); pure, like
 /// every seam here. Empty input is silence — no token, no list.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the menu's open path lands in Task 3; tests consume it today"
-    )
-)]
 pub(crate) fn candidates(
     typed: &str,
     suggest: &Suggest,
@@ -942,10 +931,6 @@ pub(crate) fn candidates(
 
 /// One provider's whole candidate set, keyed by its variant — the
 /// menu-side twin of [`provider_candidate`]'s dispatch.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reached only through candidates; live at Task 3")
-)]
 fn source_candidates(
     source: SuggestionSource,
     typed: &str,
@@ -963,10 +948,6 @@ fn source_candidates(
 /// History's whole set: every ring entry with the typed line as a
 /// strict prefix, most recent first — the ghost's own walk continued
 /// past the first hit, bounded by the ring's own cap.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reached only through candidates; live at Task 3")
-)]
 fn history_candidates(typed: &str, ring: &VecDeque<String>) -> Vec<MenuCandidate> {
     ring.iter()
         .rev()
@@ -988,10 +969,6 @@ fn history_candidates(typed: &str, ring: &VecDeque<String>) -> Vec<MenuCandidate
 /// for the one shared prefix. An entry whose remainder cannot be
 /// safely written drops alone (the per-entry silence rule), never
 /// poisons the set.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reached only through candidates; live at Task 3")
-)]
 fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.paths_enabled || !obs.paths_eligible {
         return Vec::new();
@@ -1042,10 +1019,6 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
 /// list of every flag is information, not a guess), so the flag seat
 /// lists the table whole. Each remainder rides the escape rule like
 /// every provider's.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reached only through candidates; live at Task 3")
-)]
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
@@ -1087,10 +1060,6 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
 /// seat rules hold: command position, not path-shaped, non-empty.
 /// Each remainder rides the escape rule; an unwritable name drops
 /// alone.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reached only through candidates; live at Task 3")
-)]
 fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.commands_enabled || !obs.paths_eligible {
         return Vec::new();
@@ -1127,12 +1096,8 @@ const MENU_VISIBLE_ROWS: usize = 8;
 /// Up/Down navigate, Tab/Enter accept — and every press it does not
 /// claim arrives as [`MenuKey::Other`], whose transition closes the
 /// menu before the press flows on through the normal handler.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the widget's routing lands in Task 3")
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MenuKey {
+pub enum MenuKey {
     Up,
     Down,
     Accept,
@@ -1145,10 +1110,6 @@ pub(crate) enum MenuKey {
 /// the PTY, or the clock. Invariant: open implies non-empty rows
 /// (an empty collection declines to open; a filter that empties the
 /// set closes), so a closed menu is always a spent one.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the widget's routing lands in Task 3")
-)]
 #[derive(Debug, Default)]
 pub(crate) struct MenuState {
     open: bool,

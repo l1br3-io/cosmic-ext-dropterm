@@ -209,6 +209,32 @@ fn bare_and_ctrl_b_stay_free_for_the_terminal() {
 }
 
 #[test]
+fn ctrl_space_opens_the_completions_menu() {
+    // The menu's trigger (suggest-menu spec): Ctrl+Space — the VS
+    // Code/Clink chord, Warp's Tab-fallback precedent — the fourth
+    // sanctioned bare-Ctrl exception after the zoom cluster, ruled
+    // by the warp-parity record. The trigger is *soft*: the widget
+    // owns the action and forwards the chord's own NUL byte when
+    // the menu declines, pinned at the routing level in the
+    // widget's tests.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(&binds, Modifiers::CTRL, &Key::Character(" ".into()), None,),
+        Some(Action::ShowCompletions)
+    );
+    // Bare Space is ordinary typing, never the trigger.
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::empty(),
+            &Key::Character(" ".into()),
+            None,
+        ),
+        None
+    );
+}
+
+#[test]
 fn ctrl_shift_t_opens_a_new_tab() {
     let binds = default_key_binds();
     assert_eq!(
@@ -502,20 +528,24 @@ fn bare_tab_stays_free_for_the_terminal() {
 
 // --- the default-map standard (bind-standard BS-1) ---
 
-/// The eight chords the default standard sanctions outside full
+/// The nine chords the default standard sanctions outside full
 /// `Ctrl+Shift`, spelled as exact modifier+key pairs: the zoom
 /// cluster (`Ctrl` + `=`/`+`/`-`/`0` — the physical zoom keys, `0`
 /// reset's only chord), browser-style tab cycling (`Ctrl` + `Tab`/
-/// `PageUp`/`PageDown` — convention, not shell bytes), and
+/// `PageUp`/`PageDown` — convention, not shell bytes),
 /// `Shift+Insert` for primary paste (the deep Unix convention, the
-/// action's only chord). Key halves stay in descriptor form because
-/// `Key::Character` is not const-constructible; the test compares
-/// them as built `KeyBind`s.
-const SANCTIONED: [(&[Modifier], SanctionedKey); 8] = [
+/// action's only chord), and `Ctrl+Space` for the completion menu
+/// (suggest-menu spec: the VS Code/Clink trigger chord — a *soft*
+/// trigger, the widget forwarding the chord's own NUL byte at every
+/// ineligible state, so the shell's byte survives the bind). Key
+/// halves stay in descriptor form because `Key::Character` is not
+/// const-constructible; the test compares them as built `KeyBind`s.
+const SANCTIONED: [(&[Modifier], SanctionedKey); 9] = [
     (&[Modifier::Ctrl], SanctionedKey::Character("=")),
     (&[Modifier::Ctrl], SanctionedKey::Character("+")),
     (&[Modifier::Ctrl], SanctionedKey::Character("-")),
     (&[Modifier::Ctrl], SanctionedKey::Character("0")),
+    (&[Modifier::Ctrl], SanctionedKey::Character(" ")),
     (&[Modifier::Ctrl], SanctionedKey::Named(Named::Tab)),
     (&[Modifier::Ctrl], SanctionedKey::Named(Named::PageUp)),
     (&[Modifier::Ctrl], SanctionedKey::Named(Named::PageDown)),
@@ -549,7 +579,7 @@ fn every_default_chord_is_ctrl_shift_or_sanctioned() {
     // The map-wide standard, generalizing the per-letter pins above
     // (each pin keeps its byte's why; this walks the whole map):
     // whatever chord joins the defaults must hold both Ctrl and
-    // Shift, or be one of the eight sanctioned pairs — a future bare
+    // Shift, or be one of the nine sanctioned pairs — a future bare
     // Ctrl+N would pass every pin and fail exactly here, named.
     let sanctioned: Vec<KeyBind> = SANCTIONED
         .iter()
@@ -563,7 +593,7 @@ fn every_default_chord_is_ctrl_shift_or_sanctioned() {
         });
         assert!(
             ctrl_and_shift || is_sanctioned,
-            "{chord} is neither Ctrl+Shift nor one of the eight sanctioned chords"
+            "{chord} is neither Ctrl+Shift nor one of the nine sanctioned chords"
         );
     }
 }
@@ -721,6 +751,11 @@ fn ids_are_the_pinned_file_format_literals() {
     assert_eq!(action_id(Action::Copy), Some("copy"));
     assert_eq!(action_id(Action::ZoomIn), Some("zoom_in"));
     assert_eq!(action_id(Action::Settings), Some("settings"));
+    assert_eq!(action_id(Action::ShowCompletions), Some("show_completions"));
+    assert_eq!(
+        action_from_id("show_completions"),
+        Some(Action::ShowCompletions)
+    );
     assert_eq!(action_id(Action::ActivateTab(0)), Some("activate_tab_1"));
     assert_eq!(action_id(Action::ActivateTab(7)), Some("activate_tab_8"));
     assert_eq!(
@@ -745,9 +780,9 @@ fn groups_cover_every_bindable_action_exactly_once() {
         "the section titles are part of the tab's shape"
     );
     let rows: Vec<Action> = groups.into_iter().flat_map(|group| group.actions).collect();
-    // 22 payload-free variants plus the eight numbered activate
+    // 23 payload-free variants plus the eight numbered activate
     // rows — NewProfileTab is the one deliberate exclusion.
-    assert_eq!(rows.len(), 30);
+    assert_eq!(rows.len(), 31);
     let unique: std::collections::HashSet<Action> = rows.iter().copied().collect();
     assert_eq!(unique.len(), rows.len(), "no action appears twice");
     assert!(rows.iter().all(|action| action_id(*action).is_some()));
@@ -759,6 +794,7 @@ fn labels_are_readable_english() {
     assert_eq!(action_label(Action::ActivateTab(0)), "Activate tab 1");
     assert_eq!(action_label(Action::ActivateLastTab), "Activate last tab");
     assert_eq!(action_label(Action::Settings), "Open settings");
+    assert_eq!(action_label(Action::ShowCompletions), "Show completions");
     assert_eq!(
         action_label(Action::SwitchProfileTab(0)),
         "Switch profile tab"

@@ -48,6 +48,7 @@ use cosmic::{
         Color, Element, Length, Padding, Point, Rectangle, Size, Vector,
         advanced::graphics::text::{Raw, font_system},
         event::Event,
+        keyboard::key::Physical,
         keyboard::{Event as KeyEvent, Key, Modifiers},
         mouse::{self, Button, Event as MouseEvent, ScrollDelta},
     },
@@ -66,7 +67,7 @@ use std::{
 };
 
 use super::engine::{Metadata, Terminal, TerminalScroll};
-use super::suggest::AcceptKind;
+use super::suggest::{AcceptKind, MenuKey};
 
 /// Which app-level action a bound key triggers.
 ///
@@ -139,6 +140,18 @@ pub enum Action {
     /// Toggle the status band's visibility (`Ctrl+Shift+B` and the
     /// Behavior card's toggle — one funnel, the settings write path).
     ToggleStatusBar,
+    /// Open (or close) the completion menu at the prompt
+    /// (`Ctrl+Space`, suggest-menu spec): the explicit-trigger
+    /// candidate list over the tab's current input — every history
+    /// prefix match, path entry, catalog name, and spec
+    /// subcommand/flag, where the ghost must settle for one. A soft
+    /// trigger: at every ineligible state (a foreground child,
+    /// scrolled back, no typed segment) the chord forwards to the
+    /// shell verbatim. Widget-owned — the routing and the toggle
+    /// happen in `TerminalBox`'s key handling, where a declined
+    /// chord's shell bytes live; the app's `perform_action` arm is a
+    /// documented no-op.
+    ShowCompletions,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -437,6 +450,48 @@ where
             cursor: Rectangle::new(view_position + cursor_position, Size::new(1.0, line_height)),
             purpose: input_method::Purpose::Normal,
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+        }
+    }
+
+    /// The completion menu's routing for one press (suggest-menu
+    /// spec): `true` — the menu consumed it (a claimed key, or the
+    /// soft chord that opened one), swallow; `false` — nothing
+    /// claims it (no menu; an unclaimed press that closed one; the
+    /// soft chord's decline), and the press flows through the
+    /// normal handler below, its bytes forwarded verbatim. Runs
+    /// before the keybind swallow and every mapping so a showing
+    /// menu outranks them all; the app-level `perform_action` arm
+    /// for the chord is a documented no-op — this widget owns the
+    /// action, the only place a declined chord can fall through to
+    /// its shell bytes.
+    fn menu_consumes_press(
+        &self,
+        terminal: &mut Terminal,
+        modifiers: Modifiers,
+        key: &Key,
+        physical_key: Physical,
+    ) -> bool {
+        let trigger_chord = self.key_binds.iter().any(|(bind, action)| {
+            *action == Action::ShowCompletions && bind.matches(modifiers, key, Some(&physical_key))
+        });
+        let named = match key {
+            Key::Named(named) => Some(*named),
+            _ => None,
+        };
+        match menu_key(named, modifiers, terminal.menu_is_open(), trigger_chord) {
+            Some(MenuRouting::Consume(menu_key)) => {
+                terminal.menu_press(menu_key);
+                true
+            }
+            Some(MenuRouting::CloseThenProcess) => {
+                terminal.menu_close();
+                false
+            }
+            // The soft trigger: no menu, the chord pressed — try the
+            // open; a decline forwards the chord's own shell bytes
+            // through the normal handling below.
+            None if trigger_chord => terminal.menu_open(),
+            None => false,
         }
     }
 }
@@ -1242,6 +1297,23 @@ where
                 text,
                 ..
             }) if state.is_focused && named == modified_named => {
+                // The completion menu's scoped keys (suggest-menu
+                // spec), before the keybind swallow and every
+                // mapping below: while a menu shows, its claimed keys
+                // are its alone and every other press closes it
+                // first; the soft trigger's chord tries the open here
+                // too, a decline falling through to the shell's own
+                // bytes for that chord.
+                if self.menu_consumes_press(
+                    &mut terminal,
+                    *modifiers,
+                    &Key::Named(*named),
+                    *physical_key,
+                ) {
+                    shell.capture_event();
+                    return;
+                }
+
                 for key_bind in self.key_binds.keys() {
                     if key_bind.matches(*modifiers, &Key::Named(*named), Some(physical_key)) {
                         shell.capture_event();
@@ -1423,9 +1495,18 @@ where
                 physical_key,
                 ..
             }) if state.is_focused && *key == Key::Character(SmolStr::new(" ")) => {
+                // The completion menu's routing (suggest-menu spec),
+                // first as everywhere: the chord's own default is this
+                // handler's Ctrl+Space NUL press, so an opened menu
+                // swallows the chord here and a declined one falls
+                // through to the NUL below, verbatim.
+                if self.menu_consumes_press(&mut terminal, *modifiers, key, *physical_key) {
+                    shell.capture_event();
+                    return;
+                }
                 //Special handle Enter, Escape, Backspace and Tab as described in
                 //<https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding>
-                //Also special handle Ctrl-_ to behave like xterm
+                //Also special handle Ctrl+_ to behave like xterm
                 let alt_prefix = if modifiers.alt() { "\x1B" } else { "" };
 
                 // Keep this instead of hardcoding the space to allow for dead keys
@@ -1450,6 +1531,14 @@ where
                 modified_key,
                 ..
             }) if state.is_focused => {
+                // The completion menu's scoped keys (suggest-menu
+                // spec), before the keybind swallow: a custom trigger
+                // chord on a character key lands here, declined
+                // forwarding to the character's own handling below.
+                if self.menu_consumes_press(&mut terminal, *modifiers, key, *physical_key) {
+                    shell.capture_event();
+                    return;
+                }
                 for key_bind in self.key_binds.keys() {
                     if key_bind.matches(*modifiers, key, Some(physical_key)) {
                         shell.capture_event();
@@ -2393,6 +2482,53 @@ fn accept_kind(named: Named, modifiers: Modifiers) -> Option<AcceptKind> {
     }
 }
 
+/// The completion menu's scoped-key verdict (suggest-menu spec):
+/// the routing for one press given the menu's open bit. The claimed
+/// keys — bare Up/Down/Tab/Enter/Escape, plus the `ShowCompletions`
+/// chord (its toggle-close) — are the menu's alone, VS Code's
+/// `HasFocusedSuggestion` mechanism; every other press closes the
+/// menu first and then flows through the existing handler unchanged
+/// (the ghost's accepts included). `None` is no menu routing at all
+/// — no menu shows — and the press is the shell's verbatim, Tab's
+/// `\x09` included (keybinds.rs's standing rule, pinned from both
+/// sides by the tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuRouting {
+    /// The press is the menu's: navigate, accept, or close (Escape,
+    /// the trigger chord's toggle).
+    Consume(MenuKey),
+    /// The press closes the menu, then processes normally.
+    CloseThenProcess,
+}
+
+/// The scoped routing itself — pure, so the policy is
+/// headless-testable beside the ghost's own `accept_kind`.
+fn menu_key(
+    named: Option<Named>,
+    modifiers: Modifiers,
+    open: bool,
+    trigger_chord: bool,
+) -> Option<MenuRouting> {
+    if !open {
+        return None;
+    }
+    if trigger_chord {
+        return Some(MenuRouting::Consume(MenuKey::Other));
+    }
+    if modifiers.is_empty() {
+        match named {
+            Some(Named::ArrowUp) => return Some(MenuRouting::Consume(MenuKey::Up)),
+            Some(Named::ArrowDown) => return Some(MenuRouting::Consume(MenuKey::Down)),
+            Some(Named::Tab | Named::Enter) => {
+                return Some(MenuRouting::Consume(MenuKey::Accept));
+            }
+            Some(Named::Escape) => return Some(MenuRouting::Consume(MenuKey::Other)),
+            _ => {}
+        }
+    }
+    Some(MenuRouting::CloseThenProcess)
+}
+
 /// The shell bytes a no-Ctrl character arm delivers for a press whose
 /// `text` carries `character`: the character's UTF-8, `\x1B`-prefixed
 /// under Alt. `None` — a press with no text, a dead key
@@ -2499,8 +2635,8 @@ fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DisabledFlow, EdgeScrollDirection, accumulate_wheel_lines, context_menu_press,
-        disabled_forwards, edge_scroll_adjustment,
+        DisabledFlow, EdgeScrollDirection, MenuRouting, accumulate_wheel_lines, context_menu_press,
+        disabled_forwards, edge_scroll_adjustment, menu_key,
     };
     use cosmic::iced::keyboard::{Modifiers, key::Named};
     use cosmic::iced::mouse::Button;
@@ -2509,6 +2645,7 @@ mod tests {
     use super::child_owns_pointer;
     use super::no_ctrl_input;
     use crate::terminal::suggest::AcceptKind;
+    use crate::terminal::suggest::MenuKey;
 
     #[test]
     fn no_ctrl_input_delivers_the_character_text_carries() {
@@ -2602,6 +2739,68 @@ mod tests {
         assert_eq!(accept_kind(Named::Enter, Modifiers::empty()), None);
         assert_eq!(accept_kind(Named::Tab, Modifiers::empty()), None);
         assert_eq!(accept_kind(Named::Home, Modifiers::ALT), None);
+    }
+
+    #[test]
+    fn closed_tab_is_the_shells_verbatim_and_open_tab_never_reaches_the_pty() {
+        // The bare-Tab promise, both sides pinned (suggest-menu
+        // spec): with no menu open there is no menu routing at all —
+        // the press flows to the existing mapping below, which
+        // forwards Tab's `\x09` byte-for-byte as it always has
+        // (keybinds.rs's standing rule, `only_right_is_a_soft_key`'s
+        // cousin); with a menu open, Tab is the menu's accept —
+        // consumed, never forwarded.
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::empty(), false, false),
+            None,
+            "closed, Tab is the shell's own completion key"
+        );
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Accept)),
+            "open, Tab is the menu's accept and never reaches the PTY"
+        );
+    }
+
+    #[test]
+    fn an_open_menu_claims_its_six_keys_and_closes_on_everything_else() {
+        // The scoped set (suggest-menu spec, VS Code's
+        // HasFocusedSuggestion analog): bare Up/Down navigate, bare
+        // Tab/Enter accept, bare Escape and the trigger chord close —
+        // consumed. Every other press — a character, a modified
+        // claimed key like Shift+Tab — closes the menu first, then
+        // processes normally (the ghost's accepts included).
+        assert_eq!(
+            menu_key(Some(Named::ArrowUp), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Up))
+        );
+        assert_eq!(
+            menu_key(Some(Named::ArrowDown), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Down))
+        );
+        assert_eq!(
+            menu_key(Some(Named::Enter), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Accept))
+        );
+        assert_eq!(
+            menu_key(Some(Named::Escape), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Other))
+        );
+        assert_eq!(
+            menu_key(None, Modifiers::CTRL, true, true),
+            Some(MenuRouting::Consume(MenuKey::Other)),
+            "the chord toggles an open menu closed"
+        );
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::SHIFT, true, false),
+            Some(MenuRouting::CloseThenProcess),
+            "Shift+Tab is the shell's backtab, not the menu's"
+        );
+        assert_eq!(
+            menu_key(None, Modifiers::empty(), true, false),
+            Some(MenuRouting::CloseThenProcess),
+            "a character press closes the menu, then types"
+        );
     }
 
     #[test]
