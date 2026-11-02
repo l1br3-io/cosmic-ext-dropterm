@@ -1500,3 +1500,298 @@ fn the_generator_binary_resolves_against_the_spawn_path() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the generator runner: deadline + stale-while-revalidate (suggest-generators, Task 3) ---
+
+/// Resolves the test environment's own git — `None` skips the
+/// git-backed pins (the chunk's skip-if-no-git marker: the suite
+/// stays green where git is absent).
+fn test_git() -> Option<std::path::PathBuf> {
+    resolve_generator_binary(std::env::var("PATH").ok().as_deref(), "git")
+}
+
+/// A git fixture repository: fresh directory, then each setup step
+/// run through the test's own environment (setup, not the
+/// generator contract).
+fn git_fixture(name: &str, setup: &[&str]) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("dropterm-generator-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let git = test_git().expect("git present — the skip guard ran");
+    for step in setup {
+        let status = std::process::Command::new(&git)
+            .args(step.split_whitespace())
+            .current_dir(&dir)
+            .status()
+            .expect("fixture git step runs");
+        assert!(status.success(), "fixture step failed: {step}");
+    }
+    dir
+}
+
+/// An eligible runner over the test environment's own PATH, waking
+/// a drained channel nobody reads.
+fn test_runner() -> GeneratorRunner {
+    GeneratorRunner::new(
+        "/bin/sh",
+        std::env::var("PATH").ok().as_deref(),
+        None,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    )
+}
+
+/// Polls the runner's cached sets for `dir` until they exist —
+/// bounded at 10s (the fetch deadline's own cap plus slack).
+fn poll_generator_sets(runner: &GeneratorRunner, dir: &Path) -> GenCached {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(sets) = runner.sets_for(Some(dir)) {
+            return sets;
+        }
+        assert!(Instant::now() < deadline, "generator fetch never landed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn a_two_branch_repo_yields_both_names_after_revalidation() {
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "branches",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let runner = test_runner();
+    assert!(
+        runner.sets_for(Some(&dir)).is_none(),
+        "nothing cached before the first trigger"
+    );
+    runner.revalidate(Some(&dir));
+    // The SWR bookkeeping: all three argv keys in flight the moment
+    // the trigger returns, none left when the fetches land.
+    {
+        let state = runner.lock_generator_state();
+        assert_eq!(state.in_flight.len(), 3, "one worker per argv");
+    }
+    let sets = poll_generator_sets(&runner, &dir);
+    {
+        let state = runner.lock_generator_state();
+        assert!(state.in_flight.is_empty(), "landed workers retire");
+        assert_eq!(state.cache.len(), 3, "one cache entry per argv");
+    }
+    assert!(sets.branches.iter().any(|name| name == "main"));
+    assert!(sets.branches.iter().any(|name| name == "feature/x"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_repo_and_a_non_repo_are_silence() {
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let empty = git_fixture("empty", &["init -b main"]);
+    let runner = test_runner();
+    runner.revalidate(Some(&empty));
+    let sets = poll_generator_sets(&runner, &empty);
+    assert!(
+        sets.branches.is_empty() && sets.tags.is_empty() && sets.files.is_empty(),
+        "an unborn repo carries no refs, no tags, no changes"
+    );
+    let plain = catalog_fixture("gen-nonrepo");
+    runner.revalidate(Some(&plain));
+    let sets = poll_generator_sets(&runner, &plain);
+    assert!(
+        sets.branches.is_empty() && sets.tags.is_empty() && sets.files.is_empty(),
+        "fatal output degrades to the cached empty set — silence"
+    );
+    let _ = std::fs::remove_dir_all(&empty);
+    let _ = std::fs::remove_dir_all(&plain);
+}
+
+#[test]
+fn a_slow_generator_times_out_to_silence() {
+    // The deadline path itself, through the test's own slow argv
+    // (never a shipped constant) at a test-shortened 300ms: a 30s
+    // sleep dies at the deadline, its output discarded.
+    let mut command = std::process::Command::new("sleep");
+    command.arg("30");
+    assert!(run_under_deadline(command, Duration::from_millis(300)).is_none());
+    // And the clean path for contrast: a fast child's stdout rides
+    // home whole.
+    let mut command = std::process::Command::new("echo");
+    command.arg("main|abc|subject");
+    assert_eq!(
+        run_under_deadline(command, Duration::from_secs(5)).as_deref(),
+        Some("main|abc|subject\n")
+    );
+}
+
+#[test]
+fn sets_for_is_the_spawn_free_hot_path() {
+    // The update path's read serves stale-instantly and spawns
+    // nothing: no in-flight worker, no cache write, no spawn count
+    // — the fact the typing path's pin stands on.
+    let runner = test_runner();
+    let _ = runner.sets_for(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+    assert!(state.cache.is_empty());
+}
+
+#[test]
+fn an_ineligible_tab_never_spawns() {
+    // The standing ssh gate, engine-side: a tab spawned as ssh (or
+    // any non-shell program) blocks the trigger before any spawn,
+    // whatever the cwd would say.
+    let runner = GeneratorRunner::new(
+        "ssh",
+        std::env::var("PATH").ok().as_deref(),
+        None,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    );
+    runner.revalidate(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+}
+
+#[test]
+fn a_tab_without_git_on_its_spawn_path_never_spawns() {
+    // No resolvable binary is the runner's own silence: the spawn
+    // PATH carried no git, so no trigger ever forks.
+    let runner = GeneratorRunner::new(
+        "/bin/sh",
+        Some("/nonexistent-generator-path"),
+        None,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    );
+    runner.revalidate(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+}
+
+/// One live terminal spawned inside `dir` with git resolvable on
+/// its spawn PATH — the engine-level generator harness: construction
+/// pre-warms, updates serve from cache, typing must spawn nothing.
+fn generator_terminal(dir: &Path) -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            working_directory: Some(dir.to_path_buf()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a generator test terminal")
+}
+
+/// Waits until the construction pre-warm has fully landed — no
+/// worker in flight, all three argv cached — bounded at 10s.
+fn wait_for_generator_prewarm(terminal: &Terminal) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // The guard drops before the sleep — held across it, the
+        // poller starves the very workers it waits on (Linux's
+        // mutex is not fair).
+        let (done, spawns) = {
+            let state = terminal.generator.lock_generator_state();
+            (
+                state.in_flight.is_empty() && state.cache.len() == 3,
+                state.spawns,
+            )
+        };
+        if done {
+            return spawns;
+        }
+        assert!(Instant::now() < deadline, "pre-warm never landed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn plain_typing_never_spawns_a_generator() {
+    // The hot path's own pin (the standing rule: spawns never on
+    // plain typing): the construction pre-warm lands its three, and
+    // keystrokes driven through full updates spawn nothing more.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "typing",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let mut terminal = generator_terminal(&dir);
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    assert_eq!(prewarm_spawns, 3, "one spawn per argv at eligibility onset");
+    for key in [b"g", b"i", b"t", b" ", b"c", b"h"] {
+        terminal.input_no_scroll(key);
+        terminal.update();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns, prewarm_spawns,
+        "plain typing drove updates and spawned nothing"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn menu_open_revalidates_the_generator_cache() {
+    // The menu's open moment is the ruled trigger: with the pre-warm
+    // landed and no worker in flight, a Ctrl+Space open re-fires all
+    // three argv — stale served in the rows it collects, the fresh
+    // sets landing for the updates that follow.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "menu-open",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let mut terminal = generator_terminal(&dir);
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    terminal.update();
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns,
+        prewarm_spawns + 3,
+        "the menu's open revalidates every argv for the tab's cwd"
+    );
+    terminal.input_no_scroll(&b"exit\r"[..]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -45,7 +45,7 @@ use std::{
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicU32, Ordering},
     },
     time::{Duration, Instant},
@@ -603,6 +603,10 @@ pub struct Terminal {
     /// [`PathListingCache`]; refreshed inside the synchronous update
     /// flow, never from a thread.
     path_cache: PathListingCache,
+    /// The generator runner (suggest-generators spec): spawn,
+    /// deadline, and stale-while-revalidate cache engine-side —
+    /// dies with the terminal, so a respawn starts its cache empty.
+    generator: GeneratorRunner,
     /// The ghost tint (autosuggest spec, OQ-2): the scheme fg→bg
     /// blend, computed at construction and every `set_config` —
     /// never per frame.
@@ -818,21 +822,10 @@ fn command_catalog_from_path(path: Option<&str>) -> Vec<String> {
 // spawn-time PATH's absolute binary and the tab's `/proc` cwd.
 // Five seconds, then kill, then silence (Task 3) — a failed
 // generator is DropTerm's problem, never the prompt's.
-//
-// Task 2 ships the contract pieces ahead of their caller: the
-// runner that wires them into the update flow is Task 3's, one
-// commit away, and until it lands only the tests call these.
 
 /// The branch generator's argv (VS Code's set, the record's
 /// verbatim pinning): local heads, newest commit first, the short
 /// name the template's first `|`-field carries.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) const GIT_BRANCHES: &[&str] = &[
     "git",
     "--no-optional-locks",
@@ -843,13 +836,6 @@ pub(crate) const GIT_BRANCHES: &[&str] = &[
 ];
 
 /// The tag generator's argv: every tag, newest first.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) const GIT_TAGS: &[&str] = &[
     "git",
     "--no-optional-locks",
@@ -860,37 +846,16 @@ pub(crate) const GIT_TAGS: &[&str] = &[
 
 /// The working-tree files generator's argv: the porcelain short
 /// status — staged, unstaged, and untracked alike.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) const GIT_FILES: &[&str] = &["git", "--no-optional-locks", "status", "--short"];
 
 /// One `for-each-ref --format` line's short ref name: the
 /// template's first `|`-field (the subject may carry its own
 /// pipes; the name never runs past the first).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) fn branch_name(line: &str) -> Option<&str> {
     line.split('|').next()
 }
 
 /// One `tag --list` line is the whole name.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 #[expect(
     clippy::unnecessary_wraps,
     reason = "the Option is the post-filter's uniform extract signature — every set's carve answers the same question, None dropping its line"
@@ -905,13 +870,6 @@ pub(crate) fn tag_name(line: &str) -> Option<&str> {
 /// default): the quoted form is not the name, and unquoting git's
 /// escapes is a parser this contract refuses to ship — `None`
 /// drops the line alone, never poisons the set.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) fn status_path(line: &str) -> Option<&str> {
     let rest = line.get(3..)?;
     let path = match rest.rsplit_once(" -> ") {
@@ -931,13 +889,6 @@ pub(crate) fn status_path(line: &str) -> Option<&str> {
 /// and each survivor rides `escape_for_shell` (an unwritable name
 /// drops alone, never poisons the set). The result is the
 /// already-escaped, deduped shape the model's cache holds.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that post-filters its spawns through this is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 pub(crate) fn post_filter_names(
     output: &str,
     extract: impl Fn(&str) -> Option<&str>,
@@ -974,13 +925,6 @@ pub(crate) fn post_filter_names(
 /// them into. Nothing else inherits: no ambient PATH lookup at
 /// exec, no `DropTerm` env leakage, no shell between `DropTerm`
 /// and the argv.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that builds its spawns through this is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 fn generator_command(
     argv: &[&str],
     binary: &Path,
@@ -1004,13 +948,6 @@ fn generator_command(
 /// (regular file, execute bit, symlinks followed), resolved
 /// against truth a mid-session PATH re-export cannot move. `None`
 /// is silence: no git, no generators.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the runner that resolves its binary through this is Task 3's; the contract ships first, pinned by its tests"
-    )
-)]
 fn resolve_generator_binary(spawn_path: Option<&str>, program: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1025,6 +962,245 @@ fn resolve_generator_binary(spawn_path: Option<&str>, program: &str) -> Option<P
         }
     }
     None
+}
+
+/// The generator deadline (suggest-generators spec, ruled): five
+/// seconds, then kill, then silence — a hung generator is never the
+/// prompt's problem and never a user-visible error.
+const GENERATOR_DEADLINE: Duration = Duration::from_secs(5);
+
+/// One cache key: which DropTerm-owned argv, in which cwd — the
+/// (argv, cwd) the record's stale-while-revalidate rules key on.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct GenKey {
+    argv: &'static [&'static str],
+    cwd: PathBuf,
+}
+
+/// The engine-side mirror of the model's sets: `Arc` handles out of
+/// the shared cache, cheap to hand the observation without holding
+/// the lock.
+struct GenCached {
+    branches: Arc<[String]>,
+    tags: Arc<[String]>,
+    files: Arc<[String]>,
+}
+
+/// The runner's thread-shared state: the cache, the in-flight
+/// revalidations, and the spawn counter — the no-spawn-on-typing
+/// contract's own bookkeeping, test-read.
+#[derive(Default)]
+struct GenShared {
+    cache: HashMap<GenKey, Arc<[String]>>,
+    in_flight: HashSet<GenKey>,
+    spawns: u64,
+}
+
+/// The generator runner (suggest-generators spec): engine-side
+/// spawn, deadline, and stale-while-revalidate cache for the
+/// model's generator sets. The cache serves whatever it holds the
+/// instant an update asks — stale included — and revalidation
+/// happens only on the ruled triggers (the menu's open moment and
+/// the eligibility onset at spawn), never on the damage-driven
+/// update path. Every failure is cached silence: a missing binary,
+/// a non-repo cwd, a failing command, a hung command — all degrade
+/// to the empty set (no TTL, no wall clock; a re-trigger refreshes,
+/// serve-forever-until-revalidation being the ruled horizon).
+struct GeneratorRunner {
+    /// The standing ssh gate, spawn truth: the tab's program is an
+    /// allowlisted shell. An ineligible tab never spawns.
+    eligible: bool,
+    /// The spawn-time-resolved absolute git binary; `None` silences
+    /// every spawn (no git on the tab's PATH).
+    binary: Option<PathBuf>,
+    /// The spawn-time HOME — the scrubbed env's one optional input.
+    home: Option<String>,
+    /// The wakeup channel: a landed fetch sends one `Wakeup` so the
+    /// app drives the update that serves the fresh cache — without
+    /// it, a landed fetch would wait on the user's next keystroke.
+    wake: Option<(TabId, mpsc::UnboundedSender<(TabId, Event)>)>,
+    /// The shared cache + in-flight set, written through by the
+    /// worker threads and read by every update.
+    shared: Arc<Mutex<GenShared>>,
+}
+
+impl GeneratorRunner {
+    /// The runner for a fresh terminal: spawn truth only — the
+    /// shell gate, the resolved binary, the spawn HOME, and the
+    /// wakeup channel. The cache starts empty; nothing spawns until
+    /// a trigger asks.
+    fn new(
+        spawned_program: &str,
+        spawn_path: Option<&str>,
+        spawn_home: Option<&str>,
+        tab_id: TabId,
+        event_tx: mpsc::UnboundedSender<(TabId, Event)>,
+    ) -> Self {
+        Self {
+            eligible: suggest::is_allowlisted_shell(spawned_program),
+            binary: resolve_generator_binary(spawn_path, "git"),
+            home: spawn_home.map(str::to_owned),
+            wake: Some((tab_id, event_tx)),
+            shared: Arc::new(Mutex::new(GenShared::default())),
+        }
+    }
+
+    /// Locks the shared state, poison-recovered — a panicked worker
+    /// must not take the tab's suggestions with it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, GenShared> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The cached sets for `cwd` — the observation's spawn-free
+    /// read. `None` until the runner has cached anything for this
+    /// cwd (no generator context), on an ineligible tab, or with no
+    /// resolvable git; once any set is cached the three arrive
+    /// whole, a set the cache lacks reading empty — an honest
+    /// silence, not a missing context.
+    fn sets_for(&self, cwd: Option<&Path>) -> Option<GenCached> {
+        if !self.eligible || self.binary.is_none() {
+            return None;
+        }
+        let cwd = cwd?;
+        let key = |argv: &'static [&'static str]| GenKey {
+            argv,
+            cwd: cwd.to_path_buf(),
+        };
+        let state = self.lock();
+        let branches = state.cache.get(&key(GIT_BRANCHES)).cloned();
+        let tags = state.cache.get(&key(GIT_TAGS)).cloned();
+        let files = state.cache.get(&key(GIT_FILES)).cloned();
+        if branches.is_none() && tags.is_none() && files.is_none() {
+            return None;
+        }
+        let empty = || Arc::from(Vec::new());
+        Some(GenCached {
+            branches: branches.unwrap_or_else(empty),
+            tags: tags.unwrap_or_else(empty),
+            files: files.unwrap_or_else(empty),
+        })
+    }
+
+    /// The revalidation trigger (suggest-generators spec): stale
+    /// keeps serving while a worker per argv revalidates — skipped
+    /// where one is already in flight (the SWR dedup). Menu-open
+    /// and the eligibility onset call this; the damage-driven
+    /// update path never does.
+    fn revalidate(&self, cwd: Option<&Path>) {
+        if !self.eligible || self.binary.is_none() {
+            return;
+        }
+        let Some(cwd) = cwd else {
+            return;
+        };
+        for argv in [GIT_BRANCHES, GIT_TAGS, GIT_FILES] {
+            let key = GenKey {
+                argv,
+                cwd: cwd.to_path_buf(),
+            };
+            let mut state = self.lock();
+            if !state.in_flight.insert(key.clone()) {
+                continue;
+            }
+            state.spawns += 1;
+            drop(state);
+            self.spawn_worker(key);
+        }
+    }
+
+    /// One background revalidation: run the argv under the
+    /// deadline, post-filter whatever came back (silence on any
+    /// failure), cache it, retire the in-flight mark, and wake the
+    /// app — the fresh set serves at the next update.
+    fn spawn_worker(&self, key: GenKey) {
+        let Some(binary) = self.binary.clone() else {
+            return;
+        };
+        let command = generator_command(key.argv, &binary, &key.cwd, self.home.as_deref());
+        let shared = Arc::clone(&self.shared);
+        let wake = self.wake.clone();
+        std::thread::spawn(move || {
+            let names = run_under_deadline(command, GENERATOR_DEADLINE)
+                .map(|output| post_filter_names(&output, generator_extract(key.argv)))
+                .unwrap_or_default();
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.cache.insert(key.clone(), Arc::from(names));
+            state.in_flight.remove(&key);
+            drop(state);
+            // The landed-fetch wakeup: one nudge so the app drives
+            // the update that serves the fresh cache (a dying tab's
+            // closed channel drops it silently).
+            if let Some((tab_id, tx)) = wake {
+                let _ = tx.send((tab_id, Event::Wakeup));
+            }
+        });
+    }
+
+    /// The shared state, for the engine pins — test-only reads of
+    /// the spawn counter and the cache bookkeeping.
+    #[cfg(test)]
+    fn lock_generator_state(&self) -> std::sync::MutexGuard<'_, GenShared> {
+        self.lock()
+    }
+}
+
+/// Which post-filter carve an argv's output takes: the branch
+/// template's `|`-field, the bare tag name, or the porcelain path.
+fn generator_extract(argv: &[&str]) -> fn(&str) -> Option<&str> {
+    if argv == GIT_BRANCHES {
+        branch_name
+    } else if argv == GIT_TAGS {
+        tag_name
+    } else {
+        status_path
+    }
+}
+
+/// One spawn under the deadline (suggest-generators spec): a worker
+/// thread drains the child's stdout and waits it while the caller
+/// holds the `recv_timeout`; expiry SIGKILLs the child and discards
+/// everything. Every failure is `None` — a missing binary, a spawn
+/// error, a non-zero exit, a timeout, a non-UTF-8 pipe — never an
+/// error surface.
+fn run_under_deadline(mut command: std::process::Command, deadline: Duration) -> Option<String> {
+    use std::io::Read;
+
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        // Drain before waiting: a chatty child's full pipe would
+        // otherwise deadlock the wait itself.
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut stdout);
+        }
+        let status = child.wait();
+        let _ = tx.send((stdout, status.ok()));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok((stdout, Some(status))) if status.success() => Some(stdout),
+        _ => {
+            // The hard timeout: kill, reap, discard — silence.
+            // SAFETY: libc::kill signals a pid this process owns.
+            // The waiter sends only after wait() reaps the child, so
+            // a timed-out recv means the child was unreaped when the
+            // window opened; the microsecond gap between a reaping
+            // wait() and its send would additionally require
+            // immediate pid reuse, which Linux's sequential pid
+            // allocation makes effectively unreachable.
+            unsafe { libc::kill(i32::try_from(pid).unwrap_or(-1), libc::SIGKILL) };
+            let _ = waiter.join();
+            None
+        }
+    }
 }
 
 /// The history seed's one-time read (history-seed spec): the shell's
@@ -1108,6 +1284,17 @@ impl Terminal {
             cell_width,
             cell_height,
         };
+        // The generator runner (suggest-generators spec): spawn
+        // truth only — the shell gate, the spawn-PATH git binary,
+        // the spawn HOME — plus the wakeup channel the landed
+        // fetches nudge (the clone; the proxy owns the original).
+        let generator = GeneratorRunner::new(
+            &options.spawned_program,
+            options.spawn_path.as_deref(),
+            options.spawn_home.as_deref(),
+            tab_id,
+            event_tx.clone(),
+        );
         let event_proxy = TaggedEventProxy {
             tab_id,
             tx: event_tx,
@@ -1155,7 +1342,7 @@ impl Terminal {
         )]
         let spawn_grid = (size.columns() as u16, size.screen_lines() as u16);
 
-        Ok(Self {
+        let terminal = Self {
             active_regex_match: None,
             active_hyperlink_id: None,
             url_regex_search: url_regex_search(),
@@ -1185,6 +1372,7 @@ impl Terminal {
             spawn_home: options.spawn_home.clone(),
             command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
             path_cache: PathListingCache::default(),
+            generator,
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
             timer: CommandTimer::default(),
@@ -1216,7 +1404,16 @@ impl Terminal {
             zoom_adj: Default::default(),
             is_focused: true,
             master_fd,
-        })
+        };
+        // The generators' eligibility onset (suggest-generators
+        // spec): an eligible tab's first revalidation pre-warms the
+        // cache at the spawn cwd, so the first Ctrl+Space serves
+        // real rows — background workers under the deadline, never
+        // blocking construction, never per keystroke.
+        terminal
+            .generator
+            .revalidate(terminal.working_directory().as_deref());
+        Ok(terminal)
     }
 
     pub fn buffer_weak(&self) -> Weak<Buffer> {
@@ -1506,6 +1703,12 @@ impl Terminal {
     /// caller forwards the chord to the shell verbatim.
     pub fn menu_open(&mut self) -> bool {
         self.menu_auto_opened = false;
+        // The generators' ruled trigger (suggest-generators spec):
+        // the menu's open moment revalidates the tab's cwd — stale
+        // serves in the rows this open collects, the fresh sets
+        // landing for the updates that follow.
+        self.generator
+            .revalidate(self.working_directory().as_deref());
         let rows = self.menu_candidates();
         self.menu.open(rows)
     }
@@ -1621,6 +1824,10 @@ impl Terminal {
         }
         let paths_eligible = self.paths_eligible();
         let working_directory = self.working_directory();
+        // The generator provider's cached sets (suggest-generators
+        // spec), served spawn-free beside the cwd truth: the fetch
+        // happens only on the ruled triggers, never on this path.
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
         let path_listing = self.path_cache.listing_for(
             self.autosuggestions_paths_enabled && paths_eligible,
             suggest::path_token(Some(typed)),
@@ -1636,10 +1843,11 @@ impl Terminal {
             specs_enabled: self.autosuggestions_specs_enabled,
             aliases: &self.autosuggestions_aliases,
             command_catalog: &self.command_catalog,
-            // The generator stopgap (suggest-generators spec, Task 1):
-            // the runner does not exist yet, so no tab carries cached
-            // sets — bit-for-bit today until Task 3 wires the cache in.
-            generator_candidates: None,
+            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
+                branches: &sets.branches,
+                tags: &sets.tags,
+                files: &sets.files,
+            }),
             focused: self.is_focused,
             foreground_child: false,
             display_offset: 0,
@@ -2125,6 +2333,12 @@ impl Terminal {
         // truth), hoisted for the same borrow reason: relative path
         // parents resolve against it.
         let working_directory = self.working_directory();
+        // The generator provider's cached sets (suggest-generators
+        // spec), served spawn-free beside the cwd truth — the
+        // stale-while-revalidate serving half. The fetch itself
+        // happens only on the ruled triggers (menu-open, the
+        // eligibility onset), never on this damage-driven path.
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
         let fresh_by_finish = self.last_foreground_child && !foreground_child;
         self.last_foreground_child = foreground_child;
         // The command timer rides the engine's own diff
@@ -2250,12 +2464,13 @@ impl Terminal {
                         specs_enabled: self.autosuggestions_specs_enabled,
                         aliases: &self.autosuggestions_aliases,
                         command_catalog: &self.command_catalog,
-                        // The generator stopgap (suggest-generators
-                        // spec, Task 1): the runner does not exist
-                        // yet — the observation carries no cached
-                        // sets, and the fifth source stays silent
-                        // until Task 3 wires the cache in.
-                        generator_candidates: None,
+                        generator_candidates: generator_sets.as_ref().map(|sets| {
+                            suggest::GeneratorSets {
+                                branches: &sets.branches,
+                                tags: &sets.tags,
+                                files: &sets.files,
+                            }
+                        }),
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),
