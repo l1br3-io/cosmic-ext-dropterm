@@ -56,6 +56,27 @@ The rules specific to the curated table:
 - Commands outside the five are silent - the provider never guesses. The table is universal knowledge (it describes git, not this machine), but it rides the same shell gate as paths and the catalog: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting. `python3 wha` ghosts nothing.
 - The table is curated, not derived: nothing runs `--help`, nothing reads man pages, and there is no data file to edit. No toggle yet - the provider is always on wherever its shell gate holds, and its config key is a planned follow-up.
 
+## Aliases
+
+`gc --dr` ghosts git's `--dry-run`: when the command word you type is an alias you have declared, its completions come from the command the alias runs. Declared by you, in the config file - DropTerm never reads your shell's rc files, never runs `alias` in the session, and never guesses an alias it was not told. The map is authoritative for exactly what you declare.
+
+Declare aliases in `autosuggestions_aliases` (default empty - no alias re-targets anything), one expansion per alias, hand-edited in the config file (the map is author-sized, not toggle-sized):
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/autosuggestions_aliases
+{
+    "gc": "git checkout",
+}
+```
+
+The rules specific to aliases:
+
+- **Re-target, never rewrite**: the curated-table lookups run against the expansion's command - `gc --dr` ghosts `y-run` and `gc che` ghosts `ckout`, the same ghost, the same keys, the same merge order as typing `git --dr` / `git che`. An accept still writes only the suggestion's suffix; DropTerm never sends the expansion unless you accepted ghost text that spelled it, and your typed `gc` stays `gc` on the line.
+- History outranks the map always: after one real `gc checkout main`, `gc che` ghosts `ckout main` from the tab's own truth - the map can never replace a suggestion your own past already answered.
+- Chains resolve: an alias may map to another alias (`a = "gc"` follows to git), depth-capped at three expansions and cycle-safe (`a = "b"` with `b = "a"` terminates as unmapped - silence, never a guess).
+- The map is *local-machine* truth you declared for your local shell, so it rides the same shell gate as paths, the catalog, and the curated table: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting.
+- Applies live: a map written, edited, or emptied takes effect at the next typed prefix - a running tab needs no respawn, and a fresh tab picks the map up at spawn.
+
 ## The menu
 
 `Ctrl+Space` opens a second surface beside the ghost: a candidate list over what you have typed, built from every provider at once - every matching history line, every matching path entry, every matching `$PATH` name, every matching curated subcommand and flag - where the ghost must settle for one choice. `git st` shows the history line *and* `stash` *and* `status`; `~/s` over `src` and `srv` shows both entries, where the ghost settles for the shared `r`.
