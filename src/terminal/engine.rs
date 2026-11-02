@@ -41,7 +41,7 @@ use cosmic_text::{
 use indexmap::IndexSet;
 use std::{
     borrow::Cow,
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -538,6 +538,14 @@ pub struct Terminal {
     /// every `set_config`. The table itself is static universal
     /// knowledge; only the gate is state.
     autosuggestions_specs_enabled: bool,
+    /// The user-declared alias map (suggest-aliases spec) —
+    /// engine-empty until the config key lands (the catalog's CC-3
+    /// precedent): the resolved `[autosuggestions.aliases]` table
+    /// re-targeting the specs provider's command word, re-read at
+    /// every `set_config` so a map change applies live at the next
+    /// typed prefix. Never rewritten as spawn truth — it is config
+    /// truth, not the pty's.
+    autosuggestions_aliases: HashMap<String, String>,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -942,6 +950,11 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
+            // The construction-site stopgap (suggest-aliases spec,
+            // Task 1): the model's seam lands first with an empty
+            // map — byte-for-bit today — until the config key's
+            // task wires the resolved table through the options.
+            autosuggestions_aliases: HashMap::new(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -1402,6 +1415,7 @@ impl Terminal {
             path_listing,
             commands_enabled: self.autosuggestions_commands_enabled,
             specs_enabled: self.autosuggestions_specs_enabled,
+            aliases: &self.autosuggestions_aliases,
             command_catalog: &self.command_catalog,
             focused: self.is_focused,
             foreground_child: false,
@@ -2001,6 +2015,7 @@ impl Terminal {
                         path_listing,
                         commands_enabled: self.autosuggestions_commands_enabled,
                         specs_enabled: self.autosuggestions_specs_enabled,
+                        aliases: &self.autosuggestions_aliases,
                         command_catalog: &self.command_catalog,
                         focused: self.is_focused,
                         foreground_child,

@@ -1,5 +1,11 @@
 use super::*;
 
+/// The alias map's empty default (suggest-aliases spec): the
+/// no-declaration case every pre-existing test rides — an empty map
+/// resolves every word to itself, today bit-for-bit.
+static NO_ALIASES: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 /// The clear case's defaults: an anchored idle prompt, "gi"
 /// typed, and a two-entry ring. Every guard test mutates exactly
 /// one field away from this.
@@ -11,6 +17,7 @@ fn obs() -> Observation<'static> {
         path_listing: None,
         commands_enabled: true,
         specs_enabled: true,
+        aliases: &NO_ALIASES,
         command_catalog: &[],
         focused: true,
         foreground_child: false,
@@ -1446,6 +1453,142 @@ fn pin_shape(command: &str, entries: &[&str], list: &str) {
             pair[1]
         );
     }
+}
+
+// --- the alias map (suggest-aliases) ---
+
+/// One anchored step with `typed` after the "$ " anchor and a
+/// declared alias map — the alias tier's end-to-end shape (the
+/// specs table re-targeted, every other seat as `step_typed`
+/// builds it).
+fn step_typed_aliased(
+    typed: &str,
+    aliases: &HashMap<String, String>,
+    suggest: &mut Suggest,
+) -> Option<Showing> {
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        aliases,
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+#[test]
+fn a_mapped_alias_ghosts_its_expansion_subcommand() {
+    // The flagship (the record's ruling): `gc = "git checkout"`
+    // declared, `gc che` ghosts `ckout` — the specs table re-targeted
+    // at git, the token keeping its own typed seat, the same ghost
+    // and provenance `git che` gives.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = specs_suggest();
+    let shown = step_typed_aliased("gc che", &aliases, &mut suggest)
+        .expect("the mapped alias re-targets the specs table");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn a_mapped_alias_ghosts_its_expansion_flags() {
+    // The record's other flagship: `gc --dr` ghosts git's
+    // `--dry-run` — the flag seat consults the expansion command's
+    // flag list from any argument seat, as for the typed command.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = specs_suggest();
+    let shown = step_typed_aliased("gc --dr", &aliases, &mut suggest)
+        .expect("the flag seat rides the expansion command");
+    assert_eq!(shown.suffix, "y-run");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn an_unmapped_alias_behaves_exactly_as_today() {
+    // `gc che` with no `gc` declared: the table never consults a
+    // guess — an unknown command is silence, the shipped rule, and
+    // the empty default is this case for every word.
+    let mut suggest = specs_suggest();
+    assert_eq!(step_typed("gc che", &mut suggest), None);
+}
+
+#[test]
+fn resolve_alias_returns_the_input_unmapped() {
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    assert_eq!(resolve_alias("git", &aliases), "git");
+    assert_eq!(resolve_alias("vim", &aliases), "vim");
+}
+
+#[test]
+fn resolve_alias_follows_a_chain_to_its_command() {
+    // `a → gc → git checkout`: two hops, each expansion's first
+    // word — the chain resolves to the command the user's
+    // declaration ultimately names.
+    let aliases = HashMap::from([
+        ("a".to_string(), "gc".to_string()),
+        ("gc".to_string(), "git checkout".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a", &aliases), "git");
+    assert_eq!(resolve_alias("gc", &aliases), "git");
+}
+
+#[test]
+fn resolve_alias_terminates_a_cycle_unmapped() {
+    // `a → b → a`: the walk stops at the word it would re-enter —
+    // the input, as unmapped as if nothing were declared.
+    let aliases = HashMap::from([
+        ("a".to_string(), "b".to_string()),
+        ("b".to_string(), "a".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a", &aliases), "a");
+}
+
+#[test]
+fn resolve_alias_stops_at_three_expansions() {
+    // Depth 4 stops at 3 (OQ-2, locked): `a1→a2→a3→a4→git` resolves
+    // a1 to a4, never following the fourth expansion to git.
+    let aliases = HashMap::from([
+        ("a1".to_string(), "a2".to_string()),
+        ("a2".to_string(), "a3".to_string()),
+        ("a3".to_string(), "a4".to_string()),
+        ("a4".to_string(), "git".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a1", &aliases), "a4");
+}
+
+#[test]
+fn history_outranks_a_mapped_alias() {
+    // The shipped rule verbatim: after one real `gc cheese`, the
+    // tab's own truth answers before the re-targeted table ever
+    // gets the seat.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("gc cheese".to_string());
+    suggest.ring = ring;
+    let shown = step_typed_aliased("gc che", &aliases, &mut suggest).expect("someone answers");
+    assert_eq!(shown.suffix, "ese", "the tab's own truth first");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
+fn the_ssh_gate_silences_the_alias_tier() {
+    // The map is local-machine truth the user declared for their
+    // local shell: on a tab spawned as ssh it stays silent, riding
+    // the same `paths_eligible` gate paths/catalog/specs already
+    // ride.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let before = String::from("$ gc che");
+    let observation = Observation {
+        paths_eligible: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        aliases: &aliases,
+        ..obs()
+    };
+    let mut suggest = specs_suggest();
+    assert_eq!(step(&observation, &mut suggest), None);
 }
 
 // --- the common-prefix helper ---

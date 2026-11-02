@@ -18,7 +18,7 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
@@ -127,11 +127,21 @@ pub(crate) struct Observation<'a> {
     pub(crate) commands_enabled: bool,
     /// The curated-specs provider's config gate (flag-specs spec):
     /// `autosuggestions_specs_enabled` as resolved into the
-    /// terminal's options — engine-`true` until the config key
-    /// lands (the catalog's CC-3 precedent, ruled OQ 4); a live
-    /// flip applies at the next typed prefix. History is
-    /// unaffected: `false` restores the provider's absence exactly.
+    /// terminal's options — engine-`true` until the config key lands
+    /// (the catalog's CC-3 precedent, ruled OQ 4); a live flip
+    /// applies at the next typed prefix. History is unaffected:
+    /// `false` restores the provider's absence exactly.
     pub(crate) specs_enabled: bool,
+    /// The user-declared alias map (suggest-aliases spec): alias →
+    /// expansion (`gc = "git checkout"`), engine-borrowed config
+    /// truth — the model never reads config files. Re-targets the
+    /// specs table's command word at the context carve: a mapped
+    /// alias answers what its expansion's command answers, the
+    /// seats judged on the typed line as always, and an accept
+    /// still writes only the suffix. Local truth the user declared
+    /// for their local shell — silent on a tab spawned as ssh,
+    /// riding the same `paths_eligible` gate.
+    pub(crate) aliases: &'a HashMap<String, String>,
     /// The command-name provider's reduced snapshot (command-catalog
     /// spec): the sorted executable basenames of the spawn-time
     /// `$PATH`, walked once at spawn — borrowed from the engine's
@@ -697,6 +707,37 @@ const SPECS: &[CommandSpec] = &[
     },
 ];
 
+/// The alias chain's depth cap (suggest-aliases spec, OQ-2,
+/// locked): three expansions — Warp's docs give no number, and
+/// three covers every real chain the survey found. A chain past
+/// the cap terminates as unmapped, never a guess past the user's
+/// declaration.
+const ALIAS_DEPTH_CAP: usize = 3;
+
+/// The alias map's resolution (suggest-aliases spec): the command
+/// word's ultimate expansion command — each hop follows the mapped
+/// expansion's first word, until an unmapped word ends the walk, a
+/// cycle terminates it, or the depth cap stops it. Unmapped returns
+/// the input; a cycle or the cap terminates as unmapped — the last
+/// word reached, so nothing is ever guessed past what the user
+/// declared.
+fn resolve_alias<'a>(word: &'a str, aliases: &'a HashMap<String, String>) -> &'a str {
+    let mut current = word;
+    let mut visited = HashSet::new();
+    let mut depth = 0;
+    while depth < ALIAS_DEPTH_CAP {
+        if !visited.insert(current) {
+            break;
+        }
+        let Some(expansion) = aliases.get(current) else {
+            break;
+        };
+        current = expansion.split_whitespace().next().unwrap_or_default();
+        depth += 1;
+    }
+    current
+}
+
 /// The specs provider's context carve (flag-specs spec): the line's
 /// command word and the trailing token, when the token holds a
 /// seat the table answers. A `--`-prefixed token is the **flag
@@ -708,14 +749,26 @@ const SPECS: &[CommandSpec] = &[
 /// first argument seat only (ruled: once an argument holds it, a
 /// later word never consults the subcommand table). `None` is no
 /// specs context: the command word itself being entered (the
-/// catalog's seat) or a later non-flag argument seat.
-fn specs_context(typed: &str) -> Option<(&str, &str)> {
+/// catalog's seat) or a later non-flag argument seat. The command
+/// word resolves through the alias map (suggest-aliases spec) —
+/// re-target, never rewrite: a mapped alias's expansion command
+/// becomes the lookup context, the seats still judged on the typed
+/// line.
+fn specs_context<'a>(
+    typed: &'a str,
+    aliases: &'a HashMap<String, String>,
+) -> Option<(&'a str, &'a str)> {
     if is_command_position(typed) {
         return None;
     }
     let token = trailing_token(typed);
     let completed = completed_words(&typed[..typed.len() - token.len()]);
-    let command = *completed.first()?;
+    // Re-target, never rewrite (suggest-aliases spec): the map's
+    // word becomes the lookup context — `gc --dr` answers what
+    // `git --dr` answers — but an accept still writes only the
+    // suffix; DropTerm never sends the expansion unless the user
+    // accepted ghost text that spelled it.
+    let command = resolve_alias(completed.first()?, aliases);
     if token.starts_with("--") || completed.len() == 1 {
         Some((command, token))
     } else {
@@ -769,7 +822,7 @@ fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return None;
     }
-    let (command, token) = specs_context(typed)?;
+    let (command, token) = specs_context(typed, obs.aliases)?;
     if token.is_empty() {
         return None;
     }
@@ -1023,7 +1076,7 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
     }
-    let Some((command, token)) = specs_context(typed) else {
+    let Some((command, token)) = specs_context(typed, obs.aliases) else {
         return Vec::new();
     };
     if token.is_empty() {
