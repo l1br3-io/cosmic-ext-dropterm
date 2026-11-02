@@ -488,6 +488,24 @@ pub struct DropTermConfig {
     /// toggle-sized); defaults to empty — no alias re-targets, today
     /// byte-for-bit. Applies live at the next typed prefix.
     pub autosuggestions_aliases: HashMap<String, String>,
+    /// Whether the git value generators join the autosuggest merge
+    /// (suggest-generators spec): cached branch, tag, and
+    /// working-tree-change names completing `git checkout`, `git
+    /// switch`, `git add`, and `git restore` arguments — read from
+    /// the repository the tab's shell sits in, under a
+    /// stricter-than-any-peer contract: fixed DropTerm-reviewed
+    /// read-only git commands (nothing spec- or file-authorable),
+    /// an environment scrubbed to HOME and a pinned C locale, the
+    /// spawn-time `$PATH`'s absolute git, a five-second kill
+    /// deadline, and silence on every failure — nothing leaves the
+    /// machine, and ssh or non-shell tabs never run a generator at
+    /// all. Results cache stale-while-revalidate, refreshed on the
+    /// completions menu's open; typing never spawns. Defaults to
+    /// `true` (local read-only git, the same class as path
+    /// completion's filesystem reads); `false` stops every spawn
+    /// and serves nothing from the cache. Flips apply live on the
+    /// config echo.
+    pub autosuggestions_generators_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -548,6 +566,7 @@ impl Default for DropTermConfig {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
+            autosuggestions_generators_enabled: true,
         }
     }
 }

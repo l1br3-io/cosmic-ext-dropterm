@@ -1537,6 +1537,7 @@ fn test_runner() -> GeneratorRunner {
         "/bin/sh",
         std::env::var("PATH").ok().as_deref(),
         None,
+        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     )
@@ -1655,6 +1656,7 @@ fn an_ineligible_tab_never_spawns() {
         "ssh",
         std::env::var("PATH").ok().as_deref(),
         None,
+        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     );
@@ -1672,6 +1674,7 @@ fn a_tab_without_git_on_its_spawn_path_never_spawns() {
         "/bin/sh",
         Some("/nonexistent-generator-path"),
         None,
+        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     );
@@ -1793,5 +1796,124 @@ fn menu_open_revalidates_the_generator_cache() {
         "the menu's open revalidates every argv for the tab's cwd"
     );
     terminal.input_no_scroll(&b"exit\r"[..]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_disabled_tab_never_spawns() {
+    // The kill switch's spawn half: `false` blocks the eligibility
+    // onset's pre-warm and the menu's open trigger alike — no
+    // worker, no cache, ever.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "disabled",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(alacritty_terminal::tty::Shell::new(
+                "/bin/sh".to_owned(),
+                Vec::new(),
+            )),
+            working_directory: Some(dir.clone()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            autosuggestions_generators_enabled: false,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a disabled-generator test terminal");
+    std::thread::sleep(Duration::from_millis(300));
+    {
+        let state = terminal.generator.lock_generator_state();
+        assert_eq!(state.spawns, 0, "a disabled tab never pre-warms");
+        assert!(state.cache.is_empty());
+    }
+    terminal.update();
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(state.spawns, 0, "the menu's trigger stays blocked too");
+    terminal.input_no_scroll(b"exit\r");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_off_flip_serves_nothing_from_cache() {
+    // The kill switch's serving half: a warm cache under a live `false`
+    // flip reads as nothing — the observation carries no sets, never
+    // the stale rows — and the flip silences the triggers with it.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "flip-off",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(alacritty_terminal::tty::Shell::new(
+                "/bin/sh".to_owned(),
+                Vec::new(),
+            )),
+            working_directory: Some(dir.clone()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a flip test terminal");
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    assert!(
+        terminal.generator.sets_for(Some(&dir)).is_some(),
+        "the warm cache serves before the flip"
+    );
+    terminal.set_config(
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            autosuggestions_generators_enabled: false,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    );
+    assert!(
+        terminal.generator.sets_for(Some(&dir)).is_none(),
+        "an off flip blanks the cache read on the echo"
+    );
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns, prewarm_spawns,
+        "the off flip silences the menu's trigger too"
+    );
+    terminal.input_no_scroll(b"exit\r");
     let _ = std::fs::remove_dir_all(&dir);
 }

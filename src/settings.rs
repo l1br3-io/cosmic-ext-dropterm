@@ -135,6 +135,7 @@ impl Section {
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
+                ConfigKey::AutosuggestionsGeneratorsEnabled,
                 ConfigKey::AutosuggestionsMenuEnabled,
                 ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
@@ -159,7 +160,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (48 — default-spawn's two rows included).
+/// count (49 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -195,6 +196,15 @@ pub enum ConfigKey {
     /// at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsCommandsEnabled,
+    /// The git generators' own toggle (suggest-generators spec) —
+    /// the Terminal card's row beside its siblings: branch, tag,
+    /// and working-tree-change names completing git's argument
+    /// seats, read locally under the spawn contract (reviewed
+    /// read-only commands, scrubbed env, five-second kill, silence
+    /// on ssh and on every failure). An off flip stops every spawn
+    /// and serves nothing from the cache on the echo; on re-arms
+    /// the menu-open refresh.
+    AutosuggestionsGeneratorsEnabled,
     /// The completion menu's own toggle (suggest-menu spec) — the
     /// Terminal card's row beside its siblings: `Ctrl+Space`'s
     /// candidate list over the tab's current input. An off flip
@@ -361,6 +371,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
+            ConfigKey::AutosuggestionsGeneratorsEnabled => "autosuggestions_generators_enabled",
             ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
             ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
@@ -423,6 +434,7 @@ pub enum PlannedWrite {
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
+    AutosuggestionsGeneratorsEnabled(bool),
     AutosuggestionsMenuEnabled(bool),
     AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
@@ -509,6 +521,9 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsPathsEnabled(_) => ConfigKey::AutosuggestionsPathsEnabled,
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
+            }
+            PlannedWrite::AutosuggestionsGeneratorsEnabled(_) => {
+                ConfigKey::AutosuggestionsGeneratorsEnabled
             }
             PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
             PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
@@ -616,6 +631,10 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
             }
+            PlannedWrite::AutosuggestionsGeneratorsEnabled(value) => handler.set(
+                ConfigKey::AutosuggestionsGeneratorsEnabled.key_name(),
+                *value,
+            ),
             PlannedWrite::AutosuggestionsMenuEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsMenuEnabled.key_name(), *value)
             }
@@ -915,6 +934,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
+        | ConfigKey::AutosuggestionsGeneratorsEnabled
         | ConfigKey::AutosuggestionsMenuEnabled
         | ConfigKey::AutosuggestionsMenuAuto
         // The delay resolves per update like the toggles
@@ -2318,6 +2338,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::AutosuggestionsCommandsEnabled => {
             Some(PlannedWrite::AutosuggestionsCommandsEnabled(checked))
+        }
+        ConfigKey::AutosuggestionsGeneratorsEnabled => {
+            Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(checked))
         }
         ConfigKey::AutosuggestionsMenuEnabled => {
             Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))

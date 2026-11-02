@@ -159,6 +159,16 @@ pub struct TerminalOptions {
     /// at the next typed prefix; empty (the default) re-targets
     /// nothing, today byte-for-bit.
     pub autosuggestions_aliases: HashMap<String, String>,
+    /// Whether the generator provider runs (suggest-generators
+    /// spec): resolved from the app config's
+    /// `autosuggestions_generators_enabled` — a flip applies at the
+    /// next `set_config` pass: `false` stops every spawn and blanks
+    /// the observation's cache read on the echo (the stale rows
+    /// never serve), `true` re-arms the ruled triggers. The shell
+    /// gate and the resolved binary are spawn truth, never re-read
+    /// by `set_config` — a respawn (a fresh terminal) is the only
+    /// path that changes them.
+    pub autosuggestions_generators_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -182,6 +192,7 @@ impl Default for TerminalOptions {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
+            autosuggestions_generators_enabled: true,
         }
     }
 }
@@ -1007,6 +1018,12 @@ struct GenShared {
 /// to the empty set (no TTL, no wall clock; a re-trigger refreshes,
 /// serve-forever-until-revalidation being the ruled horizon).
 struct GeneratorRunner {
+    /// The config gate (suggest-generators spec): the resolved
+    /// `autosuggestions_generators_enabled`, re-read at every
+    /// `set_config` — `false` stops every spawn and blanks the
+    /// cache read (a warm cache never serves), `true` re-arms the
+    /// ruled triggers. Config truth, never spawn truth.
+    enabled: bool,
     /// The standing ssh gate, spawn truth: the tab's program is an
     /// allowlisted shell. An ineligible tab never spawns.
     eligible: bool,
@@ -1027,16 +1044,18 @@ struct GeneratorRunner {
 impl GeneratorRunner {
     /// The runner for a fresh terminal: spawn truth only — the
     /// shell gate, the resolved binary, the spawn HOME, and the
-    /// wakeup channel. The cache starts empty; nothing spawns until
-    /// a trigger asks.
+    /// wakeup channel — plus the resolved config gate. The cache
+    /// starts empty; nothing spawns until a trigger asks.
     fn new(
         spawned_program: &str,
         spawn_path: Option<&str>,
         spawn_home: Option<&str>,
+        enabled: bool,
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
     ) -> Self {
         Self {
+            enabled,
             eligible: suggest::is_allowlisted_shell(spawned_program),
             binary: resolve_generator_binary(spawn_path, "git"),
             home: spawn_home.map(str::to_owned),
@@ -1055,12 +1074,13 @@ impl GeneratorRunner {
 
     /// The cached sets for `cwd` — the observation's spawn-free
     /// read. `None` until the runner has cached anything for this
-    /// cwd (no generator context), on an ineligible tab, or with no
-    /// resolvable git; once any set is cached the three arrive
+    /// cwd (no generator context), on an ineligible tab, with no
+    /// resolvable git, or under a live `false` flip (a warm cache
+    /// never serves); once any set is cached the three arrive
     /// whole, a set the cache lacks reading empty — an honest
     /// silence, not a missing context.
     fn sets_for(&self, cwd: Option<&Path>) -> Option<GenCached> {
-        if !self.eligible || self.binary.is_none() {
+        if !self.enabled || !self.eligible || self.binary.is_none() {
             return None;
         }
         let cwd = cwd?;
@@ -1087,9 +1107,10 @@ impl GeneratorRunner {
     /// keeps serving while a worker per argv revalidates — skipped
     /// where one is already in flight (the SWR dedup). Menu-open
     /// and the eligibility onset call this; the damage-driven
-    /// update path never does.
+    /// update path never does. A live `false` flip blocks the
+    /// trigger with everything else.
     fn revalidate(&self, cwd: Option<&Path>) {
-        if !self.eligible || self.binary.is_none() {
+        if !self.enabled || !self.eligible || self.binary.is_none() {
             return;
         }
         let Some(cwd) = cwd else {
@@ -1286,12 +1307,14 @@ impl Terminal {
         };
         // The generator runner (suggest-generators spec): spawn
         // truth only — the shell gate, the spawn-PATH git binary,
-        // the spawn HOME — plus the wakeup channel the landed
-        // fetches nudge (the clone; the proxy owns the original).
+        // the spawn HOME — plus the resolved config gate and the
+        // wakeup channel the landed fetches nudge (the clone; the
+        // proxy owns the original).
         let generator = GeneratorRunner::new(
             &options.spawned_program,
             options.spawn_path.as_deref(),
             options.spawn_home.as_deref(),
+            options.autosuggestions_generators_enabled,
             tab_id,
             event_tx.clone(),
         );
@@ -2233,6 +2256,16 @@ impl Terminal {
             // borrowing the fresh table.
             self.autosuggestions_aliases
                 .clone_from(&options.autosuggestions_aliases);
+            update = true;
+        }
+
+        if self.generator.enabled != options.autosuggestions_generators_enabled {
+            // The generators' live flip (suggest-generators spec):
+            // `false` stops every spawn and blanks the cache read on
+            // this very pass (a warm cache never serves the stale
+            // rows); `true` re-arms the ruled triggers — the next
+            // menu-open revalidates.
+            self.generator.enabled = options.autosuggestions_generators_enabled;
             update = true;
         }
 

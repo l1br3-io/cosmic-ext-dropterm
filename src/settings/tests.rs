@@ -230,6 +230,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsEnabled(true),
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
+        PlannedWrite::AutosuggestionsGeneratorsEnabled(true),
         PlannedWrite::AutosuggestionsMenuEnabled(true),
         PlannedWrite::AutosuggestionsMenuAuto(false),
         PlannedWrite::AutosuggestionsDelayMs(0),
@@ -317,6 +318,10 @@ fn key_names_match_the_config_file_fields() {
         (
             ConfigKey::AutosuggestionsCommandsEnabled,
             "autosuggestions_commands_enabled",
+        ),
+        (
+            ConfigKey::AutosuggestionsGeneratorsEnabled,
+            "autosuggestions_generators_enabled",
         ),
         (
             ConfigKey::AutosuggestionsDelayMs,
@@ -963,6 +968,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::AutosuggestionsEnabled,
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
+            ConfigKey::AutosuggestionsGeneratorsEnabled,
             ConfigKey::AutosuggestionsMenuEnabled,
             ConfigKey::AutosuggestionsMenuAuto,
             ConfigKey::AutosuggestionsDelayMs,
@@ -986,6 +992,10 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
     assert_eq!(
         toggle_write(ConfigKey::AutosuggestionsCommandsEnabled, false),
         Some(PlannedWrite::AutosuggestionsCommandsEnabled(false))
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::AutosuggestionsGeneratorsEnabled, false),
+        Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(false))
     );
 }
 
