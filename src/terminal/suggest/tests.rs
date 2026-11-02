@@ -1085,6 +1085,38 @@ fn the_shortest_match_wins_ties_alphabetical() {
 }
 
 #[test]
+fn a_one_character_command_word_is_silence_from_the_catalog() {
+    // The no-information floor (suggest-accuracy spec): a
+    // one-character strict prefix over the uncurated PATH namespace
+    // carries no intent — shortest-wins among hundreds of names is a
+    // coin flip. Two characters is the flagship's own threshold:
+    // `gi` → `git` survives, pinned beside the silence.
+    let names = catalog(&["g++", "git", "grep"]);
+    let mut suggest = catalog_suggest();
+    assert_eq!(
+        step_word("g", &names, &mut suggest),
+        None,
+        "a one-character word carries no intent over the PATH catalog"
+    );
+    let mut suggest = catalog_suggest();
+    let shown = step_word("gi", &names, &mut suggest).expect("two characters still answers");
+    assert_eq!(shown.suffix, "t");
+    assert_eq!(shown.source, SuggestionSource::Catalog);
+}
+
+#[test]
+fn a_history_backed_one_character_word_still_suggests() {
+    // History is untouched by the floor: on a lived-in tab `g`
+    // completes from the tab's own ring — only the fresh-tab
+    // one-character catalog flash goes quiet.
+    let names = catalog(&["g++"]);
+    let mut suggest = adopted();
+    let shown = step_word("g", &names, &mut suggest).expect("history answers one character");
+    assert_eq!(shown.suffix, "it status");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
 fn an_exactly_typed_command_word_yields_no_catalog_candidate() {
     // The match must extend the word: `git` with `git` present
     // suggests nothing — and a bare space is no word at all.

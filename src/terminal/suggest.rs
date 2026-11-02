@@ -524,7 +524,9 @@ fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
 /// would mangle escapes, one outside the safe sets silences. Gated
 /// on the config toggle and the shared spawn allowlist (the catalog
 /// describes the local machine); argument position and path-shaped
-/// words never consult it.
+/// words never consult it — and neither does a one-character word
+/// (the no-information floor, suggest-accuracy spec: `gi` → `git` is
+/// the floor's own threshold).
 fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.commands_enabled || !obs.paths_eligible {
         return None;
@@ -534,6 +536,13 @@ fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     }
     let word = typed.trim_start();
     if word.is_empty() || is_path_shaped(word) {
+        return None;
+    }
+    // The no-information floor (suggest-accuracy spec): a one-character
+    // strict prefix over the uncurated PATH namespace carries no intent —
+    // shortest-wins among hundreds of names is a coin flip. Two
+    // characters is the flagship's own threshold: `gi` → `git`.
+    if word.chars().count() < 2 {
         return None;
     }
     // The snapshot is sorted, so `min_by_key` over the length keeps

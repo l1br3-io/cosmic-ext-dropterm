@@ -37,6 +37,7 @@ The rules specific to command names:
 
 - Only the command position: the first word of the line, leading spaces aside. Once an argument is open (`git che`), the catalog has nothing to say - that stays history's (and paths') territory.
 - Among the names the typed word starts, the **shortest** match wins, ties broken alphabetically: `gi` suggests `git`, not `giftopnm`. The match must extend the word - typing `git` with `git` installed suggests nothing.
+- The catalog stays silent below two typed characters - an accuracy ruling, not a toggle: at one character the shortest-match rule over every executable on `$PATH` is a coin flip among hundreds of names, so a fresh tab's `g` ghosts nothing. `gi` → `git` is the floor's own threshold, and history is untouched: on a lived-in tab `g` still completes from the tab's own history.
 - History outranks the catalog always: run `git status` once and `gi` ghosts `t status` from then on. The handover is invisible, and the catalog can never replace a suggestion your own past already answered.
 - The catalog is *local-machine* knowledge (it lists the spawn-time `$PATH`), so it rides the same shell gate as paths: silent on a tab spawned as ssh or any other non-shell program, while history keeps suggesting. A profile's env-map `PATH` is the PATH it completes from.
 - Names the shell would mangle are backslash-escaped (`my cmd` suggests `my\ cmd`); a printable name past those sets rides single-quoted, and a name neither form can save suggests nothing at all.
