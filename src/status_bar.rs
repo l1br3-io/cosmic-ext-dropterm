@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::alignment;
-use cosmic::iced::core::clipboard::{Clipboard, Kind};
+use cosmic::iced::core::clipboard::Clipboard;
 use cosmic::iced::core::overlay;
 use cosmic::iced::core::text::{LineHeight, Shaping, paragraph};
 use cosmic::iced::core::text::{Text, Wrapping};
@@ -106,6 +106,24 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
             Strip::Tabs,
         ],
     }
+}
+
+/// What the band copied, payload and all — the report the widget
+/// publishes instead of writing a widget-layer clipboard
+/// (clipboard-ownership spec): the app performs the write through
+/// the focus-free path, so a band copy lands however unfocused the
+/// terminal is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Copied {
+    /// A segment's full value (never the elided display); the app
+    /// also flashes the segment's `✓`.
+    Segment(SegmentId, String),
+    /// The drag-selected display text; the app writes the standard
+    /// clipboard and the primary selection (middle-click serves it).
+    Selection(String),
+    /// Every present segment's full value (the menu's Copy All);
+    /// standard clipboard only — no single segment owns the copy.
+    All(String),
 }
 
 /// Which band region a segment owns — the shared id for cluster
@@ -1379,8 +1397,9 @@ pub struct StatusBar<Message> {
     /// The segment currently flashing its `✓`; the app owns the
     /// timing (see [`COPY_FLASH`]).
     copied: Option<SegmentId>,
-    /// Maps a clicked segment to the app's message.
-    on_copy: Box<dyn Fn(SegmentId) -> Message>,
+    /// Reports what the band copied to the app's message — the app
+    /// owns the clipboard write (focus-free) and the `✓` flash.
+    on_copy: Box<dyn Fn(Copied) -> Message>,
     /// Publishes the scrolled chip's click (status-scrolled spec):
     /// the app routes it to the existing scroll-to-bottom funnel —
     /// the one deliberate action chip, ahead of the copy path.
@@ -1403,12 +1422,12 @@ pub struct StatusBar<Message> {
 
 impl<Message> StatusBar<Message> {
     /// Creates a band rendering `segments`, flashing `copied` as a
-    /// `✓` and reporting presses through `on_copy`.
+    /// `✓` and reporting copies through `on_copy`.
     pub fn new(
         segments: StatusSegments,
         font: cosmic::iced::Font,
         copied: Option<SegmentId>,
-        on_copy: impl Fn(SegmentId) -> Message + 'static,
+        on_copy: impl Fn(Copied) -> Message + 'static,
     ) -> Self {
         Self {
             segments,
@@ -1842,7 +1861,7 @@ where
         layout: Layout<'_>,
         cursor: Cursor,
         _renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
+        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
@@ -2023,15 +2042,14 @@ where
                                 shell.publish(on_scroll_bottom());
                             }
                         } else {
-                            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
-                            shell.publish((self.on_copy)(id));
+                            let text = copy_text(id, &self.segments);
+                            shell.publish((self.on_copy)(Copied::Segment(id, text)));
                         }
                     }
                 } else if let Some((from, to)) = state.selection {
                     let text = selection_text(from, to, &row_segments(state, layout.bounds()));
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text.clone());
-                        clipboard.write(Kind::Primary, text);
+                        shell.publish((self.on_copy)(Copied::Selection(text)));
                     }
                 }
             }
@@ -2236,7 +2254,7 @@ struct StatusMenuOverlay<'a, Message> {
     /// payloads resolve against them at pick time.
     segments: &'a StatusSegments,
     /// The copy report — the click verb's ✓ flash path.
-    on_copy: &'a dyn Fn(SegmentId) -> Message,
+    on_copy: &'a dyn Fn(Copied) -> Message,
     /// The action rows' publisher — the app's `Action` funnel.
     on_menu_action: &'a Option<Box<dyn Fn(Action) -> Message>>,
     /// Which vertical side of the band the bubble pops to.
@@ -2281,7 +2299,7 @@ where
         layout: Layout<'_>,
         cursor: Cursor,
         _renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
+        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
         // The dropdown's dismissal contract, unchanged: every press
@@ -2313,11 +2331,10 @@ where
                     // The click verb's twin: the full value through
                     // `copy_text` (never the display), the same ✓
                     // flash through the band's copy report. An
-                    // emptied live value writes nothing.
+                    // emptied live value reports nothing.
                     let text = copy_text(id, self.segments);
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text);
-                        shell.publish((self.on_copy)(id));
+                        shell.publish((self.on_copy)(Copied::Segment(id, text)));
                     }
                 }
                 MenuPick::CopyAll => {
@@ -2326,7 +2343,7 @@ where
                     // menu's own dismissal is the acknowledgment).
                     let text = copy_all_text(self.segments);
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text);
+                        shell.publish((self.on_copy)(Copied::All(text)));
                     }
                 }
                 MenuPick::Action(action) => {

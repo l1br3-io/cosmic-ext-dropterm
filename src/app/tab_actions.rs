@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm};
 use cosmic::app::Task;
-use cosmic::iced::clipboard;
 use cosmic::widget;
 use cosmic::widget::menu::{self, action::MenuAction};
 
@@ -19,6 +18,7 @@ use super::spawn::{
     SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, plain_spawn_cwd,
     profile_pick,
 };
+use crate::clipboard;
 use crate::context_menu::items;
 use crate::keybinds;
 use crate::notify;
@@ -1088,14 +1088,18 @@ impl DropTerm {
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
+                        cosmic::Action::App(Message::Osc52LoadReply(
+                            tab_id,
+                            osc52_load_reply(data, &*format),
+                        ))
                     });
                 }
                 aterm::ClipboardType::Selection => {
                     return clipboard::read_primary().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
+                        cosmic::Action::App(Message::Osc52LoadReply(
+                            tab_id,
+                            osc52_load_reply(data, &*format),
+                        ))
                     });
                 }
             },
@@ -1234,6 +1238,16 @@ impl DropTerm {
     }
 }
 
+/// The bytes an OSC 52 query answers with (clipboard-ownership
+/// spec): the engine's `format` closure applied to the loaded
+/// clipboard text — an empty clipboard still answers, with the
+/// format applied to the empty payload, never silence. The caller
+/// delivers these to the asking tab's PTY
+/// (`Message::Osc52LoadReply`).
+fn osc52_load_reply<F: Fn(&str) -> String>(data: Option<String>, format: F) -> Vec<u8> {
+    format(&data.unwrap_or_default()).into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1291,5 +1305,30 @@ mod tests {
         assert!(!rename_overlay_hosted(1));
         assert!(rename_overlay_hosted(2));
         assert!(rename_overlay_hosted(5));
+    }
+
+    // --- the OSC 52 query's answer (clipboard-ownership CO-3) ---
+
+    #[test]
+    fn an_osc52_load_reply_carries_the_formatted_payload() {
+        // A program that queried the clipboard gets the reply the
+        // engine's format closure built — the bytes the app then
+        // delivers to the asking tab's PTY. Some(data) formats the
+        // data; the closure is the engine's (base64 + OSC framing),
+        // modeled here as a plain wrapper.
+        let bytes = osc52_load_reply(Some("hello".to_owned()), |data: &str| {
+            format!("\x1b]52;c;{data};\x07")
+        });
+        assert_eq!(bytes, b"\x1b]52;c;hello;\x07".to_vec());
+    }
+
+    #[test]
+    fn an_osc52_load_reply_over_an_empty_clipboard_is_the_empty_reply() {
+        // None (an empty clipboard read) still answers — with the
+        // format applied to the empty payload, never silence: the
+        // discarded-reply bug this fixes read as "the query is
+        // simply never answered".
+        let bytes = osc52_load_reply(None, |data: &str| format!("\x1b]52;c;{data};\x07"));
+        assert_eq!(bytes, b"\x1b]52;c;;\x07".to_vec());
     }
 }

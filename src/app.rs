@@ -25,7 +25,7 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
-use cosmic::iced::{Event, Subscription, clipboard, window};
+use cosmic::iced::{Event, Subscription, window};
 use cosmic::surface::Action as SurfaceAction;
 use cosmic::theme::Theme;
 use cosmic::widget;
@@ -103,13 +103,21 @@ pub enum Message {
     WindowFocused,
     WindowUnfocused,
     MiddleClick,
+    /// An OSC 52 clipboard query's answer arrived: the bytes the
+    /// engine's format closure built, delivered to the asking tab's
+    /// PTY — a program that asks for the clipboard gets a reply,
+    /// never silence (clipboard-ownership spec).
+    Osc52LoadReply(TabId, Vec<u8>),
     /// A tab bar button was left-clicked.
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
-    /// A status-band segment was click-copied — the widget already
-    /// wrote the clipboard; the app flashes the segment's `✓`.
-    StatusSegmentCopied(status_bar::SegmentId),
+    /// The status band reports a copy (clipboard-ownership spec):
+    /// the widget publishes what it copied — a segment's full value,
+    /// the drag-selected display text, or every segment's value —
+    /// and the app performs the write through the focus-free path
+    /// (flashing the segment's `✓` where one segment owns it).
+    StatusCopied(status_bar::Copied),
     /// The scrolled chip was clicked (status-scrolled spec): the
     /// active terminal's viewport jumps to the bottom through the
     /// engine's own scroll funnel — the band's one action chip.
@@ -1991,7 +1999,7 @@ impl Application for DropTerm {
                 ..cosmic::iced::Font::default()
             },
             self.copied_segment,
-            Message::StatusSegmentCopied,
+            Message::StatusCopied,
         )
         // The menu's action rows ride the `perform_action` funnel
         // every keybind uses — the same `Message::Action` route the
@@ -2603,8 +2611,17 @@ impl DropTerm {
             }
             Message::WindowUnfocused => return self.focus_lost(),
             Message::MiddleClick => {
-                return clipboard::read_primary()
+                return crate::clipboard::read_primary()
                     .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
+            }
+            Message::Osc52LoadReply(tab_id, bytes) => {
+                // The answer half of the OSC 52 round-trip: the tab
+                // that asked is the tab that hears — routed by id so
+                // a slow read can never land in a tab that replaced
+                // the asker.
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) {
+                    tab.terminal.lock().unwrap().input_no_scroll(bytes);
+                }
             }
             Message::TabSelected(id) => {
                 // The bar reports the stable tab id; resolve it against
@@ -2624,13 +2641,35 @@ impl DropTerm {
                     return self.request_close_tab(index);
                 }
             }
-            Message::StatusSegmentCopied(id) => {
-                // The widget already wrote the clipboard; the app owns
-                // the flash's life — show the check, clear on lapse.
-                self.copied_segment = Some(id);
-                return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
-                    cosmic::Action::App(Message::StatusCopyFlashLapse)
-                });
+            Message::StatusCopied(copied) => {
+                // The write inverted app-side (clipboard-ownership
+                // spec): the band reports what it copied and this
+                // handler owns both the clipboard write — the
+                // focus-free path, so the copy lands however
+                // unfocused the terminal is — and the flash's life.
+                match copied {
+                    status_bar::Copied::Segment(id, text) => {
+                        self.copied_segment = Some(id);
+                        return Task::batch([
+                            crate::clipboard::write(text),
+                            Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                                cosmic::Action::App(Message::StatusCopyFlashLapse)
+                            }),
+                        ]);
+                    }
+                    status_bar::Copied::Selection(text) => {
+                        // The drag copy's twin destinations: the
+                        // standard clipboard and the primary
+                        // selection (middle-click paste serves it).
+                        return Task::batch([
+                            crate::clipboard::write(text.clone()),
+                            crate::clipboard::write_primary(text),
+                        ]);
+                    }
+                    status_bar::Copied::All(text) => {
+                        return crate::clipboard::write(text);
+                    }
+                }
             }
             Message::StatusScrollJump => {
                 // The chip's whole verb (status-scrolled spec): the

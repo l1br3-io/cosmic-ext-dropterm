@@ -17,6 +17,7 @@
 )]
 
 mod app;
+mod clipboard;
 mod config;
 mod context_menu;
 mod drawer_handle;
