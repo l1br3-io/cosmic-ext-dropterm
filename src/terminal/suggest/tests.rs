@@ -1879,7 +1879,7 @@ fn the_menu_lists_the_whole_generator_set_in_set_order() {
     // The menu's whole-set rule: every cached name matching the
     // token, in the runner's own (recency) order — no shortest-wins
     // tiebreak for the ghost to impose on a list.
-    let mut suggest = adopted();
+    let suggest = adopted();
     let branches: Vec<String> = vec!["feature/x".to_string()];
     let tags: Vec<String> = vec!["v1".to_string()];
     let files: Vec<String> = vec!["readme".to_string()];
@@ -1909,7 +1909,7 @@ fn checkout_menu_rows_dedupe_across_branches_and_tags() {
     // refs/heads/release and refs/tags/release share a short name:
     // the checkout seat concatenates the sets, and the same escaped
     // name never lists twice.
-    let mut suggest = adopted();
+    let suggest = adopted();
     let branches: Vec<String> = vec!["release".to_string()];
     let tags: Vec<String> = vec!["release".to_string(), "v1".to_string()];
     let sets = GeneratorSets {
@@ -1962,6 +1962,143 @@ fn generator_rows_follow_the_local_providers_in_the_menu() {
             ("git checkout main2", SuggestionSource::History),
             ("main", SuggestionSource::Generator),
         ],
+    );
+}
+
+// --- the generator runner's post-filter (suggest-generators, Task 2) ---
+// The fixtures below are pinned from real git output shapes: a
+// `for-each-ref --format` line carries
+// `shortname|objectname|subject`; `tag --list` prints bare names;
+// `status --short` prints porcelain `XY path` lines with rename
+// arrows. VS Code's discipline, the record's pinning: `warning:`/
+// `error:` lines drop, `fatal:` output yields the empty set, names
+// dedupe, and every name rides `escape_for_shell`.
+
+#[test]
+fn generator_argv_pins_the_git_set() {
+    // The contract as data (the record's verbatim VS Code set): the
+    // three DropTerm-owned argv arrays — never config, never a data
+    // file, never interpolated. `--sort=-committerdate` is the
+    // record's own spelling (the spec's `commercedate` is its typo —
+    // git rejects unknown sort atoms with a `fatal:` line the
+    // post-filter would rightly silence into).
+    use crate::terminal::engine::{GIT_BRANCHES, GIT_FILES, GIT_TAGS};
+    assert_eq!(
+        GIT_BRANCHES,
+        &[
+            "git",
+            "--no-optional-locks",
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(objectname:short)|%(subject)",
+            "refs/heads/",
+        ]
+    );
+    assert_eq!(
+        GIT_TAGS,
+        &[
+            "git",
+            "--no-optional-locks",
+            "tag",
+            "--list",
+            "--sort=-committerdate",
+        ]
+    );
+    assert_eq!(
+        GIT_FILES,
+        &["git", "--no-optional-locks", "status", "--short"]
+    );
+}
+
+#[test]
+fn the_post_filter_carves_short_ref_names() {
+    // Real for-each-ref output: one ref per line, the template's
+    // first `|`-field the short name.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "main|4ab2f6f|Merge pull request #12\n\
+                  feature/x|9df217c|the runner lands\n";
+    assert_eq!(
+        post_filter_names(output, branch_name),
+        vec!["main", "feature/x"]
+    );
+}
+
+#[test]
+fn warning_and_error_lines_drop_from_generator_output() {
+    // Reality noise (an advice line before the refs, an fsck error):
+    // dropped, the real names kept.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "warning: unable to access '...'\n\
+                  error: bad signature\n\
+                  main|abc1234|subject\n";
+    assert_eq!(post_filter_names(output, branch_name), vec!["main"]);
+}
+
+#[test]
+fn fatal_generator_output_yields_the_empty_set() {
+    // A non-repo directory, a missing objectdb: the command itself
+    // failed — silence, never a half-parsed remainder.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "fatal: not a git repository (or any of the parent directories): .git\n";
+    assert!(post_filter_names(output, branch_name).is_empty());
+}
+
+#[test]
+fn duplicate_generator_names_dedupe() {
+    // The record's `seen` Set: the same name twice lists once.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "main|abc1234|one\nmain|def5678|two\n";
+    assert_eq!(post_filter_names(output, branch_name), vec!["main"]);
+}
+
+#[test]
+fn tag_lines_are_whole_names() {
+    use crate::terminal::engine::{post_filter_names, tag_name};
+    let output = "v1.1\nv1.0\n";
+    assert_eq!(post_filter_names(output, tag_name), vec!["v1.1", "v1.0"]);
+}
+
+#[test]
+fn status_lines_carve_the_changed_path() {
+    // Porcelain v1 short: `XY path`, a rename's new path after the
+    // arrow, untracked `??` — and a carved path with a space rides
+    // the escape tier like every name.
+    use crate::terminal::engine::{post_filter_names, status_path};
+    let output = " M src/main.rs\n?? notes.md\nR  old name -> new name\nA  staged.txt\n";
+    assert_eq!(
+        post_filter_names(output, status_path),
+        vec!["src/main.rs", "notes.md", "new\\ name", "staged.txt"]
+    );
+}
+
+#[test]
+fn quoted_status_paths_drop() {
+    // Git C-quotes paths carrying non-ASCII or quotes
+    // (core.quotePath's default): the quoted form is not the name,
+    // and unquoting git's escapes is a parser this contract refuses
+    // to ship — the line drops alone, never poisons the set.
+    use crate::terminal::engine::{post_filter_names, status_path};
+    let output = "?? \"src/caf\\303\\251.rs\"\n M plain.txt\n";
+    assert_eq!(post_filter_names(output, status_path), vec!["plain.txt"]);
+}
+
+#[test]
+fn generator_names_ride_the_escape_tier() {
+    // The shared quoting tier, pinned: a space backslash-escapes, a
+    // plain quote backslash-escapes (the first tier covers it), a
+    // non-ASCII name rides whole in single quotes — and a name that
+    // needs the quote tier while carrying a quote drops, the tier's
+    // own never-a-wrong-suffix rule.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = concat!(
+        "my branch|abc|subject\n",
+        "it's|ghi|subject\n",
+        "café|def|subject\n",
+        "caf'é|xyz|subject\n",
+    );
+    assert_eq!(
+        post_filter_names(output, branch_name),
+        vec!["my\\ branch", "it\\'s", "'café'"]
     );
 }
 

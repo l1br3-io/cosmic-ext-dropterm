@@ -1384,3 +1384,119 @@ fn a_real_focus_change_arms_the_buffer_rebuild_and_a_repeat_does_not() {
     terminal.set_focused(true);
     assert!(terminal.needs_update, "flipping back is a real change");
 }
+
+// --- the generator runner's spawn contract (suggest-generators) ---
+
+#[test]
+fn generator_command_pins_the_spawn_contract() {
+    // The contract in full: argv[0] is the absolutely-resolved
+    // binary (never an ambient PATH lookup at exec time), the tab's
+    // /proc cwd, env_clear with HOME (the spawn-time truth the pty
+    // exec inherited) and LANG — pinned to C so git's noise markers
+    // are the English bytes the post-filter pins, whatever the
+    // desktop locale would have localized them into. Nothing else
+    // of DropTerm's environment inherits.
+    let command = generator_command(
+        GIT_BRANCHES,
+        Path::new("/opt/git/bin/git"),
+        Path::new("/home/jpt/repo"),
+        Some("/home/jpt"),
+    );
+    assert_eq!(command.get_program(), "/opt/git/bin/git");
+    assert_eq!(
+        command.get_args().collect::<Vec<_>>(),
+        [
+            "--no-optional-locks",
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(objectname:short)|%(subject)",
+            "refs/heads/",
+        ]
+    );
+    assert_eq!(
+        command.get_current_dir(),
+        Some(Path::new("/home/jpt/repo")),
+        "the tab's /proc cwd is the spawn's working directory"
+    );
+    let mut env: Vec<String> = command
+        .get_envs()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key.to_string_lossy(),
+                value.map(|v| v.to_string_lossy()).unwrap_or_default()
+            )
+        })
+        .collect();
+    env.sort();
+    assert_eq!(
+        env,
+        vec!["HOME=/home/jpt".to_string(), "LANG=C".to_string()]
+    );
+}
+
+#[test]
+fn generator_command_inherits_nothing_but_its_two_inputs() {
+    // env(1) prints the environment it ran with — the scrub's own
+    // behavioral proof, beyond the explicitly-set pair: whatever
+    // DropTerm's process environment carries (a PATH, a USER, a
+    // desktop locale), the spawned generator sees none of it.
+    let mut command = generator_command(
+        &["env"],
+        Path::new("/usr/bin/env"),
+        Path::new("/"),
+        Some("/home/jpt"),
+    );
+    let output = command.output().expect("env(1) runs");
+    let mut printed: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    printed.sort();
+    assert_eq!(
+        printed,
+        vec!["HOME=/home/jpt".to_string(), "LANG=C".to_string()]
+    );
+}
+
+#[test]
+fn generator_command_without_home_sets_only_lang() {
+    // A tab with no spawn-time HOME (the options default): the
+    // scrubbed env carries LANG alone — git reads no user config it
+    // cannot find, and the spawn stays reproducible.
+    let command = generator_command(
+        GIT_FILES,
+        Path::new("/usr/bin/git"),
+        Path::new("/repo"),
+        None,
+    );
+    let env: Vec<String> = command
+        .get_envs()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(env, vec!["LANG".to_string()]);
+}
+
+#[test]
+fn the_generator_binary_resolves_against_the_spawn_path() {
+    // First-hit resolution over the spawn-time snapshot — the
+    // catalog walk's own executable check (regular file, exec bit,
+    // symlinks followed), never the ambient PATH a mid-session
+    // re-export could move. No snapshot or no git anywhere on it is
+    // silence.
+    let dir = catalog_fixture("gen-binary");
+    std::fs::write(dir.join("git"), b"").expect("fixture file");
+    mark_executable(&dir.join("git"));
+    let path = dir.to_string_lossy().into_owned();
+    assert_eq!(
+        resolve_generator_binary(Some(&path), "git"),
+        Some(dir.join("git")),
+        "the first executable hit on the snapshot wins"
+    );
+    assert_eq!(resolve_generator_binary(None, "git"), None);
+    assert_eq!(
+        resolve_generator_binary(Some("/nonexistent-anywhere"), "git"),
+        None
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

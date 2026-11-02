@@ -41,7 +41,7 @@ use cosmic_text::{
 use indexmap::IndexSet;
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -809,6 +809,222 @@ fn command_catalog_from_path(path: Option<&str>) -> Vec<String> {
         }
     }
     names.into_iter().collect()
+}
+
+// The generator contract (suggest-generators spec): the program
+// list is this crate's own reviewed argv — data files never carry
+// scripts, the record's permanent rejection. The env is not
+// reproduced; it is reduced to two reproducible inputs: the
+// spawn-time PATH's absolute binary and the tab's `/proc` cwd.
+// Five seconds, then kill, then silence (Task 3) — a failed
+// generator is DropTerm's problem, never the prompt's.
+//
+// Task 2 ships the contract pieces ahead of their caller: the
+// runner that wires them into the update flow is Task 3's, one
+// commit away, and until it lands only the tests call these.
+
+/// The branch generator's argv (VS Code's set, the record's
+/// verbatim pinning): local heads, newest commit first, the short
+/// name the template's first `|`-field carries.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) const GIT_BRANCHES: &[&str] = &[
+    "git",
+    "--no-optional-locks",
+    "for-each-ref",
+    "--sort=-committerdate",
+    "--format=%(refname:short)|%(objectname:short)|%(subject)",
+    "refs/heads/",
+];
+
+/// The tag generator's argv: every tag, newest first.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) const GIT_TAGS: &[&str] = &[
+    "git",
+    "--no-optional-locks",
+    "tag",
+    "--list",
+    "--sort=-committerdate",
+];
+
+/// The working-tree files generator's argv: the porcelain short
+/// status — staged, unstaged, and untracked alike.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that spawns this argv is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) const GIT_FILES: &[&str] = &["git", "--no-optional-locks", "status", "--short"];
+
+/// One `for-each-ref --format` line's short ref name: the
+/// template's first `|`-field (the subject may carry its own
+/// pipes; the name never runs past the first).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) fn branch_name(line: &str) -> Option<&str> {
+    line.split('|').next()
+}
+
+/// One `tag --list` line is the whole name.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Option is the post-filter's uniform extract signature — every set's carve answers the same question, None dropping its line"
+)]
+pub(crate) fn tag_name(line: &str) -> Option<&str> {
+    Some(line)
+}
+
+/// One `status --short` line's changed path: past the porcelain
+/// `XY ` prefix, a rename's new path after the ` -> ` arrow. Git
+/// C-quotes paths carrying non-ASCII or quotes (core.quotePath's
+/// default): the quoted form is not the name, and unquoting git's
+/// escapes is a parser this contract refuses to ship — `None`
+/// drops the line alone, never poisons the set.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that post-filters with this carve is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) fn status_path(line: &str) -> Option<&str> {
+    let rest = line.get(3..)?;
+    let path = match rest.rsplit_once(" -> ") {
+        Some((_, new)) => new,
+        None => rest,
+    };
+    if path.is_empty() || path.starts_with('"') {
+        return None;
+    }
+    Some(path)
+}
+
+/// One generator output's post-filter (VS Code's discipline, the
+/// record's pinning): `warning:`/`error:` lines are reality noise
+/// and drop, any `fatal:` line means the command itself failed —
+/// the whole set is silence — names dedupe through a `seen` set,
+/// and each survivor rides `escape_for_shell` (an unwritable name
+/// drops alone, never poisons the set). The result is the
+/// already-escaped, deduped shape the model's cache holds.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that post-filters its spawns through this is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+pub(crate) fn post_filter_names(
+    output: &str,
+    extract: impl Fn(&str) -> Option<&str>,
+) -> Vec<String> {
+    if output.lines().any(|line| line.starts_with("fatal:")) {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for line in output.lines() {
+        if line.starts_with("warning:") || line.starts_with("error:") {
+            continue;
+        }
+        let Some(raw) = extract(line).filter(|raw| !raw.is_empty()) else {
+            continue;
+        };
+        let Some(escaped) = suggest::escape_for_shell(raw) else {
+            continue;
+        };
+        if seen.insert(escaped.clone()) {
+            names.push(escaped);
+        }
+    }
+    names
+}
+
+/// One generator spawn under the contract: the DropTerm-owned argv
+/// run behind the absolutely-resolved binary with the tab's
+/// `/proc` cwd and an env scrubbed to `HOME` (the spawn-time truth
+/// the pty exec inherited — unset when the tab carried none) and
+/// `LANG` — pinned to `C` so git's noise markers (`fatal:`,
+/// `warning:`, `error:`) are the English bytes the post-filter
+/// pins, whatever the user's desktop locale would have localized
+/// them into. Nothing else inherits: no ambient PATH lookup at
+/// exec, no `DropTerm` env leakage, no shell between `DropTerm`
+/// and the argv.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that builds its spawns through this is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+fn generator_command(
+    argv: &[&str],
+    binary: &Path,
+    cwd: &Path,
+    home: Option<&str>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .env_clear()
+        .env("LANG", "C");
+    if let Some(home) = home {
+        command.env("HOME", home);
+    }
+    command
+}
+
+/// The generator binary: the first spawn-time `$PATH` directory
+/// carrying an executable `git` — the catalog walk's own check
+/// (regular file, execute bit, symlinks followed), resolved
+/// against truth a mid-session PATH re-export cannot move. `None`
+/// is silence: no git, no generators.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the runner that resolves its binary through this is Task 3's; the contract ships first, pinned by its tests"
+    )
+)]
+fn resolve_generator_binary(spawn_path: Option<&str>, program: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = spawn_path?;
+    for dir in std::env::split_paths(path) {
+        let candidate = dir.join(program);
+        let Ok(meta) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// The history seed's one-time read (history-seed spec): the shell's

@@ -1041,7 +1041,7 @@ const WHITELIST_PUNCT: &str = "-_./:=,+@%^{}";
 /// control character (a newline, a bell), and a name needing the
 /// quote tier that itself contains a quote — never a wrong suffix.
 /// The suffix-fit rule measures whichever escaped form wins.
-fn escape_for_shell(raw: &str) -> Option<String> {
+pub(crate) fn escape_for_shell(raw: &str) -> Option<String> {
     let verbatim = |c: char| c.is_ascii_alphanumeric() || WHITELIST_PUNCT.contains(c);
     if raw
         .chars()
