@@ -1346,6 +1346,37 @@ fn flag_matches_follow_the_ruled_policy() {
 }
 
 #[test]
+fn a_bare_double_dash_is_silence_at_the_flag_seat() {
+    // The no-information floor (suggest-accuracy spec): a flag-seat
+    // token of exactly `--` matches every long flag in the table
+    // equally — the shortest-wins tiebreak picks one with no
+    // evidence. One character past the dashes discriminates, and
+    // stays ruled behavior.
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed("git --", &mut suggest),
+        None,
+        "a bare `--` carries no discrimination among flags"
+    );
+    let mut suggest = specs_suggest();
+    let shown = step_typed("git --a", &mut suggest).expect("one character past the dashes answers");
+    assert_eq!(shown.suffix, "ll");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn the_subcommand_seat_stays_strong_at_one_character() {
+    // Ruled unchanged (suggest-accuracy spec): the subcommand seat is
+    // curated and small — strong even at one character — so the
+    // floors never touch it. `git a` → `add` is the spec's pinned
+    // example.
+    let mut suggest = specs_suggest();
+    let shown = step_typed("git a", &mut suggest).expect("the curated subcommand seat answers");
+    assert_eq!(shown.suffix, "dd");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
 fn the_five_commands_subcommands_answer_their_seats() {
     // One behavioral sample per command beyond git — the table pin
     // below holds the membership; these prove the entries reach the

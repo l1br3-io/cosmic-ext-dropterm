@@ -761,13 +761,24 @@ fn completed_words(typed: &str) -> Vec<&str> {
 /// `escape_for_shell` like every provider even though the table is
 /// safe by construction. Gated on the config toggle and the shared
 /// spawn allowlist (OQ 1: one gate is simpler to explain); an
-/// unknown command is silence, never a guess.
+/// unknown command is silence, never a guess — and so is a
+/// flag-seat token of exactly `--`, the no-information floor
+/// (suggest-accuracy spec: a bare `--` matches every flag equally;
+/// `--a` and longer discriminate).
 fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return None;
     }
     let (command, token) = specs_context(typed)?;
     if token.is_empty() {
+        return None;
+    }
+    // The no-information floor (suggest-accuracy spec): a token of
+    // exactly `--` matches every long flag in the table equally — the
+    // tiebreak picks one with no evidence. One character past the
+    // dashes (`--a`) is a strict prefix that discriminates, and stays
+    // ruled behavior.
+    if token == "--" {
         return None;
     }
     let spec = SPECS.iter().find(|spec| spec.command == command)?;
