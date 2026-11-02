@@ -152,6 +152,13 @@ pub struct TerminalOptions {
     /// lowered delay can reveal a withheld suggestion at the next
     /// update). `0` is fish parity — nothing is ever withheld.
     pub autosuggestions_delay_ms: u16,
+    /// The user-declared alias map (suggest-aliases spec):
+    /// `[autosuggestions.aliases]` as resolved from the app config —
+    /// one serialized map field (the `custom_key_binds` precedent).
+    /// Re-read at every `set_config`, so a map change applies live
+    /// at the next typed prefix; empty (the default) re-targets
+    /// nothing, today byte-for-bit.
+    pub autosuggestions_aliases: HashMap<String, String>,
 }
 
 impl Default for TerminalOptions {
@@ -174,6 +181,7 @@ impl Default for TerminalOptions {
             autosuggestions_menu_enabled: true,
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
+            autosuggestions_aliases: HashMap::new(),
         }
     }
 }
@@ -538,13 +546,12 @@ pub struct Terminal {
     /// every `set_config`. The table itself is static universal
     /// knowledge; only the gate is state.
     autosuggestions_specs_enabled: bool,
-    /// The user-declared alias map (suggest-aliases spec) —
-    /// engine-empty until the config key lands (the catalog's CC-3
-    /// precedent): the resolved `[autosuggestions.aliases]` table
-    /// re-targeting the specs provider's command word, re-read at
-    /// every `set_config` so a map change applies live at the next
-    /// typed prefix. Never rewritten as spawn truth — it is config
-    /// truth, not the pty's.
+    /// The user-declared alias map (suggest-aliases spec): the
+    /// resolved `[autosuggestions.aliases]` table re-targeting the
+    /// specs provider's command word, re-read at every `set_config`
+    /// so a map change applies live at the next typed prefix.
+    /// Config truth, never spawn truth — unlike the catalog
+    /// snapshot it follows the config, not the pty's birth.
     autosuggestions_aliases: HashMap<String, String>,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
@@ -950,11 +957,7 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
-            // The construction-site stopgap (suggest-aliases spec,
-            // Task 1): the model's seam lands first with an empty
-            // map — byte-for-bit today — until the config key's
-            // task wires the resolved table through the options.
-            autosuggestions_aliases: HashMap::new(),
+            autosuggestions_aliases: options.autosuggestions_aliases.clone(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -1792,6 +1795,16 @@ impl Terminal {
 
         if self.autosuggestions_delay_ms != options.autosuggestions_delay_ms {
             self.autosuggestions_delay_ms = options.autosuggestions_delay_ms;
+            update = true;
+        }
+
+        if self.autosuggestions_aliases != options.autosuggestions_aliases {
+            // The alias map's live flip (suggest-aliases spec): one
+            // whole-map swap — a declared, edited, or removed alias
+            // applies at the next typed prefix, the next observation
+            // borrowing the fresh table.
+            self.autosuggestions_aliases
+                .clone_from(&options.autosuggestions_aliases);
             update = true;
         }
 

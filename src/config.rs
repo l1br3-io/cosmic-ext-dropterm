@@ -4,7 +4,7 @@
 //! persists one key per file, its setting enums, and the clamping
 //! that guards stale or hand-edited values.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
@@ -473,6 +473,21 @@ pub struct DropTermConfig {
     /// suggestion wins. Applies live; 200–300 ms suits the churn
     /// complaint.
     pub autosuggestions_delay_ms: u16,
+    /// The user-declared alias map (suggest-aliases spec): alias →
+    /// expansion (`gc = "git checkout"`), re-targeting the specs
+    /// and catalog providers at the expansion's words — a mapped
+    /// alias ghosts what its expansion ghosts (`gc --dr` ghosts
+    /// git's `--dry-run`). Authoritative for exactly what the user
+    /// declares; nothing is guessed past it, no shell rc file is
+    /// ever read or parsed, and nothing runs in the session — the
+    /// expansion is completion-time knowledge, never input: an
+    /// accept still writes only the suggestion's suffix. Chains
+    /// resolve recursively (depth cap 3, cycle-safe); history
+    /// outranks the map always; silent on a tab spawned as ssh.
+    /// Config-file first (the map is author-sized, not
+    /// toggle-sized); defaults to empty — no alias re-targets, today
+    /// byte-for-bit. Applies live at the next typed prefix.
+    pub autosuggestions_aliases: HashMap<String, String>,
 }
 
 impl Default for DropTermConfig {
@@ -532,6 +547,7 @@ impl Default for DropTermConfig {
             autosuggestions_menu_enabled: true,
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
+            autosuggestions_aliases: HashMap::new(),
         }
     }
 }

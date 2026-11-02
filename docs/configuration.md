@@ -68,7 +68,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `autosuggestions_menu_auto` | `false` |
 | `autosuggestions_delay_ms` | `0` |
 
-The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
+The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `autosuggestions_aliases` (empty by default - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
 
 ## Geometry
 
@@ -184,10 +184,20 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 | `autosuggestions_menu_enabled` | `true` | The Ctrl+Space completion menu: an explicit-trigger candidate list over the tab's current input - every history prefix match, path entry, PATH name, and curated subcommand/flag at once, where the ghost must settle for one choice. Up/Down navigate, Tab and Enter accept only while it shows (bare Tab stays the shell's own completion key whenever no menu shows; at an ineligible prompt the chord forwards to the shell verbatim) ([autosuggestions](autosuggestions.md)). `false` removes the menu surface exactly - the ghost is untouched. Flips apply live: a showing menu closes the moment the switch lands. |
 | `autosuggestions_menu_auto` | `false` | The auto-popup opt-in for the completion menu: with the key on, an idle prompt whose typed segment collects two or more candidates pops the menu without the chord, closing again when narrowing leaves one or nothing and on every ineligibility ([autosuggestions](autosuggestions.md)). Defaults to `false` - no surveyed peer ships auto-popup on; `false` is today exactly (the chord is the only opener). Applies live. |
 | `autosuggestions_delay_ms` | `0` | The autosuggest idle delay, in milliseconds: a qualifying suggestion is withheld until the typed segment has been stable this long - so no ghost churns while you type fast, it appears once at the pause (200-300 suits that complaint; `0` is fish parity, today's behavior). Any keystroke restarts the wait and dismisses a showing ghost instantly; Right/Alt+Right are unchanged the moment the ghost shows, and the knob changes *when* a suggestion is seen, never *which* one wins ([autosuggestions](autosuggestions.md)). Applies live. |
+| `autosuggestions_aliases` | `{}` | The user-declared alias map, hand-edited in the config file (the map is author-sized, not toggle-sized): alias → expansion, `gc = "git checkout"`, re-targeting the specs and catalog completions at the expansion's words - a mapped alias ghosts what its expansion ghosts (`gc --dr` ghosts git's `--dry-run`, `gc che` ghosts `ckout`), with history still outranking always and silent over ssh. Authoritative for exactly what you declare: DropTerm never reads or parses your shell rc files and never runs anything in the session to discover aliases, and an accept still writes only the suggestion's suffix - never the expansion unless you accepted ghost text that spelled it ([autosuggestions](autosuggestions.md)). Chains resolve recursively (an alias mapping to another alias), depth-capped at 3 and cycle-safe. Applies live at the next typed prefix. |
 | `new_tab_after_current` | `true` | New tabs land directly after the active tab. `false` appends at the end of the list (Guake's ordering); `duplicate-tab` always lands after the active tab. |
 | `scrollback_lines` | `10000` | Scrollback capacity per terminal. Applies to the next spawn - capacity is fixed when a terminal is created. |
 
 The toggles apply at their next natural trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab.
+
+The alias map is written by hand, one expansion per declared alias:
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/autosuggestions_aliases
+{
+    "gc": "git checkout",
+}
+```
 
 ## Layer, focus, and panels
 

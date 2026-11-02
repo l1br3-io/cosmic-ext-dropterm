@@ -78,6 +78,10 @@ pub const APP_ID: &str = cosmic_ext_dropterm::APP_ID;
 const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "ConfigChanged carries the whole config by value — the message's existing shape; the config grew past the lint's threshold with the alias-map key (a file-format field, suggest-aliases spec), and boxing the variant now would touch every construction and match site for a size nit"
+)]
 pub enum Message {
     ToggleAction(ToggleAction),
     ConfigChanged(DropTermConfig),
@@ -525,6 +529,7 @@ impl DropTerm {
             autosuggestions_menu_enabled: self.config.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
             autosuggestions_delay_ms: self.config.autosuggestions_delay_ms,
+            autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
             ..TerminalOptions::default()
         }
     }
