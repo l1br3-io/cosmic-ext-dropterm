@@ -893,7 +893,7 @@ fn merged_candidate(
 /// suggest-specs-data is the supplier), and the provenance the
 /// merge ranking orders by.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MenuCandidate {
+pub struct MenuCandidate {
     pub(crate) label: String,
     pub(crate) suffix: String,
     pub(crate) description: Option<String>,
@@ -1088,8 +1088,9 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
 
 /// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
 /// eight rows with a scroll offset — Warp/VS Code show ~10; eight
-/// fits the drop-down's short surface.
-const MENU_VISIBLE_ROWS: usize = 8;
+/// fits the drop-down's short surface. Shared by the model's scroll
+/// arithmetic and the renderer's window.
+pub(crate) const MENU_VISIBLE_ROWS: usize = 8;
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —
@@ -1118,13 +1119,6 @@ pub(crate) struct MenuState {
     scroll: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the accessors beyond is_open feed Task 4's renderer"
-    )
-)]
 impl MenuState {
     /// A closed, spent menu — the state a fresh terminal carries.
     pub(crate) fn new() -> Self {

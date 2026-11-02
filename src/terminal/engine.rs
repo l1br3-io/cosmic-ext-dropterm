@@ -1072,6 +1072,13 @@ impl Terminal {
         self.is_focused = is_focused;
 
         if focus_changed {
+            // The completion menu closes on focus loss
+            // (suggest-menu spec): an unfocused surface must not
+            // hold an interaction overlay over a grid it is not
+            // attending to.
+            if !is_focused {
+                self.menu.close();
+            }
             // The caret rides the buffer build — the cursor cell's
             // fg/bg swap keys on this flag — so a real focus change
             // must arm a rebuild, or the swap only lands when
@@ -1244,8 +1251,27 @@ impl Terminal {
         self.menu.is_open()
     }
 
+    /// The menu's displayed rows (suggest-menu spec) — the
+    /// renderer's input, in display order.
+    pub fn menu_rows(&self) -> &[suggest::MenuCandidate] {
+        self.menu.rows()
+    }
+
+    /// The menu's selected row index (suggest-menu spec) — the
+    /// renderer's highlight.
+    pub fn menu_selected(&self) -> usize {
+        self.menu.selected()
+    }
+
+    /// The menu's scroll offset (suggest-menu spec) — the renderer's
+    /// visible window starts here.
+    pub fn menu_scroll(&self) -> usize {
+        self.menu.scroll()
+    }
+
     /// Closes the menu: Escape, the chord's toggle, any press the
-    /// menu does not claim.
+    /// menu does not claim, and the lifecycle moments (resize,
+    /// focus loss, scroll-away) the renderer's contract names.
     pub fn menu_close(&mut self) {
         self.menu.close();
     }
@@ -1391,9 +1417,23 @@ impl Terminal {
         self.ghost_color
     }
 
+    /// The scheme's foreground as a cosmic-text color
+    /// (suggest-menu spec): the completion menu's row text — the
+    /// live terminal scheme's own fg, the same conversion the
+    /// default attrs ride, never a palette index.
+    pub fn foreground_color(&self) -> cosmic_text::Color {
+        convert_color(&self.colors, Color::Named(NamedColor::Foreground))
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width != self.size.width || height != self.size.height {
             let instant = Instant::now();
+
+            // The completion menu closes on resize (suggest-menu
+            // spec): the panel is anchored to the cursor's cell, and
+            // a reflow moves that anchor under a panel sized for the
+            // old geometry.
+            self.menu.close();
 
             // Clamp dimensions to ensure at least 1 row and 1 column,
             // preventing index-out-of-bounds panics in alacritty_terminal.
@@ -1929,6 +1969,14 @@ impl Terminal {
                         typed_idle_ms,
                     };
                     suggest::step(&observation, &mut self.suggest);
+                    // The completion menu closes on scroll-away
+                    // (suggest-menu spec, the record's lifecycle
+                    // ruling): the panel anchors to the cursor's
+                    // viewport cell, and scrolling moves the cursor
+                    // out from under it.
+                    if observation.display_offset != 0 && self.menu.is_open() {
+                        self.menu.close();
+                    }
                     // The adoption reset (suggest-delay spec): a
                     // fresh anchor — the first adoption or a
                     // post-finish re-adoption — is a new line, so
