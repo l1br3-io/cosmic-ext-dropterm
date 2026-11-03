@@ -18,8 +18,11 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
+use serde::Deserialize;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
 
 use super::engine::WINDOW_BG_COLOR;
@@ -172,6 +175,13 @@ pub(crate) struct Observation<'a> {
     /// for their local shell — silent on a tab spawned as ssh,
     /// riding the same `paths_eligible` gate.
     pub(crate) aliases: &'a HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by the user's `completions.toml`
+    /// beside the config — app-loaded, engine-borrowed config
+    /// truth like the alias map; the model never reads files. The
+    /// fallback is the built-in table itself, so the table is
+    /// always present and no file is today's five, byte for byte.
+    pub(crate) specs_table: &'a [SpecCommand],
     /// The command-name provider's reduced snapshot (command-catalog
     /// spec): the sorted executable basenames of the spawn-time
     /// `$PATH`, walked once at spawn — borrowed from the engine's
@@ -629,11 +639,12 @@ struct CommandSpec {
 
 /// The curated-specs table (flag-specs spec, OQ 5): the ruled v1
 /// five — git, cargo, docker, systemctl, npm. Curated means
-/// curated: no attempt at completeness. Static in-code data by
-/// ruling: no runtime derivation from `--help`, no user-editable
-/// file; the lookup sits behind `specs_candidate` alone, so the
-/// growth path (a loadable data file) touches neither merge nor
-/// guards.
+/// curated: no attempt at completeness. Static in-code data,
+/// demoted to the fallback's storage by the loadable data file
+/// (suggest-specs-data spec): no file, an unreadable file, or an
+/// invalid file answers this table, byte-equivalent to the
+/// pre-file behavior; the lookup sits behind `specs_candidate`
+/// alone, so neither merge nor guards know which table answers.
 const SPECS: &[CommandSpec] = &[
     CommandSpec {
         command: "cargo",
@@ -749,6 +760,161 @@ const SPECS: &[CommandSpec] = &[
         flags: &["--force", "--host", "--no-pager", "--quiet", "--type"],
     },
 ];
+
+/// One table entry as the data file carries it
+/// (suggest-specs-data spec): the name the seats complete, beside
+/// the description the menu renders — new cargo the format ships;
+/// the ghost ignores it (locked: single-choice text).
+// The no-scripts boundary, made structural (suggest-specs-data
+// spec): every schema type denies unknown fields, so a file that
+// carries a `script` key — the Fig format's executable half, the
+// generators record's permanent rejection — fails the whole file
+// and falls back to the built-in table. Data imports; scripts
+// never arrive.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpecEntry {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// One command's completion table, file-shaped
+/// (suggest-specs-data spec): the command word the lookup keys on,
+/// its high-traffic subcommands, and its long flags — every entry
+/// carrying its optional description. `pub` for the field-type
+/// visibility `TerminalOptions` needs; the module's own `pub(crate)`
+/// keeps it crate-reach in truth, and the fields stay private to
+/// this module — only the seam's lookups read them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpecCommand {
+    name: String,
+    #[serde(default)]
+    subcommands: Vec<SpecEntry>,
+    #[serde(default)]
+    flags: Vec<SpecEntry>,
+}
+
+/// The data file's root shape: one key, the command table.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecsFile {
+    #[serde(default)]
+    commands: Vec<SpecCommand>,
+}
+
+/// The built-in table, file-shaped: the curated const converted
+/// once, on first use — the fallback every load failure answers,
+/// and the floor a valid file's commands merge over.
+static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
+    SPECS
+        .iter()
+        .map(|spec| SpecCommand {
+            name: spec.command.to_string(),
+            subcommands: spec
+                .subcommands
+                .iter()
+                .map(|entry| SpecEntry {
+                    name: (*entry).to_string(),
+                    description: None,
+                })
+                .collect(),
+            flags: spec
+                .flags
+                .iter()
+                .map(|entry| SpecEntry {
+                    name: (*entry).to_string(),
+                    description: None,
+                })
+                .collect(),
+        })
+        .collect()
+});
+
+/// The built-in fallback table (suggest-specs-data spec): exactly
+/// the curated const, file-shaped, descriptions `None` — what no
+/// file, an unreadable file, and an invalid file all answer.
+pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
+    &BUILTIN_SPECS
+}
+
+/// Parses the data file's text into the normalized table
+/// (suggest-specs-data spec): every schema tier rejects unknown
+/// keys (`deny_unknown_fields`), and the survivors normalize to the
+/// ruled order — commands and every entry list sorted by name, a
+/// stable sort keeping file order among equals — because the
+/// shortest-wins, ties-alphabetical policy falls out of
+/// `min_by_key` over sorted lists exactly the way the built-in's
+/// does. A file with no commands parses to an empty table (the
+/// merge answers the built-in alone).
+fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error> {
+    let file: SpecsFile = toml::from_str(contents)?;
+    let mut commands = file.commands;
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    for command in &mut commands {
+        command.subcommands.sort_by(|a, b| a.name.cmp(&b.name));
+        command.flags.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    Ok(commands)
+}
+
+/// The merge ruling (suggest-specs-data spec): the built-in five
+/// are the floor — the file's commands add beside them, and a
+/// re-declared command replaces its built-in whole (no per-entry
+/// merging: a re-declaration is the user's table for that command,
+/// the only way to describe a built-in entry). Deterministic
+/// throughout: equal names resolve by the stable sort's file
+/// order, and the merged table ends sorted by command name.
+fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
+    let mut table = BUILTIN_SPECS.clone();
+    for command in file {
+        match table
+            .iter_mut()
+            .find(|existing| existing.name == command.name)
+        {
+            Some(existing) => *existing = command,
+            None => table.push(command),
+        }
+    }
+    table.sort_by(|a, b| a.name.cmp(&b.name));
+    table
+}
+
+/// The loadable spec table's whole truth (suggest-specs-data spec):
+/// resolve `completions.toml` under the config directory, parse
+/// it, and merge it over the built-in floor. Failure is always
+/// silence-shaped — no directory, no file, an unreadable file, or
+/// an invalid file (any unknown key, `script` included) answers
+/// the built-in table with a `debug!` log, never a half-loaded
+/// table; the caller is the app layer, engine-side and once per
+/// load point, so the model never touches the filesystem.
+pub(crate) fn load_completions(dir: Option<&Path>) -> Cow<'static, [SpecCommand]> {
+    let Some(dir) = dir else {
+        log::debug!("no config directory: the spec table stays built-in");
+        return Cow::Borrowed(builtin_specs());
+    };
+    let path = dir.join("completions.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => match parse_completions(&contents) {
+            Ok(file) => Cow::Owned(merge_completions(file)),
+            Err(err) => {
+                log::debug!(
+                    "completions.toml rejected, the built-in table answers: {}: {err}",
+                    path.display()
+                );
+                Cow::Borrowed(builtin_specs())
+            }
+        },
+        Err(err) => {
+            log::debug!(
+                "completions.toml unreadable, the built-in table answers: {}: {err}",
+                path.display()
+            );
+            Cow::Borrowed(builtin_specs())
+        }
+    }
+}
 
 /// The alias chain's depth cap (suggest-aliases spec, OQ-2,
 /// locked): three expansions — Warp's docs give no number, and
@@ -877,17 +1043,17 @@ fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if token == "--" {
         return None;
     }
-    let spec = SPECS.iter().find(|spec| spec.command == command)?;
+    let spec = obs.specs_table.iter().find(|spec| spec.name == command)?;
     let entries = if token.starts_with("--") {
-        spec.flags
+        &spec.flags
     } else {
-        spec.subcommands
+        &spec.subcommands
     };
     let entry = entries
         .iter()
-        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
-        .min_by_key(|entry| entry.len())?;
-    escape_for_shell(&entry[token.len()..])
+        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
+        .min_by_key(|entry| entry.name.len())?;
+    escape_for_shell(&entry.name[token.len()..])
 }
 
 /// The generator seat's set choice (suggest-generators spec): which
@@ -1253,21 +1419,21 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if token.is_empty() {
         return Vec::new();
     }
-    let Some(spec) = SPECS.iter().find(|spec| spec.command == command) else {
+    let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
         return Vec::new();
     };
     let entries = if token.starts_with("--") {
-        spec.flags
+        &spec.flags
     } else {
-        spec.subcommands
+        &spec.subcommands
     };
     entries
         .iter()
-        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
         .filter_map(|entry| {
-            let suffix = escape_for_shell(&entry[token.len()..])?;
+            let suffix = escape_for_shell(&entry.name[token.len()..])?;
             Some(MenuCandidate {
-                label: (*entry).to_string(),
+                label: entry.name.clone(),
                 suffix,
                 description: None,
                 source: SuggestionSource::Specs,

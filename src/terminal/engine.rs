@@ -157,8 +157,16 @@ pub struct TerminalOptions {
     /// one serialized map field (the `custom_key_binds` precedent).
     /// Re-read at every `set_config`, so a map change applies live
     /// at the next typed prefix; empty (the default) re-targets
-    /// nothing, today byte-for-bit.
+    /// nothing, today byte-for-byte.
     pub autosuggestions_aliases: HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml` beside the
+    /// config, app-loaded and handed down engine-side — the
+    /// `Cow::Borrowed` default is the built-in fallback itself, so
+    /// no file is today's table without an allocation. A changed
+    /// table applies at the next `set_config` pass, the next typed
+    /// prefix borrowing the fresh rows.
+    pub autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
     /// Whether the generator provider runs (suggest-generators
     /// spec): resolved from the app config's
     /// `autosuggestions_generators_enabled` — a flip applies at the
@@ -192,6 +200,7 @@ impl Default for TerminalOptions {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
+            autosuggestions_specs_table: Cow::Borrowed(suggest::builtin_specs()),
             autosuggestions_generators_enabled: true,
         }
     }
@@ -564,6 +573,13 @@ pub struct Terminal {
     /// Config truth, never spawn truth — unlike the catalog
     /// snapshot it follows the config, not the pty's birth.
     autosuggestions_aliases: HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml`, re-read at
+    /// every `set_config` so an edited or dropped file applies live
+    /// at the next typed prefix — config truth beside the config,
+    /// never spawn truth. `Cow::Borrowed` holds the built-in
+    /// fallback without owning a copy of it.
+    autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -1384,6 +1400,7 @@ impl Terminal {
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
             autosuggestions_aliases: options.autosuggestions_aliases.clone(),
+            autosuggestions_specs_table: options.autosuggestions_specs_table.clone(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -1865,6 +1882,7 @@ impl Terminal {
             commands_enabled: self.autosuggestions_commands_enabled,
             specs_enabled: self.autosuggestions_specs_enabled,
             aliases: &self.autosuggestions_aliases,
+            specs_table: &self.autosuggestions_specs_table,
             command_catalog: &self.command_catalog,
             generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
                 branches: &sets.branches,
@@ -2259,6 +2277,18 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_specs_table != options.autosuggestions_specs_table {
+            // The spec table's live flip (suggest-specs-data spec):
+            // one whole-table swap — an edited, extended, or removed
+            // `completions.toml` applies at the next typed prefix,
+            // the next observation borrowing the fresh rows.
+            // `Cow::clone_from` keeps the borrowed fallback a
+            // pointer swap, never a table copy.
+            self.autosuggestions_specs_table
+                .clone_from(&options.autosuggestions_specs_table);
+            update = true;
+        }
+
         if self.generator.enabled != options.autosuggestions_generators_enabled {
             // The generators' live flip (suggest-generators spec):
             // `false` stops every spawn and blanks the cache read on
@@ -2496,6 +2526,7 @@ impl Terminal {
                         commands_enabled: self.autosuggestions_commands_enabled,
                         specs_enabled: self.autosuggestions_specs_enabled,
                         aliases: &self.autosuggestions_aliases,
+                        specs_table: &self.autosuggestions_specs_table,
                         command_catalog: &self.command_catalog,
                         generator_candidates: generator_sets.as_ref().map(|sets| {
                             suggest::GeneratorSets {

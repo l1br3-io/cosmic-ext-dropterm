@@ -508,6 +508,7 @@ impl DropTerm {
                 autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
                 autosuggestions_generators_enabled: self.config.autosuggestions_generators_enabled,
                 autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
+                autosuggestions_specs_table: self.specs_table.clone(),
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
                 spawn_path,

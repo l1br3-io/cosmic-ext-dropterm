@@ -78,6 +78,20 @@ tokio = { version = "1", features = ["sync", "time"] }
 # `p2p` feature exists for the headless peer-to-peer wire tests only.
 zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
 
+# The completions data file's format (suggest-specs-data spec):
+# `completions.toml` beside the config parses through serde with
+# `deny_unknown_fields` everywhere — the no-scripts boundary made
+# structural. Version-matched to the 0.5.11 line the lock already
+# carries, so no new code enters the build.
+toml = "0.5"
+
+# The completions data file's directory (suggest-specs-data spec):
+# `dirs::config_dir()` is the same resolution cosmic-config performs
+# for the config keys the file rides beside. Version-matched to the
+# 6.0.0 line cosmic-config already pulls into the lock, so no new
+# code enters the build.
+dirs = "6"
+
 [dependencies.cosmic-text]
 version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]

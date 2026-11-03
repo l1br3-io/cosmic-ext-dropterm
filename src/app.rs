@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,7 @@ use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
+use crate::terminal::suggest;
 use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
 pub(crate) mod remote;
@@ -271,6 +273,15 @@ pub struct DropTerm {
     /// everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml` beside the
+    /// config, loaded here at init and re-read on every config
+    /// echo — an edited file applies to live tabs at the next
+    /// settings pass and to every new tab at spawn. The borrowed
+    /// fallback is the no-file default; the app never parses the
+    /// file itself, [`suggest::load_completions`] owns the whole
+    /// load-or-fallback contract.
+    specs_table: Cow<'static, [suggest::SpecCommand]>,
     /// The overlay's terminals in tab order. Never empty while a
     /// surface is shown: closing the last tab respawns a fresh one
     /// (see `ensure_tabs`).
@@ -530,6 +541,7 @@ impl DropTerm {
             autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
             autosuggestions_delay_ms: self.config.autosuggestions_delay_ms,
             autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
+            autosuggestions_specs_table: self.specs_table.clone(),
             ..TerminalOptions::default()
         }
     }
@@ -1454,6 +1466,27 @@ fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
     }
 }
 
+/// `DropTerm`'s cosmic config directory (suggest-specs-data spec):
+/// the same resolution cosmic-config performs for the config keys
+/// (its `Config` keeps the path private) — under a flatpak the
+/// host's config is the truth `DropTerm` edits, otherwise the XDG
+/// standard — then `cosmic/<APP_ID>/v<CONFIG_VERSION>`. The
+/// `completions.toml` the specs table loads rides beside the keys.
+fn completions_config_dir() -> Option<PathBuf> {
+    let base = if std::env::var_os("FLATPAK_ID").is_some() {
+        std::env::var_os("HOST_XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?
+    } else {
+        dirs::config_dir()?
+    };
+    Some(
+        base.join("cosmic")
+            .join(DropTerm::APP_ID)
+            .join(format!("v{CONFIG_VERSION}")),
+    )
+}
+
 /// Swaps the clipboard anchor to the configured body (shell-presence
 /// spec): destroys the live body first — the runtime drops the
 /// clipboard binding with it, so whatever is on the clipboard dies
@@ -1573,6 +1606,7 @@ impl Application for DropTerm {
             core,
             config_handler,
             config,
+            specs_table: suggest::load_completions(completions_config_dir().as_deref()),
             tabs: Vec::new(),
             active_tab: 0,
             terminal_id: widget::Id::unique(),
@@ -2235,6 +2269,13 @@ impl DropTerm {
                 let old_title_mode = self.config.tab_title_mode;
                 let old_profiles = self.config.profiles.clone();
                 self.config = config;
+                // The spec table rides the echo (suggest-specs-data
+                // spec): the file beside the config re-reads on every
+                // config pass — our own write's echo and an external
+                // edit land here alike — so an edited
+                // `completions.toml` applies to live tabs without a
+                // restart.
+                self.specs_table = suggest::load_completions(completions_config_dir().as_deref());
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
                 // (keybinds-editor criterion 2: a hand-edited config

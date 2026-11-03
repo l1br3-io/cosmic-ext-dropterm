@@ -18,6 +18,10 @@ fn obs() -> Observation<'static> {
         commands_enabled: true,
         specs_enabled: true,
         aliases: &NO_ALIASES,
+        // The loadable table's built-in default (suggest-specs-data
+        // spec): every pre-existing test rides today's table,
+        // bit-for-bit — no file, the curated five.
+        specs_table: builtin_specs(),
         command_catalog: &[],
         // The generator stopgap (suggest-generators spec): no cached
         // sets by default — every pre-existing test rides today's
@@ -2546,4 +2550,286 @@ fn an_empty_query_keeps_the_collection_order() {
     menu.open(rows.clone());
     menu.filter("");
     assert_eq!(menu.rows(), rows.as_slice());
+}
+
+// --- the loadable spec table (suggest-specs-data) ---
+
+/// A fixture directory under the temp root, unique per name — the
+/// engine tests' std-only convention, wiped for the next run.
+fn completions_fixture(name: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("dropterm-specs-data-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    dir
+}
+
+/// The format's whole shape in miniature: one new command, one
+/// described subcommand beside a bare one, one described flag —
+/// every tier the schema owns.
+const GH_FILE: &str = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+[[commands.subcommands]]
+name = "pr-check"
+
+[[commands.flags]]
+name = "--repo"
+description = "Select another repository"
+"#;
+
+#[test]
+fn a_minimal_file_parses_descriptions_opt_in() {
+    // One command, one described subcommand, one bare flag: the
+    // format's whole shape. A missing description is `None` — the
+    // menu renders clean without it; a present one parses verbatim.
+    let table = parse_completions(GH_FILE).expect("a minimal valid file parses");
+    assert_eq!(table.len(), 1, "one command declared");
+    assert_eq!(table[0].name, "gh");
+    assert_eq!(
+        table[0].subcommands[0].description.as_deref(),
+        Some("Manage pull requests")
+    );
+    assert_eq!(
+        table[0].subcommands[1].description, None,
+        "a missing description is None"
+    );
+    assert_eq!(
+        table[0].flags[0].description.as_deref(),
+        Some("Select another repository")
+    );
+}
+
+#[test]
+fn a_script_key_rejects_the_file_whole() {
+    // The no-scripts boundary, made structural (the generators
+    // record's permanent rejection): a `script` key is unknown to
+    // the schema and `deny_unknown_fields` rejects the whole file —
+    // pinned by name at the entry tier where the Fig format
+    // carries it, and joined by the `generators` shape at the
+    // tiers above.
+    let entry_tier = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+script = "gh pr list"
+"#;
+    assert!(
+        parse_completions(entry_tier).is_err(),
+        "an entry-level `script` rejects the file"
+    );
+    let command_tier = r#"
+[[commands]]
+name = "gh"
+script = "echo hi"
+"#;
+    assert!(
+        parse_completions(command_tier).is_err(),
+        "a command-level unknown key rejects the file"
+    );
+    let root_tier = r#"
+generators = []
+
+[[commands]]
+name = "gh"
+"#;
+    assert!(
+        parse_completions(root_tier).is_err(),
+        "a root-level `generators` key rejects the file"
+    );
+}
+
+#[test]
+fn a_parsed_table_normalizes_to_the_ruled_order() {
+    // The match policy rides sorted lists — shortest wins, ties
+    // alphabetical, both falling out of `min_by_key` the way the
+    // built-in's do — so parsing normalizes: commands and every
+    // entry list sort by name, stable among equals.
+    let unsorted = r#"
+[[commands]]
+name = "zb"
+
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "zebra"
+
+[[commands.subcommands]]
+name = "pr"
+
+[[commands.flags]]
+name = "--b"
+
+[[commands.flags]]
+name = "--a"
+"#;
+    let table = parse_completions(unsorted).expect("an unsorted file still parses");
+    let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["gh", "zb"], "commands sort by name");
+    let subcommands: Vec<&str> = table[0]
+        .subcommands
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(subcommands, ["pr", "zebra"], "subcommands sort by name");
+    let flags: Vec<&str> = table[0].flags.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(flags, ["--a", "--b"], "flags sort by name");
+}
+
+#[test]
+fn the_builtin_fallback_is_todays_table() {
+    // Byte-equivalence pinned (suggest-specs-data spec, criterion
+    // 2): the fallback answers exactly the curated const — every
+    // command, every list, every description None.
+    assert_eq!(builtin_specs().len(), SPECS.len());
+    for (owned, spec) in builtin_specs().iter().zip(SPECS) {
+        assert_eq!(owned.name, spec.command);
+        let subcommands: Vec<&str> = owned.subcommands.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(subcommands, spec.subcommands);
+        let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(flags, spec.flags);
+        assert!(
+            owned
+                .subcommands
+                .iter()
+                .chain(&owned.flags)
+                .all(|e| e.description.is_none()),
+            "the built-in carries no descriptions"
+        );
+    }
+}
+
+#[test]
+fn the_file_extends_the_builtin_and_redeclarations_replace() {
+    // The merge ruling: the built-in five are the floor — a file
+    // command adds beside them, and a re-declared command replaces
+    // its built-in whole (no per-entry merging: a re-declaration is
+    // the user's table for that command).
+    let file = parse_completions(
+        r#"
+[[commands]]
+name = "gh"
+
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "worktree"
+"#,
+    )
+    .expect("a valid file parses");
+    let merged = merge_completions(file);
+    let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
+        "the file's command adds, the built-in keep their seats"
+    );
+    let git = merged
+        .iter()
+        .find(|c| c.name == "git")
+        .expect("git is re-declared");
+    assert_eq!(
+        git.subcommands.len(),
+        1,
+        "a re-declaration replaces the built-in whole"
+    );
+    assert_eq!(git.subcommands[0].name, "worktree");
+}
+
+#[test]
+fn no_file_and_no_config_dir_answer_the_builtin_table() {
+    // The fallback contract: an absent directory and an absent
+    // file are both today's table — the default state is
+    // byte-equivalent to the built-in (criterion 2).
+    let dir = completions_fixture("absent");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "no file answers the built-in"
+    );
+    assert_eq!(
+        load_completions(None).as_ref(),
+        builtin_specs(),
+        "no config directory answers the built-in"
+    );
+}
+
+#[test]
+fn an_invalid_or_scripted_file_answers_the_builtin_table() {
+    // A file that fails to parse — broken TOML, or a `script` key
+    // the schema structurally rejects — never half-loads: the
+    // whole file falls back to the built-in table.
+    let dir = completions_fixture("invalid");
+    std::fs::write(dir.join("completions.toml"), b"[[commands\nname = broken")
+        .expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "broken TOML answers the built-in"
+    );
+    let dir = completions_fixture("scripted");
+    std::fs::write(
+        dir.join("completions.toml"),
+        b"[[commands]]\nname = \"gh\"\n\n[[commands.subcommands]]\nname = \"pr\"\nscript = \"gh pr list\"\n",
+    )
+    .expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "a scripted entry answers the built-in"
+    );
+}
+
+#[test]
+fn a_valid_file_answers_the_merged_table() {
+    let dir = completions_fixture("valid");
+    std::fs::write(dir.join("completions.toml"), GH_FILE).expect("fixture file");
+    let table = load_completions(Some(&dir));
+    let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
+        "a valid file's table is the merge"
+    );
+}
+
+#[test]
+fn the_ghosts_spec_tier_answers_from_a_wider_table() {
+    // The data file widens the table; it changes no rules
+    // (criterion 1): the file-declared `gh` completes at the
+    // subcommand seat under the unchanged strict-prefix,
+    // must-extend, shortest-wins policy — `gh pr` finishing to
+    // `pr-check` past the exactly-typed `pr` — and the flag seat
+    // answers from the file's flags alike.
+    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let mut suggest = specs_suggest();
+    let before = String::from("$ gh pr");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the wider table answers");
+    assert_eq!(shown.suffix, "-check");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    let mut suggest = specs_suggest();
+    let before = String::from("$ gh --re");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the flag seat answers");
+    assert_eq!(shown.suffix, "po");
 }
