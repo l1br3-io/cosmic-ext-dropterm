@@ -822,6 +822,17 @@ impl DropTerm {
         if let Some(old) = self.active() {
             old.terminal.lock().unwrap().set_focused(false);
         }
+        // Both missed-activity latches clear at the switch
+        // (status-activity spec): the outgoing tab's because the tab
+        // ceased to be active, the incoming's because activation is
+        // a touch verb — the user is now looking at it. Two short
+        // locks, flipped at the event point, never per frame.
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            tab.terminal.lock().unwrap().clear_missed_activity();
+        }
+        if let Some(tab) = self.tabs.get(index) {
+            tab.terminal.lock().unwrap().clear_missed_activity();
+        }
         self.active_tab = index;
         // The window background follows the switch: the incoming tab's
         // resolution replaces the outgoing one's. The status band's
@@ -1170,7 +1181,10 @@ impl DropTerm {
             TermEvent::Wakeup => {
                 // Output arrived: an inactive tab accrues an
                 // activity marker; the active tab shows the output
-                // itself, so nothing to signal — but its wakeup is
+                // itself — except while the surface is hidden, when
+                // its wakeup arms the missed-activity latch instead
+                // (status-activity spec), the in-band sibling of the
+                // tab marker. Either way the active tab's wakeup is
                 // the band's finest piggyback point: a process that
                 // just produced output is exactly when the name
                 // should be fresh (criterion 5).
@@ -1185,9 +1199,18 @@ impl DropTerm {
                 // active — a background tab's command finishes hidden
                 // too. The band's snapshot reads never touch it, so
                 // the frozen segment and this notification coexist.
+                // The missed-activity arm folds under the same lock:
+                // output on the active tab while the surface is
+                // hidden leaves no other trace — the tab markers
+                // accrue only for inactive tabs — so the latch is
+                // that trace (status-activity spec).
                 let finished = {
                     let mut terminal = self.tabs[tab_index].terminal.lock().unwrap();
                     terminal.needs_update = true;
+                    if tab_index == self.active_tab && matches!(self.surface, SurfaceState::Hidden)
+                    {
+                        terminal.note_missed_activity();
+                    }
                     terminal.take_command_finished()
                 };
                 // A finished command while hidden posts one desktop

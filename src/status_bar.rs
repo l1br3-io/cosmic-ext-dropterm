@@ -237,7 +237,10 @@ impl StatusToggles {
 /// the foreground child's comm, or the recorded shell's basename when
 /// the shell itself owns the foreground (or the comm read failed —
 /// the honest fallback, never a blank band).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+//
+// No `Eq`: the attention reds are f32 tuples — color values compared
+// by field, never hashed or totally ordered.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct StatusSegments {
     /// Whether a foreground child runs — the disc fills.
     pub running: bool,
@@ -280,6 +283,21 @@ pub struct StatusSegments {
     /// rest. The display is [`scrolled_display`]; the click is the
     /// jump, never a copy.
     pub scrolled: Option<u16>,
+    /// Output landed on the active tab while the surface was hidden
+    /// and no interaction has acknowledged it since
+    /// (status-activity spec) — the halo's fact. A pass-through:
+    /// the app samples it under [`activity_mark_due`]'s gate, and
+    /// no segment toggle hides it — the mark is the surface's
+    /// news, not the process segment's decoration.
+    pub missed_activity: bool,
+    /// The live scheme's plain red, as `(r, g, b)` linear f32 —
+    /// the attention token's source (status-activity spec). Flows
+    /// ungated by the mark key: status-exit's chip reuses the
+    /// token under its own key.
+    pub attention_red: Option<(f32, f32, f32)>,
+    /// The live scheme's bright red — [`Self::attention_red`]'s
+    /// sibling for dark strips.
+    pub attention_bright_red: Option<(f32, f32, f32)>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -332,6 +350,17 @@ pub struct StatusInputs<'a> {
     /// `None` (not ssh, unreadable, unparseable) keeps today's
     /// local path and branch.
     pub ssh_destination: Option<&'a str>,
+    /// The engine's missed-activity latch, sampled only under
+    /// [`activity_mark_due`]'s gate (status-activity spec) — key
+    /// off means never gathered and never rendered.
+    pub missed_activity: bool,
+    /// The live scheme's plain red `(r, g, b)` — the attention
+    /// token's source, sampled ungated (status-exit's chip reuses
+    /// the token under its own key).
+    pub attention_red: Option<(f32, f32, f32)>,
+    /// The scheme's bright red — [`Self::attention_red`]'s sibling
+    /// for dark strips.
+    pub attention_bright_red: Option<(f32, f32, f32)>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -415,6 +444,14 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.scrolled_back)
             .flatten()
             .filter(|&lines| lines > 0),
+        // Pass-throughs (status-activity spec): the mark is the
+        // surface's news, so no segment toggle gates it (the
+        // config-key gate lives upstream at the sampling), and the
+        // red pair rides ungated — status-exit's chip reuses the
+        // token under its own key.
+        missed_activity: inputs.missed_activity,
+        attention_red: inputs.attention_red,
+        attention_bright_red: inputs.attention_bright_red,
     }
 }
 
@@ -1107,6 +1144,17 @@ pub const fn duration_due(
 /// foreground never pays it.
 pub const fn ssh_read_due(band_enabled: bool, show_path: bool, foreground_is_ssh: bool) -> bool {
     band_enabled && show_path && foreground_is_ssh
+}
+
+/// Whether the missed-activity fact should be sampled
+/// (status-activity spec): the band shown and the mark enabled —
+/// [`clock_due`]'s shape. Gates only the fact's gathering (key off
+/// means never gathered and never rendered), never the halo's
+/// rules; the scheme's red pair rides ungated beside it, because
+/// status-exit's chip reuses the attention token under its own
+/// key. Evaluated at every status sampling.
+pub const fn activity_mark_due(band_enabled: bool, mark_enabled: bool) -> bool {
+    band_enabled && mark_enabled
 }
 
 /// The duration from `now` to the next minute boundary — the tick's

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
+use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
@@ -739,11 +740,36 @@ impl DropTerm {
         // the engine's frozen duration. The unnamed floor: a run
         // that was never sampled (a background tab's finished
         // command) keeps its duration with no name to lie about.
-        let (zoom_adj, grid, spawn_grid, scrolled_back, running_elapsed, frozen) = {
+        // The missed-activity latch joins under the same guard
+        // (status-activity spec), sampled only while its gate
+        // holds, with the scheme's red pair beside it — the pair
+        // ungated, because status-exit's chip reuses the attention
+        // token under its own key.
+        let (
+            zoom_adj,
+            grid,
+            spawn_grid,
+            scrolled_back,
+            running_elapsed,
+            frozen,
+            missed_activity,
+            attention_red,
+            attention_bright_red,
+        ) = {
             let terminal = tab.terminal.lock().unwrap();
             let frozen = terminal
                 .command_frozen()
                 .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
+            // The engine's u8 channels become the linear f32 tuple
+            // `attention_color` derives from.
+            let scheme_red = |rgb: alacritty_terminal::vte::ansi::Rgb| {
+                (
+                    f32::from(rgb.r) / 255.0,
+                    f32::from(rgb.g) / 255.0,
+                    f32::from(rgb.b) / 255.0,
+                )
+            };
+            let colors = terminal.colors();
             (
                 terminal.zoom_adj(),
                 terminal.grid(),
@@ -751,6 +777,12 @@ impl DropTerm {
                 Some(terminal.scrolled_back_lines()),
                 terminal.command_live().1,
                 frozen,
+                // The mark key's own gate is its default (`true`)
+                // until the key ships with its settings row.
+                status_bar::activity_mark_due(self.config.status_bar_enabled, true)
+                    && terminal.missed_activity(),
+                colors[NamedColor::Red as usize].map(scheme_red),
+                colors[NamedColor::BrightRed as usize].map(scheme_red),
             )
         };
         // The step the tab's terminal actually zooms by: the same
@@ -777,6 +809,9 @@ impl DropTerm {
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
             ssh_destination: self.active_ssh_destination.as_deref(),
+            missed_activity,
+            attention_red,
+            attention_bright_red,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }

@@ -33,6 +33,9 @@ fn resolve(
         frozen: None,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -606,6 +609,9 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         frozen: None,
         scrolled_back: Some(12),
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -747,6 +753,9 @@ fn resolve_duration(
         frozen,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -877,6 +886,9 @@ fn resolve_grid(
         frozen: None,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -949,6 +961,9 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         frozen: None,
         scrolled_back,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1154,6 +1169,9 @@ fn resolve_ssh(
         frozen: None,
         scrolled_back: None,
         ssh_destination,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1456,6 +1474,47 @@ fn a_scheme_without_any_red_yields_exactly_the_pane_foreground() {
     assert_eq!(color, pane_fg);
 }
 
+#[test]
+fn the_activity_mark_samples_only_while_both_gates_hold() {
+    assert!(activity_mark_due(true, true));
+    assert!(!activity_mark_due(true, false));
+    assert!(!activity_mark_due(false, true));
+    assert!(!activity_mark_due(false, false));
+}
+
+#[test]
+fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
+    // The mark is the surface's news, not a segment's: no segment
+    // toggle gates it (the config key gates the sampling upstream,
+    // in the app), and the red pair flows ungated too — status-exit's
+    // chip reuses the token under its own key.
+    let inputs = StatusInputs {
+        home: Some(&home()),
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
+        missed_activity: true,
+        attention_red: Some((0.6, 0.1, 0.1)),
+        attention_bright_red: Some((0.9, 0.3, 0.3)),
+    };
+    let segments = resolve_segments(&inputs, StatusToggles::all());
+    assert!(segments.missed_activity);
+    assert_eq!(segments.attention_red, Some((0.6, 0.1, 0.1)));
+    assert_eq!(segments.attention_bright_red, Some((0.9, 0.3, 0.3)));
+}
+
 // --- the command timer (command-lifecycle) ---
 //
 // Pure policy over the foreground diff the engine already computes:
@@ -1664,6 +1723,9 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         running_elapsed: None,
         frozen: None,
         scrolled: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     };
     let band: StatusBar<()> = StatusBar::new(
         segments.clone(),
@@ -2041,6 +2103,9 @@ fn rich_segments() -> StatusSegments {
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
         scrolled: Some(7),
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
     }
 }
 
