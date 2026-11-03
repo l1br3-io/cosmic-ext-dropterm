@@ -2459,7 +2459,11 @@ where
         // full alpha on the left, dimmed on the right — hierarchy by
         // alpha and mass, never a new hue. The duration carries the
         // dim too (OQ-2): a left-cluster seat beside its process,
-        // but a meta narration, not identity.
+        // but a meta narration, not identity. The exit chip is the
+        // one deliberate exception (status-exit spec): failure paints
+        // in the scheme's own attention red — the same token the
+        // halo rings with, flowing from the ungated red pair, so the
+        // chip colors even when the halo's own key is off.
         let text_y =
             |paragraph: &BandParagraph| bounds.y + (BAND_HEIGHT - paragraph.min_height()) / 2.0;
         let dimmed = Color {
@@ -2468,7 +2472,14 @@ where
         };
         for (id, rect) in segment_rects(state, bounds) {
             let paragraph = state.paragraph_of(id);
-            let color = if LEFT_CLUSTER.contains(&id) && id != SegmentId::Duration {
+            let color = if id == SegmentId::Exit {
+                attention_color(
+                    self.segments.attention_red,
+                    self.segments.attention_bright_red,
+                    pane_fg,
+                    band_bg,
+                )
+            } else if LEFT_CLUSTER.contains(&id) && id != SegmentId::Duration {
                 pane_fg
             } else {
                 dimmed

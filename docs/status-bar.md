@@ -6,7 +6,7 @@ A 28 px strip at the surface's free edge, beside the grab bar, narrating the act
 
 Segments are values without labels - a path reads as a path - separated by gaps, never punctuation. Two clusters:
 
-- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories).
+- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the exit chip (`✗1`, only after a failed command - see [Shell integration](#shell-integration-optional)), then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories).
 - **Right, dimmed**: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, the scrolled-back chip, and the wall clock (`HH:MM`, local time, ticking on the minute).
 
 The band always takes the slot adjacent to the grab bar, whatever the `edge` × `tab_position` stacking - it never trades places with the tab strip. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame.
@@ -18,6 +18,46 @@ While `ssh` owns the foreground, the path's seat stops lying: the local cwd froz
 While a foreground command runs, the duration segment beside the process name counts it once per second (`0:04`, `2:41`; `1:00:00` past the hour) - the tick alone drives it, so a command that prints nothing (`sleep 30`) still counts. When the command finishes the reading freezes as the last command's cost, paired with its name - `cargo 2:41` - because by then the process segment already shows the shell again; the pair stands until the next command starts.
 
 The timing is derived, never guessed: it comes from the two moments the terminal itself observes the foreground change (a process taking the terminal over from the shell, and handing it back), with no shell integration. A command whose start was never observed - the initial command of a profile tab, wrapping into its shell at spawn - shows no duration at all rather than a wrong one, and a respawned tab starts clean. The 1-second tick exists only while the active tab actually runs a command on a visible surface with the segment shown; it stands down within a second of the command finishing, the surface hiding, or the toggle flipping - hiding the segment (`status_bar_show_duration`) is the kill switch, and because the timing itself always runs, re-enabling it mid-command shows the live count immediately.
+
+A command that *failed* says so beside its cost - `cargo 2:41 ✗1` - a small chip in the scheme's own red, the same attention red the missed-activity halo rings with. Success renders nothing (exit code 0 is the unmarked default), and the chip stands exactly as long as the frozen duration does: the next command's start clears both facts together. Clicking the chip copies the bare code (`1`, never the glyph), and it drops under width pressure right after the duration it verdicts. The verdict itself is never guessed either - it comes solely from the shell's own report, via optional [shell integration](#shell-integration-optional); without it the band renders exactly what it renders today. Hide the chip with `status_bar_show_exit_status` (the engine keeps recording verdicts either way, so a re-enable shows whatever still stands).
+
+## Shell integration (optional)
+
+The exit chip's one source is the shell *telling* the terminal a command finished and what it cost: `OSC 133 ; D ; <code>` - the "command finished" mark of the semantic prompt zones, the FinalTerm/contour shell-integration standard. DropTerm reads only this `D` mark; the prompt/output boundary marks (`A`/`B`/`C`) other terminals build on are ignored, so any integration that emits `D` works as-is.
+
+- **fish 4.0 and later** need nothing: fish marks its prompts natively (`A`, `C` and `D` from 4.0.0). `set -Ua fish_features no-mark-prompt` (fish 4.0.6+) turns fish's own marks off - unset it and the chip returns.
+- **zsh** - two hooks in `~/.zshrc`, the shape of contour's own integration reduced to the one mark DropTerm reads: `$?` captured before anything can clobber it, and the report sent only once a command has actually run (an unconditional report would verdict the shell's startup line):
+
+  ```zsh
+  _dropterm_preexec() { _dropterm_ran=1 }
+  _dropterm_precmd() {
+      local exit_status=$?  # first line: nothing may clobber the status
+      if [[ -n ${_dropterm_ran:-} ]]; then
+          print -n "\e]133;D;${exit_status}\e\\"
+          unset _dropterm_ran
+      fi
+  }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook preexec _dropterm_preexec
+  add-zsh-hook precmd _dropterm_precmd
+  ```
+
+- **bash** has no prompt hook of its own; [bash-preexec](https://github.com/rcaloras/bash-preexec) supplies the same pair (at the end of `~/.bashrc`):
+
+  ```bash
+  preexec() { _dropterm_ran=1; }
+  precmd() {
+      local exit_status=$?
+      if [[ -n ${_dropterm_ran:-} ]]; then
+          printf '\e]133;D;%s\e\\' "$exit_status"
+          unset _dropterm_ran
+      fi
+  }
+  ```
+
+  contour's shipped integration scripts (which vendor bash-preexec and emit the full A/B/C/D set) work as-is if you already run them. The reference for the sequence is contour's [OSC 133 shell-integration documentation](https://github.com/contour-terminal/contour/blob/master/docs/vt-extensions/osc-133-shell-integration.md), and its shipped hooks are [the source these snippets are reduced from](https://github.com/contour-terminal/contour/tree/master/src/contour/cli/shell-integration).
+
+Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status.
 
 ## The scrolled-back chip
 
