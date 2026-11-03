@@ -1636,6 +1636,64 @@ fn default_is_a_clean_idle_timer() {
     let timer = CommandTimer::default();
     assert_eq!(timer.live_elapsed(Instant::now()), None);
     assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), None);
+}
+
+// --- the exit verdict (status-exit) ---
+//
+// The shell's own 133;D report rides the frozen pair's lifecycle:
+// verbatim except success, set regardless of a witnessed start, and
+// cleared by the next witnessed start beside the frozen duration —
+// one rule for both facts.
+
+#[test]
+fn a_non_zero_verdict_holds_through_reads() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    assert_eq!(
+        timer.last_exit(),
+        Some(1),
+        "a held verdict is not drained by reads"
+    );
+}
+
+#[test]
+fn success_normalizes_to_the_unmarked_default() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(0);
+    assert_eq!(timer.last_exit(), None);
+}
+
+#[test]
+fn the_next_witnessed_start_clears_a_held_verdict() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    timer.step(true, t0 + Duration::from_secs(10));
+    assert_eq!(
+        timer.last_exit(),
+        None,
+        "the next start clears the verdict with the freeze"
+    );
+}
+
+#[test]
+fn an_unwitnessed_mid_run_timer_still_holds_a_verdict() {
+    // OQ-3 default: the verdict needs no start, only the finish's own
+    // report — a timer born mid-run freezes no duration yet holds the
+    // verdict the shell reported after it.
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(5));
+    timer.note_exit(2);
+    assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), Some(2));
 }
 
 #[test]

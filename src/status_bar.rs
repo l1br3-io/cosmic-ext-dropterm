@@ -1191,6 +1191,13 @@ pub struct CommandTimer {
     started_at: Option<Instant>,
     /// The last finished command's duration, until the next start.
     frozen: Option<Duration>,
+    /// The last finished command's exit code, until the next start —
+    /// the shell's own 133;D report, never a guess (status-exit
+    /// spec). `None` is both the absent fact (no shell integration)
+    /// and success: code 0 is the unmarked default. Set regardless of
+    /// whether the start was witnessed — the verdict needs no start,
+    /// only the finish's own report.
+    last_exit: Option<u32>,
 }
 
 impl CommandTimer {
@@ -1203,6 +1210,9 @@ impl CommandTimer {
             (Some(false), true) => {
                 self.started_at = Some(now);
                 self.frozen = None;
+                // One rule for both facts: the next command's start
+                // retires the previous verdict with the freeze.
+                self.last_exit = None;
             }
             // The witnessed running→idle crossing: freeze the
             // elapsed of a witnessed start — an unwitnessed one has
@@ -1228,6 +1238,18 @@ impl CommandTimer {
     /// The last finished command's duration, until the next start.
     pub fn last_duration(&self) -> Option<Duration> {
         self.frozen
+    }
+
+    /// Records the shell's own verdict for the finished command
+    /// (OSC 133;D): verbatim, except success (code 0) normalizes to
+    /// `None` — the unmarked default.
+    pub fn note_exit(&mut self, code: u32) {
+        self.last_exit = (code != 0).then_some(code);
+    }
+
+    /// The last finished command's exit code, until the next start.
+    pub fn last_exit(&self) -> Option<u32> {
+        self.last_exit
     }
 }
 

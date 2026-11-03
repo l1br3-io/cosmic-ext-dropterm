@@ -1681,6 +1681,21 @@ impl Terminal {
         self.timer.last_duration()
     }
 
+    /// Records the shell's own verdict for the finished command
+    /// (status-exit spec): the OSC 133;D report forwarded from the
+    /// event surface, held by the command timer on the frozen pair's
+    /// lifecycle — cleared by the next witnessed start, never guessed.
+    pub fn note_prompt_exit(&mut self, code: u32) {
+        self.timer.note_exit(code);
+    }
+
+    /// The last finished command's exit code (status-exit spec): the
+    /// shell's own 133;D report — success and absent facts both read
+    /// `None` — served until the next command starts.
+    pub fn command_exit(&self) -> Option<u32> {
+        self.timer.last_exit()
+    }
+
     /// Drains the finish latch once (command-lifecycle spec): the
     /// frozen duration of the most recently finished command,
     /// returned exactly once per finish — `command-notify`'s seam.
