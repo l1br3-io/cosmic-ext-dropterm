@@ -1515,6 +1515,37 @@ fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
     assert_eq!(segments.attention_bright_red, Some((0.9, 0.3, 0.3)));
 }
 
+#[test]
+fn the_halo_rings_the_disc_when_the_process_segment_renders() {
+    let bounds = Rectangle::new(Point::new(100.0, 40.0), Size::new(600.0, BAND_HEIGHT));
+    let center_y = bounds.y + BAND_HEIGHT / 2.0;
+    let disc = Rectangle::new(
+        Point::new(bounds.x + PAD_X, center_y - DISC_SIZE / 2.0),
+        Size::new(DISC_SIZE, DISC_SIZE),
+    );
+    let halo = halo_rect(Some(disc), bounds);
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    assert_eq!(halo.width, size);
+    assert_eq!(halo.height, size);
+    assert_eq!(halo.x + halo.width / 2.0, disc.x + disc.width / 2.0);
+    assert_eq!(halo.y + halo.height / 2.0, disc.y + disc.height / 2.0);
+}
+
+#[test]
+fn the_halo_stands_alone_centered_in_the_leading_padding_when_the_process_segment_hides() {
+    // The mark is the surface's news, not the process segment's
+    // decoration: with the segment toggled off, the ring keeps the
+    // band's left edge — centered in the PAD_X zone, ahead of every
+    // rect, shifting nothing.
+    let bounds = Rectangle::new(Point::new(100.0, 40.0), Size::new(600.0, BAND_HEIGHT));
+    let halo = halo_rect(None, bounds);
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    assert_eq!(halo.width, size);
+    assert_eq!(halo.height, size);
+    assert_eq!(halo.x + halo.width / 2.0, bounds.x + PAD_X / 2.0);
+    assert_eq!(halo.y + halo.height / 2.0, bounds.y + BAND_HEIGHT / 2.0);
+}
+
 // --- the command timer (command-lifecycle) ---
 //
 // Pure policy over the foreground diff the engine already computes:

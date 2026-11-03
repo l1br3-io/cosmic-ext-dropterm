@@ -25,6 +25,14 @@ When the viewport rests somewhere other than the bottom, a dim chip between the 
 
 The chip is the band's one **action chip**: clicking it jumps the viewport to the bottom and the chip vanishes the same frame. Every other segment copies its value on click - this one has nothing to copy, so its click is the jump; a deliberate, one-time bend of the copy rule, not a precedent (there is no menu row for it either - the click is the whole verb). The count rides the same in-memory read as the terminal size, taken whenever the band re-renders. Hide it with `status_bar_show_scrollback`.
 
+## The missed-activity halo
+
+Output landing on the **active** tab while the surface is hidden leaves a trace nothing else records - the tab strip's markers accrue only for inactive tabs, and a desktop toast retires the moment the daemon drops it. The band answers: a thin attention ring around the process disc, in the live scheme's own red - the bright variant on dark strips, the plain on light, the same luminance flip the band's own text performs - that survives the show and clears only when the user acknowledges the news. It is the in-band sibling of the desktop notification: the toast expires, the halo persists until acknowledged.
+
+The acknowledgment set is every touch: typed input, a paste, a scroll (wheel or key), a click in the terminal pane, the scrolled chip's jump to the bottom, and activating another tab - a switch clears both tabs' marks (the outgoing tab's because it ceased to be active, the incoming's because activation is a touch). The show itself clears nothing: a mark cleared on show would never be seen. There is no timed expiry, and respawned tabs start clean.
+
+The ring renders with or without the process segment - with it, the ring circles the disc; without it, it stands alone at the band's left edge: the mark is the surface's news, not the segment's decoration. It never becomes a click target and never moves a rect. Hide it with `status_bar_activity_mark` (key off means never gathered and never rendered; the latch keeps arming either way, so a later flip-on shows whatever the surface still holds).
+
 ## Reading and copying
 
 **Every segment is click-to-copy**: a press writes the segment's full value to the clipboard - a squeezed path still copies whole - flashes a `✓`, and the cursor points over each segment while the gaps stay idle.
@@ -41,4 +49,4 @@ A right-press on the band opens its menu: **Copy** (the pressed segment's value 
 
 ## Toggling and tailoring
 
-Flip the whole band with `Ctrl+Shift+B`, the Behavior tab's Status bar card, or the `status_bar_enabled` key - it applies the moment it lands: the band leaves or joins the column and the terminal's pinned height reclaims or cedes its 28 px the same frame. Each segment is individually showable with its own `status_bar_*` key (a hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick), and the band's terminal-facing hairline has its own `status_bar_border`. The full key inventory lives in [configuration](configuration.md#status-bar).
+Flip the whole band with `Ctrl+Shift+B`, the Behavior tab's Status bar card, or the `status_bar_enabled` key - it applies the moment it lands: the band leaves or joins the column and the terminal's pinned height reclaims or cedes its 28 px the same frame. Each segment is individually showable with its own `status_bar_*` key (a hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick), the band's terminal-facing hairline has its own `status_bar_border`, and its missed-activity halo its own `status_bar_activity_mark`. The full key inventory lives in [configuration](configuration.md#status-bar).

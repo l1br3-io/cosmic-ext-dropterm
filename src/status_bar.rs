@@ -1293,16 +1293,6 @@ fn parse_head(head: &str) -> Option<String> {
 /// variant the scheme leaves unset falls back to its sibling, and a
 /// scheme with no red at all degrades to the pane foreground —
 /// monochrome, never an invented hue.
-// The tests consume the derivation from day one, so the dead-code
-// expect lives only in the non-test compilation (an unconditional
-// expect would be unfulfilled in the test target).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "transient: consumed when status-activity Task 3 wires the reds into the inputs and Task 5 paints the halo"
-    )
-)]
 pub fn attention_color(
     scheme_red: Option<(f32, f32, f32)>,
     scheme_bright_red: Option<(f32, f32, f32)>,
@@ -1320,6 +1310,25 @@ pub fn attention_color(
     }
 }
 
+/// The attention halo's quad (status-activity spec): centered on
+/// the process disc when its segment renders — ringing the disc,
+/// `HALO_GAP` beyond its edge, never over it — and standing alone
+/// at the band's left edge, centered in the leading `PAD_X` zone,
+/// when the process segment is hidden: the mark is the surface's
+/// news, not the process segment's decoration. Pure geometry —
+/// never a click target, never a shifted rect.
+fn halo_rect(disc: Option<Rectangle>, bounds: Rectangle) -> Rectangle {
+    let center = disc.map_or(
+        Point::new(bounds.x + PAD_X / 2.0, bounds.y + BAND_HEIGHT / 2.0),
+        |disc| Point::new(disc.x + disc.width / 2.0, disc.y + disc.height / 2.0),
+    );
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    Rectangle::new(
+        Point::new(center.x - size / 2.0, center.y - size / 2.0),
+        Size::new(size, size),
+    )
+}
+
 // --- the widget: the band itself, per the tab_bar.rs pattern ---
 
 /// Named through the iced core because libcosmic keeps its own `Plain`
@@ -1335,6 +1344,12 @@ const SEGMENT_FONT_SIZE: f32 = 12.0;
 /// The state disc's diameter, and the hollow ring's stroke.
 const DISC_SIZE: f32 = 8.0;
 const DISC_RING_WIDTH: f32 = 1.5;
+
+/// The attention halo's clearance outside the disc
+/// (status-activity spec) — the ring sits this far beyond the disc's
+/// edge so it rings the disc, never overdraws it. Retunable at the
+/// hardware pass.
+const HALO_GAP: f32 = 1.5;
 
 /// Side padding of the band's clusters, and the gap between segments.
 const PAD_X: f32 = 12.0;
@@ -2308,6 +2323,39 @@ where
             Point::new(bounds.x + PAD_X, center_y - DISC_SIZE / 2.0),
             Size::new(DISC_SIZE, DISC_SIZE),
         );
+
+        // The missed-activity halo (status-activity spec): the
+        // in-band sibling of the desktop notification — the toast
+        // expires, this ring persists until a touch acknowledges it.
+        // A `DISC_RING_WIDTH` attention ring around the disc's seat
+        // in the scheme's own red, painted above the strip and below
+        // the disc and text — the halo rings the disc from outside,
+        // so the disc's own paints sit over its inner edge, never
+        // erasing it. With the process segment hidden the ring
+        // stands alone at the band's left edge: the mark is the
+        // surface's news, not the segment's decoration. Pure paint
+        // — no hit-test knows it, no rect moves for it.
+        if self.segments.missed_activity {
+            let halo = halo_rect((state.process.min_width() > 0.0).then_some(disc), bounds);
+            renderer.fill_quad(
+                Quad {
+                    bounds: halo,
+                    border: Border {
+                        radius: (halo.width / 2.0).into(),
+                        width: DISC_RING_WIDTH,
+                        color: attention_color(
+                            self.segments.attention_red,
+                            self.segments.attention_bright_red,
+                            pane_fg,
+                            band_bg,
+                        ),
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color::TRANSPARENT,
+            );
+        }
         if state.process.min_width() > 0.0 {
             if self.segments.running {
                 fill_disc(renderer, disc, pane_fg);
