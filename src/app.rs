@@ -752,6 +752,7 @@ impl DropTerm {
             scrolled_back,
             running_elapsed,
             frozen,
+            exit_status,
             missed_activity,
             attention_red,
             attention_bright_red,
@@ -770,6 +771,11 @@ impl DropTerm {
                 )
             };
             let colors = terminal.colors();
+            // The timer's verdict joins its frozen sibling under the
+            // same guard (status-exit spec) — an in-memory read, but
+            // gated all the same: key off means never gathered, the
+            // resolver's hidden/absent indistinguishability.
+            let toggles = self.config.status_toggles();
             (
                 terminal.zoom_adj(),
                 terminal.grid(),
@@ -777,6 +783,7 @@ impl DropTerm {
                 Some(terminal.scrolled_back_lines()),
                 terminal.command_live().1,
                 frozen,
+                toggles.exit.then(|| terminal.command_exit()).flatten(),
                 // Key off means never gathered and never rendered
                 // (status-activity spec); the red pair stays
                 // ungated beside it — status-exit's chip reuses the
@@ -816,10 +823,7 @@ impl DropTerm {
             missed_activity,
             attention_red,
             attention_bright_red,
-            // The engine's verdict reads here with the module's
-            // plumbing task (status-exit Task 5); `None` keeps the
-            // band bit-for-bit until then.
-            exit_status: None,
+            exit_status,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }

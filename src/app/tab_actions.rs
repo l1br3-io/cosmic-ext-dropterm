@@ -1108,12 +1108,7 @@ impl DropTerm {
                     notify::post_bell_notification(title);
                 }
             }
-            // The patched crate already delivers the 133;D verdict;
-            // its engine seat and snapshot piggyback land with the
-            // module's plumbing task.
-            TermEvent::CursorBlinkingChange
-            | TermEvent::ChildExit(_)
-            | TermEvent::PromptExit(_) => {}
+            TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
@@ -1255,6 +1250,24 @@ impl DropTerm {
                     return self
                         .sync_status_duration()
                         .chain(self.arm_suggest_reveal_after_damage());
+                }
+            }
+            TermEvent::PromptExit(code) => {
+                // The shell's own verdict for the command that just
+                // finished (status-exit spec): forwarded to the
+                // engine's timer under the lock, then the snapshot
+                // piggyback — a 133;D rides the same prompt-redraw
+                // wakeup the duration's finish does, so the arm only
+                // forwards and refreshes, the tick sync staying with
+                // the wakeup itself. Without shell integration the
+                // event never fires; the band never guesses.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_prompt_exit(code);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
                 }
             }
             TermEvent::MouseCursorDirty => {
