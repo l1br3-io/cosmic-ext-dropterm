@@ -1917,3 +1917,87 @@ fn an_off_flip_serves_nothing_from_cache() {
     terminal.input_no_scroll(b"exit\r");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the missed-activity latch (status-activity) ---
+//
+// The latch's transition model, pinned over a real Terminal: set by
+// the app's hidden-wakeup arm, held until one of the three user
+// funnels clears it. The clear verbs are the funnels themselves, so
+// these tests construct terminals exactly like their siblings above.
+
+/// The module's own /bin/sh terminal shape, shared by the
+/// latch-funnel tests below.
+fn latch_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh latch test terminal")
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_missed_activity() {
+    // Respawned/restored tabs start clean by construction — the
+    // latch dies with the terminal that owns it.
+    let terminal = latch_terminal();
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn an_armed_latch_holds_across_a_read() {
+    // The arm is sticky: reading the fact (every status sampling)
+    // never consumes it — only a touch does.
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    assert!(terminal.missed_activity());
+    assert!(
+        terminal.missed_activity(),
+        "the read is not a drain; the mark persists"
+    );
+}
+
+#[test]
+fn a_typed_key_through_input_scroll_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.input_scroll(&b"true\r"[..]);
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn a_paste_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.paste("echo hi");
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn a_scroll_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.scroll(TerminalScroll::Bottom);
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn an_internal_write_never_masquerades_as_a_touch() {
+    // Engine-side writes (OSC replies, PtyWrite, suggest acceptance)
+    // ride `input_no_scroll` directly — the arm must survive them,
+    // or the mark would clear itself on the very output that set it.
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.input_no_scroll(&b"\x1b[6n"[..]);
+    assert!(terminal.missed_activity());
+}

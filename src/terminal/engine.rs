@@ -41,6 +41,7 @@ use cosmic_text::{
 use indexmap::IndexSet;
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::{BTreeSet, HashMap, HashSet},
     fs, io, mem,
     path::{Path, PathBuf},
@@ -656,6 +657,16 @@ pub struct Terminal {
     /// is unaffected by the drain: it reads
     /// [`Self::command_frozen`], which serves until the next start.
     command_finished: Option<Duration>,
+    /// Output landed on this tab while the surface was hidden and no
+    /// interaction has acknowledged it since (status-activity spec).
+    /// Set by the active tab's wakeup while hidden; cleared by
+    /// terminal touch or tab activation — never by the show itself,
+    /// because a mark cleared on show is never seen. A `Cell`
+    /// because the touch funnels ([`Self::input_scroll`],
+    /// [`Self::paste`], [`Self::scroll`]) take `&self`. Dies with
+    /// the terminal, so a respawn or session restore starts clean
+    /// by construction.
+    missed_activity: Cell<bool>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1417,6 +1428,7 @@ impl Terminal {
             last_foreground_child: false,
             timer: CommandTimer::default(),
             command_finished: None,
+            missed_activity: Cell::new(false),
             settle_prompt_pending: false,
             suggest: {
                 // The history seed (history-seed spec): read once at
@@ -1678,12 +1690,42 @@ impl Terminal {
         self.command_finished.take()
     }
 
+    /// Arms the missed-activity latch (status-activity spec): output
+    /// landed on this tab while the surface was hidden. Called by
+    /// the app's Wakeup handler for the active tab, gated on the
+    /// hidden surface — never by anything inside the engine, whose
+    /// own output writes must not arm their own mark.
+    pub fn note_missed_activity(&mut self) {
+        self.missed_activity.set(true);
+    }
+
+    /// Whether output landed while the surface was hidden and no
+    /// interaction has acknowledged it since (status-activity spec)
+    /// — the band's attention halo's fact. A pure read: the band
+    /// samples it every refresh without draining it.
+    pub fn missed_activity(&self) -> bool {
+        self.missed_activity.get()
+    }
+
+    /// Clears the missed-activity latch — the acknowledgment itself
+    /// (status-activity spec). The shared head of the three user
+    /// touch funnels ([`Self::input_scroll`], [`Self::paste`],
+    /// [`Self::scroll`]) and the widget's pane-press site: any input
+    /// routed into the terminal pane is the user saying "seen".
+    /// Internal engine writes ride [`Self::input_no_scroll`]
+    /// directly, so they never masquerade as touches.
+    pub(crate) fn clear_missed_activity(&self) {
+        self.missed_activity.set(false);
+    }
+
     pub fn input_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+        self.clear_missed_activity();
         self.input_no_scroll(input);
         self.scroll(TerminalScroll::Bottom);
     }
 
     pub fn paste(&self, value: &str) {
+        self.clear_missed_activity();
         // This code is ported from alacritty
         let bracketed_paste = {
             let term = self.term.lock();
@@ -2004,6 +2046,7 @@ impl Terminal {
     }
 
     pub fn scroll(&self, scroll: TerminalScroll) {
+        self.clear_missed_activity();
         self.term.lock().scroll_display(scroll);
     }
 

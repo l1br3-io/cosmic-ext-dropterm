@@ -1814,6 +1814,12 @@ where
                                 && y >= 0.0
                                 && y < buffer_size.1.unwrap_or(0.0)
                             {
+                                // A click in the terminal pane is the
+                                // last of the touch verbs
+                                // (status-activity spec): the guard is
+                                // already held here, so the
+                                // acknowledgment is one bool write.
+                                terminal.clear_missed_activity();
                                 let click_kind =
                                     if let Some((click_kind, click_time)) = state.click.take() {
                                         if click_time.elapsed() < self.click_timing {
