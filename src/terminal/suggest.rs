@@ -1277,8 +1277,9 @@ fn merged_candidate(
 /// table entry or PATH name — beside the suffix an accept writes
 /// through `Terminal::input_no_scroll` (the one funnel, the same
 /// escaped bytes the ghost's accepts carry), a description when a
-/// source carries one (none today; the specs data file in
-/// suggest-specs-data is the supplier), and the provenance the
+/// source carries one (the specs table's entries, file-declared —
+/// suggest-specs-data's cargo; every other source is bare), and the
+/// provenance the
 /// merge ranking orders by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuCandidate {
@@ -1408,7 +1409,10 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
 /// seat. The bare `--` floor is the single-choice ghost's alone (a
 /// list of every flag is information, not a guess), so the flag seat
 /// lists the table whole. Each remainder rides the escape rule like
-/// every provider's.
+/// every provider's, and each row carries its table entry's
+/// description where one exists (suggest-specs-data spec) — the
+/// menu's dim second column; the ghost never sees it (locked:
+/// single-choice text).
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
@@ -1435,7 +1439,7 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
             Some(MenuCandidate {
                 label: entry.name.clone(),
                 suffix,
-                description: None,
+                description: entry.description.clone(),
                 source: SuggestionSource::Specs,
             })
         })

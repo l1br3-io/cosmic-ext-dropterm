@@ -2833,3 +2833,68 @@ fn the_ghosts_spec_tier_answers_from_a_wider_table() {
     let shown = step(&observation, &mut suggest).expect("the flag seat answers");
     assert_eq!(shown.suffix, "po");
 }
+
+#[test]
+fn file_descriptions_reach_the_menu_rows() {
+    // End-to-end (suggest-specs-data spec, criterion 1): a
+    // description declared in the file rides the table into the
+    // menu's Specs rows — the dim second column the renderer
+    // already shapes — while an entry without one stays clean
+    // (`None`), and every other provider's rows stay as bare as
+    // ever.
+    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let suggest = specs_suggest();
+    let observation = Observation {
+        specs_table: &table,
+        ..obs()
+    };
+    // `p` is a strict prefix of both entries: the described `pr`
+    // lists beside the bare `pr-check`, in the table's sorted order.
+    let menu = candidates("gh p", &suggest, &observation);
+    let descriptions: Vec<Option<&str>> = menu.iter().map(|c| c.description.as_deref()).collect();
+    assert_eq!(
+        descriptions,
+        [Some("Manage pull requests"), None],
+        "the described entry carries it, the bare one stays None"
+    );
+    let menu = candidates("gh --rep", &suggest, &observation);
+    assert_eq!(
+        menu[0].description.as_deref(),
+        Some("Select another repository"),
+        "flag entries carry descriptions alike"
+    );
+}
+
+#[test]
+fn the_ghost_ignores_descriptions() {
+    // Locked (suggest-specs-data spec, OQ 3): descriptions are the
+    // menu's — the ghost is single-choice text, and a described
+    // entry ghosts exactly the suffix it would bare. `Showing`
+    // carries no description field, so the lock is structural;
+    // this pins the behavior it buys: a re-declared, described
+    // checkout ghosts the same `ckout` the bare built-in does.
+    let table = merge_completions(
+        parse_completions(
+            r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "checkout"
+description = "Switch branches or restore working tree files"
+"#,
+        )
+        .expect("valid"),
+    );
+    let mut suggest = specs_suggest();
+    let before = String::from("$ git che");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the ghost answers the same");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
