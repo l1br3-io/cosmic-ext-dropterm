@@ -275,3 +275,44 @@ Two keys load and persist today but change no behavior:
 
 - `settings_drawer_click_close` (default `true`) is **parked**: the planned click-to-dismiss behavior cannot ship until a capture mechanism exists. A hand-edited value is inert.
 - `output` (default unset) is **reserved** for monitor selection - naming the Wayland output the drop-down shows on. Nothing reads it yet; see the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md).
+
+## The completions data file
+
+One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions).
+
+```toml
+# ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml
+
+# One table per command. `name` is the command word the table
+# answers for - through the alias map too, so a mapped alias
+# re-targets here exactly as it does the built-ins.
+[[commands]]
+name = "gh"
+
+# Subcommands complete the first argument seat (`gh pr` ghosts
+# and lists them). Every entry is a `name` plus an optional
+# `description` - the completions menu shows it beside the row,
+# dimmed; the ghost ignores descriptions (it is text only).
+[[commands.subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+[[commands.subcommands]]
+name = "pr-check"
+
+# Long flags complete the flag seat from any argument position
+# (`gh --rep` finishes `--repo`). No short flags - same ruling as
+# the built-in table: a single-choice ghost pays a wrong accept
+# for a wrong guess.
+[[commands.flags]]
+name = "--repo"
+description = "Select another repository"
+```
+
+Rules the loader holds:
+
+- **No executable content - ever.** The schema rejects unknown keys, so a file carrying a `script` field (or any key the format does not define) fails whole: DropTerm logs at debug level and answers with the built-in table, never a half-loaded one. Data imports; scripts never arrive.
+- The file is optional. No file, an unreadable file, or an invalid file is exactly the built-in behavior - the curated five, unchanged.
+- Entries sort by name at load (the match policy - strict prefix, must extend, shortest wins, ties alphabetical - rides sorted lists); an unsorted file is fine.
+- An edit applies at the next tab you open (the file reads fresh at spawn) or the next settings change (the file re-reads on every config pass); tabs already open pick it up at that pass's next typed prefix.
+
