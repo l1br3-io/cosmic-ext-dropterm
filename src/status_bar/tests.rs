@@ -1392,6 +1392,70 @@ fn the_clock_ticks_only_while_both_gates_hold() {
     assert!(!clock_due(false, false));
 }
 
+// --- the attention token (status-activity) ---
+//
+// The initiative's one new color derivation: the live scheme's own
+// red, luminance-flipped over the strip exactly as the band's
+// foreground flips. The strip fixtures are the tab strip's own
+// light/dark pair, so the flip tested here is the same boundary
+// readable_foreground has always turned on.
+
+#[test]
+fn attention_color_picks_the_bright_red_on_a_dark_strip() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.9, 0.3, 0.3));
+}
+
+#[test]
+fn attention_color_picks_the_plain_red_on_a_light_strip() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.6, 0.1, 0.1));
+}
+
+#[test]
+fn a_dark_strip_without_a_bright_red_falls_back_to_the_plain() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        None,
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.6, 0.1, 0.1));
+}
+
+#[test]
+fn a_light_strip_without_a_plain_red_falls_back_to_the_bright() {
+    let color = attention_color(
+        None,
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.9, 0.3, 0.3));
+}
+
+#[test]
+fn a_scheme_without_any_red_yields_exactly_the_pane_foreground() {
+    let pane_fg = Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0);
+    let color = attention_color(
+        None,
+        None,
+        pane_fg,
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, pane_fg);
+}
+
 // --- the command timer (command-lifecycle) ---
 //
 // Pure policy over the foreground diff the engine already computes:

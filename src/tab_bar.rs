@@ -98,9 +98,12 @@ pub(crate) fn pane_colors() -> (Color, Color) {
     (strip, readable_foreground(background))
 }
 
-/// Near-black or near-white text for `background`, by relative
-/// luminance (WCAG definition).
-fn readable_foreground(background: Color) -> Color {
+/// A color's relative luminance (the WCAG definition) — the one
+/// flip formula the strips share: [`readable_foreground`] turns on
+/// it here, and the status band's attention token
+/// (`status_bar::attention_color`) turns on it over its own strip.
+/// One formula, no per-caller copies.
+pub(crate) fn relative_luminance(color: Color) -> f32 {
     fn channel(c: f32) -> f32 {
         if c <= 0.03928 {
             c / 12.92
@@ -108,10 +111,13 @@ fn readable_foreground(background: Color) -> Color {
             ((c + 0.055) / 1.055).powf(2.4)
         }
     }
-    let luminance = 0.2126 * channel(background.r)
-        + 0.7152 * channel(background.g)
-        + 0.0722 * channel(background.b);
-    if luminance > 0.5 {
+    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+}
+
+/// Near-black or near-white text for `background`, by relative
+/// luminance (WCAG definition).
+fn readable_foreground(background: Color) -> Color {
+    if relative_luminance(background) > 0.5 {
         Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0)
     } else {
         Color::from_rgba8(0xF5, 0xF5, 0xFF, 1.0)

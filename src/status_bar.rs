@@ -50,7 +50,7 @@ use cosmic::{Element, Renderer};
 use crate::config::{Edge, TabPosition};
 use crate::tab_bar::{
     BORDER_ALPHA, DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, border_rect,
-    dropdown_row_at, fill_disc, pane_colors,
+    dropdown_row_at, fill_disc, pane_colors, relative_luminance,
 };
 use crate::terminal::Action;
 
@@ -1231,6 +1231,44 @@ fn parse_head(head: &str) -> Option<String> {
     } else {
         let sha: String = head.chars().take(7).collect();
         (sha.len() == 7 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+    }
+}
+
+// --- the attention token (status-activity spec) ---
+
+/// The initiative's one new color token (status-activity spec): the
+/// live terminal scheme's own red — the bright variant on dark
+/// strips, the plain on light, the same luminance flip the band's
+/// foreground performs over its strip (`relative_luminance`'s WCAG
+/// channels, the one formula). One hue, one meaning: *needs your
+/// eyes*; success and normal state are never marked. A chosen
+/// variant the scheme leaves unset falls back to its sibling, and a
+/// scheme with no red at all degrades to the pane foreground —
+/// monochrome, never an invented hue.
+// The tests consume the derivation from day one, so the dead-code
+// expect lives only in the non-test compilation (an unconditional
+// expect would be unfulfilled in the test target).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "transient: consumed when status-activity Task 3 wires the reds into the inputs and Task 5 paints the halo"
+    )
+)]
+pub fn attention_color(
+    scheme_red: Option<(f32, f32, f32)>,
+    scheme_bright_red: Option<(f32, f32, f32)>,
+    pane_fg: Color,
+    strip: Color,
+) -> Color {
+    let (chosen, sibling) = if relative_luminance(strip) > 0.5 {
+        (scheme_red, scheme_bright_red)
+    } else {
+        (scheme_bright_red, scheme_red)
+    };
+    match chosen.or(sibling) {
+        Some((r, g, b)) => Color::from_rgb(r, g, b),
+        None => pane_fg,
     }
 }
 
