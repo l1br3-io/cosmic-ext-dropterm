@@ -735,6 +735,23 @@ pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<Segm
         .map(|(id, _)| *id)
 }
 
+/// The segment the hover tint paints — the hovered segment's own
+/// rect, the same rects hit-testing walks, so the tint and the copy
+/// verb can never disagree about a strip. Suppressed while a live
+/// drag or the persisting selection owns the visual (one narrator
+/// at a time); an absent cursor, a gap, and everything outside the
+/// row tint nothing.
+pub fn hover_segment(
+    rects: &[(SegmentId, Rectangle)],
+    cursor: Option<Point>,
+    selection_live: bool,
+) -> Option<SegmentId> {
+    if selection_live {
+        return None;
+    }
+    cursor.and_then(|point| segment_at(rects, point))
+}
+
 /// Whether the inline reveal is armed (status-glance criterion 3,
 /// the OQ-1 inline ruling): the path's display must be elided and
 /// the cursor must rest on its **current** display rect — the

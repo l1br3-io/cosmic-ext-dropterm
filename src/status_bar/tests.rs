@@ -1072,6 +1072,59 @@ fn segment_at_hits_only_the_rect_containing_the_point() {
     assert_eq!(segment_at(&rects, Point::new(10.0, BAND_HEIGHT)), None);
 }
 
+#[test]
+fn hover_segment_yields_the_rect_under_the_cursor_and_nothing_else() {
+    let rects = [
+        (
+            SegmentId::Process,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Path,
+            Rectangle::new(Point::new(72.0, 0.0), Size::new(90.0, BAND_HEIGHT)),
+        ),
+    ];
+    // The hovered segment's own rect — the same rects hit-testing
+    // walks, so the tint and the click target can never disagree.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(10.0, 14.0)), false),
+        Some(SegmentId::Process)
+    );
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(100.0, 27.9)), false),
+        Some(SegmentId::Path)
+    );
+    // A gap between segments, and an absent cursor (the cursor
+    // outside the window, or over another surface's overlay),
+    // tint nothing.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(65.0, 14.0)), false),
+        None
+    );
+    assert_eq!(hover_segment(&rects, None, false), None);
+}
+
+#[test]
+fn hover_segment_suppresses_while_a_selection_is_live() {
+    let rects = [
+        (
+            SegmentId::Process,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Path,
+            Rectangle::new(Point::new(72.0, 0.0), Size::new(90.0, BAND_HEIGHT)),
+        ),
+    ];
+    // A live drag or the persisting highlight owns the visual —
+    // even a cursor dead-on a segment tints nothing.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(10.0, 14.0)), true),
+        None
+    );
+    assert_eq!(hover_segment(&rects, None, true), None);
+}
+
 // --- the ssh stand-in (status-remote) ---
 
 /// The stand-in's resolver shape: the path seat and branch fed
