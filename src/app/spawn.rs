@@ -12,6 +12,7 @@ use crate::config::{DropTermConfig, NewTabCwd, program_is_runnable};
 use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
+use crate::terminal::suggest;
 use crate::terminal::{Terminal, TerminalOptions};
 
 /// What a new tab runs: the user's shell — config-resolved or per-tab
@@ -508,7 +509,14 @@ impl DropTerm {
                 autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
                 autosuggestions_generators_enabled: self.config.autosuggestions_generators_enabled,
                 autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
-                autosuggestions_specs_table: self.specs_table.clone(),
+                // The spec table reads fresh at spawn
+                // (suggest-specs-data spec): the data file has no
+                // watcher, and a spawn is the user-action point a
+                // dropped or edited `completions.toml` applies at —
+                // live tabs pick it up at the next config echo.
+                autosuggestions_specs_table: suggest::load_completions(
+                    super::completions_config_dir().as_deref(),
+                ),
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
                 spawn_path,
