@@ -58,6 +58,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `status_bar_show_zoom` | `true` |
 | `status_bar_show_clock` | `true` |
 | `status_bar_show_duration` | `true` |
+| `status_bar_show_exit_status` | `true` |
 | `status_bar_show_scrollback` | `true` |
 | `tab_bar_border` | `true` |
 | `status_bar_border` | `true` |
@@ -136,9 +137,10 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 | `status_bar_show_zoom` | Zoom delta (`+200%`) while the font is off its base size. | `true` |
 | `status_bar_show_clock` | Wall clock (`HH:MM`). | `true` |
 | `status_bar_show_duration` | Command time (`2:41` while a command runs, `cargo 2:41` after it finishes) - derived from the foreground edges the engine already diffs, no shell integration. Hiding it stops its 1 s tick. | `true` |
+| `status_bar_show_exit_status` | Exit status (`✗1`) of the last finished command, beside its duration, in the scheme's own red - sourced solely from the shell's OSC 133;D report (opt-in shell integration; see the status band page). Success renders nothing; without integration the band never guesses. Clicking the chip copies the bare code. | `true` |
 | `status_bar_show_scrollback` | Lines scrolled back from the bottom (`↑12`) - shown only while the viewport is off-bottom; clicking the chip jumps to the bottom. | `true` |
 
-All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs.
+All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs, hiding the exit status stops its verdict sampling.
 
 ## Bar borders
 

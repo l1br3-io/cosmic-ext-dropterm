@@ -122,6 +122,7 @@ impl Section {
                 ConfigKey::StatusBarShowZoom,
                 ConfigKey::StatusBarShowClock,
                 ConfigKey::StatusBarShowDuration,
+                ConfigKey::StatusBarShowExitStatus,
                 ConfigKey::StatusBarShowScrollback,
             ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
@@ -266,6 +267,11 @@ pub enum ConfigKey {
     /// engine's timestamps keep running, so re-enabling mid-command
     /// shows the live elapsed immediately.
     StatusBarShowDuration,
+    /// The exit-status chip (status-exit spec): the toggle hides the
+    /// chip and its verdict sampling — the engine's timer keeps
+    /// recording either way, so a re-enable shows whatever verdict
+    /// still stands.
+    StatusBarShowExitStatus,
     /// The scrolled-back chip (status-scrolled spec): the toggle
     /// hides the chip outright — the offset read rides the same
     /// view-assembly lock either way, so the flip costs nothing
@@ -407,6 +413,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
             ConfigKey::StatusBarShowDuration => "status_bar_show_duration",
+            ConfigKey::StatusBarShowExitStatus => "status_bar_show_exit_status",
             ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
@@ -491,6 +498,11 @@ pub enum PlannedWrite {
     StatusBarShowClock(bool),
     /// The duration segment's own row (command-lifecycle spec).
     StatusBarShowDuration(bool),
+    /// The exit chip's own row (status-exit spec) — a display flip
+    /// like its duration sibling: the echo's next view pass
+    /// re-evaluates the sampling gate and the resolver's seat
+    /// together.
+    StatusBarShowExitStatus(bool),
     /// The scrolled chip's own row (status-scrolled spec).
     StatusBarShowScrollback(bool),
     /// The bars' border hairlines (bar-borders spec): pure display
@@ -565,6 +577,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
             PlannedWrite::StatusBarShowDuration(_) => ConfigKey::StatusBarShowDuration,
+            PlannedWrite::StatusBarShowExitStatus(_) => ConfigKey::StatusBarShowExitStatus,
             PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
@@ -731,6 +744,9 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarShowDuration(value) => {
                 handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowExitStatus(value) => {
+                handler.set(ConfigKey::StatusBarShowExitStatus.key_name(), *value)
             }
             PlannedWrite::StatusBarShowScrollback(value) => {
                 handler.set(ConfigKey::StatusBarShowScrollback.key_name(), *value)
@@ -938,6 +954,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
         | ConfigKey::StatusBarShowDuration
+        | ConfigKey::StatusBarShowExitStatus
         | ConfigKey::StatusBarShowScrollback
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
@@ -2383,6 +2400,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
         ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
         ConfigKey::StatusBarShowDuration => Some(PlannedWrite::StatusBarShowDuration(checked)),
+        ConfigKey::StatusBarShowExitStatus => Some(PlannedWrite::StatusBarShowExitStatus(checked)),
         ConfigKey::StatusBarShowScrollback => Some(PlannedWrite::StatusBarShowScrollback(checked)),
         _ => None,
     }

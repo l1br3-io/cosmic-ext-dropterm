@@ -387,6 +387,16 @@ pub struct DropTermConfig {
     /// alike; the engine's timestamps keep running either way, so a
     /// mid-command re-enable shows the live elapsed immediately.
     pub status_bar_show_duration: bool,
+    /// The exit-status chip (status-exit spec): the last finished
+    /// command's non-zero exit code — `✗1` in the scheme's own
+    /// attention red, beside its frozen duration — sourced solely
+    /// from the shell's own OSC 133;D report (opt-in shell
+    /// integration), never a guess: without integration the band
+    /// renders exactly what it renders without the chip. Key off
+    /// means the verdict is never gathered and never rendered; the
+    /// engine's timer keeps recording either way, so a re-enable
+    /// shows whatever verdict still stands.
+    pub status_bar_show_exit_status: bool,
     /// The scrolled-back chip (status-scrolled spec): the
     /// viewport's lines back from the bottom — `↑12` — shown only
     /// off-bottom, its click jumping to the bottom (the band's one
@@ -565,6 +575,7 @@ impl Default for DropTermConfig {
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
             status_bar_show_duration: true,
+            status_bar_show_exit_status: true,
             status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
@@ -588,11 +599,7 @@ impl DropTermConfig {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
             duration: self.status_bar_show_duration,
-            // The `status_bar_show_exit_status` key lands with its
-            // docs row and settings control (status-exit Task 6);
-            // until then the default-shaped `true` is bit-for-bit —
-            // the input's stopgap `None` hides the chip regardless.
-            exit: true,
+            exit: self.status_bar_show_exit_status,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,
