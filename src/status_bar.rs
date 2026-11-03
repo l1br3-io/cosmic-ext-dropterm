@@ -1261,6 +1261,10 @@ const DISC_GAP: f32 = 6.0;
 /// alpha and mass, never a new hue.
 const DIM_ALPHA: f32 = 0.6;
 
+/// The hover tint's alpha — the context menu's hover strength, one
+/// idiom across the band and its bubble, hierarchy by alpha.
+const HOVER_ALPHA: f32 = 0.1;
+
 /// How long a copied segment flashes its `✓` before the value
 /// returns (OQ-3: 800 ms, retunable at the hardware pass).
 pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800);
@@ -1995,6 +1999,14 @@ where
                 shell.request_redraw();
             }
             Event::Mouse(MouseEvent::CursorMoved { position }) => {
+                // A bare motion inside the band asks for its frame —
+                // the hover tint follows the cursor, and the runtime
+                // draws only on request (the menu overlay's own
+                // rule). No capture: the event keeps flowing, and the
+                // armed-press handling below stands unchanged.
+                if layout.bounds().contains(*position) {
+                    shell.request_redraw();
+                }
                 let state = tree.state.downcast_ref::<State>();
                 let Some(anchor) = state.press else {
                     return;
@@ -2089,10 +2101,10 @@ where
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor_position: mouse::Cursor,
+        cursor_position: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
@@ -2167,6 +2179,38 @@ where
                     },
                 );
             }
+        }
+
+        // The hover tint, in the selection highlight's own slot —
+        // above the strip, under the text: the menu's hover idiom
+        // (low-alpha pane foreground, radius_s), so the band and its
+        // bubble speak one hover language, and only ever over the
+        // hovered segment's exact hit-target rect — the copy verb
+        // discoverable before the first click. A live or persisting
+        // selection owns the visual instead; gaps paint nothing.
+        let rects = segment_rects(state, bounds);
+        if let Some(id) = hover_segment(
+            &rects,
+            cursor_position.position(),
+            state.selection.is_some(),
+        ) && let Some((_, rect)) = rects.iter().find(|(sid, _)| *sid == id)
+        {
+            renderer.fill_quad(
+                Quad {
+                    bounds: *rect,
+                    border: Border {
+                        radius: theme.cosmic().radius_s().into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color {
+                    a: HOVER_ALPHA,
+                    ..pane_fg
+                },
+            );
         }
 
         // The process-state disc: filled while a foreground child
