@@ -118,6 +118,11 @@ pub enum SegmentId {
     /// elapsed while a witnessed start runs, the frozen
     /// (name, duration) pair after it finishes.
     Duration,
+    /// The last finished command's non-zero exit code — `✗1` in the
+    /// attention red, beside its duration. Success renders nothing:
+    /// code 0 is the unmarked default, and an unwitnessed verdict
+    /// (no shell integration) renders nothing either — never a guess.
+    Exit,
     /// The `~`-collapsed cwd.
     Path,
     /// The cwd's git branch (or detached sha).
@@ -139,10 +144,12 @@ pub enum SegmentId {
 
 /// The left cluster's segments in draw order — full alpha, except
 /// the duration's dimmed meta narration (OQ-2: the seat is the
-/// process's side; the alpha stays a notch down).
-pub const LEFT_CLUSTER: [SegmentId; 4] = [
+/// process's side; the alpha stays a notch down). The exit chip sits
+/// after the duration it verdicts (status-exit spec).
+pub const LEFT_CLUSTER: [SegmentId; 5] = [
     SegmentId::Process,
     SegmentId::Duration,
+    SegmentId::Exit,
     SegmentId::Path,
     SegmentId::Branch,
 ];
@@ -166,27 +173,29 @@ pub const RIGHT_CLUSTER: [SegmentId; 6] = [
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
-/// the scrolled chip follows the duration (it answers "what's
-/// happening now" — it must survive while the command's own
-/// narration stands), and the clock is last — tmux keeps time to
-/// the bitter end.
-pub const DROP_ORDER: [SegmentId; 8] = [
+/// the exit chip follows the duration (the verdict rides its
+/// command's narration, never outliving it), the scrolled chip
+/// follows both (it answers "what's happening now" — it must
+/// survive while the command's own narration stands), and the clock
+/// is last — tmux keeps time to the bitter end.
+pub const DROP_ORDER: [SegmentId; 9] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
     SegmentId::Duration,
+    SegmentId::Exit,
     SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// ten `status_bar_show_*` bools. A hidden segment is absent
+/// eleven `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "ten independent visibility switches — one per config key, by design"
+    reason = "eleven independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -194,6 +203,8 @@ pub struct StatusToggles {
     pub process: bool,
     /// The command timer's reading.
     pub duration: bool,
+    /// The exit chip.
+    pub exit: bool,
     /// The `~`-collapsed cwd.
     pub path: bool,
     /// The git branch of the cwd.
@@ -213,12 +224,13 @@ pub struct StatusToggles {
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's ten
+    /// Every segment shown — the all-on default the config's eleven
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
             process: true,
             duration: true,
+            exit: true,
             path: true,
             branch: true,
             profile: true,
@@ -276,6 +288,11 @@ pub struct StatusSegments {
     /// command starts. An empty name is the honest floor — the
     /// duration without a name to lie about.
     pub frozen: Option<(String, Duration)>,
+    /// The last finished command's non-zero exit code (status-exit
+    /// spec): the shell's own 133;D report, until the next command
+    /// starts. `None` is both success and no report — the band never
+    /// guesses a verdict.
+    pub exit_code: Option<u32>,
     /// The viewport's lines scrolled back from the bottom
     /// (status-scrolled spec) — absent at the bottom (and when
     /// hidden): the same indistinguishable `None`, so the chip
@@ -340,6 +357,11 @@ pub struct StatusInputs<'a> {
     /// The last finished command's (name, duration) pair — the
     /// name the app last sampled running on this tab.
     pub frozen: Option<(&'a str, Duration)>,
+    /// The last finished command's exit code — the shell's own
+    /// 133;D report sampled from the engine's timer under the exit
+    /// toggle's gate (key off means never gathered and never
+    /// rendered).
+    pub exit_status: Option<u32>,
     /// The viewport's lines scrolled back from the bottom — the
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
@@ -435,6 +457,15 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
                     .map(|(name, duration)| (name.to_string(), duration))
             })
             .flatten(),
+        // The verdict gate: hidden, absent, and success are all the
+        // same indistinguishable `None` (status-exit spec) — the
+        // filter repeats the model's own normalization so the
+        // resolver's contract holds regardless of its feeder.
+        exit_code: toggles
+            .exit
+            .then_some(inputs.exit_status)
+            .flatten()
+            .filter(|&code| code != 0),
         // Absent at bottom — the same indistinguishable None a
         // hidden or zoomed-at-base segment resolves to
         // (status-scrolled spec); the chip exists only when the
@@ -474,6 +505,14 @@ pub fn duration_display(segments: &StatusSegments) -> String {
 /// click is the jump, not a copy; this display is the whole value.
 pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
+}
+
+/// The exit chip's display (status-exit spec): `✗{code}` — the
+/// cross, then the shell's own verdict, verbatim (OQ-2: no clamp).
+/// The click copies the bare code ([`copy_text`]'s payload), never
+/// the glyph.
+pub fn exit_display(code: u32) -> String {
+    format!("✗{code}")
 }
 
 /// The ssh command's destination token (status-remote spec): the
@@ -745,6 +784,10 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
             .unwrap_or_default(),
         SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
         SegmentId::Duration => duration_display(segments),
+        SegmentId::Exit => segments
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_default(),
         // The action chip has no copyable value — the jump is the
         // verb (status-scrolled spec). The widget's press routing
         // never reaches this arm; empty is defensive.
@@ -1406,6 +1449,7 @@ pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800
 struct State {
     process: BandParagraph,
     duration: BandParagraph,
+    exit: BandParagraph,
     path: BandParagraph,
     branch: BandParagraph,
     profile: BandParagraph,
@@ -1473,6 +1517,7 @@ impl State {
         match id {
             SegmentId::Process => &self.process,
             SegmentId::Duration => &self.duration,
+            SegmentId::Exit => &self.exit,
             SegmentId::Path => &self.path,
             SegmentId::Branch => &self.branch,
             SegmentId::Profile => &self.profile,
@@ -1488,6 +1533,7 @@ impl State {
         match id {
             SegmentId::Process => &mut self.process,
             SegmentId::Duration => &mut self.duration,
+            SegmentId::Exit => &mut self.exit,
             SegmentId::Path => &mut self.path,
             SegmentId::Branch => &mut self.branch,
             SegmentId::Profile => &mut self.profile,
@@ -1617,6 +1663,11 @@ impl<Message> StatusBar<Message> {
         let duration_text = duration_display(&self.segments);
         state.duration.update(segment_text(
             display_text(copied, SegmentId::Duration, &duration_text),
+            font,
+        ));
+        let exit_text = self.segments.exit_code.map(exit_display);
+        state.exit.update(segment_text(
+            display_text(copied, SegmentId::Exit, exit_text.as_deref().unwrap_or("")),
             font,
         ));
         state.branch.update(segment_text(
@@ -1755,6 +1806,7 @@ impl<Message> StatusBar<Message> {
             let value = match id {
                 SegmentId::Process => self.segments.process.clone(),
                 SegmentId::Duration => duration_text.clone(),
+                SegmentId::Exit => exit_text.clone().unwrap_or_default(),
                 SegmentId::Path => {
                     if armed {
                         state.path_armed_text.clone()
@@ -1852,7 +1904,12 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
         rects.push((SegmentId::Process, row(x, width)));
         x += width + SEGMENT_GAP;
     }
-    for id in [SegmentId::Duration, SegmentId::Path, SegmentId::Branch] {
+    for id in [
+        SegmentId::Duration,
+        SegmentId::Exit,
+        SegmentId::Path,
+        SegmentId::Branch,
+    ] {
         let width = state.paragraph_of(id).min_width();
         if width > 0.0 {
             rects.push((id, row(x, width)));

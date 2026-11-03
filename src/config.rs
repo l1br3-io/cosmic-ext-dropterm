@@ -583,11 +583,16 @@ impl Default for DropTermConfig {
 
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
-    /// ten additive bools — the resolver's toggle set.
+    /// eleven additive bools — the resolver's toggle set.
     pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
             duration: self.status_bar_show_duration,
+            // The `status_bar_show_exit_status` key lands with its
+            // docs row and settings control (status-exit Task 6);
+            // until then the default-shaped `true` is bit-for-bit —
+            // the input's stopgap `None` hides the chip regardless.
+            exit: true,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,

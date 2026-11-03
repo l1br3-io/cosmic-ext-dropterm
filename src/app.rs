@@ -816,6 +816,10 @@ impl DropTerm {
             missed_activity,
             attention_red,
             attention_bright_red,
+            // The engine's verdict reads here with the module's
+            // plumbing task (status-exit Task 5); `None` keeps the
+            // band bit-for-bit until then.
+            exit_status: None,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
