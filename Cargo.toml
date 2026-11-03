@@ -30,6 +30,24 @@ members = [".", "applet"]
 # `cargo update -p libcosmic --precise <sha>`.
 libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false }
 
+# status-exit (OQ-1, decided 2026-11-03): the shell's own "command
+# finished with code N" (OSC 133;D, FinalTerm/contour shell
+# integration) is parsed nowhere upstream — vte 0.15.0's ansi table
+# log-drops unknown codes and alacritty_terminal 0.25.1 holds no
+# parser at all. Two one-arm forks carry the passthrough (branch
+# dropterm-osc133d each, based on the exact crates.io publish
+# commits, so the patched sources are the lockfile's versions plus
+# the one arm): vte parses `133;D;<code>` into a default-no-op
+# Handler method; alacritty_terminal implements it on Term, emitting
+# Event::PromptExit(code). Unlike the bare libcosmic git URL above, a
+# [patch.crates-io] entry REPLACES each crate's registry source
+# rather than adding a second one, so cargo vendor still sees one
+# source per crate. Upstreaming: PRs to alacritty/vte and
+# alacritty/alacritty are the follow-up once the module proves out.
+[patch.crates-io]
+vte = { git = "https://github.com/l1br3-io/vte", rev = "34af676e31a82048ee1ac0d80fd99bcf50f98861" }
+alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "f11e4763e62039687b9608706a0947d34261d973" }
+
 [dependencies]
 alacritty_terminal = "0.25.1"
 clap = { version = "4", features = ["derive"] }

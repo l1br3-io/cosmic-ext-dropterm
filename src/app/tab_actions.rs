@@ -1108,7 +1108,12 @@ impl DropTerm {
                     notify::post_bell_notification(title);
                 }
             }
-            TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
+            // The patched crate already delivers the 133;D verdict;
+            // its engine seat and snapshot piggyback land with the
+            // module's plumbing task.
+            TermEvent::CursorBlinkingChange
+            | TermEvent::ChildExit(_)
+            | TermEvent::PromptExit(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
