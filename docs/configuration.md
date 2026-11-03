@@ -278,7 +278,7 @@ Two keys load and persist today but change no behavior:
 
 ## The completions data file
 
-One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions).
+One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships an audited seed to start from: [`data/completions.toml`](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/data/completions.toml) in the repository - fourteen commands with menu descriptions, converted from withfig/autocomplete (MIT; every entry's derivation named in the [seed audit](research/completions-seed-audit.md)) - copy it to the config directory and edit from there.
 
 ```toml
 # ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml

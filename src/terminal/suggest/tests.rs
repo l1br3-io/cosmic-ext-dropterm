@@ -2866,6 +2866,41 @@ fn file_descriptions_reach_the_menu_rows() {
 }
 
 #[test]
+fn the_shipped_seed_parses_and_never_shrinks_the_built_in_five() {
+    // The seed's own gates (suggest-specs-data spec, criterion 4):
+    // the audited file ships valid under the schema — the `script`
+    // boundary holds for what DropTerm itself distributes — and the
+    // five re-declared commands carry the complete built-in entry
+    // sets, because the merge replaces whole: a seed that dropped a
+    // built-in entry would shrink every table it touched.
+    let seed = include_str!("../../../data/completions.toml");
+    let file = parse_completions(seed).expect("the shipped seed parses under the schema");
+    let merged = merge_completions(file);
+    for spec in SPECS {
+        let command = merged
+            .iter()
+            .find(|command| command.name == spec.command)
+            .unwrap_or_else(|| panic!("{} keeps its seat in the seed", spec.command));
+        let subcommands: Vec<&str> = command
+            .subcommands
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            subcommands, spec.subcommands,
+            "{} subcommands",
+            spec.command
+        );
+        let flags: Vec<&str> = command
+            .flags
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(flags, spec.flags, "{} flags", spec.command);
+    }
+}
+
+#[test]
 fn the_ghost_ignores_descriptions() {
     // Locked (suggest-specs-data spec, OQ 3): descriptions are the
     // menu's — the ghost is single-choice text, and a described
