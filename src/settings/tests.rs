@@ -252,6 +252,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarEnabled(true),
         PlannedWrite::TabBarBorder(true),
         PlannedWrite::StatusBarBorder(true),
+        PlannedWrite::StatusBarActivityMark(true),
         PlannedWrite::StatusBarShowProcess(true),
         PlannedWrite::StatusBarShowPath(true),
         PlannedWrite::StatusBarShowBranch(true),
@@ -350,6 +351,7 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
         (ConfigKey::TabBarBorder, "tab_bar_border"),
         (ConfigKey::StatusBarBorder, "status_bar_border"),
+        (ConfigKey::StatusBarActivityMark, "status_bar_activity_mark"),
     ];
     for (key, name) in expected {
         assert_eq!(key.key_name(), name);
@@ -1010,13 +1012,13 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_and_ten_show_rows() {
+fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_ten_show_rows() {
     // status-segments Task 3 + bar-borders BB-3 + status-scrolled
-    // Task 2: the Status bar card grows to twelve rows, in band
-    // order — the master toggle, the border toggle, then one
-    // "Show …" row per segment — each under its exact file
-    // spelling, each flipping through the single planned-write
-    // path, all Live.
+    // Task 2 + status-activity Task 4: the Status bar card grows to
+    // thirteen rows, in band order — the master toggle, the border
+    // toggle, the missed-activity halo, then one "Show …" row per
+    // segment — each under its exact file spelling, each flipping
+    // through the single planned-write path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -1033,6 +1035,7 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_ten_show_rows() {
         &[
             ConfigKey::StatusBarEnabled,
             ConfigKey::StatusBarBorder,
+            ConfigKey::StatusBarActivityMark,
             ConfigKey::StatusBarShowProcess,
             ConfigKey::StatusBarShowPath,
             ConfigKey::StatusBarShowBranch,
@@ -1049,6 +1052,10 @@ fn the_status_bar_card_hosts_the_master_toggle_border_and_ten_show_rows() {
     assert_eq!(
         ConfigKey::StatusBarBorder.label(),
         "Show the status band border"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarActivityMark.label(),
+        "Show the missed-activity halo"
     );
     assert_eq!(
         ConfigKey::StatusBarShowProcess.key_name(),

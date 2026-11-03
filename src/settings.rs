@@ -112,6 +112,7 @@ impl Section {
             Section::StatusBar => &[
                 ConfigKey::StatusBarEnabled,
                 ConfigKey::StatusBarBorder,
+                ConfigKey::StatusBarActivityMark,
                 ConfigKey::StatusBarShowProcess,
                 ConfigKey::StatusBarShowPath,
                 ConfigKey::StatusBarShowBranch,
@@ -276,6 +277,10 @@ pub enum ConfigKey {
     TabBarBorder,
     /// The band's border hairline — the strip key's twin.
     StatusBarBorder,
+    /// The band's missed-activity halo (status-activity spec): key
+    /// off means the fact is never gathered and never rendered —
+    /// the ring, not the latch, is what this key gates.
+    StatusBarActivityMark,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -405,6 +410,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
+            ConfigKey::StatusBarActivityMark => "status_bar_activity_mark",
         }
     }
 }
@@ -493,6 +499,10 @@ pub enum PlannedWrite {
     TabBarBorder(bool),
     /// The band's twin of the strip's border write.
     StatusBarBorder(bool),
+    /// The band's missed-activity halo write (status-activity spec)
+    /// — a display flip like its border sibling: the echo's next
+    /// view pass re-evaluates the sampling gate.
+    StatusBarActivityMark(bool),
 }
 
 impl PlannedWrite {
@@ -558,6 +568,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
+            PlannedWrite::StatusBarActivityMark(_) => ConfigKey::StatusBarActivityMark,
         }
     }
 
@@ -729,6 +740,9 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarBorder(value) => {
                 handler.set(ConfigKey::StatusBarBorder.key_name(), *value)
+            }
+            PlannedWrite::StatusBarActivityMark(value) => {
+                handler.set(ConfigKey::StatusBarActivityMark.key_name(), *value)
             }
         }
     }
@@ -914,6 +928,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarEnabled
         | ConfigKey::TabBarBorder
         | ConfigKey::StatusBarBorder
+        | ConfigKey::StatusBarActivityMark
         | ConfigKey::StatusBarShowProcess
         | ConfigKey::StatusBarShowPath
         | ConfigKey::StatusBarShowBranch
@@ -2358,6 +2373,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
+        ConfigKey::StatusBarActivityMark => Some(PlannedWrite::StatusBarActivityMark(checked)),
         ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
         ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
         ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),

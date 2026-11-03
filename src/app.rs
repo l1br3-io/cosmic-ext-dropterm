@@ -777,10 +777,14 @@ impl DropTerm {
                 Some(terminal.scrolled_back_lines()),
                 terminal.command_live().1,
                 frozen,
-                // The mark key's own gate is its default (`true`)
-                // until the key ships with its settings row.
-                status_bar::activity_mark_due(self.config.status_bar_enabled, true)
-                    && terminal.missed_activity(),
+                // Key off means never gathered and never rendered
+                // (status-activity spec); the red pair stays
+                // ungated beside it — status-exit's chip reuses the
+                // token under its own key.
+                status_bar::activity_mark_due(
+                    self.config.status_bar_enabled,
+                    self.config.status_bar_activity_mark,
+                ) && terminal.missed_activity(),
                 colors[NamedColor::Red as usize].map(scheme_red),
                 colors[NamedColor::BrightRed as usize].map(scheme_red),
             )

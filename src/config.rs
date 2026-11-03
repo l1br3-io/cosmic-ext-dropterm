@@ -405,6 +405,15 @@ pub struct DropTermConfig {
     /// the band's own enable — a hidden band renders nothing, and
     /// re-enabling it restores the border per this key.
     pub status_bar_border: bool,
+    /// Whether the band arms its missed-activity halo
+    /// (status-activity spec): a thin attention ring around the
+    /// process disc while output landed on the active tab under a
+    /// hidden surface and nothing has acknowledged it — input,
+    /// paste, scroll, a pane click, or a tab switch. Key off means
+    /// the fact is never gathered and never rendered; the engine's
+    /// latch keeps arming either way, so a later flip-on shows
+    /// whatever the surface still holds.
+    pub status_bar_activity_mark: bool,
     /// Whether fish-style autosuggestions compute (autosuggest
     /// spec): the rest of the most recent matching command from this
     /// tab's own history, as dim ghost text after the cursor; Right
@@ -559,6 +568,7 @@ impl Default for DropTermConfig {
             status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
+            status_bar_activity_mark: true,
             autosuggestions_enabled: true,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,

@@ -235,6 +235,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowScrollback => "Show the scrolled-back lines",
             ConfigKey::TabBarBorder => "Show the tab bar border",
             ConfigKey::StatusBarBorder => "Show the status band border",
+            ConfigKey::StatusBarActivityMark => "Show the missed-activity halo",
         }
     }
 }
@@ -1159,6 +1160,7 @@ fn toggle_control(
         ConfigKey::StatusBarEnabled => config.status_bar_enabled,
         ConfigKey::TabBarBorder => config.tab_bar_border,
         ConfigKey::StatusBarBorder => config.status_bar_border,
+        ConfigKey::StatusBarActivityMark => config.status_bar_activity_mark,
         ConfigKey::StatusBarShowProcess => config.status_bar_show_process,
         ConfigKey::StatusBarShowPath => config.status_bar_show_path,
         ConfigKey::StatusBarShowBranch => config.status_bar_show_branch,

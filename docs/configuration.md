@@ -61,6 +61,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `status_bar_show_scrollback` | `true` |
 | `tab_bar_border` | `true` |
 | `status_bar_border` | `true` |
+| `status_bar_activity_mark` | `true` |
 | `autosuggestions_enabled` | `true` |
 | `autosuggestions_paths_enabled` | `true` |
 | `autosuggestions_commands_enabled` | `true` |
@@ -125,6 +126,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 
 | Key | Shows | Default |
 |---|---|---|
+| `status_bar_activity_mark` | The missed-activity halo - a thin attention ring around the process disc while output landed on the active tab under a hidden surface, until a touch (input, paste, scroll, pane click) or a tab switch acknowledges it. | `true` |
 | `status_bar_show_process` | Foreground process name - filled disc while one runs, hollow ring over the idle shell. | `true` |
 | `status_bar_show_path` | Working directory, `$HOME` collapsed to `~`. | `true` |
 | `status_bar_show_branch` | Git branch of the cwd (worktrees and submodules resolve). | `true` |
