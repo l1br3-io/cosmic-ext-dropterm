@@ -397,6 +397,18 @@ pub struct DropTermConfig {
     /// engine's timer keeps recording either way, so a re-enable
     /// shows whatever verdict still stands.
     pub status_bar_show_exit_status: bool,
+    /// The progress chip (osc94-progress spec): the running
+    /// command's own OSC 9;4 report — `42%` beside the exit chip,
+    /// `…` when indeterminate, the value in the scheme's own
+    /// attention red when the reporter says error (`!` when none
+    /// ever stood) — opt-in shell integration like the 133;D
+    /// verdict, never a guess: without integration the band renders
+    /// exactly what it renders without the chip. Three deaths keep
+    /// the number honest (the protocol's state 0, the foreground
+    /// handoff, and ~15 s without a refresh), so a dead reporter
+    /// never leaves its last number lying. Key off means the report
+    /// is never gathered and never rendered.
+    pub status_bar_show_progress: bool,
     /// The scrolled-back chip (status-scrolled spec): the
     /// viewport's lines back from the bottom — `↑12` — shown only
     /// off-bottom, its click jumping to the bottom (the band's one
@@ -576,6 +588,7 @@ impl Default for DropTermConfig {
             status_bar_show_clock: true,
             status_bar_show_duration: true,
             status_bar_show_exit_status: true,
+            status_bar_show_progress: true,
             status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
@@ -600,10 +613,7 @@ impl DropTermConfig {
             process: self.status_bar_show_process,
             duration: self.status_bar_show_duration,
             exit: self.status_bar_show_exit_status,
-            // The chip's own key ships whole with its docs row and
-            // settings control (osc94-progress Task 4); default on
-            // until then — the map gate's visibility ruling.
-            progress: true,
+            progress: self.status_bar_show_progress,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,

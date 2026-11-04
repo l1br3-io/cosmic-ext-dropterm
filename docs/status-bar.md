@@ -6,7 +6,7 @@ A 28 px strip at the surface's free edge, beside the grab bar, narrating the act
 
 Segments are values without labels - a path reads as a path - separated by gaps, never punctuation. Two clusters:
 
-- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the exit chip (`✗1`, only after a failed command - see [Shell integration](#shell-integration-optional)), then the tab's cwd with `$HOME` collapsed to `~` (the shell's own OSC 7 report outranks it - and the ssh stand-in - while one stands, `host:path` on a remote host; see [Shell integration](#shell-integration-optional)) and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories - hidden while a remote report or the ssh stand-in owns the path seat, when the local branch is as stale as the local path was).
+- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the exit chip (`✗1`, only after a failed command - see [Shell integration](#shell-integration-optional)), then the progress chip (`42%`, the running command's own OSC 9;4 report - `…` while indeterminate, the value in the scheme's red on error; see [Shell integration](#shell-integration-optional)), then the tab's cwd with `$HOME` collapsed to `~` (the shell's own OSC 7 report outranks it - and the ssh stand-in - while one stands, `host:path` on a remote host; see [Shell integration](#shell-integration-optional)) and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories - hidden while a remote report or the ssh stand-in owns the path seat, when the local branch is as stale as the local path was).
 - **Right, dimmed**: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, the scrolled-back chip, and the wall clock (`HH:MM`, local time, ticking on the minute).
 
 The band always takes the slot adjacent to the grab bar, whatever the `edge` × `tab_position` stacking - it never trades places with the tab strip. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame.
@@ -86,7 +86,26 @@ One rule for emitters: percent-encode at least `%` in the path (`%` → `%25`, a
   printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "${PWD//\%/%25}"
   ```
 
-Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status. Without an OSC 7 report the path seat reads exactly what it always did.
+The same opt-in channel carries the running command's own progress: `OSC 9 ; 4 ; <state> [; <percent>]` - the ConEmu-family progress report (Windows Terminal, kitty, and Ghostty 1.2+ read the same sequence; the reference is Ghostty's [ConEmu-style progress documentation](https://ghostty.org/docs/runtime-ansi-escapes/conemu-progress)). While a report stands the chip renders beside the exit chip: `42%` while a value stands, `…` when the reporter says indeterminate (it owns the chip - a stale number is not a number worth narrating), the value in the scheme's own attention red when the reporter says error, `!` in that red when error never had a value, and paused plain - the percent is the truth, paused is not a hue. A report that omits its percent keeps the standing one (the protocol's leave-unchanged rule, states 2-4). Clicking the chip copies the bare percent.
+
+Three deaths keep the number honest, and each is true to its source: the protocol's own `state 0` clears; the chip dies at the command's finish (the foreground handoff the duration timer already observes - a finished command's percent is history the exit chip narrates better); and a report expires ~15 s after its last refresh (Ghostty's own hardcoding, inherited), so a reporter that dies mid-command cannot leave its last number lying. The expiry clock runs on any tab whose report stands, hidden or not - the band can switch to a background tab, and its number must not have outlived its window there either.
+
+To see each state from a shell by hand:
+
+```sh
+printf '\e]9;4;1;42\e\\'   # 42%   - in progress
+printf '\e]9;4;1;84\e\\'   # 84%   - the value moves with each report
+printf '\e]9;4;3\e\\'      # …     - indeterminate owns the chip
+printf '\e]9;4;2;42\e\\'   # 42%   - error, in the scheme's red
+printf '\e]9;4;4;42\e\\'   # 42%   - paused, plain
+printf '\e]9;4;0\e\\'      # gone  - the protocol's own clear
+printf '\e]9;4;2\e\\'      # !     - error with no standing value, in the red
+printf '\e]9;4;0\e\\'      # gone
+```
+
+A real integration emits from inside the long-running command - a deployment script reporting as it walks its steps - not from rc files; anything already speaking ConEmu progress (tooling built for Windows Terminal, kitty, or Ghostty) works as-is.
+
+Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status. Without an OSC 7 report the path seat reads exactly what it always did. Without an OSC 9;4 report the band renders exactly what it renders without the chip.
 
 ## The scrolled-back chip
 

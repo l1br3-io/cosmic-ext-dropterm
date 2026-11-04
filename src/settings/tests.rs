@@ -263,6 +263,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarShowClock(true),
         PlannedWrite::StatusBarShowDuration(true),
         PlannedWrite::StatusBarShowExitStatus(true),
+        PlannedWrite::StatusBarShowProgress(true),
         PlannedWrite::StatusBarShowScrollback(true),
     ];
     let keys = section_keys();
@@ -1013,14 +1014,14 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_eleven_show_rows() {
+fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_twelve_show_rows() {
     // status-segments Task 3 + bar-borders BB-3 + status-scrolled
-    // Task 2 + status-activity Task 4 + status-exit Task 6: the
-    // Status bar card grows to fourteen rows, in band order — the
-    // master toggle, the border toggle, the missed-activity halo,
-    // then one "Show …" row per segment — each under its exact file
-    // spelling, each flipping through the single planned-write
-    // path, all Live.
+    // Task 2 + status-activity Task 4 + status-exit Task 6 +
+    // osc94-progress Task 4: the Status bar card grows to fifteen
+    // rows, in band order — the master toggle, the border toggle,
+    // the missed-activity halo, then one "Show …" row per segment —
+    // each under its exact file spelling, each flipping through the
+    // single planned-write path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -1048,8 +1049,21 @@ fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_eleven_s
             ConfigKey::StatusBarShowClock,
             ConfigKey::StatusBarShowDuration,
             ConfigKey::StatusBarShowExitStatus,
+            ConfigKey::StatusBarShowProgress,
             ConfigKey::StatusBarShowScrollback,
         ]
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowProgress.key_name(),
+        "status_bar_show_progress"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowProgress.label(),
+        "Show the progress chip"
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::StatusBarShowProgress, false),
+        Some(PlannedWrite::StatusBarShowProgress(false))
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
     assert_eq!(
