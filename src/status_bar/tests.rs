@@ -39,6 +39,7 @@ fn resolve(
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -243,6 +244,7 @@ fn fit_widths() -> Vec<(SegmentId, f32)> {
     vec![
         (SegmentId::Branch, 30.0),
         (SegmentId::Duration, 30.0),
+        (SegmentId::Progress, 30.0),
         (SegmentId::Exit, 30.0),
         (SegmentId::Profile, 40.0),
         (SegmentId::Grid, 30.0),
@@ -264,13 +266,14 @@ fn fit_path() -> PathMeasure {
 fn the_drop_order_pins_the_precedence() {
     // Facts the shell knows go first, then slow-moving identity,
     // the branch beside its path, the duration after its command,
-    // the exit chip after the duration (the verdict rides its
-    // command's narration, never outliving it), the scrolled chip
-    // after both (it answers "what's happening now" — it must
-    // survive while the command's own narration stands), the clock
-    // to the bitter end. Process and path are absent by
-    // construction: the disc never yields, and the path elides
-    // before anything else gives way.
+    // the progress chip before the exit chip (the most accessory
+    // fact — osc94-progress spec), the exit chip after the duration
+    // (the verdict rides its command's narration, never outliving
+    // it), the scrolled chip after both (it answers "what's
+    // happening now" — it must survive while the command's own
+    // narration stands), the clock to the bitter end. Process and
+    // path are absent by construction: the disc never yields, and
+    // the path elides before anything else gives way.
     assert_eq!(
         DROP_ORDER,
         [
@@ -280,11 +283,32 @@ fn the_drop_order_pins_the_precedence() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Progress,
             SegmentId::Exit,
             SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
+}
+
+#[test]
+fn progress_drops_before_the_exit_chip() {
+    // The seat pin (osc94-progress criterion 3): progress is the
+    // most accessory fact — with Progress, Exit, and Clock
+    // measured, starvation drops the chip first, the exit second,
+    // and the clock survives — DROP_ORDER's precedence restricted
+    // to the present.
+    let widths = vec![
+        (SegmentId::Progress, 30.0),
+        (SegmentId::Exit, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all three consumed 126 → room -74 past Gone; the
+    // chip's 42 and the exit's 42 free 10 px of room — one
+    // character's worth, beside the surviving clock.
+    let fit = band_fit(152.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Progress, SegmentId::Exit]);
+    assert_eq!(fit.path, PathFit::Elided(1));
 }
 
 #[test]
@@ -348,41 +372,41 @@ fn exit_drops_after_duration_and_before_scrolled() {
 
 #[test]
 fn zero_pressure_renders_everything() {
-    // 678 px of consumption (fixed + nine gaps-and-widths + the
-    // whole path) under 700 px: nothing drops, nothing elides.
-    let fit = band_fit(700.0, 100.0, &fit_widths(), fit_path());
+    // 716 px of consumption (fixed + ten gaps-and-widths + the
+    // whole path) under 738 px: nothing drops, nothing elides.
+    let fit = band_fit(738.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn pressure_elides_the_path_before_any_segment_drops() {
-    // 500 px leaves 22 px of room for the 200 px path: elide to
+    // 548 px leaves 22 px of room for the 200 px path: elide to
     // 2 chars — but nothing drops while any of the path survives.
-    let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(548.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Elided(2));
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn past_full_elision_segments_drop_one_at_a_time_in_order() {
-    // 470 px cannot host even a fully elided path (room below one
+    // 508 px cannot host even a fully elided path (room below one
     // character): the grid goes first, and the path re-expands
     // into the freed 42 px — three characters' worth.
-    let fit = band_fit(470.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(508.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid]);
     assert_eq!(fit.path, PathFit::Elided(3));
 
-    // 428 px costs a second drop: tab follows grid, and the path
+    // 466 px costs a second drop: tab follows grid, and the path
     // re-expands again (24 px of room, two characters).
-    let fit = band_fit(428.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(466.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
 
 #[test]
 fn absent_segments_are_skipped_in_the_drop_order() {
-    // No grid segment (toggle off, or at spawn dimensions): 342 px
+    // No grid segment (toggle off, or at spawn dimensions): 390 px
     // starves the band past full elision, and the yields walk tab,
     // zoom, then profile — the absent grid is skipped, not waited
     // on.
@@ -390,7 +414,7 @@ fn absent_segments_are_skipped_in_the_drop_order() {
         .into_iter()
         .filter(|(id, _)| *id != SegmentId::Grid)
         .collect();
-    let fit = band_fit(342.0, 100.0, &widths, fit_path());
+    let fit = band_fit(390.0, 100.0, &widths, fit_path());
     assert_eq!(
         fit.dropped,
         vec![SegmentId::Tab, SegmentId::Zoom, SegmentId::Profile]
@@ -401,13 +425,13 @@ fn absent_segments_are_skipped_in_the_drop_order() {
 #[test]
 fn the_path_re_expands_monotonically_as_drops_free_width() {
     // Widths chosen so exactly `k` drops are forced (the k-th
-    // survivor's room sits at 10 + 5(k-1) px — one character plus a
+    // survivor's room sits at 10 + 4(k-1) px — one character plus a
     // growing slack that stays below the next drop's freed width,
     // while the (k-1)-th sits below one character): the path's char
     // budget never shrinks as drops free width.
     let mut prev_chars = 0;
     let fixture = fit_widths();
-    for k in 1..=9 {
+    for k in 1..=10 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -421,10 +445,10 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of nine, exact in f32"
+            reason = "a loop index of ten, exact in f32"
         )]
-        let room = 10.0 + 5.0 * (k as f32 - 1.0);
-        let width = 100.0 + 378.0 + room - freed;
+        let room = 10.0 + 4.0 * (k as f32 - 1.0);
+        let width = 100.0 + 421.0 + room - freed;
         let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
         assert_eq!(
             fit.dropped.len(),
@@ -446,7 +470,7 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
 
 #[test]
 fn the_disc_never_yields_even_when_everything_drops() {
-    // Zero width: all nine droppables give way in order and the
+    // Zero width: all ten droppables give way in order and the
     // path is gone — but `fixed` (the paddings and the disc
     // cluster) is untouchable by construction, and the path never
     // appears in the dropped set: the type has no say in it.
@@ -460,6 +484,7 @@ fn the_disc_never_yields_even_when_everything_drops() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Progress,
             SegmentId::Exit,
             SegmentId::Scrolled,
             SegmentId::Clock,
@@ -647,6 +672,11 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         exit_status: Some(1),
         reported_cwd: None,
         hostname: None,
+        progress: Some(crate::terminal::ReportedProgress {
+            state: crate::terminal::ProgressState::InProgress,
+            value: Some(42),
+            refreshed_at: std::time::Instant::now(),
+        }),
     };
     resolve_segments(&inputs, toggles)
 }
@@ -663,6 +693,7 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Clock => segments.clock.is_some(),
         SegmentId::Duration => segments.running_elapsed.is_some() || segments.frozen.is_some(),
         SegmentId::Exit => segments.exit_code.is_some(),
+        SegmentId::Progress => segments.progress.is_some(),
         SegmentId::Scrolled => segments.scrolled.is_some(),
     }
 }
@@ -679,26 +710,29 @@ fn hide(toggles: &mut StatusToggles, id: SegmentId) {
         SegmentId::Clock => &mut toggles.clock,
         SegmentId::Duration => &mut toggles.duration,
         SegmentId::Exit => &mut toggles.exit,
+        SegmentId::Progress => &mut toggles.progress,
         SegmentId::Scrolled => &mut toggles.scrolled,
     };
     *field = false;
 }
 
 #[test]
-fn the_clusters_pin_the_eleven_segments_order() {
+fn the_clusters_pin_the_twelve_segments_order() {
     // The duration sits in the left cluster's second seat — right
     // beside the process it times (OQ-2) — but carries the dimmed
     // alpha of a meta narration, not identity (the draw's rule).
     // The exit chip sits after the duration (status-exit spec): the
-    // verdict beside its cost. The scrolled chip sits between Zoom
-    // and Clock (status-scrolled OQ-2): state of the view, beside
-    // time.
+    // verdict beside its cost. The progress chip sits after the
+    // exit (osc94-progress spec): the running command's own report
+    // beside the verdict. The scrolled chip sits between Zoom and
+    // Clock (status-scrolled OQ-2): state of the view, beside time.
     assert_eq!(
         LEFT_CLUSTER,
         [
             SegmentId::Process,
             SegmentId::Duration,
             SegmentId::Exit,
+            SegmentId::Progress,
             SegmentId::Path,
             SegmentId::Branch
         ]
@@ -800,6 +834,7 @@ fn resolve_duration(
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -937,8 +972,107 @@ fn resolve_exit(exit_status: Option<u32>, toggles: StatusToggles) -> StatusSegme
         exit_status,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
+}
+
+// --- the progress chip (osc94-progress) ---
+//
+// The running command's own report: the percent while a value
+// stands, `…` when indeterminate owns the chip or none ever stood,
+// the value (or `!`) in the attention red when the reporter says
+// error, paused plain — and the click copies the bare number.
+
+/// A standing report for the chip's pins — the engine's fact,
+/// constructed as the engine constructs it.
+fn standing_progress(
+    state: crate::terminal::ProgressState,
+    value: Option<u8>,
+) -> crate::terminal::ReportedProgress {
+    crate::terminal::ReportedProgress {
+        state,
+        value,
+        refreshed_at: std::time::Instant::now(),
+    }
+}
+
+#[test]
+fn the_progress_chip_renders_every_report_state() {
+    // The render table (osc94-progress spec), every row: `42%`
+    // while a value stands (in progress and paused alike — the
+    // percent is the truth, paused is not a hue, OQ-1), `…` when
+    // indeterminate owns the chip or no value ever stood, the value
+    // for error (the attention red is the paint's rule, beside the
+    // exit chip's), `!` when error never had a value.
+    use crate::terminal::ProgressState;
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::InProgress, Some(42))),
+        "42%"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::InProgress, None)),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Indeterminate, Some(42))),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Indeterminate, None)),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Error, Some(42))),
+        "42%"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Error, None)),
+        "!"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Paused, Some(42))),
+        "42%"
+    );
+}
+
+#[test]
+fn the_progress_chip_resolves_from_the_engine_fact() {
+    // The engine's standing fact flows to the chip un-guessed, and
+    // the toggle hides chip and fact together — hidden and absent
+    // stay the same indistinguishable None.
+    use crate::terminal::ProgressState;
+    let segments = resolve_full(StatusToggles::all());
+    assert_eq!(
+        segments.progress.map(|report| (report.state, report.value)),
+        Some((ProgressState::InProgress, Some(42)))
+    );
+    let mut toggles = StatusToggles::all();
+    toggles.progress = false;
+    assert_eq!(resolve_full(toggles).progress, None);
+}
+
+#[test]
+fn the_progress_chip_copies_the_bare_number() {
+    // The exit chip's own convention: the payload is the bare
+    // number, never the glyph or the `%`; the valueless shapes —
+    // `…`, `!` — have no number to copy, and no report copies
+    // nothing.
+    use crate::terminal::ProgressState;
+    let errored = StatusSegments {
+        progress: Some(standing_progress(ProgressState::Error, Some(42))),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Progress, &errored), "42");
+    let valueless = StatusSegments {
+        progress: Some(standing_progress(ProgressState::InProgress, None)),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Progress, &valueless), "");
+    assert_eq!(
+        copy_text(SegmentId::Progress, &StatusSegments::default()),
+        ""
+    );
 }
 
 /// Resolve with a shell cwd report standing (osc7-cwd spec) — the
@@ -975,6 +1109,7 @@ fn resolve_reported(
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        progress: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -1169,6 +1304,7 @@ fn resolve_grid(
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1247,6 +1383,7 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1458,6 +1595,7 @@ fn resolve_ssh(
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1797,6 +1935,7 @@ fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
         exit_status: None,
         reported_cwd: None,
         hostname: None,
+        progress: None,
     };
     let segments = resolve_segments(&inputs, StatusToggles::all());
     assert!(segments.missed_activity);
@@ -2095,6 +2234,7 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         profile: Some("dev".to_string()),
         zoom_percent: Some(20),
         branch: None,
+        progress: None,
         grid: None,
         tab_position: None,
         clock: None,
@@ -2183,14 +2323,14 @@ fn a_missing_path_rect_never_arms() {
 
 #[test]
 fn the_armed_display_borrows_the_branchs_seat() {
-    // 644 px: the resting fit elides the path to 16 chars beside
+    // 682 px: the resting fit elides the path to 16 chars beside
     // the branch; lending the branch's 42 px frees the whole value
     // — the armed display is the un-elided path.
-    let resting = band_fit(644.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(682.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(resting.path, PathFit::Elided(16));
     let display = reveal_display(
         "~/src/oss/l1br3/ced2",
-        644.0,
+        682.0,
         100.0,
         &fit_widths(),
         fit_path(),
@@ -2200,11 +2340,11 @@ fn the_armed_display_borrows_the_branchs_seat() {
 
 #[test]
 fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
-    // 362 px: the resting fit drops the grid, tab, zoom, and
+    // 410 px: the resting fit drops the grid, tab, zoom, and
     // profile and elides to five characters; the armed fit — the
     // branch's seat lent on top of the resting drops — still shows
     // only a longer elision, never an overflow.
-    let resting = band_fit(362.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(410.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(
         resting.dropped,
         vec![
@@ -2219,8 +2359,8 @@ fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
         .into_iter()
         .filter(|(id, _)| !resting.dropped.contains(id))
         .collect();
-    let display = reveal_display("~/src/oss/l1br3/ced2", 362.0, 100.0, &survivors, fit_path());
-    assert_eq!(display, "…br3/ced2");
+    let display = reveal_display("~/src/oss/l1br3/ced2", 410.0, 100.0, &survivors, fit_path());
+    assert_eq!(display, "…1br3/ced2");
 }
 
 #[test]
@@ -2481,6 +2621,10 @@ fn rich_segments() -> StatusSegments {
         branch: Some("ced2".to_string()),
         profile: Some("dev".to_string()),
         zoom_percent: Some(120),
+        progress: Some(standing_progress(
+            crate::terminal::ProgressState::InProgress,
+            Some(42),
+        )),
         grid: Some((120, 30)),
         tab_position: Some((1, 3)),
         clock: Some("14:32".to_string()),
@@ -2628,7 +2772,7 @@ fn copy_all_joins_every_present_full_value_with_single_spaces() {
     // then right — never displays, empties skipped.
     assert_eq!(
         copy_all_text(&rich_segments()),
-        "cargo 2:41 ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
+        "cargo 2:41 42 ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
     );
 }
 

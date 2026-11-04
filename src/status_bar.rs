@@ -53,6 +53,7 @@ use crate::tab_bar::{
     dropdown_row_at, fill_disc, pane_colors, relative_luminance,
 };
 use crate::terminal::Action;
+use crate::terminal::ProgressState;
 
 /// The band's height in logical pixels — one notch below the tab
 /// strip's 32 px, for callers that reserve room for it outside the
@@ -123,6 +124,12 @@ pub enum SegmentId {
     /// code 0 is the unmarked default, and an unwitnessed verdict
     /// (no shell integration) renders nothing either — never a guess.
     Exit,
+    /// The running command's own progress report (OSC 9;4) — `42%`,
+    /// `…` when indeterminate, the value in attention red when the
+    /// reporter says error. State 0, the foreground handoff, and ~15 s
+    /// without a refresh each clear it: a dead reporter never leaves
+    /// its last number lying.
+    Progress,
     /// The `~`-collapsed cwd.
     Path,
     /// The cwd's git branch (or detached sha).
@@ -145,11 +152,13 @@ pub enum SegmentId {
 /// The left cluster's segments in draw order — full alpha, except
 /// the duration's dimmed meta narration (OQ-2: the seat is the
 /// process's side; the alpha stays a notch down). The exit chip sits
-/// after the duration it verdicts (status-exit spec).
-pub const LEFT_CLUSTER: [SegmentId; 5] = [
+/// after the duration it verdicts (status-exit spec); the progress
+/// chip after the exit (osc94-progress spec).
+pub const LEFT_CLUSTER: [SegmentId; 6] = [
     SegmentId::Process,
     SegmentId::Duration,
     SegmentId::Exit,
+    SegmentId::Progress,
     SegmentId::Path,
     SegmentId::Branch,
 ];
@@ -173,29 +182,32 @@ pub const RIGHT_CLUSTER: [SegmentId; 6] = [
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
-/// the exit chip follows the duration (the verdict rides its
-/// command's narration, never outliving it), the scrolled chip
-/// follows both (it answers "what's happening now" — it must
-/// survive while the command's own narration stands), and the clock
-/// is last — tmux keeps time to the bitter end.
-pub const DROP_ORDER: [SegmentId; 9] = [
+/// the progress chip drops before the exit chip (the most
+/// accessory fact — osc94-progress spec), the exit chip follows
+/// the duration (the verdict rides its command's narration, never
+/// outliving it), the scrolled chip follows both (it answers
+/// "what's happening now" — it must survive while the command's
+/// own narration stands), and the clock is last — tmux keeps time
+/// to the bitter end.
+pub const DROP_ORDER: [SegmentId; 10] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
     SegmentId::Duration,
+    SegmentId::Progress,
     SegmentId::Exit,
     SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// eleven `status_bar_show_*` bools. A hidden segment is absent
+/// `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "eleven independent visibility switches — one per config key, by design"
+    reason = "twelve independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -205,6 +217,8 @@ pub struct StatusToggles {
     pub duration: bool,
     /// The exit chip.
     pub exit: bool,
+    /// The progress chip.
+    pub progress: bool,
     /// The `~`-collapsed cwd.
     pub path: bool,
     /// The git branch of the cwd.
@@ -224,13 +238,14 @@ pub struct StatusToggles {
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's eleven
+    /// Every segment shown — the all-on default the config's
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
             process: true,
             duration: true,
             exit: true,
+            progress: true,
             path: true,
             branch: true,
             profile: true,
@@ -300,6 +315,13 @@ pub struct StatusSegments {
     /// rest. The display is [`scrolled_display`]; the click is the
     /// jump, never a copy.
     pub scrolled: Option<u16>,
+    /// The running command's own progress report (osc94-progress
+    /// spec), verbatim from the engine — the display
+    /// ([`progress_display`]) and the error-red decision derive at
+    /// paint; the copy payload is the bare number. Absent when no
+    /// report stands (and when hidden): the same
+    /// indistinguishable `None`.
+    pub progress: Option<crate::terminal::ReportedProgress>,
     /// Output landed on the active tab while the surface was hidden
     /// and no interaction has acknowledged it since
     /// (status-activity spec) — the halo's fact. A pass-through:
@@ -379,6 +401,12 @@ pub struct StatusInputs<'a> {
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
+    /// The running command's own progress report (OSC 9;4,
+    /// osc94-progress spec) — the engine's standing fact, gathered
+    /// under the progress toggle's gate. `None` (no integration, a
+    /// clear, the handoff, or the decay window) shows nothing:
+    /// never a guess.
+    pub progress: Option<crate::terminal::ReportedProgress>,
     /// The foreground ssh command's destination token (status-remote
     /// spec) — the engine's cmdline read, gathered only at the
     /// snapshot points and only under [`ssh_read_due`]'s gate;
@@ -510,6 +538,11 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.scrolled_back)
             .flatten()
             .filter(|&lines| lines > 0),
+        // The engine's standing report, verbatim — hidden and
+        // absent the same indistinguishable None (osc94-progress
+        // spec); the display and the error-red decision derive at
+        // paint, the copy payload from the value.
+        progress: toggles.progress.then_some(inputs.progress).flatten(),
         // Pass-throughs (status-activity spec): the mark is the
         // surface's news, so no segment toggle gates it (the
         // config-key gate lives upstream at the sampling), and the
@@ -548,6 +581,28 @@ pub fn scrolled_display(lines: u16) -> String {
 /// the glyph.
 pub fn exit_display(code: u32) -> String {
     format!("✗{code}")
+}
+
+/// The progress chip's display (osc94-progress spec): the percent
+/// the reporter gave — `42%`; `…` when indeterminate owns the chip
+/// or no value ever stood; the value when the reporter says error
+/// (painted in the attention red beside the exit chip's rule — `!`
+/// alone when none ever stood). Paused renders its percent plain:
+/// the percent is the truth, paused is not a hue (OQ-1).
+pub fn progress_display(progress: crate::terminal::ReportedProgress) -> String {
+    use crate::terminal::ProgressState;
+    match progress.state {
+        ProgressState::InProgress | ProgressState::Paused => progress
+            .value
+            .map_or_else(|| "…".to_owned(), |value| format!("{value}%")),
+        // Indeterminate owns the chip — a standing value is not a
+        // number worth narrating while the reporter says it cannot
+        // measure.
+        ProgressState::Indeterminate => "…".to_owned(),
+        ProgressState::Error => progress
+            .value
+            .map_or_else(|| "!".to_owned(), |value| format!("{value}%")),
+    }
 }
 
 /// The ssh command's destination token (status-remote spec): the
@@ -845,6 +900,14 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
         SegmentId::Exit => segments
             .exit_code
             .map(|code| code.to_string())
+            .unwrap_or_default(),
+        // The bare number, never the glyph or the `%` — the exit
+        // chip's own convention; the valueless shapes (`…`, `!`)
+        // have no number to copy.
+        SegmentId::Progress => segments
+            .progress
+            .and_then(|progress| progress.value)
+            .map(|value| value.to_string())
             .unwrap_or_default(),
         // The action chip has no copyable value — the jump is the
         // verb (status-scrolled spec). The widget's press routing
@@ -1508,6 +1571,7 @@ struct State {
     process: BandParagraph,
     duration: BandParagraph,
     exit: BandParagraph,
+    progress: BandParagraph,
     path: BandParagraph,
     branch: BandParagraph,
     profile: BandParagraph,
@@ -1576,6 +1640,7 @@ impl State {
             SegmentId::Process => &self.process,
             SegmentId::Duration => &self.duration,
             SegmentId::Exit => &self.exit,
+            SegmentId::Progress => &self.progress,
             SegmentId::Path => &self.path,
             SegmentId::Branch => &self.branch,
             SegmentId::Profile => &self.profile,
@@ -1592,6 +1657,7 @@ impl State {
             SegmentId::Process => &mut self.process,
             SegmentId::Duration => &mut self.duration,
             SegmentId::Exit => &mut self.exit,
+            SegmentId::Progress => &mut self.progress,
             SegmentId::Path => &mut self.path,
             SegmentId::Branch => &mut self.branch,
             SegmentId::Profile => &mut self.profile,
@@ -1726,6 +1792,15 @@ impl<Message> StatusBar<Message> {
         let exit_text = self.segments.exit_code.map(exit_display);
         state.exit.update(segment_text(
             display_text(copied, SegmentId::Exit, exit_text.as_deref().unwrap_or("")),
+            font,
+        ));
+        let progress_text = self.segments.progress.map(progress_display);
+        state.progress.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Progress,
+                progress_text.as_deref().unwrap_or(""),
+            ),
             font,
         ));
         state.branch.update(segment_text(
@@ -1865,6 +1940,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Process => self.segments.process.clone(),
                 SegmentId::Duration => duration_text.clone(),
                 SegmentId::Exit => exit_text.clone().unwrap_or_default(),
+                SegmentId::Progress => progress_text.clone().unwrap_or_default(),
                 SegmentId::Path => {
                     if armed {
                         state.path_armed_text.clone()
@@ -1965,6 +2041,7 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
     for id in [
         SegmentId::Duration,
         SegmentId::Exit,
+        SegmentId::Progress,
         SegmentId::Path,
         SegmentId::Branch,
     ] {
@@ -2521,7 +2598,9 @@ where
         // one deliberate exception (status-exit spec): failure paints
         // in the scheme's own attention red — the same token the
         // halo rings with, flowing from the ungated red pair, so the
-        // chip colors even when the halo's own key is off.
+        // chip colors even when the halo's own key is off. The
+        // progress chip's error row joins it (osc94-progress spec):
+        // no second state hue, ever — the standing rule.
         let text_y =
             |paragraph: &BandParagraph| bounds.y + (BAND_HEIGHT - paragraph.min_height()) / 2.0;
         let dimmed = Color {
@@ -2530,7 +2609,13 @@ where
         };
         for (id, rect) in segment_rects(state, bounds) {
             let paragraph = state.paragraph_of(id);
-            let color = if id == SegmentId::Exit {
+            let color = if id == SegmentId::Exit
+                || (id == SegmentId::Progress
+                    && self
+                        .segments
+                        .progress
+                        .is_some_and(|progress| progress.state == ProgressState::Error))
+            {
                 attention_color(
                     self.segments.attention_red,
                     self.segments.attention_bright_red,

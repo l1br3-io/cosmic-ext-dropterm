@@ -3298,7 +3298,10 @@ const PROGRESS_DECAY: Duration = Duration::from_secs(15);
 pub struct ReportedProgress {
     pub state: ProgressState,
     pub value: Option<u8>,
-    refreshed_at: Instant,
+    /// The decay anchor — engine policy, read through
+    /// [`Terminal::progress_decay_deadline`]; crate-visible only so
+    /// the band's headless fixtures can stand a report.
+    pub(crate) refreshed_at: Instant,
 }
 
 impl ReportedProgress {

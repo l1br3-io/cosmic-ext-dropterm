@@ -806,6 +806,7 @@ impl DropTerm {
             frozen,
             exit_status,
             reported_cwd,
+            progress,
             missed_activity,
             attention_red,
             attention_bright_red,
@@ -843,6 +844,14 @@ impl DropTerm {
                 // when the path seat's own key hides the seat, and
                 // the resolver gates the seat itself.
                 terminal.reported_cwd(),
+                // The running command's own report (osc94-progress
+                // spec), an in-memory read gated all the same: key
+                // off means never gathered, the resolver's
+                // hidden/absent indistinguishability.
+                toggles
+                    .progress
+                    .then(|| terminal.reported_progress())
+                    .flatten(),
                 // Key off means never gathered and never rendered
                 // (status-activity spec); the red pair stays
                 // ungated beside it — status-exit's chip reuses the
@@ -885,6 +894,7 @@ impl DropTerm {
             attention_bright_red,
             exit_status,
             reported_cwd,
+            progress,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
