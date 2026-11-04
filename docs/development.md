@@ -121,6 +121,63 @@ checklist every change answers to lives in [testing.md](testing.md). Headless
 concerns stay in `#[cfg(test)]` module tests - `just test` runs them, and
 `just check` (format, clippy, test) is the change Definition of Done.
 
+## The COSMIC validation VM
+
+The applet rows at the bottom of [testing.md](testing.md) need a live
+COSMIC session; the validation VM is where they walk when no spare
+hardware is at hand. The guest is a Pop!_OS 24.04 COSMIC image under
+virt-manager/QEMU — `/dev/kvm`, virtio-gpu with virgl: cosmic-comp
+renders GLES and libcosmic falls back to GL, so no guest Vulkan is
+needed (cosmic-epoch#3831/#3844). One-time guest setup: install
+`qemu-guest-agent` (the harness's only channel in — no SSH), auto-login
+via greetd so reboots return to the desktop unattended, then snapshot
+the stock state and name it; every walk rewinds to it first.
+
+The harness is `scripts/vm.sh` behind `just vm-*` recipes:
+
+- `just vm-status` — the preflight doctor (agent, session, flatpak
+  toolchain, disk headroom, snapshots). Run it first, always.
+- `just vm-exec` / `just vm-exec-user` — run a command in the guest as
+  root, or as the desktop user inside the session env (runtime dir +
+  session bus + Wayland socket), which is how the CLI toggles and
+  `flatpak --user` behave exactly as from a guest terminal.
+- `just vm-put` — transfer a file in, sha256 verified on both sides.
+- `just vm-screenshot` — capture the display for evidence.
+- `just vm-snapshot` / `just vm-restore` — clean points around each leg.
+- `just vm-push` — build both artifacts host-side and install them in
+  the guest exactly as the release tarball lays them down.
+
+The walk, in order:
+
+1. Rewind to the stock snapshot; install the native terminal from the
+   published release tarball — `sha256sum -c sha256sums`, copy `usr/`
+   over `/usr`, reboot (auto-login returns it).
+2. Fetch the listing's two files from the fork branch **by their
+   recorded sha256s**. Never regenerate `cargo-sources.json` from a
+   working tree: main's lock carries the `[patch.crates-io]` forks and
+   pairs with the pinned manifest as a mismatch the build rejects.
+3. One-time in-guest toolchain: `apt install flatpak-builder`, add the
+   flathub remote. Then `flatpak-builder --user --force-clean` over the
+   two files; export and install land under `~/.local/share/flatpak`.
+4. Add the applet to the panel: COSMIC Settings → Panel (the honest
+   human route), or the config route — append the applet id to
+   `~/.config/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_center`
+   and `pkill -x cosmic-panel`; the session respawns the panel, which
+   re-reads its config and spawns the applet.
+5. Drive the rows. The applet's toggle and running/not indicator ride
+   the session bus — watch them with `dbus-monitor --session` in-guest.
+   Scripted input goes through QEMU's monitor: `virsh send-key` for
+   keys, `input-send-event` for the pointer. Pointer quirks that
+   matter: absolute moves go to the USB tablet (axis 0–32767 across
+   the screen), the guest display runs 1280×800, and a batched
+   move+click **drops the button** — send the move, then the press,
+   then the release as three separate commands.
+
+What the VM cannot prove: real-hardware timing (GPU throughput,
+scanout), and the two GUI steps a script should not fake — the
+Settings → Panel listing and the custom-keybind press belong to a
+human at the SPICE console.
+
 ## Releasing
 
 A release is three recipes and a push, split because one edit is necessarily
