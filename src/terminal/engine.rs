@@ -1708,8 +1708,8 @@ impl Terminal {
     /// payload forwarded from the event surface. A malformed report
     /// is ignored whole — it never disturbs a standing one; a valid
     /// report replaces whatever stood.
-    pub fn note_current_directory(&mut self, url: String) {
-        if let Some(report) = ReportedCwd::parse(&url) {
+    pub fn note_current_directory(&mut self, url: &str) {
+        if let Some(report) = ReportedCwd::parse(url) {
             self.reported_cwd = Some(report);
         }
     }
@@ -3229,6 +3229,20 @@ impl ReportedCwd {
             host: (!host.is_empty()).then_some(host),
             path,
         })
+    }
+
+    /// Whether the report names a host other than ours (osc7-cwd
+    /// spec): an empty host is local by convention; a named host is
+    /// local exactly when it names ours — case-insensitively, the
+    /// DNS rule. Without a local name to compare against
+    /// (`None` — the hostname read failed), a named host is taken
+    /// at its word: remote.
+    pub fn names_remote_host(&self, local: Option<&str>) -> bool {
+        match (&self.host, local) {
+            (None, _) => false,
+            (Some(host), Some(ours)) => !host.eq_ignore_ascii_case(ours),
+            (Some(_), None) => true,
+        }
     }
 }
 

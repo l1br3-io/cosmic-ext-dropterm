@@ -16,5 +16,5 @@ pub(crate) mod suggest;
 pub mod theme_source;
 mod widget;
 
-pub use engine::{Terminal, TerminalOptions, TerminalScroll, WINDOW_BG_COLOR};
+pub use engine::{ReportedCwd, Terminal, TerminalOptions, TerminalScroll, WINDOW_BG_COLOR};
 pub use widget::{Action, TerminalBox};

@@ -329,6 +329,17 @@ pub struct StatusInputs<'a> {
     pub home: Option<&'a Path>,
     /// The active tab's cwd.
     pub cwd: Option<&'a Path>,
+    /// The shell's own cwd report (OSC 7, osc7-cwd spec) —
+    /// `file://host/path`, decoded. A standing report outranks both
+    /// layers it replaces: the ssh stand-in and the `/proc` cwd. The
+    /// host renders only when it differs from ours — the remote case
+    /// is the one that matters; remote paths never collapse (no
+    /// guessed `$HOME`). Gathered only under the path toggle's gate.
+    pub reported_cwd: Option<crate::terminal::ReportedCwd>,
+    /// Our own hostname (osc7-cwd spec) — the host-qualification
+    /// base: a reported host renders only when it differs from
+    /// this. Gathered once at init, passed every snapshot.
+    pub hostname: Option<&'a str>,
     /// The shell the tab's spawn recorded.
     pub shell: &'a str,
     /// The id-resolved profile name.
@@ -402,28 +413,50 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         path: toggles
             .path
             .then(|| {
-                // The ssh stand-in (status-remote spec): while ssh
-                // owns the foreground and its argv certifies a
-                // destination, the path's own seat shows that token
-                // verbatim — the local cwd froze when ssh started,
-                // and the band never narrates a stale seat. The
-                // copy payload rides the same field: the token is
-                // the full value.
+                // A standing report outranks both layers it
+                // replaces (osc7-cwd spec): the shell said its own
+                // cwd, so the ssh stand-in and the `/proc` guess
+                // both stand down — the report renders
+                // host-qualified only when it names another machine,
+                // `~`-collapsed only against our own `$HOME` (a
+                // remote path never borrows a local abbreviation).
+                // The copy payload rides the same field, as the
+                // stand-in's does.
                 inputs
-                    .ssh_destination
-                    .map(str::to_string)
-                    .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+                    .reported_cwd
+                    .as_ref()
+                    .map(|report| reported_path_value(report, inputs.hostname, inputs.home))
+                    // The ssh stand-in (status-remote spec): while
+                    // ssh owns the foreground and its argv certifies
+                    // a destination, the path's own seat shows that
+                    // token verbatim — the local cwd froze when ssh
+                    // started, and the band never narrates a stale
+                    // seat. The copy payload rides the same field:
+                    // the token is the full value.
+                    .or_else(|| {
+                        inputs
+                            .ssh_destination
+                            .map(str::to_string)
+                            .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+                    })
             })
             .flatten(),
         // The branch hides while stood-in (status-remote OQ-1): the
         // token's presence is the ssh fact — the local repo's branch
         // is as stale as the path was. Keyed on the fact, not the
         // seat's visibility; the app's read gate keeps the two
-        // reachable states one and the same.
-        branch: (toggles.branch && inputs.ssh_destination.is_none())
-            .then_some(inputs.branch)
-            .flatten()
-            .map(str::to_string),
+        // reachable states one and the same. A remote report hides
+        // it too (osc7-cwd spec) — the same staleness, extended; a
+        // local report leaves the branch to its own cwd read.
+        branch: (toggles.branch
+            && inputs.ssh_destination.is_none()
+            && !inputs
+                .reported_cwd
+                .as_ref()
+                .is_some_and(|report| report.names_remote_host(inputs.hostname)))
+        .then_some(inputs.branch)
+        .flatten()
+        .map(str::to_string),
         profile: toggles
             .profile
             .then_some(inputs.profile_name)
@@ -582,6 +615,29 @@ pub fn collapse_home(path: &Path, home: Option<&Path>) -> String {
         }
         Some(_) => "~".to_string(),
         None => path.display().to_string(),
+    }
+}
+
+/// The path seat's value from a standing OSC 7 report (osc7-cwd
+/// spec): the report's path, host-qualified only when it names
+/// another machine — the remote case is the one that matters — and
+/// `~`-collapsed only against our own `$HOME`; a remote path renders
+/// verbatim, because no remote `$HOME` is known and a guessed
+/// collapse is a lie.
+fn reported_path_value(
+    report: &crate::terminal::ReportedCwd,
+    hostname: Option<&str>,
+    home: Option<&Path>,
+) -> String {
+    let path = Path::new(&report.path);
+    if report.names_remote_host(hostname) {
+        format!(
+            "{}:{}",
+            report.host.as_deref().unwrap_or_default(),
+            path.display()
+        )
+    } else {
+        collapse_home(path, home)
     }
 }
 

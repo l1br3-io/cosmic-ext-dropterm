@@ -335,6 +335,12 @@ pub struct DropTerm {
     /// ssh foreground all hold. `None` keeps the local path and
     /// branch — the stand-in never guesses a host.
     active_ssh_destination: Option<String>,
+    /// Our own hostname, read once at init (osc7-cwd spec): the
+    /// band's host-qualification base — a reported OSC 7 host
+    /// renders only when it differs from this. One `/proc` read at
+    /// construction, never per frame; `None` (unreadable) takes
+    /// every named host at its word.
+    local_hostname: Option<String>,
     /// The band segment currently flashing its `✓` after a
     /// click-to-copy — set on the copied message, cleared by the
     /// flash-lapse task (`status_bar::COPY_FLASH`).
@@ -753,6 +759,7 @@ impl DropTerm {
             running_elapsed,
             frozen,
             exit_status,
+            reported_cwd,
             missed_activity,
             attention_red,
             attention_bright_red,
@@ -784,6 +791,11 @@ impl DropTerm {
                 terminal.command_live().1,
                 frozen,
                 toggles.exit.then(|| terminal.command_exit()).flatten(),
+                // The path seat's authoritative source (osc7-cwd
+                // spec) joins under the seat's own gate — key off
+                // means never gathered, the same
+                // hidden/absent indistinguishability.
+                toggles.path.then(|| terminal.reported_cwd()).flatten(),
                 // Key off means never gathered and never rendered
                 // (status-activity spec); the red pair stays
                 // ungated beside it — status-exit's chip reuses the
@@ -820,10 +832,12 @@ impl DropTerm {
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
             ssh_destination: self.active_ssh_destination.as_deref(),
+            hostname: self.local_hostname.as_deref(),
             missed_activity,
             attention_red,
             attention_bright_red,
             exit_status,
+            reported_cwd,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -1513,6 +1527,16 @@ fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
     }
 }
 
+/// Our own hostname, read once at init (osc7-cwd spec): the band's
+/// host-qualification base — a reported OSC 7 host renders only when
+/// it differs from this. One `/proc` read at construction, never per
+/// frame; `None` (unreadable) takes every named host at its word.
+fn read_local_hostname() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|host| host.trim().to_owned())
+}
+
 /// `DropTerm`'s cosmic config directory (suggest-specs-data spec):
 /// the same resolution cosmic-config performs for the config keys
 /// (its `Config` keeps the path private) — under a flatpak the
@@ -1666,6 +1690,7 @@ impl Application for DropTerm {
             active_process_name: None,
             active_branch: None,
             active_ssh_destination: None,
+            local_hostname: read_local_hostname(),
             copied_segment: None,
             status_clock: None,
             clock_armed: false,

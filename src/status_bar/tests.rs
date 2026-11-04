@@ -37,6 +37,8 @@ fn resolve(
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -643,6 +645,8 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         attention_red: None,
         attention_bright_red: None,
         exit_status: Some(1),
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -794,6 +798,8 @@ fn resolve_duration(
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -929,8 +935,140 @@ fn resolve_exit(exit_status: Option<u32>, toggles: StatusToggles) -> StatusSegme
         attention_red: None,
         attention_bright_red: None,
         exit_status,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
+}
+
+/// Resolve with a shell cwd report standing (osc7-cwd spec) — the
+/// path seat's precedence pins. The home base is ours
+/// (`/home/u`), so local collapse has something to collapse.
+fn resolve_reported(
+    reported_cwd: Option<crate::terminal::ReportedCwd>,
+    hostname: Option<&str>,
+    cwd: Option<&Path>,
+    ssh_destination: Option<&str>,
+    branch: Option<&str>,
+) -> StatusSegments {
+    let home = Path::new("/home/u");
+    let inputs = StatusInputs {
+        home: Some(home),
+        cwd,
+        reported_cwd,
+        hostname,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+    };
+    resolve_segments(&inputs, StatusToggles::all())
+}
+
+#[test]
+fn a_standing_report_outranks_the_local_cwd() {
+    // The shell said its own cwd — the `/proc` guess stands down.
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/elsewhere/x".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        Some(Path::new("/home/u/old")),
+        None,
+        None,
+    );
+    assert_eq!(segments.path, Some("/elsewhere/x".to_string()));
+}
+
+#[test]
+fn a_standing_report_outranks_the_ssh_stand_in() {
+    // Even while ssh owns the foreground: a reporting remote shell
+    // knows the true remote path; the destination token was only
+    // ever a stand-in for a silent one.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        None,
+        Some("user@workstation"),
+        None,
+    );
+    assert_eq!(segments.path, Some("workstation:/srv".to_string()));
+}
+
+#[test]
+fn a_local_report_collapses_home_like_the_local_cwd_does() {
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("~/x".to_string()));
+}
+
+#[test]
+fn a_report_naming_our_host_collapses_home() {
+    // Case-insensitively ours (the DNS rule) — still local, still
+    // collapsed.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("LAPTOP".to_owned()),
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("~/x".to_string()));
+}
+
+#[test]
+fn a_remote_report_renders_verbatim_host_qualified() {
+    // No collapse against our `$HOME` — a remote path never borrows
+    // a local abbreviation.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("workstation:/home/u/x".to_string()));
+}
+
+#[test]
+fn the_branch_hides_under_a_remote_report() {
+    // The stand-in's own rule, extended: the local repo's branch is
+    // as stale as the local path was.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, Some("main"));
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn the_branch_survives_a_local_report() {
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, Some("main"));
+    assert_eq!(segments.branch, Some("main".to_string()));
 }
 
 #[test]
@@ -997,6 +1135,8 @@ fn resolve_grid(
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1073,6 +1213,8 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1282,6 +1424,8 @@ fn resolve_ssh(
         attention_red: None,
         attention_bright_red: None,
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1619,6 +1763,8 @@ fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
         attention_red: Some((0.6, 0.1, 0.1)),
         attention_bright_red: Some((0.9, 0.3, 0.3)),
         exit_status: None,
+        reported_cwd: None,
+        hostname: None,
     };
     let segments = resolve_segments(&inputs, StatusToggles::all());
     assert!(segments.missed_activity);

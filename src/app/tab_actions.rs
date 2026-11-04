@@ -1252,12 +1252,24 @@ impl DropTerm {
                         .chain(self.arm_suggest_reveal_after_damage());
                 }
             }
-            // OSC 7 cwd report (osc7-cwd spec): a commented stopgap
-            // until the engine seat lands — accepted and dropped so
-            // the match stays exhaustive; the seat's task replaces
-            // this arm with the forward + snapshot refresh, exactly
-            // as PromptExit's below.
-            TermEvent::CurrentDirectory(_) => {}
+            TermEvent::CurrentDirectory(url) => {
+                // The shell's own cwd report (osc7-cwd spec):
+                // forwarded to the engine under the lock exactly as
+                // the 133;D verdict is — the engine's parse rejects
+                // malformed payloads whole, so a mangled report
+                // never disturbs a standing one — then the snapshot
+                // piggyback: the report rides the same wakeup the
+                // redraw does. Without shell integration the event
+                // never fires; the band never guesses.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_current_directory(&url);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+            }
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the

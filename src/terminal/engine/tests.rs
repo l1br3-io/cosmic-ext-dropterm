@@ -85,7 +85,11 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
     .expect("spawn a /bin/sh cwd test terminal");
 
     terminal.input_no_scroll(&b"printf '\\033]7;file://workstation/home\\007'\r"[..]);
-    poll_until_cwd(&mut rx, "file://workstation/home", "the OSC 7 report arrives");
+    poll_until_cwd(
+        &mut rx,
+        "file://workstation/home",
+        "the OSC 7 report arrives",
+    );
 }
 
 #[test]
@@ -2082,7 +2086,7 @@ fn a_fresh_terminal_carries_no_reported_cwd() {
 #[test]
 fn a_valid_report_lands_parsed_into_host_and_path() {
     let mut terminal = cwd_report_terminal();
-    terminal.note_current_directory("file://workstation/home/u".to_owned());
+    terminal.note_current_directory("file://workstation/home/u");
     let report = terminal.reported_cwd().expect("the report stands");
     assert_eq!(report.host.as_deref(), Some("workstation"));
     assert_eq!(report.path, "/home/u");
@@ -2091,7 +2095,7 @@ fn a_valid_report_lands_parsed_into_host_and_path() {
 #[test]
 fn an_empty_host_report_reads_as_local() {
     let mut terminal = cwd_report_terminal();
-    terminal.note_current_directory("file:///home/u".to_owned());
+    terminal.note_current_directory("file:///home/u");
     let report = terminal.reported_cwd().expect("the report stands");
     assert_eq!(report.host, None);
     assert_eq!(report.path, "/home/u");
@@ -2100,7 +2104,7 @@ fn an_empty_host_report_reads_as_local() {
 #[test]
 fn percent_escapes_decode_in_the_path() {
     let mut terminal = cwd_report_terminal();
-    terminal.note_current_directory("file://h/home/a%20b%2Fc".to_owned());
+    terminal.note_current_directory("file://h/home/a%20b%2Fc");
     let report = terminal.reported_cwd().expect("the report stands");
     assert_eq!(report.path, "/home/a b/c");
 }
@@ -2110,10 +2114,12 @@ fn a_malformed_report_never_replaces_a_standing_one() {
     // Each malformed shape is ignored whole — a mangled report never
     // replaces a live truth.
     let mut terminal = cwd_report_terminal();
-    terminal.note_current_directory("file://h/home".to_owned());
+    terminal.note_current_directory("file://h/home");
     for url in ["gopher://h/x", "file://h/%zz", "file://h", ""] {
-        terminal.note_current_directory(url.to_owned());
-        let report = terminal.reported_cwd().expect("the standing report survives");
+        terminal.note_current_directory(url);
+        let report = terminal
+            .reported_cwd()
+            .expect("the standing report survives");
         assert_eq!(report.path, "/home", "url {url:?} must not disturb it");
     }
 }
@@ -2121,8 +2127,8 @@ fn a_malformed_report_never_replaces_a_standing_one() {
 #[test]
 fn a_newer_report_replaces_the_standing_one() {
     let mut terminal = cwd_report_terminal();
-    terminal.note_current_directory("file://h/one".to_owned());
-    terminal.note_current_directory("file://h/two".to_owned());
+    terminal.note_current_directory("file://h/one");
+    terminal.note_current_directory("file://h/two");
     let report = terminal.reported_cwd().expect("the newer report stands");
     assert_eq!(report.path, "/two");
 }
@@ -2137,6 +2143,32 @@ fn reported_cwd_parse_rejects_malformed_urls() {
         "file://h/%2",
         "file://h/%zz",
     ] {
-        assert_eq!(ReportedCwd::parse(url), None, "url {url:?} must be rejected");
+        assert_eq!(
+            ReportedCwd::parse(url),
+            None,
+            "url {url:?} must be rejected"
+        );
     }
+}
+
+#[test]
+fn an_empty_host_report_never_names_a_remote_host() {
+    let report = ReportedCwd::parse("file:///home/u").expect("parses");
+    assert!(!report.names_remote_host(None));
+    assert!(!report.names_remote_host(Some("laptop")));
+}
+
+#[test]
+fn a_report_naming_our_host_is_local_case_insensitively() {
+    let report = ReportedCwd::parse("file://Laptop/home/u").expect("parses");
+    assert!(!report.names_remote_host(Some("laptop")));
+}
+
+#[test]
+fn a_report_naming_another_host_is_remote() {
+    let report = ReportedCwd::parse("file://workstation/home/u").expect("parses");
+    assert!(report.names_remote_host(Some("laptop")));
+    // No local name to compare against: a named host is taken at
+    // its word.
+    assert!(report.names_remote_host(None));
 }
