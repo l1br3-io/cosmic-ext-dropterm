@@ -667,6 +667,13 @@ pub struct Terminal {
     /// the terminal, so a respawn or session restore starts clean
     /// by construction.
     missed_activity: Cell<bool>,
+    /// The shell's own cwd report (osc7-cwd spec) — the path seat's
+    /// authoritative source, outranking the `/proc` cwd and the ssh
+    /// stand-in while it stands. Written only by the event surface
+    /// ([`Self::note_current_directory`]); a malformed report is
+    /// ignored whole, a newer one replaces whatever stood. Dies with
+    /// the terminal, so a respawn starts clean by construction.
+    reported_cwd: Option<ReportedCwd>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1429,6 +1436,7 @@ impl Terminal {
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
+            reported_cwd: None,
             settle_prompt_pending: false,
             suggest: {
                 // The history seed (history-seed spec): read once at
@@ -1694,6 +1702,23 @@ impl Terminal {
     /// `None` — served until the next command starts.
     pub fn command_exit(&self) -> Option<u32> {
         self.timer.last_exit()
+    }
+
+    /// Records the shell's own cwd report (osc7-cwd spec): the OSC 7
+    /// payload forwarded from the event surface. A malformed report
+    /// is ignored whole — it never disturbs a standing one; a valid
+    /// report replaces whatever stood.
+    pub fn note_current_directory(&mut self, url: String) {
+        if let Some(report) = ReportedCwd::parse(&url) {
+            self.reported_cwd = Some(report);
+        }
+    }
+
+    /// The shell's own cwd report (osc7-cwd spec), served until the
+    /// next report or the terminal's death — the path seat's
+    /// authoritative source, never a guess.
+    pub fn reported_cwd(&self) -> Option<ReportedCwd> {
+        self.reported_cwd.clone()
     }
 
     /// Drains the finish latch once (command-lifecycle spec): the
@@ -3179,6 +3204,51 @@ impl Drop for Terminal {
             log::warn!("Failed to send shutdown message on dropped terminal: {err}");
         }
     }
+}
+
+/// The shell's own cwd report (osc7-cwd spec): an OSC 7 payload,
+/// parsed. `host` is `None` for an empty host (the local case);
+/// the path is percent-decoded and keeps its leading slash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedCwd {
+    pub host: Option<String>,
+    pub path: String,
+}
+
+impl ReportedCwd {
+    /// Parse an OSC 7 payload — `file://[host]/path`. Everything
+    /// else (another scheme, a missing path, an undecodable escape,
+    /// a non-UTF-8 decode) is rejected: a mangled report never
+    /// replaces a live truth.
+    pub fn parse(url: &str) -> Option<Self> {
+        let rest = url.strip_prefix("file://")?;
+        let slash = rest.find('/')?;
+        let host = percent_decode(&rest[..slash])?;
+        let path = percent_decode(&rest[slash..])?;
+        Some(Self {
+            host: (!host.is_empty()).then_some(host),
+            path,
+        })
+    }
+}
+
+/// Percent-decode a URL segment (`%41` → `A`); a truncated or
+/// non-hex escape, or a decode that is not UTF-8, rejects whole.
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = input.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]

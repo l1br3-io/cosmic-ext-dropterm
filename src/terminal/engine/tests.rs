@@ -41,6 +41,53 @@ fn poll_until_title(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str
     }
 }
 
+/// Poll the tagged-event channel until the next `CurrentDirectory`
+/// event arrives — skipping the wakeups that share the stream — and
+/// pin its payload.
+fn poll_until_cwd(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str, what: &str) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::CurrentDirectory(url) = event {
+                assert_eq!(url, want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for cwd {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_osc7_report_arrives_as_a_current_directory_event() {
+    // The delivery half of the seat (osc7-cwd spec): a shell-emitted
+    // OSC 7 reaches the app as `CurrentDirectory(url)` through the
+    // same tagged stream the title rides — the fork arm's
+    // end-to-end pin on the pinned revs.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh cwd test terminal");
+
+    terminal.input_no_scroll(&b"printf '\\033]7;file://workstation/home\\007'\r"[..]);
+    poll_until_cwd(&mut rx, "file://workstation/home", "the OSC 7 report arrives");
+}
+
 #[test]
 fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
     // The delivery half of the empty-report clear: OSC 0/2 with
@@ -2000,4 +2047,96 @@ fn an_internal_write_never_masquerades_as_a_touch() {
     terminal.note_missed_activity();
     terminal.input_no_scroll(&b"\x1b[6n"[..]);
     assert!(terminal.missed_activity());
+}
+
+/// A `/bin/sh` terminal for the OSC 7 seat pins — the same shape as
+/// [`latch_terminal`]: the report dies with the terminal that owns
+/// it, so a respawn starts clean by construction.
+fn cwd_report_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh cwd-report test terminal")
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_reported_cwd() {
+    // Respawned/restored tabs start clean by construction — the
+    // report dies with the terminal that owns it.
+    let terminal = cwd_report_terminal();
+    assert_eq!(terminal.reported_cwd(), None);
+}
+
+#[test]
+fn a_valid_report_lands_parsed_into_host_and_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://workstation/home/u".to_owned());
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.host.as_deref(), Some("workstation"));
+    assert_eq!(report.path, "/home/u");
+}
+
+#[test]
+fn an_empty_host_report_reads_as_local() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file:///home/u".to_owned());
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.host, None);
+    assert_eq!(report.path, "/home/u");
+}
+
+#[test]
+fn percent_escapes_decode_in_the_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home/a%20b%2Fc".to_owned());
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.path, "/home/a b/c");
+}
+
+#[test]
+fn a_malformed_report_never_replaces_a_standing_one() {
+    // Each malformed shape is ignored whole — a mangled report never
+    // replaces a live truth.
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home".to_owned());
+    for url in ["gopher://h/x", "file://h/%zz", "file://h", ""] {
+        terminal.note_current_directory(url.to_owned());
+        let report = terminal.reported_cwd().expect("the standing report survives");
+        assert_eq!(report.path, "/home", "url {url:?} must not disturb it");
+    }
+}
+
+#[test]
+fn a_newer_report_replaces_the_standing_one() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/one".to_owned());
+    terminal.note_current_directory("file://h/two".to_owned());
+    let report = terminal.reported_cwd().expect("the newer report stands");
+    assert_eq!(report.path, "/two");
+}
+
+#[test]
+fn reported_cwd_parse_rejects_malformed_urls() {
+    for url in [
+        "",
+        "file://",
+        "file://h",
+        "https://h/p",
+        "file://h/%2",
+        "file://h/%zz",
+    ] {
+        assert_eq!(ReportedCwd::parse(url), None, "url {url:?} must be rejected");
+    }
 }
