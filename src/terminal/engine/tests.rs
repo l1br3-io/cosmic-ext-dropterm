@@ -2162,6 +2162,183 @@ fn reported_cwd_parse_rejects_malformed_urls() {
     }
 }
 
+/// Spawn a `/bin/sh` terminal for the OSC 9;4 progress-report
+/// pins, with its event receiver — the `cwd_report_terminal`
+/// shape (a real PTY: the delivery and handoff facts need the
+/// real event loop, so the channel must reach the caller).
+fn progress_report_terminal() -> (Terminal, mpsc::UnboundedReceiver<(TabId, Event)>) {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh progress-report test terminal");
+    (terminal, rx)
+}
+
+/// Poll the tagged-event channel until the next `ProgressReport`
+/// event arrives — skipping the wakeups that share the stream —
+/// and pin its payload.
+fn poll_until_progress(
+    rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>,
+    want: (u8, Option<u8>),
+    what: &str,
+) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::ProgressReport(state, value) = event {
+                assert_eq!((state, value), want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for progress {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_progress_report() {
+    // Respawned/restored tabs start clean by construction — the
+    // report dies with the terminal that owns it, deadline and all.
+    let (terminal, _rx) = progress_report_terminal();
+    assert_eq!(terminal.reported_progress(), None);
+    assert_eq!(terminal.progress_decay_deadline(), None);
+}
+
+#[test]
+fn progress_state_zero_clears_a_standing_report() {
+    // The protocol's own invalidation (osc94-progress spec): state
+    // 0 removes the report — a value riding it changes nothing —
+    // and with it the decay deadline.
+    let (mut terminal, _rx) = progress_report_terminal();
+    terminal.note_progress_report(1, Some(42));
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::InProgress, Some(42)))
+    );
+    assert!(terminal.progress_decay_deadline().is_some());
+    terminal.note_progress_report(0, None);
+    assert_eq!(terminal.reported_progress(), None);
+    assert_eq!(terminal.progress_decay_deadline(), None);
+    // The clear is whole: a value on a state-0 report clears too.
+    terminal.note_progress_report(2, Some(7));
+    terminal.note_progress_report(0, Some(50));
+    assert_eq!(terminal.reported_progress(), None);
+}
+
+#[test]
+fn an_omitted_progress_value_keeps_the_standing_one() {
+    // The protocol's leave-unchanged rule (osc94-progress spec): a
+    // report may omit its value — states 2–4 do — and the standing
+    // one survives the state change; with no value ever standing,
+    // omitted stays absent.
+    let (mut terminal, _rx) = progress_report_terminal();
+    terminal.note_progress_report(1, Some(42));
+    terminal.note_progress_report(2, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Error, Some(42)))
+    );
+    terminal.note_progress_report(4, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Paused, Some(42)))
+    );
+    terminal.note_progress_report(0, None);
+    terminal.note_progress_report(3, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Indeterminate, None))
+    );
+}
+
+#[test]
+fn a_progress_report_expires_fifteen_seconds_after_its_last_refresh() {
+    // The decay death (osc94-progress spec): Ghostty's hardcoded
+    // ~15 s window, inherited by the record's rule — anchored at
+    // the last refresh, so a refreshed report's clock restarts and
+    // a dead reporter's last number cannot linger.
+    let t0 = Instant::now();
+    let standing = ReportedProgress::apply(None, 1, Some(42), t0).expect("the report stands");
+    assert!(!standing.expired(t0 + Duration::from_secs(14)));
+    assert!(standing.expired(t0 + Duration::from_secs(15)));
+    // A refresh re-anchors the window.
+    let refreshed = ReportedProgress::apply(Some(standing), 1, None, t0 + Duration::from_secs(10))
+        .expect("the report still stands");
+    assert!(!refreshed.expired(t0 + Duration::from_secs(24)));
+    assert!(refreshed.expired(t0 + Duration::from_secs(25)));
+}
+
+#[test]
+fn an_osc94_report_arrives_as_a_progress_report_event() {
+    // The delivery half of the seat (osc94-progress spec): a
+    // shell-emitted OSC 9;4 reaches the app as
+    // `ProgressReport(state, value)` through the same tagged
+    // stream the title rides — the fork arm's end-to-end pin on
+    // the pinned revs, both the full and the omitted-value form.
+    let (terminal, mut rx) = progress_report_terminal();
+
+    terminal.input_no_scroll(&b"printf '\\033]9;4;1;42\\007\\033]9;4;3\\007'\r"[..]);
+    poll_until_progress(&mut rx, (1, Some(42)), "the valued report arrives");
+    poll_until_progress(&mut rx, (3, None), "the omitted-value report arrives");
+}
+
+#[test]
+fn the_foreground_handoff_clears_a_standing_progress_report() {
+    // The local edge (osc94-progress spec): the command that owned
+    // the report finished — update()'s finish edge, the one the
+    // timer already rides, clears the fact. The test stands in for
+    // the app arm (event → engine note), then runs one real
+    // foreground job that reports mid-run and exits: the handoff's
+    // own update retires the number.
+    let (mut terminal, mut rx) = progress_report_terminal();
+
+    // One compound foreground job: report, then hold the
+    // foreground long enough to witness it.
+    terminal.input_no_scroll(&b"(printf '\\033]9;4;1;42\\007'; sleep 1)\r"[..]);
+    poll_until_progress(&mut rx, (1, Some(42)), "the report arrives mid-command");
+    terminal.note_progress_report(1, Some(42));
+
+    // Witness the running state: the widget's draw is update()'s
+    // driver in production (the duration tick wakes it for silent
+    // runners — nothing else does), so the test stands in for the
+    // render loop — one update while the job holds the foreground
+    // records the state the finish edge needs, the timer's own
+    // both-edges honesty rule.
+    poll_until_foreground(&terminal, true, "the job takes the foreground");
+    terminal.update();
+    assert_eq!(
+        terminal.reported_progress().map(|r| r.value),
+        Some(Some(42)),
+        "the report stands while its command owns the foreground"
+    );
+
+    // The job exits; one update after the handoff retires the
+    // number — the prompt redraw's damage drives this update in
+    // production.
+    poll_until_foreground(&terminal, false, "the job hands the foreground back");
+    terminal.update();
+    assert_eq!(
+        terminal.reported_progress(),
+        None,
+        "the handoff clears the standing report"
+    );
+}
+
 #[test]
 fn a_multibyte_escape_decodes_into_the_path() {
     let mut terminal = cwd_report_terminal();

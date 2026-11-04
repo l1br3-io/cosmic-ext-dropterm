@@ -1270,12 +1270,24 @@ impl DropTerm {
                     self.refresh_status_snapshot();
                 }
             }
-            // OSC 9;4 progress report (osc94-progress spec): a
-            // commented stopgap until the engine seat lands —
-            // accepted and dropped so the match stays exhaustive; the
-            // seat's task replaces this arm with the forward +
-            // snapshot refresh, exactly as its siblings above.
-            TermEvent::ProgressReport(_, _) => {}
+            TermEvent::ProgressReport(state, value) => {
+                // The running command's own progress report
+                // (osc94-progress spec): forwarded to the engine
+                // under the lock exactly as its siblings are —
+                // state 0 clearing, an omitted value keeping the
+                // standing one, the decay anchor refreshed — then
+                // the snapshot piggyback and the decay arm: the
+                // report's window starts here, on any tab.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_progress_report(state, value);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+                return self.sync_progress_decay();
+            }
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the

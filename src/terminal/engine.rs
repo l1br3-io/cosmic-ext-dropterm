@@ -674,6 +674,14 @@ pub struct Terminal {
     /// ignored whole, a newer one replaces whatever stood. Dies with
     /// the terminal, so a respawn starts clean by construction.
     reported_cwd: Option<ReportedCwd>,
+    /// The running command's own progress report (osc94-progress
+    /// spec) — the OSC 9;4 state and last value, written only by
+    /// the event surface ([`Self::note_progress_report`]) and
+    /// cleared by state 0, the foreground handoff (`update()`'s
+    /// finish edge), and [`PROGRESS_DECAY`] without a refresh. Dies
+    /// with the terminal, so a respawn starts clean by
+    /// construction.
+    reported_progress: Option<ReportedProgress>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1433,6 +1441,7 @@ impl Terminal {
             generator,
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
+            reported_progress: None,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1719,6 +1728,45 @@ impl Terminal {
     /// authoritative source, never a guess.
     pub fn reported_cwd(&self) -> Option<ReportedCwd> {
         self.reported_cwd.clone()
+    }
+
+    /// Records the running command's own progress report
+    /// (osc94-progress spec): the OSC 9;4 payload forwarded from
+    /// the event surface. State 0 clears; a report that omits its
+    /// value keeps the standing one; every report re-anchors the
+    /// decay clock.
+    pub fn note_progress_report(&mut self, state: u8, value: Option<u8>) {
+        self.reported_progress =
+            ReportedProgress::apply(self.reported_progress, state, value, Instant::now());
+    }
+
+    /// The standing progress report (osc94-progress spec), until
+    /// state 0, the foreground handoff, or the decay window clears
+    /// it — never a guess.
+    pub fn reported_progress(&self) -> Option<ReportedProgress> {
+        self.reported_progress
+    }
+
+    /// The decay deadline of the standing progress report
+    /// (osc94-progress spec): the instant it expires without a
+    /// refresh — `None` when nothing stands. The app sleeps until
+    /// this instant and then expires, so a dead reporter's last
+    /// number never outlives its window.
+    pub fn progress_decay_deadline(&self) -> Option<Instant> {
+        self.reported_progress
+            .map(|report| report.refreshed_at + PROGRESS_DECAY)
+    }
+
+    /// Expires the standing progress report if its decay window
+    /// has passed (osc94-progress spec); a no-op before the
+    /// deadline — an early fire caught a refreshed anchor.
+    pub fn expire_progress(&mut self) {
+        if self
+            .reported_progress
+            .is_some_and(|report| report.expired(Instant::now()))
+        {
+            self.reported_progress = None;
+        }
     }
 
     /// Drains the finish latch once (command-lifecycle spec): the
@@ -2494,6 +2542,13 @@ impl Terminal {
         // notify latch with the just-frozen duration (unwitnessed
         // starts freeze nothing, so they latch nothing either).
         self.timer.step(foreground_child, instant);
+        if fresh_by_finish {
+            // The command that owned any standing progress report
+            // finished at this handoff — the report dies with it
+            // (osc94-progress spec), on the same edge the timer
+            // freezes its duration.
+            self.reported_progress = None;
+        }
         if fresh_by_finish && let Some(duration) = self.timer.last_duration() {
             self.command_finished = Some(duration);
         }
@@ -3213,6 +3268,67 @@ impl Drop for Terminal {
 pub struct ReportedCwd {
     pub host: Option<String>,
     pub path: String,
+}
+
+/// The standing states of an OSC 9;4 progress report
+/// (osc94-progress spec). State 0 is not one of them — it clears
+/// the report; the fork's parse guard already refuses anything
+/// past 4, so the enum needs no more members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    InProgress,
+    Error,
+    Indeterminate,
+    Paused,
+}
+
+/// The progress decay window (osc94-progress spec): a standing
+/// OSC 9;4 report expires this long after its last refresh, so a
+/// reporter that dies mid-command cannot leave its last number
+/// lying — Ghostty's own hardcoding, the record's inherited rule.
+/// Fixed, no knob (OQ-2).
+const PROGRESS_DECAY: Duration = Duration::from_secs(15);
+
+/// A standing OSC 9;4 progress report (osc94-progress spec): the
+/// reporter's state, the last value it gave (a percent 0–100,
+/// inherited when a report omits its own — the protocol's
+/// leave-unchanged rule), and the instant of the last refresh —
+/// the decay clock's anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportedProgress {
+    pub state: ProgressState,
+    pub value: Option<u8>,
+    refreshed_at: Instant,
+}
+
+impl ReportedProgress {
+    /// One report applied to the standing state: state 0 clears
+    /// (the protocol's own invalidation, whatever value rides it);
+    /// any other state stands, a report that omits its value keeps
+    /// the standing one, and every report re-anchors the decay
+    /// clock. States past the fork's 0–4 guard are ignored whole —
+    /// unreachable here, and still not a guess.
+    fn apply(standing: Option<Self>, state: u8, value: Option<u8>, now: Instant) -> Option<Self> {
+        let state = match state {
+            0 => return None,
+            1 => ProgressState::InProgress,
+            2 => ProgressState::Error,
+            3 => ProgressState::Indeterminate,
+            4 => ProgressState::Paused,
+            _ => return standing,
+        };
+        Some(Self {
+            state,
+            value: value.or(standing.and_then(|standing| standing.value)),
+            refreshed_at: now,
+        })
+    }
+
+    /// Whether [`PROGRESS_DECAY`] has passed since the last
+    /// refresh — the decay death's truth.
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.refreshed_at + PROGRESS_DECAY
+    }
 }
 
 /// The OSC 7 payload cap (osc7-cwd spec, /ship hardening): a cwd

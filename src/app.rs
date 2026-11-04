@@ -139,6 +139,11 @@ pub enum Message {
     /// re-arm at the next deadline or stand down. Never periodic;
     /// it exists only while the active tab reports a deadline.
     SuggestRevealTick,
+    /// The progress report's decay window elapsed (osc94-progress
+    /// spec): expire the standing report if its window truly
+    /// passed — the chip with it — then re-arm while any report
+    /// stands. Never periodic; it exists only while one does.
+    StatusProgressDecayTick,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -364,6 +369,12 @@ pub struct DropTerm {
     /// may hold a withheld suggestion, cleared by each fire before
     /// the re-sync re-evaluates.
     reveal_armed: bool,
+    /// Whether a progress decay tick sleeps in the task queue
+    /// (osc94-progress spec) — the `clock_armed` shape again: one
+    /// outstanding one-shot at most, armed only while any tab holds
+    /// a standing OSC 9;4 report, cleared by each fire before the
+    /// re-sync re-evaluates.
+    progress_decay_armed: bool,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -683,6 +694,41 @@ impl DropTerm {
         Task::perform(
             tokio::time::sleep(deadline.saturating_duration_since(std::time::Instant::now())),
             |()| cosmic::Action::App(Message::SuggestRevealTick),
+        )
+    }
+
+    /// Sync the progress decay arm to the standing OSC 9;4 reports
+    /// (osc94-progress spec): arm a one-shot sleep until the
+    /// soonest deadline any tab reports, stand down when no report
+    /// stands anywhere. Called where the state moves — a report's
+    /// arrival (the event arm) and the tick's own fire (which
+    /// expires and re-syncs) — so the arm exists exactly while a
+    /// report stands. Every tab, not the active one: the band can
+    /// switch to a background tab whose reporter died, and its
+    /// number must not have outlived its window there either.
+    /// Unlike the reveal arm, hidden is not a gate — decay is an
+    /// invalidation, not a render; a number that must not linger
+    /// does not linger behind a hidden surface. An early fire (a
+    /// refreshed anchor moved the deadline out — it only ever moves
+    /// out) expires nothing and re-arms at the true deadline; the
+    /// armed guard keeps the sleeps unstacked.
+    fn sync_progress_decay(&mut self) -> Task<Message> {
+        let deadline = self
+            .tabs
+            .iter()
+            .filter_map(|tab| tab.terminal.lock().unwrap().progress_decay_deadline())
+            .min();
+        let Some(deadline) = deadline else {
+            self.progress_decay_armed = false;
+            return Task::none();
+        };
+        if self.progress_decay_armed {
+            return Task::none();
+        }
+        self.progress_decay_armed = true;
+        Task::perform(
+            tokio::time::sleep(deadline.saturating_duration_since(std::time::Instant::now())),
+            |()| cosmic::Action::App(Message::StatusProgressDecayTick),
         )
     }
 
@@ -1697,6 +1743,7 @@ impl Application for DropTerm {
             clock_armed: false,
             duration_armed: false,
             reveal_armed: false,
+            progress_decay_armed: false,
             rename: None,
             pending_close: None,
             drag: None,
@@ -2802,6 +2849,22 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().needs_update = true;
                 }
                 return self.sync_suggest_reveal();
+            }
+            Message::StatusProgressDecayTick => {
+                // The fired sleep consumed itself — the deadline
+                // arrived (or an early fire caught a refreshed
+                // anchor, and `expire_progress` is the no-op that
+                // says so). The expiry is the point: a standing
+                // report whose window passed dies here, the chip
+                // with it (the snapshot refresh lands the
+                // re-render). The re-sync re-arms at a refreshed
+                // anchor or stands down.
+                self.progress_decay_armed = false;
+                for tab in &self.tabs {
+                    tab.terminal.lock().unwrap().expire_progress();
+                }
+                self.refresh_status_snapshot();
+                return self.sync_progress_decay();
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();
