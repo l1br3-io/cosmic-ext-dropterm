@@ -1270,6 +1270,12 @@ impl DropTerm {
                     self.refresh_status_snapshot();
                 }
             }
+            // OSC 9;4 progress report (osc94-progress spec): a
+            // commented stopgap until the engine seat lands —
+            // accepted and dropped so the match stays exhaustive; the
+            // seat's task replaces this arm with the forward +
+            // snapshot refresh, exactly as its siblings above.
+            TermEvent::ProgressReport(_, _) => {}
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the
