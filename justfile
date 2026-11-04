@@ -3,6 +3,25 @@
 # just's `error: Recipe ... failed` line plus the underlying tool's stderr.
 set quiet
 
+# Run a command via the shell, printing its combined output only when it
+# fails. Agent-facing gates route through this so a green run costs zero
+# output tokens while a red one replays the full log with its exit code.
+[private]
+quietly command:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(mktemp)"
+    set +e
+    bash -c '{{command}}' >"$out" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -ne 0 ]; then
+        cat "$out"
+        rm -f "$out"
+        exit "$status"
+    fi
+    rm -f "$out"
+
 name := 'cosmic-ext-dropterm'
 appid := 'io.github.l1br3_io.CosmicExtDropterm'
 
@@ -140,14 +159,14 @@ fmt-check:
     cargo fmt --check --all
 
 clippy *args:
-    cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings
-    cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings
-    cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings
+    {{just_executable()}} quietly 'cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings'
+    {{just_executable()}} quietly 'cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings'
+    {{just_executable()}} quietly 'cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings'
 
 test *args:
-    cargo test --workspace --locked {{args}}
-    cargo test -p {{name}} --locked --features dev-identity {{args}}
-    cargo test -p {{applet}} --locked --features dev-identity {{args}}
+    {{just_executable()}} quietly 'cargo test --workspace --locked {{args}}'
+    {{just_executable()}} quietly 'cargo test -p {{name}} --locked --features dev-identity {{args}}'
+    {{just_executable()}} quietly 'cargo test -p {{applet}} --locked --features dev-identity {{args}}'
 
 # Docs drift gate: every internal markdown link — relative path and
 # in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
@@ -275,8 +294,11 @@ build-nice := env('DROPTERM_BUILD_NICE', '19')
 # in /root where the user cannot update it; the user-side build
 # recipes bootstrap it for themselves instead.
 deps:
-    #!/usr/bin/env sh
-    set -eu
+    #!/usr/bin/env bash
+    # pipefail: the rustup bootstrap is a `curl | sh` pipeline — without
+    # it, a dead curl hands sh an EOF, sh exits 0, and deps reports
+    # success with cargo never installed.
+    set -euo pipefail
 
     # System side: each module is what the build asks pkg-config for,
     # and each maps to a -dev/-devel package in the lists below. A
@@ -354,11 +376,11 @@ deps:
 # both crates (see build-applet for why that must not produce
 # release artifacts).
 build-debug *args: deps
-    cargo build -p {{name}} {{args}}
+    {{just_executable()}} quietly 'cargo build -p {{name}} {{args}}'
 
 # Compiles with the release profile, throttled (see build-jobs).
 build-release *args: deps
-    nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}
+    {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}'
 
 # Compiles the applet with the release profile, throttled like
 # build-release. Per-package on purpose: a unified workspace release
@@ -366,7 +388,7 @@ build-release *args: deps
 # feature unification, and the wgpu renderer falls back to llvmpipe
 # on panel surfaces.
 build-applet *args: deps
-    nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}
+    {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}'
 
 # Both release artifacts, each per-package, in the shape `install`
 # expects. Exists as one recipe because `build-release` takes
@@ -381,8 +403,22 @@ build-all: build-release build-applet
 # [source."url"] redirect, so the config cannot be hand-written). The
 # working tree is cleaned afterward so dev builds keep using git deps.
 vendor:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p .cargo
-    cargo vendor --locked | head -n -1 > .cargo/config.toml
+    # pipefail: a failed `cargo vendor` must not hide behind `head`'s
+    # exit 0 and ship an incomplete vendor.tar as success. Its stderr
+    # (the per-crate "Vendoring …" progress) is captured and replayed
+    # only on failure.
+    log="$(mktemp)"
+    if cargo vendor --locked 2>"$log" | head -n -1 > .cargo/config.toml; then
+        rm -f "$log"
+    else
+        status=$?
+        cat "$log"
+        rm -f "$log"
+        exit "$status"
+    fi
     echo 'directory = "vendor"' >> .cargo/config.toml
     tar -cf vendor.tar vendor .cargo/config.toml
     rm -rf vendor .cargo
@@ -439,7 +475,7 @@ dev-applet-desktop := dev-data-dir / 'applications' / (applet-appid + '.Dev.desk
 # applet summons the dev launcher. Add it via COSMIC Settings →
 # Panel.
 dev-applet: dev-install
-    cargo build -p {{applet}} {{dev-identity-args}}
+    {{just_executable()}} quietly 'cargo build -p {{applet}} {{dev-identity-args}}'
     install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / (applet + '-dev')}}
     install -d {{dev-data-dir / 'applications'}}
     sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{applet}}-dev/' {{applet-desktop-src}} > {{dev-applet-desktop}}
@@ -471,6 +507,9 @@ clean:
 # schedule and is deliberately left alone.
 stop-stale-release:
     #!/usr/bin/env sh
+    # -e: a failed kill must abort before the success echo below — never
+    # announce a stop that did not happen.
+    set -eu
     for pid in $(pgrep -f '{{bin-dst}}' || true); do
         if [ "$(readlink /proc/"$pid"/exe 2>/dev/null)" = '{{bin-dst}} (deleted)' ]; then
             kill "$pid"
@@ -519,18 +558,16 @@ applet-flatpak-sources:
 # (deps pulled from flathub into the user installation). State lands
 # in .flatpak-builder/, the build tree under packaging/flatpak/build-dir.
 applet-flatpak-build:
-    flatpak-builder --user --install-deps-from=flathub --force-clean \
-        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
 
 # Install the built applet into the user installation (from the
 # builder's cache, so a prior applet-flatpak-build makes this quick).
 applet-flatpak-install:
-    flatpak-builder --user --install-deps-from=flathub --force-clean --install \
-        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean --install {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
 
 # Uninstall the applet flatpak from the user installation.
 applet-flatpak-remove:
-    flatpak uninstall --user -y {{applet-appid}}
+    {{just_executable()}} quietly 'flatpak uninstall --user -y {{applet-appid}}'
 
 # ── COSMIC validation VM ──
 #
@@ -595,7 +632,7 @@ vm-push:
     {{just_executable()}} rootdir='{{cargo-target-dir / 'vm-stage'}}' install
     tar -C {{cargo-target-dir / 'vm-stage'}} -czf {{vm-tarball}} usr
     VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh put {{vm-tarball}} /root/dropterm-vm.tar.gz
-    VM_NAME={{vm-name}} scripts/vm.sh exec 'tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && update-desktop-database /usr/share/applications 2>/dev/null || true'
+    VM_NAME={{vm-name}} scripts/vm.sh exec 'tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && { update-desktop-database /usr/share/applications 2>/dev/null || true; }'
     VM_NAME={{vm-name}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"; pkill -f "(^|/){{applet}}([ ]|$)" && echo "vm: stopped the panel applet; cosmic-panel respawns it on this build" || echo "vm: no applet was running"'
 
 # Capture the VM's display (evidence screenshots)
