@@ -6,7 +6,7 @@ A 28 px strip at the surface's free edge, beside the grab bar, narrating the act
 
 Segments are values without labels - a path reads as a path - separated by gaps, never punctuation. Two clusters:
 
-- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the exit chip (`✗1`, only after a failed command - see [Shell integration](#shell-integration-optional)), then the tab's cwd with `$HOME` collapsed to `~` and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories).
+- **Left**: the state disc - filled while a foreground process runs, a hollow ring over the idle shell - with that process's name (its `/proc` comm; an unreadable read falls back to the recorded shell's basename), then the command duration, then the exit chip (`✗1`, only after a failed command - see [Shell integration](#shell-integration-optional)), then the tab's cwd with `$HOME` collapsed to `~` (the shell's own OSC 7 report outranks it - and the ssh stand-in - while one stands, `host:path` on a remote host; see [Shell integration](#shell-integration-optional)) and elided from its left when the row is squeezed, then the cwd's git branch (a ref name, or a detached commit's first seven characters; read from `.git/HEAD` with one `gitdir:` indirection so worktrees and submodules resolve, absent outside repositories - hidden while a remote report or the ssh stand-in owns the path seat, when the local branch is as stale as the local path was).
 - **Right, dimmed**: the tab's profile name (when it runs one), the terminal's cell dimensions (`80×24`), the tab position (`2/5`), the zoom delta (`+200%`) whenever the font is not at its base size, the scrolled-back chip, and the wall clock (`HH:MM`, local time, ticking on the minute).
 
 The band always takes the slot adjacent to the grab bar, whatever the `edge` × `tab_position` stacking - it never trades places with the tab strip. The process name and git branch are sampled only when the terminal reports activity, a tab switches, or a spawn/zoom/config event lands - never per frame.
@@ -57,7 +57,34 @@ The exit chip's one source is the shell *telling* the terminal a command finishe
 
   contour's shipped integration scripts (which vendor bash-preexec and emit the full A/B/C/D set) work as-is if you already run them. The reference for the sequence is contour's [OSC 133 shell-integration documentation](https://github.com/contour-terminal/contour/blob/master/docs/vt-extensions/osc-133-shell-integration.md), and its shipped hooks are [the source these snippets are reduced from](https://github.com/contour-terminal/contour/tree/master/src/contour/cli/shell-integration).
 
-Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status.
+The same opt-in channel carries the path's authoritative source: `OSC 7 ; file://host/path` - the shell reporting its own working directory (WezTerm/iTerm2/VTE semantics; Fedora's bash and zsh already emit it by default through the sourced `vte.sh`). While a report stands it outranks both layers the path seat otherwise reads - the ssh stand-in and the `/proc`-derived cwd - so an SSH tab whose remote shell reports shows the true remote path, rendered `host:path` and never `~`-collapsed (no remote home is known, and a guessed collapse is a lie). A report naming this machine renders bare and collapses like a local one, case-insensitively (the DNS rule); the git branch hides under a remote report, by the same staleness rule that hides it under the stand-in.
+
+The report stands until a newer one replaces it, and a tab's respawn starts clean - the peer lifetime (WezTerm and kitty take the last report the same way): staleness belongs to the emitter, and an integration that reports at every prompt self-corrects the moment it can.
+
+- **fish** - one line inside the prompt function:
+
+  ```fish
+  function fish_prompt
+      printf '\e]7;file://%s%s\e\\' (hostname) $PWD
+      # ... the prompt itself
+  end
+  ```
+
+- **zsh** - a `precmd` hook in `~/.zshrc` (composes with the `D`-mark hook above; both ride `precmd`):
+
+  ```zsh
+  _dropterm_osc7() { print -n "\e]7;file://${HOST}${PWD}\e\\" }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _dropterm_osc7
+  ```
+
+- **bash** - add the same report to the `precmd` hook above, before the `D`-mark `printf`:
+
+  ```bash
+  printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "$PWD"
+  ```
+
+Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status. Without an OSC 7 report the path seat reads exactly what it always did.
 
 ## The scrolled-back chip
 
