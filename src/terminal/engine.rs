@@ -3215,12 +3215,24 @@ pub struct ReportedCwd {
     pub path: String,
 }
 
+/// The OSC 7 payload cap (osc7-cwd spec, /ship hardening): a cwd
+/// past 4 KiB is not a cwd worth narrating — and an unbounded
+/// payload is a `cat`-away UI stall, its whole length text-shaped
+/// on every band layout — so over-long reports reject whole, never
+/// truncate.
+const REPORTED_CWD_MAX: usize = 4096;
+
 impl ReportedCwd {
     /// Parse an OSC 7 payload — `file://[host]/path`. Everything
-    /// else (another scheme, a missing path, an undecodable escape,
-    /// a non-UTF-8 decode) is rejected: a mangled report never
-    /// replaces a live truth.
+    /// else (another scheme, a missing path, an escape that is not
+    /// exactly two hex digits, a decode that is not UTF-8, a control
+    /// or bidirectional character re-admitted by an escape, or a
+    /// payload beyond [`REPORTED_CWD_MAX`]) is rejected: a mangled
+    /// report never replaces a live truth.
     pub fn parse(url: &str) -> Option<Self> {
+        if url.len() > REPORTED_CWD_MAX {
+            return None;
+        }
         let rest = url.strip_prefix("file://")?;
         let slash = rest.find('/')?;
         let host = percent_decode(&rest[..slash])?;
@@ -3246,23 +3258,51 @@ impl ReportedCwd {
     }
 }
 
-/// Percent-decode a URL segment (`%41` → `A`); a truncated or
-/// non-hex escape, or a decode that is not UTF-8, rejects whole.
+/// Percent-decode a URL segment (`%41` → `A`); an escape must be
+/// exactly two hex digits (a `+` sign is not one, whatever
+/// `from_str_radix` says), a decode that is not UTF-8 rejects
+/// whole, and so does any character that can only be there to
+/// mislead — see [`is_invisible`].
 fn percent_decode(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = input.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
+        match bytes[i] {
+            b'%' => {
+                let hex = input.get(i + 1..i + 3)?;
+                let [hi, lo] = hex.as_bytes() else {
+                    return None;
+                };
+                if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+                    return None;
+                }
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
         }
     }
-    String::from_utf8(out).ok()
+    let decoded = String::from_utf8(out).ok()?;
+    (!decoded.chars().any(is_invisible)).then_some(decoded)
+}
+
+/// Whether a character can only be there to mislead: a control
+/// character (vte's OSC layer strips these raw, so an escape
+/// re-admitting one is a payload lying about being text) or a
+/// bidirectional override / zero-width mark (the invisible spoof
+/// class the band's plain text owes no trust to). A report carrying
+/// one rejects whole.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{FEFF}')
 }
 
 #[cfg(test)]

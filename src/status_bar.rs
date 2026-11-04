@@ -334,7 +334,9 @@ pub struct StatusInputs<'a> {
     /// layers it replaces: the ssh stand-in and the `/proc` cwd. The
     /// host renders only when it differs from ours — the remote case
     /// is the one that matters; remote paths never collapse (no
-    /// guessed `$HOME`). Gathered only under the path toggle's gate.
+    /// guessed `$HOME`). Gathered ungated: the branch rule reads the
+    /// fact even when the path key hides the seat, which the
+    /// resolver gates itself.
     pub reported_cwd: Option<crate::terminal::ReportedCwd>,
     /// Our own hostname (osc7-cwd spec) — the host-qualification
     /// base: a reported host renders only when it differs from

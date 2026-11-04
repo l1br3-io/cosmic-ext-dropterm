@@ -61,11 +61,13 @@ The same opt-in channel carries the path's authoritative source: `OSC 7 ; file:/
 
 The report stands until a newer one replaces it, and a tab's respawn starts clean - the peer lifetime (WezTerm and kitty take the last report the same way): staleness belongs to the emitter, and an integration that reports at every prompt self-corrects the moment it can.
 
+One rule for emitters: percent-encode at least `%` in the path (`%` → `%25`, as `vte.sh` does). A bare `%` makes the report malformed, and DropTerm drops it whole rather than display a wrong path.
+
 - **fish** - one line inside the prompt function:
 
   ```fish
   function fish_prompt
-      printf '\e]7;file://%s%s\e\\' (hostname) $PWD
+      printf '\e]7;file://%s%s\e\\' (hostname) (string replace --all '%' '%25' -- $PWD)
       # ... the prompt itself
   end
   ```
@@ -73,7 +75,7 @@ The report stands until a newer one replaces it, and a tab's respawn starts clea
 - **zsh** - a `precmd` hook in `~/.zshrc` (composes with the `D`-mark hook above; both ride `precmd`):
 
   ```zsh
-  _dropterm_osc7() { print -n "\e]7;file://${HOST}${PWD}\e\\" }
+  _dropterm_osc7() { print -n "\e]7;file://${HOST}${PWD//\%/%25}\e\\" }
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _dropterm_osc7
   ```
@@ -81,7 +83,7 @@ The report stands until a newer one replaces it, and a tab's respawn starts clea
 - **bash** - add the same report to the `precmd` hook above, before the `D`-mark `printf`:
 
   ```bash
-  printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "$PWD"
+  printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "${PWD//\%/%25}"
   ```
 
 Integration is strictly opt-in by your own rc files - DropTerm injects nothing (`ZDOTDIR` and `PROMPT_COMMAND` tricks are out). Without it, no `D` mark ever arrives, and the band never guesses a verdict: a bell is not failure, a title is not a status. Without an OSC 7 report the path seat reads exactly what it always did.

@@ -2135,6 +2135,7 @@ fn a_newer_report_replaces_the_standing_one() {
 
 #[test]
 fn reported_cwd_parse_rejects_malformed_urls() {
+    let overlong = format!("file://h/{}", "a".repeat(4096));
     for url in [
         "",
         "file://",
@@ -2142,6 +2143,16 @@ fn reported_cwd_parse_rejects_malformed_urls() {
         "https://h/p",
         "file://h/%2",
         "file://h/%zz",
+        // A `+` sign is not a hex digit, whatever from_str_radix
+        // says — escapes are exactly two hex digits.
+        "file://h/%+f",
+        // An escape re-admitting a control character is a payload
+        // lying about being text — rejected whole.
+        "file://h/a%1Bb",
+        // A bidirectional override is not a path character.
+        "file://h/\u{202E}evil",
+        // Past the payload cap — rejected whole, never truncated.
+        overlong.as_str(),
     ] {
         assert_eq!(
             ReportedCwd::parse(url),
@@ -2149,6 +2160,39 @@ fn reported_cwd_parse_rejects_malformed_urls() {
             "url {url:?} must be rejected"
         );
     }
+}
+
+#[test]
+fn a_multibyte_escape_decodes_into_the_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home/%E4%BD%A0");
+    let report = terminal
+        .reported_cwd()
+        .expect("the multibyte decode stands");
+    assert_eq!(report.path, "/home/你");
+}
+
+#[test]
+fn a_non_utf8_decode_rejects_without_disturbing_the_standing_report() {
+    // `%FF` decodes to a byte sequence that is not UTF-8 — the
+    // report rejects whole (the spec-named branch; fails toward
+    // rejection).
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/one");
+    terminal.note_current_directory("file://h/%FF");
+    let report = terminal
+        .reported_cwd()
+        .expect("the standing report survives");
+    assert_eq!(report.path, "/one");
+}
+
+#[test]
+fn a_root_path_report_stands() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/");
+    let report = terminal.reported_cwd().expect("the root is a path");
+    assert_eq!(report.host.as_deref(), Some("h"));
+    assert_eq!(report.path, "/");
 }
 
 #[test]

@@ -792,10 +792,11 @@ impl DropTerm {
                 frozen,
                 toggles.exit.then(|| terminal.command_exit()).flatten(),
                 // The path seat's authoritative source (osc7-cwd
-                // spec) joins under the seat's own gate — key off
-                // means never gathered, the same
-                // hidden/absent indistinguishability.
-                toggles.path.then(|| terminal.reported_cwd()).flatten(),
+                // spec), gathered ungated like the ssh stand-in it
+                // outranks: the branch rule consumes the fact even
+                // when the path seat's own key hides the seat, and
+                // the resolver gates the seat itself.
+                terminal.reported_cwd(),
                 // Key off means never gathered and never rendered
                 // (status-activity spec); the red pair stays
                 // ungated beside it — status-exit's chip reuses the

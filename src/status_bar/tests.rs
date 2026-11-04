@@ -1072,6 +1072,38 @@ fn the_branch_survives_a_local_report() {
 }
 
 #[test]
+fn the_ssh_stand_in_and_a_local_report_hide_the_branch_together() {
+    // The realistic ssh-tab shape: the stand-in owns the seat and a
+    // local report (stale from before the session, per the peer
+    // lifetime) still stands — the branch stays hidden via the ssh
+    // term even though the report alone would keep it.
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        None,
+        Some("user@host"),
+        Some("main"),
+    );
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn clicking_a_reported_path_copies_its_display_value() {
+    // The copy payload is the display value (spec OQ-3's default) —
+    // host-qualified when the display is.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(copy_text(SegmentId::Path, &segments), "workstation:/srv");
+}
+
+#[test]
 fn an_exit_fact_resolves_the_verdict_and_success_and_absence_do_not() {
     let segments = resolve_exit(Some(1), StatusToggles::all());
     assert_eq!(segments.exit_code, Some(1));
