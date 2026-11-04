@@ -1252,6 +1252,12 @@ impl DropTerm {
                         .chain(self.arm_suggest_reveal_after_damage());
                 }
             }
+            // OSC 7 cwd report (osc7-cwd spec): a commented stopgap
+            // until the engine seat lands — accepted and dropped so
+            // the match stays exhaustive; the seat's task replaces
+            // this arm with the forward + snapshot refresh, exactly
+            // as PromptExit's below.
+            TermEvent::CurrentDirectory(_) => {}
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the
