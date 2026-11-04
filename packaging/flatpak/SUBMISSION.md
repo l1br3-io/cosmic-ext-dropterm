@@ -70,15 +70,34 @@ Evidence block — attach/reference in the PR:
   `X-CosmicApplet=true` / `X-CosmicShrinkable=true` intact and `Exec`
   rewritten to `flatpak run … --command=cosmic-ext-dropterm-applet`;
   the `.Applet-symbolic` icon exported alongside.
-- **Hardware walk**: **PENDING** — the three rows in
-  `docs/development.md` (panel listing/themed render; sandbox
-  boundary — flatpaked applet driving the native v0.1.0 app with
-  indicator tracking; panel-restart respawn). Fill in per-row results
-  and the date here before filing:
-  - Listing and add: ______
-  - Sandbox boundary: ______
-  - Respawn: ______
-  - Walked on: ______
+- **VM flatpak build (v0.3.0 listing bytes)**: 2026-11-04, built
+  `--user` in a clean Pop!_OS 24.04 COSMIC VM from the fork branch's
+  two files fetched by sha256. The Rust build is green, but
+  `appstreamcli compose` (AppStream 1.0.2 — the same stack the
+  catalog's CI installs) rejects the applet metainfo for carrying no
+  `<category>`, drops the component, and aborts the export. **The
+  catalog PR would fail CI on the pinned bytes as-is.** The walk
+  therefore ran on a patched manifest — one added build-command seds
+  `<category>System</category>` into the installed metainfo, archive
+  URL + sha untouched — which builds, exports, and installs clean.
+  Fix before filing: ship a category-bearing metainfo in a patch
+  release and recut the branch from its own matching tree.
+- **Hardware walk** (COSMIC validation VM, 2026-11-04, on the patched
+  build; per-row detail in `docs/testing.md`):
+  - Listing and add: applet installed `--user` and added to the panel
+    (config route; the Settings-UI listing screenshot pending the
+    maintainer's SPICE step), symbolic icon resolves and renders
+    themed beside the clock.
+  - Sandbox boundary: the flatpaked applet's click toggled the native
+    v0.3.0 app over the session bus (`ActivateAction "toggle"`
+    wire-captured from the sandbox's proxied connection); the
+    indicator tracks kill and restart. Known gap recorded: a click
+    with no terminal running cannot launch it — the sandbox cannot
+    exec the host-installed binary.
+  - Respawn: `pkill cosmic-panel` respawns the applet cleanly inside
+    its sandbox, watch re-initializing, the running terminal
+    unaffected.
+  - Walked on: 2026-11-04 (Pop!_OS 24.04 COSMIC VM, virtio-gpu/virgl).
 
 ## Design notes reviewers may ask about
 
