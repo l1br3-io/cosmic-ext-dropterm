@@ -45,8 +45,8 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = fa
 # source per crate. Upstreaming: PRs to alacritty/vte and
 # alacritty/alacritty are the follow-up once the module proves out.
 [patch.crates-io]
-vte = { git = "https://github.com/l1br3-io/vte", rev = "7cd0e4bdf164f56712e44cd5019b98d494e1d59d" }
-alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "c9eb7de00f5f88431526357528ed171f59ebdc41" }
+vte = { git = "https://github.com/l1br3-io/vte", rev = "61226f3e95bcf0b464933ec67a6f35fe8a99814c" }
+alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "10072565f615e45fbedfaa05a9422bd23da96b3f" }
 
 [dependencies]
 alacritty_terminal = "0.25.1"

@@ -1288,6 +1288,17 @@ impl DropTerm {
                 }
                 return self.sync_progress_decay();
             }
+            // OSC 7501 program status report (osc7501-status spec):
+            // a commented stopgap until the engine seat lands —
+            // accepted and dropped so the match stays exhaustive; the
+            // seat's task replaces this arm with the forward +
+            // snapshot refresh, exactly as its siblings above. The
+            // expect self-cleans the moment that body lands.
+            #[expect(
+                clippy::match_same_arms,
+                reason = "stopgap-empty until the engine seat lands (osc7501-status Task 2)"
+            )]
+            TermEvent::ProgramStatus(_) => {}
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the
