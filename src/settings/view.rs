@@ -234,6 +234,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowDuration => "Show the command duration",
             ConfigKey::StatusBarShowExitStatus => "Show the exit status",
             ConfigKey::StatusBarShowProgress => "Show the progress chip",
+            ConfigKey::StatusBarShowProgramStatus => "Show the program status",
             ConfigKey::StatusBarShowScrollback => "Show the scrolled-back lines",
             ConfigKey::TabBarBorder => "Show the tab bar border",
             ConfigKey::StatusBarBorder => "Show the status band border",
@@ -1174,6 +1175,7 @@ fn toggle_control(
         ConfigKey::StatusBarShowDuration => config.status_bar_show_duration,
         ConfigKey::StatusBarShowExitStatus => config.status_bar_show_exit_status,
         ConfigKey::StatusBarShowProgress => config.status_bar_show_progress,
+        ConfigKey::StatusBarShowProgramStatus => config.status_bar_show_program_status,
         ConfigKey::StatusBarShowScrollback => config.status_bar_show_scrollback,
         _ => return None,
     };

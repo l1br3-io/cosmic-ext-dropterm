@@ -409,6 +409,21 @@ pub struct DropTermConfig {
     /// never leaves its last number lying. Key off means the report
     /// is never gathered and never rendered.
     pub status_bar_show_progress: bool,
+    /// The program status seats (osc7501-status spec): the program's
+    /// own OSC 7501 report — `blocked` (waiting on you) and `error`
+    /// (stopped on failure) tint the process disc's fill with the
+    /// scheme's own attention red, and a progress percent rides the
+    /// name seat beside the process name (`cargo 40%`) — opt-in
+    /// shell integration like the 133;D verdict, never a guess:
+    /// without integration the band renders exactly what it renders
+    /// without the report. The root record alone stands (child
+    /// records and the `app`/`title`/`msg`/`kind` keys are ignored
+    /// by design — one disc, one name seat), and its lifetime rides
+    /// `DropTerm`'s own observed edges: the foreground handoff drops
+    /// `working`/`blocked`, `done`/`error` persist until replaced or
+    /// cleared, and a full reset (RIS) clears everything. Key off
+    /// means the report is never gathered and never rendered.
+    pub status_bar_show_program_status: bool,
     /// The scrolled-back chip (status-scrolled spec): the
     /// viewport's lines back from the bottom — `↑12` — shown only
     /// off-bottom, its click jumping to the bottom (the band's one
@@ -589,6 +604,7 @@ impl Default for DropTermConfig {
             status_bar_show_duration: true,
             status_bar_show_exit_status: true,
             status_bar_show_progress: true,
+            status_bar_show_program_status: true,
             status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
@@ -614,10 +630,7 @@ impl DropTermConfig {
             duration: self.status_bar_show_duration,
             exit: self.status_bar_show_exit_status,
             progress: self.status_bar_show_progress,
-            // The report's own key ships whole with its docs row and
-            // settings control (osc7501-status Task 4); default on
-            // until then — the map gate's visibility ruling.
-            program_status: true,
+            program_status: self.status_bar_show_program_status,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,
