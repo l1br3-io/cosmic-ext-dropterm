@@ -807,6 +807,7 @@ impl DropTerm {
             exit_status,
             reported_cwd,
             progress,
+            program_status,
             missed_activity,
             attention_red,
             attention_bright_red,
@@ -852,6 +853,14 @@ impl DropTerm {
                     .progress
                     .then(|| terminal.reported_progress())
                     .flatten(),
+                // The program's own report (osc7501-status spec), an
+                // in-memory read gated all the same: key off means
+                // never gathered, the resolver's hidden/absent
+                // indistinguishability.
+                toggles
+                    .program_status
+                    .then(|| terminal.program_status())
+                    .flatten(),
                 // Key off means never gathered and never rendered
                 // (status-activity spec); the red pair stays
                 // ungated beside it — status-exit's chip reuses the
@@ -895,6 +904,7 @@ impl DropTerm {
             exit_status,
             reported_cwd,
             progress,
+            program_status,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }

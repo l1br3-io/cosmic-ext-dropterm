@@ -207,7 +207,7 @@ pub const DROP_ORDER: [SegmentId; 10] = [
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "twelve independent visibility switches — one per config key, by design"
+    reason = "thirteen independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -219,6 +219,10 @@ pub struct StatusToggles {
     pub exit: bool,
     /// The progress chip.
     pub progress: bool,
+    /// The program status's disc tint + name-seat percent
+    /// (osc7501-status) — one switch for the report's two seats,
+    /// riding the process segment's own visibility.
+    pub program_status: bool,
     /// The `~`-collapsed cwd.
     pub path: bool,
     /// The git branch of the cwd.
@@ -246,6 +250,7 @@ impl StatusToggles {
             duration: true,
             exit: true,
             progress: true,
+            program_status: true,
             path: true,
             branch: true,
             profile: true,
@@ -322,6 +327,13 @@ pub struct StatusSegments {
     /// report stands (and when hidden): the same
     /// indistinguishable `None`.
     pub progress: Option<crate::terminal::ReportedProgress>,
+    /// The program's own status report (osc7501-status spec),
+    /// verbatim from the engine — the disc's tint decision
+    /// ([`program_needs_attention`]) and the name-seat percent
+    /// ([`process_display`]) derive at paint. Absent when no record
+    /// stands (and when hidden): the same indistinguishable
+    /// `None`.
+    pub program_status: Option<crate::terminal::ProgramStatus>,
     /// Output landed on the active tab while the surface was hidden
     /// and no interaction has acknowledged it since
     /// (status-activity spec) — the halo's fact. A pass-through:
@@ -407,6 +419,12 @@ pub struct StatusInputs<'a> {
     /// clear, the handoff, or the decay window) shows nothing:
     /// never a guess.
     pub progress: Option<crate::terminal::ReportedProgress>,
+    /// The program's own status report (OSC 7501, osc7501-status
+    /// spec) — the engine's standing root record, gathered under
+    /// the program-status toggle's gate. `None` (no integration, a
+    /// clear, the handoff for its live states, a full reset) shows
+    /// nothing: never a guess.
+    pub program_status: Option<crate::terminal::ProgramStatus>,
     /// The foreground ssh command's destination token (status-remote
     /// spec) — the engine's cmdline read, gathered only at the
     /// snapshot points and only under [`ssh_read_due`]'s gate;
@@ -543,6 +561,13 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         // spec); the display and the error-red decision derive at
         // paint, the copy payload from the value.
         progress: toggles.progress.then_some(inputs.progress).flatten(),
+        // The engine's standing record, verbatim — the same
+        // indistinguishable None (osc7501-status spec); the disc's
+        // tint and the name-seat percent derive at paint.
+        program_status: toggles
+            .program_status
+            .then_some(inputs.program_status)
+            .flatten(),
         // Pass-throughs (status-activity spec): the mark is the
         // surface's news, so no segment toggle gates it (the
         // config-key gate lives upstream at the sampling), and the
@@ -603,6 +628,35 @@ pub fn progress_display(progress: crate::terminal::ReportedProgress) -> String {
             .value
             .map_or_else(|| "!".to_owned(), |value| format!("{value}%")),
     }
+}
+
+/// The process segment's display with the program's own report
+/// standing (osc7501-status spec): any state carrying a progress
+/// percent shows it beside the name — `cargo 40%`, the name seat's
+/// own idiom — and a record without one leaves the name bare. The
+/// copy payload is unaffected: the name stays the name.
+pub fn process_display(
+    name: &str,
+    program_status: Option<crate::terminal::ProgramStatus>,
+) -> String {
+    match program_status.and_then(|status| status.progress) {
+        Some(percent) => format!("{name} {percent}%"),
+        None => name.to_owned(),
+    }
+}
+
+/// Whether the standing program report tints the disc's fill
+/// `attention` (osc7501-status spec): `blocked` — the program is
+/// waiting on *you* — and `error` — it stopped on failure — carry
+/// the token's own pair, both reds; `working`, `done`, and `idle`
+/// leave the disc to its `/proc` truth, and `done` deliberately so:
+/// finishes are already narrated by their own honest channels, and a
+/// second finish signal would be a second narrator. No record tints
+/// nothing.
+pub fn program_needs_attention(program_status: Option<crate::terminal::ProgramStatus>) -> bool {
+    use crate::terminal::ProgramState;
+    program_status
+        .is_some_and(|status| matches!(status.state, ProgramState::Blocked | ProgramState::Error))
 }
 
 /// The ssh command's destination token (status-remote spec): the
@@ -1780,8 +1834,13 @@ impl<Message> StatusBar<Message> {
     fn refresh_paragraphs(&self, state: &mut State, width: f32) {
         let font = self.font;
         let copied = self.copied;
+        // The name seat's text carries the program's percent
+        // (osc7501-status spec) when its report stands — `cargo 40%`
+        // — the name alone otherwise; the copy payload stays the
+        // name, whatever the display shows.
+        let process_text = process_display(&self.segments.process, self.segments.program_status);
         state.process.update(segment_text(
-            display_text(copied, SegmentId::Process, &self.segments.process),
+            display_text(copied, SegmentId::Process, &process_text),
             font,
         ));
         let duration_text = duration_display(&self.segments);
@@ -2572,7 +2631,26 @@ where
         }
         if state.process.min_width() > 0.0 {
             if self.segments.running {
-                fill_disc(renderer, disc, pane_fg);
+                // The program's own report may own the fill's color
+                // (osc7501-status spec): `blocked` (waiting on you)
+                // and `error` (stopped on failure) tint it with the
+                // attention token — the same pair the halo rings
+                // with — while every other state, and no report at
+                // all, keep the pane foreground the disc always
+                // filled with. The hollow ring never tints: the
+                // record that persists past the handoff renders its
+                // percent, not a second hue on the idle shell.
+                let fill = if program_needs_attention(self.segments.program_status) {
+                    attention_color(
+                        self.segments.attention_red,
+                        self.segments.attention_bright_red,
+                        pane_fg,
+                        band_bg,
+                    )
+                } else {
+                    pane_fg
+                };
+                fill_disc(renderer, disc, fill);
             } else {
                 renderer.fill_quad(
                     Quad {

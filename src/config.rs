@@ -614,6 +614,10 @@ impl DropTermConfig {
             duration: self.status_bar_show_duration,
             exit: self.status_bar_show_exit_status,
             progress: self.status_bar_show_progress,
+            // The report's own key ships whole with its docs row and
+            // settings control (osc7501-status Task 4); default on
+            // until then — the map gate's visibility ruling.
+            program_status: true,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,
