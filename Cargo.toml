@@ -46,7 +46,7 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = fa
 # alacritty/alacritty are the follow-up once the module proves out.
 [patch.crates-io]
 vte = { git = "https://github.com/l1br3-io/vte", rev = "61226f3e95bcf0b464933ec67a6f35fe8a99814c" }
-alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "10072565f615e45fbedfaa05a9422bd23da96b3f" }
+alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "94ff9ffd30e7da69d4c8557684af6a7754452e78" }
 
 [dependencies]
 alacritty_terminal = "0.25.1"
