@@ -30,7 +30,7 @@ use cosmic::{
     Renderer,
     cosmic_theme::palette::{WithAlpha, blend::Compose},
     iced::core::{
-        Border, Shell,
+        Border, Shadow, Shell,
         border::Radius,
         clipboard::Clipboard,
         input_method::{self, InputMethod},
@@ -1042,18 +1042,33 @@ where
         }
 
         // The completion-menu overlay (suggest-menu spec): a pure
-        // overlay after the text pass — the ghost's own pattern,
-        // never the grid and never the terminal's own buffer, so
-        // selection, search, scrollback, and copy see nothing. The
-        // panel anchors at the cursor's cell (dropping below it,
-        // flipping above at the view's floor), shows the visible
-        // window from the scroll offset, paints from the live theme
-        // and the terminal's own scheme — never palette index 8,
-        // the zsh-invisible-text lesson — highlights the selected
+        // overlay — never the grid and never the terminal's own
+        // buffer, so selection, search, scrollback, and copy see
+        // nothing. The panel anchors at the cursor's cell (dropping
+        // below it, flipping above at the view's floor), shows the
+        // visible window from the scroll offset, paints from the live
+        // theme and the terminal's own scheme — never palette index
+        // 8, the zsh-invisible-text lesson — highlights the selected
         // row, and right-aligns descriptions in the ghost's own dim
         // tint where a source carries one. Shaped content caches in
         // State (the ghost cache's precedent); the geometry and the
         // highlight are per-frame.
+        //
+        // The whole panel draws inside its own renderer layer — the
+        // z-order fix. A layer renders by primitive kind, not by
+        // call order — wgpu and tiny_skia both: every quad of the
+        // layer first, text last. The grid's glyphs are a text pass,
+        // so a panel quad issued "after" them in the same layer
+        // still paints beneath them — the terminal text showed
+        // straight through the menu no matter how opaque its fill
+        // (the overlap report). `with_layer` stacks a child layer
+        // that renders entirely after its parent's every kind —
+        // iced's z-index, the same seat iced's own overlay menus
+        // ride — so the panel's quad and rows float above the grid
+        // on both backends; the applet never draws the grid, and one
+        // code path keeps the ruling true everywhere. The layer
+        // clips to the view, keeping the panel's shadow inside the
+        // pane.
         {
             let (cursor_point, display_offset) = {
                 let term = terminal.term.lock();
@@ -1117,80 +1132,103 @@ where
                     view,
                 );
 
-                // The panel: the theme's background with a component
-                // border, the pane's own corner rhythm.
-                renderer.fill_quad(
-                    Quad {
-                        bounds: panel,
-                        border: Border {
-                            radius: cosmic_theme.radius_s().into(),
-                            width: 1.0,
-                            color: Color::from(cosmic_theme.bg_component_color()),
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    Color::from(cosmic_theme.bg_color()),
-                );
-
-                // The selected row's highlight (the scrollbar's own
-                // pressed-state recipe, theme-derived).
-                if window.contains(&selected) {
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "row indices < 2^24, exact in f32"
-                    )]
-                    let row = (selected - window.start) as f32;
-                    let highlight = Rectangle::new(
-                        Point::new(panel.x, panel.y + row * metrics.line_height),
-                        Size::new(panel.width, metrics.line_height),
-                    );
+                // The panel: an opaque elevated surface — the popover
+                // recipe every libcosmic menu already uses
+                // ([`menu_panel_style`]'s pin: the component surface
+                // and its divider border, never the window background
+                // the grid beneath wears, which under the default
+                // COSMIC pair is the same color and would read as no
+                // surface at all) — the pane's own corner rhythm, and
+                // the tab bar's elevated shadow (tab_bar.rs's recipe)
+                // so the panel reads as a layer above the grid. The
+                // fill's opacity only matters because the layer below
+                // (the block comment above) puts this quad above the
+                // grid's glyphs in the first place.
+                let (panel_fill, panel_border) = menu_panel_style(cosmic_theme, theme.transparent);
+                renderer.with_layer(view, |renderer| {
                     renderer.fill_quad(
                         Quad {
-                            bounds: highlight,
+                            bounds: panel,
                             border: Border {
-                                radius: cosmic_theme.radius_xs().into(),
-                                width: 0.0,
-                                color: Color::TRANSPARENT,
+                                radius: cosmic_theme.radius_s().into(),
+                                width: 1.0,
+                                color: panel_border,
+                            },
+                            shadow: Shadow {
+                                color: Color {
+                                    a: 0.35,
+                                    ..Color::BLACK
+                                },
+                                blur_radius: 10.0,
+                                offset: Vector::new(0.0, 4.0),
                             },
                             snap: true,
-                            ..Default::default()
                         },
-                        Color::from(
-                            cosmic_theme
-                                .background(theme.transparent)
-                                .component
-                                .pressed
-                                .without_alpha()
-                                .with_alpha(0.5),
-                        ),
+                        panel_fill,
                     );
-                }
 
-                // The rows: the label at the leading pad, the
-                // description right-aligned at the trailing pad.
-                for (index, (label, description)) in glyphs.rows.iter().enumerate() {
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "row indices < 2^24, exact in f32"
-                    )]
-                    let row_top =
-                        Point::new(panel.x + pad, panel.y + index as f32 * metrics.line_height);
-                    renderer.fill_raw(Raw {
-                        buffer: Arc::downgrade(label),
-                        position: row_top,
-                        color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
-                        clip_bounds: panel,
-                    });
-                    if let Some((buffer, width)) = description {
+                    // The selected row's highlight (the scrollbar's own
+                    // pressed-state recipe, theme-derived).
+                    if window.contains(&selected) {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "row indices < 2^24, exact in f32"
+                        )]
+                        let row = (selected - window.start) as f32;
+                        let highlight = Rectangle::new(
+                            Point::new(panel.x, panel.y + row * metrics.line_height),
+                            Size::new(panel.width, metrics.line_height),
+                        );
+                        renderer.fill_quad(
+                            Quad {
+                                bounds: highlight,
+                                border: Border {
+                                    radius: cosmic_theme.radius_xs().into(),
+                                    width: 0.0,
+                                    color: Color::TRANSPARENT,
+                                },
+                                snap: true,
+                                ..Default::default()
+                            },
+                            Color::from(
+                                cosmic_theme
+                                    .background(theme.transparent)
+                                    .component
+                                    .pressed
+                                    .without_alpha()
+                                    .with_alpha(0.5),
+                            ),
+                        );
+                    }
+
+                    // The rows: the label at the leading pad, the
+                    // description right-aligned at the trailing pad.
+                    for (index, (label, description)) in glyphs.rows.iter().enumerate() {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "row indices < 2^24, exact in f32"
+                        )]
+                        let row_top =
+                            Point::new(panel.x + pad, panel.y + index as f32 * metrics.line_height);
                         renderer.fill_raw(Raw {
-                            buffer: Arc::downgrade(buffer),
-                            position: Point::new(panel.x + panel.width - pad - width, row_top.y),
+                            buffer: Arc::downgrade(label),
+                            position: row_top,
                             color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
                             clip_bounds: panel,
                         });
+                        if let Some((buffer, width)) = description {
+                            renderer.fill_raw(Raw {
+                                buffer: Arc::downgrade(buffer),
+                                position: Point::new(
+                                    panel.x + panel.width - pad - width,
+                                    row_top.y,
+                                ),
+                                color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
+                                clip_bounds: panel,
+                            });
+                        }
                     }
-                }
+                });
             }
         }
 
@@ -2806,6 +2844,32 @@ fn menu_panel_bounds(
     Rectangle::new(Point::new(x, y), Size::new(width, height))
 }
 
+/// The completion-menu panel's surface colors (suggest-menu spec): the
+/// popover recipe every libcosmic menu already uses — the elevated
+/// component surface, `background.component.base`, forced opaque and
+/// bordered by its own `divider` — never the window background the
+/// grid beneath wears. The first cut filled with `bg_color()`, which
+/// under the default COSMIC pair is the very color the terminal pane
+/// derives (`theme_glue`'s fallback reads the same palette base), so
+/// the panel read as no surface at all. One honesty note: the fill
+/// alone never fixed the overlap report — under wgpu the panel quad
+/// painted beneath the grid's text pass whatever its color (the draw
+/// site's layer comment names that root cause); the opaque fill is
+/// what makes the surface *visible* once the layer puts the quad on
+/// top. Opaque by pin, not by theme courtesy — the menu floats over
+/// arbitrarily dense terminal text and must fully occlude it. Pure
+/// theme math, headless-testable.
+fn menu_panel_style(
+    cosmic_theme: &cosmic::cosmic_theme::Theme,
+    transparent: bool,
+) -> (Color, Color) {
+    let component = &cosmic_theme.background(transparent).component;
+    (
+        Color::from(component.base.without_alpha().with_alpha(1.0)),
+        Color::from(component.divider),
+    )
+}
+
 /// The shell bytes a no-Ctrl character arm delivers for a press whose
 /// `text` carries `character`: the character's UTF-8, `\x1B`-prefixed
 /// under Alt. `None` — a press with no text, a dead key
@@ -2913,12 +2977,13 @@ fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
 mod tests {
     use super::{
         DisabledFlow, EdgeScrollDirection, MenuRouting, accumulate_wheel_lines, context_menu_press,
-        disabled_forwards, edge_scroll_adjustment, menu_key, menu_panel_bounds,
+        disabled_forwards, edge_scroll_adjustment, menu_key, menu_panel_bounds, menu_panel_style,
         menu_visible_window,
     };
+    use cosmic::cosmic_theme::palette::WithAlpha;
     use cosmic::iced::keyboard::{Modifiers, key::Named};
     use cosmic::iced::mouse::Button;
-    use cosmic::iced::{Point, Rectangle, Size};
+    use cosmic::iced::{Color, Point, Rectangle, Size};
 
     use super::accept_kind;
     use super::child_owns_pointer;
@@ -3118,6 +3183,44 @@ mod tests {
             400.0,
             "the panel's right edge never crosses the view's"
         );
+    }
+
+    #[test]
+    fn the_menu_panel_wears_the_opaque_component_surface() {
+        // The popover recipe, both stock modes: the fill is the
+        // component surface — fully opaque, whatever the palette's
+        // alpha says (the menu floats over arbitrarily dense terminal
+        // text and must fully occlude it) — and the border is that
+        // surface's own divider.
+        for theme in [cosmic::Theme::dark(), cosmic::Theme::light()] {
+            let (fill, border) = menu_panel_style(theme.cosmic(), false);
+            let component = &theme.cosmic().background(false).component;
+            assert_eq!(
+                fill,
+                Color::from(component.base.without_alpha().with_alpha(1.0))
+            );
+            assert_eq!(fill.a, 1.0, "the panel fully occludes the grid behind it");
+            assert_eq!(border, Color::from(component.divider));
+        }
+    }
+
+    #[test]
+    fn the_menu_panel_never_fills_with_the_window_background() {
+        // The z-index report's root cause: the first cut filled the
+        // panel with `bg_color()`, and under the default COSMIC pair
+        // the terminal pane derives its background from the same
+        // palette base — the panel vanished into the pane, its rows
+        // reading as overlapping the content behind them. Both stock
+        // palettes carry an elevated component surface distinct from
+        // the window background, so the pin holds in dark and light.
+        for theme in [cosmic::Theme::dark(), cosmic::Theme::light()] {
+            let (fill, _) = menu_panel_style(theme.cosmic(), false);
+            assert_ne!(
+                fill,
+                Color::from(theme.cosmic().bg_color()),
+                "the panel must be a visible surface, never the pane's own color"
+            );
+        }
     }
 
     #[test]

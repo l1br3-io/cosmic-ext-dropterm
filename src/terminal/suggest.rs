@@ -1293,10 +1293,17 @@ pub struct MenuCandidate {
 /// provider's **whole** strict-prefix set — where the single-choice
 /// ghost must settle for one answer (the newest match, the shared
 /// prefix, the shortest name), the menu carries every match —
-/// concatenated under the merge's ruled priority ([`source_rank`],
-/// history on top). Each provider rides its own gates unchanged
-/// (config toggles, the spawn allowlist, the seat rules); pure, like
-/// every seam here. Empty input is silence — no token, no list.
+/// concatenated under the menu's own seat-aware priority
+/// ([`menu_source_rank`], amended 2026-11-06 by the maintainer's
+/// scoping report: the keyword's scope leads — `git st` lists the
+/// curated subcommands above the history line, a path-shaped token
+/// lists the path entries above history — where the ghost keeps its
+/// locked [`source_rank`] with history on top; a list that already
+/// carries the seat's scope leads with it, a single silent choice
+/// still leans on the tab's own truth first). Each provider rides
+/// its own gates unchanged (config toggles, the spawn allowlist, the
+/// seat rules); pure, like every seam here. Empty input is silence
+/// — no token, no list.
 pub(crate) fn candidates(
     typed: &str,
     suggest: &Suggest,
@@ -1312,11 +1319,35 @@ pub(crate) fn candidates(
         SuggestionSource::Catalog,
         SuggestionSource::Generator,
     ];
-    providers.sort_by_key(|&source| source_rank(source));
+    providers.sort_by_key(|&source| menu_source_rank(source));
     providers
         .into_iter()
         .flat_map(|source| source_candidates(source, typed, suggest, obs))
         .collect()
+}
+
+/// The menu's own source order — the display order of
+/// [`candidates`]' rows, distinct from the ghost's locked
+/// [`source_rank`] (suggest-menu spec, amended 2026-11-06): the
+/// seat-scoped providers first — path (the typed token's own
+/// directory), specs (the command's own table), generator (the
+/// command's own cached names) — then history, then the command
+/// catalog last (command position has no settled keyword to scope
+/// to; history is the better context there, and the amendment moves
+/// nothing at that seat). The seats are mutually exclusive enough
+/// that the scoped tier's internal order only shows where two scope
+/// kinds fire at once; it keeps the ghost's relative order among
+/// them. The single-choice ghost is untouched — its merge tests pin
+/// `source_rank` with history on top, and one silent answer still
+/// belongs to the tab's own truth.
+fn menu_source_rank(source: SuggestionSource) -> usize {
+    match source {
+        SuggestionSource::Path => 0,
+        SuggestionSource::Specs => 1,
+        SuggestionSource::Generator => 2,
+        SuggestionSource::History => 3,
+        SuggestionSource::Catalog => 4,
+    }
 }
 
 /// One provider's whole candidate set, keyed by its variant — the
@@ -1406,12 +1437,15 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
 /// The curated-specs provider's whole set (suggest-menu spec): every
 /// table entry with the trailing token as a strict prefix —
 /// subcommands at the subcommand seat, long flags from any argument
-/// seat. The bare `--` floor is the single-choice ghost's alone (a
-/// list of every flag is information, not a guess), so the flag seat
-/// lists the table whole. Each remainder rides the escape rule like
-/// every provider's, and each row carries its table entry's
-/// description where one exists (suggest-specs-data spec) — the
-/// menu's dim second column; the ghost never sees it (locked:
+/// seat. The single-choice ghost's no-information floors are the
+/// ghost's alone: a list is information, not a guess, so the bare
+/// `--` lists the flag table whole and an empty trailing token at
+/// the subcommand seat (`git ` with the space echoed) lists the
+/// command's whole subcommand table — the scoped next level the
+/// command word settles the menu into. Each remainder rides the
+/// escape rule like every provider's, and each row carries its table
+/// entry's description where one exists (suggest-specs-data spec) —
+/// the menu's dim second column; the ghost never sees it (locked:
 /// single-choice text).
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
@@ -1420,9 +1454,6 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     let Some((command, token)) = specs_context(typed, obs.aliases) else {
         return Vec::new();
     };
-    if token.is_empty() {
-        return Vec::new();
-    }
     let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
         return Vec::new();
     };
@@ -1541,11 +1572,11 @@ impl MenuState {
     }
 
     /// Opens over the merged collection (the record's ruled
-    /// contents): the collection's own source order — history on
-    /// top — is the display order, the selection at the top, no
-    /// re-ranking here. An empty collection declines to open and
-    /// answers `false`: no candidates, no menu. Returns whether the
-    /// menu is open.
+    /// contents): the collection's own source order — the seat's
+    /// scope above history ([`menu_source_rank`]) — is the display
+    /// order, the selection at the top, no re-ranking here. An empty
+    /// collection declines to open and answers `false`: no
+    /// candidates, no menu. Returns whether the menu is open.
     pub(crate) fn open(&mut self, rows: Vec<MenuCandidate>) -> bool {
         if rows.is_empty() {
             self.close();

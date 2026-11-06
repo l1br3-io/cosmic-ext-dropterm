@@ -717,6 +717,34 @@ fn source_rank_pins_the_ruled_priority() {
 }
 
 #[test]
+fn menu_source_rank_pins_the_scoped_first_order() {
+    // The menu's own order, stated as data (suggest-menu spec,
+    // amended 2026-11-06): the seat-scoped providers — path, specs,
+    // generator — above history, the command catalog last (the
+    // scope-less command seat keeps history as its leading
+    // context). The ghost's `source_rank` stays locked
+    // history-first; only the list leads with the keyword's scope.
+    assert_eq!(menu_source_rank(SuggestionSource::Path), 0);
+    assert_eq!(menu_source_rank(SuggestionSource::Specs), 1);
+    assert_eq!(menu_source_rank(SuggestionSource::Generator), 2);
+    assert_eq!(menu_source_rank(SuggestionSource::History), 3);
+    assert_eq!(menu_source_rank(SuggestionSource::Catalog), 4);
+    // The two orders are genuinely distinct seams: history is first
+    // in the ghost's table and demoted below the scoped tier in the
+    // menu's alone — the amendment would silently undo itself if
+    // either rank table collapsed into the other.
+    assert_eq!(
+        source_rank(SuggestionSource::History),
+        0,
+        "the ghost keeps history first"
+    );
+    assert!(
+        menu_source_rank(SuggestionSource::History) > menu_source_rank(SuggestionSource::Generator),
+        "history demoted below the scoped tier in the menu alone"
+    );
+}
+
+#[test]
 fn the_dispatch_asks_history_and_carries_its_provenance() {
     let suggest = adopted();
     let (suffix, source) =
@@ -1937,10 +1965,12 @@ fn checkout_menu_rows_dedupe_across_branches_and_tags() {
 }
 
 #[test]
-fn generator_rows_follow_the_local_providers_in_the_menu() {
-    // The collection's source order is the display order: history's
-    // rows first, the generator's after — the merge's ruled priority
-    // in list form.
+fn generator_rows_lead_history_in_the_menu() {
+    // The collection's source order is the display order, amended
+    // 2026-11-06: the seat's scope leads, so the generator's cached
+    // branch — git's own names, the keyword's context — rides above
+    // the history line, where the single-choice ghost keeps its
+    // locked history-first merge.
     let mut suggest = adopted();
     let mut ring = VecDeque::new();
     ring.push_back("git checkout main2".to_string());
@@ -1963,8 +1993,8 @@ fn generator_rows_follow_the_local_providers_in_the_menu() {
             .map(|row| (row.label.as_str(), row.source))
             .collect::<Vec<_>>(),
         vec![
-            ("git checkout main2", SuggestionSource::History),
             ("main", SuggestionSource::Generator),
+            ("git checkout main2", SuggestionSource::History),
         ],
     );
 }
@@ -2257,31 +2287,37 @@ fn a_two_match_path_token_lists_both_entries_where_the_ghost_yields_the_common_p
 }
 
 #[test]
-fn the_menu_ranks_history_on_top_under_the_merge_priority() {
-    // The merge's ruled priority orders the menu too (suggest-menu
-    // spec): history first — the tab's own truth — then the rest by
-    // source_rank. One token cannot seat every provider at once (the
-    // seats are mutually exclusive), so the pin composes two tokens
-    // that each seat two: `git st` (history + specs) and `~/s`
-    // (history + path).
+fn the_menu_ranks_the_seats_scope_above_history() {
+    // The menu's own order (suggest-menu spec, amended 2026-11-06 by
+    // the maintainer's scoping report): the keyword's scope leads —
+    // the seat-scoped providers above history — where the
+    // single-choice ghost keeps its locked history-first
+    // `source_rank`. One token cannot seat every provider at once
+    // (the seats are mutually exclusive), so the pin composes three
+    // tokens that each seat two: `git st` (specs over history), `~/s`
+    // (path over history), and `gi` (the command seat, where no
+    // keyword has settled and history still leads the catalog).
     let suggest = adopted();
-    let history_and_specs = candidates("git st", &suggest, &obs());
-    let sources: Vec<SuggestionSource> = history_and_specs.iter().map(|c| c.source).collect();
+    let specs_over_history = candidates("git st", &suggest, &obs());
+    let sources: Vec<SuggestionSource> = specs_over_history.iter().map(|c| c.source).collect();
     assert_eq!(
         sources,
         [
-            SuggestionSource::History,
             SuggestionSource::Specs,
-            SuggestionSource::Specs
+            SuggestionSource::Specs,
+            SuggestionSource::History
         ]
     );
-    let labels: Vec<&str> = history_and_specs.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["git status", "stash", "status"]);
+    let labels: Vec<&str> = specs_over_history
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(labels, ["stash", "status", "git status"]);
     assert!(
-        history_and_specs
+        specs_over_history
             .windows(2)
-            .all(|pair| source_rank(pair[0].source) <= source_rank(pair[1].source)),
-        "the whole list is non-decreasing in source_rank"
+            .all(|pair| menu_source_rank(pair[0].source) <= menu_source_rank(pair[1].source)),
+        "the whole list is non-decreasing in menu_source_rank"
     );
 
     let mut suggest = adopted();
@@ -2293,18 +2329,48 @@ fn the_menu_ranks_history_on_top_under_the_merge_priority() {
         path_listing: Some(&entries),
         ..obs()
     };
-    let history_and_path = candidates("~/s", &suggest, &observation);
-    let sources: Vec<SuggestionSource> = history_and_path.iter().map(|c| c.source).collect();
+    let path_over_history = candidates("~/s", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = path_over_history.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::Path,
+            SuggestionSource::Path,
+            SuggestionSource::History
+        ]
+    );
+    let labels: Vec<&str> = path_over_history.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["src/", "srv/", "~/src/project"]);
+
+    // The command seat is the scope-less one: no command word has
+    // completed, so history stays the leading context and the
+    // catalog follows (the amendment moves nothing here).
+    let names = catalog(&["giftopnm", "git", "gitk"]);
+    let suggest = adopted();
+    let observation = Observation {
+        command_catalog: &names,
+        ..obs()
+    };
+    let history_then_catalog = candidates("gi", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = history_then_catalog.iter().map(|c| c.source).collect();
     assert_eq!(
         sources,
         [
             SuggestionSource::History,
-            SuggestionSource::Path,
-            SuggestionSource::Path
+            SuggestionSource::History,
+            SuggestionSource::Catalog,
+            SuggestionSource::Catalog,
+            SuggestionSource::Catalog
         ]
     );
-    let labels: Vec<&str> = history_and_path.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["~/src/project", "src/", "srv/"]);
+    let labels: Vec<&str> = history_then_catalog
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        ["git status", "git push", "giftopnm", "git", "gitk"]
+    );
 }
 
 #[test]
@@ -2376,6 +2442,62 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
     assert_eq!(
         labels, git.flags,
         "the bare `--` lists the whole flag table"
+    );
+}
+
+#[test]
+fn the_menu_lists_the_whole_subcommand_table_at_a_bare_command_word() {
+    // The ghost's empty-word floor is the ghost's alone (the bare
+    // `--` rule's twin): `git ` with the space echoed and nothing
+    // after lists git's whole curated subcommand table above the
+    // history lines (the 2026-11-06 amendment: the keyword's scope
+    // leads) — the scoped next level the command word settles the
+    // menu into, where an unscoped provider or a later seat
+    // contributes nothing.
+    let suggest = adopted();
+    let menu = candidates("git ", &suggest, &obs());
+    let git = SPECS
+        .iter()
+        .find(|spec| spec.command == "git")
+        .expect("git is curated");
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        &labels[..git.subcommands.len()],
+        git.subcommands,
+        "the whole subcommand table leads, the table's own order"
+    );
+    assert_eq!(
+        &labels[git.subcommands.len()..],
+        ["git status", "git push"],
+        "then the history lines, most recent first"
+    );
+    let suffixes: Vec<&str> = menu
+        .iter()
+        .take(git.subcommands.len())
+        .map(|c| c.suffix.as_str())
+        .collect();
+    assert_eq!(
+        suffixes, git.subcommands,
+        "an empty token accepts the whole word"
+    );
+    assert!(
+        menu.iter()
+            .take(git.subcommands.len())
+            .all(|c| c.source == SuggestionSource::Specs),
+        "the table rows carry the specs provenance"
+    );
+    // The seat rules hold at the boundary: a later seat with an
+    // empty token never consults the subcommand table, and an
+    // uncurated command's bare word collects nothing (the ring holds
+    // no match either — specs_suggest's `vim notes`).
+    let suggest = specs_suggest();
+    assert!(
+        candidates("git checkout ", &suggest, &obs()).is_empty(),
+        "a later argument seat stays out of the subcommand table"
+    );
+    assert!(
+        candidates("echo ", &suggest, &obs()).is_empty(),
+        "an uncurated command's bare word is silence"
     );
 }
 
