@@ -1288,17 +1288,37 @@ impl DropTerm {
                 }
                 return self.sync_progress_decay();
             }
-            // OSC 7501 program status report (osc7501-status spec):
-            // a commented stopgap until the engine seat lands —
-            // accepted and dropped so the match stays exhaustive; the
-            // seat's task replaces this arm with the forward +
-            // snapshot refresh, exactly as its siblings above. The
-            // expect self-cleans the moment that body lands.
-            #[expect(
-                clippy::match_same_arms,
-                reason = "stopgap-empty until the engine seat lands (osc7501-status Task 2)"
-            )]
-            TermEvent::ProgramStatus(_) => {}
+            // The program's own status report (osc7501-status spec):
+            // forwarded to the engine under the lock exactly as its
+            // siblings are — the protocol's grammar holds there, the
+            // root record alone standing, a mangled body never
+            // disturbing a live one — then the snapshot piggyback.
+            // Without integration the event never fires; the band
+            // never guesses.
+            TermEvent::ProgramStatus(body) => {
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_program_status(&body);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+            }
+            // The terminal was fully reset (osc7501-status spec):
+            // RIS removes every record — the fork's FullReset
+            // event's seat, forwarded under the lock, then the
+            // snapshot piggyback.
+            TermEvent::FullReset => {
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_terminal_reset();
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+            }
             TermEvent::PromptExit(code) => {
                 // The shell's own verdict for the command that just
                 // finished (status-exit spec): forwarded to the

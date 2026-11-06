@@ -2339,6 +2339,296 @@ fn the_foreground_handoff_clears_a_standing_progress_report() {
     );
 }
 
+/// Poll the tagged-event channel until the next `ProgramStatus`
+/// event arrives — skipping the wakeups that share the stream — and
+/// pin its payload.
+fn poll_until_program_status(
+    rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>,
+    want: &str,
+    what: &str,
+) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::ProgramStatus(body) = event {
+                assert_eq!(body, want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for program status {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_program_status() {
+    // Respawned/restored tabs start clean by construction — the
+    // record dies with the terminal that owns it (osc7501-status
+    // spec).
+    let (terminal, _rx) = progress_report_terminal();
+    assert_eq!(terminal.program_status(), None);
+}
+
+#[test]
+fn program_status_pairs_parse_by_the_protocol_rules() {
+    // The grammar (osc7501-status spec, the protocol's own rules):
+    // pairs split on `:`, unknown keys ignored (the protocol's
+    // extension path — `app`, `kind`, `title`, and `msg` ride it as
+    // consumed-by-nothing), malformed pairs skipped, a repeated key's
+    // last value winning.
+    let standing = ProgramStatus {
+        state: ProgramState::Done,
+        progress: None,
+    };
+    // Unknown keys and ignored-by-design keys change nothing.
+    assert_eq!(
+        ProgramStatus::apply(
+            Some(standing),
+            "state=blocked:kind=permission:app=cargo:title=Rm9v:msg=YmFy:future=x"
+        ),
+        Some(ProgramStatus {
+            state: ProgramState::Blocked,
+            progress: None
+        })
+    );
+    // Malformed pairs (no `=`) are skipped; the rest still parses.
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=working:progress=40:malformed"),
+        Some(ProgramStatus {
+            state: ProgramState::Working,
+            progress: Some(40)
+        })
+    );
+    // A repeated key's last value wins — state and progress alike.
+    assert_eq!(
+        ProgramStatus::apply(
+            Some(standing),
+            "state=working:state=error:progress=40:progress=70"
+        ),
+        Some(ProgramStatus {
+            state: ProgramState::Error,
+            progress: Some(70)
+        })
+    );
+    // Each report replaces its record completely: an omitted progress
+    // vanishes (no inheritance — the protocol's replace rule).
+    assert_eq!(
+        ProgramStatus::apply(
+            Some(ProgramStatus {
+                state: ProgramState::Working,
+                progress: Some(40)
+            }),
+            "state=idle"
+        ),
+        Some(ProgramStatus {
+            state: ProgramState::Idle,
+            progress: None
+        })
+    );
+    // A progress outside 0–100, or not an integer, is treated as
+    // absent — the kind precedent for unrecognized values.
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=working:progress=101"),
+        Some(ProgramStatus {
+            state: ProgramState::Working,
+            progress: None
+        })
+    );
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=working:progress=half"),
+        Some(ProgramStatus {
+            state: ProgramState::Working,
+            progress: None
+        })
+    );
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=blocked:progress=100"),
+        Some(ProgramStatus {
+            state: ProgramState::Blocked,
+            progress: Some(100)
+        })
+    );
+}
+
+#[test]
+fn a_report_without_a_state_or_with_an_unrecognized_one_discards_whole() {
+    // `state` is the protocol's one required key and an unrecognized
+    // value discards the whole report — either way the standing
+    // record is untouched (a mangled report never disturbs a live
+    // truth).
+    let standing = ProgramStatus {
+        state: ProgramState::Done,
+        progress: None,
+    };
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "progress=40"),
+        Some(standing)
+    );
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=working:state=bogus"),
+        Some(standing)
+    );
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=bogus:state=working"),
+        Some(standing)
+    );
+    // An over-long body rejects whole — the REPORTED_CWD_MAX
+    // precedent, fail toward rejection.
+    let long = format!("state=working:future={}", "x".repeat(5000));
+    assert_eq!(ProgramStatus::apply(Some(standing), &long), Some(standing));
+}
+
+#[test]
+fn id_records_are_not_the_band_s_narrator() {
+    // Root-only (osc7501-status spec, OQ-2's locked default): one
+    // disc, one name seat, the program's own summary — an id'd
+    // report is a child record and is ignored whole, including an
+    // id'd `clear` (it addresses the child, not the root).
+    let standing = ProgramStatus {
+        state: ProgramState::Working,
+        progress: Some(40),
+    };
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "id=us-east:state=blocked:progress=10"),
+        Some(standing)
+    );
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=clear:id=us-east"),
+        Some(standing)
+    );
+    // The root `clear` removes the standing record — with anything
+    // riding it.
+    assert_eq!(ProgramStatus::apply(Some(standing), "state=clear"), None);
+    assert_eq!(
+        ProgramStatus::apply(Some(standing), "state=clear:progress=50"),
+        None
+    );
+    // A `clear` for nothing standing stays nothing.
+    assert_eq!(ProgramStatus::apply(None, "state=clear"), None);
+}
+
+#[test]
+fn an_osc7501_report_arrives_as_a_program_status_event() {
+    // The delivery half of the seat (osc7501-status spec): a
+    // program-emitted OSC 7501 reaches the app as
+    // `ProgramStatus(body)` through the same tagged stream — the
+    // fork arm's end-to-end pin on the pinned revs, the body
+    // verbatim.
+    let (terminal, mut rx) = progress_report_terminal();
+
+    terminal.input_no_scroll(&b"printf '\\033]7501;state=working:progress=40\\007'\r"[..]);
+    poll_until_program_status(&mut rx, "state=working:progress=40", "the report arrives");
+}
+
+#[test]
+fn the_foreground_handoff_drops_working_and_blocked_only() {
+    // The local edge (osc7501-status spec): the program ended —
+    // DropTerm watches it happen — so its `working`/`blocked`
+    // reports die with it; `done` and `error` persist (their own
+    // honest channels narrate finishes, and the protocol says they
+    // survive). Three short jobs: a working report dies at the first
+    // handoff, a blocked one at the second, a done one survives the
+    // third.
+    let (mut terminal, mut rx) = progress_report_terminal();
+
+    // Job one: report `working` mid-run, then finish.
+    terminal
+        .input_no_scroll(&b"(printf '\\033]7501;state=working:progress=40\\007'; sleep 1)\r"[..]);
+    poll_until_program_status(
+        &mut rx,
+        "state=working:progress=40",
+        "the working report arrives",
+    );
+    terminal.note_program_status("state=working:progress=40");
+    poll_until_foreground(&terminal, true, "job one takes the foreground");
+    terminal.update();
+    assert_eq!(
+        terminal.program_status().map(|status| status.state),
+        Some(ProgramState::Working),
+        "the report stands while its program owns the foreground"
+    );
+    poll_until_foreground(&terminal, false, "job one hands the foreground back");
+    terminal.update();
+    assert_eq!(
+        terminal.program_status(),
+        None,
+        "the handoff drops the working report"
+    );
+
+    // Job two: stand a blocked report (the program is waiting on the
+    // user), run an unrelated job, and the handoff drops it too.
+    terminal.note_program_status("state=blocked:kind=permission");
+    assert_eq!(
+        terminal.program_status().map(|status| status.state),
+        Some(ProgramState::Blocked)
+    );
+    terminal.input_no_scroll(&b"sleep 1\r"[..]);
+    poll_until_foreground(&terminal, true, "job two takes the foreground");
+    terminal.update();
+    poll_until_foreground(&terminal, false, "job two hands the foreground back");
+    terminal.update();
+    assert_eq!(
+        terminal.program_status(),
+        None,
+        "the handoff drops the blocked report"
+    );
+
+    // Job three: a done report survives the handoff — finishes are
+    // narrated by their own channels, and the record persists until
+    // replaced, cleared, or respawned.
+    terminal.note_program_status("state=done");
+    terminal.input_no_scroll(&b"sleep 1\r"[..]);
+    poll_until_foreground(&terminal, true, "job three takes the foreground");
+    terminal.update();
+    poll_until_foreground(&terminal, false, "job three hands the foreground back");
+    terminal.update();
+    assert_eq!(
+        terminal.program_status().map(|status| status.state),
+        Some(ProgramState::Done),
+        "the done report persists through the handoff"
+    );
+}
+
+#[test]
+fn an_ris_arrives_as_a_full_reset_event_and_clears_the_record() {
+    // RIS (osc7501-status spec, the protocol's MUST): a full reset
+    // removes every record — the fork's FullReset event carries the
+    // edge (sanctioned 2026-11-06), and the seat clears even the
+    // persistent `done` on it. DECSTR and every other reset-shaped
+    // sequence does not route through the fork's arm.
+    let (mut terminal, mut rx) = progress_report_terminal();
+
+    terminal.note_program_status("state=done");
+    assert_eq!(
+        terminal.program_status().map(|status| status.state),
+        Some(ProgramState::Done)
+    );
+
+    terminal.input_no_scroll(&b"printf '\\033c'\r"[..]);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if matches!(event, Event::FullReset) {
+                terminal.note_terminal_reset();
+                assert_eq!(
+                    terminal.program_status(),
+                    None,
+                    "the full reset clears even the persistent record"
+                );
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the RIS event"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn a_multibyte_escape_decodes_into_the_path() {
     let mut terminal = cwd_report_terminal();

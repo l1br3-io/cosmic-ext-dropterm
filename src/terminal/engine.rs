@@ -682,6 +682,16 @@ pub struct Terminal {
     /// with the terminal, so a respawn starts clean by
     /// construction.
     reported_progress: Option<ReportedProgress>,
+    /// The program's own status report (OSC 7501, osc7501-status
+    /// spec) — the root record alone, `app`/`title`/`msg`/`kind`
+    /// ignored by design. Written only by the event surface
+    /// ([`Self::note_program_status`]); cleared by the root
+    /// `state=clear`, the foreground handoff for `working`/`blocked`
+    /// alone ([`Terminal::update`]'s finish edge), a full reset
+    /// ([`Self::note_terminal_reset`], RIS), and the terminal's own
+    /// death. Dies with the terminal, so a respawn starts clean by
+    /// construction.
+    program_status: Option<ProgramStatus>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1442,6 +1452,7 @@ impl Terminal {
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
             reported_progress: None,
+            program_status: None,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1767,6 +1778,31 @@ impl Terminal {
         {
             self.reported_progress = None;
         }
+    }
+
+    /// Records the program's own status report (osc7501-status
+    /// spec): the OSC 7501 body forwarded from the event surface.
+    /// The protocol's grammar holds — the root record alone stands
+    /// (id'd reports ignored), the root `state=clear` removes, each
+    /// report replacing its record completely — and a mangled body
+    /// never disturbs a standing one.
+    pub fn note_program_status(&mut self, body: &str) {
+        self.program_status = ProgramStatus::apply(self.program_status, body);
+    }
+
+    /// The standing program status report (osc7501-status spec),
+    /// until the root `clear`, the foreground handoff (for
+    /// `working`/`blocked` alone), a full reset, or the terminal's
+    /// own death — never a guess.
+    pub fn program_status(&self) -> Option<ProgramStatus> {
+        self.program_status
+    }
+
+    /// The terminal was fully reset (osc7501-status spec): RIS
+    /// removes every record — the fork's `FullReset` event's seat,
+    /// clearing even the persistent `done`/`error`.
+    pub fn note_terminal_reset(&mut self) {
+        self.program_status = None;
     }
 
     /// Drains the finish latch once (command-lifecycle spec): the
@@ -2548,6 +2584,18 @@ impl Terminal {
             // (osc94-progress spec), on the same edge the timer
             // freezes its duration.
             self.reported_progress = None;
+            // The program behind a 7501 report ended here too, but
+            // only its live states die with it (osc7501-status
+            // spec): `working`/`blocked` describe a program that no
+            // longer runs, while `done`/`error` persist until
+            // replaced, cleared, or respawned — finishes are already
+            // narrated by their own honest channels, and the
+            // protocol says both survive.
+            if self.program_status.is_some_and(|status| {
+                matches!(status.state, ProgramState::Working | ProgramState::Blocked)
+            }) {
+                self.program_status = None;
+            }
         }
         if fresh_by_finish && let Some(duration) = self.timer.last_duration() {
             self.command_finished = Some(duration);
@@ -3331,6 +3379,118 @@ impl ReportedProgress {
     /// refresh — the decay death's truth.
     fn expired(&self, now: Instant) -> bool {
         now >= self.refreshed_at + PROGRESS_DECAY
+    }
+}
+
+/// The program's own status states (OSC 7501, osc7501-status spec):
+/// the protocol's five reportable states. `clear` is not one of
+/// them — it clears the record rather than standing as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramState {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+    Error,
+}
+
+/// The OSC 7501 body cap (osc7501-status spec, the `REPORTED_CWD_MAX`
+/// hardening precedent): a body past 4 KiB is not a status worth
+/// parsing — reject whole, never truncate, and never disturb a
+/// standing record with one.
+const PROGRAM_STATUS_MAX: usize = 4096;
+
+/// A standing OSC 7501 root-record report (osc7501-status spec): the
+/// program's own status — `blocked` and `error` tint the disc
+/// `attention` — with its optional progress percent 0–100. Child
+/// records never reach the seat (root-only: one disc, one name seat,
+/// the program's own summary); `app`, `title`, `msg`, and `kind` are
+/// consumed by nothing — ignored by design, named in the docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramStatus {
+    pub state: ProgramState,
+    pub progress: Option<u8>,
+}
+
+impl ProgramStatus {
+    /// One report applied to the standing record, the protocol's own
+    /// grammar: pairs split on `:`; unknown keys ignored (the
+    /// protocol's extension path); malformed pairs skipped; a
+    /// repeated key's last value winning. Each report replaces its
+    /// record completely — an omitted key vanishes, no inheritance.
+    /// A report carrying an `id` is a child record and is ignored
+    /// whole (root-only), including an id'd `clear`; the root
+    /// `state=clear` removes the standing record. A missing or
+    /// unrecognized `state` discards the report whole — a mangled
+    /// report never disturbs a standing truth.
+    fn apply(standing: Option<Self>, body: &str) -> Option<Self> {
+        if body.len() > PROGRAM_STATUS_MAX {
+            return standing;
+        }
+        let mut state: Option<ProgramState> = None;
+        let mut clear = false;
+        let mut progress: Option<Option<u8>> = None;
+        let mut id = false;
+        for pair in body.split(':') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+            match key {
+                "state" => match value {
+                    "idle" => {
+                        state = Some(ProgramState::Idle);
+                        clear = false;
+                    }
+                    "working" => {
+                        state = Some(ProgramState::Working);
+                        clear = false;
+                    }
+                    "done" => {
+                        state = Some(ProgramState::Done);
+                        clear = false;
+                    }
+                    "blocked" => {
+                        state = Some(ProgramState::Blocked);
+                        clear = false;
+                    }
+                    "error" => {
+                        state = Some(ProgramState::Error);
+                        clear = false;
+                    }
+                    "clear" => {
+                        clear = true;
+                        state = None;
+                    }
+                    // The protocol's one required key, unrecognized:
+                    // the whole report discards.
+                    _ => return standing,
+                },
+                "progress" => {
+                    progress = Some(value.parse::<u8>().ok().filter(|&percent| percent <= 100));
+                }
+                // An `id` marks a child record — not the band's
+                // narrator, whatever else the report carries.
+                "id" => id = true,
+                // Unknown keys MUST be ignored: the protocol's
+                // extension path, and the seat for the
+                // ignored-by-design set (`app`, `kind`, `title`,
+                // `msg`).
+                _ => {}
+            }
+        }
+        if id {
+            return standing;
+        }
+        if clear {
+            return None;
+        }
+        let Some(state) = state else {
+            return standing;
+        };
+        Some(Self {
+            state,
+            progress: progress.flatten(),
+        })
     }
 }
 
