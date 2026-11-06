@@ -60,6 +60,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `status_bar_show_duration` | `true` |
 | `status_bar_show_exit_status` | `true` |
 | `status_bar_show_progress` | `true` |
+| `status_bar_show_program_status` | `true` |
 | `status_bar_show_scrollback` | `true` |
 | `tab_bar_border` | `true` |
 | `status_bar_border` | `true` |
@@ -140,6 +141,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 | `status_bar_show_duration` | Command time (`2:41` while a command runs, `cargo 2:41` after it finishes) - derived from the foreground edges the engine already diffs, no shell integration. Hiding it stops its 1 s tick. | `true` |
 | `status_bar_show_exit_status` | Exit status (`✗1`) of the last finished command, beside its duration, in the scheme's own red - sourced solely from the shell's OSC 133;D report (opt-in shell integration; see the status band page). Success renders nothing; without integration the band never guesses. Clicking the chip copies the bare code. | `true` |
 | `status_bar_show_progress` | The running command's own progress (`42%`) beside the exit chip - sourced solely from the shell's OSC 9;4 report (opt-in shell integration; see the status band page): `…` while indeterminate, the value in the scheme's own red on error (`!` if none was ever given), paused plain. State 0, the command's finish, and ~15 s without a refresh each clear it - a dead reporter never leaves its last number lying. Clicking the chip copies the bare percent. | `true` |
+| `status_bar_show_program_status` | The program's own report on the process disc and name - sourced solely from the shell's OSC 7501 report (opt-in shell integration; see the status band page): `blocked` (the program waits on you) and `error` tint the disc's fill in the scheme's own red, any state's progress percent rides the name (`cargo 40%`), and `working`/`done`/`idle` leave the disc alone. The command's finish drops `working`/`blocked`, `done`/`error` persist until replaced or cleared, and a full terminal reset clears everything. Only the root report is consumed - child records and the `app`/`title`/`msg`/`kind` keys are ignored by design. | `true` |
 | `status_bar_show_scrollback` | Lines scrolled back from the bottom (`↑12`) - shown only while the viewport is off-bottom; clicking the chip jumps to the bottom. | `true` |
 
 All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs, hiding the exit status stops its verdict sampling.

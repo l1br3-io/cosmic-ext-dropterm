@@ -264,6 +264,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::StatusBarShowDuration(true),
         PlannedWrite::StatusBarShowExitStatus(true),
         PlannedWrite::StatusBarShowProgress(true),
+        PlannedWrite::StatusBarShowProgramStatus(true),
         PlannedWrite::StatusBarShowScrollback(true),
     ];
     let keys = section_keys();
@@ -1014,14 +1015,14 @@ fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
 }
 
 #[test]
-fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_twelve_show_rows() {
+fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_thirteen_show_rows() {
     // status-segments Task 3 + bar-borders BB-3 + status-scrolled
     // Task 2 + status-activity Task 4 + status-exit Task 6 +
-    // osc94-progress Task 4: the Status bar card grows to fifteen
-    // rows, in band order — the master toggle, the border toggle,
-    // the missed-activity halo, then one "Show …" row per segment —
-    // each under its exact file spelling, each flipping through the
-    // single planned-write path, all Live.
+    // osc94-progress Task 4 + osc7501-status Task 4: the Status bar
+    // card grows to sixteen rows, in band order — the master toggle,
+    // the border toggle, the missed-activity halo, then one
+    // "Show …" row per segment — each under its exact file spelling,
+    // each flipping through the single planned-write path, all Live.
     assert_eq!(
         SettingsTab::Behavior,
         SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
@@ -1050,6 +1051,7 @@ fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_twelve_s
             ConfigKey::StatusBarShowDuration,
             ConfigKey::StatusBarShowExitStatus,
             ConfigKey::StatusBarShowProgress,
+            ConfigKey::StatusBarShowProgramStatus,
             ConfigKey::StatusBarShowScrollback,
         ]
     );
@@ -1064,6 +1066,18 @@ fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_twelve_s
     assert_eq!(
         toggle_write(ConfigKey::StatusBarShowProgress, false),
         Some(PlannedWrite::StatusBarShowProgress(false))
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowProgramStatus.key_name(),
+        "status_bar_show_program_status"
+    );
+    assert_eq!(
+        ConfigKey::StatusBarShowProgramStatus.label(),
+        "Show the program status"
+    );
+    assert_eq!(
+        toggle_write(ConfigKey::StatusBarShowProgramStatus, false),
+        Some(PlannedWrite::StatusBarShowProgramStatus(false))
     );
     assert_eq!(ConfigKey::StatusBarEnabled.key_name(), "status_bar_enabled");
     assert_eq!(

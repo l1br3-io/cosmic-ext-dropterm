@@ -40,6 +40,7 @@ fn resolve(
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -677,6 +678,10 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
             value: Some(42),
             refreshed_at: std::time::Instant::now(),
         }),
+        program_status: Some(crate::terminal::ProgramStatus {
+            state: crate::terminal::ProgramState::Blocked,
+            progress: Some(40),
+        }),
     };
     resolve_segments(&inputs, toggles)
 }
@@ -835,6 +840,7 @@ fn resolve_duration(
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -973,6 +979,7 @@ fn resolve_exit(exit_status: Option<u32>, toggles: StatusToggles) -> StatusSegme
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1075,6 +1082,122 @@ fn the_progress_chip_copies_the_bare_number() {
     );
 }
 
+// --- the disc and the name (osc7501-status) ---
+//
+// The program's own report: `blocked` and `error` tint the disc's
+// fill `attention` — the program needs eyes — while `working`,
+// `done`, and `idle` leave the disc to its `/proc` truth; a progress
+// percent rides the name seat beside the process name, whatever the
+// state. No new segment: the tint and the percent ride the process
+// segment's own seats.
+
+/// A standing program status for the band's pins — the engine's
+/// fact, constructed as the engine constructs it.
+fn standing_program(
+    state: crate::terminal::ProgramState,
+    progress: Option<u8>,
+) -> crate::terminal::ProgramStatus {
+    crate::terminal::ProgramStatus { state, progress }
+}
+
+#[test]
+fn blocked_and_error_alone_tint_the_disc() {
+    // The state→tint table (osc7501-status spec), every row: the
+    // two needs-eyes states carry the attention tint — the token's
+    // own pair, both reds — and the three live-or-settled states
+    // leave the disc to its `/proc` truth; no record tints nothing.
+    use crate::terminal::ProgramState;
+    assert!(program_needs_attention(Some(standing_program(
+        ProgramState::Blocked,
+        None
+    ))));
+    assert!(program_needs_attention(Some(standing_program(
+        ProgramState::Error,
+        None
+    ))));
+    assert!(!program_needs_attention(Some(standing_program(
+        ProgramState::Working,
+        None
+    ))));
+    assert!(!program_needs_attention(Some(standing_program(
+        ProgramState::Done,
+        None
+    ))));
+    assert!(!program_needs_attention(Some(standing_program(
+        ProgramState::Idle,
+        None
+    ))));
+    assert!(!program_needs_attention(None));
+}
+
+#[test]
+fn the_name_seat_renders_the_percent_beside_the_name() {
+    // The display (osc7501-status spec): any state carrying a
+    // progress percent shows it beside the process name — `cargo
+    // 40%`, the name seat's own idiom — and a record without one
+    // (or no record at all) leaves the name bare.
+    use crate::terminal::ProgramState;
+    assert_eq!(
+        process_display(
+            "cargo",
+            Some(standing_program(ProgramState::Working, Some(40)))
+        ),
+        "cargo 40%"
+    );
+    // `done` keeps its percent too — the record persists past the
+    // handoff, and the percent is the truth it still carries.
+    assert_eq!(
+        process_display(
+            "cargo",
+            Some(standing_program(ProgramState::Done, Some(40)))
+        ),
+        "cargo 40%"
+    );
+    assert_eq!(
+        process_display("cargo", Some(standing_program(ProgramState::Blocked, None))),
+        "cargo"
+    );
+    assert_eq!(process_display("fish", None), "fish");
+}
+
+#[test]
+fn the_program_status_resolves_from_the_engine_fact() {
+    // The engine's standing fact flows to the band un-guessed, and
+    // the toggle hides tint, percent, and fact together — hidden
+    // and absent stay the same indistinguishable None.
+    use crate::terminal::ProgramState;
+    let segments = resolve_full(StatusToggles::all());
+    assert_eq!(
+        segments
+            .program_status
+            .map(|status| (status.state, status.progress)),
+        Some((ProgramState::Blocked, Some(40)))
+    );
+    let mut toggles = StatusToggles::all();
+    toggles.program_status = false;
+    assert_eq!(resolve_full(toggles).program_status, None);
+}
+
+#[test]
+fn the_process_copy_stays_the_bare_name_with_a_percent_standing() {
+    // No new segment id (osc7501-status spec): the tint and the
+    // percent ride the process segment's own seats, so the copy
+    // payload stays the name the segment always copied — the
+    // percent is the report's fact, not the name's.
+    use crate::terminal::ProgramState;
+    let reporting = StatusSegments {
+        program_status: Some(standing_program(ProgramState::Working, Some(40))),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Process, &reporting), "");
+    let named = StatusSegments {
+        process: "cargo".to_owned(),
+        program_status: Some(standing_program(ProgramState::Working, Some(40))),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Process, &named), "cargo");
+}
+
 /// Resolve with a shell cwd report standing (osc7-cwd spec) — the
 /// path seat's precedence pins. The home base is ours
 /// (`/home/u`), so local collapse has something to collapse.
@@ -1110,6 +1233,7 @@ fn resolve_reported(
         attention_bright_red: None,
         exit_status: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -1305,6 +1429,7 @@ fn resolve_grid(
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1384,6 +1509,7 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1596,6 +1722,7 @@ fn resolve_ssh(
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1936,6 +2063,7 @@ fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
         reported_cwd: None,
         hostname: None,
         progress: None,
+        program_status: None,
     };
     let segments = resolve_segments(&inputs, StatusToggles::all());
     assert!(segments.missed_activity);
@@ -2235,6 +2363,7 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         zoom_percent: Some(20),
         branch: None,
         progress: None,
+        program_status: None,
         grid: None,
         tab_position: None,
         clock: None,
@@ -2625,6 +2754,7 @@ fn rich_segments() -> StatusSegments {
             crate::terminal::ProgressState::InProgress,
             Some(42),
         )),
+        program_status: None,
         grid: Some((120, 30)),
         tab_position: Some((1, 3)),
         clock: Some("14:32".to_string()),
