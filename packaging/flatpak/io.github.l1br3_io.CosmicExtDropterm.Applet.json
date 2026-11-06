@@ -39,8 +39,8 @@
             "sources": [
                 {
                     "type": "archive",
-                    "url": "https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.2.0/v0.2.0.tar.gz",
-                    "sha256": "4c0f1d12c305a409f8bbf4af12e02ca79559bcc68759788691f7db8894f3d79d"
+                    "url": "https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.3.0/v0.3.0.tar.gz",
+                    "sha256": "69108a80195eb1ccfa2c2c2133f8d936e51c3bb4bf2c66005255ed172e183d7a"
                 },
                 "cargo-sources.json"
             ]

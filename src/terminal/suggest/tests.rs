@@ -1,5 +1,11 @@
 use super::*;
 
+/// The alias map's empty default (suggest-aliases spec): the
+/// no-declaration case every pre-existing test rides — an empty map
+/// resolves every word to itself, today bit-for-bit.
+static NO_ALIASES: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 /// The clear case's defaults: an anchored idle prompt, "gi"
 /// typed, and a two-entry ring. Every guard test mutates exactly
 /// one field away from this.
@@ -11,7 +17,16 @@ fn obs() -> Observation<'static> {
         path_listing: None,
         commands_enabled: true,
         specs_enabled: true,
+        aliases: &NO_ALIASES,
+        // The loadable table's built-in default (suggest-specs-data
+        // spec): every pre-existing test rides today's table,
+        // bit-for-bit — no file, the curated five.
+        specs_table: builtin_specs(),
         command_catalog: &[],
+        // The generator stopgap (suggest-generators spec): no cached
+        // sets by default — every pre-existing test rides today's
+        // bit-for-bit silence.
+        generator_candidates: None,
         focused: true,
         foreground_child: false,
         display_offset: 0,
@@ -89,13 +104,23 @@ fn guard_scrolled_back_yields_none() {
 }
 
 #[test]
-fn guard_cursor_off_bottom_row_yields_none() {
+fn a_prompt_above_the_bottom_row_still_suggests() {
+    // The fresh-terminal ruling (hardware trace, 2026-10-24): a new
+    // tab's first prompt sits near the TOP of an empty grid — the
+    // cursor is nowhere near the bottom row until a screen of output
+    // scrolls it there — and the widget draws the ghost at the
+    // cursor's own row (cursor-relative, widget.rs), so the
+    // bottom-row guard silenced every fresh (and `clear`-ed)
+    // terminal for no drawing reason. The chain's real geometry
+    // needs are the not-scrolled-back fact (display_offset) and the
+    // cursor-at-line-end fact (after_cursor_blank), both checked.
     let mut suggest = adopted();
     let o = Observation {
         cursor_on_bottom_row: false,
         ..obs()
     };
-    assert_eq!(step(&o, &mut suggest), None);
+    let shown = step(&o, &mut suggest).expect("a mid-grid prompt suggests");
+    assert_eq!(shown.suffix, "t status");
 }
 
 #[test]
@@ -676,11 +701,13 @@ fn source_rank_pins_the_ruled_priority() {
         SuggestionSource::Path,
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
+        SuggestionSource::Generator,
     ];
     assert_eq!(source_rank(SuggestionSource::History), 0);
     assert_eq!(source_rank(SuggestionSource::Path), 1);
     assert_eq!(source_rank(SuggestionSource::Specs), 2);
     assert_eq!(source_rank(SuggestionSource::Catalog), 3);
+    assert_eq!(source_rank(SuggestionSource::Generator), 4);
     for pair in ruled_order.windows(2) {
         assert!(
             source_rank(pair[0]) < source_rank(pair[1]),
@@ -1075,6 +1102,38 @@ fn the_shortest_match_wins_ties_alphabetical() {
 }
 
 #[test]
+fn a_one_character_command_word_is_silence_from_the_catalog() {
+    // The no-information floor (suggest-accuracy spec): a
+    // one-character strict prefix over the uncurated PATH namespace
+    // carries no intent — shortest-wins among hundreds of names is a
+    // coin flip. Two characters is the flagship's own threshold:
+    // `gi` → `git` survives, pinned beside the silence.
+    let names = catalog(&["g++", "git", "grep"]);
+    let mut suggest = catalog_suggest();
+    assert_eq!(
+        step_word("g", &names, &mut suggest),
+        None,
+        "a one-character word carries no intent over the PATH catalog"
+    );
+    let mut suggest = catalog_suggest();
+    let shown = step_word("gi", &names, &mut suggest).expect("two characters still answers");
+    assert_eq!(shown.suffix, "t");
+    assert_eq!(shown.source, SuggestionSource::Catalog);
+}
+
+#[test]
+fn a_history_backed_one_character_word_still_suggests() {
+    // History is untouched by the floor: on a lived-in tab `g`
+    // completes from the tab's own ring — only the fresh-tab
+    // one-character catalog flash goes quiet.
+    let names = catalog(&["g++"]);
+    let mut suggest = adopted();
+    let shown = step_word("g", &names, &mut suggest).expect("history answers one character");
+    assert_eq!(shown.suffix, "it status");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
 fn an_exactly_typed_command_word_yields_no_catalog_candidate() {
     // The match must extend the word: `git` with `git` present
     // suggests nothing — and a bare space is no word at all.
@@ -1304,6 +1363,37 @@ fn flag_matches_follow_the_ruled_policy() {
 }
 
 #[test]
+fn a_bare_double_dash_is_silence_at_the_flag_seat() {
+    // The no-information floor (suggest-accuracy spec): a flag-seat
+    // token of exactly `--` matches every long flag in the table
+    // equally — the shortest-wins tiebreak picks one with no
+    // evidence. One character past the dashes discriminates, and
+    // stays ruled behavior.
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed("git --", &mut suggest),
+        None,
+        "a bare `--` carries no discrimination among flags"
+    );
+    let mut suggest = specs_suggest();
+    let shown = step_typed("git --a", &mut suggest).expect("one character past the dashes answers");
+    assert_eq!(shown.suffix, "ll");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn the_subcommand_seat_stays_strong_at_one_character() {
+    // Ruled unchanged (suggest-accuracy spec): the subcommand seat is
+    // curated and small — strong even at one character — so the
+    // floors never touch it. `git a` → `add` is the spec's pinned
+    // example.
+    let mut suggest = specs_suggest();
+    let shown = step_typed("git a", &mut suggest).expect("the curated subcommand seat answers");
+    assert_eq!(shown.suffix, "dd");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
 fn the_five_commands_subcommands_answer_their_seats() {
     // One behavioral sample per command beyond git — the table pin
     // below holds the membership; these prove the entries reach the
@@ -1373,6 +1463,647 @@ fn pin_shape(command: &str, entries: &[&str], list: &str) {
             pair[1]
         );
     }
+}
+
+// --- the alias map (suggest-aliases) ---
+
+/// One anchored step with `typed` after the "$ " anchor and a
+/// declared alias map — the alias tier's end-to-end shape (the
+/// specs table re-targeted, every other seat as `step_typed`
+/// builds it).
+fn step_typed_aliased(
+    typed: &str,
+    aliases: &HashMap<String, String>,
+    suggest: &mut Suggest,
+) -> Option<Showing> {
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        aliases,
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+#[test]
+fn a_mapped_alias_ghosts_its_expansion_subcommand() {
+    // The flagship (the record's ruling): `gc = "git checkout"`
+    // declared, `gc che` ghosts `ckout` — the specs table re-targeted
+    // at git, the token keeping its own typed seat, the same ghost
+    // and provenance `git che` gives.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = specs_suggest();
+    let shown = step_typed_aliased("gc che", &aliases, &mut suggest)
+        .expect("the mapped alias re-targets the specs table");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn a_mapped_alias_ghosts_its_expansion_flags() {
+    // The record's other flagship: `gc --dr` ghosts git's
+    // `--dry-run` — the flag seat consults the expansion command's
+    // flag list from any argument seat, as for the typed command.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = specs_suggest();
+    let shown = step_typed_aliased("gc --dr", &aliases, &mut suggest)
+        .expect("the flag seat rides the expansion command");
+    assert_eq!(shown.suffix, "y-run");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn an_unmapped_alias_behaves_exactly_as_today() {
+    // `gc che` with no `gc` declared: the table never consults a
+    // guess — an unknown command is silence, the shipped rule, and
+    // the empty default is this case for every word.
+    let mut suggest = specs_suggest();
+    assert_eq!(step_typed("gc che", &mut suggest), None);
+}
+
+#[test]
+fn resolve_alias_returns_the_input_unmapped() {
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    assert_eq!(resolve_alias("git", &aliases), "git");
+    assert_eq!(resolve_alias("vim", &aliases), "vim");
+}
+
+#[test]
+fn resolve_alias_follows_a_chain_to_its_command() {
+    // `a → gc → git checkout`: two hops, each expansion's first
+    // word — the chain resolves to the command the user's
+    // declaration ultimately names.
+    let aliases = HashMap::from([
+        ("a".to_string(), "gc".to_string()),
+        ("gc".to_string(), "git checkout".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a", &aliases), "git");
+    assert_eq!(resolve_alias("gc", &aliases), "git");
+}
+
+#[test]
+fn resolve_alias_terminates_a_cycle_unmapped() {
+    // `a → b → a`: the walk stops at the word it would re-enter —
+    // the input, as unmapped as if nothing were declared.
+    let aliases = HashMap::from([
+        ("a".to_string(), "b".to_string()),
+        ("b".to_string(), "a".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a", &aliases), "a");
+}
+
+#[test]
+fn resolve_alias_stops_at_three_expansions() {
+    // Depth 4 stops at 3 (OQ-2, locked): `a1→a2→a3→a4→git` resolves
+    // a1 to a4, never following the fourth expansion to git.
+    let aliases = HashMap::from([
+        ("a1".to_string(), "a2".to_string()),
+        ("a2".to_string(), "a3".to_string()),
+        ("a3".to_string(), "a4".to_string()),
+        ("a4".to_string(), "git".to_string()),
+    ]);
+    assert_eq!(resolve_alias("a1", &aliases), "a4");
+}
+
+#[test]
+fn history_outranks_a_mapped_alias() {
+    // The shipped rule verbatim: after one real `gc cheese`, the
+    // tab's own truth answers before the re-targeted table ever
+    // gets the seat.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("gc cheese".to_string());
+    suggest.ring = ring;
+    let shown = step_typed_aliased("gc che", &aliases, &mut suggest).expect("someone answers");
+    assert_eq!(shown.suffix, "ese", "the tab's own truth first");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
+fn the_ssh_gate_silences_the_alias_tier() {
+    // The map is local-machine truth the user declared for their
+    // local shell: on a tab spawned as ssh it stays silent, riding
+    // the same `paths_eligible` gate paths/catalog/specs already
+    // ride.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let before = String::from("$ gc che");
+    let observation = Observation {
+        paths_eligible: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        aliases: &aliases,
+        ..obs()
+    };
+    let mut suggest = specs_suggest();
+    assert_eq!(step(&observation, &mut suggest), None);
+}
+
+// --- the generator provider (suggest-generators) ---
+
+/// One anchored step with `typed` after the "$ " anchor and injected
+/// generator caches — the provider's end-to-end shape, the sets
+/// arriving exactly as the engine-side runner will cache them:
+/// post-processed, already-escaped names, in the runner's own
+/// (recency) order.
+fn step_generator(
+    typed: &str,
+    branches: &[&str],
+    tags: &[&str],
+    files: &[&str],
+    suggest: &mut Suggest,
+) -> Option<Showing> {
+    let branches: Vec<String> = branches.iter().map(|s| (*s).to_string()).collect();
+    let tags: Vec<String> = tags.iter().map(|s| (*s).to_string()).collect();
+    let files: Vec<String> = files.iter().map(|s| (*s).to_string()).collect();
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &files,
+    };
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+#[test]
+fn the_generator_ghosts_a_cached_branch_at_the_checkout_seat() {
+    // The spec's flagship: `git checkout ma` ghosts `in` from a
+    // cached `main` — the fifth source surfacing through the same
+    // seam, provenance carried.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout ma",
+        &["feature/x", "main"],
+        &[],
+        &[],
+        &mut suggest,
+    )
+    .expect("the cached branch answers its prefix");
+    assert_eq!(shown.suffix, "in");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+}
+
+#[test]
+fn history_outranks_the_generator() {
+    // The merge's ruling holds for the fifth source: the tab's own
+    // ring answers first, the cached sets only when history cannot.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("git checkout maintain".to_string());
+    suggest.ring = ring;
+    let shown = step_generator("git checkout ma", &["main"], &[], &[], &mut suggest)
+        .expect("someone answers the prefix");
+    assert_eq!(shown.suffix, "intain");
+    assert_eq!(shown.source, SuggestionSource::History);
+}
+
+#[test]
+fn the_generator_stays_silent_without_a_cache() {
+    // The engine stopgap (Task 1): no runner exists yet, the
+    // observation carries no sets, and today's behavior holds
+    // bit-for-bit — silence, never a guess.
+    let mut suggest = adopted();
+    let before = String::from("$ git checkout ma");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: None,
+        ..obs()
+    };
+    assert_eq!(step(&observation, &mut suggest), None);
+}
+
+#[test]
+fn the_generator_rides_the_shell_gate() {
+    // The standing ssh gate: cached or not, a tab spawned as ssh (or
+    // any non-shell program) never serves generator candidates — the
+    // readable cwd is the wrong machine's.
+    let mut suggest = adopted();
+    let branches: Vec<String> = vec!["main".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &[],
+        files: &[],
+    };
+    let before = String::from("$ git checkout ma");
+    let observation = Observation {
+        paths_eligible: false,
+        before_cursor: &before,
+        cursor_column: before.len(),
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    assert_eq!(step(&observation, &mut suggest), None);
+}
+
+#[test]
+fn switch_consults_branches_only() {
+    // `git switch` takes a local branch, never a tag — the seat
+    // picks its set, and a tag the token would match stays silent.
+    let mut suggest = adopted();
+    assert_eq!(
+        step_generator("git switch v", &["main"], &["v2"], &[], &mut suggest),
+        None,
+        "a tag never answers the switch seat"
+    );
+    let shown = step_generator("git switch ma", &["main"], &["v2"], &[], &mut suggest)
+        .expect("the branch answers its own seat");
+    assert_eq!(shown.suffix, "in");
+}
+
+#[test]
+fn checkout_consults_branches_then_tags() {
+    // `git checkout` takes either a branch or a tag: branches first
+    // (the common case), tags after, and an equal-length tie falls to
+    // the first name in that order — the newest branch, then the
+    // newest tag.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout v1.",
+        &["main"],
+        &["v1.1", "v1.0"],
+        &[],
+        &mut suggest,
+    )
+    .expect("the tag set answers when no branch does");
+    assert_eq!(shown.suffix, "1", "the first tag of the tie wins");
+}
+
+#[test]
+fn add_and_restore_consult_the_changed_files() {
+    // The working-tree file seat: `status --short` names answer the
+    // argument token of the commands that take changed files.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git add src/ma",
+        &["main"],
+        &[],
+        &["src/main.rs", "readme"],
+        &mut suggest,
+    )
+    .expect("a changed file answers its prefix");
+    assert_eq!(shown.suffix, "in.rs");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+    let shown = step_generator(
+        "git restore rea",
+        &["main"],
+        &[],
+        &["src/main.rs", "readme"],
+        &mut suggest,
+    )
+    .expect("restore takes changed files too");
+    assert_eq!(shown.suffix, "dme");
+}
+
+#[test]
+fn command_position_and_later_words_never_consult_the_generator() {
+    // The seat is exactly the first argument token after the git
+    // subcommand: the command word itself is the catalog's seat, and
+    // a third completed word (`git checkout -b <name>`) is naming
+    // something new, not completing a cached ref. An empty ring
+    // keeps every other provider out of the assertion's way.
+    let mut suggest = adopted();
+    suggest.ring = VecDeque::new();
+    assert_eq!(
+        step_generator("gi", &["main"], &[], &[], &mut suggest),
+        None,
+        "the command word is not the generator's seat"
+    );
+    assert_eq!(
+        step_generator("git checkout -b ma", &["main"], &[], &[], &mut suggest),
+        None,
+        "a later word never consults the ref sets"
+    );
+}
+
+#[test]
+fn an_unknown_subcommand_or_empty_token_is_silence() {
+    // Only the ruled seats map to sets (`checkout`, `switch`, `add`,
+    // `restore`); a bare trailing space is no token at all — the
+    // specs provider's own empty-word rule, one policy across
+    // providers.
+    let mut suggest = adopted();
+    assert_eq!(
+        step_generator("git commit ma", &["main"], &[], &[], &mut suggest),
+        None,
+        "an unmapped subcommand consults nothing"
+    );
+    assert_eq!(
+        step_generator("git checkout ", &["main"], &[], &[], &mut suggest),
+        None,
+        "an empty token matches every name equally — the floor"
+    );
+}
+
+#[test]
+fn a_non_git_command_never_consults_the_generator() {
+    // The argv set is git-only (the record's first slice); every
+    // other command's arguments are another provider's or nobody's.
+    // `zzz bu` is a shape no other provider answers, so any answer
+    // here could only be the generator's.
+    let mut suggest = adopted();
+    suggest.ring = VecDeque::new();
+    assert_eq!(
+        step_generator("zzz bu", &["main"], &[], &["build.rs"], &mut suggest),
+        None,
+        "the generator has no program beyond git"
+    );
+}
+
+#[test]
+fn an_aliased_git_re_targets_the_generator_seat() {
+    // Re-target, never rewrite (the aliases ruling): a declared
+    // `gc = "git checkout"` makes `gc checkout ma` a generator seat,
+    // while `gc ma` alone keeps the specs subcommand seat the map
+    // already rules.
+    let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
+    let run = |typed: &str, suggest: &mut Suggest| {
+        let branches: Vec<String> = vec!["main".to_string()];
+        let sets = GeneratorSets {
+            branches: &branches,
+            tags: &[],
+            files: &[],
+        };
+        let mut before = String::from("$ ");
+        before.push_str(typed);
+        let observation = Observation {
+            before_cursor: &before,
+            cursor_column: before.len(),
+            aliases: &aliases,
+            generator_candidates: Some(sets),
+            ..obs()
+        };
+        step(&observation, suggest)
+    };
+    let mut suggest = adopted();
+    let shown = run("gc checkout ma", &mut suggest)
+        .expect("the alias's expansion command re-targets the seat");
+    assert_eq!(shown.suffix, "in");
+    assert_eq!(shown.source, SuggestionSource::Generator);
+    assert_eq!(
+        run("gc ma", &mut suggest),
+        None,
+        "the alias alone is the specs seat, not a ref seat"
+    );
+}
+
+#[test]
+fn escaped_generator_names_carve_their_typed_suffix() {
+    // The runner caches already-escaped names (the record's
+    // post-filter): the typed token prefix-matches the escaped form
+    // itself — the user typed their own backslash — and the carved
+    // remainder is exactly the completion of what they typed. A
+    // quote-tier name rides whole: `'c` completes inside the quotes.
+    let mut suggest = adopted();
+    let shown = step_generator(
+        "git checkout my\\ b",
+        &["my\\ branch"],
+        &[],
+        &[],
+        &mut suggest,
+    )
+    .expect("the escaped form matches its typed prefix");
+    assert_eq!(shown.suffix, "ranch");
+    let shown = step_generator("git checkout 'c", &["'café'"], &[], &[], &mut suggest)
+        .expect("the quote tier rides whole");
+    assert_eq!(shown.suffix, "afé'");
+}
+
+#[test]
+fn the_menu_lists_the_whole_generator_set_in_set_order() {
+    // The menu's whole-set rule: every cached name matching the
+    // token, in the runner's own (recency) order — no shortest-wins
+    // tiebreak for the ghost to impose on a list.
+    let suggest = adopted();
+    let branches: Vec<String> = vec!["feature/x".to_string()];
+    let tags: Vec<String> = vec!["v1".to_string()];
+    let files: Vec<String> = vec!["readme".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &files,
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout f",
+        cursor_column: 16,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout f", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| (row.label.as_str(), row.suffix.as_str(), row.source))
+            .collect::<Vec<_>>(),
+        vec![("feature/x", "eature/x", SuggestionSource::Generator)],
+    );
+    assert!(menu[0].description.is_none());
+}
+
+#[test]
+fn checkout_menu_rows_dedupe_across_branches_and_tags() {
+    // refs/heads/release and refs/tags/release share a short name:
+    // the checkout seat concatenates the sets, and the same escaped
+    // name never lists twice.
+    let suggest = adopted();
+    let branches: Vec<String> = vec!["release".to_string()];
+    let tags: Vec<String> = vec!["release".to_string(), "v1".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &tags,
+        files: &[],
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout re",
+        cursor_column: 17,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout re", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["release"],
+    );
+}
+
+#[test]
+fn generator_rows_follow_the_local_providers_in_the_menu() {
+    // The collection's source order is the display order: history's
+    // rows first, the generator's after — the merge's ruled priority
+    // in list form.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("git checkout main2".to_string());
+    suggest.ring = ring;
+    let branches: Vec<String> = vec!["main".to_string()];
+    let sets = GeneratorSets {
+        branches: &branches,
+        tags: &[],
+        files: &[],
+    };
+    let observation = Observation {
+        before_cursor: "$ git checkout ma",
+        cursor_column: 17,
+        generator_candidates: Some(sets),
+        ..obs()
+    };
+    let menu = candidates("git checkout ma", &suggest, &observation);
+    assert_eq!(
+        menu.iter()
+            .map(|row| (row.label.as_str(), row.source))
+            .collect::<Vec<_>>(),
+        vec![
+            ("git checkout main2", SuggestionSource::History),
+            ("main", SuggestionSource::Generator),
+        ],
+    );
+}
+
+// --- the generator runner's post-filter (suggest-generators, Task 2) ---
+// The fixtures below are pinned from real git output shapes: a
+// `for-each-ref --format` line carries
+// `shortname|objectname|subject`; `tag --list` prints bare names;
+// `status --short` prints porcelain `XY path` lines with rename
+// arrows. VS Code's discipline, the record's pinning: `warning:`/
+// `error:` lines drop, `fatal:` output yields the empty set, names
+// dedupe, and every name rides `escape_for_shell`.
+
+#[test]
+fn generator_argv_pins_the_git_set() {
+    // The contract as data (the record's verbatim VS Code set): the
+    // three DropTerm-owned argv arrays — never config, never a data
+    // file, never interpolated. `--sort=-committerdate` is the
+    // record's own spelling (the spec's `commercedate` is its typo —
+    // git rejects unknown sort atoms with a `fatal:` line the
+    // post-filter would rightly silence into).
+    use crate::terminal::engine::{GIT_BRANCHES, GIT_FILES, GIT_TAGS};
+    assert_eq!(
+        GIT_BRANCHES,
+        &[
+            "git",
+            "--no-optional-locks",
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(objectname:short)|%(subject)",
+            "refs/heads/",
+        ]
+    );
+    assert_eq!(
+        GIT_TAGS,
+        &[
+            "git",
+            "--no-optional-locks",
+            "tag",
+            "--list",
+            "--sort=-committerdate",
+        ]
+    );
+    assert_eq!(
+        GIT_FILES,
+        &["git", "--no-optional-locks", "status", "--short"]
+    );
+}
+
+#[test]
+fn the_post_filter_carves_short_ref_names() {
+    // Real for-each-ref output: one ref per line, the template's
+    // first `|`-field the short name.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "main|4ab2f6f|Merge pull request #12\n\
+                  feature/x|9df217c|the runner lands\n";
+    assert_eq!(
+        post_filter_names(output, branch_name),
+        vec!["main", "feature/x"]
+    );
+}
+
+#[test]
+fn warning_and_error_lines_drop_from_generator_output() {
+    // Reality noise (an advice line before the refs, an fsck error):
+    // dropped, the real names kept.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "warning: unable to access '...'\n\
+                  error: bad signature\n\
+                  main|abc1234|subject\n";
+    assert_eq!(post_filter_names(output, branch_name), vec!["main"]);
+}
+
+#[test]
+fn fatal_generator_output_yields_the_empty_set() {
+    // A non-repo directory, a missing objectdb: the command itself
+    // failed — silence, never a half-parsed remainder.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "fatal: not a git repository (or any of the parent directories): .git\n";
+    assert!(post_filter_names(output, branch_name).is_empty());
+}
+
+#[test]
+fn duplicate_generator_names_dedupe() {
+    // The record's `seen` Set: the same name twice lists once.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = "main|abc1234|one\nmain|def5678|two\n";
+    assert_eq!(post_filter_names(output, branch_name), vec!["main"]);
+}
+
+#[test]
+fn tag_lines_are_whole_names() {
+    use crate::terminal::engine::{post_filter_names, tag_name};
+    let output = "v1.1\nv1.0\n";
+    assert_eq!(post_filter_names(output, tag_name), vec!["v1.1", "v1.0"]);
+}
+
+#[test]
+fn status_lines_carve_the_changed_path() {
+    // Porcelain v1 short: `XY path`, a rename's new path after the
+    // arrow, untracked `??` — and a carved path with a space rides
+    // the escape tier like every name.
+    use crate::terminal::engine::{post_filter_names, status_path};
+    let output = " M src/main.rs\n?? notes.md\nR  old name -> new name\nA  staged.txt\n";
+    assert_eq!(
+        post_filter_names(output, status_path),
+        vec!["src/main.rs", "notes.md", "new\\ name", "staged.txt"]
+    );
+}
+
+#[test]
+fn quoted_status_paths_drop() {
+    // Git C-quotes paths carrying non-ASCII or quotes
+    // (core.quotePath's default): the quoted form is not the name,
+    // and unquoting git's escapes is a parser this contract refuses
+    // to ship — the line drops alone, never poisons the set.
+    use crate::terminal::engine::{post_filter_names, status_path};
+    let output = "?? \"src/caf\\303\\251.rs\"\n M plain.txt\n";
+    assert_eq!(post_filter_names(output, status_path), vec!["plain.txt"]);
+}
+
+#[test]
+fn generator_names_ride_the_escape_tier() {
+    // The shared quoting tier, pinned: a space backslash-escapes, a
+    // plain quote backslash-escapes (the first tier covers it), a
+    // non-ASCII name rides whole in single quotes — and a name that
+    // needs the quote tier while carrying a quote drops, the tier's
+    // own never-a-wrong-suffix rule.
+    use crate::terminal::engine::{branch_name, post_filter_names};
+    let output = concat!(
+        "my branch|abc|subject\n",
+        "it's|ghi|subject\n",
+        "café|def|subject\n",
+        "caf'é|xyz|subject\n",
+    );
+    assert_eq!(
+        post_filter_names(output, branch_name),
+        vec!["my\\ branch", "it\\'s", "'café'"]
+    );
 }
 
 // --- the common-prefix helper ---
@@ -1493,4 +2224,712 @@ fn seed_history_commits_in_order_deduping_and_capping() {
     let mut suggest = Suggest::new();
     suggest.seed_history(seeded);
     assert_eq!(suggest.ring.len(), RING_CAP);
+}
+
+// --- the menu's full candidate collection (suggest-menu) ---
+
+#[test]
+fn a_two_match_path_token_lists_both_entries_where_the_ghost_yields_the_common_prefix() {
+    // The menu's reason to exist (suggest-menu spec): at `~/s` over
+    // src and srv the ghost must settle for the one shared prefix
+    // `r`, but the menu carries both entries whole — each with the
+    // exact escaped suffix an accept writes, and no description (no
+    // source carries one yet; the specs-data file is the supplier).
+    let entries = listing(&[("src", true), ("srv", true)]);
+    let mut suggest = adopted();
+    let ghost =
+        step_path("~/s", Some(&entries), &mut suggest).expect("the ghost answers the field");
+    assert_eq!(
+        ghost.suffix, "r",
+        "the single-choice ghost settles for the shared prefix"
+    );
+    let observation = Observation {
+        path_listing: Some(&entries),
+        ..obs()
+    };
+    let menu = candidates("~/s", &suggest, &observation);
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["src/", "srv/"], "the menu lists both entries");
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["rc/", "rv/"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::Path));
+    assert!(menu.iter().all(|c| c.description.is_none()));
+}
+
+#[test]
+fn the_menu_ranks_history_on_top_under_the_merge_priority() {
+    // The merge's ruled priority orders the menu too (suggest-menu
+    // spec): history first — the tab's own truth — then the rest by
+    // source_rank. One token cannot seat every provider at once (the
+    // seats are mutually exclusive), so the pin composes two tokens
+    // that each seat two: `git st` (history + specs) and `~/s`
+    // (history + path).
+    let suggest = adopted();
+    let history_and_specs = candidates("git st", &suggest, &obs());
+    let sources: Vec<SuggestionSource> = history_and_specs.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::History,
+            SuggestionSource::Specs,
+            SuggestionSource::Specs
+        ]
+    );
+    let labels: Vec<&str> = history_and_specs.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["git status", "stash", "status"]);
+    assert!(
+        history_and_specs
+            .windows(2)
+            .all(|pair| source_rank(pair[0].source) <= source_rank(pair[1].source)),
+        "the whole list is non-decreasing in source_rank"
+    );
+
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("~/src/project".to_string());
+    suggest.ring = ring;
+    let entries = listing(&[("src", true), ("srv", true)]);
+    let observation = Observation {
+        path_listing: Some(&entries),
+        ..obs()
+    };
+    let history_and_path = candidates("~/s", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = history_and_path.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::History,
+            SuggestionSource::Path,
+            SuggestionSource::Path
+        ]
+    );
+    let labels: Vec<&str> = history_and_path.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["~/src/project", "src/", "srv/"]);
+}
+
+#[test]
+fn empty_typed_input_collects_no_menu_candidates() {
+    // A bare prompt has no token to complete: the collection is
+    // silence — even a ring that would prefix-match everything stays
+    // quiet (the open path treats an empty set as ineligible).
+    let suggest = adopted();
+    assert!(candidates("", &suggest, &obs()).is_empty());
+}
+
+#[test]
+fn the_menu_lists_every_history_prefix_match_most_recent_first() {
+    // The ghost answers with the newest match alone; the menu carries
+    // the whole set, most recent first — the ring walked backwards,
+    // bounded by the ring's own cap. `echo h` seats history alone
+    // (echo is outside the curated table, the word is past the
+    // command seat), so the order pin reads without composition.
+    let mut suggest = adopted();
+    let mut ring = VecDeque::new();
+    ring.push_back("echo hello".to_string());
+    ring.push_back("echo hi".to_string());
+    suggest.ring = ring;
+    let menu = candidates("echo h", &suggest, &obs());
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["echo hi", "echo hello"], "most recent first");
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["i", "ello"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::History));
+}
+
+#[test]
+fn the_menu_lists_every_catalog_prefix_name() {
+    // No shortest-wins at the menu (suggest-menu spec): the
+    // tiebreak exists to pick one of many for the single-choice
+    // ghost, and a list needs no tiebreak — `gi` carries giftopnm,
+    // git, and gitk whole, in the snapshot's sorted order.
+    let names = catalog(&["giftopnm", "git", "gitk"]);
+    let suggest = catalog_suggest();
+    let observation = Observation {
+        command_catalog: &names,
+        ..obs()
+    };
+    let menu = candidates("gi", &suggest, &observation);
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["giftopnm", "git", "gitk"]);
+    let suffixes: Vec<&str> = menu.iter().map(|c| c.suffix.as_str()).collect();
+    assert_eq!(suffixes, ["ftopnm", "t", "tk"]);
+    assert!(menu.iter().all(|c| c.source == SuggestionSource::Catalog));
+}
+
+#[test]
+fn the_menu_lists_every_spec_entry_for_the_seat() {
+    // The specs table's whole strict-prefix set at each seat — and
+    // the bare `--` the single-choice ghost floors to silence lists
+    // the flag table whole (a list is information, not a guess; the
+    // floor is the ghost's alone).
+    let suggest = specs_suggest();
+    let subcommands = candidates("git st", &suggest, &obs());
+    let labels: Vec<&str> = subcommands.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["stash", "status"]);
+    let suggest = specs_suggest();
+    let flags = candidates("git --", &suggest, &obs());
+    let git = SPECS
+        .iter()
+        .find(|spec| spec.command == "git")
+        .expect("git is curated");
+    let labels: Vec<&str> = flags.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels, git.flags,
+        "the bare `--` lists the whole flag table"
+    );
+}
+
+// --- the menu state machine (suggest-menu) ---
+
+/// Menu rows from (label, suffix) pairs — the state machine's
+/// fixtures; Specs provenance throughout (the source is not the
+/// state machine's business).
+fn menu_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
+    entries
+        .iter()
+        .map(|(label, suffix)| MenuCandidate {
+            label: (*label).to_string(),
+            suffix: (*suffix).to_string(),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect()
+}
+
+#[test]
+fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
+    // The record's ruled contents: the merged collection's own
+    // source order — history on top — is the display order, the
+    // selection at the top, no re-ranking at open. An empty
+    // collection declines to open: no candidates, no menu.
+    let mut menu = MenuState::new();
+    assert!(!menu.is_open());
+    assert!(
+        !menu.open(menu_rows(&[])),
+        "an empty collection never opens the menu"
+    );
+    assert!(!menu.is_open());
+    let rows = menu_rows(&[("git status", "atus"), ("stash", "ash")]);
+    assert!(menu.open(rows.clone()));
+    assert!(menu.is_open());
+    assert_eq!(menu.rows(), rows.as_slice());
+    assert_eq!(menu.selected(), 0, "selection lands at the top");
+    assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn move_clamps_at_the_edges_and_the_scroll_window_follows() {
+    // Ten rows over the eight-row budget (OQ-2, locked): walking
+    // past the bottom clamps at the last row while the scroll
+    // window follows (the selection always visible), and walking
+    // past the top clamps at the first with the window back at the
+    // top.
+    let rows: Vec<MenuCandidate> = (0..10)
+        .map(|i| MenuCandidate {
+            label: format!("row-{i}"),
+            suffix: format!("-{i}"),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect();
+    let mut menu = MenuState::new();
+    menu.open(rows);
+    for _ in 0..12 {
+        menu.press(MenuKey::Down);
+    }
+    assert_eq!(menu.selected(), 9, "clamped at the last row");
+    assert_eq!(menu.scroll(), 2, "the window follows: rows 2..10 visible");
+    for _ in 0..12 {
+        menu.press(MenuKey::Up);
+    }
+    assert_eq!(menu.selected(), 0);
+    assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn accept_returns_only_the_selected_suffix_then_closes() {
+    // The accept's whole payload is the suffix string — the exact
+    // bytes input_no_scroll writes; the label never reaches the
+    // PTY. After the accept the menu is closed and spent.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git status", "atus"), ("stash", "ash")]));
+    menu.press(MenuKey::Down);
+    assert_eq!(menu.press(MenuKey::Accept).as_deref(), Some("ash"));
+    assert!(!menu.is_open());
+    assert!(menu.rows().is_empty());
+    assert_eq!(
+        menu.press(MenuKey::Accept),
+        None,
+        "a closed menu accepts nothing"
+    );
+}
+
+#[test]
+fn any_other_key_closes_the_menu() {
+    // The any-other-key rule (suggest-menu spec): a press the menu
+    // does not claim closes it — the press itself then flows on
+    // through the normal handler (the widget's routing, Task 3).
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("stash", "ash")]));
+    assert_eq!(menu.press(MenuKey::Other), None);
+    assert!(!menu.is_open());
+}
+
+#[test]
+fn the_ranker_puts_prefix_hits_above_subsequence_hits() {
+    // Warp's pinned policy: case-insensitive prefix first, the
+    // subsequence fallback second — `drill` (prefix) outranks
+    // `--dry-run`, `--dream`, and `--dr` (subsequence) whatever the
+    // collection order, and the subsequence ties keep their
+    // provenance order (the stable sort).
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[
+        ("--dry-run", "y-run"),
+        ("--dream", "eam"),
+        ("--dr", "r"),
+        ("drill", "ill"),
+    ]));
+    menu.filter("dr");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["drill", "--dry-run", "--dream", "--dr"]);
+    assert_eq!(menu.selected(), 0, "a re-rank resets the selection");
+}
+
+#[test]
+fn the_ranker_matches_case_insensitively() {
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git", "it"), ("--dry-run", "y-run")]));
+    menu.filter("GI");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["git"], "the uppercase query still prefixes");
+}
+
+#[test]
+fn the_ranker_prefers_contiguous_runs_over_scattered_matches() {
+    // Contiguity-aware: `--dyx` matches d-then-y adjacently (a
+    // two-character run), `--day` matches scattered — the contiguous
+    // run outranks, provenance order notwithstanding.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("--day", "ay"), ("--dyx", "yx")]));
+    menu.filter("dy");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["--dyx", "--day"]);
+}
+
+#[test]
+fn a_punctuation_only_query_never_falls_back_to_subsequence() {
+    // Warp's own gate (matchers.rs): the subsequence fallback exists
+    // only for a query with at least one alphanumeric — fuzzy
+    // matches on punctuation produce poor results. At the bare `--`
+    // flag seat the prefix tier answers alone.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("x--y", "y"), ("--all", "ll")]));
+    menu.filter("--");
+    let labels: Vec<&str> = menu.rows().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["--all"]);
+}
+
+#[test]
+fn a_filter_that_empties_the_set_closes_the_menu() {
+    // An open menu with no rows is a state the machine refuses: a
+    // query nothing matches closes rather than showing an empty box.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("stash", "ash")]));
+    menu.filter("zzz");
+    assert!(!menu.is_open());
+    assert!(menu.rows().is_empty());
+}
+
+#[test]
+fn an_empty_query_keeps_the_collection_order() {
+    // The vacuous prefix: an empty filter query matches everything
+    // as a prefix hit, and the stable sort keeps the merge's source
+    // order untouched.
+    let rows = menu_rows(&[("git status", "atus"), ("stash", "ash")]);
+    let mut menu = MenuState::new();
+    menu.open(rows.clone());
+    menu.filter("");
+    assert_eq!(menu.rows(), rows.as_slice());
+}
+
+// --- the loadable spec table (suggest-specs-data) ---
+
+/// A fixture directory under the temp root, unique per name — the
+/// engine tests' std-only convention, wiped for the next run.
+fn completions_fixture(name: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("dropterm-specs-data-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    dir
+}
+
+/// The format's whole shape in miniature: one new command, one
+/// described subcommand beside a bare one, one described flag —
+/// every tier the schema owns.
+const GH_FILE: &str = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+[[commands.subcommands]]
+name = "pr-check"
+
+[[commands.flags]]
+name = "--repo"
+description = "Select another repository"
+"#;
+
+#[test]
+fn a_minimal_file_parses_descriptions_opt_in() {
+    // One command, one described subcommand, one bare flag: the
+    // format's whole shape. A missing description is `None` — the
+    // menu renders clean without it; a present one parses verbatim.
+    let table = parse_completions(GH_FILE).expect("a minimal valid file parses");
+    assert_eq!(table.len(), 1, "one command declared");
+    assert_eq!(table[0].name, "gh");
+    assert_eq!(
+        table[0].subcommands[0].description.as_deref(),
+        Some("Manage pull requests")
+    );
+    assert_eq!(
+        table[0].subcommands[1].description, None,
+        "a missing description is None"
+    );
+    assert_eq!(
+        table[0].flags[0].description.as_deref(),
+        Some("Select another repository")
+    );
+}
+
+#[test]
+fn a_script_key_rejects_the_file_whole() {
+    // The no-scripts boundary, made structural (the generators
+    // record's permanent rejection): a `script` key is unknown to
+    // the schema and `deny_unknown_fields` rejects the whole file —
+    // pinned by name at the entry tier where the Fig format
+    // carries it, and joined by the `generators` shape at the
+    // tiers above.
+    let entry_tier = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+script = "gh pr list"
+"#;
+    assert!(
+        parse_completions(entry_tier).is_err(),
+        "an entry-level `script` rejects the file"
+    );
+    let command_tier = r#"
+[[commands]]
+name = "gh"
+script = "echo hi"
+"#;
+    assert!(
+        parse_completions(command_tier).is_err(),
+        "a command-level unknown key rejects the file"
+    );
+    let root_tier = r#"
+generators = []
+
+[[commands]]
+name = "gh"
+"#;
+    assert!(
+        parse_completions(root_tier).is_err(),
+        "a root-level `generators` key rejects the file"
+    );
+}
+
+#[test]
+fn a_parsed_table_normalizes_to_the_ruled_order() {
+    // The match policy rides sorted lists — shortest wins, ties
+    // alphabetical, both falling out of `min_by_key` the way the
+    // built-in's do — so parsing normalizes: commands and every
+    // entry list sort by name, stable among equals.
+    let unsorted = r#"
+[[commands]]
+name = "zb"
+
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "zebra"
+
+[[commands.subcommands]]
+name = "pr"
+
+[[commands.flags]]
+name = "--b"
+
+[[commands.flags]]
+name = "--a"
+"#;
+    let table = parse_completions(unsorted).expect("an unsorted file still parses");
+    let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["gh", "zb"], "commands sort by name");
+    let subcommands: Vec<&str> = table[0]
+        .subcommands
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(subcommands, ["pr", "zebra"], "subcommands sort by name");
+    let flags: Vec<&str> = table[0].flags.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(flags, ["--a", "--b"], "flags sort by name");
+}
+
+#[test]
+fn the_builtin_fallback_is_todays_table() {
+    // Byte-equivalence pinned (suggest-specs-data spec, criterion
+    // 2): the fallback answers exactly the curated const — every
+    // command, every list, every description None.
+    assert_eq!(builtin_specs().len(), SPECS.len());
+    for (owned, spec) in builtin_specs().iter().zip(SPECS) {
+        assert_eq!(owned.name, spec.command);
+        let subcommands: Vec<&str> = owned.subcommands.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(subcommands, spec.subcommands);
+        let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(flags, spec.flags);
+        assert!(
+            owned
+                .subcommands
+                .iter()
+                .chain(&owned.flags)
+                .all(|e| e.description.is_none()),
+            "the built-in carries no descriptions"
+        );
+    }
+}
+
+#[test]
+fn the_file_extends_the_builtin_and_redeclarations_replace() {
+    // The merge ruling: the built-in five are the floor — a file
+    // command adds beside them, and a re-declared command replaces
+    // its built-in whole (no per-entry merging: a re-declaration is
+    // the user's table for that command).
+    let file = parse_completions(
+        r#"
+[[commands]]
+name = "gh"
+
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "worktree"
+"#,
+    )
+    .expect("a valid file parses");
+    let merged = merge_completions(file);
+    let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
+        "the file's command adds, the built-in keep their seats"
+    );
+    let git = merged
+        .iter()
+        .find(|c| c.name == "git")
+        .expect("git is re-declared");
+    assert_eq!(
+        git.subcommands.len(),
+        1,
+        "a re-declaration replaces the built-in whole"
+    );
+    assert_eq!(git.subcommands[0].name, "worktree");
+}
+
+#[test]
+fn no_file_and_no_config_dir_answer_the_builtin_table() {
+    // The fallback contract: an absent directory and an absent
+    // file are both today's table — the default state is
+    // byte-equivalent to the built-in (criterion 2).
+    let dir = completions_fixture("absent");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "no file answers the built-in"
+    );
+    assert_eq!(
+        load_completions(None).as_ref(),
+        builtin_specs(),
+        "no config directory answers the built-in"
+    );
+}
+
+#[test]
+fn an_invalid_or_scripted_file_answers_the_builtin_table() {
+    // A file that fails to parse — broken TOML, or a `script` key
+    // the schema structurally rejects — never half-loads: the
+    // whole file falls back to the built-in table.
+    let dir = completions_fixture("invalid");
+    std::fs::write(dir.join("completions.toml"), b"[[commands\nname = broken")
+        .expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "broken TOML answers the built-in"
+    );
+    let dir = completions_fixture("scripted");
+    std::fs::write(
+        dir.join("completions.toml"),
+        b"[[commands]]\nname = \"gh\"\n\n[[commands.subcommands]]\nname = \"pr\"\nscript = \"gh pr list\"\n",
+    )
+    .expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "a scripted entry answers the built-in"
+    );
+}
+
+#[test]
+fn a_valid_file_answers_the_merged_table() {
+    let dir = completions_fixture("valid");
+    std::fs::write(dir.join("completions.toml"), GH_FILE).expect("fixture file");
+    let table = load_completions(Some(&dir));
+    let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
+        "a valid file's table is the merge"
+    );
+}
+
+#[test]
+fn the_ghosts_spec_tier_answers_from_a_wider_table() {
+    // The data file widens the table; it changes no rules
+    // (criterion 1): the file-declared `gh` completes at the
+    // subcommand seat under the unchanged strict-prefix,
+    // must-extend, shortest-wins policy — `gh pr` finishing to
+    // `pr-check` past the exactly-typed `pr` — and the flag seat
+    // answers from the file's flags alike.
+    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let mut suggest = specs_suggest();
+    let before = String::from("$ gh pr");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the wider table answers");
+    assert_eq!(shown.suffix, "-check");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    let mut suggest = specs_suggest();
+    let before = String::from("$ gh --re");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the flag seat answers");
+    assert_eq!(shown.suffix, "po");
+}
+
+#[test]
+fn file_descriptions_reach_the_menu_rows() {
+    // End-to-end (suggest-specs-data spec, criterion 1): a
+    // description declared in the file rides the table into the
+    // menu's Specs rows — the dim second column the renderer
+    // already shapes — while an entry without one stays clean
+    // (`None`), and every other provider's rows stay as bare as
+    // ever.
+    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let suggest = specs_suggest();
+    let observation = Observation {
+        specs_table: &table,
+        ..obs()
+    };
+    // `p` is a strict prefix of both entries: the described `pr`
+    // lists beside the bare `pr-check`, in the table's sorted order.
+    let menu = candidates("gh p", &suggest, &observation);
+    let descriptions: Vec<Option<&str>> = menu.iter().map(|c| c.description.as_deref()).collect();
+    assert_eq!(
+        descriptions,
+        [Some("Manage pull requests"), None],
+        "the described entry carries it, the bare one stays None"
+    );
+    let menu = candidates("gh --rep", &suggest, &observation);
+    assert_eq!(
+        menu[0].description.as_deref(),
+        Some("Select another repository"),
+        "flag entries carry descriptions alike"
+    );
+}
+
+#[test]
+fn the_shipped_seed_parses_and_never_shrinks_the_built_in_five() {
+    // The seed's own gates (suggest-specs-data spec, criterion 4):
+    // the audited file ships valid under the schema — the `script`
+    // boundary holds for what DropTerm itself distributes — and the
+    // five re-declared commands carry the complete built-in entry
+    // sets, because the merge replaces whole: a seed that dropped a
+    // built-in entry would shrink every table it touched.
+    let seed = include_str!("../../../data/completions.toml");
+    let file = parse_completions(seed).expect("the shipped seed parses under the schema");
+    let merged = merge_completions(file);
+    for spec in SPECS {
+        let command = merged
+            .iter()
+            .find(|command| command.name == spec.command)
+            .unwrap_or_else(|| panic!("{} keeps its seat in the seed", spec.command));
+        let subcommands: Vec<&str> = command
+            .subcommands
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            subcommands, spec.subcommands,
+            "{} subcommands",
+            spec.command
+        );
+        let flags: Vec<&str> = command
+            .flags
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(flags, spec.flags, "{} flags", spec.command);
+    }
+}
+
+#[test]
+fn the_ghost_ignores_descriptions() {
+    // Locked (suggest-specs-data spec, OQ 3): descriptions are the
+    // menu's — the ghost is single-choice text, and a described
+    // entry ghosts exactly the suffix it would bare. `Showing`
+    // carries no description field, so the lock is structural;
+    // this pins the behavior it buys: a re-declared, described
+    // checkout ghosts the same `ckout` the bare built-in does.
+    let table = merge_completions(
+        parse_completions(
+            r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "checkout"
+description = "Switch branches or restore working tree files"
+"#,
+        )
+        .expect("valid"),
+    );
+    let mut suggest = specs_suggest();
+    let before = String::from("$ git che");
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: &table,
+        ..obs()
+    };
+    let shown = step(&observation, &mut suggest).expect("the ghost answers the same");
+    assert_eq!(shown.suffix, "ckout");
+    assert_eq!(shown.source, SuggestionSource::Specs);
 }

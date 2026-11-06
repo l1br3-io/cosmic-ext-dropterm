@@ -18,8 +18,11 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
-use std::collections::{HashSet, VecDeque};
+use serde::Deserialize;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
 
 use super::engine::WINDOW_BG_COLOR;
@@ -33,7 +36,13 @@ const RING_CAP: usize = 256;
 /// variant, and the pipeline — eligibility, rendering, acceptance —
 /// talks to this enum, never to history matching directly, so `Ai`
 /// and external providers join additively behind the same match
-/// later. Never a plugin registry; never async machinery.
+/// later. Never a plugin registry; never async machinery — a phase-1
+/// line the generators record superseded **for the model's inputs
+/// only** (suggest-generators spec): the [`Generator`] variant joins
+/// additively like every other, reading cached candidates
+/// synchronously through [`Observation`]; every spawn, timeout, and
+/// cache population stays engine-side, outside the model, so the
+/// model itself still spawns nothing and never clocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SuggestionSource {
     /// The tab's own scraped command ring.
@@ -50,6 +59,12 @@ pub(crate) enum SuggestionSource {
     /// (command-catalog spec) — local-machine knowledge, gated on
     /// the same spawn allowlist.
     Catalog,
+    /// The spawn-based git value sets (suggest-generators spec):
+    /// cached branch/tag/working-tree names, engine-populated under
+    /// the record's stricter-than-any-peer contract — DropTerm-owned
+    /// argv, scrubbed env, 5s kill, stale-while-revalidate — and
+    /// served to the model as one more pure input.
+    Generator,
 }
 
 /// How much of the showing suffix an accept key writes (autosuggest
@@ -80,6 +95,24 @@ pub(crate) struct Showing {
     pub(crate) visible: String,
     /// Provenance.
     pub(crate) source: SuggestionSource,
+}
+
+/// The generator provider's cached sets (suggest-generators spec):
+/// the post-processed, already-escaped names of the tab's git
+/// context — local branches, tags, and working-tree changes — keyed
+/// to the cwd the runner resolved (`/proc/{shell_pid}/cwd`) and
+/// cached stale-while-revalidate engine-side. Every name rode the
+/// shared escape tier at post-filter time; the model carves suffixes
+/// from the escaped forms verbatim and never escapes again.
+#[derive(Clone, Copy)]
+pub(crate) struct GeneratorSets<'a> {
+    /// Local branch short names (`for-each-ref` over `refs/heads/`),
+    /// newest-commit-first — the runner's own argv-pinned order.
+    pub(crate) branches: &'a [String],
+    /// Tag names (`tag --list`), newest-first.
+    pub(crate) tags: &'a [String],
+    /// Working-tree change paths (`status --short`).
+    pub(crate) files: &'a [String],
 }
 
 /// One update's snapshot of everything the model may look at
@@ -127,16 +160,41 @@ pub(crate) struct Observation<'a> {
     pub(crate) commands_enabled: bool,
     /// The curated-specs provider's config gate (flag-specs spec):
     /// `autosuggestions_specs_enabled` as resolved into the
-    /// terminal's options — engine-`true` until the config key
-    /// lands (the catalog's CC-3 precedent, ruled OQ 4); a live
-    /// flip applies at the next typed prefix. History is
-    /// unaffected: `false` restores the provider's absence exactly.
+    /// terminal's options — engine-`true` until the config key lands
+    /// (the catalog's CC-3 precedent, ruled OQ 4); a live flip
+    /// applies at the next typed prefix. History is unaffected:
+    /// `false` restores the provider's absence exactly.
     pub(crate) specs_enabled: bool,
+    /// The user-declared alias map (suggest-aliases spec): alias →
+    /// expansion (`gc = "git checkout"`), engine-borrowed config
+    /// truth — the model never reads config files. Re-targets the
+    /// specs table's command word at the context carve: a mapped
+    /// alias answers what its expansion's command answers, the
+    /// seats judged on the typed line as always, and an accept
+    /// still writes only the suffix. Local truth the user declared
+    /// for their local shell — silent on a tab spawned as ssh,
+    /// riding the same `paths_eligible` gate.
+    pub(crate) aliases: &'a HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by the user's `completions.toml`
+    /// beside the config — app-loaded, engine-borrowed config
+    /// truth like the alias map; the model never reads files. The
+    /// fallback is the built-in table itself, so the table is
+    /// always present and no file is today's five, byte for byte.
+    pub(crate) specs_table: &'a [SpecCommand],
     /// The command-name provider's reduced snapshot (command-catalog
     /// spec): the sorted executable basenames of the spawn-time
     /// `$PATH`, walked once at spawn — borrowed from the engine's
     /// per-tab state; the model never touches the filesystem.
     pub(crate) command_catalog: &'a [String],
+    /// The generator provider's cached sets (suggest-generators
+    /// spec): post-processed, already-escaped branch/tag/file names
+    /// for the tab's git context, borrowed from the engine's
+    /// stale-while-revalidate cache — present only where the runner
+    /// has cached something for an eligible tab; `None` is no
+    /// generator context (silence). The cache is the model's whole
+    /// truth about the repo: no spawn, no clock, no process state.
+    pub(crate) generator_candidates: Option<GeneratorSets<'a>>,
     /// The terminal's focus state.
     pub(crate) focused: bool,
     /// A foreground child holds the PTY (`tcgetpgrp` vs the shell's
@@ -146,7 +204,11 @@ pub(crate) struct Observation<'a> {
     /// The grid's display offset: non-zero means the user is scrolled
     /// back into history.
     pub(crate) display_offset: usize,
-    /// The cursor sits on the viewport's bottom row.
+    /// The cursor sits on the viewport's bottom row — a grid fact the
+    /// debug trace prints. No longer a showing guard (the 2026-10-24
+    /// fresh-terminal ruling): a new tab's first prompt sits at the
+    /// top of an empty grid, and the widget draws the ghost at the
+    /// cursor's own row.
     pub(crate) cursor_on_bottom_row: bool,
     /// The grid's column count.
     pub(crate) columns: usize,
@@ -369,22 +431,21 @@ impl Outcome {
 
 /// The guard chain (autosuggest spec): every condition must hold, and
 /// each one's failure alone means silence — config off, unfocused, a
-/// foreground child, scrolled back, off the bottom row, unanchored, a
-/// line that left the anchor, an empty typed segment, or no candidate
-/// from any provider. The candidate itself comes from the merged
-/// seam's dispatch; the guards apply after the merge, unchanged. A
-/// candidate younger than the idle delay is withheld, not silent
-/// (suggest-delay spec) — the outcome carries the difference so the
-/// engine can expose a reveal deadline. A too-wide suffix no longer
-/// silences (ghost-fit spec): the display clips to the free columns,
-/// and the accept stays whole.
+/// foreground child, scrolled back, unanchored, a line that left the
+/// anchor, an empty typed segment, or no candidate from any provider.
+/// The candidate itself comes from the merged seam's dispatch; the
+/// guards apply after the merge, unchanged. A candidate younger than
+/// the idle delay is withheld, not silent (suggest-delay spec) — the
+/// outcome carries the difference so the engine can expose a reveal
+/// deadline. A too-wide suffix no longer silences (ghost-fit spec):
+/// the display clips to the free columns, and the accept stays whole.
+/// No bottom-row requirement (the 2026-10-24 fresh-terminal ruling):
+/// a new tab's first prompt sits near the top of an empty grid, the
+/// widget draws the ghost at the cursor's own row, and the chain's
+/// geometry needs — not scrolled back, the cursor at line end — are
+/// both still checked.
 fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
-    if !obs.enabled
-        || !obs.focused
-        || obs.foreground_child
-        || obs.display_offset != 0
-        || !obs.cursor_on_bottom_row
-    {
+    if !obs.enabled || !obs.focused || obs.foreground_child || obs.display_offset != 0 {
         return Outcome::Silent;
     }
     let Some(anchor) = suggest.anchor.as_ref() else {
@@ -422,15 +483,20 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
 
 /// The merge policy, ruled at clarification: history answers first —
 /// the tab's own truth — then path, then the curated specs, then the
-/// command catalog. One pure function of the provider variant,
-/// pinned by its test, so the dispatch derives its order here and
-/// later modules cannot reorder the merge by accident.
+/// command catalog, then the generator's cached sets
+/// (suggest-generators spec: ranked with the local providers,
+/// history on top, and yielding to every live provider — a cached
+/// name may be stale, so nothing fresh ever defers to it). One pure
+/// function of the provider variant, pinned by its test, so the
+/// dispatch derives its order here and later modules cannot reorder
+/// the merge by accident.
 fn source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::History => 0,
         SuggestionSource::Path => 1,
         SuggestionSource::Specs => 2,
         SuggestionSource::Catalog => 3,
+        SuggestionSource::Generator => 4,
     }
 }
 
@@ -521,7 +587,9 @@ fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
 /// would mangle escapes, one outside the safe sets silences. Gated
 /// on the config toggle and the shared spawn allowlist (the catalog
 /// describes the local machine); argument position and path-shaped
-/// words never consult it.
+/// words never consult it — and neither does a one-character word
+/// (the no-information floor, suggest-accuracy spec: `gi` → `git` is
+/// the floor's own threshold).
 fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.commands_enabled || !obs.paths_eligible {
         return None;
@@ -531,6 +599,13 @@ fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     }
     let word = typed.trim_start();
     if word.is_empty() || is_path_shaped(word) {
+        return None;
+    }
+    // The no-information floor (suggest-accuracy spec): a one-character
+    // strict prefix over the uncurated PATH namespace carries no intent —
+    // shortest-wins among hundreds of names is a coin flip. Two
+    // characters is the flagship's own threshold: `gi` → `git`.
+    if word.chars().count() < 2 {
         return None;
     }
     // The snapshot is sorted, so `min_by_key` over the length keeps
@@ -564,11 +639,12 @@ struct CommandSpec {
 
 /// The curated-specs table (flag-specs spec, OQ 5): the ruled v1
 /// five — git, cargo, docker, systemctl, npm. Curated means
-/// curated: no attempt at completeness. Static in-code data by
-/// ruling: no runtime derivation from `--help`, no user-editable
-/// file; the lookup sits behind `specs_candidate` alone, so the
-/// growth path (a loadable data file) touches neither merge nor
-/// guards.
+/// curated: no attempt at completeness. Static in-code data,
+/// demoted to the fallback's storage by the loadable data file
+/// (suggest-specs-data spec): no file, an unreadable file, or an
+/// invalid file answers this table, byte-equivalent to the
+/// pre-file behavior; the lookup sits behind `specs_candidate`
+/// alone, so neither merge nor guards know which table answers.
 const SPECS: &[CommandSpec] = &[
     CommandSpec {
         command: "cargo",
@@ -685,6 +761,192 @@ const SPECS: &[CommandSpec] = &[
     },
 ];
 
+/// One table entry as the data file carries it
+/// (suggest-specs-data spec): the name the seats complete, beside
+/// the description the menu renders — new cargo the format ships;
+/// the ghost ignores it (locked: single-choice text).
+// The no-scripts boundary, made structural (suggest-specs-data
+// spec): every schema type denies unknown fields, so a file that
+// carries a `script` key — the Fig format's executable half, the
+// generators record's permanent rejection — fails the whole file
+// and falls back to the built-in table. Data imports; scripts
+// never arrive.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpecEntry {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// One command's completion table, file-shaped
+/// (suggest-specs-data spec): the command word the lookup keys on,
+/// its high-traffic subcommands, and its long flags — every entry
+/// carrying its optional description. `pub` for the field-type
+/// visibility `TerminalOptions` needs; the module's own `pub(crate)`
+/// keeps it crate-reach in truth, and the fields stay private to
+/// this module — only the seam's lookups read them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpecCommand {
+    name: String,
+    #[serde(default)]
+    subcommands: Vec<SpecEntry>,
+    #[serde(default)]
+    flags: Vec<SpecEntry>,
+}
+
+/// The data file's root shape: one key, the command table.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecsFile {
+    #[serde(default)]
+    commands: Vec<SpecCommand>,
+}
+
+/// The built-in table, file-shaped: the curated const converted
+/// once, on first use — the fallback every load failure answers,
+/// and the floor a valid file's commands merge over.
+static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
+    SPECS
+        .iter()
+        .map(|spec| SpecCommand {
+            name: spec.command.to_string(),
+            subcommands: spec
+                .subcommands
+                .iter()
+                .map(|entry| SpecEntry {
+                    name: (*entry).to_string(),
+                    description: None,
+                })
+                .collect(),
+            flags: spec
+                .flags
+                .iter()
+                .map(|entry| SpecEntry {
+                    name: (*entry).to_string(),
+                    description: None,
+                })
+                .collect(),
+        })
+        .collect()
+});
+
+/// The built-in fallback table (suggest-specs-data spec): exactly
+/// the curated const, file-shaped, descriptions `None` — what no
+/// file, an unreadable file, and an invalid file all answer.
+pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
+    &BUILTIN_SPECS
+}
+
+/// Parses the data file's text into the normalized table
+/// (suggest-specs-data spec): every schema tier rejects unknown
+/// keys (`deny_unknown_fields`), and the survivors normalize to the
+/// ruled order — commands and every entry list sorted by name, a
+/// stable sort keeping file order among equals — because the
+/// shortest-wins, ties-alphabetical policy falls out of
+/// `min_by_key` over sorted lists exactly the way the built-in's
+/// does. A file with no commands parses to an empty table (the
+/// merge answers the built-in alone).
+fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error> {
+    let file: SpecsFile = toml::from_str(contents)?;
+    let mut commands = file.commands;
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    for command in &mut commands {
+        command.subcommands.sort_by(|a, b| a.name.cmp(&b.name));
+        command.flags.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    Ok(commands)
+}
+
+/// The merge ruling (suggest-specs-data spec): the built-in five
+/// are the floor — the file's commands add beside them, and a
+/// re-declared command replaces its built-in whole (no per-entry
+/// merging: a re-declaration is the user's table for that command,
+/// the only way to describe a built-in entry). Deterministic
+/// throughout: equal names resolve by the stable sort's file
+/// order, and the merged table ends sorted by command name.
+fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
+    let mut table = BUILTIN_SPECS.clone();
+    for command in file {
+        match table
+            .iter_mut()
+            .find(|existing| existing.name == command.name)
+        {
+            Some(existing) => *existing = command,
+            None => table.push(command),
+        }
+    }
+    table.sort_by(|a, b| a.name.cmp(&b.name));
+    table
+}
+
+/// The loadable spec table's whole truth (suggest-specs-data spec):
+/// resolve `completions.toml` under the config directory, parse
+/// it, and merge it over the built-in floor. Failure is always
+/// silence-shaped — no directory, no file, an unreadable file, or
+/// an invalid file (any unknown key, `script` included) answers
+/// the built-in table with a `debug!` log, never a half-loaded
+/// table; the caller is the app layer, engine-side and once per
+/// load point, so the model never touches the filesystem.
+pub(crate) fn load_completions(dir: Option<&Path>) -> Cow<'static, [SpecCommand]> {
+    let Some(dir) = dir else {
+        log::debug!("no config directory: the spec table stays built-in");
+        return Cow::Borrowed(builtin_specs());
+    };
+    let path = dir.join("completions.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => match parse_completions(&contents) {
+            Ok(file) => Cow::Owned(merge_completions(file)),
+            Err(err) => {
+                log::debug!(
+                    "completions.toml rejected, the built-in table answers: {}: {err}",
+                    path.display()
+                );
+                Cow::Borrowed(builtin_specs())
+            }
+        },
+        Err(err) => {
+            log::debug!(
+                "completions.toml unreadable, the built-in table answers: {}: {err}",
+                path.display()
+            );
+            Cow::Borrowed(builtin_specs())
+        }
+    }
+}
+
+/// The alias chain's depth cap (suggest-aliases spec, OQ-2,
+/// locked): three expansions — Warp's docs give no number, and
+/// three covers every real chain the survey found. A chain past
+/// the cap terminates as unmapped, never a guess past the user's
+/// declaration.
+const ALIAS_DEPTH_CAP: usize = 3;
+
+/// The alias map's resolution (suggest-aliases spec): the command
+/// word's ultimate expansion command — each hop follows the mapped
+/// expansion's first word, until an unmapped word ends the walk, a
+/// cycle terminates it, or the depth cap stops it. Unmapped returns
+/// the input; a cycle or the cap terminates as unmapped — the last
+/// word reached, so nothing is ever guessed past what the user
+/// declared.
+fn resolve_alias<'a>(word: &'a str, aliases: &'a HashMap<String, String>) -> &'a str {
+    let mut current = word;
+    let mut visited = HashSet::new();
+    let mut depth = 0;
+    while depth < ALIAS_DEPTH_CAP {
+        if !visited.insert(current) {
+            break;
+        }
+        let Some(expansion) = aliases.get(current) else {
+            break;
+        };
+        current = expansion.split_whitespace().next().unwrap_or_default();
+        depth += 1;
+    }
+    current
+}
+
 /// The specs provider's context carve (flag-specs spec): the line's
 /// command word and the trailing token, when the token holds a
 /// seat the table answers. A `--`-prefixed token is the **flag
@@ -696,14 +958,26 @@ const SPECS: &[CommandSpec] = &[
 /// first argument seat only (ruled: once an argument holds it, a
 /// later word never consults the subcommand table). `None` is no
 /// specs context: the command word itself being entered (the
-/// catalog's seat) or a later non-flag argument seat.
-fn specs_context(typed: &str) -> Option<(&str, &str)> {
+/// catalog's seat) or a later non-flag argument seat. The command
+/// word resolves through the alias map (suggest-aliases spec) —
+/// re-target, never rewrite: a mapped alias's expansion command
+/// becomes the lookup context, the seats still judged on the typed
+/// line.
+fn specs_context<'a>(
+    typed: &'a str,
+    aliases: &'a HashMap<String, String>,
+) -> Option<(&'a str, &'a str)> {
     if is_command_position(typed) {
         return None;
     }
     let token = trailing_token(typed);
     let completed = completed_words(&typed[..typed.len() - token.len()]);
-    let command = *completed.first()?;
+    // Re-target, never rewrite (suggest-aliases spec): the map's
+    // word becomes the lookup context — `gc --dr` answers what
+    // `git --dr` answers — but an accept still writes only the
+    // suffix; DropTerm never sends the expansion unless the user
+    // accepted ghost text that spelled it.
+    let command = resolve_alias(completed.first()?, aliases);
     if token.starts_with("--") || completed.len() == 1 {
         Some((command, token))
     } else {
@@ -749,26 +1023,161 @@ fn completed_words(typed: &str) -> Vec<&str> {
 /// `escape_for_shell` like every provider even though the table is
 /// safe by construction. Gated on the config toggle and the shared
 /// spawn allowlist (OQ 1: one gate is simpler to explain); an
-/// unknown command is silence, never a guess.
+/// unknown command is silence, never a guess — and so is a
+/// flag-seat token of exactly `--`, the no-information floor
+/// (suggest-accuracy spec: a bare `--` matches every flag equally;
+/// `--a` and longer discriminate).
 fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return None;
     }
-    let (command, token) = specs_context(typed)?;
+    let (command, token) = specs_context(typed, obs.aliases)?;
     if token.is_empty() {
         return None;
     }
-    let spec = SPECS.iter().find(|spec| spec.command == command)?;
+    // The no-information floor (suggest-accuracy spec): a token of
+    // exactly `--` matches every long flag in the table equally — the
+    // tiebreak picks one with no evidence. One character past the
+    // dashes (`--a`) is a strict prefix that discriminates, and stays
+    // ruled behavior.
+    if token == "--" {
+        return None;
+    }
+    let spec = obs.specs_table.iter().find(|spec| spec.name == command)?;
     let entries = if token.starts_with("--") {
-        spec.flags
+        &spec.flags
     } else {
-        spec.subcommands
+        &spec.subcommands
     };
     let entry = entries
         .iter()
+        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
+        .min_by_key(|entry| entry.name.len())?;
+    escape_for_shell(&entry.name[token.len()..])
+}
+
+/// The generator seat's set choice (suggest-generators spec): which
+/// cached set answers the git subcommand whose argument token is
+/// being entered — checkout takes a branch or a tag, switch a local
+/// branch, add/restore a working-tree change. The mapping is this
+/// crate's own reviewed carve of the git set; every other subcommand
+/// is silence.
+#[derive(Clone, Copy)]
+enum GeneratorSeat {
+    /// `git checkout` — a branch or a tag alike, branches first.
+    Refs,
+    /// `git switch` — a local branch only.
+    Branches,
+    /// `git add` / `git restore` — a working-tree change.
+    Files,
+}
+
+/// The generator provider's context carve (suggest-generators spec):
+/// the trailing token when it holds the argument seat directly after
+/// a git subcommand — exactly two completed words, the command word
+/// resolved through the alias map to `git` (the argv set is git-only,
+/// the record's first slice; docker/systemctl are named later slices,
+/// same contract, own change). Command position, a third completed
+/// word (`git checkout -b <name>` names something new rather than
+/// completing a cached ref), an unknown subcommand, and an empty
+/// token are all silence.
+fn generator_context<'a>(
+    typed: &'a str,
+    aliases: &'a HashMap<String, String>,
+) -> Option<GeneratorSeat> {
+    if is_command_position(typed) {
+        return None;
+    }
+    let token = trailing_token(typed);
+    if token.is_empty() {
+        return None;
+    }
+    let completed = completed_words(&typed[..typed.len() - token.len()]);
+    if completed.len() != 2 || resolve_alias(completed[0], aliases) != "git" {
+        return None;
+    }
+    match completed[1] {
+        "checkout" => Some(GeneratorSeat::Refs),
+        "switch" => Some(GeneratorSeat::Branches),
+        "add" | "restore" => Some(GeneratorSeat::Files),
+        _ => None,
+    }
+}
+
+/// The seat's concatenated names, deduped across sets (a branch and
+/// a tag may share a short name legally) — branches first, tags
+/// after, the runner's own order kept: recency is the ordering the
+/// argv pins, so the ghost's equal-length tie falls to the newest
+/// name, not the alphabetically first (the shortest-wins ruling's
+/// tiebreak was pinned to the sorted tables; these sets are
+/// recency-sorted by construction).
+fn generator_names<'a>(seat: GeneratorSeat, sets: &GeneratorSets<'a>) -> Vec<&'a str> {
+    let (first, second): (&'a [String], &'a [String]) = match seat {
+        GeneratorSeat::Refs => (sets.branches, sets.tags),
+        GeneratorSeat::Branches => (sets.branches, &[]),
+        GeneratorSeat::Files => (sets.files, &[]),
+    };
+    let mut seen = HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .map(String::as_str)
+        .filter(|name| seen.insert(*name))
+        .collect()
+}
+
+/// The generator provider's candidate function (suggest-generators
+/// spec): complete the argument token from the seat's cached,
+/// already-escaped names — strict prefix, must extend, shortest wins
+/// (the ruled match policy the catalog and specs ride), ties falling
+/// to the runner's recency order. The carve is the typed token's own
+/// bytes against the escaped form, so the suffix completes exactly
+/// what the user typed; the names rode the escape tier
+/// engine-side, so the remainder rides verbatim. Gated on the shared
+/// spawn allowlist (the standing ssh gate) and the cache itself.
+fn generator_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.paths_eligible {
+        return None;
+    }
+    let sets = obs.generator_candidates.as_ref()?;
+    let seat = generator_context(typed, obs.aliases)?;
+    let token = trailing_token(typed);
+    let entry = generator_names(seat, sets)
+        .into_iter()
         .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
         .min_by_key(|entry| entry.len())?;
-    escape_for_shell(&entry[token.len()..])
+    Some(entry[token.len()..].to_string())
+}
+
+/// The generator provider's whole set (suggest-menu spec): every
+/// cached name matching the argument token, in the seat's
+/// concatenated order — branches before tags, the runner's recency
+/// order kept, no shortest-wins tiebreak a list does not need.
+/// Labels are the escaped names the cache holds; descriptions are a
+/// later module's to supply (suggest-specs-data is the named
+/// supplier). Each provider's own gates hold: the ssh gate, the
+/// cache, the seat.
+fn generator_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some(sets) = obs.generator_candidates.as_ref() else {
+        return Vec::new();
+    };
+    let Some(seat) = generator_context(typed, obs.aliases) else {
+        return Vec::new();
+    };
+    let token = trailing_token(typed);
+    generator_names(seat, sets)
+        .into_iter()
+        .filter(|entry| entry.starts_with(token) && entry.len() > token.len())
+        .map(|entry| MenuCandidate {
+            label: entry.to_string(),
+            suffix: entry[token.len()..].to_string(),
+            description: None,
+            source: SuggestionSource::Generator,
+        })
+        .collect()
 }
 
 /// The characters a suggested suffix backslash-escapes (path-suggest
@@ -798,7 +1207,7 @@ const WHITELIST_PUNCT: &str = "-_./:=,+@%^{}";
 /// control character (a newline, a bell), and a name needing the
 /// quote tier that itself contains a quote — never a wrong suffix.
 /// The suffix-fit rule measures whichever escaped form wins.
-fn escape_for_shell(raw: &str) -> Option<String> {
+pub(crate) fn escape_for_shell(raw: &str) -> Option<String> {
     let verbatim = |c: char| c.is_ascii_alphanumeric() || WHITELIST_PUNCT.contains(c);
     if raw
         .chars()
@@ -836,6 +1245,7 @@ fn provider_candidate(
         SuggestionSource::Path => path_candidate(typed, obs),
         SuggestionSource::Specs => specs_candidate(typed, obs),
         SuggestionSource::Catalog => catalog_candidate(typed, obs),
+        SuggestionSource::Generator => generator_candidate(typed, obs),
     }
 }
 
@@ -854,10 +1264,465 @@ fn merged_candidate(
         SuggestionSource::Path,
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
+        SuggestionSource::Generator,
     ];
     providers.sort_by_key(|&source| source_rank(source));
     providers.into_iter().find_map(|source| {
         provider_candidate(source, typed, suggest, obs).map(|suffix| (suffix, source))
+    })
+}
+
+/// One completion-menu row (suggest-menu spec): the label the menu
+/// displays — the completed whole, a full history line or a whole
+/// table entry or PATH name — beside the suffix an accept writes
+/// through `Terminal::input_no_scroll` (the one funnel, the same
+/// escaped bytes the ghost's accepts carry), a description when a
+/// source carries one (the specs table's entries, file-declared —
+/// suggest-specs-data's cargo; every other source is bare), and the
+/// provenance the
+/// merge ranking orders by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuCandidate {
+    pub(crate) label: String,
+    pub(crate) suffix: String,
+    pub(crate) description: Option<String>,
+    pub(crate) source: SuggestionSource,
+}
+
+/// The menu's candidate collection (suggest-menu spec): every
+/// provider's **whole** strict-prefix set — where the single-choice
+/// ghost must settle for one answer (the newest match, the shared
+/// prefix, the shortest name), the menu carries every match —
+/// concatenated under the merge's ruled priority ([`source_rank`],
+/// history on top). Each provider rides its own gates unchanged
+/// (config toggles, the spawn allowlist, the seat rules); pure, like
+/// every seam here. Empty input is silence — no token, no list.
+pub(crate) fn candidates(
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Vec<MenuCandidate> {
+    if typed.is_empty() {
+        return Vec::new();
+    }
+    let mut providers = [
+        SuggestionSource::History,
+        SuggestionSource::Path,
+        SuggestionSource::Specs,
+        SuggestionSource::Catalog,
+        SuggestionSource::Generator,
+    ];
+    providers.sort_by_key(|&source| source_rank(source));
+    providers
+        .into_iter()
+        .flat_map(|source| source_candidates(source, typed, suggest, obs))
+        .collect()
+}
+
+/// One provider's whole candidate set, keyed by its variant — the
+/// menu-side twin of [`provider_candidate`]'s dispatch.
+fn source_candidates(
+    source: SuggestionSource,
+    typed: &str,
+    suggest: &Suggest,
+    obs: &Observation<'_>,
+) -> Vec<MenuCandidate> {
+    match source {
+        SuggestionSource::History => history_candidates(typed, &suggest.ring),
+        SuggestionSource::Path => path_candidates(typed, obs),
+        SuggestionSource::Specs => specs_candidates(typed, obs),
+        SuggestionSource::Catalog => catalog_candidates(typed, obs),
+        SuggestionSource::Generator => generator_candidates(typed, obs),
+    }
+}
+
+/// History's whole set: every ring entry with the typed line as a
+/// strict prefix, most recent first — the ghost's own walk continued
+/// past the first hit, bounded by the ring's own cap.
+fn history_candidates(typed: &str, ring: &VecDeque<String>) -> Vec<MenuCandidate> {
+    ring.iter()
+        .rev()
+        .filter(|entry| entry.starts_with(typed) && entry.len() > typed.len())
+        .map(|entry| MenuCandidate {
+            label: entry.clone(),
+            suffix: entry[typed.len()..].to_string(),
+            description: None,
+            source: SuggestionSource::History,
+        })
+        .collect()
+}
+
+/// The path provider's whole set (suggest-menu spec): every listing
+/// entry matching the typed token's final component under the
+/// ghost's own rules — the same gates, the same component carve, the
+/// same dotfile convention — each completing to its own escaped
+/// remainder (directories suffixed `/`), where the ghost must settle
+/// for the one shared prefix. An entry whose remainder cannot be
+/// safely written drops alone (the per-entry silence rule), never
+/// poisons the set.
+fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.paths_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some(token) = path_token(Some(typed)) else {
+        return Vec::new();
+    };
+    let Some(listing) = obs.path_listing else {
+        return Vec::new();
+    };
+    // The final component: after the last `/` — or the empty
+    // component when the token is the `~` root alone.
+    let component = match token.rfind('/') {
+        Some(idx) => &token[idx + 1..],
+        None => "",
+    };
+    listing
+        .iter()
+        .filter(|(name, is_dir)| {
+            name.starts_with(component)
+                && (*is_dir || name.len() > component.len())
+                && (component.starts_with('.') || !name.starts_with('.'))
+        })
+        .filter_map(|(name, is_dir)| {
+            let mut remainder = name[component.len()..].to_string();
+            if *is_dir {
+                remainder.push('/');
+            }
+            let suffix = escape_for_shell(&remainder)?;
+            Some(MenuCandidate {
+                label: if *is_dir {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                },
+                suffix,
+                description: None,
+                source: SuggestionSource::Path,
+            })
+        })
+        .collect()
+}
+
+/// The curated-specs provider's whole set (suggest-menu spec): every
+/// table entry with the trailing token as a strict prefix —
+/// subcommands at the subcommand seat, long flags from any argument
+/// seat. The bare `--` floor is the single-choice ghost's alone (a
+/// list of every flag is information, not a guess), so the flag seat
+/// lists the table whole. Each remainder rides the escape rule like
+/// every provider's, and each row carries its table entry's
+/// description where one exists (suggest-specs-data spec) — the
+/// menu's dim second column; the ghost never sees it (locked:
+/// single-choice text).
+fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.specs_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some((command, token)) = specs_context(typed, obs.aliases) else {
+        return Vec::new();
+    };
+    if token.is_empty() {
+        return Vec::new();
+    }
+    let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
+        return Vec::new();
+    };
+    let entries = if token.starts_with("--") {
+        &spec.flags
+    } else {
+        &spec.subcommands
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
+        .filter_map(|entry| {
+            let suffix = escape_for_shell(&entry.name[token.len()..])?;
+            Some(MenuCandidate {
+                label: entry.name.clone(),
+                suffix,
+                description: entry.description.clone(),
+                source: SuggestionSource::Specs,
+            })
+        })
+        .collect()
+}
+
+/// The command-name provider's whole set (suggest-menu spec): every
+/// catalog name with the typed command word as a strict prefix — no
+/// shortest-wins and no one-character floor, both tiebreak-shaped
+/// rulings for the single-choice ghost that a list dissolves (a
+/// listing of every `g`-word is information, not a coin flip). The
+/// seat rules hold: command position, not path-shaped, non-empty.
+/// Each remainder rides the escape rule; an unwritable name drops
+/// alone.
+fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.commands_enabled || !obs.paths_eligible {
+        return Vec::new();
+    }
+    if !is_command_position(typed) {
+        return Vec::new();
+    }
+    let word = typed.trim_start();
+    if word.is_empty() || is_path_shaped(word) {
+        return Vec::new();
+    }
+    obs.command_catalog
+        .iter()
+        .filter(|name| name.starts_with(word) && name.len() > word.len())
+        .filter_map(|name| {
+            let suffix = escape_for_shell(&name[word.len()..])?;
+            Some(MenuCandidate {
+                label: name.clone(),
+                suffix,
+                description: None,
+                source: SuggestionSource::Catalog,
+            })
+        })
+        .collect()
+}
+
+/// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
+/// eight rows with a scroll offset — Warp/VS Code show ~10; eight
+/// fits the drop-down's short surface. Shared by the model's scroll
+/// arithmetic and the renderer's window.
+pub(crate) const MENU_VISIBLE_ROWS: usize = 8;
+
+/// One menu-scoped press (suggest-menu spec): the widget's scoped
+/// routing maps the keys the menu claims while open onto these —
+/// Up/Down navigate, Tab/Enter accept — and every press it does not
+/// claim arrives as [`MenuKey::Other`], whose transition closes the
+/// menu before the press flows on through the normal handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKey {
+    Up,
+    Down,
+    Accept,
+    Other,
+}
+
+/// The completion menu's state (suggest-menu spec): the open fact,
+/// the displayed rows, the selected index, and the scroll offset —
+/// pure transitions over [`MenuCandidate`] lists, never the grid,
+/// the PTY, or the clock. Invariant: open implies non-empty rows
+/// (an empty collection declines to open; a filter that empties the
+/// set closes), so a closed menu is always a spent one.
+#[derive(Debug, Default)]
+pub(crate) struct MenuState {
+    open: bool,
+    rows: Vec<MenuCandidate>,
+    selected: usize,
+    scroll: usize,
+}
+
+impl MenuState {
+    /// A closed, spent menu — the state a fresh terminal carries.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the menu shows.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The displayed rows, in display order.
+    pub(crate) fn rows(&self) -> &[MenuCandidate] {
+        &self.rows
+    }
+
+    /// The selected row's index into [`Self::rows`].
+    pub(crate) fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// The first visible row's index — the scroll offset the
+    /// renderer's window starts at.
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Opens over the merged collection (the record's ruled
+    /// contents): the collection's own source order — history on
+    /// top — is the display order, the selection at the top, no
+    /// re-ranking here. An empty collection declines to open and
+    /// answers `false`: no candidates, no menu. Returns whether the
+    /// menu is open.
+    pub(crate) fn open(&mut self, rows: Vec<MenuCandidate>) -> bool {
+        if rows.is_empty() {
+            self.close();
+            return false;
+        }
+        self.rows = rows;
+        self.selected = 0;
+        self.scroll = 0;
+        self.open = true;
+        true
+    }
+
+    /// Closes and spends the menu — the transition for Escape,
+    /// Ctrl+Space's toggle, and any press the menu does not claim.
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+        self.rows.clear();
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// Re-ranks the displayed rows under a filter query — Warp's
+    /// pinned policy via [`filter_rank`]: prefix hits above
+    /// subsequence hits, contiguity-aware, ties in provenance
+    /// order. The selection and scroll reset to the top; a query
+    /// nothing matches closes the menu (an open menu with no rows
+    /// is a state the machine refuses).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no caller yet by ruling: the auto-popup re-collects fresh prefix sets per keystroke, so the fuzzy re-rank stays a pinned model primitive for the surface that wants it"
+        )
+    )]
+    pub(crate) fn filter(&mut self, query: &str) {
+        self.rows = filter_rank(query, std::mem::take(&mut self.rows));
+        if self.rows.is_empty() {
+            self.close();
+            return;
+        }
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// One menu-scoped press's transition: navigate, accept (the
+    /// exact suffix string an accept writes), or close on any other
+    /// key. A closed menu answers `None` to everything and stays
+    /// closed.
+    pub(crate) fn press(&mut self, key: MenuKey) -> Option<String> {
+        if !self.open {
+            return None;
+        }
+        match key {
+            MenuKey::Up => {
+                self.move_up();
+                None
+            }
+            MenuKey::Down => {
+                self.move_down();
+                None
+            }
+            MenuKey::Accept => self.accept(),
+            MenuKey::Other => {
+                self.close();
+                None
+            }
+        }
+    }
+
+    /// Takes the selected row's suffix and closes: the exact string
+    /// `Terminal::input_no_scroll` writes — the label, the
+    /// description, the provenance never reach the PTY.
+    fn accept(&mut self) -> Option<String> {
+        let suffix = self.rows.get(self.selected).map(|row| row.suffix.clone());
+        self.close();
+        suffix
+    }
+
+    /// Moves the selection up one row, clamping at the top, the
+    /// scroll window following so the selection stays visible.
+    fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+        self.follow_scroll();
+    }
+
+    /// Moves the selection down one row, clamping at the last, the
+    /// scroll window following so the selection stays visible.
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.rows.len() {
+            self.selected += 1;
+        }
+        self.follow_scroll();
+    }
+
+    /// Keeps the selected row inside the visible window after a
+    /// move: scrolled past the top edge pulls the window up, past
+    /// the bottom edge pushes it down.
+    fn follow_scroll(&mut self) {
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + MENU_VISIBLE_ROWS {
+            self.scroll = self.selected + 1 - MENU_VISIBLE_ROWS;
+        }
+    }
+}
+
+/// One label's verdict under the menu's fuzzy filter: the tier, and
+/// within the subsequence tier the contiguity facts
+/// [`filter_rank`]'s sort key orders by — longer contiguous runs
+/// first (via [`std::cmp::Reverse`]), then earlier first matches.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum MatchTier {
+    /// The label starts with the query, case-insensitively — the
+    /// vacuous hit when the query is empty, which keeps every row.
+    Prefix,
+    /// The query's characters appear in the label in order:
+    /// `run` the longest contiguous run of query characters the
+    /// greedy walk matched adjacently, `first` the first match's
+    /// position.
+    Subsequence { run: usize, first: usize },
+}
+
+/// The menu's fuzzy filter and ranker (suggest-menu spec; Warp's
+/// pinned policy, `matchers.rs`): case-insensitive prefix hits
+/// first, then subsequence hits — engaged only when the query
+/// carries at least one alphanumeric character (Warp's own gate:
+/// fuzzy matches on punctuation produce poor results) —
+/// contiguity-aware (a longer contiguous matched run outranks a
+/// scattered one), earlier matches outranking later. Hand-rolled,
+/// zero dependencies; a stable sort, so every tie falls back to the
+/// collection's provenance order. Rows that match nothing drop.
+fn filter_rank(query: &str, rows: Vec<MenuCandidate>) -> Vec<MenuCandidate> {
+    let sort_key = |tier: &MatchTier| match tier {
+        MatchTier::Prefix => (0, std::cmp::Reverse(0), 0),
+        MatchTier::Subsequence { run, first } => (1, std::cmp::Reverse(*run), *first),
+    };
+    let mut ranked: Vec<_> = rows
+        .into_iter()
+        .filter_map(|row| match_tier(query, &row.label).map(|tier| (row, tier)))
+        .collect();
+    ranked.sort_by_key(|(_, tier)| sort_key(tier));
+    ranked.into_iter().map(|(row, _)| row).collect()
+}
+
+/// One query's verdict against one label, case-insensitively — the
+/// filter's match half; `None` drops the row. The subsequence walk
+/// is greedy left-to-right (the fzf-family approximation):
+/// contiguity is measured on the greedy match, which is
+/// deterministic and exact for the short menu labels it serves.
+fn match_tier(query: &str, label: &str) -> Option<MatchTier> {
+    let query: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let label: Vec<char> = label.chars().flat_map(char::to_lowercase).collect();
+    if query.is_empty() || label.starts_with(&query[..]) {
+        return Some(MatchTier::Prefix);
+    }
+    // Warp's own gate: the subsequence fallback exists only for a
+    // query with at least one alphanumeric.
+    if !query.iter().copied().any(char::is_alphanumeric) {
+        return None;
+    }
+    let mut query_idx = 0;
+    let mut first = None;
+    let mut run = 0;
+    let mut best_run = 0;
+    for (idx, c) in label.iter().enumerate() {
+        if query_idx < query.len() && *c == query[query_idx] {
+            first.get_or_insert(idx);
+            run += 1;
+            best_run = best_run.max(run);
+            query_idx += 1;
+        } else {
+            run = 0;
+        }
+    }
+    (query_idx == query.len()).then(|| MatchTier::Subsequence {
+        run: best_run,
+        first: first.unwrap_or(0),
     })
 }
 

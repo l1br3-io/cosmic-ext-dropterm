@@ -58,15 +58,21 @@ What a fresh configuration carries - every key that has a default, with the file
 | `status_bar_show_zoom` | `true` |
 | `status_bar_show_clock` | `true` |
 | `status_bar_show_duration` | `true` |
+| `status_bar_show_exit_status` | `true` |
+| `status_bar_show_progress` | `true` |
 | `status_bar_show_scrollback` | `true` |
 | `tab_bar_border` | `true` |
 | `status_bar_border` | `true` |
+| `status_bar_activity_mark` | `true` |
 | `autosuggestions_enabled` | `true` |
 | `autosuggestions_paths_enabled` | `true` |
 | `autosuggestions_commands_enabled` | `true` |
+| `autosuggestions_generators_enabled` | `true` |
+| `autosuggestions_menu_enabled` | `true` |
+| `autosuggestions_menu_auto` | `false` |
 | `autosuggestions_delay_ms` | `0` |
 
-The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
+The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `autosuggestions_aliases` (empty by default - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
 
 ## Geometry
 
@@ -122,6 +128,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 
 | Key | Shows | Default |
 |---|---|---|
+| `status_bar_activity_mark` | The missed-activity halo - a thin attention ring around the process disc while output landed on the active tab under a hidden surface, until a touch (input, paste, scroll, pane click) or a tab switch acknowledges it. | `true` |
 | `status_bar_show_process` | Foreground process name - filled disc while one runs, hollow ring over the idle shell. | `true` |
 | `status_bar_show_path` | Working directory, `$HOME` collapsed to `~`. | `true` |
 | `status_bar_show_branch` | Git branch of the cwd (worktrees and submodules resolve). | `true` |
@@ -131,9 +138,11 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 | `status_bar_show_zoom` | Zoom delta (`+200%`) while the font is off its base size. | `true` |
 | `status_bar_show_clock` | Wall clock (`HH:MM`). | `true` |
 | `status_bar_show_duration` | Command time (`2:41` while a command runs, `cargo 2:41` after it finishes) - derived from the foreground edges the engine already diffs, no shell integration. Hiding it stops its 1 s tick. | `true` |
+| `status_bar_show_exit_status` | Exit status (`✗1`) of the last finished command, beside its duration, in the scheme's own red - sourced solely from the shell's OSC 133;D report (opt-in shell integration; see the status band page). Success renders nothing; without integration the band never guesses. Clicking the chip copies the bare code. | `true` |
+| `status_bar_show_progress` | The running command's own progress (`42%`) beside the exit chip - sourced solely from the shell's OSC 9;4 report (opt-in shell integration; see the status band page): `…` while indeterminate, the value in the scheme's own red on error (`!` if none was ever given), paused plain. State 0, the command's finish, and ~15 s without a refresh each clear it - a dead reporter never leaves its last number lying. Clicking the chip copies the bare percent. | `true` |
 | `status_bar_show_scrollback` | Lines scrolled back from the bottom (`↑12`) - shown only while the viewport is off-bottom; clicking the chip jumps to the bottom. | `true` |
 
-All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs.
+All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs, hiding the exit status stops its verdict sampling.
 
 ## Bar borders
 
@@ -179,11 +188,24 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 | `autosuggestions_enabled` | `true` | Fish-style autosuggestions: dim ghost text after the cursor completing the most recent matching command from this tab's own history ([autosuggestions](autosuggestions.md)). Right accepts it, Alt+Right takes one word, anything else dismisses it - nothing executes without an accept. `false` is the kill switch. |
 | `autosuggestions_paths_enabled` | `true` | Path completion joins the autosuggestions: a typed path token (`~/sr`, `../co`, `./te`, `/usr/bi`) ghosts its first sorted match from the parent directory, directories suffixed `/`, names the shell would mangle backslash-escaped or not suggested at all ([autosuggestions](autosuggestions.md)). Local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |
 | `autosuggestions_commands_enabled` | `true` | Command-name completion joins the autosuggestions: at the command position the typed word ghosts its shortest match among the executables on the tab's spawn-time `$PATH` (ties alphabetical; the match must extend the word) - so a fresh tab with an empty history finishes `gi` → `git`, and after one real run history takes over invisibly ([autosuggestions](autosuggestions.md)). A spawn-time snapshot, never rescanned; local-machine knowledge - silent over ssh. `false` restores history-only suggestions. |
+| `autosuggestions_generators_enabled` | `true` | The git value generators join the autosuggestions: cached branch, tag, and working-tree-change names completing the argument seats of `git checkout`, `git switch`, `git add`, and `git restore` - `git checkout ma` ghosts `in` from a cached `main` ([autosuggestions](autosuggestions.md)). The names are read from the repository the tab's shell sits in by fixed, reviewed, read-only git commands DropTerm owns (nothing you can configure runs anything), with an environment scrubbed to `HOME` and a pinned `C` locale, the tab's spawn-time `$PATH` git by absolute path, and a five-second kill deadline - silence on every failure, nothing leaves the machine, and ssh or non-shell tabs never run a generator at all. Results cache stale-while-revalidate and refresh when the completions menu opens; plain typing never spawns anything. `false` stops every spawn and serves nothing from the cache. Applies live. |
+| `autosuggestions_menu_enabled` | `true` | The Ctrl+Space completion menu: an explicit-trigger candidate list over the tab's current input - every history prefix match, path entry, PATH name, and curated subcommand/flag at once, where the ghost must settle for one choice. Up/Down navigate, Tab and Enter accept only while it shows (bare Tab stays the shell's own completion key whenever no menu shows; at an ineligible prompt the chord forwards to the shell verbatim) ([autosuggestions](autosuggestions.md)). `false` removes the menu surface exactly - the ghost is untouched. Flips apply live: a showing menu closes the moment the switch lands. |
+| `autosuggestions_menu_auto` | `false` | The auto-popup opt-in for the completion menu: with the key on, an idle prompt whose typed segment collects two or more candidates pops the menu without the chord, closing again when narrowing leaves one or nothing and on every ineligibility ([autosuggestions](autosuggestions.md)). Defaults to `false` - no surveyed peer ships auto-popup on; `false` is today exactly (the chord is the only opener). Applies live. |
 | `autosuggestions_delay_ms` | `0` | The autosuggest idle delay, in milliseconds: a qualifying suggestion is withheld until the typed segment has been stable this long - so no ghost churns while you type fast, it appears once at the pause (200-300 suits that complaint; `0` is fish parity, today's behavior). Any keystroke restarts the wait and dismisses a showing ghost instantly; Right/Alt+Right are unchanged the moment the ghost shows, and the knob changes *when* a suggestion is seen, never *which* one wins ([autosuggestions](autosuggestions.md)). Applies live. |
+| `autosuggestions_aliases` | `{}` | The user-declared alias map, hand-edited in the config file (the map is author-sized, not toggle-sized): alias → expansion, `gc = "git checkout"`, re-targeting the specs and catalog completions at the expansion's words - a mapped alias ghosts what its expansion ghosts (`gc --dr` ghosts git's `--dry-run`, `gc che` ghosts `ckout`), with history still outranking always and silent over ssh. Authoritative for exactly what you declare: DropTerm never reads or parses your shell rc files and never runs anything in the session to discover aliases, and an accept still writes only the suggestion's suffix - never the expansion unless you accepted ghost text that spelled it ([autosuggestions](autosuggestions.md)). Chains resolve recursively (an alias mapping to another alias), depth-capped at 3 and cycle-safe. Applies live at the next typed prefix. |
 | `new_tab_after_current` | `true` | New tabs land directly after the active tab. `false` appends at the end of the list (Guake's ordering); `duplicate-tab` always lands after the active tab. |
 | `scrollback_lines` | `10000` | Scrollback capacity per terminal. Applies to the next spawn - capacity is fixed when a terminal is created. |
 
 The toggles apply at their next natural trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab.
+
+The alias map is written by hand, one expansion per declared alias:
+
+```ron
+// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/autosuggestions_aliases
+{
+    "gc": "git checkout",
+}
+```
 
 ## Layer, focus, and panels
 
@@ -259,3 +281,44 @@ Two keys load and persist today but change no behavior:
 
 - `settings_drawer_click_close` (default `true`) is **parked**: the planned click-to-dismiss behavior cannot ship until a capture mechanism exists. A hand-edited value is inert.
 - `output` (default unset) is **reserved** for monitor selection - naming the Wayland output the drop-down shows on. Nothing reads it yet; see the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md).
+
+## The completions data file
+
+One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships an audited seed to start from: [`data/completions.toml`](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/data/completions.toml) in the repository - fourteen commands with menu descriptions, converted from withfig/autocomplete (MIT; every entry's derivation named in the [seed audit](research/completions-seed-audit.md)) - copy it to the config directory and edit from there.
+
+```toml
+# ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml
+
+# One table per command. `name` is the command word the table
+# answers for - through the alias map too, so a mapped alias
+# re-targets here exactly as it does the built-ins.
+[[commands]]
+name = "gh"
+
+# Subcommands complete the first argument seat (`gh pr` ghosts
+# and lists them). Every entry is a `name` plus an optional
+# `description` - the completions menu shows it beside the row,
+# dimmed; the ghost ignores descriptions (it is text only).
+[[commands.subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+[[commands.subcommands]]
+name = "pr-check"
+
+# Long flags complete the flag seat from any argument position
+# (`gh --rep` finishes `--repo`). No short flags - same ruling as
+# the built-in table: a single-choice ghost pays a wrong accept
+# for a wrong guess.
+[[commands.flags]]
+name = "--repo"
+description = "Select another repository"
+```
+
+Rules the loader holds:
+
+- **No executable content - ever.** The schema rejects unknown keys, so a file carrying a `script` field (or any key the format does not define) fails whole: DropTerm logs at debug level and answers with the built-in table, never a half-loaded one. Data imports; scripts never arrive.
+- The file is optional. No file, an unreadable file, or an invalid file is exactly the built-in behavior - the curated five, unchanged.
+- Entries sort by name at load (the match policy - strict prefix, must extend, shortest wins, ties alphabetical - rides sorted lists); an unsorted file is fine.
+- An edit applies at the next tab you open (the file reads fresh at spawn) or the next settings change (the file re-reads on every config pass); tabs already open pick it up at that pass's next typed prefix.
+

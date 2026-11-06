@@ -4,7 +4,7 @@
 //! persists one key per file, its setting enums, and the clamping
 //! that guards stale or hand-edited values.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
@@ -387,6 +387,28 @@ pub struct DropTermConfig {
     /// alike; the engine's timestamps keep running either way, so a
     /// mid-command re-enable shows the live elapsed immediately.
     pub status_bar_show_duration: bool,
+    /// The exit-status chip (status-exit spec): the last finished
+    /// command's non-zero exit code — `✗1` in the scheme's own
+    /// attention red, beside its frozen duration — sourced solely
+    /// from the shell's own OSC 133;D report (opt-in shell
+    /// integration), never a guess: without integration the band
+    /// renders exactly what it renders without the chip. Key off
+    /// means the verdict is never gathered and never rendered; the
+    /// engine's timer keeps recording either way, so a re-enable
+    /// shows whatever verdict still stands.
+    pub status_bar_show_exit_status: bool,
+    /// The progress chip (osc94-progress spec): the running
+    /// command's own OSC 9;4 report — `42%` beside the exit chip,
+    /// `…` when indeterminate, the value in the scheme's own
+    /// attention red when the reporter says error (`!` when none
+    /// ever stood) — opt-in shell integration like the 133;D
+    /// verdict, never a guess: without integration the band renders
+    /// exactly what it renders without the chip. Three deaths keep
+    /// the number honest (the protocol's state 0, the foreground
+    /// handoff, and ~15 s without a refresh), so a dead reporter
+    /// never leaves its last number lying. Key off means the report
+    /// is never gathered and never rendered.
+    pub status_bar_show_progress: bool,
     /// The scrolled-back chip (status-scrolled spec): the
     /// viewport's lines back from the bottom — `↑12` — shown only
     /// off-bottom, its click jumping to the bottom (the band's one
@@ -405,6 +427,15 @@ pub struct DropTermConfig {
     /// the band's own enable — a hidden band renders nothing, and
     /// re-enabling it restores the border per this key.
     pub status_bar_border: bool,
+    /// Whether the band arms its missed-activity halo
+    /// (status-activity spec): a thin attention ring around the
+    /// process disc while output landed on the active tab under a
+    /// hidden surface and nothing has acknowledged it — input,
+    /// paste, scroll, a pane click, or a tab switch. Key off means
+    /// the fact is never gathered and never rendered; the engine's
+    /// latch keeps arming either way, so a later flip-on shows
+    /// whatever the surface still holds.
+    pub status_bar_activity_mark: bool,
     /// Whether fish-style autosuggestions compute (autosuggest
     /// spec): the rest of the most recent matching command from this
     /// tab's own history, as dim ghost text after the cursor; Right
@@ -436,6 +467,30 @@ pub struct DropTermConfig {
     /// `false` restores history-only behavior exactly. Flips apply
     /// live at the next typed prefix.
     pub autosuggestions_commands_enabled: bool,
+    /// Whether the Ctrl+Space completion menu computes (suggest-menu
+    /// spec): the explicit-trigger candidate list over the tab's
+    /// current input — every provider's whole match set where the
+    /// ghost must settle for one choice, Up/Down to navigate,
+    /// Tab/Enter to accept while it shows (bare Tab stays the
+    /// shell's own completion key whenever no menu shows). Defaults
+    /// to `true` — the ghost and the trigger are separable; `false`
+    /// removes the menu surface exactly: the chord forwards to the
+    /// shell verbatim and the ghost is untouched. Flips apply live
+    /// on the config echo — a showing menu closes the moment the
+    /// switch lands.
+    pub autosuggestions_menu_enabled: bool,
+    /// Whether the completion menu also opens on its own as you type
+    /// (suggest-menu spec, the auto-popup opt-in): with the key on,
+    /// an idle prompt whose typed segment collects two or more
+    /// candidates pops the menu without the chord, closing again
+    /// when narrowing leaves one or nothing and on every ineligibility
+    /// (a foreground child, scroll-away, focus loss). Defaults to
+    /// `false` — no surveyed peer ships auto-popup on, and a
+    /// persistent popup over a grid the terminal does not own is the
+    /// hostility the warp-parity record priced exactly so; `false`
+    /// is today byte-for-bit (the chord is the only opener). Flips
+    /// apply live on the config echo.
+    pub autosuggestions_menu_auto: bool,
     /// The idle-delay display gate for autosuggestions (suggest-delay
     /// spec): a qualifying suggestion is withheld until the typed
     /// segment has been stable this many milliseconds — the
@@ -449,6 +504,39 @@ pub struct DropTermConfig {
     /// suggestion wins. Applies live; 200–300 ms suits the churn
     /// complaint.
     pub autosuggestions_delay_ms: u16,
+    /// The user-declared alias map (suggest-aliases spec): alias →
+    /// expansion (`gc = "git checkout"`), re-targeting the specs
+    /// and catalog providers at the expansion's words — a mapped
+    /// alias ghosts what its expansion ghosts (`gc --dr` ghosts
+    /// git's `--dry-run`). Authoritative for exactly what the user
+    /// declares; nothing is guessed past it, no shell rc file is
+    /// ever read or parsed, and nothing runs in the session — the
+    /// expansion is completion-time knowledge, never input: an
+    /// accept still writes only the suggestion's suffix. Chains
+    /// resolve recursively (depth cap 3, cycle-safe); history
+    /// outranks the map always; silent on a tab spawned as ssh.
+    /// Config-file first (the map is author-sized, not
+    /// toggle-sized); defaults to empty — no alias re-targets, today
+    /// byte-for-bit. Applies live at the next typed prefix.
+    pub autosuggestions_aliases: HashMap<String, String>,
+    /// Whether the git value generators join the autosuggest merge
+    /// (suggest-generators spec): cached branch, tag, and
+    /// working-tree-change names completing `git checkout`, `git
+    /// switch`, `git add`, and `git restore` arguments — read from
+    /// the repository the tab's shell sits in, under a
+    /// stricter-than-any-peer contract: fixed DropTerm-reviewed
+    /// read-only git commands (nothing spec- or file-authorable),
+    /// an environment scrubbed to HOME and a pinned C locale, the
+    /// spawn-time `$PATH`'s absolute git, a five-second kill
+    /// deadline, and silence on every failure — nothing leaves the
+    /// machine, and ssh or non-shell tabs never run a generator at
+    /// all. Results cache stale-while-revalidate, refreshed on the
+    /// completions menu's open; typing never spawns. Defaults to
+    /// `true` (local read-only git, the same class as path
+    /// completion's filesystem reads); `false` stops every spawn
+    /// and serves nothing from the cache. Flips apply live on the
+    /// config echo.
+    pub autosuggestions_generators_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -499,24 +587,33 @@ impl Default for DropTermConfig {
             status_bar_show_zoom: true,
             status_bar_show_clock: true,
             status_bar_show_duration: true,
+            status_bar_show_exit_status: true,
+            status_bar_show_progress: true,
             status_bar_show_scrollback: true,
             tab_bar_border: true,
             status_bar_border: true,
+            status_bar_activity_mark: true,
             autosuggestions_enabled: true,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
+            autosuggestions_menu_enabled: true,
+            autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
+            autosuggestions_aliases: HashMap::new(),
+            autosuggestions_generators_enabled: true,
         }
     }
 }
 
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
-    /// ten additive bools — the resolver's toggle set.
+    /// additive bools — the resolver's toggle set.
     pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
         crate::status_bar::StatusToggles {
             process: self.status_bar_show_process,
             duration: self.status_bar_show_duration,
+            exit: self.status_bar_show_exit_status,
+            progress: self.status_bar_show_progress,
             path: self.status_bar_show_path,
             branch: self.status_bar_show_branch,
             profile: self.status_bar_show_profile,

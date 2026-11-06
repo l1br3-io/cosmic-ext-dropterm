@@ -33,6 +33,13 @@ fn resolve(
         frozen: None,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, StatusToggles::all())
 }
@@ -237,6 +244,8 @@ fn fit_widths() -> Vec<(SegmentId, f32)> {
     vec![
         (SegmentId::Branch, 30.0),
         (SegmentId::Duration, 30.0),
+        (SegmentId::Progress, 30.0),
+        (SegmentId::Exit, 30.0),
         (SegmentId::Profile, 40.0),
         (SegmentId::Grid, 30.0),
         (SegmentId::Tab, 20.0),
@@ -257,7 +266,10 @@ fn fit_path() -> PathMeasure {
 fn the_drop_order_pins_the_precedence() {
     // Facts the shell knows go first, then slow-moving identity,
     // the branch beside its path, the duration after its command,
-    // the scrolled chip after the duration (it answers "what's
+    // the progress chip before the exit chip (the most accessory
+    // fact — osc94-progress spec), the exit chip after the duration
+    // (the verdict rides its command's narration, never outliving
+    // it), the scrolled chip after both (it answers "what's
     // happening now" — it must survive while the command's own
     // narration stands), the clock to the bitter end. Process and
     // path are absent by construction: the disc never yields, and
@@ -271,10 +283,32 @@ fn the_drop_order_pins_the_precedence() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Progress,
+            SegmentId::Exit,
             SegmentId::Scrolled,
             SegmentId::Clock,
         ]
     );
+}
+
+#[test]
+fn progress_drops_before_the_exit_chip() {
+    // The seat pin (osc94-progress criterion 3): progress is the
+    // most accessory fact — with Progress, Exit, and Clock
+    // measured, starvation drops the chip first, the exit second,
+    // and the clock survives — DROP_ORDER's precedence restricted
+    // to the present.
+    let widths = vec![
+        (SegmentId::Progress, 30.0),
+        (SegmentId::Exit, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all three consumed 126 → room -74 past Gone; the
+    // chip's 42 and the exit's 42 free 10 px of room — one
+    // character's worth, beside the surviving clock.
+    let fit = band_fit(152.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Progress, SegmentId::Exit]);
+    assert_eq!(fit.path, PathFit::Elided(1));
 }
 
 #[test]
@@ -317,63 +351,87 @@ fn scrolled_drops_after_duration_and_before_clock() {
 }
 
 #[test]
+fn exit_drops_after_duration_and_before_scrolled() {
+    // The seat pin (status-exit criterion 2): with Duration, Exit,
+    // Scrolled, and Clock measured, starvation drops the duration
+    // first, the verdict second, and the chip and clock survive —
+    // the verdict rides its command's narration, never outliving it.
+    let widths = vec![
+        (SegmentId::Duration, 30.0),
+        (SegmentId::Exit, 30.0),
+        (SegmentId::Scrolled, 30.0),
+        (SegmentId::Clock, 30.0),
+    ];
+    // fixed 100; all four consumed 168; at 194 the room is -74 past
+    // Gone — the duration's 42 and the verdict's 42 free 10 px of
+    // room, one character's worth, beside the two survivors.
+    let fit = band_fit(194.0, 100.0, &widths, fit_path());
+    assert_eq!(fit.dropped, vec![SegmentId::Duration, SegmentId::Exit]);
+    assert_eq!(fit.path, PathFit::Elided(1));
+}
+
+#[test]
 fn zero_pressure_renders_everything() {
-    // 636 px of consumption (fixed + eight gaps-and-widths + the
-    // whole path) under 700 px: nothing drops, nothing elides.
-    let fit = band_fit(700.0, 100.0, &fit_widths(), fit_path());
+    // 716 px of consumption (fixed + ten gaps-and-widths + the
+    // whole path) under 738 px: nothing drops, nothing elides.
+    let fit = band_fit(738.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.path, PathFit::Full);
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn pressure_elides_the_path_before_any_segment_drops() {
-    // 500 px leaves 64 px of room for the 200 px path: elide to
-    // 6 chars — but nothing drops while any of the path survives.
-    let fit = band_fit(500.0, 100.0, &fit_widths(), fit_path());
-    assert_eq!(fit.path, PathFit::Elided(6));
+    // 548 px leaves 22 px of room for the 200 px path: elide to
+    // 2 chars — but nothing drops while any of the path survives.
+    let fit = band_fit(548.0, 100.0, &fit_widths(), fit_path());
+    assert_eq!(fit.path, PathFit::Elided(2));
     assert!(fit.dropped.is_empty(), "not empty: {:?}", fit.dropped);
 }
 
 #[test]
 fn past_full_elision_segments_drop_one_at_a_time_in_order() {
-    // 427 px cannot host even a fully elided path (room below one
+    // 508 px cannot host even a fully elided path (room below one
     // character): the grid goes first, and the path re-expands
     // into the freed 42 px — three characters' worth.
-    let fit = band_fit(427.0, 100.0, &fit_widths(), fit_path());
+    let fit = band_fit(508.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid]);
     assert_eq!(fit.path, PathFit::Elided(3));
 
-    // 387 px costs a second drop: tab follows grid, and the path
-    // re-expands again (25 px of room, two characters).
-    let fit = band_fit(387.0, 100.0, &fit_widths(), fit_path());
+    // 466 px costs a second drop: tab follows grid, and the path
+    // re-expands again (24 px of room, two characters).
+    let fit = band_fit(466.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(fit.dropped, vec![SegmentId::Grid, SegmentId::Tab]);
     assert_eq!(fit.path, PathFit::Elided(2));
 }
 
 #[test]
 fn absent_segments_are_skipped_in_the_drop_order() {
-    // No grid segment (toggle off, or at spawn dimensions): 342 px
-    // starves the band past full elision, and the first yield is
-    // the tab — the absent grid is skipped, not waited on.
+    // No grid segment (toggle off, or at spawn dimensions): 390 px
+    // starves the band past full elision, and the yields walk tab,
+    // zoom, then profile — the absent grid is skipped, not waited
+    // on.
     let widths: Vec<(SegmentId, f32)> = fit_widths()
         .into_iter()
         .filter(|(id, _)| *id != SegmentId::Grid)
         .collect();
-    let fit = band_fit(342.0, 100.0, &widths, fit_path());
-    assert_eq!(fit.dropped, vec![SegmentId::Tab, SegmentId::Zoom]);
-    assert_eq!(fit.path, PathFit::Elided(2));
+    let fit = band_fit(390.0, 100.0, &widths, fit_path());
+    assert_eq!(
+        fit.dropped,
+        vec![SegmentId::Tab, SegmentId::Zoom, SegmentId::Profile]
+    );
+    assert_eq!(fit.path, PathFit::Elided(3));
 }
 
 #[test]
 fn the_path_re_expands_monotonically_as_drops_free_width() {
     // Widths chosen so exactly `k` drops are forced (the k-th
-    // survivor's room sits at 10 + 5(k-1) px — one character plus a
+    // survivor's room sits at 10 + 4(k-1) px — one character plus a
     // growing slack that stays below the next drop's freed width,
     // while the (k-1)-th sits below one character): the path's char
     // budget never shrinks as drops free width.
     let mut prev_chars = 0;
     let fixture = fit_widths();
-    for k in 1..=8 {
+    for k in 1..=10 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -387,10 +445,10 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of eight, exact in f32"
+            reason = "a loop index of ten, exact in f32"
         )]
-        let room = 10.0 + 5.0 * (k as f32 - 1.0);
-        let width = 100.0 + 336.0 + room - freed;
+        let room = 10.0 + 4.0 * (k as f32 - 1.0);
+        let width = 100.0 + 421.0 + room - freed;
         let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
         assert_eq!(
             fit.dropped.len(),
@@ -412,7 +470,7 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
 
 #[test]
 fn the_disc_never_yields_even_when_everything_drops() {
-    // Zero width: all eight droppables give way in order and the
+    // Zero width: all ten droppables give way in order and the
     // path is gone — but `fixed` (the paddings and the disc
     // cluster) is untouchable by construction, and the path never
     // appears in the dropped set: the type has no say in it.
@@ -426,6 +484,8 @@ fn the_disc_never_yields_even_when_everything_drops() {
             SegmentId::Profile,
             SegmentId::Branch,
             SegmentId::Duration,
+            SegmentId::Progress,
+            SegmentId::Exit,
             SegmentId::Scrolled,
             SegmentId::Clock,
         ]
@@ -606,6 +666,17 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         frozen: None,
         scrolled_back: Some(12),
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: Some(1),
+        reported_cwd: None,
+        hostname: None,
+        progress: Some(crate::terminal::ReportedProgress {
+            state: crate::terminal::ProgressState::InProgress,
+            value: Some(42),
+            refreshed_at: std::time::Instant::now(),
+        }),
     };
     resolve_segments(&inputs, toggles)
 }
@@ -621,6 +692,8 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Zoom => segments.zoom_percent.is_some(),
         SegmentId::Clock => segments.clock.is_some(),
         SegmentId::Duration => segments.running_elapsed.is_some() || segments.frozen.is_some(),
+        SegmentId::Exit => segments.exit_code.is_some(),
+        SegmentId::Progress => segments.progress.is_some(),
         SegmentId::Scrolled => segments.scrolled.is_some(),
     }
 }
@@ -636,23 +709,30 @@ fn hide(toggles: &mut StatusToggles, id: SegmentId) {
         SegmentId::Zoom => &mut toggles.zoom,
         SegmentId::Clock => &mut toggles.clock,
         SegmentId::Duration => &mut toggles.duration,
+        SegmentId::Exit => &mut toggles.exit,
+        SegmentId::Progress => &mut toggles.progress,
         SegmentId::Scrolled => &mut toggles.scrolled,
     };
     *field = false;
 }
 
 #[test]
-fn the_clusters_pin_the_ten_segments_order() {
+fn the_clusters_pin_the_twelve_segments_order() {
     // The duration sits in the left cluster's second seat — right
     // beside the process it times (OQ-2) — but carries the dimmed
     // alpha of a meta narration, not identity (the draw's rule).
-    // The scrolled chip sits between Zoom and Clock
-    // (status-scrolled OQ-2): state of the view, beside time.
+    // The exit chip sits after the duration (status-exit spec): the
+    // verdict beside its cost. The progress chip sits after the
+    // exit (osc94-progress spec): the running command's own report
+    // beside the verdict. The scrolled chip sits between Zoom and
+    // Clock (status-scrolled OQ-2): state of the view, beside time.
     assert_eq!(
         LEFT_CLUSTER,
         [
             SegmentId::Process,
             SegmentId::Duration,
+            SegmentId::Exit,
+            SegmentId::Progress,
             SegmentId::Path,
             SegmentId::Branch
         ]
@@ -715,6 +795,7 @@ fn the_new_segments_resolve_from_their_inputs() {
     assert_eq!(segments.clock.as_deref(), Some("14:32"));
     assert_eq!(segments.running_elapsed, Some(Duration::from_secs(161)));
     assert_eq!(segments.scrolled, Some(12));
+    assert_eq!(segments.exit_code, Some(1));
 }
 
 // --- the duration segment (command-lifecycle) ---
@@ -747,6 +828,13 @@ fn resolve_duration(
         frozen,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -853,6 +941,339 @@ fn the_duration_tick_exists_only_while_every_gate_holds() {
     }
 }
 
+// --- the exit chip (status-exit) ---
+//
+// The verdict beside its duration: a non-zero report resolves the
+// chip, success and absent facts resolve nothing (code 0 is the
+// unmarked default, and no shell integration never guesses), and
+// the click copies the bare code — the glyph stays a paint fact.
+
+fn resolve_exit(exit_status: Option<u32>, toggles: StatusToggles) -> StatusSegments {
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
+    };
+    resolve_segments(&inputs, toggles)
+}
+
+// --- the progress chip (osc94-progress) ---
+//
+// The running command's own report: the percent while a value
+// stands, `…` when indeterminate owns the chip or none ever stood,
+// the value (or `!`) in the attention red when the reporter says
+// error, paused plain — and the click copies the bare number.
+
+/// A standing report for the chip's pins — the engine's fact,
+/// constructed as the engine constructs it.
+fn standing_progress(
+    state: crate::terminal::ProgressState,
+    value: Option<u8>,
+) -> crate::terminal::ReportedProgress {
+    crate::terminal::ReportedProgress {
+        state,
+        value,
+        refreshed_at: std::time::Instant::now(),
+    }
+}
+
+#[test]
+fn the_progress_chip_renders_every_report_state() {
+    // The render table (osc94-progress spec), every row: `42%`
+    // while a value stands (in progress and paused alike — the
+    // percent is the truth, paused is not a hue, OQ-1), `…` when
+    // indeterminate owns the chip or no value ever stood, the value
+    // for error (the attention red is the paint's rule, beside the
+    // exit chip's), `!` when error never had a value.
+    use crate::terminal::ProgressState;
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::InProgress, Some(42))),
+        "42%"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::InProgress, None)),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Indeterminate, Some(42))),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Indeterminate, None)),
+        "…"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Error, Some(42))),
+        "42%"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Error, None)),
+        "!"
+    );
+    assert_eq!(
+        progress_display(standing_progress(ProgressState::Paused, Some(42))),
+        "42%"
+    );
+}
+
+#[test]
+fn the_progress_chip_resolves_from_the_engine_fact() {
+    // The engine's standing fact flows to the chip un-guessed, and
+    // the toggle hides chip and fact together — hidden and absent
+    // stay the same indistinguishable None.
+    use crate::terminal::ProgressState;
+    let segments = resolve_full(StatusToggles::all());
+    assert_eq!(
+        segments.progress.map(|report| (report.state, report.value)),
+        Some((ProgressState::InProgress, Some(42)))
+    );
+    let mut toggles = StatusToggles::all();
+    toggles.progress = false;
+    assert_eq!(resolve_full(toggles).progress, None);
+}
+
+#[test]
+fn the_progress_chip_copies_the_bare_number() {
+    // The exit chip's own convention: the payload is the bare
+    // number, never the glyph or the `%`; the valueless shapes —
+    // `…`, `!` — have no number to copy, and no report copies
+    // nothing.
+    use crate::terminal::ProgressState;
+    let errored = StatusSegments {
+        progress: Some(standing_progress(ProgressState::Error, Some(42))),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Progress, &errored), "42");
+    let valueless = StatusSegments {
+        progress: Some(standing_progress(ProgressState::InProgress, None)),
+        ..StatusSegments::default()
+    };
+    assert_eq!(copy_text(SegmentId::Progress, &valueless), "");
+    assert_eq!(
+        copy_text(SegmentId::Progress, &StatusSegments::default()),
+        ""
+    );
+}
+
+/// Resolve with a shell cwd report standing (osc7-cwd spec) — the
+/// path seat's precedence pins. The home base is ours
+/// (`/home/u`), so local collapse has something to collapse.
+fn resolve_reported(
+    reported_cwd: Option<crate::terminal::ReportedCwd>,
+    hostname: Option<&str>,
+    cwd: Option<&Path>,
+    ssh_destination: Option<&str>,
+    branch: Option<&str>,
+) -> StatusSegments {
+    let home = Path::new("/home/u");
+    let inputs = StatusInputs {
+        home: Some(home),
+        cwd,
+        reported_cwd,
+        hostname,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        progress: None,
+    };
+    resolve_segments(&inputs, StatusToggles::all())
+}
+
+#[test]
+fn a_standing_report_outranks_the_local_cwd() {
+    // The shell said its own cwd — the `/proc` guess stands down.
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/elsewhere/x".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        Some(Path::new("/home/u/old")),
+        None,
+        None,
+    );
+    assert_eq!(segments.path, Some("/elsewhere/x".to_string()));
+}
+
+#[test]
+fn a_standing_report_outranks_the_ssh_stand_in() {
+    // Even while ssh owns the foreground: a reporting remote shell
+    // knows the true remote path; the destination token was only
+    // ever a stand-in for a silent one.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        None,
+        Some("user@workstation"),
+        None,
+    );
+    assert_eq!(segments.path, Some("workstation:/srv".to_string()));
+}
+
+#[test]
+fn a_local_report_collapses_home_like_the_local_cwd_does() {
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("~/x".to_string()));
+}
+
+#[test]
+fn a_report_naming_our_host_collapses_home() {
+    // Case-insensitively ours (the DNS rule) — still local, still
+    // collapsed.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("LAPTOP".to_owned()),
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("~/x".to_string()));
+}
+
+#[test]
+fn a_remote_report_renders_verbatim_host_qualified() {
+    // No collapse against our `$HOME` — a remote path never borrows
+    // a local abbreviation.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/home/u/x".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(segments.path, Some("workstation:/home/u/x".to_string()));
+}
+
+#[test]
+fn the_branch_hides_under_a_remote_report() {
+    // The stand-in's own rule, extended: the local repo's branch is
+    // as stale as the local path was.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, Some("main"));
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn the_branch_survives_a_local_report() {
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, Some("main"));
+    assert_eq!(segments.branch, Some("main".to_string()));
+}
+
+#[test]
+fn the_ssh_stand_in_and_a_local_report_hide_the_branch_together() {
+    // The realistic ssh-tab shape: the stand-in owns the seat and a
+    // local report (stale from before the session, per the peer
+    // lifetime) still stands — the branch stays hidden via the ssh
+    // term even though the report alone would keep it.
+    let report = crate::terminal::ReportedCwd {
+        host: None,
+        path: "/home/u".to_owned(),
+    };
+    let segments = resolve_reported(
+        Some(report),
+        Some("laptop"),
+        None,
+        Some("user@host"),
+        Some("main"),
+    );
+    assert_eq!(segments.branch, None);
+}
+
+#[test]
+fn clicking_a_reported_path_copies_its_display_value() {
+    // The copy payload is the display value (spec OQ-3's default) —
+    // host-qualified when the display is.
+    let report = crate::terminal::ReportedCwd {
+        host: Some("workstation".to_owned()),
+        path: "/srv".to_owned(),
+    };
+    let segments = resolve_reported(Some(report), Some("laptop"), None, None, None);
+    assert_eq!(copy_text(SegmentId::Path, &segments), "workstation:/srv");
+}
+
+#[test]
+fn an_exit_fact_resolves_the_verdict_and_success_and_absence_do_not() {
+    let segments = resolve_exit(Some(1), StatusToggles::all());
+    assert_eq!(segments.exit_code, Some(1));
+    // Success is the unmarked default — the same indistinguishable
+    // None an unwitnessed verdict (no shell integration) resolves
+    // to, so the band renders byte-identical without integration.
+    assert_eq!(resolve_exit(Some(0), StatusToggles::all()).exit_code, None);
+    assert_eq!(resolve_exit(None, StatusToggles::all()).exit_code, None);
+}
+
+#[test]
+fn the_exit_chip_copies_its_bare_code() {
+    let segments = resolve_exit(Some(1), StatusToggles::all());
+    assert_eq!(copy_text(SegmentId::Exit, &segments), "1");
+    // An absent chip copies nothing (defensive — hit-testing only
+    // yields rendered segments).
+    let absent = resolve_exit(None, StatusToggles::all());
+    assert_eq!(copy_text(SegmentId::Exit, &absent), "");
+}
+
+#[test]
+fn exit_off_resolves_absence() {
+    let mut toggles = StatusToggles::all();
+    toggles.exit = false;
+    assert_eq!(resolve_exit(Some(1), toggles).exit_code, None);
+}
+
+#[test]
+fn the_exit_display_crosses_the_verdict() {
+    // Verbatim, no clamp (OQ-2): the shell's own number, whatever
+    // its width, behind the one glyph.
+    assert_eq!(exit_display(1), "✗1");
+    assert_eq!(exit_display(127), "✗127");
+}
+
 // --- the grid condition (status-glance) ---
 
 fn resolve_grid(
@@ -877,6 +1298,13 @@ fn resolve_grid(
         frozen: None,
         scrolled_back: None,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -949,6 +1377,13 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         frozen: None,
         scrolled_back,
         ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1072,6 +1507,59 @@ fn segment_at_hits_only_the_rect_containing_the_point() {
     assert_eq!(segment_at(&rects, Point::new(10.0, BAND_HEIGHT)), None);
 }
 
+#[test]
+fn hover_segment_yields_the_rect_under_the_cursor_and_nothing_else() {
+    let rects = [
+        (
+            SegmentId::Process,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Path,
+            Rectangle::new(Point::new(72.0, 0.0), Size::new(90.0, BAND_HEIGHT)),
+        ),
+    ];
+    // The hovered segment's own rect — the same rects hit-testing
+    // walks, so the tint and the click target can never disagree.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(10.0, 14.0)), false),
+        Some(SegmentId::Process)
+    );
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(100.0, 27.9)), false),
+        Some(SegmentId::Path)
+    );
+    // A gap between segments, and an absent cursor (the cursor
+    // outside the window, or over another surface's overlay),
+    // tint nothing.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(65.0, 14.0)), false),
+        None
+    );
+    assert_eq!(hover_segment(&rects, None, false), None);
+}
+
+#[test]
+fn hover_segment_suppresses_while_a_selection_is_live() {
+    let rects = [
+        (
+            SegmentId::Process,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(60.0, BAND_HEIGHT)),
+        ),
+        (
+            SegmentId::Path,
+            Rectangle::new(Point::new(72.0, 0.0), Size::new(90.0, BAND_HEIGHT)),
+        ),
+    ];
+    // A live drag or the persisting highlight owns the visual —
+    // even a cursor dead-on a segment tints nothing.
+    assert_eq!(
+        hover_segment(&rects, Some(Point::new(10.0, 14.0)), true),
+        None
+    );
+    assert_eq!(hover_segment(&rects, None, true), None);
+}
+
 // --- the ssh stand-in (status-remote) ---
 
 /// The stand-in's resolver shape: the path seat and branch fed
@@ -1101,6 +1589,13 @@ fn resolve_ssh(
         frozen: None,
         scrolled_back: None,
         ssh_destination,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
     };
     resolve_segments(&inputs, toggles)
 }
@@ -1339,6 +1834,146 @@ fn the_clock_ticks_only_while_both_gates_hold() {
     assert!(!clock_due(false, false));
 }
 
+// --- the attention token (status-activity) ---
+//
+// The initiative's one new color derivation: the live scheme's own
+// red, luminance-flipped over the strip exactly as the band's
+// foreground flips. The strip fixtures are the tab strip's own
+// light/dark pair, so the flip tested here is the same boundary
+// readable_foreground has always turned on.
+
+#[test]
+fn attention_color_picks_the_bright_red_on_a_dark_strip() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.9, 0.3, 0.3));
+}
+
+#[test]
+fn attention_color_picks_the_plain_red_on_a_light_strip() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.6, 0.1, 0.1));
+}
+
+#[test]
+fn a_dark_strip_without_a_bright_red_falls_back_to_the_plain() {
+    let color = attention_color(
+        Some((0.6, 0.1, 0.1)),
+        None,
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.6, 0.1, 0.1));
+}
+
+#[test]
+fn a_light_strip_without_a_plain_red_falls_back_to_the_bright() {
+    let color = attention_color(
+        None,
+        Some((0.9, 0.3, 0.3)),
+        Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0),
+        Color::from_rgba8(0xCC, 0xD0, 0xDE, 1.0),
+    );
+    assert_eq!(color, Color::from_rgb(0.9, 0.3, 0.3));
+}
+
+#[test]
+fn a_scheme_without_any_red_yields_exactly_the_pane_foreground() {
+    let pane_fg = Color::from_rgba8(0xAB, 0xCD, 0xEF, 1.0);
+    let color = attention_color(
+        None,
+        None,
+        pane_fg,
+        Color::from_rgba8(0x1B, 0x1B, 0x22, 1.0),
+    );
+    assert_eq!(color, pane_fg);
+}
+
+#[test]
+fn the_activity_mark_samples_only_while_both_gates_hold() {
+    assert!(activity_mark_due(true, true));
+    assert!(!activity_mark_due(true, false));
+    assert!(!activity_mark_due(false, true));
+    assert!(!activity_mark_due(false, false));
+}
+
+#[test]
+fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
+    // The mark is the surface's news, not a segment's: no segment
+    // toggle gates it (the config key gates the sampling upstream,
+    // in the app), and the red pair flows ungated too — status-exit's
+    // chip reuses the token under its own key.
+    let inputs = StatusInputs {
+        home: Some(&home()),
+        cwd: None,
+        shell: "/usr/bin/fish",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
+        missed_activity: true,
+        attention_red: Some((0.6, 0.1, 0.1)),
+        attention_bright_red: Some((0.9, 0.3, 0.3)),
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
+    };
+    let segments = resolve_segments(&inputs, StatusToggles::all());
+    assert!(segments.missed_activity);
+    assert_eq!(segments.attention_red, Some((0.6, 0.1, 0.1)));
+    assert_eq!(segments.attention_bright_red, Some((0.9, 0.3, 0.3)));
+}
+
+#[test]
+fn the_halo_rings_the_disc_when_the_process_segment_renders() {
+    let bounds = Rectangle::new(Point::new(100.0, 40.0), Size::new(600.0, BAND_HEIGHT));
+    let center_y = bounds.y + BAND_HEIGHT / 2.0;
+    let disc = Rectangle::new(
+        Point::new(bounds.x + PAD_X, center_y - DISC_SIZE / 2.0),
+        Size::new(DISC_SIZE, DISC_SIZE),
+    );
+    let halo = halo_rect(Some(disc), bounds);
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    assert_eq!(halo.width, size);
+    assert_eq!(halo.height, size);
+    assert_eq!(halo.x + halo.width / 2.0, disc.x + disc.width / 2.0);
+    assert_eq!(halo.y + halo.height / 2.0, disc.y + disc.height / 2.0);
+}
+
+#[test]
+fn the_halo_stands_alone_centered_in_the_leading_padding_when_the_process_segment_hides() {
+    // The mark is the surface's news, not the process segment's
+    // decoration: with the segment toggled off, the ring keeps the
+    // band's left edge — centered in the PAD_X zone, ahead of every
+    // rect, shifting nothing.
+    let bounds = Rectangle::new(Point::new(100.0, 40.0), Size::new(600.0, BAND_HEIGHT));
+    let halo = halo_rect(None, bounds);
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    assert_eq!(halo.width, size);
+    assert_eq!(halo.height, size);
+    assert_eq!(halo.x + halo.width / 2.0, bounds.x + PAD_X / 2.0);
+    assert_eq!(halo.y + halo.height / 2.0, bounds.y + BAND_HEIGHT / 2.0);
+}
+
 // --- the command timer (command-lifecycle) ---
 //
 // Pure policy over the foreground diff the engine already computes:
@@ -1429,6 +2064,64 @@ fn default_is_a_clean_idle_timer() {
     let timer = CommandTimer::default();
     assert_eq!(timer.live_elapsed(Instant::now()), None);
     assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), None);
+}
+
+// --- the exit verdict (status-exit) ---
+//
+// The shell's own 133;D report rides the frozen pair's lifecycle:
+// verbatim except success, set regardless of a witnessed start, and
+// cleared by the next witnessed start beside the frozen duration —
+// one rule for both facts.
+
+#[test]
+fn a_non_zero_verdict_holds_through_reads() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    assert_eq!(
+        timer.last_exit(),
+        Some(1),
+        "a held verdict is not drained by reads"
+    );
+}
+
+#[test]
+fn success_normalizes_to_the_unmarked_default() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(0);
+    assert_eq!(timer.last_exit(), None);
+}
+
+#[test]
+fn the_next_witnessed_start_clears_a_held_verdict() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    timer.step(true, t0 + Duration::from_secs(10));
+    assert_eq!(
+        timer.last_exit(),
+        None,
+        "the next start clears the verdict with the freeze"
+    );
+}
+
+#[test]
+fn an_unwitnessed_mid_run_timer_still_holds_a_verdict() {
+    // OQ-3 default: the verdict needs no start, only the finish's own
+    // report — a timer born mid-run freezes no duration yet holds the
+    // verdict the shell reported after it.
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(5));
+    timer.note_exit(2);
+    assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), Some(2));
 }
 
 #[test]
@@ -1541,12 +2234,17 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         profile: Some("dev".to_string()),
         zoom_percent: Some(20),
         branch: None,
+        progress: None,
         grid: None,
         tab_position: None,
         clock: None,
         running_elapsed: None,
         frozen: None,
         scrolled: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_code: None,
     };
     let band: StatusBar<()> = StatusBar::new(
         segments.clone(),
@@ -1625,14 +2323,14 @@ fn a_missing_path_rect_never_arms() {
 
 #[test]
 fn the_armed_display_borrows_the_branchs_seat() {
-    // 602 px: the resting fit elides the path to 16 chars beside
+    // 682 px: the resting fit elides the path to 16 chars beside
     // the branch; lending the branch's 42 px frees the whole value
     // — the armed display is the un-elided path.
-    let resting = band_fit(602.0, 100.0, &fit_widths(), fit_path());
+    let resting = band_fit(682.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(resting.path, PathFit::Elided(16));
     let display = reveal_display(
         "~/src/oss/l1br3/ced2",
-        602.0,
+        682.0,
         100.0,
         &fit_widths(),
         fit_path(),
@@ -1642,22 +2340,27 @@ fn the_armed_display_borrows_the_branchs_seat() {
 
 #[test]
 fn a_band_too_narrow_even_for_the_loan_shows_the_longest_elision() {
-    // 362 px: the resting fit drops the grid, tab, and zoom and
-    // elides to four characters; the armed fit — the branch's seat
-    // lent on top of the resting drops — still shows only a longer
-    // elision, never an overflow.
-    let resting = band_fit(362.0, 100.0, &fit_widths(), fit_path());
+    // 410 px: the resting fit drops the grid, tab, zoom, and
+    // profile and elides to five characters; the armed fit — the
+    // branch's seat lent on top of the resting drops — still shows
+    // only a longer elision, never an overflow.
+    let resting = band_fit(410.0, 100.0, &fit_widths(), fit_path());
     assert_eq!(
         resting.dropped,
-        vec![SegmentId::Grid, SegmentId::Tab, SegmentId::Zoom]
+        vec![
+            SegmentId::Grid,
+            SegmentId::Tab,
+            SegmentId::Zoom,
+            SegmentId::Profile
+        ]
     );
-    assert_eq!(resting.path, PathFit::Elided(4));
+    assert_eq!(resting.path, PathFit::Elided(5));
     let survivors: Vec<(SegmentId, f32)> = fit_widths()
         .into_iter()
         .filter(|(id, _)| !resting.dropped.contains(id))
         .collect();
-    let display = reveal_display("~/src/oss/l1br3/ced2", 362.0, 100.0, &survivors, fit_path());
-    assert_eq!(display, "…r3/ced2");
+    let display = reveal_display("~/src/oss/l1br3/ced2", 410.0, 100.0, &survivors, fit_path());
+    assert_eq!(display, "…1br3/ced2");
 }
 
 #[test]
@@ -1918,12 +2621,20 @@ fn rich_segments() -> StatusSegments {
         branch: Some("ced2".to_string()),
         profile: Some("dev".to_string()),
         zoom_percent: Some(120),
+        progress: Some(standing_progress(
+            crate::terminal::ProgressState::InProgress,
+            Some(42),
+        )),
         grid: Some((120, 30)),
         tab_position: Some((1, 3)),
         clock: Some("14:32".to_string()),
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
         scrolled: Some(7),
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_code: None,
     }
 }
 
@@ -2061,7 +2772,7 @@ fn copy_all_joins_every_present_full_value_with_single_spaces() {
     // then right — never displays, empties skipped.
     assert_eq!(
         copy_all_text(&rich_segments()),
-        "cargo 2:41 ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
+        "cargo 2:41 42 ~/src/oss/l1br3/ced2 ced2 dev 120×30 1/3 +120% 14:32"
     );
 }
 

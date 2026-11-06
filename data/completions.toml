@@ -1,0 +1,1293 @@
+# DropTerm's audited completions seed (suggest-specs-data).
+#
+# Copy this file to
+#   ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml
+# to extend the built-in table: every command here adds beside the
+# built-in five, and a re-declared one (cargo, docker, git, npm,
+# systemctl below) replaces its built-in entry whole — which is why
+# each of the five carries the complete built-in entry set, now with
+# descriptions. Descriptions render in the completion menu's dim
+# second column; the ghost ignores them.
+#
+# Derivation and license: every subcommand, flag, and description is
+# converted from withfig/autocomplete @ aef52acff84c (v2.692.3,
+# 2025-05-05), MIT. Generators, templates, and scripts never cross
+# the conversion — data only, and the file format structurally
+# rejects executable content (unknown keys fail the whole file).
+# Per-command derivations are named in
+# docs/research/completions-seed-audit.md.
+#
+# Regeneration (a one-off, never a build step): the source specs are
+# fetched at the pinned commit and hand-converted under the rules the
+# audit record names —
+#   curl -sfL https://raw.githubusercontent.com/withfig/autocomplete/aef52acff84c/src/<cli>.ts
+# Conversion rules: top-level subcommands and long flags only; one
+# name per entry (the first long form of a multi-name flag, the
+# primary name of a multi-name subcommand); descriptions verbatim; no
+# entry without a withfig counterpart at the spec's top level.
+#
+# ---
+# The upstream license, preserved as it applies to this derived data:
+#
+# MIT License
+#
+# Copyright (c) 2021 Hercules Labs Inc. (Fig)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# ---
+
+[[commands]]
+name = "apt"
+
+[[commands.subcommands]]
+name = "autoclean"
+description = "Like clean, but only removes package files that can no longer be downloaded"
+
+[[commands.subcommands]]
+name = "autoremove"
+description = "Remove unused packages"
+
+[[commands.subcommands]]
+name = "build-dep"
+description = "Install/remove packages in an attempt to satisfy the build dependencies for a source package"
+
+[[commands.subcommands]]
+name = "changelog"
+description = "Show the changelog for a package"
+
+[[commands.subcommands]]
+name = "clean"
+description = "Remove downloaded package files"
+
+[[commands.subcommands]]
+name = "download"
+description = "Download package binary into the current directory"
+
+[[commands.subcommands]]
+name = "edit-sources"
+description = "Edit the list of package sources"
+
+[[commands.subcommands]]
+name = "full-upgrade"
+description = "Install available upgrades, removing currently installed packages if needed to upgrade the system as a whole"
+
+[[commands.subcommands]]
+name = "install"
+description = "Install package(s)"
+
+[[commands.subcommands]]
+name = "list"
+description = "List packages"
+
+[[commands.subcommands]]
+name = "purge"
+description = "Remove package(s) and their configuration files"
+
+[[commands.subcommands]]
+name = "reinstall"
+description = "Reinstall package(s)"
+
+[[commands.subcommands]]
+name = "remove"
+description = "Remove package(s)"
+
+[[commands.subcommands]]
+name = "satisfy"
+description = "Satisfy package dependencies"
+
+[[commands.subcommands]]
+name = "search"
+description = "Search for packages"
+
+[[commands.subcommands]]
+name = "show"
+description = "Show package details"
+
+[[commands.subcommands]]
+name = "source"
+description = "Fetch package source files"
+
+[[commands.subcommands]]
+name = "update"
+description = "Update the package database"
+
+[[commands.subcommands]]
+name = "upgrade"
+description = "Install all available upgrades"
+
+[[commands.flags]]
+name = "--help"
+description = "Print help message and exit"
+
+[[commands.flags]]
+name = "--version"
+description = "Print version information and exit"
+
+# The built-in five, re-declared whole (the merge replaces whole) with
+# withfig's descriptions where its top level carries them; entries
+# withfig leaves undescribed (cargo's fmt, several flags) keep no
+# description rather than an invented one.
+
+[[commands]]
+name = "cargo"
+
+[[commands.subcommands]]
+name = "build"
+description = "Compile a local package and all of its dependencies"
+
+[[commands.subcommands]]
+name = "check"
+description = "Check a local package and all of its dependencies for errors"
+
+[[commands.subcommands]]
+name = "clean"
+description = "Remove artifacts that cargo has generated in the past"
+
+[[commands.subcommands]]
+name = "doc"
+description = "Build a package's documentation"
+
+[[commands.subcommands]]
+name = "fetch"
+description = "Fetch dependencies of a package from the network"
+
+[[commands.subcommands]]
+name = "fix"
+description = "Automatically fix lint warnings reported by rustc"
+
+[[commands.subcommands]]
+name = "fmt"
+
+[[commands.subcommands]]
+name = "init"
+description = "Create a new cargo package in an existing directory"
+
+[[commands.subcommands]]
+name = "install"
+description = "Install a Rust binary. Default location is $HOME/.cargo/bin"
+
+[[commands.subcommands]]
+name = "publish"
+description = "Upload a package to the registry"
+
+[[commands.subcommands]]
+name = "run"
+description = "Run a binary or example of the local package"
+
+[[commands.subcommands]]
+name = "test"
+description = "Execute all unit and integration tests and build examples of a local package"
+
+[[commands.subcommands]]
+name = "update"
+description = "Update dependencies as recorded in the local lock file"
+
+[[commands.flags]]
+name = "--bin"
+
+[[commands.flags]]
+name = "--frozen"
+description = "Require Cargo.lock and cache are up to date"
+
+[[commands.flags]]
+name = "--lib"
+
+[[commands.flags]]
+name = "--locked"
+description = "Require Cargo.lock is up to date"
+
+[[commands.flags]]
+name = "--manifest-path"
+
+[[commands.flags]]
+name = "--offline"
+description = "Run without accessing the network"
+
+[[commands.flags]]
+name = "--quiet"
+description = "Do not print cargo log messages"
+
+[[commands.flags]]
+name = "--release"
+
+[[commands.flags]]
+name = "--verbose"
+description = "Use verbose output (-vv very verbose/build.rs output)"
+
+[[commands]]
+name = "curl"
+
+[[commands.flags]]
+name = "--config"
+description = "Read config from a file"
+
+[[commands.flags]]
+name = "--continue-at"
+description = "Resumed transfer offset"
+
+[[commands.flags]]
+name = "--cookie"
+description = "Send cookies from string/file"
+
+[[commands.flags]]
+name = "--cookie-jar"
+description = "Write cookies to <filename> after operation"
+
+[[commands.flags]]
+name = "--data"
+description = "HTTP POST data"
+
+[[commands.flags]]
+name = "--dump-header"
+description = "Write the received headers to <filename>"
+
+[[commands.flags]]
+name = "--fail"
+description = "Fail silently (no output at all) on HTTP errors"
+
+[[commands.flags]]
+name = "--form"
+description = "Specify multipart MIME data"
+
+[[commands.flags]]
+name = "--head"
+description = "Show document info only"
+
+[[commands.flags]]
+name = "--header"
+description = "Pass custom header(s) to server"
+
+[[commands.flags]]
+name = "--help"
+description = "This help text"
+
+[[commands.flags]]
+name = "--include"
+description = "Include protocol response headers in the output"
+
+[[commands.flags]]
+name = "--insecure"
+description = "Allow insecure server connections when using SSL"
+
+[[commands.flags]]
+name = "--location"
+description = "Follow redirects"
+
+[[commands.flags]]
+name = "--max-time"
+description = "Maximum time allowed for the transfer"
+
+[[commands.flags]]
+name = "--output"
+description = "Write to file instead of stdout"
+
+[[commands.flags]]
+name = "--progress-bar"
+description = "Display transfer progress as a bar"
+
+[[commands.flags]]
+name = "--proxy"
+description = "[protocol://]host[:port] Use this proxy"
+
+[[commands.flags]]
+name = "--range"
+description = "Retrieve only the bytes within RANGE"
+
+[[commands.flags]]
+name = "--referer"
+description = "Referrer URL"
+
+[[commands.flags]]
+name = "--remote-name"
+description = "Write output to a file named as the remote file"
+
+[[commands.flags]]
+name = "--request"
+description = "Specify request command to use"
+
+[[commands.flags]]
+name = "--silent"
+description = "Silent mode"
+
+[[commands.flags]]
+name = "--upload-file"
+description = "Transfer local FILE to destination"
+
+[[commands.flags]]
+name = "--user"
+description = "Server user and password"
+
+[[commands.flags]]
+name = "--user-agent"
+description = "Send User-Agent <name> to server"
+
+[[commands.flags]]
+name = "--verbose"
+description = "Make the operation more talkative"
+
+[[commands.flags]]
+name = "--version"
+description = "Show version number and quit"
+
+[[commands.flags]]
+name = "--write-out"
+description = "Use output FORMAT after completion"
+
+[[commands]]
+name = "docker"
+
+[[commands.subcommands]]
+name = "build"
+description = "Build an image from a Dockerfile"
+
+[[commands.subcommands]]
+name = "commit"
+description = "Create a new image from a container's changes"
+
+[[commands.subcommands]]
+name = "cp"
+description = "Copy files/folders between a container and the local filesystem"
+
+[[commands.subcommands]]
+name = "create"
+description = "Create a new container"
+
+[[commands.subcommands]]
+name = "exec"
+description = "Run a command in a running container"
+
+[[commands.subcommands]]
+name = "images"
+description = "List images"
+
+[[commands.subcommands]]
+name = "inspect"
+description = "Return low-level information on Docker objects"
+
+[[commands.subcommands]]
+name = "logs"
+description = "Fetch the logs of a container"
+
+[[commands.subcommands]]
+name = "pull"
+description = "Pull an image or a repository from a registry"
+
+[[commands.subcommands]]
+name = "push"
+description = "Push an image or a repository to a registry"
+
+[[commands.subcommands]]
+name = "rm"
+description = "Remove one or more containers"
+
+[[commands.subcommands]]
+name = "rmi"
+description = "Remove one or more images"
+
+[[commands.subcommands]]
+name = "run"
+description = "Run a command in a new container"
+
+[[commands.subcommands]]
+name = "start"
+description = "Start one or more stopped containers"
+
+[[commands.subcommands]]
+name = "stop"
+description = "Stop one or more running containers"
+
+[[commands.subcommands]]
+name = "version"
+description = "Show the Docker version information"
+
+# withfig's docker spec carries no top-level flags (they live on the
+# subcommands), so the built-in flag set ships undescribed.
+
+[[commands.flags]]
+name = "--detach"
+
+[[commands.flags]]
+name = "--env"
+
+[[commands.flags]]
+name = "--interactive"
+
+[[commands.flags]]
+name = "--name"
+
+[[commands.flags]]
+name = "--publish"
+
+[[commands.flags]]
+name = "--tty"
+
+[[commands.flags]]
+name = "--volume"
+
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "alias"
+description = "Create command shortcuts"
+
+[[commands.subcommands]]
+name = "api"
+description = "Make an authenticated GitHub API request"
+
+[[commands.subcommands]]
+name = "auth"
+description = "Login, logout, and refresh your authentication"
+
+[[commands.subcommands]]
+name = "browse"
+description = "Open the repository in the browser"
+
+[[commands.subcommands]]
+name = "codespace"
+description = "Connect to and manage codespaces"
+
+[[commands.subcommands]]
+name = "completion"
+description = "Generate shell completion scripts"
+
+[[commands.subcommands]]
+name = "config"
+description = "Manage configuration for gh"
+
+[[commands.subcommands]]
+name = "extensions"
+description = "Manage gh extensions"
+
+[[commands.subcommands]]
+name = "gist"
+description = "Manage gists"
+
+[[commands.subcommands]]
+name = "gpg-key"
+description = "Manage GPG keys registered with your GitHub account"
+
+[[commands.subcommands]]
+name = "issue"
+description = "Manage issues"
+
+[[commands.subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+[[commands.subcommands]]
+name = "project"
+description = "Manage projects"
+
+[[commands.subcommands]]
+name = "release"
+description = "Manage GitHub releases"
+
+[[commands.subcommands]]
+name = "repo"
+description = "Work with GitHub repositories"
+
+[[commands.subcommands]]
+name = "run"
+description = "View details about workflow runs"
+
+[[commands.subcommands]]
+name = "secret"
+description = "Manage GitHub secrets"
+
+[[commands.subcommands]]
+name = "ssh-key"
+description = "Manage SSH keys"
+
+[[commands.subcommands]]
+name = "workflow"
+description = "View details about GitHub Actions workflows"
+
+[[commands.flags]]
+name = "--help"
+description = "Show help for command"
+
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "add"
+description = "Add file contents to the index"
+
+[[commands.subcommands]]
+name = "branch"
+description = "List, create, or delete branches"
+
+[[commands.subcommands]]
+name = "checkout"
+description = "Switch branches or restore working tree files"
+
+[[commands.subcommands]]
+name = "cherry-pick"
+description = "Apply the changes introduced by some existing commits"
+
+[[commands.subcommands]]
+name = "clone"
+description = "Clone a repository into a new directory"
+
+[[commands.subcommands]]
+name = "commit"
+description = "Record changes to the repository"
+
+[[commands.subcommands]]
+name = "diff"
+description = "Show changes between commits, commit and working tree, etc"
+
+[[commands.subcommands]]
+name = "fetch"
+description = "Download objects and refs from another repository"
+
+[[commands.subcommands]]
+name = "init"
+description = "Create an empty Git repository or reinitialize an existing one"
+
+[[commands.subcommands]]
+name = "log"
+description = "Show commit logs"
+
+[[commands.subcommands]]
+name = "merge"
+description = "Join two or more development histories together"
+
+[[commands.subcommands]]
+name = "mv"
+description = "Move or rename a file, a directory, or a symlink"
+
+[[commands.subcommands]]
+name = "pull"
+description = "Integrate with another repository"
+
+[[commands.subcommands]]
+name = "push"
+description = "Update remote refs"
+
+[[commands.subcommands]]
+name = "rebase"
+description = "Reapply commits on top of another base tip"
+
+[[commands.subcommands]]
+name = "reset"
+description = "Reset current HEAD to the specified state"
+
+[[commands.subcommands]]
+name = "restore"
+description = "Restore working tree files"
+
+[[commands.subcommands]]
+name = "revert"
+description = "Create new commit that undoes all of the changes made in <commit>, then apply it to the current branch"
+
+[[commands.subcommands]]
+name = "rm"
+description = "Remove files from the working tree and from the index"
+
+[[commands.subcommands]]
+name = "show"
+description = "Show various types of objects"
+
+[[commands.subcommands]]
+name = "stash"
+description = "Temporarily stores all of the modified tracked files"
+
+[[commands.subcommands]]
+name = "status"
+description = "Show the working tree status"
+
+[[commands.subcommands]]
+name = "switch"
+description = "Switch branches"
+
+[[commands.subcommands]]
+name = "tag"
+description = "Create, list, delete or verify a tag object signed with GPG"
+
+[[commands.flags]]
+name = "--all"
+
+[[commands.flags]]
+name = "--amend"
+
+[[commands.flags]]
+name = "--branch"
+
+[[commands.flags]]
+name = "--dry-run"
+
+[[commands.flags]]
+name = "--force"
+
+[[commands.flags]]
+name = "--global"
+
+[[commands.flags]]
+name = "--help"
+description = "Output help"
+
+[[commands.flags]]
+name = "--interactive"
+
+[[commands.flags]]
+name = "--message"
+
+[[commands.flags]]
+name = "--quiet"
+
+[[commands.flags]]
+name = "--set-upstream"
+
+[[commands.flags]]
+name = "--verbose"
+
+[[commands.flags]]
+name = "--version"
+description = "Output version"
+
+[[commands]]
+name = "kubectl"
+
+[[commands.subcommands]]
+name = "annotate"
+description = "Update the annotations on one or more resources"
+
+[[commands.subcommands]]
+name = "api-resources"
+description = "Print the supported API resources on the server"
+
+[[commands.subcommands]]
+name = "api-versions"
+description = "Print the supported API versions on the server, in the form of \"group/version\""
+
+[[commands.subcommands]]
+name = "apply"
+description = "Apply a configuration to a resource by filename or stdin. The resource name must be specified. This resource will be created if it doesn't exist yet. To use 'apply', always create the resource initially with either 'apply' or 'create --save-config'"
+
+[[commands.subcommands]]
+name = "attach"
+description = "Attach to a process that is already running inside an existing container"
+
+[[commands.subcommands]]
+name = "cluster-info"
+description = "Display addresses of the master and services with label kubernetes.io/cluster-service=true To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'"
+
+[[commands.subcommands]]
+name = "completion"
+description = "Output shell completion code for the specified shell (bash or zsh). The shell code must be evaluated to provide interactive completion of kubectl commands.  This can be done by sourcing it from the .bash_profile"
+
+[[commands.subcommands]]
+name = "config"
+description = "Modify kubeconfig files using subcommands like \"kubectl config set current-context my-context\""
+
+[[commands.subcommands]]
+name = "cordon"
+description = "Mark node as unschedulable"
+
+[[commands.subcommands]]
+name = "cp"
+description = "Copy files and directories to and from containers"
+
+[[commands.subcommands]]
+name = "create"
+description = "Create a resource from a file or from stdin"
+
+[[commands.subcommands]]
+name = "delete"
+description = "Delete resources by filenames, stdin, resources and names, or by resources and label selector"
+
+[[commands.subcommands]]
+name = "describe"
+description = "Show details of a specific resource or group of resources"
+
+[[commands.subcommands]]
+name = "diff"
+description = "Diff configurations specified by filename or stdin between the current online configuration, and the configuration as it would be if applied"
+
+[[commands.subcommands]]
+name = "drain"
+description = "Drain node in preparation for maintenance"
+
+[[commands.subcommands]]
+name = "edit"
+description = "Edit a resource from the default editor"
+
+[[commands.subcommands]]
+name = "exec"
+description = "Execute a command in a container"
+
+[[commands.subcommands]]
+name = "explain"
+description = "List the fields for supported resources"
+
+[[commands.subcommands]]
+name = "expose"
+description = "Expose a resource as a new Kubernetes service"
+
+[[commands.subcommands]]
+name = "get"
+description = "Display one or many resources"
+
+[[commands.subcommands]]
+name = "label"
+description = "Update the labels on a resource"
+
+[[commands.subcommands]]
+name = "logs"
+description = "Print the logs for a container in a pod or specified resource. If the pod has only one container, the container name is optional"
+
+[[commands.subcommands]]
+name = "patch"
+description = "Update field(s) of a resource using strategic merge patch, a JSON merge patch, or a JSON patch"
+
+[[commands.subcommands]]
+name = "port-forward"
+description = "Forward one or more local ports to a pod. This command requires the node to have 'socat' installed"
+
+[[commands.subcommands]]
+name = "replace"
+description = "Replace a resource by filename or stdin"
+
+[[commands.subcommands]]
+name = "rollout"
+description = "Manage the rollout of a resource"
+
+[[commands.subcommands]]
+name = "run"
+description = "Create and run a particular image in a pod"
+
+[[commands.subcommands]]
+name = "scale"
+description = "Set a new size for a Deployment, ReplicaSet, Replication Controller, or StatefulSet"
+
+[[commands.subcommands]]
+name = "top"
+description = "Display Resource (CPU/Memory/Storage) usage"
+
+[[commands.subcommands]]
+name = "uncordon"
+description = "Mark node as schedulable"
+
+[[commands.subcommands]]
+name = "version"
+description = "Print the client and server version information for the current context"
+
+[[commands.subcommands]]
+name = "wait"
+description = "Experimental: Wait for a specific condition on one or many resources"
+
+[[commands.flags]]
+name = "--namespace"
+description = "If present, the namespace scope for this CLI request"
+
+[[commands]]
+name = "make"
+
+[[commands.flags]]
+name = "--always-make"
+description = "Unconditionally make all targets"
+
+[[commands.flags]]
+name = "--debug"
+description = "Print various types of debugging information"
+
+[[commands.flags]]
+name = "--directory"
+description = "Change to DIRECTORY before doing anything"
+
+[[commands.flags]]
+name = "--environment-overrides"
+description = "Environment variables override makefiles"
+
+[[commands.flags]]
+name = "--file"
+description = "Read FILE as a makefile"
+
+[[commands.flags]]
+name = "--help"
+description = "Print this message and exit"
+
+[[commands.flags]]
+name = "--ignore-errors"
+description = "Ignore errors from commands"
+
+[[commands.flags]]
+name = "--include-dir"
+description = "Search directory for included makefiles"
+
+[[commands.flags]]
+name = "--keep-going"
+description = "Keep going when some targets can't be made"
+
+[[commands.flags]]
+name = "--load-average"
+description = "Don't start multiple jobs unless load is below N"
+
+[[commands.flags]]
+name = "--no-print-directory"
+description = "Turn off -w, even if it was turned on implicitly"
+
+[[commands.flags]]
+name = "--old-file"
+description = "Consider file to be very old and don't remake it"
+
+[[commands.flags]]
+name = "--print-directory"
+description = "Print the current directory"
+
+[[commands.flags]]
+name = "--question"
+description = "Run no commands; exit status says if up to date"
+
+[[commands.flags]]
+name = "--touch"
+description = "Touch targets instead of remaking them"
+
+[[commands.flags]]
+name = "--version"
+description = "Print the version number of make and exit"
+
+[[commands.flags]]
+name = "--warn-undefined-variables"
+description = "Warn when an undefined variable is referenced"
+
+[[commands.flags]]
+name = "--what-if"
+description = "Consider file to be infinitely new"
+
+[[commands]]
+name = "npm"
+
+[[commands.subcommands]]
+name = "ci"
+description = "Install a project with a clean slate"
+
+[[commands.subcommands]]
+name = "config"
+description = "Manage the npm configuration files"
+
+[[commands.subcommands]]
+name = "install"
+description = "Install a package and its dependencies"
+
+[[commands.subcommands]]
+name = "publish"
+description = "Publish a package"
+
+[[commands.subcommands]]
+name = "run"
+description = "Run arbitrary package scripts"
+
+[[commands.subcommands]]
+name = "test"
+description = "Test a package"
+
+[[commands.subcommands]]
+name = "uninstall"
+description = "Uninstall a package"
+
+[[commands.subcommands]]
+name = "update"
+description = "Update a package"
+
+# withfig's npm spec carries no top-level flags (they live on the
+# subcommands), so the built-in flag set ships undescribed.
+
+[[commands.flags]]
+name = "--global"
+
+[[commands.flags]]
+name = "--legacy-peer-deps"
+
+[[commands.flags]]
+name = "--prefix"
+
+[[commands.flags]]
+name = "--registry"
+
+[[commands.flags]]
+name = "--save-dev"
+
+[[commands.flags]]
+name = "--save-exact"
+
+[[commands.flags]]
+name = "--verbose"
+
+[[commands]]
+name = "pip"
+
+[[commands.subcommands]]
+name = "cache"
+description = "Inspect and manage pip's wheel cache"
+
+[[commands.subcommands]]
+name = "check"
+description = "Verify installed packages have compatible dependencies"
+
+[[commands.subcommands]]
+name = "completion"
+description = "A helper command used for command completion"
+
+[[commands.subcommands]]
+name = "config"
+description = "Manage local and global configuration"
+
+[[commands.subcommands]]
+name = "debug"
+description = "Show information useful for debugging"
+
+[[commands.subcommands]]
+name = "download"
+description = "Download packages"
+
+[[commands.subcommands]]
+name = "freeze"
+description = "Output installed packages in requirements format"
+
+[[commands.subcommands]]
+name = "hash"
+description = "Compute hashes of package archives"
+
+[[commands.subcommands]]
+name = "help"
+description = "Show help for commands"
+
+[[commands.subcommands]]
+name = "install"
+description = "Install packages"
+
+[[commands.subcommands]]
+name = "list"
+description = "List installed packages"
+
+[[commands.subcommands]]
+name = "search"
+description = "Search PyPI for packages"
+
+[[commands.subcommands]]
+name = "show"
+description = "Show information about installed packages"
+
+[[commands.subcommands]]
+name = "uninstall"
+description = "Uninstall packages"
+
+[[commands.subcommands]]
+name = "wheel"
+description = "Build wheels from your requirements"
+
+# withfig's pip spec ships its top-level options commented out
+# upstream; nothing to convert, so no flags ship.
+
+[[commands]]
+name = "rsync"
+
+[[commands.flags]]
+name = "--append"
+description = "Append data onto shorter files"
+
+[[commands.flags]]
+name = "--archive"
+description = "Archive mode; equals -rlptgoD (no -H,-A,-X)"
+
+[[commands.flags]]
+name = "--backup"
+description = "Make backups (see --suffix & --backup-dir)"
+
+[[commands.flags]]
+name = "--backup-dir"
+description = "Make backups into hierarchy based in DIR"
+
+[[commands.flags]]
+name = "--checksum"
+description = "Skip based on checksum, not mod-time & size"
+
+[[commands.flags]]
+name = "--chmod"
+description = "Affect file and/or directory permissions"
+
+[[commands.flags]]
+name = "--copy-links"
+description = "Transform symlink into referent file/dir"
+
+[[commands.flags]]
+name = "--delete"
+description = "Delete extraneous files from destination dirs"
+
+[[commands.flags]]
+name = "--delete-after"
+description = "Receiver deletes after transfer, not during"
+
+[[commands.flags]]
+name = "--delete-before"
+description = "Receiver deletes before transfer, not during"
+
+[[commands.flags]]
+name = "--delete-during"
+description = "Receiver deletes during the transfer"
+
+[[commands.flags]]
+name = "--dirs"
+description = "Transfer directories without recursing"
+
+[[commands.flags]]
+name = "--dry-run"
+description = "Perform a trial run with no changes made"
+
+[[commands.flags]]
+name = "--existing"
+description = "Skip creating new files on receiver"
+
+[[commands.flags]]
+name = "--executability"
+description = "Preserve the file's executability"
+
+[[commands.flags]]
+name = "--group"
+description = "Preserve group"
+
+[[commands.flags]]
+name = "--hard-links"
+description = "Preserve hard links"
+
+[[commands.flags]]
+name = "--ignore-existing"
+description = "Skip updating files that already exist on receiver"
+
+[[commands.flags]]
+name = "--inplace"
+description = "Update destination files in-place (SEE MAN PAGE)"
+
+[[commands.flags]]
+name = "--links"
+description = "Copy symlinks as symlinks"
+
+[[commands.flags]]
+name = "--one-file-system"
+description = "Don't cross filesystem boundaries"
+
+[[commands.flags]]
+name = "--owner"
+description = "Preserve owner (super-user only)"
+
+[[commands.flags]]
+name = "--perms"
+description = "Preserve permissions"
+
+[[commands.flags]]
+name = "--quiet"
+description = "Suppress non-error messages"
+
+[[commands.flags]]
+name = "--recursive"
+description = "Recurse into directories"
+
+[[commands.flags]]
+name = "--relative"
+description = "Use relative path names"
+
+[[commands.flags]]
+name = "--rsh"
+description = "Specify the remote shell to use"
+
+[[commands.flags]]
+name = "--rsync-path"
+description = "Specify the rsync to run on the remote machine"
+
+[[commands.flags]]
+name = "--sparse"
+description = "Turn sequences of nulls into sparse blocks"
+
+[[commands.flags]]
+name = "--suffix"
+description = "Set backup suffix (default ~ w/o --backup-dir)"
+
+[[commands.flags]]
+name = "--times"
+description = "Preserve modification times"
+
+[[commands.flags]]
+name = "--update"
+description = "Skip files that are newer on the receiver"
+
+[[commands.flags]]
+name = "--verbose"
+description = "Increase verbosity"
+
+[[commands.flags]]
+name = "--whole-file"
+description = "Copy whole (without delta-xfer algorithm)"
+
+[[commands]]
+name = "systemctl"
+
+[[commands.subcommands]]
+name = "daemon-reload"
+description = "Reload systemd manager configuration"
+
+[[commands.subcommands]]
+name = "disable"
+description = "Disable one or more unit files"
+
+[[commands.subcommands]]
+name = "enable"
+description = "Enable one or more unit files"
+
+[[commands.subcommands]]
+name = "restart"
+description = "Start or restart one or more units"
+
+[[commands.subcommands]]
+name = "start"
+description = "Start (activate) one or more units"
+
+[[commands.subcommands]]
+name = "status"
+description = "Show runtime status of one or more units"
+
+[[commands.subcommands]]
+name = "stop"
+description = "Stop (deactivate) one or more units"
+
+[[commands.flags]]
+name = "--force"
+description = "When enabling unit files, override existing symlinks. When shutting down, execute action immediately"
+
+[[commands.flags]]
+name = "--host"
+description = "Operate on remote host"
+
+[[commands.flags]]
+name = "--no-pager"
+description = "Do not pipe output into a pager"
+
+[[commands.flags]]
+name = "--quiet"
+description = "Supress output"
+
+[[commands.flags]]
+name = "--type"
+description = "List units of a particular type"
+
+[[commands]]
+name = "tar"
+
+# withfig models tar's operation modes as subcommands; in real tar
+# they are long options, so the conversion carries them as flags and
+# the subcommand seat stays empty (completing `tar c` to `reate`
+# would guess at old-style bundling nobody types).
+
+[[commands.flags]]
+name = "--append"
+description = "Append files to the end of an archive"
+
+[[commands.flags]]
+name = "--block-number"
+description = "Show block number within archive with each message"
+
+[[commands.flags]]
+name = "--create"
+description = "Create a new archive"
+
+[[commands.flags]]
+name = "--delete"
+description = "Delete from the archive"
+
+[[commands.flags]]
+name = "--diff"
+description = "Find differences between archive and file system"
+
+[[commands.flags]]
+name = "--directory"
+description = "Change to DIR before performing any operations"
+
+[[commands.flags]]
+name = "--exclude-from"
+description = "Exclude files matching patterns listed in FILE"
+
+[[commands.flags]]
+name = "--extract"
+description = "Extract files from an archive"
+
+[[commands.flags]]
+name = "--files-from"
+description = "Get names to extract or create from FILE"
+
+[[commands.flags]]
+name = "--help"
+description = "Display a short option summary and exit"
+
+[[commands.flags]]
+name = "--interactive"
+description = "Ask for confirmation for every action"
+
+[[commands.flags]]
+name = "--list"
+description = "List the contents of an archive"
+
+[[commands.flags]]
+name = "--no-recursion"
+description = "Avoid descending automatically in directories"
+
+[[commands.flags]]
+name = "--numeric-owner"
+description = "Always use numbers for user/group names"
+
+[[commands.flags]]
+name = "--show-defaults"
+description = "Show built-in defaults for various tar options and exit"
+
+[[commands.flags]]
+name = "--show-transformed-names"
+description = "Show file or archive names after transformation by --strip and --transform options"
+
+[[commands.flags]]
+name = "--sparse"
+description = "Handle sparse files efficiently"
+
+[[commands.flags]]
+name = "--test-label"
+description = "Test the archive volume label and exit"
+
+[[commands.flags]]
+name = "--totals"
+description = "Print total bytes after processing the archive"
+
+[[commands.flags]]
+name = "--update"
+description = "Append files which are newer than the corresponding copy in  the archive"
+
+[[commands.flags]]
+name = "--usage"
+description = "Display a list of available options and exit"
+
+[[commands.flags]]
+name = "--verbose"
+description = "Verbosely list files processed"
+
+[[commands.flags]]
+name = "--verbatim-files-from"
+description = "Treat each line obtained from a file list as a file name, even if it starts with a dash"
+
+[[commands.flags]]
+name = "--version"
+description = "Print program version and copyright information and exit"

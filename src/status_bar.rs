@@ -50,9 +50,10 @@ use cosmic::{Element, Renderer};
 use crate::config::{Edge, TabPosition};
 use crate::tab_bar::{
     BORDER_ALPHA, DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, border_rect,
-    dropdown_row_at, fill_disc, pane_colors,
+    dropdown_row_at, fill_disc, pane_colors, relative_luminance,
 };
 use crate::terminal::Action;
+use crate::terminal::ProgressState;
 
 /// The band's height in logical pixels — one notch below the tab
 /// strip's 32 px, for callers that reserve room for it outside the
@@ -136,6 +137,17 @@ pub enum SegmentId {
     /// elapsed while a witnessed start runs, the frozen
     /// (name, duration) pair after it finishes.
     Duration,
+    /// The last finished command's non-zero exit code — `✗1` in the
+    /// attention red, beside its duration. Success renders nothing:
+    /// code 0 is the unmarked default, and an unwitnessed verdict
+    /// (no shell integration) renders nothing either — never a guess.
+    Exit,
+    /// The running command's own progress report (OSC 9;4) — `42%`,
+    /// `…` when indeterminate, the value in attention red when the
+    /// reporter says error. State 0, the foreground handoff, and ~15 s
+    /// without a refresh each clear it: a dead reporter never leaves
+    /// its last number lying.
+    Progress,
     /// The `~`-collapsed cwd.
     Path,
     /// The cwd's git branch (or detached sha).
@@ -157,10 +169,14 @@ pub enum SegmentId {
 
 /// The left cluster's segments in draw order — full alpha, except
 /// the duration's dimmed meta narration (OQ-2: the seat is the
-/// process's side; the alpha stays a notch down).
-pub const LEFT_CLUSTER: [SegmentId; 4] = [
+/// process's side; the alpha stays a notch down). The exit chip sits
+/// after the duration it verdicts (status-exit spec); the progress
+/// chip after the exit (osc94-progress spec).
+pub const LEFT_CLUSTER: [SegmentId; 6] = [
     SegmentId::Process,
     SegmentId::Duration,
+    SegmentId::Exit,
+    SegmentId::Progress,
     SegmentId::Path,
     SegmentId::Branch,
 ];
@@ -184,27 +200,32 @@ pub const RIGHT_CLUSTER: [SegmentId; 6] = [
 /// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
-/// the scrolled chip follows the duration (it answers "what's
-/// happening now" — it must survive while the command's own
-/// narration stands), and the clock is last — tmux keeps time to
-/// the bitter end.
-pub const DROP_ORDER: [SegmentId; 8] = [
+/// the progress chip drops before the exit chip (the most
+/// accessory fact — osc94-progress spec), the exit chip follows
+/// the duration (the verdict rides its command's narration, never
+/// outliving it), the scrolled chip follows both (it answers
+/// "what's happening now" — it must survive while the command's
+/// own narration stands), and the clock is last — tmux keeps time
+/// to the bitter end.
+pub const DROP_ORDER: [SegmentId; 10] = [
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Profile,
     SegmentId::Branch,
     SegmentId::Duration,
+    SegmentId::Progress,
+    SegmentId::Exit,
     SegmentId::Scrolled,
     SegmentId::Clock,
 ];
 
 /// The per-segment visibility switches, folded from the config's
-/// ten `status_bar_show_*` bools. A hidden segment is absent
+/// `status_bar_show_*` bools. A hidden segment is absent
 /// downstream — and its costly inputs are never gathered.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "ten independent visibility switches — one per config key, by design"
+    reason = "twelve independent visibility switches — one per config key, by design"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusToggles {
@@ -212,6 +233,10 @@ pub struct StatusToggles {
     pub process: bool,
     /// The command timer's reading.
     pub duration: bool,
+    /// The exit chip.
+    pub exit: bool,
+    /// The progress chip.
+    pub progress: bool,
     /// The `~`-collapsed cwd.
     pub path: bool,
     /// The git branch of the cwd.
@@ -231,12 +256,14 @@ pub struct StatusToggles {
 }
 
 impl StatusToggles {
-    /// Every segment shown — the all-on default the config's ten
+    /// Every segment shown — the all-on default the config's
     /// `true` keys fold into.
     pub const fn all() -> Self {
         Self {
             process: true,
             duration: true,
+            exit: true,
+            progress: true,
             path: true,
             branch: true,
             profile: true,
@@ -255,7 +282,10 @@ impl StatusToggles {
 /// the foreground child's comm, or the recorded shell's basename when
 /// the shell itself owns the foreground (or the comm read failed —
 /// the honest fallback, never a blank band).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+//
+// No `Eq`: the attention reds are f32 tuples — color values compared
+// by field, never hashed or totally ordered.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct StatusSegments {
     /// Whether a foreground child runs — the disc fills.
     pub running: bool,
@@ -291,6 +321,11 @@ pub struct StatusSegments {
     /// command starts. An empty name is the honest floor — the
     /// duration without a name to lie about.
     pub frozen: Option<(String, Duration)>,
+    /// The last finished command's non-zero exit code (status-exit
+    /// spec): the shell's own 133;D report, until the next command
+    /// starts. `None` is both success and no report — the band never
+    /// guesses a verdict.
+    pub exit_code: Option<u32>,
     /// The viewport's lines scrolled back from the bottom
     /// (status-scrolled spec) — absent at the bottom (and when
     /// hidden): the same indistinguishable `None`, so the chip
@@ -298,6 +333,28 @@ pub struct StatusSegments {
     /// rest. The display is [`scrolled_display`]; the click is the
     /// jump, never a copy.
     pub scrolled: Option<u16>,
+    /// The running command's own progress report (osc94-progress
+    /// spec), verbatim from the engine — the display
+    /// ([`progress_display`]) and the error-red decision derive at
+    /// paint; the copy payload is the bare number. Absent when no
+    /// report stands (and when hidden): the same
+    /// indistinguishable `None`.
+    pub progress: Option<crate::terminal::ReportedProgress>,
+    /// Output landed on the active tab while the surface was hidden
+    /// and no interaction has acknowledged it since
+    /// (status-activity spec) — the halo's fact. A pass-through:
+    /// the app samples it under [`activity_mark_due`]'s gate, and
+    /// no segment toggle hides it — the mark is the surface's
+    /// news, not the process segment's decoration.
+    pub missed_activity: bool,
+    /// The live scheme's plain red, as `(r, g, b)` linear f32 —
+    /// the attention token's source (status-activity spec). Flows
+    /// ungated by the mark key: status-exit's chip reuses the
+    /// token under its own key.
+    pub attention_red: Option<(f32, f32, f32)>,
+    /// The live scheme's bright red — [`Self::attention_red`]'s
+    /// sibling for dark strips.
+    pub attention_bright_red: Option<(f32, f32, f32)>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -312,6 +369,19 @@ pub struct StatusInputs<'a> {
     pub home: Option<&'a Path>,
     /// The active tab's cwd.
     pub cwd: Option<&'a Path>,
+    /// The shell's own cwd report (OSC 7, osc7-cwd spec) —
+    /// `file://host/path`, decoded. A standing report outranks both
+    /// layers it replaces: the ssh stand-in and the `/proc` cwd. The
+    /// host renders only when it differs from ours — the remote case
+    /// is the one that matters; remote paths never collapse (no
+    /// guessed `$HOME`). Gathered ungated: the branch rule reads the
+    /// fact even when the path key hides the seat, which the
+    /// resolver gates itself.
+    pub reported_cwd: Option<crate::terminal::ReportedCwd>,
+    /// Our own hostname (osc7-cwd spec) — the host-qualification
+    /// base: a reported host renders only when it differs from
+    /// this. Gathered once at init, passed every snapshot.
+    pub hostname: Option<&'a str>,
     /// The shell the tab's spawn recorded.
     pub shell: &'a str,
     /// The id-resolved profile name.
@@ -340,16 +410,38 @@ pub struct StatusInputs<'a> {
     /// The last finished command's (name, duration) pair — the
     /// name the app last sampled running on this tab.
     pub frozen: Option<(&'a str, Duration)>,
+    /// The last finished command's exit code — the shell's own
+    /// 133;D report sampled from the engine's timer under the exit
+    /// toggle's gate (key off means never gathered and never
+    /// rendered).
+    pub exit_status: Option<u32>,
     /// The viewport's lines scrolled back from the bottom — the
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
+    /// The running command's own progress report (OSC 9;4,
+    /// osc94-progress spec) — the engine's standing fact, gathered
+    /// under the progress toggle's gate. `None` (no integration, a
+    /// clear, the handoff, or the decay window) shows nothing:
+    /// never a guess.
+    pub progress: Option<crate::terminal::ReportedProgress>,
     /// The foreground ssh command's destination token (status-remote
     /// spec) — the engine's cmdline read, gathered only at the
     /// snapshot points and only under [`ssh_read_due`]'s gate;
     /// `None` (not ssh, unreadable, unparseable) keeps today's
     /// local path and branch.
     pub ssh_destination: Option<&'a str>,
+    /// The engine's missed-activity latch, sampled only under
+    /// [`activity_mark_due`]'s gate (status-activity spec) — key
+    /// off means never gathered and never rendered.
+    pub missed_activity: bool,
+    /// The live scheme's plain red `(r, g, b)` — the attention
+    /// token's source, sampled ungated (status-exit's chip reuses
+    /// the token under its own key).
+    pub attention_red: Option<(f32, f32, f32)>,
+    /// The scheme's bright red — [`Self::attention_red`]'s sibling
+    /// for dark strips.
+    pub attention_bright_red: Option<(f32, f32, f32)>,
 }
 
 /// Assemble the active tab's segments from the inputs, hidden
@@ -369,28 +461,50 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         path: toggles
             .path
             .then(|| {
-                // The ssh stand-in (status-remote spec): while ssh
-                // owns the foreground and its argv certifies a
-                // destination, the path's own seat shows that token
-                // verbatim — the local cwd froze when ssh started,
-                // and the band never narrates a stale seat. The
-                // copy payload rides the same field: the token is
-                // the full value.
+                // A standing report outranks both layers it
+                // replaces (osc7-cwd spec): the shell said its own
+                // cwd, so the ssh stand-in and the `/proc` guess
+                // both stand down — the report renders
+                // host-qualified only when it names another machine,
+                // `~`-collapsed only against our own `$HOME` (a
+                // remote path never borrows a local abbreviation).
+                // The copy payload rides the same field, as the
+                // stand-in's does.
                 inputs
-                    .ssh_destination
-                    .map(str::to_string)
-                    .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+                    .reported_cwd
+                    .as_ref()
+                    .map(|report| reported_path_value(report, inputs.hostname, inputs.home))
+                    // The ssh stand-in (status-remote spec): while
+                    // ssh owns the foreground and its argv certifies
+                    // a destination, the path's own seat shows that
+                    // token verbatim — the local cwd froze when ssh
+                    // started, and the band never narrates a stale
+                    // seat. The copy payload rides the same field:
+                    // the token is the full value.
+                    .or_else(|| {
+                        inputs
+                            .ssh_destination
+                            .map(str::to_string)
+                            .or_else(|| inputs.cwd.map(|cwd| collapse_home(cwd, inputs.home)))
+                    })
             })
             .flatten(),
         // The branch hides while stood-in (status-remote OQ-1): the
         // token's presence is the ssh fact — the local repo's branch
         // is as stale as the path was. Keyed on the fact, not the
         // seat's visibility; the app's read gate keeps the two
-        // reachable states one and the same.
-        branch: (toggles.branch && inputs.ssh_destination.is_none())
-            .then_some(inputs.branch)
-            .flatten()
-            .map(str::to_string),
+        // reachable states one and the same. A remote report hides
+        // it too (osc7-cwd spec) — the same staleness, extended; a
+        // local report leaves the branch to its own cwd read.
+        branch: (toggles.branch
+            && inputs.ssh_destination.is_none()
+            && !inputs
+                .reported_cwd
+                .as_ref()
+                .is_some_and(|report| report.names_remote_host(inputs.hostname)))
+        .then_some(inputs.branch)
+        .flatten()
+        .map(str::to_string),
         profile: toggles
             .profile
             .then_some(inputs.profile_name)
@@ -424,6 +538,15 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
                     .map(|(name, duration)| (name.to_string(), duration))
             })
             .flatten(),
+        // The verdict gate: hidden, absent, and success are all the
+        // same indistinguishable `None` (status-exit spec) — the
+        // filter repeats the model's own normalization so the
+        // resolver's contract holds regardless of its feeder.
+        exit_code: toggles
+            .exit
+            .then_some(inputs.exit_status)
+            .flatten()
+            .filter(|&code| code != 0),
         // Absent at bottom — the same indistinguishable None a
         // hidden or zoomed-at-base segment resolves to
         // (status-scrolled spec); the chip exists only when the
@@ -433,6 +556,19 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.scrolled_back)
             .flatten()
             .filter(|&lines| lines > 0),
+        // The engine's standing report, verbatim — hidden and
+        // absent the same indistinguishable None (osc94-progress
+        // spec); the display and the error-red decision derive at
+        // paint, the copy payload from the value.
+        progress: toggles.progress.then_some(inputs.progress).flatten(),
+        // Pass-throughs (status-activity spec): the mark is the
+        // surface's news, so no segment toggle gates it (the
+        // config-key gate lives upstream at the sampling), and the
+        // red pair rides ungated — status-exit's chip reuses the
+        // token under its own key.
+        missed_activity: inputs.missed_activity,
+        attention_red: inputs.attention_red,
+        attention_bright_red: inputs.attention_bright_red,
     }
 }
 
@@ -455,6 +591,36 @@ pub fn duration_display(segments: &StatusSegments) -> String {
 /// click is the jump, not a copy; this display is the whole value.
 pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
+}
+
+/// The exit chip's display (status-exit spec): `✗{code}` — the
+/// cross, then the shell's own verdict, verbatim (OQ-2: no clamp).
+/// The click copies the bare code ([`copy_text`]'s payload), never
+/// the glyph.
+pub fn exit_display(code: u32) -> String {
+    format!("✗{code}")
+}
+
+/// The progress chip's display (osc94-progress spec): the percent
+/// the reporter gave — `42%`; `…` when indeterminate owns the chip
+/// or no value ever stood; the value when the reporter says error
+/// (painted in the attention red beside the exit chip's rule — `!`
+/// alone when none ever stood). Paused renders its percent plain:
+/// the percent is the truth, paused is not a hue (OQ-1).
+pub fn progress_display(progress: crate::terminal::ReportedProgress) -> String {
+    use crate::terminal::ProgressState;
+    match progress.state {
+        ProgressState::InProgress | ProgressState::Paused => progress
+            .value
+            .map_or_else(|| "…".to_owned(), |value| format!("{value}%")),
+        // Indeterminate owns the chip — a standing value is not a
+        // number worth narrating while the reporter says it cannot
+        // measure.
+        ProgressState::Indeterminate => "…".to_owned(),
+        ProgressState::Error => progress
+            .value
+            .map_or_else(|| "!".to_owned(), |value| format!("{value}%")),
+    }
 }
 
 /// The ssh command's destination token (status-remote spec): the
@@ -524,6 +690,29 @@ pub fn collapse_home(path: &Path, home: Option<&Path>) -> String {
         }
         Some(_) => "~".to_string(),
         None => path.display().to_string(),
+    }
+}
+
+/// The path seat's value from a standing OSC 7 report (osc7-cwd
+/// spec): the report's path, host-qualified only when it names
+/// another machine — the remote case is the one that matters — and
+/// `~`-collapsed only against our own `$HOME`; a remote path renders
+/// verbatim, because no remote `$HOME` is known and a guessed
+/// collapse is a lie.
+fn reported_path_value(
+    report: &crate::terminal::ReportedCwd,
+    hostname: Option<&str>,
+    home: Option<&Path>,
+) -> String {
+    let path = Path::new(&report.path);
+    if report.names_remote_host(hostname) {
+        format!(
+            "{}:{}",
+            report.host.as_deref().unwrap_or_default(),
+            path.display()
+        )
+    } else {
+        collapse_home(path, home)
     }
 }
 
@@ -726,6 +915,18 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
             .unwrap_or_default(),
         SegmentId::Clock => segments.clock.clone().unwrap_or_default(),
         SegmentId::Duration => duration_display(segments),
+        SegmentId::Exit => segments
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_default(),
+        // The bare number, never the glyph or the `%` — the exit
+        // chip's own convention; the valueless shapes (`…`, `!`)
+        // have no number to copy.
+        SegmentId::Progress => segments
+            .progress
+            .and_then(|progress| progress.value)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         // The action chip has no copyable value — the jump is the
         // verb (status-scrolled spec). The widget's press routing
         // never reaches this arm; empty is defensive.
@@ -751,6 +952,23 @@ pub fn segment_at(rects: &[(SegmentId, Rectangle)], point: Point) -> Option<Segm
         .iter()
         .find(|(_, rect)| rect.contains(point))
         .map(|(id, _)| *id)
+}
+
+/// The segment the hover tint paints — the hovered segment's own
+/// rect, the same rects hit-testing walks, so the tint and the copy
+/// verb can never disagree about a strip. Suppressed while a live
+/// drag or the persisting selection owns the visual (one narrator
+/// at a time); an absent cursor, a gap, and everything outside the
+/// row tint nothing.
+pub fn hover_segment(
+    rects: &[(SegmentId, Rectangle)],
+    cursor: Option<Point>,
+    selection_live: bool,
+) -> Option<SegmentId> {
+    if selection_live {
+        return None;
+    }
+    cursor.and_then(|point| segment_at(rects, point))
 }
 
 /// Whether the inline reveal is armed (status-glance criterion 3,
@@ -1110,6 +1328,17 @@ pub const fn ssh_read_due(band_enabled: bool, show_path: bool, foreground_is_ssh
     band_enabled && show_path && foreground_is_ssh
 }
 
+/// Whether the missed-activity fact should be sampled
+/// (status-activity spec): the band shown and the mark enabled —
+/// [`clock_due`]'s shape. Gates only the fact's gathering (key off
+/// means never gathered and never rendered), never the halo's
+/// rules; the scheme's red pair rides ungated beside it, because
+/// status-exit's chip reuses the attention token under its own
+/// key. Evaluated at every status sampling.
+pub const fn activity_mark_due(band_enabled: bool, mark_enabled: bool) -> bool {
+    band_enabled && mark_enabled
+}
+
 /// The duration from `now` to the next minute boundary — the tick's
 /// alignment; an on-boundary `now` waits a full minute.
 pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
@@ -1144,6 +1373,13 @@ pub struct CommandTimer {
     started_at: Option<Instant>,
     /// The last finished command's duration, until the next start.
     frozen: Option<Duration>,
+    /// The last finished command's exit code, until the next start —
+    /// the shell's own 133;D report, never a guess (status-exit
+    /// spec). `None` is both the absent fact (no shell integration)
+    /// and success: code 0 is the unmarked default. Set regardless of
+    /// whether the start was witnessed — the verdict needs no start,
+    /// only the finish's own report.
+    last_exit: Option<u32>,
 }
 
 impl CommandTimer {
@@ -1156,6 +1392,9 @@ impl CommandTimer {
             (Some(false), true) => {
                 self.started_at = Some(now);
                 self.frozen = None;
+                // One rule for both facts: the next command's start
+                // retires the previous verdict with the freeze.
+                self.last_exit = None;
             }
             // The witnessed running→idle crossing: freeze the
             // elapsed of a witnessed start — an unwitnessed one has
@@ -1181,6 +1420,18 @@ impl CommandTimer {
     /// The last finished command's duration, until the next start.
     pub fn last_duration(&self) -> Option<Duration> {
         self.frozen
+    }
+
+    /// Records the shell's own verdict for the finished command
+    /// (OSC 133;D): verbatim, except success (code 0) normalizes to
+    /// `None` — the unmarked default.
+    pub fn note_exit(&mut self, code: u32) {
+        self.last_exit = (code != 0).then_some(code);
+    }
+
+    /// The last finished command's exit code, until the next start.
+    pub fn last_exit(&self) -> Option<u32> {
+        self.last_exit
     }
 }
 
@@ -1235,6 +1486,53 @@ fn parse_head(head: &str) -> Option<String> {
     }
 }
 
+// --- the attention token (status-activity spec) ---
+
+/// The initiative's one new color token (status-activity spec): the
+/// live terminal scheme's own red — the bright variant on dark
+/// strips, the plain on light, the same luminance flip the band's
+/// foreground performs over its strip (`relative_luminance`'s WCAG
+/// channels, the one formula). One hue, one meaning: *needs your
+/// eyes*; success and normal state are never marked. A chosen
+/// variant the scheme leaves unset falls back to its sibling, and a
+/// scheme with no red at all degrades to the pane foreground —
+/// monochrome, never an invented hue.
+pub fn attention_color(
+    scheme_red: Option<(f32, f32, f32)>,
+    scheme_bright_red: Option<(f32, f32, f32)>,
+    pane_fg: Color,
+    strip: Color,
+) -> Color {
+    let (chosen, sibling) = if relative_luminance(strip) > 0.5 {
+        (scheme_red, scheme_bright_red)
+    } else {
+        (scheme_bright_red, scheme_red)
+    };
+    match chosen.or(sibling) {
+        Some((r, g, b)) => Color::from_rgb(r, g, b),
+        None => pane_fg,
+    }
+}
+
+/// The attention halo's quad (status-activity spec): centered on
+/// the process disc when its segment renders — ringing the disc,
+/// `HALO_GAP` beyond its edge, never over it — and standing alone
+/// at the band's left edge, centered in the leading `PAD_X` zone,
+/// when the process segment is hidden: the mark is the surface's
+/// news, not the process segment's decoration. Pure geometry —
+/// never a click target, never a shifted rect.
+fn halo_rect(disc: Option<Rectangle>, bounds: Rectangle) -> Rectangle {
+    let center = disc.map_or(
+        Point::new(bounds.x + PAD_X / 2.0, bounds.y + BAND_HEIGHT / 2.0),
+        |disc| Point::new(disc.x + disc.width / 2.0, disc.y + disc.height / 2.0),
+    );
+    let size = DISC_SIZE + HALO_GAP * 2.0;
+    Rectangle::new(
+        Point::new(center.x - size / 2.0, center.y - size / 2.0),
+        Size::new(size, size),
+    )
+}
+
 // --- the widget: the band itself, per the tab_bar.rs pattern ---
 
 /// Named through the iced core because libcosmic keeps its own `Plain`
@@ -1251,6 +1549,12 @@ const SEGMENT_FONT_SIZE: f32 = 12.0;
 const DISC_SIZE: f32 = 8.0;
 const DISC_RING_WIDTH: f32 = 1.5;
 
+/// The attention halo's clearance outside the disc
+/// (status-activity spec) — the ring sits this far beyond the disc's
+/// edge so it rings the disc, never overdraws it. Retunable at the
+/// hardware pass.
+const HALO_GAP: f32 = 1.5;
+
 /// Side padding of the band's clusters, and the gap between segments.
 const PAD_X: f32 = 12.0;
 const SEGMENT_GAP: f32 = 12.0;
@@ -1261,6 +1565,10 @@ const DISC_GAP: f32 = 6.0;
 /// The dimmed alpha the right cluster's segments carry — hierarchy by
 /// alpha and mass, never a new hue.
 const DIM_ALPHA: f32 = 0.6;
+
+/// The hover tint's alpha — the context menu's hover strength, one
+/// idiom across the band and its bubble, hierarchy by alpha.
+const HOVER_ALPHA: f32 = 0.1;
 
 /// How long a copied segment flashes its `✓` before the value
 /// returns (OQ-3: 800 ms, retunable at the hardware pass).
@@ -1280,6 +1588,8 @@ pub const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(800
 struct State {
     process: BandParagraph,
     duration: BandParagraph,
+    exit: BandParagraph,
+    progress: BandParagraph,
     path: BandParagraph,
     branch: BandParagraph,
     profile: BandParagraph,
@@ -1347,6 +1657,8 @@ impl State {
         match id {
             SegmentId::Process => &self.process,
             SegmentId::Duration => &self.duration,
+            SegmentId::Exit => &self.exit,
+            SegmentId::Progress => &self.progress,
             SegmentId::Path => &self.path,
             SegmentId::Branch => &self.branch,
             SegmentId::Profile => &self.profile,
@@ -1362,6 +1674,8 @@ impl State {
         match id {
             SegmentId::Process => &mut self.process,
             SegmentId::Duration => &mut self.duration,
+            SegmentId::Exit => &mut self.exit,
+            SegmentId::Progress => &mut self.progress,
             SegmentId::Path => &mut self.path,
             SegmentId::Branch => &mut self.branch,
             SegmentId::Profile => &mut self.profile,
@@ -1492,6 +1806,20 @@ impl<Message> StatusBar<Message> {
         let duration_text = duration_display(&self.segments);
         state.duration.update(segment_text(
             display_text(copied, SegmentId::Duration, &duration_text),
+            font,
+        ));
+        let exit_text = self.segments.exit_code.map(exit_display);
+        state.exit.update(segment_text(
+            display_text(copied, SegmentId::Exit, exit_text.as_deref().unwrap_or("")),
+            font,
+        ));
+        let progress_text = self.segments.progress.map(progress_display);
+        state.progress.update(segment_text(
+            display_text(
+                copied,
+                SegmentId::Progress,
+                progress_text.as_deref().unwrap_or(""),
+            ),
             font,
         ));
         state.branch.update(segment_text(
@@ -1630,6 +1958,8 @@ impl<Message> StatusBar<Message> {
             let value = match id {
                 SegmentId::Process => self.segments.process.clone(),
                 SegmentId::Duration => duration_text.clone(),
+                SegmentId::Exit => exit_text.clone().unwrap_or_default(),
+                SegmentId::Progress => progress_text.clone().unwrap_or_default(),
                 SegmentId::Path => {
                     if armed {
                         state.path_armed_text.clone()
@@ -1727,7 +2057,13 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
         rects.push((SegmentId::Process, row(x, width)));
         x += width + SEGMENT_GAP;
     }
-    for id in [SegmentId::Duration, SegmentId::Path, SegmentId::Branch] {
+    for id in [
+        SegmentId::Duration,
+        SegmentId::Exit,
+        SegmentId::Progress,
+        SegmentId::Path,
+        SegmentId::Branch,
+    ] {
         let width = state.paragraph_of(id).min_width();
         if width > 0.0 {
             rects.push((id, row(x, width)));
@@ -1997,6 +2333,14 @@ where
                 shell.request_redraw();
             }
             Event::Mouse(MouseEvent::CursorMoved { position }) => {
+                // A bare motion inside the band asks for its frame —
+                // the hover tint follows the cursor, and the runtime
+                // draws only on request (the menu overlay's own
+                // rule). No capture: the event keeps flowing, and the
+                // armed-press handling below stands unchanged.
+                if layout.bounds().contains(*position) {
+                    shell.request_redraw();
+                }
                 let state = tree.state.downcast_ref::<State>();
                 let Some(anchor) = state.press else {
                     return;
@@ -2090,10 +2434,10 @@ where
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor_position: mouse::Cursor,
+        cursor_position: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
@@ -2170,6 +2514,38 @@ where
             }
         }
 
+        // The hover tint, in the selection highlight's own slot —
+        // above the strip, under the text: the menu's hover idiom
+        // (low-alpha pane foreground, radius_s), so the band and its
+        // bubble speak one hover language, and only ever over the
+        // hovered segment's exact hit-target rect — the copy verb
+        // discoverable before the first click. A live or persisting
+        // selection owns the visual instead; gaps paint nothing.
+        let rects = segment_rects(state, bounds);
+        if let Some(id) = hover_segment(
+            &rects,
+            cursor_position.position(),
+            state.selection.is_some(),
+        ) && let Some((_, rect)) = rects.iter().find(|(sid, _)| *sid == id)
+        {
+            renderer.fill_quad(
+                Quad {
+                    bounds: *rect,
+                    border: Border {
+                        radius: theme.cosmic().radius_s().into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color {
+                    a: HOVER_ALPHA,
+                    ..pane_fg
+                },
+            );
+        }
+
         // The process-state disc: filled while a foreground child
         // runs, a hollow ring over the idle shell — the gear's own
         // disc primitive. It renders with the process segment and
@@ -2179,6 +2555,39 @@ where
             Point::new(bounds.x + PAD_X, center_y - DISC_SIZE / 2.0),
             Size::new(DISC_SIZE, DISC_SIZE),
         );
+
+        // The missed-activity halo (status-activity spec): the
+        // in-band sibling of the desktop notification — the toast
+        // expires, this ring persists until a touch acknowledges it.
+        // A `DISC_RING_WIDTH` attention ring around the disc's seat
+        // in the scheme's own red, painted above the strip and below
+        // the disc and text — the halo rings the disc from outside,
+        // so the disc's own paints sit over its inner edge, never
+        // erasing it. With the process segment hidden the ring
+        // stands alone at the band's left edge: the mark is the
+        // surface's news, not the segment's decoration. Pure paint
+        // — no hit-test knows it, no rect moves for it.
+        if self.segments.missed_activity {
+            let halo = halo_rect((state.process.min_width() > 0.0).then_some(disc), bounds);
+            renderer.fill_quad(
+                Quad {
+                    bounds: halo,
+                    border: Border {
+                        radius: (halo.width / 2.0).into(),
+                        width: DISC_RING_WIDTH,
+                        color: attention_color(
+                            self.segments.attention_red,
+                            self.segments.attention_bright_red,
+                            pane_fg,
+                            band_bg,
+                        ),
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color::TRANSPARENT,
+            );
+        }
         if state.process.min_width() > 0.0 {
             if self.segments.running {
                 fill_disc(renderer, disc, pane_fg);
@@ -2203,7 +2612,13 @@ where
         // full alpha on the left, dimmed on the right — hierarchy by
         // alpha and mass, never a new hue. The duration carries the
         // dim too (OQ-2): a left-cluster seat beside its process,
-        // but a meta narration, not identity.
+        // but a meta narration, not identity. The exit chip is the
+        // one deliberate exception (status-exit spec): failure paints
+        // in the scheme's own attention red — the same token the
+        // halo rings with, flowing from the ungated red pair, so the
+        // chip colors even when the halo's own key is off. The
+        // progress chip's error row joins it (osc94-progress spec):
+        // no second state hue, ever — the standing rule.
         let text_y =
             |paragraph: &BandParagraph| bounds.y + (BAND_HEIGHT - paragraph.min_height()) / 2.0;
         let dimmed = Color {
@@ -2212,7 +2627,20 @@ where
         };
         for (id, rect) in segment_rects(state, bounds) {
             let paragraph = state.paragraph_of(id);
-            let color = if LEFT_CLUSTER.contains(&id) && id != SegmentId::Duration {
+            let color = if id == SegmentId::Exit
+                || (id == SegmentId::Progress
+                    && self
+                        .segments
+                        .progress
+                        .is_some_and(|progress| progress.state == ProgressState::Error))
+            {
+                attention_color(
+                    self.segments.attention_red,
+                    self.segments.attention_bright_red,
+                    pane_fg,
+                    band_bg,
+                )
+            } else if LEFT_CLUSTER.contains(&id) && id != SegmentId::Duration {
                 pane_fg
             } else {
                 dimmed

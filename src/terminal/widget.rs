@@ -48,6 +48,7 @@ use cosmic::{
         Color, Element, Length, Padding, Point, Rectangle, Size, Vector,
         advanced::graphics::text::{Raw, font_system},
         event::Event,
+        keyboard::key::Physical,
         keyboard::{Event as KeyEvent, Key, Modifiers},
         mouse::{self, Button, Event as MouseEvent, ScrollDelta},
     },
@@ -66,7 +67,7 @@ use std::{
 };
 
 use super::engine::{Metadata, Terminal, TerminalScroll};
-use super::suggest::AcceptKind;
+use super::suggest::{AcceptKind, MenuKey};
 
 /// Which app-level action a bound key triggers.
 ///
@@ -139,6 +140,18 @@ pub enum Action {
     /// Toggle the status band's visibility (`Ctrl+Shift+B` and the
     /// Behavior card's toggle — one funnel, the settings write path).
     ToggleStatusBar,
+    /// Open (or close) the completion menu at the prompt
+    /// (`Ctrl+Space`, suggest-menu spec): the explicit-trigger
+    /// candidate list over the tab's current input — every history
+    /// prefix match, path entry, catalog name, and spec
+    /// subcommand/flag, where the ghost must settle for one. A soft
+    /// trigger: at every ineligible state (a foreground child,
+    /// scrolled back, no typed segment) the chord forwards to the
+    /// shell verbatim. Widget-owned — the routing and the toggle
+    /// happen in `TerminalBox`'s key handling, where a declined
+    /// chord's shell bytes live; the app's `perform_action` arm is a
+    /// documented no-op.
+    ShowCompletions,
 }
 
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -437,6 +450,48 @@ where
             cursor: Rectangle::new(view_position + cursor_position, Size::new(1.0, line_height)),
             purpose: input_method::Purpose::Normal,
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+        }
+    }
+
+    /// The completion menu's routing for one press (suggest-menu
+    /// spec): `true` — the menu consumed it (a claimed key, or the
+    /// soft chord that opened one), swallow; `false` — nothing
+    /// claims it (no menu; an unclaimed press that closed one; the
+    /// soft chord's decline), and the press flows through the
+    /// normal handler below, its bytes forwarded verbatim. Runs
+    /// before the keybind swallow and every mapping so a showing
+    /// menu outranks them all; the app-level `perform_action` arm
+    /// for the chord is a documented no-op — this widget owns the
+    /// action, the only place a declined chord can fall through to
+    /// its shell bytes.
+    fn menu_consumes_press(
+        &self,
+        terminal: &mut Terminal,
+        modifiers: Modifiers,
+        key: &Key,
+        physical_key: Physical,
+    ) -> bool {
+        let trigger_chord = self.key_binds.iter().any(|(bind, action)| {
+            *action == Action::ShowCompletions && bind.matches(modifiers, key, Some(&physical_key))
+        });
+        let named = match key {
+            Key::Named(named) => Some(*named),
+            _ => None,
+        };
+        match menu_key(named, modifiers, terminal.menu_is_open(), trigger_chord) {
+            Some(MenuRouting::Consume(menu_key)) => {
+                terminal.menu_press(menu_key);
+                true
+            }
+            Some(MenuRouting::CloseThenProcess) => {
+                terminal.menu_close();
+                false
+            }
+            // The soft trigger: no menu, the chord pressed — try the
+            // open; a decline forwards the chord's own shell bytes
+            // through the normal handling below.
+            None if trigger_chord => terminal.menu_open(),
+            None => false,
         }
     }
 }
@@ -986,6 +1041,159 @@ where
             }
         }
 
+        // The completion-menu overlay (suggest-menu spec): a pure
+        // overlay after the text pass — the ghost's own pattern,
+        // never the grid and never the terminal's own buffer, so
+        // selection, search, scrollback, and copy see nothing. The
+        // panel anchors at the cursor's cell (dropping below it,
+        // flipping above at the view's floor), shows the visible
+        // window from the scroll offset, paints from the live theme
+        // and the terminal's own scheme — never palette index 8,
+        // the zsh-invisible-text lesson — highlights the selected
+        // row, and right-aligns descriptions in the ghost's own dim
+        // tint where a source carries one. Shaped content caches in
+        // State (the ghost cache's precedent); the geometry and the
+        // highlight are per-frame.
+        {
+            let (cursor_point, display_offset) = {
+                let term = terminal.term.lock();
+                (
+                    term.renderable_content().cursor.point,
+                    term.grid().display_offset(),
+                )
+            };
+            if display_offset == 0 && terminal.menu_is_open() {
+                let all_rows = terminal.menu_rows();
+                let window = menu_visible_window(terminal.menu_scroll(), all_rows.len());
+                let visible = &all_rows[window.clone()];
+                let selected = terminal.menu_selected();
+                let size = terminal.size();
+                let metrics = terminal.with_buffer(Buffer::metrics);
+                let dim = terminal.ghost_color();
+                let fg = terminal.foreground_color();
+                let mut digest = String::new();
+                for row in visible {
+                    digest.push_str(&row.label);
+                    digest.push('\u{1F}');
+                    digest.push_str(row.description.as_deref().unwrap_or_default());
+                    digest.push('\u{1F}');
+                }
+                let key = (digest, metrics, fg, dim);
+                let mut cache = state.menu_glyphs.borrow_mut();
+                let entry = match cache.take() {
+                    Some(entry) if entry.0 == key => entry,
+                    _ => (
+                        key,
+                        Arc::new(menu_glyphs(
+                            visible,
+                            metrics,
+                            size.cell_width,
+                            fg,
+                            dim,
+                            terminal.default_attrs(),
+                        )),
+                    ),
+                };
+                let glyphs = Arc::clone(&entry.1);
+                *cache = Some(entry);
+                drop(cache);
+
+                let pad = f32::from(cosmic_theme.spacing.space_xs);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "view px are < 2^24, exact in f32"
+                )]
+                let view = Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32));
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "cell indices < 2^24, exact in f32"
+                )]
+                let panel = menu_panel_bounds(
+                    view_position.x + cursor_point.column.0 as f32 * size.cell_width,
+                    view_position.y + cursor_point.line.0 as f32 * size.cell_height,
+                    metrics.line_height,
+                    visible.len(),
+                    glyphs.width + pad * 2.0,
+                    view,
+                );
+
+                // The panel: the theme's background with a component
+                // border, the pane's own corner rhythm.
+                renderer.fill_quad(
+                    Quad {
+                        bounds: panel,
+                        border: Border {
+                            radius: cosmic_theme.radius_s().into(),
+                            width: 1.0,
+                            color: Color::from(cosmic_theme.bg_component_color()),
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                    Color::from(cosmic_theme.bg_color()),
+                );
+
+                // The selected row's highlight (the scrollbar's own
+                // pressed-state recipe, theme-derived).
+                if window.contains(&selected) {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "row indices < 2^24, exact in f32"
+                    )]
+                    let row = (selected - window.start) as f32;
+                    let highlight = Rectangle::new(
+                        Point::new(panel.x, panel.y + row * metrics.line_height),
+                        Size::new(panel.width, metrics.line_height),
+                    );
+                    renderer.fill_quad(
+                        Quad {
+                            bounds: highlight,
+                            border: Border {
+                                radius: cosmic_theme.radius_xs().into(),
+                                width: 0.0,
+                                color: Color::TRANSPARENT,
+                            },
+                            snap: true,
+                            ..Default::default()
+                        },
+                        Color::from(
+                            cosmic_theme
+                                .background(theme.transparent)
+                                .component
+                                .pressed
+                                .without_alpha()
+                                .with_alpha(0.5),
+                        ),
+                    );
+                }
+
+                // The rows: the label at the leading pad, the
+                // description right-aligned at the trailing pad.
+                for (index, (label, description)) in glyphs.rows.iter().enumerate() {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "row indices < 2^24, exact in f32"
+                    )]
+                    let row_top =
+                        Point::new(panel.x + pad, panel.y + index as f32 * metrics.line_height);
+                    renderer.fill_raw(Raw {
+                        buffer: Arc::downgrade(label),
+                        position: row_top,
+                        color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
+                        clip_bounds: panel,
+                    });
+                    if let Some((buffer, width)) = description {
+                        renderer.fill_raw(Raw {
+                            buffer: Arc::downgrade(buffer),
+                            position: Point::new(panel.x + panel.width - pad - width, row_top.y),
+                            color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
+                            clip_bounds: panel,
+                        });
+                    }
+                }
+            }
+        }
+
         // Draw scrollbar
         if let Some((start, end)) = terminal.scrollbar() {
             #[expect(
@@ -1242,6 +1450,23 @@ where
                 text,
                 ..
             }) if state.is_focused && named == modified_named => {
+                // The completion menu's scoped keys (suggest-menu
+                // spec), before the keybind swallow and every
+                // mapping below: while a menu shows, its claimed keys
+                // are its alone and every other press closes it
+                // first; the soft trigger's chord tries the open here
+                // too, a decline falling through to the shell's own
+                // bytes for that chord.
+                if self.menu_consumes_press(
+                    &mut terminal,
+                    *modifiers,
+                    &Key::Named(*named),
+                    *physical_key,
+                ) {
+                    shell.capture_event();
+                    return;
+                }
+
                 for key_bind in self.key_binds.keys() {
                     if key_bind.matches(*modifiers, &Key::Named(*named), Some(physical_key)) {
                         shell.capture_event();
@@ -1423,9 +1648,18 @@ where
                 physical_key,
                 ..
             }) if state.is_focused && *key == Key::Character(SmolStr::new(" ")) => {
+                // The completion menu's routing (suggest-menu spec),
+                // first as everywhere: the chord's own default is this
+                // handler's Ctrl+Space NUL press, so an opened menu
+                // swallows the chord here and a declined one falls
+                // through to the NUL below, verbatim.
+                if self.menu_consumes_press(&mut terminal, *modifiers, key, *physical_key) {
+                    shell.capture_event();
+                    return;
+                }
                 //Special handle Enter, Escape, Backspace and Tab as described in
                 //<https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding>
-                //Also special handle Ctrl-_ to behave like xterm
+                //Also special handle Ctrl+_ to behave like xterm
                 let alt_prefix = if modifiers.alt() { "\x1B" } else { "" };
 
                 // Keep this instead of hardcoding the space to allow for dead keys
@@ -1450,6 +1684,14 @@ where
                 modified_key,
                 ..
             }) if state.is_focused => {
+                // The completion menu's scoped keys (suggest-menu
+                // spec), before the keybind swallow: a custom trigger
+                // chord on a character key lands here, declined
+                // forwarding to the character's own handling below.
+                if self.menu_consumes_press(&mut terminal, *modifiers, key, *physical_key) {
+                    shell.capture_event();
+                    return;
+                }
                 for key_bind in self.key_binds.keys() {
                     if key_bind.matches(*modifiers, key, Some(physical_key)) {
                         shell.capture_event();
@@ -1572,6 +1814,12 @@ where
                                 && y >= 0.0
                                 && y < buffer_size.1.unwrap_or(0.0)
                             {
+                                // A click in the terminal pane is the
+                                // last of the touch verbs
+                                // (status-activity spec): the guard is
+                                // already held here, so the
+                                // acknowledgment is one bool write.
+                                terminal.clear_missed_activity();
                                 let click_kind =
                                     if let Some((click_kind, click_time)) = state.click.take() {
                                         if click_time.elapsed() < self.click_timing {
@@ -2310,6 +2558,75 @@ fn ghost_buffer(
     buffer
 }
 
+/// The menu overlay's cache key: the visible rows' whole content
+/// (labels and descriptions, joined), the metrics, and the two text
+/// colors — everything the shaped pixels depend on. Selection and
+/// scroll are pure per-frame geometry and stay out of the key.
+type MenuGlyphKey = (String, Metrics, cosmic_text::Color, cosmic_text::Color);
+
+/// The menu overlay's shaped rows (suggest-menu spec): per visible
+/// row the label's buffer, plus the right-aligned description's own
+/// buffer and measured width when a source carries one, and the
+/// widest row the panel sizes itself to (label + gap + description).
+/// One shaped menu row: the label's buffer and, when a source
+/// carries one, the description's own buffer with its measured
+/// width (right-alignment's offset input).
+type MenuGlyphRow = (Arc<Buffer>, Option<(Arc<Buffer>, f32)>);
+
+struct MenuGlyphs {
+    rows: Vec<MenuGlyphRow>,
+    width: f32,
+}
+
+/// The gap between a row's label and its right-aligned description,
+/// in cells — two, the ghost's own clip-reservation rhythm.
+const MENU_DESCRIPTION_GAP: f32 = 2.0;
+
+/// Shapes the menu overlay's rows (suggest-menu spec) — the ghost
+/// overlay's own pattern, one no-wrap buffer per line at the
+/// terminal's own font and metrics (not cell-monospaced: the panel
+/// is not the grid), the label in the scheme's foreground, the
+/// description in the engine's ghost tint. No source carries a
+/// description today (the specs-data file is the supplier); the
+/// path shapes for the day one does.
+fn menu_glyphs(
+    rows: &[super::suggest::MenuCandidate],
+    metrics: Metrics,
+    cell_width: f32,
+    fg: cosmic_text::Color,
+    dim: cosmic_text::Color,
+    default_attrs: &cosmic_text::Attrs<'_>,
+) -> MenuGlyphs {
+    let line = |text: &str, color: cosmic_text::Color| {
+        let attrs = default_attrs.clone().color(color);
+        let mut buffer = Buffer::new_empty(metrics);
+        buffer.set_wrap(Wrap::None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        let mut font_system = font_system().write().unwrap();
+        buffer.shape_until_scroll(font_system.raw(), true);
+        let width = buffer
+            .line_layout(font_system.raw(), 0)
+            .map_or(0.0, |lines| lines.iter().map(|line| line.w).sum::<f32>());
+        (Arc::new(buffer), width)
+    };
+    let mut shaped = Vec::with_capacity(rows.len());
+    let mut width = 0.0_f32;
+    for row in rows {
+        let (label, label_w) = line(&row.label, fg);
+        let description = row.description.as_deref().map(|text| line(text, dim));
+        let row_width = label_w
+            + description
+                .as_ref()
+                .map_or(0.0, |(_, w)| MENU_DESCRIPTION_GAP * cell_width + w);
+        width = width.max(row_width);
+        shaped.push((label, description));
+    }
+    MenuGlyphs {
+        rows: shaped,
+        width,
+    }
+}
+
 /// Cached per-widget interaction state: focus, click cadence, the
 /// active drag, scroll accumulators, and IME preedit.
 pub struct State {
@@ -2329,6 +2646,14 @@ pub struct State {
     /// Interior-mutable because `draw` receives the tree state by
     /// shared reference (the scrollbar rect's `Cell` precedent).
     ghost: RefCell<Option<(GhostKey, Arc<Buffer>)>>,
+    /// The completion-menu overlay's cache (suggest-menu spec): the
+    /// shaped visible rows plus the key they were built for — the
+    /// visible rows' labels and descriptions, the metrics, and the
+    /// two text colors the pixels depend on. Selection and scroll
+    /// are pure geometry per frame; only the shaped content caches
+    /// (the ghost cache's precedent, interior-mutable for the same
+    /// reason).
+    menu_glyphs: RefCell<Option<(MenuGlyphKey, Arc<MenuGlyphs>)>>,
 }
 
 impl State {
@@ -2345,6 +2670,7 @@ impl State {
             autoscroll: DragAutoscroll::new(AUTOSCROLL_INTERVAL),
             preedit: None,
             ghost: RefCell::new(None),
+            menu_glyphs: RefCell::new(None),
         }
     }
 }
@@ -2391,6 +2717,93 @@ fn accept_kind(named: Named, modifiers: Modifiers) -> Option<AcceptKind> {
     } else {
         None
     }
+}
+
+/// The completion menu's scoped-key verdict (suggest-menu spec):
+/// the routing for one press given the menu's open bit. The claimed
+/// keys — bare Up/Down/Tab/Enter/Escape, plus the `ShowCompletions`
+/// chord (its toggle-close) — are the menu's alone, VS Code's
+/// `HasFocusedSuggestion` mechanism; every other press closes the
+/// menu first and then flows through the existing handler unchanged
+/// (the ghost's accepts included). `None` is no menu routing at all
+/// — no menu shows — and the press is the shell's verbatim, Tab's
+/// `\x09` included (keybinds.rs's standing rule, pinned from both
+/// sides by the tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuRouting {
+    /// The press is the menu's: navigate, accept, or close (Escape,
+    /// the trigger chord's toggle).
+    Consume(MenuKey),
+    /// The press closes the menu, then processes normally.
+    CloseThenProcess,
+}
+
+/// The scoped routing itself — pure, so the policy is
+/// headless-testable beside the ghost's own `accept_kind`.
+fn menu_key(
+    named: Option<Named>,
+    modifiers: Modifiers,
+    open: bool,
+    trigger_chord: bool,
+) -> Option<MenuRouting> {
+    if !open {
+        return None;
+    }
+    if trigger_chord {
+        return Some(MenuRouting::Consume(MenuKey::Other));
+    }
+    if modifiers.is_empty() {
+        match named {
+            Some(Named::ArrowUp) => return Some(MenuRouting::Consume(MenuKey::Up)),
+            Some(Named::ArrowDown) => return Some(MenuRouting::Consume(MenuKey::Down)),
+            Some(Named::Tab | Named::Enter) => {
+                return Some(MenuRouting::Consume(MenuKey::Accept));
+            }
+            Some(Named::Escape) => return Some(MenuRouting::Consume(MenuKey::Other)),
+            _ => {}
+        }
+    }
+    Some(MenuRouting::CloseThenProcess)
+}
+
+/// The menu overlay's visible-row window (suggest-menu spec, OQ-2's
+/// locked budget): at most [`MENU_VISIBLE_ROWS`] rows starting at
+/// the scroll offset, fewer only when the list itself is shorter.
+fn menu_visible_window(scroll: usize, rows: usize) -> std::ops::Range<usize> {
+    let start = scroll.min(rows);
+    start..(start + super::suggest::MENU_VISIBLE_ROWS).min(rows)
+}
+
+/// The menu overlay panel's pixel geometry (suggest-menu spec):
+/// anchored at the cursor cell — `anchor_x`/`anchor_y` the cursor
+/// column and row's top-left in view pixels — dropping below the
+/// cursor's row, flipping above it when the rows would overflow the
+/// view's floor (a drop-down's prompt almost always sits at the
+/// grid's bottom), clamped at the view's top when even the flip
+/// cannot fit, and clamped horizontally so the panel never leaves
+/// the view. Pure f32 math, headless-testable.
+fn menu_panel_bounds(
+    anchor_x: f32,
+    anchor_y: f32,
+    row_height: f32,
+    rows: usize,
+    width: f32,
+    view: Rectangle<f32>,
+) -> Rectangle<f32> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the row count is the visible budget (\u{2264}8), exact in f32"
+    )]
+    let height = row_height * rows as f32;
+    let below_top = anchor_y + row_height;
+    let y = if below_top + height <= view.y + view.height {
+        below_top
+    } else {
+        (anchor_y - height).max(view.y)
+    };
+    let width = width.min(view.width);
+    let x = anchor_x.clamp(view.x, (view.x + view.width - width).max(view.x));
+    Rectangle::new(Point::new(x, y), Size::new(width, height))
 }
 
 /// The shell bytes a no-Ctrl character arm delivers for a press whose
@@ -2499,16 +2912,19 @@ fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DisabledFlow, EdgeScrollDirection, accumulate_wheel_lines, context_menu_press,
-        disabled_forwards, edge_scroll_adjustment,
+        DisabledFlow, EdgeScrollDirection, MenuRouting, accumulate_wheel_lines, context_menu_press,
+        disabled_forwards, edge_scroll_adjustment, menu_key, menu_panel_bounds,
+        menu_visible_window,
     };
     use cosmic::iced::keyboard::{Modifiers, key::Named};
     use cosmic::iced::mouse::Button;
+    use cosmic::iced::{Point, Rectangle, Size};
 
     use super::accept_kind;
     use super::child_owns_pointer;
     use super::no_ctrl_input;
     use crate::terminal::suggest::AcceptKind;
+    use crate::terminal::suggest::MenuKey;
 
     #[test]
     fn no_ctrl_input_delivers_the_character_text_carries() {
@@ -2602,6 +3018,119 @@ mod tests {
         assert_eq!(accept_kind(Named::Enter, Modifiers::empty()), None);
         assert_eq!(accept_kind(Named::Tab, Modifiers::empty()), None);
         assert_eq!(accept_kind(Named::Home, Modifiers::ALT), None);
+    }
+
+    #[test]
+    fn closed_tab_is_the_shells_verbatim_and_open_tab_never_reaches_the_pty() {
+        // The bare-Tab promise, both sides pinned (suggest-menu
+        // spec): with no menu open there is no menu routing at all —
+        // the press flows to the existing mapping below, which
+        // forwards Tab's `\x09` byte-for-byte as it always has
+        // (keybinds.rs's standing rule, `only_right_is_a_soft_key`'s
+        // cousin); with a menu open, Tab is the menu's accept —
+        // consumed, never forwarded.
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::empty(), false, false),
+            None,
+            "closed, Tab is the shell's own completion key"
+        );
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Accept)),
+            "open, Tab is the menu's accept and never reaches the PTY"
+        );
+    }
+
+    #[test]
+    fn an_open_menu_claims_its_six_keys_and_closes_on_everything_else() {
+        // The scoped set (suggest-menu spec, VS Code's
+        // HasFocusedSuggestion analog): bare Up/Down navigate, bare
+        // Tab/Enter accept, bare Escape and the trigger chord close —
+        // consumed. Every other press — a character, a modified
+        // claimed key like Shift+Tab — closes the menu first, then
+        // processes normally (the ghost's accepts included).
+        assert_eq!(
+            menu_key(Some(Named::ArrowUp), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Up))
+        );
+        assert_eq!(
+            menu_key(Some(Named::ArrowDown), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Down))
+        );
+        assert_eq!(
+            menu_key(Some(Named::Enter), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Accept))
+        );
+        assert_eq!(
+            menu_key(Some(Named::Escape), Modifiers::empty(), true, false),
+            Some(MenuRouting::Consume(MenuKey::Other))
+        );
+        assert_eq!(
+            menu_key(None, Modifiers::CTRL, true, true),
+            Some(MenuRouting::Consume(MenuKey::Other)),
+            "the chord toggles an open menu closed"
+        );
+        assert_eq!(
+            menu_key(Some(Named::Tab), Modifiers::SHIFT, true, false),
+            Some(MenuRouting::CloseThenProcess),
+            "Shift+Tab is the shell's backtab, not the menu's"
+        );
+        assert_eq!(
+            menu_key(None, Modifiers::empty(), true, false),
+            Some(MenuRouting::CloseThenProcess),
+            "a character press closes the menu, then types"
+        );
+    }
+
+    #[test]
+    fn the_menu_panel_drops_below_the_cursor_and_flips_above_at_the_floor() {
+        // The anchor rule (suggest-menu spec): the panel drops below
+        // the cursor's row when the rows fit, flips above the cursor
+        // when they would overflow the view's floor (a drop-down's
+        // prompt almost always sits at the grid's bottom), and clamps
+        // at the view's top when even the flip cannot fit.
+        let view = Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, 300.0));
+        // Room below: the panel starts one row under the cursor.
+        let drops = menu_panel_bounds(10.0, 100.0, 20.0, 5, 150.0, view);
+        assert_eq!(drops.y, 120.0, "one row below the cursor's top");
+        assert_eq!(drops.height, 100.0, "five rows of line height");
+        // No room below: flip above the cursor's row.
+        let flips = menu_panel_bounds(10.0, 280.0, 20.0, 5, 150.0, view);
+        assert_eq!(
+            flips.y, 180.0,
+            "the panel's bottom lands on the cursor's top"
+        );
+        // Neither side fits: clamp at the view's top.
+        let clamps = menu_panel_bounds(10.0, 280.0, 20.0, 20, 150.0, view);
+        assert_eq!(clamps.y, 0.0, "an oversized panel clamps at the view top");
+    }
+
+    #[test]
+    fn the_menu_panel_clamps_inside_the_view_horizontally() {
+        // The panel follows the cursor's column but never leaves the
+        // view: a right-edge anchor pulls it back inside.
+        let view = Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, 300.0));
+        let follows = menu_panel_bounds(120.0, 100.0, 20.0, 3, 150.0, view);
+        assert_eq!(follows.x, 120.0, "the panel follows the cursor's column");
+        let clamped = menu_panel_bounds(350.0, 100.0, 20.0, 3, 150.0, view);
+        assert_eq!(
+            clamped.x + clamped.width,
+            400.0,
+            "the panel's right edge never crosses the view's"
+        );
+    }
+
+    #[test]
+    fn the_visible_window_is_eight_rows_clamped_to_the_list() {
+        // OQ-2's locked budget: at most eight visible rows from the
+        // scroll offset, fewer only when the list itself is shorter.
+        assert_eq!(menu_visible_window(0, 20), 0..8);
+        assert_eq!(menu_visible_window(9, 20), 9..17);
+        assert_eq!(
+            menu_visible_window(2, 5),
+            2..5,
+            "a short list shows its tail only"
+        );
     }
 
     #[test]

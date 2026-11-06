@@ -589,3 +589,15 @@ fn clipboard_anchor_carries_the_app_id() {
         APP_ID
     );
 }
+
+#[test]
+fn the_local_hostname_reads_trimmed_or_absent() {
+    // (osc7-cwd spec) A trim regression here flips every report —
+    // local ones included — to host-qualified rendering: an untrimmed
+    // name never equals the reported host. The `None` arm (an
+    // unreadable /proc) is engine-pinned — named hosts read remote.
+    if let Some(name) = read_local_hostname() {
+        assert!(!name.is_empty());
+        assert_eq!(name, name.trim(), "the /proc read must land trimmed");
+    }
+}

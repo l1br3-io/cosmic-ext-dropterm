@@ -248,6 +248,18 @@ impl DropTerm {
             );
             return Task::none();
         }
+        // The completion menu's trigger is widget-owned
+        // (suggest-menu spec): the soft trigger must forward the
+        // chord's own shell bytes — Ctrl+Space's NUL — when the menu
+        // declines, and only the terminal widget's key handler,
+        // where those bytes live, can do that. The widget matches
+        // the chord and performs the toggle against the active
+        // terminal itself; this arm keeps `perform_action` total for
+        // the subscription's `matched_action`, which lands here as a
+        // no-op after the widget already acted.
+        if action == Action::ShowCompletions {
+            return Task::none();
+        }
         // The tab actions reshape the tab list itself — including keeping
         // it non-empty — so they run before the active-tab borrow below
         // and never reach the per-terminal actions.
@@ -274,6 +286,7 @@ impl DropTerm {
             Action::Hide
             | Action::Settings
             | Action::ToggleStatusBar
+            | Action::ShowCompletions
             | Action::NewTab
             | Action::NewTabHome
             | Action::NewProfileTab(_)
@@ -809,6 +822,17 @@ impl DropTerm {
         if let Some(old) = self.active() {
             old.terminal.lock().unwrap().set_focused(false);
         }
+        // Both missed-activity latches clear at the switch
+        // (status-activity spec): the outgoing tab's because the tab
+        // ceased to be active, the incoming's because activation is
+        // a touch verb — the user is now looking at it. Two short
+        // locks, flipped at the event point, never per frame.
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            tab.terminal.lock().unwrap().clear_missed_activity();
+        }
+        if let Some(tab) = self.tabs.get(index) {
+            tab.terminal.lock().unwrap().clear_missed_activity();
+        }
         self.active_tab = index;
         // The window background follows the switch: the incoming tab's
         // resolution replaces the outgoing one's. The status band's
@@ -1161,7 +1185,10 @@ impl DropTerm {
             TermEvent::Wakeup => {
                 // Output arrived: an inactive tab accrues an
                 // activity marker; the active tab shows the output
-                // itself, so nothing to signal — but its wakeup is
+                // itself — except while the surface is hidden, when
+                // its wakeup arms the missed-activity latch instead
+                // (status-activity spec), the in-band sibling of the
+                // tab marker. Either way the active tab's wakeup is
                 // the band's finest piggyback point: a process that
                 // just produced output is exactly when the name
                 // should be fresh (criterion 5).
@@ -1176,9 +1203,18 @@ impl DropTerm {
                 // active — a background tab's command finishes hidden
                 // too. The band's snapshot reads never touch it, so
                 // the frozen segment and this notification coexist.
+                // The missed-activity arm folds under the same lock:
+                // output on the active tab while the surface is
+                // hidden leaves no other trace — the tab markers
+                // accrue only for inactive tabs — so the latch is
+                // that trace (status-activity spec).
                 let finished = {
                     let mut terminal = self.tabs[tab_index].terminal.lock().unwrap();
                     terminal.needs_update = true;
+                    if tab_index == self.active_tab && matches!(self.surface, SurfaceState::Hidden)
+                    {
+                        terminal.note_missed_activity();
+                    }
                     terminal.take_command_finished()
                 };
                 // A finished command while hidden posts one desktop
@@ -1218,6 +1254,71 @@ impl DropTerm {
                     return self
                         .sync_status_duration()
                         .chain(self.arm_suggest_reveal_after_damage());
+                }
+            }
+            TermEvent::CurrentDirectory(url) => {
+                // The shell's own cwd report (osc7-cwd spec):
+                // forwarded to the engine under the lock exactly as
+                // the 133;D verdict is — the engine's parse rejects
+                // malformed payloads whole, so a mangled report
+                // never disturbs a standing one — then the snapshot
+                // piggyback: the report rides the same wakeup the
+                // redraw does. Without shell integration the event
+                // never fires; the band never guesses.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_current_directory(&url);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+            }
+            TermEvent::ProgressReport(state, value) => {
+                // The running command's own progress report
+                // (osc94-progress spec): forwarded to the engine
+                // under the lock exactly as its siblings are —
+                // state 0 clearing, an omitted value keeping the
+                // standing one, the decay anchor refreshed — then
+                // the snapshot piggyback and the decay arm: the
+                // report's window starts here, on any tab.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_progress_report(state, value);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
+                }
+                return self.sync_progress_decay();
+            }
+            // OSC 7501 program status report (osc7501-status spec):
+            // a commented stopgap until the engine seat lands —
+            // accepted and dropped so the match stays exhaustive; the
+            // seat's task replaces this arm with the forward +
+            // snapshot refresh, exactly as its siblings above. The
+            // expect self-cleans the moment that body lands.
+            #[expect(
+                clippy::match_same_arms,
+                reason = "stopgap-empty until the engine seat lands (osc7501-status Task 2)"
+            )]
+            TermEvent::ProgramStatus(_) => {}
+            TermEvent::PromptExit(code) => {
+                // The shell's own verdict for the command that just
+                // finished (status-exit spec): forwarded to the
+                // engine's timer under the lock, then the snapshot
+                // piggyback — a 133;D rides the same prompt-redraw
+                // wakeup the duration's finish does, so the arm only
+                // forwards and refreshes, the tick sync staying with
+                // the wakeup itself. Without shell integration the
+                // event never fires; the band never guesses.
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_prompt_exit(code);
+                if tab_index == self.active_tab {
+                    self.refresh_status_snapshot();
                 }
             }
             TermEvent::MouseCursorDirty => {

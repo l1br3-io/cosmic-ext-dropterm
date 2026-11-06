@@ -41,6 +41,57 @@ fn poll_until_title(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str
     }
 }
 
+/// Poll the tagged-event channel until the next `CurrentDirectory`
+/// event arrives — skipping the wakeups that share the stream — and
+/// pin its payload.
+fn poll_until_cwd(rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>, want: &str, what: &str) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::CurrentDirectory(url) = event {
+                assert_eq!(url, want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for cwd {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_osc7_report_arrives_as_a_current_directory_event() {
+    // The delivery half of the seat (osc7-cwd spec): a shell-emitted
+    // OSC 7 reaches the app as `CurrentDirectory(url)` through the
+    // same tagged stream the title rides — the fork arm's
+    // end-to-end pin on the pinned revs.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh cwd test terminal");
+
+    terminal.input_no_scroll(&b"printf '\\033]7;file://workstation/home\\007'\r"[..]);
+    poll_until_cwd(
+        &mut rx,
+        "file://workstation/home",
+        "the OSC 7 report arrives",
+    );
+}
+
 #[test]
 fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
     // The delivery half of the empty-report clear: OSC 0/2 with
@@ -293,6 +344,35 @@ fn arming_a_settled_spawn_grid_is_a_no_op() {
         terminal.spawn_grid().0,
         40,
         "the second arm changes nothing"
+    );
+}
+
+#[test]
+fn settling_after_the_grant_applied_records_the_grid_already_held() {
+    // The fresh-start hardware shape (2026-10-24 trace): the
+    // granted size applies first (the draw resized), and the pin
+    // funnel's adoption lands after — but `resize` no-ops on
+    // unchanged sizes, so an arm at that point waits for a changed
+    // resize that never comes: the settle (and its fresh-prompt
+    // latch) never closed, the anchor never adopted, and the tab
+    // never suggested. `settle_spawn_grid_now` closes at the grid
+    // already held; a settled record still never re-snapshots.
+    let mut terminal = spawn_grid_terminal();
+    resize_cols(&mut terminal, 45); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    assert_eq!(terminal.spawn_grid().0, 45);
+    resize_cols(&mut terminal, 70);
+    assert_eq!(
+        terminal.spawn_grid().0,
+        45,
+        "settled: later resizes deviate"
+    );
+    terminal.settle_spawn_grid_now(); // every re-show adoption: no-op
+    resize_cols(&mut terminal, 80);
+    assert_eq!(
+        terminal.spawn_grid().0,
+        45,
+        "a settled record never re-snapshots"
     );
 }
 
@@ -663,6 +743,35 @@ fn autosuggest_records_a_run_command_and_suggests_its_prefix() {
         &mut terminal,
         |t| t.suggestion() == Some("p 30"),
         "the prefix suggests the remainder",
+    );
+}
+
+#[test]
+fn a_fresh_terminal_suggests_without_pushing_the_prompt_off_the_top() {
+    // The hardware report (2026-10-24): a fresh app start's tabs
+    // never suggested at all. Two stacked causes, both exercised
+    // here: the pin funnel's settle close lands AFTER the granted
+    // size is applied (resize no-ops on unchanged sizes, so waiting
+    // for the next changed resize waits forever — settle_spawn_grid_
+    // now closes at the grid already held), and a fresh prompt sits
+    // near the top of an empty grid, where the old bottom-row guard
+    // silenced it. No `seq` push, no scrolled output: the prompt
+    // stays exactly where the shell drew it, the ring is seeded the
+    // documented spawn-time way, and a typed prefix suggests.
+    let mut terminal = autosuggest_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors at the top of the empty grid",
+    );
+    terminal.suggest.seed_history(["sleep 30".to_string()]);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion() == Some("p 30"),
+        "a prefix at a fresh top-of-grid prompt suggests",
     );
 }
 
@@ -1325,4 +1434,962 @@ fn a_real_focus_change_arms_the_buffer_rebuild_and_a_repeat_does_not() {
 
     terminal.set_focused(true);
     assert!(terminal.needs_update, "flipping back is a real change");
+}
+
+// --- the generator runner's spawn contract (suggest-generators) ---
+
+#[test]
+fn generator_command_pins_the_spawn_contract() {
+    // The contract in full: argv[0] is the absolutely-resolved
+    // binary (never an ambient PATH lookup at exec time), the tab's
+    // /proc cwd, env_clear with HOME (the spawn-time truth the pty
+    // exec inherited) and LANG — pinned to C so git's noise markers
+    // are the English bytes the post-filter pins, whatever the
+    // desktop locale would have localized them into. Nothing else
+    // of DropTerm's environment inherits.
+    let command = generator_command(
+        GIT_BRANCHES,
+        Path::new("/opt/git/bin/git"),
+        Path::new("/home/jpt/repo"),
+        Some("/home/jpt"),
+    );
+    assert_eq!(command.get_program(), "/opt/git/bin/git");
+    assert_eq!(
+        command.get_args().collect::<Vec<_>>(),
+        [
+            "--no-optional-locks",
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(objectname:short)|%(subject)",
+            "refs/heads/",
+        ]
+    );
+    assert_eq!(
+        command.get_current_dir(),
+        Some(Path::new("/home/jpt/repo")),
+        "the tab's /proc cwd is the spawn's working directory"
+    );
+    let mut env: Vec<String> = command
+        .get_envs()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key.to_string_lossy(),
+                value.map(|v| v.to_string_lossy()).unwrap_or_default()
+            )
+        })
+        .collect();
+    env.sort();
+    assert_eq!(
+        env,
+        vec!["HOME=/home/jpt".to_string(), "LANG=C".to_string()]
+    );
+}
+
+#[test]
+fn generator_command_inherits_nothing_but_its_two_inputs() {
+    // env(1) prints the environment it ran with — the scrub's own
+    // behavioral proof, beyond the explicitly-set pair: whatever
+    // DropTerm's process environment carries (a PATH, a USER, a
+    // desktop locale), the spawned generator sees none of it.
+    let mut command = generator_command(
+        &["env"],
+        Path::new("/usr/bin/env"),
+        Path::new("/"),
+        Some("/home/jpt"),
+    );
+    let output = command.output().expect("env(1) runs");
+    let mut printed: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    printed.sort();
+    assert_eq!(
+        printed,
+        vec!["HOME=/home/jpt".to_string(), "LANG=C".to_string()]
+    );
+}
+
+#[test]
+fn generator_command_without_home_sets_only_lang() {
+    // A tab with no spawn-time HOME (the options default): the
+    // scrubbed env carries LANG alone — git reads no user config it
+    // cannot find, and the spawn stays reproducible.
+    let command = generator_command(
+        GIT_FILES,
+        Path::new("/usr/bin/git"),
+        Path::new("/repo"),
+        None,
+    );
+    let env: Vec<String> = command
+        .get_envs()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(env, vec!["LANG".to_string()]);
+}
+
+#[test]
+fn the_generator_binary_resolves_against_the_spawn_path() {
+    // First-hit resolution over the spawn-time snapshot — the
+    // catalog walk's own executable check (regular file, exec bit,
+    // symlinks followed), never the ambient PATH a mid-session
+    // re-export could move. No snapshot or no git anywhere on it is
+    // silence.
+    let dir = catalog_fixture("gen-binary");
+    std::fs::write(dir.join("git"), b"").expect("fixture file");
+    mark_executable(&dir.join("git"));
+    let path = dir.to_string_lossy().into_owned();
+    assert_eq!(
+        resolve_generator_binary(Some(&path), "git"),
+        Some(dir.join("git")),
+        "the first executable hit on the snapshot wins"
+    );
+    assert_eq!(resolve_generator_binary(None, "git"), None);
+    assert_eq!(
+        resolve_generator_binary(Some("/nonexistent-anywhere"), "git"),
+        None
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- the generator runner: deadline + stale-while-revalidate (suggest-generators, Task 3) ---
+
+/// Resolves the test environment's own git — `None` skips the
+/// git-backed pins (the chunk's skip-if-no-git marker: the suite
+/// stays green where git is absent).
+fn test_git() -> Option<std::path::PathBuf> {
+    resolve_generator_binary(std::env::var("PATH").ok().as_deref(), "git")
+}
+
+/// A git fixture repository: fresh directory, then each setup step
+/// run through the test's own environment (setup, not the
+/// generator contract).
+fn git_fixture(name: &str, setup: &[&str]) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("dropterm-generator-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let git = test_git().expect("git present — the skip guard ran");
+    for step in setup {
+        let status = std::process::Command::new(&git)
+            .args(step.split_whitespace())
+            .current_dir(&dir)
+            .status()
+            .expect("fixture git step runs");
+        assert!(status.success(), "fixture step failed: {step}");
+    }
+    dir
+}
+
+/// An eligible runner over the test environment's own PATH, waking
+/// a drained channel nobody reads.
+fn test_runner() -> GeneratorRunner {
+    GeneratorRunner::new(
+        "/bin/sh",
+        std::env::var("PATH").ok().as_deref(),
+        None,
+        true,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    )
+}
+
+/// Polls the runner's cached sets for `dir` until they exist —
+/// bounded at 10s (the fetch deadline's own cap plus slack).
+fn poll_generator_sets(runner: &GeneratorRunner, dir: &Path) -> GenCached {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(sets) = runner.sets_for(Some(dir)) {
+            return sets;
+        }
+        assert!(Instant::now() < deadline, "generator fetch never landed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn a_two_branch_repo_yields_both_names_after_revalidation() {
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "branches",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let runner = test_runner();
+    assert!(
+        runner.sets_for(Some(&dir)).is_none(),
+        "nothing cached before the first trigger"
+    );
+    runner.revalidate(Some(&dir));
+    // The SWR bookkeeping: all three argv keys in flight the moment
+    // the trigger returns, none left when the fetches land.
+    {
+        let state = runner.lock_generator_state();
+        assert_eq!(state.in_flight.len(), 3, "one worker per argv");
+    }
+    let sets = poll_generator_sets(&runner, &dir);
+    {
+        let state = runner.lock_generator_state();
+        assert!(state.in_flight.is_empty(), "landed workers retire");
+        assert_eq!(state.cache.len(), 3, "one cache entry per argv");
+    }
+    assert!(sets.branches.iter().any(|name| name == "main"));
+    assert!(sets.branches.iter().any(|name| name == "feature/x"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_repo_and_a_non_repo_are_silence() {
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let empty = git_fixture("empty", &["init -b main"]);
+    let runner = test_runner();
+    runner.revalidate(Some(&empty));
+    let sets = poll_generator_sets(&runner, &empty);
+    assert!(
+        sets.branches.is_empty() && sets.tags.is_empty() && sets.files.is_empty(),
+        "an unborn repo carries no refs, no tags, no changes"
+    );
+    let plain = catalog_fixture("gen-nonrepo");
+    runner.revalidate(Some(&plain));
+    let sets = poll_generator_sets(&runner, &plain);
+    assert!(
+        sets.branches.is_empty() && sets.tags.is_empty() && sets.files.is_empty(),
+        "fatal output degrades to the cached empty set — silence"
+    );
+    let _ = std::fs::remove_dir_all(&empty);
+    let _ = std::fs::remove_dir_all(&plain);
+}
+
+#[test]
+fn a_slow_generator_times_out_to_silence() {
+    // The deadline path itself, through the test's own slow argv
+    // (never a shipped constant) at a test-shortened 300ms: a 30s
+    // sleep dies at the deadline, its output discarded.
+    let mut command = std::process::Command::new("sleep");
+    command.arg("30");
+    assert!(run_under_deadline(command, Duration::from_millis(300)).is_none());
+    // And the clean path for contrast: a fast child's stdout rides
+    // home whole.
+    let mut command = std::process::Command::new("echo");
+    command.arg("main|abc|subject");
+    assert_eq!(
+        run_under_deadline(command, Duration::from_secs(5)).as_deref(),
+        Some("main|abc|subject\n")
+    );
+}
+
+#[test]
+fn sets_for_is_the_spawn_free_hot_path() {
+    // The update path's read serves stale-instantly and spawns
+    // nothing: no in-flight worker, no cache write, no spawn count
+    // — the fact the typing path's pin stands on.
+    let runner = test_runner();
+    let _ = runner.sets_for(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+    assert!(state.cache.is_empty());
+}
+
+#[test]
+fn an_ineligible_tab_never_spawns() {
+    // The standing ssh gate, engine-side: a tab spawned as ssh (or
+    // any non-shell program) blocks the trigger before any spawn,
+    // whatever the cwd would say.
+    let runner = GeneratorRunner::new(
+        "ssh",
+        std::env::var("PATH").ok().as_deref(),
+        None,
+        true,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    );
+    runner.revalidate(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+}
+
+#[test]
+fn a_tab_without_git_on_its_spawn_path_never_spawns() {
+    // No resolvable binary is the runner's own silence: the spawn
+    // PATH carried no git, so no trigger ever forks.
+    let runner = GeneratorRunner::new(
+        "/bin/sh",
+        Some("/nonexistent-generator-path"),
+        None,
+        true,
+        TabId(0),
+        mpsc::unbounded_channel().0,
+    );
+    runner.revalidate(Some(Path::new("/")));
+    let state = runner.lock_generator_state();
+    assert_eq!(state.spawns, 0);
+    assert!(state.in_flight.is_empty());
+}
+
+/// One live terminal spawned inside `dir` with git resolvable on
+/// its spawn PATH — the engine-level generator harness: construction
+/// pre-warms, updates serve from cache, typing must spawn nothing.
+fn generator_terminal(dir: &Path) -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            working_directory: Some(dir.to_path_buf()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a generator test terminal")
+}
+
+/// Waits until the construction pre-warm has fully landed — no
+/// worker in flight, all three argv cached — bounded at 10s.
+fn wait_for_generator_prewarm(terminal: &Terminal) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // The guard drops before the sleep — held across it, the
+        // poller starves the very workers it waits on (Linux's
+        // mutex is not fair).
+        let (done, spawns) = {
+            let state = terminal.generator.lock_generator_state();
+            (
+                state.in_flight.is_empty() && state.cache.len() == 3,
+                state.spawns,
+            )
+        };
+        if done {
+            return spawns;
+        }
+        assert!(Instant::now() < deadline, "pre-warm never landed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn plain_typing_never_spawns_a_generator() {
+    // The hot path's own pin (the standing rule: spawns never on
+    // plain typing): the construction pre-warm lands its three, and
+    // keystrokes driven through full updates spawn nothing more.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "typing",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let mut terminal = generator_terminal(&dir);
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    assert_eq!(prewarm_spawns, 3, "one spawn per argv at eligibility onset");
+    for key in [b"g", b"i", b"t", b" ", b"c", b"h"] {
+        terminal.input_no_scroll(key);
+        terminal.update();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns, prewarm_spawns,
+        "plain typing drove updates and spawned nothing"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn menu_open_revalidates_the_generator_cache() {
+    // The menu's open moment is the ruled trigger: with the pre-warm
+    // landed and no worker in flight, a Ctrl+Space open re-fires all
+    // three argv — stale served in the rows it collects, the fresh
+    // sets landing for the updates that follow.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "menu-open",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let mut terminal = generator_terminal(&dir);
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    terminal.update();
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns,
+        prewarm_spawns + 3,
+        "the menu's open revalidates every argv for the tab's cwd"
+    );
+    terminal.input_no_scroll(&b"exit\r"[..]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_disabled_tab_never_spawns() {
+    // The kill switch's spawn half: `false` blocks the eligibility
+    // onset's pre-warm and the menu's open trigger alike — no
+    // worker, no cache, ever.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "disabled",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(alacritty_terminal::tty::Shell::new(
+                "/bin/sh".to_owned(),
+                Vec::new(),
+            )),
+            working_directory: Some(dir.clone()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            autosuggestions_generators_enabled: false,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a disabled-generator test terminal");
+    std::thread::sleep(Duration::from_millis(300));
+    {
+        let state = terminal.generator.lock_generator_state();
+        assert_eq!(state.spawns, 0, "a disabled tab never pre-warms");
+        assert!(state.cache.is_empty());
+    }
+    terminal.update();
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(state.spawns, 0, "the menu's trigger stays blocked too");
+    terminal.input_no_scroll(b"exit\r");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_off_flip_serves_nothing_from_cache() {
+    // The kill switch's serving half: a warm cache under a live `false`
+    // flip reads as nothing — the observation carries no sets, never
+    // the stale rows — and the flip silences the triggers with it.
+    let Some(_git) = test_git() else {
+        return;
+    };
+    let dir = git_fixture(
+        "flip-off",
+        &[
+            "init -b main",
+            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
+            "branch feature/x",
+        ],
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(alacritty_terminal::tty::Shell::new(
+                "/bin/sh".to_owned(),
+                Vec::new(),
+            )),
+            working_directory: Some(dir.clone()),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a flip test terminal");
+    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
+    assert!(
+        terminal.generator.sets_for(Some(&dir)).is_some(),
+        "the warm cache serves before the flip"
+    );
+    terminal.set_config(
+        &TerminalOptions {
+            spawned_program: "/bin/sh".to_owned(),
+            spawn_path: std::env::var("PATH").ok(),
+            autosuggestions_generators_enabled: false,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    );
+    assert!(
+        terminal.generator.sets_for(Some(&dir)).is_none(),
+        "an off flip blanks the cache read on the echo"
+    );
+    let _ = terminal.menu_open();
+    let state = terminal.generator.lock_generator_state();
+    assert_eq!(
+        state.spawns, prewarm_spawns,
+        "the off flip silences the menu's trigger too"
+    );
+    terminal.input_no_scroll(b"exit\r");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- the missed-activity latch (status-activity) ---
+//
+// The latch's transition model, pinned over a real Terminal: set by
+// the app's hidden-wakeup arm, held until one of the three user
+// funnels clears it. The clear verbs are the funnels themselves, so
+// these tests construct terminals exactly like their siblings above.
+
+/// The module's own /bin/sh terminal shape, shared by the
+/// latch-funnel tests below.
+fn latch_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh latch test terminal")
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_missed_activity() {
+    // Respawned/restored tabs start clean by construction — the
+    // latch dies with the terminal that owns it.
+    let terminal = latch_terminal();
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn an_armed_latch_holds_across_a_read() {
+    // The arm is sticky: reading the fact (every status sampling)
+    // never consumes it — only a touch does.
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    assert!(terminal.missed_activity());
+    assert!(
+        terminal.missed_activity(),
+        "the read is not a drain; the mark persists"
+    );
+}
+
+#[test]
+fn a_typed_key_through_input_scroll_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.input_scroll(&b"true\r"[..]);
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn a_paste_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.paste("echo hi");
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn a_scroll_clears_the_latch() {
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.scroll(TerminalScroll::Bottom);
+    assert!(!terminal.missed_activity());
+}
+
+#[test]
+fn an_internal_write_never_masquerades_as_a_touch() {
+    // Engine-side writes (OSC replies, PtyWrite, suggest acceptance)
+    // ride `input_no_scroll` directly — the arm must survive them,
+    // or the mark would clear itself on the very output that set it.
+    let mut terminal = latch_terminal();
+    terminal.note_missed_activity();
+    terminal.input_no_scroll(&b"\x1b[6n"[..]);
+    assert!(terminal.missed_activity());
+}
+
+/// A `/bin/sh` terminal for the OSC 7 seat pins — the same shape as
+/// [`latch_terminal`]: the report dies with the terminal that owns
+/// it, so a respawn starts clean by construction.
+fn cwd_report_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh cwd-report test terminal")
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_reported_cwd() {
+    // Respawned/restored tabs start clean by construction — the
+    // report dies with the terminal that owns it.
+    let terminal = cwd_report_terminal();
+    assert_eq!(terminal.reported_cwd(), None);
+}
+
+#[test]
+fn a_valid_report_lands_parsed_into_host_and_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://workstation/home/u");
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.host.as_deref(), Some("workstation"));
+    assert_eq!(report.path, "/home/u");
+}
+
+#[test]
+fn an_empty_host_report_reads_as_local() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file:///home/u");
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.host, None);
+    assert_eq!(report.path, "/home/u");
+}
+
+#[test]
+fn percent_escapes_decode_in_the_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home/a%20b%2Fc");
+    let report = terminal.reported_cwd().expect("the report stands");
+    assert_eq!(report.path, "/home/a b/c");
+}
+
+#[test]
+fn a_malformed_report_never_replaces_a_standing_one() {
+    // Each malformed shape is ignored whole — a mangled report never
+    // replaces a live truth.
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home");
+    for url in ["gopher://h/x", "file://h/%zz", "file://h", ""] {
+        terminal.note_current_directory(url);
+        let report = terminal
+            .reported_cwd()
+            .expect("the standing report survives");
+        assert_eq!(report.path, "/home", "url {url:?} must not disturb it");
+    }
+}
+
+#[test]
+fn a_newer_report_replaces_the_standing_one() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/one");
+    terminal.note_current_directory("file://h/two");
+    let report = terminal.reported_cwd().expect("the newer report stands");
+    assert_eq!(report.path, "/two");
+}
+
+#[test]
+fn reported_cwd_parse_rejects_malformed_urls() {
+    let overlong = format!("file://h/{}", "a".repeat(4096));
+    for url in [
+        "",
+        "file://",
+        "file://h",
+        "https://h/p",
+        "file://h/%2",
+        "file://h/%zz",
+        // A `+` sign is not a hex digit, whatever from_str_radix
+        // says — escapes are exactly two hex digits.
+        "file://h/%+f",
+        // An escape re-admitting a control character is a payload
+        // lying about being text — rejected whole.
+        "file://h/a%1Bb",
+        // A bidirectional override is not a path character.
+        "file://h/\u{202E}evil",
+        // Past the payload cap — rejected whole, never truncated.
+        overlong.as_str(),
+    ] {
+        assert_eq!(
+            ReportedCwd::parse(url),
+            None,
+            "url {url:?} must be rejected"
+        );
+    }
+}
+
+/// Spawn a `/bin/sh` terminal for the OSC 9;4 progress-report
+/// pins, with its event receiver — the `cwd_report_terminal`
+/// shape (a real PTY: the delivery and handoff facts need the
+/// real event loop, so the channel must reach the caller).
+fn progress_report_terminal() -> (Terminal, mpsc::UnboundedReceiver<(TabId, Event)>) {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh progress-report test terminal");
+    (terminal, rx)
+}
+
+/// Poll the tagged-event channel until the next `ProgressReport`
+/// event arrives — skipping the wakeups that share the stream —
+/// and pin its payload.
+fn poll_until_progress(
+    rx: &mut mpsc::UnboundedReceiver<(TabId, Event)>,
+    want: (u8, Option<u8>),
+    what: &str,
+) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::ProgressReport(state, value) = event {
+                assert_eq!((state, value), want, "{what}");
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for progress {want:?}: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_fresh_terminal_carries_no_progress_report() {
+    // Respawned/restored tabs start clean by construction — the
+    // report dies with the terminal that owns it, deadline and all.
+    let (terminal, _rx) = progress_report_terminal();
+    assert_eq!(terminal.reported_progress(), None);
+    assert_eq!(terminal.progress_decay_deadline(), None);
+}
+
+#[test]
+fn progress_state_zero_clears_a_standing_report() {
+    // The protocol's own invalidation (osc94-progress spec): state
+    // 0 removes the report — a value riding it changes nothing —
+    // and with it the decay deadline.
+    let (mut terminal, _rx) = progress_report_terminal();
+    terminal.note_progress_report(1, Some(42));
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::InProgress, Some(42)))
+    );
+    assert!(terminal.progress_decay_deadline().is_some());
+    terminal.note_progress_report(0, None);
+    assert_eq!(terminal.reported_progress(), None);
+    assert_eq!(terminal.progress_decay_deadline(), None);
+    // The clear is whole: a value on a state-0 report clears too.
+    terminal.note_progress_report(2, Some(7));
+    terminal.note_progress_report(0, Some(50));
+    assert_eq!(terminal.reported_progress(), None);
+}
+
+#[test]
+fn an_omitted_progress_value_keeps_the_standing_one() {
+    // The protocol's leave-unchanged rule (osc94-progress spec): a
+    // report may omit its value — states 2–4 do — and the standing
+    // one survives the state change; with no value ever standing,
+    // omitted stays absent.
+    let (mut terminal, _rx) = progress_report_terminal();
+    terminal.note_progress_report(1, Some(42));
+    terminal.note_progress_report(2, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Error, Some(42)))
+    );
+    terminal.note_progress_report(4, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Paused, Some(42)))
+    );
+    terminal.note_progress_report(0, None);
+    terminal.note_progress_report(3, None);
+    assert_eq!(
+        terminal.reported_progress().map(|r| (r.state, r.value)),
+        Some((ProgressState::Indeterminate, None))
+    );
+}
+
+#[test]
+fn a_progress_report_expires_fifteen_seconds_after_its_last_refresh() {
+    // The decay death (osc94-progress spec): Ghostty's hardcoded
+    // ~15 s window, inherited by the record's rule — anchored at
+    // the last refresh, so a refreshed report's clock restarts and
+    // a dead reporter's last number cannot linger.
+    let t0 = Instant::now();
+    let standing = ReportedProgress::apply(None, 1, Some(42), t0).expect("the report stands");
+    assert!(!standing.expired(t0 + Duration::from_secs(14)));
+    assert!(standing.expired(t0 + Duration::from_secs(15)));
+    // A refresh re-anchors the window.
+    let refreshed = ReportedProgress::apply(Some(standing), 1, None, t0 + Duration::from_secs(10))
+        .expect("the report still stands");
+    assert!(!refreshed.expired(t0 + Duration::from_secs(24)));
+    assert!(refreshed.expired(t0 + Duration::from_secs(25)));
+}
+
+#[test]
+fn an_osc94_report_arrives_as_a_progress_report_event() {
+    // The delivery half of the seat (osc94-progress spec): a
+    // shell-emitted OSC 9;4 reaches the app as
+    // `ProgressReport(state, value)` through the same tagged
+    // stream the title rides — the fork arm's end-to-end pin on
+    // the pinned revs, both the full and the omitted-value form.
+    let (terminal, mut rx) = progress_report_terminal();
+
+    terminal.input_no_scroll(&b"printf '\\033]9;4;1;42\\007\\033]9;4;3\\007'\r"[..]);
+    poll_until_progress(&mut rx, (1, Some(42)), "the valued report arrives");
+    poll_until_progress(&mut rx, (3, None), "the omitted-value report arrives");
+}
+
+#[test]
+fn the_foreground_handoff_clears_a_standing_progress_report() {
+    // The local edge (osc94-progress spec): the command that owned
+    // the report finished — update()'s finish edge, the one the
+    // timer already rides, clears the fact. The test stands in for
+    // the app arm (event → engine note), then runs one real
+    // foreground job that reports mid-run and exits: the handoff's
+    // own update retires the number.
+    let (mut terminal, mut rx) = progress_report_terminal();
+
+    // One compound foreground job: report, then hold the
+    // foreground long enough to witness it.
+    terminal.input_no_scroll(&b"(printf '\\033]9;4;1;42\\007'; sleep 1)\r"[..]);
+    poll_until_progress(&mut rx, (1, Some(42)), "the report arrives mid-command");
+    terminal.note_progress_report(1, Some(42));
+
+    // Witness the running state: the widget's draw is update()'s
+    // driver in production (the duration tick wakes it for silent
+    // runners — nothing else does), so the test stands in for the
+    // render loop — one update while the job holds the foreground
+    // records the state the finish edge needs, the timer's own
+    // both-edges honesty rule.
+    poll_until_foreground(&terminal, true, "the job takes the foreground");
+    terminal.update();
+    assert_eq!(
+        terminal.reported_progress().map(|r| r.value),
+        Some(Some(42)),
+        "the report stands while its command owns the foreground"
+    );
+
+    // The job exits; one update after the handoff retires the
+    // number — the prompt redraw's damage drives this update in
+    // production.
+    poll_until_foreground(&terminal, false, "the job hands the foreground back");
+    terminal.update();
+    assert_eq!(
+        terminal.reported_progress(),
+        None,
+        "the handoff clears the standing report"
+    );
+}
+
+#[test]
+fn a_multibyte_escape_decodes_into_the_path() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/home/%E4%BD%A0");
+    let report = terminal
+        .reported_cwd()
+        .expect("the multibyte decode stands");
+    assert_eq!(report.path, "/home/你");
+}
+
+#[test]
+fn a_non_utf8_decode_rejects_without_disturbing_the_standing_report() {
+    // `%FF` decodes to a byte sequence that is not UTF-8 — the
+    // report rejects whole (the spec-named branch; fails toward
+    // rejection).
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/one");
+    terminal.note_current_directory("file://h/%FF");
+    let report = terminal
+        .reported_cwd()
+        .expect("the standing report survives");
+    assert_eq!(report.path, "/one");
+}
+
+#[test]
+fn a_root_path_report_stands() {
+    let mut terminal = cwd_report_terminal();
+    terminal.note_current_directory("file://h/");
+    let report = terminal.reported_cwd().expect("the root is a path");
+    assert_eq!(report.host.as_deref(), Some("h"));
+    assert_eq!(report.path, "/");
+}
+
+#[test]
+fn an_empty_host_report_never_names_a_remote_host() {
+    let report = ReportedCwd::parse("file:///home/u").expect("parses");
+    assert!(!report.names_remote_host(None));
+    assert!(!report.names_remote_host(Some("laptop")));
+}
+
+#[test]
+fn a_report_naming_our_host_is_local_case_insensitively() {
+    let report = ReportedCwd::parse("file://Laptop/home/u").expect("parses");
+    assert!(!report.names_remote_host(Some("laptop")));
+}
+
+#[test]
+fn a_report_naming_another_host_is_remote() {
+    let report = ReportedCwd::parse("file://workstation/home/u").expect("parses");
+    assert!(report.names_remote_host(Some("laptop")));
+    // No local name to compare against: a named host is taken at
+    // its word.
+    assert!(report.names_remote_host(None));
 }

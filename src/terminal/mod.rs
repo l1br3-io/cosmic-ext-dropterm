@@ -9,9 +9,15 @@
 
 mod engine;
 pub mod mouse_reporter;
-mod suggest;
+// pub(crate) for one consumer: the app layer loads the spec table's
+// data file (suggest-specs-data spec) and hands it down through
+// `TerminalOptions` — the model itself never reads files.
+pub(crate) mod suggest;
 pub mod theme_source;
 mod widget;
 
-pub use engine::{Terminal, TerminalOptions, TerminalScroll, WINDOW_BG_COLOR};
+pub use engine::{
+    ProgressState, ReportedCwd, ReportedProgress, Terminal, TerminalOptions, TerminalScroll,
+    WINDOW_BG_COLOR,
+};
 pub use widget::{Action, TerminalBox};

@@ -2,6 +2,19 @@
 
 What each tagged release changed, newest first - a curated, linkable summary; the GitHub release pages carry the exhaustive auto-generated lists, and the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md) carries what comes next. A section is added here at release time, by the release commit; nothing in between.
 
+## v0.3.0 (2026-10-24)
+
+The autosuggestions release: fish-style ghost text computed entirely terminal-side - no shell integration, no scripts shipped, no environment injected. As you type, the rest of the most recent matching command from this tab's own history renders as dim ghost text after the cursor; Right accepts all of it, Alt+Right accepts one shell-word, and nothing ever executes without an explicit accept. Beyond history, typed path tokens complete from the filesystem, command names complete from the spawn-time PATH snapshot, and the curated table finishes subcommands and long flags for git, cargo, docker, systemctl, and npm; an optional idle delay holds the ghost back until typing pauses, and every provider carries its own settings toggle. Around it: the status band's command-lifecycle tier, the settings font picker, the howto/FAQ/sample-config docs layer, and the empty-desktop and caret fixes.
+
+- Autosuggestions - history ghosts, paths, command names, the subcommand/flag table ([autosuggestions](autosuggestions.md))
+- The idle delay - `autosuggestions_delay_ms`, the ghost at the pause instead of the churn ([the delay](autosuggestions.md#the-delay))
+- The status band's command lifecycle - the duration segment, the finished-command notification, the scrolled-back chip, the band's pointer idioms ([command time](status-bar.md#command-time), [the scrolled-back chip](status-bar.md#the-scrolled-back-chip), [reading and copying](status-bar.md#reading-and-copying))
+- The font picker - the Appearance card's family list, each row previewed in its own face ([settings](settings.md#the-five-tabs))
+- Desktop presence - hidden from the dock and window switcher by default, `show_in_dock` to restore it ([configuration](configuration.md#layer-focus-and-panels))
+- The docs layer - Common tasks, the FAQ, the complete sample config ([common tasks](howto.md), [FAQ](faq.md))
+- Fixes - toggle-show on an empty desktop lands focused with keybinds live, the block caret paints in the first shown frame, font zoom applies immediately, an empty title report clears the title
+- Build - `just deps`, the prerequisite gate that installs whatever a fresh machine lacks ([development](development.md))
+
 ## v0.2.0 (2026-10-17)
 
 The status band release: a 28 px glance strip beside the grab bar narrating the active terminal - foreground process, working directory with git branch, profile, cell dimensions, tab position, zoom, clock, command time, scroll position - every segment click-to-copy, drag-selectable, individually toggleable, with its own context menu. Profiles grew a full manager (transactional edit form, armed two-step delete, inherit-aware pickers), the tab strip and status band gained border hairlines, and the documentation you are reading shipped: this site, the research decision log, and the two drift gates that pin docs to code. Development installs split from the installed release under a `-dev` identity so the two never tug each other.
@@ -25,7 +38,3 @@ First release: the drop-down core and parity with Yakuake (the KDE drop-down ter
 - Settings drawer, theming, the twelve schemes ([settings](settings.md), [theming](theming.md))
 - CLI remote control and `--is-visible` ([CLI reference](cli.md))
 - The panel applet ([applet](applet.md))
-
-## Next (unreleased, on main)
-
-Fish-style autosuggestions - history ghosts, path and command-name completion, the curated subcommand/flag table - shipped to main after v0.2.0 and rides the next release ([autosuggestions](autosuggestions.md)).

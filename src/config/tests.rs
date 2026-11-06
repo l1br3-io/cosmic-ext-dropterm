@@ -792,6 +792,88 @@ fn missing_custom_key_binds_loads_as_the_empty_map() {
 }
 
 #[test]
+fn an_alias_map_round_trips_through_the_config_store() {
+    // The record's own example survives a write→load cycle with
+    // equality: `gc = "git checkout"` declared once, re-targeting
+    // the specs table on every load. One serialized map field (OQ-1,
+    // decided against the config machinery's grain — the
+    // `custom_key_binds` precedent), its file name the field's
+    // on-disk spelling.
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-aliases-roundtrip-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    let stored = DropTermConfig {
+        autosuggestions_aliases: HashMap::from([
+            ("gc".to_string(), "git checkout".to_string()),
+            ("a".to_string(), "gc".to_string()),
+        ]),
+        ..DropTermConfig::default()
+    };
+    stored.write_entry(&config).expect("write config keys");
+    let version_dir = root
+        .join("cosmic")
+        .join("dropterm-config-test")
+        .join(format!("v{CONFIG_VERSION}"));
+    assert!(
+        version_dir.join("autosuggestions_aliases").is_file(),
+        "the key file's name is the field's on-disk spelling"
+    );
+
+    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    assert_eq!(loaded, stored);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn missing_autosuggestions_aliases_key_loads_as_the_empty_map() {
+    // A config directory from a version that did not yet write
+    // `autosuggestions_aliases` loads as the empty map — the same
+    // default-entry leniency as every additive key before it, and
+    // the empty map is today byte-for-bit (no alias re-targets).
+    let root = std::env::temp_dir().join(format!(
+        "dropterm-config-test-missing-aliases-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let config = cosmic_config::Config::with_custom_path(
+        "dropterm-config-test",
+        CONFIG_VERSION,
+        root.clone(),
+    )
+    .expect("temp config context");
+    DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    }
+    .write_entry(&config)
+    .expect("write config keys");
+    let version_dir = root
+        .join("cosmic")
+        .join("dropterm-config-test")
+        .join(format!("v{CONFIG_VERSION}"));
+    std::fs::remove_file(version_dir.join("autosuggestions_aliases"))
+        .expect("remove autosuggestions_aliases key file");
+
+    let loaded = DropTermConfig::get_entry(&config).expect("aliases-less v1 config loads clean");
+    assert!(loaded.autosuggestions_aliases.is_empty());
+    // The directory is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn keybinds_write_persists_the_whole_map_through_the_store() {
     // The settings module's whole-map write lands as one `set` of
     // the `custom_key_binds` key — the ProfileWrite precedent —

@@ -41,11 +41,12 @@ use cosmic_text::{
 use indexmap::IndexSet;
 use std::{
     borrow::Cow,
-    collections::BTreeSet,
+    cell::Cell,
+    collections::{BTreeSet, HashMap, HashSet},
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicU32, Ordering},
     },
     time::{Duration, Instant},
@@ -131,6 +132,19 @@ pub struct TerminalOptions {
     /// `set_config` pass, so a showing specs ghost disappears the
     /// moment the toggle lands while history keeps suggesting.
     pub autosuggestions_specs_enabled: bool,
+    /// Whether the completion menu computes (suggest-menu spec):
+    /// resolved from the app config's
+    /// `autosuggestions_menu_enabled` — a flip applies at the next
+    /// `set_config` pass, and an off flip closes a showing menu on
+    /// the spot while the ghost keeps suggesting (the ghost and the
+    /// trigger are separable).
+    pub autosuggestions_menu_enabled: bool,
+    /// The auto-popup opt-in (suggest-menu spec, Task 6): resolved
+    /// from the app config's `autosuggestions_menu_auto` — with it
+    /// on, an idle update whose typed segment collects two or more
+    /// candidates opens the menu without the chord. `false` (the
+    /// default) is today byte-for-bit: the block never runs.
+    pub autosuggestions_menu_auto: bool,
     /// The idle-delay display gate (suggest-delay spec):
     /// `autosuggestions_delay_ms` as resolved from the app config —
     /// a qualifying suggestion is withheld until the typed segment
@@ -139,6 +153,31 @@ pub struct TerminalOptions {
     /// lowered delay can reveal a withheld suggestion at the next
     /// update). `0` is fish parity — nothing is ever withheld.
     pub autosuggestions_delay_ms: u16,
+    /// The user-declared alias map (suggest-aliases spec):
+    /// `[autosuggestions.aliases]` as resolved from the app config —
+    /// one serialized map field (the `custom_key_binds` precedent).
+    /// Re-read at every `set_config`, so a map change applies live
+    /// at the next typed prefix; empty (the default) re-targets
+    /// nothing, today byte-for-byte.
+    pub autosuggestions_aliases: HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml` beside the
+    /// config, app-loaded and handed down engine-side — the
+    /// `Cow::Borrowed` default is the built-in fallback itself, so
+    /// no file is today's table without an allocation. A changed
+    /// table applies at the next `set_config` pass, the next typed
+    /// prefix borrowing the fresh rows.
+    pub autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
+    /// Whether the generator provider runs (suggest-generators
+    /// spec): resolved from the app config's
+    /// `autosuggestions_generators_enabled` — a flip applies at the
+    /// next `set_config` pass: `false` stops every spawn and blanks
+    /// the observation's cache read on the echo (the stale rows
+    /// never serve), `true` re-arms the ruled triggers. The shell
+    /// gate and the resolved binary are spawn truth, never re-read
+    /// by `set_config` — a respawn (a fresh terminal) is the only
+    /// path that changes them.
+    pub autosuggestions_generators_enabled: bool,
 }
 
 impl Default for TerminalOptions {
@@ -158,7 +197,12 @@ impl Default for TerminalOptions {
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
             autosuggestions_specs_enabled: true,
+            autosuggestions_menu_enabled: true,
+            autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
+            autosuggestions_aliases: HashMap::new(),
+            autosuggestions_specs_table: Cow::Borrowed(suggest::builtin_specs()),
+            autosuggestions_generators_enabled: true,
         }
     }
 }
@@ -523,6 +567,33 @@ pub struct Terminal {
     /// every `set_config`. The table itself is static universal
     /// knowledge; only the gate is state.
     autosuggestions_specs_enabled: bool,
+    /// The user-declared alias map (suggest-aliases spec): the
+    /// resolved `[autosuggestions.aliases]` table re-targeting the
+    /// specs provider's command word, re-read at every `set_config`
+    /// so a map change applies live at the next typed prefix.
+    /// Config truth, never spawn truth — unlike the catalog
+    /// snapshot it follows the config, not the pty's birth.
+    autosuggestions_aliases: HashMap<String, String>,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml`, re-read at
+    /// every `set_config` so an edited or dropped file applies live
+    /// at the next typed prefix — config truth beside the config,
+    /// never spawn truth. `Cow::Borrowed` holds the built-in
+    /// fallback without owning a copy of it.
+    autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
+    /// Whether the completion menu computes (suggest-menu spec) —
+    /// the resolved options flag, re-read at every `set_config`;
+    /// an off flip closes a showing menu on the spot.
+    autosuggestions_menu_enabled: bool,
+    /// The auto-popup opt-in (suggest-menu spec) — the resolved
+    /// options flag, re-read at every `set_config`.
+    autosuggestions_menu_auto: bool,
+    /// Whether the open menu's session is auto-managed
+    /// (suggest-menu spec): an auto-opened menu closes itself when
+    /// narrowing leaves one or nothing; a chord-opened one obeys
+    /// only its own rules (the press, the lifecycle moments). Reset
+    /// on every open, either kind.
+    menu_auto_opened: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
     /// observation carries it per update, so a live flip applies
@@ -560,6 +631,10 @@ pub struct Terminal {
     /// [`PathListingCache`]; refreshed inside the synchronous update
     /// flow, never from a thread.
     path_cache: PathListingCache,
+    /// The generator runner (suggest-generators spec): spawn,
+    /// deadline, and stale-while-revalidate cache engine-side —
+    /// dies with the terminal, so a respawn starts its cache empty.
+    generator: GeneratorRunner,
     /// The ghost tint (autosuggest spec, OQ-2): the scheme fg→bg
     /// blend, computed at construction and every `set_config` —
     /// never per frame.
@@ -582,6 +657,31 @@ pub struct Terminal {
     /// is unaffected by the drain: it reads
     /// [`Self::command_frozen`], which serves until the next start.
     command_finished: Option<Duration>,
+    /// Output landed on this tab while the surface was hidden and no
+    /// interaction has acknowledged it since (status-activity spec).
+    /// Set by the active tab's wakeup while hidden; cleared by
+    /// terminal touch or tab activation — never by the show itself,
+    /// because a mark cleared on show is never seen. A `Cell`
+    /// because the touch funnels ([`Self::input_scroll`],
+    /// [`Self::paste`], [`Self::scroll`]) take `&self`. Dies with
+    /// the terminal, so a respawn or session restore starts clean
+    /// by construction.
+    missed_activity: Cell<bool>,
+    /// The shell's own cwd report (osc7-cwd spec) — the path seat's
+    /// authoritative source, outranking the `/proc` cwd and the ssh
+    /// stand-in while it stands. Written only by the event surface
+    /// ([`Self::note_current_directory`]); a malformed report is
+    /// ignored whole, a newer one replaces whatever stood. Dies with
+    /// the terminal, so a respawn starts clean by construction.
+    reported_cwd: Option<ReportedCwd>,
+    /// The running command's own progress report (osc94-progress
+    /// spec) — the OSC 9;4 state and last value, written only by
+    /// the event surface ([`Self::note_progress_report`]) and
+    /// cleared by state 0, the foreground handoff (`update()`'s
+    /// finish edge), and [`PROGRESS_DECAY`] without a refresh. Dies
+    /// with the terminal, so a respawn starts clean by
+    /// construction.
+    reported_progress: Option<ReportedProgress>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -591,6 +691,11 @@ pub struct Terminal {
     /// the status-glance lesson: it dies with the terminal, so a
     /// respawn (a fresh terminal) resets history by construction.
     suggest: Suggest,
+    /// The completion menu's state (suggest-menu spec): the pure
+    /// model, owned beside `suggest` so the collection, the scoped
+    /// presses, and the accept funnel share one truth — and die with
+    /// the terminal, like the ring.
+    menu: suggest::MenuState,
     search_regex_opt: Option<RegexSearch>,
     search_value: String,
     shell_pid: Option<u32>,
@@ -763,6 +868,404 @@ fn command_catalog_from_path(path: Option<&str>) -> Vec<String> {
     names.into_iter().collect()
 }
 
+// The generator contract (suggest-generators spec): the program
+// list is this crate's own reviewed argv — data files never carry
+// scripts, the record's permanent rejection. The env is not
+// reproduced; it is reduced to two reproducible inputs: the
+// spawn-time PATH's absolute binary and the tab's `/proc` cwd.
+// Five seconds, then kill, then silence (Task 3) — a failed
+// generator is DropTerm's problem, never the prompt's.
+
+/// The branch generator's argv (VS Code's set, the record's
+/// verbatim pinning): local heads, newest commit first, the short
+/// name the template's first `|`-field carries.
+pub(crate) const GIT_BRANCHES: &[&str] = &[
+    "git",
+    "--no-optional-locks",
+    "for-each-ref",
+    "--sort=-committerdate",
+    "--format=%(refname:short)|%(objectname:short)|%(subject)",
+    "refs/heads/",
+];
+
+/// The tag generator's argv: every tag, newest first.
+pub(crate) const GIT_TAGS: &[&str] = &[
+    "git",
+    "--no-optional-locks",
+    "tag",
+    "--list",
+    "--sort=-committerdate",
+];
+
+/// The working-tree files generator's argv: the porcelain short
+/// status — staged, unstaged, and untracked alike.
+pub(crate) const GIT_FILES: &[&str] = &["git", "--no-optional-locks", "status", "--short"];
+
+/// One `for-each-ref --format` line's short ref name: the
+/// template's first `|`-field (the subject may carry its own
+/// pipes; the name never runs past the first).
+pub(crate) fn branch_name(line: &str) -> Option<&str> {
+    line.split('|').next()
+}
+
+/// One `tag --list` line is the whole name.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Option is the post-filter's uniform extract signature — every set's carve answers the same question, None dropping its line"
+)]
+pub(crate) fn tag_name(line: &str) -> Option<&str> {
+    Some(line)
+}
+
+/// One `status --short` line's changed path: past the porcelain
+/// `XY ` prefix, a rename's new path after the ` -> ` arrow. Git
+/// C-quotes paths carrying non-ASCII or quotes (core.quotePath's
+/// default): the quoted form is not the name, and unquoting git's
+/// escapes is a parser this contract refuses to ship — `None`
+/// drops the line alone, never poisons the set.
+pub(crate) fn status_path(line: &str) -> Option<&str> {
+    let rest = line.get(3..)?;
+    let path = match rest.rsplit_once(" -> ") {
+        Some((_, new)) => new,
+        None => rest,
+    };
+    if path.is_empty() || path.starts_with('"') {
+        return None;
+    }
+    Some(path)
+}
+
+/// One generator output's post-filter (VS Code's discipline, the
+/// record's pinning): `warning:`/`error:` lines are reality noise
+/// and drop, any `fatal:` line means the command itself failed —
+/// the whole set is silence — names dedupe through a `seen` set,
+/// and each survivor rides `escape_for_shell` (an unwritable name
+/// drops alone, never poisons the set). The result is the
+/// already-escaped, deduped shape the model's cache holds.
+pub(crate) fn post_filter_names(
+    output: &str,
+    extract: impl Fn(&str) -> Option<&str>,
+) -> Vec<String> {
+    if output.lines().any(|line| line.starts_with("fatal:")) {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for line in output.lines() {
+        if line.starts_with("warning:") || line.starts_with("error:") {
+            continue;
+        }
+        let Some(raw) = extract(line).filter(|raw| !raw.is_empty()) else {
+            continue;
+        };
+        let Some(escaped) = suggest::escape_for_shell(raw) else {
+            continue;
+        };
+        if seen.insert(escaped.clone()) {
+            names.push(escaped);
+        }
+    }
+    names
+}
+
+/// One generator spawn under the contract: the DropTerm-owned argv
+/// run behind the absolutely-resolved binary with the tab's
+/// `/proc` cwd and an env scrubbed to `HOME` (the spawn-time truth
+/// the pty exec inherited — unset when the tab carried none) and
+/// `LANG` — pinned to `C` so git's noise markers (`fatal:`,
+/// `warning:`, `error:`) are the English bytes the post-filter
+/// pins, whatever the user's desktop locale would have localized
+/// them into. Nothing else inherits: no ambient PATH lookup at
+/// exec, no `DropTerm` env leakage, no shell between `DropTerm`
+/// and the argv.
+fn generator_command(
+    argv: &[&str],
+    binary: &Path,
+    cwd: &Path,
+    home: Option<&str>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .env_clear()
+        .env("LANG", "C");
+    if let Some(home) = home {
+        command.env("HOME", home);
+    }
+    command
+}
+
+/// The generator binary: the first spawn-time `$PATH` directory
+/// carrying an executable `git` — the catalog walk's own check
+/// (regular file, execute bit, symlinks followed), resolved
+/// against truth a mid-session PATH re-export cannot move. `None`
+/// is silence: no git, no generators.
+fn resolve_generator_binary(spawn_path: Option<&str>, program: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = spawn_path?;
+    for dir in std::env::split_paths(path) {
+        let candidate = dir.join(program);
+        let Ok(meta) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The generator deadline (suggest-generators spec, ruled): five
+/// seconds, then kill, then silence — a hung generator is never the
+/// prompt's problem and never a user-visible error.
+const GENERATOR_DEADLINE: Duration = Duration::from_secs(5);
+
+/// One cache key: which DropTerm-owned argv, in which cwd — the
+/// (argv, cwd) the record's stale-while-revalidate rules key on.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct GenKey {
+    argv: &'static [&'static str],
+    cwd: PathBuf,
+}
+
+/// The engine-side mirror of the model's sets: `Arc` handles out of
+/// the shared cache, cheap to hand the observation without holding
+/// the lock.
+struct GenCached {
+    branches: Arc<[String]>,
+    tags: Arc<[String]>,
+    files: Arc<[String]>,
+}
+
+/// The runner's thread-shared state: the cache, the in-flight
+/// revalidations, and the spawn counter — the no-spawn-on-typing
+/// contract's own bookkeeping, test-read.
+#[derive(Default)]
+struct GenShared {
+    cache: HashMap<GenKey, Arc<[String]>>,
+    in_flight: HashSet<GenKey>,
+    spawns: u64,
+}
+
+/// The generator runner (suggest-generators spec): engine-side
+/// spawn, deadline, and stale-while-revalidate cache for the
+/// model's generator sets. The cache serves whatever it holds the
+/// instant an update asks — stale included — and revalidation
+/// happens only on the ruled triggers (the menu's open moment and
+/// the eligibility onset at spawn), never on the damage-driven
+/// update path. Every failure is cached silence: a missing binary,
+/// a non-repo cwd, a failing command, a hung command — all degrade
+/// to the empty set (no TTL, no wall clock; a re-trigger refreshes,
+/// serve-forever-until-revalidation being the ruled horizon).
+struct GeneratorRunner {
+    /// The config gate (suggest-generators spec): the resolved
+    /// `autosuggestions_generators_enabled`, re-read at every
+    /// `set_config` — `false` stops every spawn and blanks the
+    /// cache read (a warm cache never serves), `true` re-arms the
+    /// ruled triggers. Config truth, never spawn truth.
+    enabled: bool,
+    /// The standing ssh gate, spawn truth: the tab's program is an
+    /// allowlisted shell. An ineligible tab never spawns.
+    eligible: bool,
+    /// The spawn-time-resolved absolute git binary; `None` silences
+    /// every spawn (no git on the tab's PATH).
+    binary: Option<PathBuf>,
+    /// The spawn-time HOME — the scrubbed env's one optional input.
+    home: Option<String>,
+    /// The wakeup channel: a landed fetch sends one `Wakeup` so the
+    /// app drives the update that serves the fresh cache — without
+    /// it, a landed fetch would wait on the user's next keystroke.
+    wake: Option<(TabId, mpsc::UnboundedSender<(TabId, Event)>)>,
+    /// The shared cache + in-flight set, written through by the
+    /// worker threads and read by every update.
+    shared: Arc<Mutex<GenShared>>,
+}
+
+impl GeneratorRunner {
+    /// The runner for a fresh terminal: spawn truth only — the
+    /// shell gate, the resolved binary, the spawn HOME, and the
+    /// wakeup channel — plus the resolved config gate. The cache
+    /// starts empty; nothing spawns until a trigger asks.
+    fn new(
+        spawned_program: &str,
+        spawn_path: Option<&str>,
+        spawn_home: Option<&str>,
+        enabled: bool,
+        tab_id: TabId,
+        event_tx: mpsc::UnboundedSender<(TabId, Event)>,
+    ) -> Self {
+        Self {
+            enabled,
+            eligible: suggest::is_allowlisted_shell(spawned_program),
+            binary: resolve_generator_binary(spawn_path, "git"),
+            home: spawn_home.map(str::to_owned),
+            wake: Some((tab_id, event_tx)),
+            shared: Arc::new(Mutex::new(GenShared::default())),
+        }
+    }
+
+    /// Locks the shared state, poison-recovered — a panicked worker
+    /// must not take the tab's suggestions with it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, GenShared> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The cached sets for `cwd` — the observation's spawn-free
+    /// read. `None` until the runner has cached anything for this
+    /// cwd (no generator context), on an ineligible tab, with no
+    /// resolvable git, or under a live `false` flip (a warm cache
+    /// never serves); once any set is cached the three arrive
+    /// whole, a set the cache lacks reading empty — an honest
+    /// silence, not a missing context.
+    fn sets_for(&self, cwd: Option<&Path>) -> Option<GenCached> {
+        if !self.enabled || !self.eligible || self.binary.is_none() {
+            return None;
+        }
+        let cwd = cwd?;
+        let key = |argv: &'static [&'static str]| GenKey {
+            argv,
+            cwd: cwd.to_path_buf(),
+        };
+        let state = self.lock();
+        let branches = state.cache.get(&key(GIT_BRANCHES)).cloned();
+        let tags = state.cache.get(&key(GIT_TAGS)).cloned();
+        let files = state.cache.get(&key(GIT_FILES)).cloned();
+        if branches.is_none() && tags.is_none() && files.is_none() {
+            return None;
+        }
+        let empty = || Arc::from(Vec::new());
+        Some(GenCached {
+            branches: branches.unwrap_or_else(empty),
+            tags: tags.unwrap_or_else(empty),
+            files: files.unwrap_or_else(empty),
+        })
+    }
+
+    /// The revalidation trigger (suggest-generators spec): stale
+    /// keeps serving while a worker per argv revalidates — skipped
+    /// where one is already in flight (the SWR dedup). Menu-open
+    /// and the eligibility onset call this; the damage-driven
+    /// update path never does. A live `false` flip blocks the
+    /// trigger with everything else.
+    fn revalidate(&self, cwd: Option<&Path>) {
+        if !self.enabled || !self.eligible || self.binary.is_none() {
+            return;
+        }
+        let Some(cwd) = cwd else {
+            return;
+        };
+        for argv in [GIT_BRANCHES, GIT_TAGS, GIT_FILES] {
+            let key = GenKey {
+                argv,
+                cwd: cwd.to_path_buf(),
+            };
+            let mut state = self.lock();
+            if !state.in_flight.insert(key.clone()) {
+                continue;
+            }
+            state.spawns += 1;
+            drop(state);
+            self.spawn_worker(key);
+        }
+    }
+
+    /// One background revalidation: run the argv under the
+    /// deadline, post-filter whatever came back (silence on any
+    /// failure), cache it, retire the in-flight mark, and wake the
+    /// app — the fresh set serves at the next update.
+    fn spawn_worker(&self, key: GenKey) {
+        let Some(binary) = self.binary.clone() else {
+            return;
+        };
+        let command = generator_command(key.argv, &binary, &key.cwd, self.home.as_deref());
+        let shared = Arc::clone(&self.shared);
+        let wake = self.wake.clone();
+        std::thread::spawn(move || {
+            let names = run_under_deadline(command, GENERATOR_DEADLINE)
+                .map(|output| post_filter_names(&output, generator_extract(key.argv)))
+                .unwrap_or_default();
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.cache.insert(key.clone(), Arc::from(names));
+            state.in_flight.remove(&key);
+            drop(state);
+            // The landed-fetch wakeup: one nudge so the app drives
+            // the update that serves the fresh cache (a dying tab's
+            // closed channel drops it silently).
+            if let Some((tab_id, tx)) = wake {
+                let _ = tx.send((tab_id, Event::Wakeup));
+            }
+        });
+    }
+
+    /// The shared state, for the engine pins — test-only reads of
+    /// the spawn counter and the cache bookkeeping.
+    #[cfg(test)]
+    fn lock_generator_state(&self) -> std::sync::MutexGuard<'_, GenShared> {
+        self.lock()
+    }
+}
+
+/// Which post-filter carve an argv's output takes: the branch
+/// template's `|`-field, the bare tag name, or the porcelain path.
+fn generator_extract(argv: &[&str]) -> fn(&str) -> Option<&str> {
+    if argv == GIT_BRANCHES {
+        branch_name
+    } else if argv == GIT_TAGS {
+        tag_name
+    } else {
+        status_path
+    }
+}
+
+/// One spawn under the deadline (suggest-generators spec): a worker
+/// thread drains the child's stdout and waits it while the caller
+/// holds the `recv_timeout`; expiry SIGKILLs the child and discards
+/// everything. Every failure is `None` — a missing binary, a spawn
+/// error, a non-zero exit, a timeout, a non-UTF-8 pipe — never an
+/// error surface.
+fn run_under_deadline(mut command: std::process::Command, deadline: Duration) -> Option<String> {
+    use std::io::Read;
+
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        // Drain before waiting: a chatty child's full pipe would
+        // otherwise deadlock the wait itself.
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut stdout);
+        }
+        let status = child.wait();
+        let _ = tx.send((stdout, status.ok()));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok((stdout, Some(status))) if status.success() => Some(stdout),
+        _ => {
+            // The hard timeout: kill, reap, discard — silence.
+            // SAFETY: libc::kill signals a pid this process owns.
+            // The waiter sends only after wait() reaps the child, so
+            // a timed-out recv means the child was unreaped when the
+            // window opened; the microsecond gap between a reaping
+            // wait() and its send would additionally require
+            // immediate pid reuse, which Linux's sequential pid
+            // allocation makes effectively unreachable.
+            unsafe { libc::kill(i32::try_from(pid).unwrap_or(-1), libc::SIGKILL) };
+            let _ = waiter.join();
+            None
+        }
+    }
+}
+
 /// The history seed's one-time read (history-seed spec): the shell's
 /// own persistent history file under the spawn-time HOME — the
 /// per-shell default location, read once at spawn and never written,
@@ -844,6 +1347,19 @@ impl Terminal {
             cell_width,
             cell_height,
         };
+        // The generator runner (suggest-generators spec): spawn
+        // truth only — the shell gate, the spawn-PATH git binary,
+        // the spawn HOME — plus the resolved config gate and the
+        // wakeup channel the landed fetches nudge (the clone; the
+        // proxy owns the original).
+        let generator = GeneratorRunner::new(
+            &options.spawned_program,
+            options.spawn_path.as_deref(),
+            options.spawn_home.as_deref(),
+            options.autosuggestions_generators_enabled,
+            tab_id,
+            event_tx.clone(),
+        );
         let event_proxy = TaggedEventProxy {
             tab_id,
             tx: event_tx,
@@ -891,7 +1407,7 @@ impl Terminal {
         )]
         let spawn_grid = (size.columns() as u16, size.screen_lines() as u16);
 
-        Ok(Self {
+        let terminal = Self {
             active_regex_match: None,
             active_hyperlink_id: None,
             url_regex_search: url_regex_search(),
@@ -909,6 +1425,11 @@ impl Terminal {
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
+            autosuggestions_aliases: options.autosuggestions_aliases.clone(),
+            autosuggestions_specs_table: options.autosuggestions_specs_table.clone(),
+            autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
+            autosuggestions_menu_auto: options.autosuggestions_menu_auto,
+            menu_auto_opened: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
             suggest_typed_at: Instant::now(),
             suggest_last_before_cursor: String::new(),
@@ -917,10 +1438,14 @@ impl Terminal {
             spawn_home: options.spawn_home.clone(),
             command_catalog: command_catalog_from_path(options.spawn_path.as_deref()),
             path_cache: PathListingCache::default(),
+            generator,
             ghost_color: suggest::ghost_color(colors),
             last_foreground_child: false,
+            reported_progress: None,
             timer: CommandTimer::default(),
             command_finished: None,
+            missed_activity: Cell::new(false),
+            reported_cwd: None,
             settle_prompt_pending: false,
             suggest: {
                 // The history seed (history-seed spec): read once at
@@ -936,6 +1461,7 @@ impl Terminal {
                 }
                 suggest
             },
+            menu: suggest::MenuState::new(),
             search_regex_opt: None,
             search_value: String::new(),
             shell_pid,
@@ -947,7 +1473,16 @@ impl Terminal {
             zoom_adj: Default::default(),
             is_focused: true,
             master_fd,
-        })
+        };
+        // The generators' eligibility onset (suggest-generators
+        // spec): an eligible tab's first revalidation pre-warms the
+        // cache at the spawn cwd, so the first Ctrl+Space serves
+        // real rows — background workers under the deadline, never
+        // blocking construction, never per keystroke.
+        terminal
+            .generator
+            .revalidate(terminal.working_directory().as_deref());
+        Ok(terminal)
     }
 
     pub fn buffer_weak(&self) -> Weak<Buffer> {
@@ -1028,6 +1563,31 @@ impl Terminal {
         }
     }
 
+    /// Closes the spawn-grid settle at the grid the terminal already
+    /// holds — records the resting grid, freezes the record, and
+    /// marks the settle's close a fresh-prompt moment (autosuggest
+    /// spec) so the next update may adopt the shell's first prompt.
+    /// For the adoption-after-apply shape the pin funnel runs: the
+    /// granted size applies first (the draw resized before the
+    /// granted-size echo arrived), and `resize` no-ops on unchanged
+    /// sizes — so an arm at that point would wait for a changed
+    /// resize that never comes, the settle would never close, and
+    /// the fresh-prompt latch would never arm (the 2026-10-24
+    /// fresh-start trace: no tab ever adopted its anchor). A no-op
+    /// on settled records, so a re-show's adoption can never
+    /// re-snapshot a frozen record.
+    pub fn settle_spawn_grid_now(&mut self) {
+        if matches!(self.spawn_settle, SpawnSettle::Settled) {
+            return;
+        }
+        self.spawn_grid = self.grid();
+        self.spawn_settle = SpawnSettle::Settled;
+        // The settle's close is a fresh-prompt moment (autosuggest
+        // spec): the update that follows may adopt the shell's
+        // first prompt.
+        self.settle_prompt_pending = true;
+    }
+
     pub fn zoom_adj(&self) -> i8 {
         self.zoom_adj
     }
@@ -1041,6 +1601,13 @@ impl Terminal {
         self.is_focused = is_focused;
 
         if focus_changed {
+            // The completion menu closes on focus loss
+            // (suggest-menu spec): an unfocused surface must not
+            // hold an interaction overlay over a grid it is not
+            // attending to.
+            if !is_focused {
+                self.menu.close();
+            }
             // The caret rides the buffer build — the cursor cell's
             // fg/bg swap keys on this flag — so a real focus change
             // must arm a rebuild, or the swap only lands when
@@ -1131,6 +1698,77 @@ impl Terminal {
         self.timer.last_duration()
     }
 
+    /// Records the shell's own verdict for the finished command
+    /// (status-exit spec): the OSC 133;D report forwarded from the
+    /// event surface, held by the command timer on the frozen pair's
+    /// lifecycle — cleared by the next witnessed start, never guessed.
+    pub fn note_prompt_exit(&mut self, code: u32) {
+        self.timer.note_exit(code);
+    }
+
+    /// The last finished command's exit code (status-exit spec): the
+    /// shell's own 133;D report — success and absent facts both read
+    /// `None` — served until the next command starts.
+    pub fn command_exit(&self) -> Option<u32> {
+        self.timer.last_exit()
+    }
+
+    /// Records the shell's own cwd report (osc7-cwd spec): the OSC 7
+    /// payload forwarded from the event surface. A malformed report
+    /// is ignored whole — it never disturbs a standing one; a valid
+    /// report replaces whatever stood.
+    pub fn note_current_directory(&mut self, url: &str) {
+        if let Some(report) = ReportedCwd::parse(url) {
+            self.reported_cwd = Some(report);
+        }
+    }
+
+    /// The shell's own cwd report (osc7-cwd spec), served until the
+    /// next report or the terminal's death — the path seat's
+    /// authoritative source, never a guess.
+    pub fn reported_cwd(&self) -> Option<ReportedCwd> {
+        self.reported_cwd.clone()
+    }
+
+    /// Records the running command's own progress report
+    /// (osc94-progress spec): the OSC 9;4 payload forwarded from
+    /// the event surface. State 0 clears; a report that omits its
+    /// value keeps the standing one; every report re-anchors the
+    /// decay clock.
+    pub fn note_progress_report(&mut self, state: u8, value: Option<u8>) {
+        self.reported_progress =
+            ReportedProgress::apply(self.reported_progress, state, value, Instant::now());
+    }
+
+    /// The standing progress report (osc94-progress spec), until
+    /// state 0, the foreground handoff, or the decay window clears
+    /// it — never a guess.
+    pub fn reported_progress(&self) -> Option<ReportedProgress> {
+        self.reported_progress
+    }
+
+    /// The decay deadline of the standing progress report
+    /// (osc94-progress spec): the instant it expires without a
+    /// refresh — `None` when nothing stands. The app sleeps until
+    /// this instant and then expires, so a dead reporter's last
+    /// number never outlives its window.
+    pub fn progress_decay_deadline(&self) -> Option<Instant> {
+        self.reported_progress
+            .map(|report| report.refreshed_at + PROGRESS_DECAY)
+    }
+
+    /// Expires the standing progress report if its decay window
+    /// has passed (osc94-progress spec); a no-op before the
+    /// deadline — an early fire caught a refreshed anchor.
+    pub fn expire_progress(&mut self) {
+        if self
+            .reported_progress
+            .is_some_and(|report| report.expired(Instant::now()))
+        {
+            self.reported_progress = None;
+        }
+    }
+
     /// Drains the finish latch once (command-lifecycle spec): the
     /// frozen duration of the most recently finished command,
     /// returned exactly once per finish — `command-notify`'s seam.
@@ -1140,12 +1778,42 @@ impl Terminal {
         self.command_finished.take()
     }
 
+    /// Arms the missed-activity latch (status-activity spec): output
+    /// landed on this tab while the surface was hidden. Called by
+    /// the app's Wakeup handler for the active tab, gated on the
+    /// hidden surface — never by anything inside the engine, whose
+    /// own output writes must not arm their own mark.
+    pub fn note_missed_activity(&mut self) {
+        self.missed_activity.set(true);
+    }
+
+    /// Whether output landed while the surface was hidden and no
+    /// interaction has acknowledged it since (status-activity spec)
+    /// — the band's attention halo's fact. A pure read: the band
+    /// samples it every refresh without draining it.
+    pub fn missed_activity(&self) -> bool {
+        self.missed_activity.get()
+    }
+
+    /// Clears the missed-activity latch — the acknowledgment itself
+    /// (status-activity spec). The shared head of the three user
+    /// touch funnels ([`Self::input_scroll`], [`Self::paste`],
+    /// [`Self::scroll`]) and the widget's pane-press site: any input
+    /// routed into the terminal pane is the user saying "seen".
+    /// Internal engine writes ride [`Self::input_no_scroll`]
+    /// directly, so they never masquerade as touches.
+    pub(crate) fn clear_missed_activity(&self) {
+        self.missed_activity.set(false);
+    }
+
     pub fn input_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+        self.clear_missed_activity();
         self.input_no_scroll(input);
         self.scroll(TerminalScroll::Bottom);
     }
 
     pub fn paste(&self, value: &str) {
+        self.clear_missed_activity();
         // This code is ported from alacritty
         let bracketed_paste = {
             let term = self.term.lock();
@@ -1197,6 +1865,175 @@ impl Terminal {
             .map(|showing| showing.visible.as_str())
     }
 
+    /// The completion menu's open attempt (suggest-menu spec, the
+    /// soft trigger): the ghost's own eligibility chain minus its
+    /// single-choice display gates, a fresh observation, and the
+    /// merged providers' full candidate sets. `false` is the
+    /// decline — ineligible, or no candidate answered — and the
+    /// caller forwards the chord to the shell verbatim.
+    pub fn menu_open(&mut self) -> bool {
+        self.menu_auto_opened = false;
+        // The generators' ruled trigger (suggest-generators spec):
+        // the menu's open moment revalidates the tab's cwd — stale
+        // serves in the rows this open collects, the fresh sets
+        // landing for the updates that follow.
+        self.generator
+            .revalidate(self.working_directory().as_deref());
+        let rows = self.menu_candidates();
+        self.menu.open(rows)
+    }
+
+    /// Whether the completion menu shows.
+    pub fn menu_is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// The menu's displayed rows (suggest-menu spec) — the
+    /// renderer's input, in display order.
+    pub fn menu_rows(&self) -> &[suggest::MenuCandidate] {
+        self.menu.rows()
+    }
+
+    /// The menu's selected row index (suggest-menu spec) — the
+    /// renderer's highlight.
+    pub fn menu_selected(&self) -> usize {
+        self.menu.selected()
+    }
+
+    /// The menu's scroll offset (suggest-menu spec) — the renderer's
+    /// visible window starts here.
+    pub fn menu_scroll(&self) -> usize {
+        self.menu.scroll()
+    }
+
+    /// Closes the menu: Escape, the chord's toggle, any press the
+    /// menu does not claim, and the lifecycle moments (resize,
+    /// focus loss, scroll-away) the renderer's contract names.
+    pub fn menu_close(&mut self) {
+        self.menu.close();
+    }
+
+    /// One menu-scoped press (suggest-menu spec): the pure
+    /// transition, with an accept's suffix written straight through
+    /// the one funnel — typed characters via `input_no_scroll`,
+    /// never a paste.
+    pub fn menu_press(&mut self, key: suggest::MenuKey) {
+        if let Some(suffix) = self.menu.press(key)
+            && !suffix.is_empty()
+        {
+            self.input_no_scroll(suffix.into_bytes());
+        }
+    }
+
+    /// The menu's candidate collection (suggest-menu spec): a fresh
+    /// observation under the ghost's eligibility chain minus its
+    /// single-choice display gates — the same reduced facts
+    /// `update()` builds each damage cycle, mirrored here as a
+    /// second cursor-line scrape at key-press frequency (never per
+    /// frame) so the ghost's own path stays untouched. Ineligible is
+    /// the empty set: the soft trigger's decline.
+    fn menu_candidates(&mut self) -> Vec<suggest::MenuCandidate> {
+        if !self.autosuggestions_menu_enabled || !self.autosuggestions_enabled || !self.is_focused {
+            return Vec::new();
+        }
+        if self.foreground_child_running() {
+            return Vec::new();
+        }
+        let (before_cursor, after_cursor_blank, display_offset, columns, cursor_column) = {
+            let term = self.term.lock();
+            let grid = term.grid();
+            let cursor = grid.cursor.point;
+            let columns = grid.columns();
+            let row = &grid[cursor.line];
+            let mut before_cursor = String::new();
+            let mut after_cursor_blank = true;
+            for column in 0..columns {
+                let cell = &row[Column(column)];
+                if Column(column) < cursor.column {
+                    if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                        continue;
+                    }
+                    before_cursor.push(match cell.c {
+                        '\t' => ' ',
+                        c => c,
+                    });
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        for &c in zerowidth {
+                            before_cursor.push(c);
+                        }
+                    }
+                } else {
+                    let blank = cell.c == ' '
+                        && !cell
+                            .flags
+                            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                        && cell.zerowidth().is_none();
+                    if !blank {
+                        after_cursor_blank = false;
+                    }
+                }
+            }
+            (
+                before_cursor,
+                after_cursor_blank,
+                grid.display_offset(),
+                columns,
+                cursor.column.0,
+            )
+        };
+        if display_offset != 0 {
+            return Vec::new();
+        }
+        // The anchor carve doubles as two of the ghost's guards:
+        // `None` is unanchored or a line that left the anchor.
+        let Some(typed) = self.suggest.typed_segment(&before_cursor) else {
+            return Vec::new();
+        };
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let paths_eligible = self.paths_eligible();
+        let working_directory = self.working_directory();
+        // The generator provider's cached sets (suggest-generators
+        // spec), served spawn-free beside the cwd truth: the fetch
+        // happens only on the ruled triggers, never on this path.
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
+        let path_listing = self.path_cache.listing_for(
+            self.autosuggestions_paths_enabled && paths_eligible,
+            suggest::path_token(Some(typed)),
+            self.spawn_home.as_deref(),
+            working_directory.as_deref(),
+        );
+        let observation = suggest::Observation {
+            enabled: self.autosuggestions_enabled,
+            paths_eligible,
+            paths_enabled: self.autosuggestions_paths_enabled,
+            path_listing,
+            commands_enabled: self.autosuggestions_commands_enabled,
+            specs_enabled: self.autosuggestions_specs_enabled,
+            aliases: &self.autosuggestions_aliases,
+            specs_table: &self.autosuggestions_specs_table,
+            command_catalog: &self.command_catalog,
+            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
+                branches: &sets.branches,
+                tags: &sets.tags,
+                files: &sets.files,
+            }),
+            focused: self.is_focused,
+            foreground_child: false,
+            display_offset: 0,
+            cursor_on_bottom_row: false,
+            columns,
+            cursor_column,
+            before_cursor: &before_cursor,
+            after_cursor_blank,
+            fresh_prompt: false,
+            delay_ms: self.autosuggestions_delay_ms,
+            typed_idle_ms: 0,
+        };
+        suggest::candidates(typed, &self.suggest, &observation)
+    }
+
     /// The active reveal deadline (suggest-delay spec): the instant
     /// a withheld suggestion may show — the typed segment's last
     /// change plus the resolved delay. `None` when nothing waits (no
@@ -1228,9 +2065,23 @@ impl Terminal {
         self.ghost_color
     }
 
+    /// The scheme's foreground as a cosmic-text color
+    /// (suggest-menu spec): the completion menu's row text — the
+    /// live terminal scheme's own fg, the same conversion the
+    /// default attrs ride, never a palette index.
+    pub fn foreground_color(&self) -> cosmic_text::Color {
+        convert_color(&self.colors, Color::Named(NamedColor::Foreground))
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width != self.size.width || height != self.size.height {
             let instant = Instant::now();
+
+            // The completion menu closes on resize (suggest-menu
+            // spec): the panel is anchored to the cursor's cell, and
+            // a reflow moves that anchor under a panel sized for the
+            // old geometry.
+            self.menu.close();
 
             // Clamp dimensions to ensure at least 1 row and 1 column,
             // preventing index-out-of-bounds panics in alacritty_terminal.
@@ -1283,6 +2134,7 @@ impl Terminal {
     }
 
     pub fn scroll(&self, scroll: TerminalScroll) {
+        self.clear_missed_activity();
         self.term.lock().scroll_display(scroll);
     }
 
@@ -1527,8 +2379,54 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_menu_enabled != options.autosuggestions_menu_enabled {
+            self.autosuggestions_menu_enabled = options.autosuggestions_menu_enabled;
+            // The live close (suggest-menu spec): an off flip spends
+            // a showing menu the moment the switch lands; an on flip
+            // only arms the chord (opens stay press-driven).
+            self.menu.close();
+            update = true;
+        }
+
+        if self.autosuggestions_menu_auto != options.autosuggestions_menu_auto {
+            self.autosuggestions_menu_auto = options.autosuggestions_menu_auto;
+            update = true;
+        }
+
         if self.autosuggestions_delay_ms != options.autosuggestions_delay_ms {
             self.autosuggestions_delay_ms = options.autosuggestions_delay_ms;
+            update = true;
+        }
+
+        if self.autosuggestions_aliases != options.autosuggestions_aliases {
+            // The alias map's live flip (suggest-aliases spec): one
+            // whole-map swap — a declared, edited, or removed alias
+            // applies at the next typed prefix, the next observation
+            // borrowing the fresh table.
+            self.autosuggestions_aliases
+                .clone_from(&options.autosuggestions_aliases);
+            update = true;
+        }
+
+        if self.autosuggestions_specs_table != options.autosuggestions_specs_table {
+            // The spec table's live flip (suggest-specs-data spec):
+            // one whole-table swap — an edited, extended, or removed
+            // `completions.toml` applies at the next typed prefix,
+            // the next observation borrowing the fresh rows.
+            // `Cow::clone_from` keeps the borrowed fallback a
+            // pointer swap, never a table copy.
+            self.autosuggestions_specs_table
+                .clone_from(&options.autosuggestions_specs_table);
+            update = true;
+        }
+
+        if self.generator.enabled != options.autosuggestions_generators_enabled {
+            // The generators' live flip (suggest-generators spec):
+            // `false` stops every spawn and blanks the cache read on
+            // this very pass (a warm cache never serves the stale
+            // rows); `true` re-arms the ruled triggers — the next
+            // menu-open revalidates.
+            self.generator.enabled = options.autosuggestions_generators_enabled;
             update = true;
         }
 
@@ -1629,6 +2527,12 @@ impl Terminal {
         // truth), hoisted for the same borrow reason: relative path
         // parents resolve against it.
         let working_directory = self.working_directory();
+        // The generator provider's cached sets (suggest-generators
+        // spec), served spawn-free beside the cwd truth — the
+        // stale-while-revalidate serving half. The fetch itself
+        // happens only on the ruled triggers (menu-open, the
+        // eligibility onset), never on this damage-driven path.
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
         let fresh_by_finish = self.last_foreground_child && !foreground_child;
         self.last_foreground_child = foreground_child;
         // The command timer rides the engine's own diff
@@ -1638,6 +2542,13 @@ impl Terminal {
         // notify latch with the just-frozen duration (unwitnessed
         // starts freeze nothing, so they latch nothing either).
         self.timer.step(foreground_child, instant);
+        if fresh_by_finish {
+            // The command that owned any standing progress report
+            // finished at this handoff — the report dies with it
+            // (osc94-progress spec), on the same edge the timer
+            // freezes its duration.
+            self.reported_progress = None;
+        }
         if fresh_by_finish && let Some(duration) = self.timer.last_duration() {
             self.command_finished = Some(duration);
         }
@@ -1752,7 +2663,16 @@ impl Terminal {
                         path_listing,
                         commands_enabled: self.autosuggestions_commands_enabled,
                         specs_enabled: self.autosuggestions_specs_enabled,
+                        aliases: &self.autosuggestions_aliases,
+                        specs_table: &self.autosuggestions_specs_table,
                         command_catalog: &self.command_catalog,
+                        generator_candidates: generator_sets.as_ref().map(|sets| {
+                            suggest::GeneratorSets {
+                                branches: &sets.branches,
+                                tags: &sets.tags,
+                                files: &sets.files,
+                            }
+                        }),
                         focused: self.is_focused,
                         foreground_child,
                         display_offset: grid.display_offset(),
@@ -1766,6 +2686,42 @@ impl Terminal {
                         typed_idle_ms,
                     };
                     suggest::step(&observation, &mut self.suggest);
+                    // The completion menu closes on scroll-away
+                    // (suggest-menu spec, the record's lifecycle
+                    // ruling): the panel anchors to the cursor's
+                    // viewport cell, and scrolling moves the cursor
+                    // out from under it.
+                    if observation.display_offset != 0 && self.menu.is_open() {
+                        self.menu.close();
+                    }
+                    // The auto-popup opt-in (suggest-menu spec, the
+                    // OQ-1 condition decided in the module's final
+                    // task): with the key on, this idle update's
+                    // typed segment collects the providers' full
+                    // sets — two or more candidates pops the menu
+                    // without the chord, narrowing past the boundary
+                    // (or any ineligibility, which collects nothing)
+                    // closes an auto-opened one. A chord-opened
+                    // session is the user's: only its own rules
+                    // close it. Default off never runs a byte of
+                    // this — the chord is today's only opener.
+                    if self.autosuggestions_menu_auto
+                        && self.autosuggestions_menu_enabled
+                        && self.autosuggestions_enabled
+                        && observation.focused
+                        && !observation.foreground_child
+                        && observation.display_offset == 0
+                        && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
+                        && !typed.is_empty()
+                    {
+                        let collected = suggest::candidates(typed, &self.suggest, &observation);
+                        if collected.len() >= 2 {
+                            self.menu_auto_opened = true;
+                            self.menu.open(collected);
+                        } else if self.menu.is_open() && self.menu_auto_opened {
+                            self.menu.close();
+                        }
+                    }
                     // The adoption reset (suggest-delay spec): a
                     // fresh anchor — the first adoption or a
                     // post-finish re-adoption — is a new line, so
@@ -2303,6 +3259,169 @@ impl Drop for Terminal {
             log::warn!("Failed to send shutdown message on dropped terminal: {err}");
         }
     }
+}
+
+/// The shell's own cwd report (osc7-cwd spec): an OSC 7 payload,
+/// parsed. `host` is `None` for an empty host (the local case);
+/// the path is percent-decoded and keeps its leading slash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedCwd {
+    pub host: Option<String>,
+    pub path: String,
+}
+
+/// The standing states of an OSC 9;4 progress report
+/// (osc94-progress spec). State 0 is not one of them — it clears
+/// the report; the fork's parse guard already refuses anything
+/// past 4, so the enum needs no more members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    InProgress,
+    Error,
+    Indeterminate,
+    Paused,
+}
+
+/// The progress decay window (osc94-progress spec): a standing
+/// OSC 9;4 report expires this long after its last refresh, so a
+/// reporter that dies mid-command cannot leave its last number
+/// lying — Ghostty's own hardcoding, the record's inherited rule.
+/// Fixed, no knob (OQ-2).
+const PROGRESS_DECAY: Duration = Duration::from_secs(15);
+
+/// A standing OSC 9;4 progress report (osc94-progress spec): the
+/// reporter's state, the last value it gave (a percent 0–100,
+/// inherited when a report omits its own — the protocol's
+/// leave-unchanged rule), and the instant of the last refresh —
+/// the decay clock's anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportedProgress {
+    pub state: ProgressState,
+    pub value: Option<u8>,
+    /// The decay anchor — engine policy, read through
+    /// [`Terminal::progress_decay_deadline`]; crate-visible only so
+    /// the band's headless fixtures can stand a report.
+    pub(crate) refreshed_at: Instant,
+}
+
+impl ReportedProgress {
+    /// One report applied to the standing state: state 0 clears
+    /// (the protocol's own invalidation, whatever value rides it);
+    /// any other state stands, a report that omits its value keeps
+    /// the standing one, and every report re-anchors the decay
+    /// clock. States past the fork's 0–4 guard are ignored whole —
+    /// unreachable here, and still not a guess.
+    fn apply(standing: Option<Self>, state: u8, value: Option<u8>, now: Instant) -> Option<Self> {
+        let state = match state {
+            0 => return None,
+            1 => ProgressState::InProgress,
+            2 => ProgressState::Error,
+            3 => ProgressState::Indeterminate,
+            4 => ProgressState::Paused,
+            _ => return standing,
+        };
+        Some(Self {
+            state,
+            value: value.or(standing.and_then(|standing| standing.value)),
+            refreshed_at: now,
+        })
+    }
+
+    /// Whether [`PROGRESS_DECAY`] has passed since the last
+    /// refresh — the decay death's truth.
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.refreshed_at + PROGRESS_DECAY
+    }
+}
+
+/// The OSC 7 payload cap (osc7-cwd spec, /ship hardening): a cwd
+/// past 4 KiB is not a cwd worth narrating — and an unbounded
+/// payload is a `cat`-away UI stall, its whole length text-shaped
+/// on every band layout — so over-long reports reject whole, never
+/// truncate.
+const REPORTED_CWD_MAX: usize = 4096;
+
+impl ReportedCwd {
+    /// Parse an OSC 7 payload — `file://[host]/path`. Everything
+    /// else (another scheme, a missing path, an escape that is not
+    /// exactly two hex digits, a decode that is not UTF-8, a control
+    /// or bidirectional character re-admitted by an escape, or a
+    /// payload beyond [`REPORTED_CWD_MAX`]) is rejected: a mangled
+    /// report never replaces a live truth.
+    pub fn parse(url: &str) -> Option<Self> {
+        if url.len() > REPORTED_CWD_MAX {
+            return None;
+        }
+        let rest = url.strip_prefix("file://")?;
+        let slash = rest.find('/')?;
+        let host = percent_decode(&rest[..slash])?;
+        let path = percent_decode(&rest[slash..])?;
+        Some(Self {
+            host: (!host.is_empty()).then_some(host),
+            path,
+        })
+    }
+
+    /// Whether the report names a host other than ours (osc7-cwd
+    /// spec): an empty host is local by convention; a named host is
+    /// local exactly when it names ours — case-insensitively, the
+    /// DNS rule. Without a local name to compare against
+    /// (`None` — the hostname read failed), a named host is taken
+    /// at its word: remote.
+    pub fn names_remote_host(&self, local: Option<&str>) -> bool {
+        match (&self.host, local) {
+            (None, _) => false,
+            (Some(host), Some(ours)) => !host.eq_ignore_ascii_case(ours),
+            (Some(_), None) => true,
+        }
+    }
+}
+
+/// Percent-decode a URL segment (`%41` → `A`); an escape must be
+/// exactly two hex digits (a `+` sign is not one, whatever
+/// `from_str_radix` says), a decode that is not UTF-8 rejects
+/// whole, and so does any character that can only be there to
+/// mislead — see [`is_invisible`].
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hex = input.get(i + 1..i + 3)?;
+                let [hi, lo] = hex.as_bytes() else {
+                    return None;
+                };
+                if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+                    return None;
+                }
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    let decoded = String::from_utf8(out).ok()?;
+    (!decoded.chars().any(is_invisible)).then_some(decoded)
+}
+
+/// Whether a character can only be there to mislead: a control
+/// character (vte's OSC layer strips these raw, so an escape
+/// re-admitting one is a payload lying about being text) or a
+/// bidirectional override / zero-width mark (the invisible spoof
+/// class the band's plain text owes no trust to). A report carrying
+/// one rejects whole.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{FEFF}')
 }
 
 #[cfg(test)]

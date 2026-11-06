@@ -38,13 +38,16 @@ fn bind_named(modifiers: &[Modifier], key: Named) -> KeyBind {
 /// The default app-level bindings, mapped to the [`Action`] they trigger.
 ///
 /// The standard every chord here follows: `Ctrl+Shift`-modified, with
-/// three sanctioned exceptions — the zoom cluster (`Ctrl` + `=`/`+`/
+/// four sanctioned exceptions — the zoom cluster (`Ctrl` + `=`/`+`/
 /// `-`/`0`: the physical zoom keys, `0` reset's only chord), tab
 /// cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`PageDown`: the browser
-/// convention, not shell bytes), and `Shift+Insert` for primary
-/// paste. New defaults follow the standard: a bare `Ctrl+<letter>`
-/// is always a byte the shell owns — see the stay-free pins in the
-/// tests — never an app chord.
+/// convention, not shell bytes), `Shift+Insert` for primary paste,
+/// and `Ctrl+Space` for the completion menu (suggest-menu spec: the
+/// VS Code/Clink trigger chord, Warp's fallback — a *soft* trigger,
+/// so at every ineligible state the widget forwards the chord's own
+/// NUL byte to the shell verbatim). New defaults follow the
+/// standard: a bare `Ctrl+<letter>` is always a byte the shell owns
+/// — see the stay-free pins in the tests — never an app chord.
 pub fn default_key_binds() -> HashMap<KeyBind, Action> {
     let mut map = HashMap::new();
     map.insert(bind(&[Modifier::Ctrl, Modifier::Shift], "c"), Action::Copy);
@@ -100,6 +103,11 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "b"),
         Action::ToggleStatusBar,
     );
+    // The completion menu's trigger (suggest-menu spec): Ctrl+Space —
+    // the VS Code/Clink chord, Warp's Tab-fallback precedent. Soft:
+    // the widget owns the action, and a decline (ineligible prompt,
+    // no candidates) forwards the chord's own NUL byte verbatim.
+    map.insert(bind(&[Modifier::Ctrl], " "), Action::ShowCompletions);
     map.insert(
         bind(&[Modifier::Ctrl, Modifier::Shift], "t"),
         Action::NewTab,
@@ -292,6 +300,7 @@ pub fn action_id(action: Action) -> Option<&'static str> {
         Action::DuplicateTab => "duplicate_tab",
         Action::Settings => "settings",
         Action::ToggleStatusBar => "toggle_status_bar",
+        Action::ShowCompletions => "show_completions",
     };
     Some(id)
 }
@@ -333,6 +342,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "duplicate_tab" => Action::DuplicateTab,
         "settings" => Action::Settings,
         "toggle_status_bar" => Action::ToggleStatusBar,
+        "show_completions" => Action::ShowCompletions,
         _ => return None,
     };
     Some(action)
@@ -421,6 +431,7 @@ pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
                 Action::Hide,
                 Action::Settings,
                 Action::ToggleStatusBar,
+                Action::ShowCompletions,
             ],
         },
     ]
@@ -472,6 +483,7 @@ pub fn action_label(action: Action) -> &'static str {
         Action::DuplicateTab => "Duplicate tab",
         Action::Settings => "Open settings",
         Action::ToggleStatusBar => "Toggle the status bar",
+        Action::ShowCompletions => "Show completions",
     }
 }
 

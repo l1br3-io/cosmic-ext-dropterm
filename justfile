@@ -3,6 +3,25 @@
 # just's `error: Recipe ... failed` line plus the underlying tool's stderr.
 set quiet
 
+# Run a command via the shell, printing its combined output only when it
+# fails. Agent-facing gates route through this so a green run costs zero
+# output tokens while a red one replays the full log with its exit code.
+[private]
+quietly command:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(mktemp)"
+    set +e
+    bash -c '{{command}}' >"$out" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -ne 0 ]; then
+        cat "$out"
+        rm -f "$out"
+        exit "$status"
+    fi
+    rm -f "$out"
+
 name := 'cosmic-ext-dropterm'
 appid := 'io.github.l1br3_io.CosmicExtDropterm'
 
@@ -140,14 +159,14 @@ fmt-check:
     cargo fmt --check --all
 
 clippy *args:
-    cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings
-    cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings
-    cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings
+    {{just_executable()}} quietly 'cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings'
+    {{just_executable()}} quietly 'cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings'
+    {{just_executable()}} quietly 'cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings'
 
 test *args:
-    cargo test --workspace --locked {{args}}
-    cargo test -p {{name}} --locked --features dev-identity {{args}}
-    cargo test -p {{applet}} --locked --features dev-identity {{args}}
+    {{just_executable()}} quietly 'cargo test --workspace --locked {{args}}'
+    {{just_executable()}} quietly 'cargo test -p {{name}} --locked --features dev-identity {{args}}'
+    {{just_executable()}} quietly 'cargo test -p {{applet}} --locked --features dev-identity {{args}}'
 
 # Docs drift gate: every internal markdown link — relative path and
 # in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
@@ -275,8 +294,11 @@ build-nice := env('DROPTERM_BUILD_NICE', '19')
 # in /root where the user cannot update it; the user-side build
 # recipes bootstrap it for themselves instead.
 deps:
-    #!/usr/bin/env sh
-    set -eu
+    #!/usr/bin/env bash
+    # pipefail: the rustup bootstrap is a `curl | sh` pipeline — without
+    # it, a dead curl hands sh an EOF, sh exits 0, and deps reports
+    # success with cargo never installed.
+    set -euo pipefail
 
     # System side: each module is what the build asks pkg-config for,
     # and each maps to a -dev/-devel package in the lists below. A
@@ -321,8 +343,18 @@ deps:
                 libxkbcommon-devel wayland-devel fontconfig-devel \
                 freetype2-devel libexpat-devel
         else
-            echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
-            echo "deps: install the equivalents of:$missing and re-run" >&2
+            # Not a package-manager gap on non-Linux: DropTerm targets
+            # the COSMIC desktop, so name the real reason instead of a
+            # package guessing game.
+            case "$(uname -s)" in
+                Darwin)
+                    echo "deps: DropTerm targets the COSMIC desktop — build on Linux; macOS has neither the compositor nor its libraries" >&2
+                    ;;
+                *)
+                    echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
+                    echo "deps: install the equivalents of:$missing and re-run" >&2
+                    ;;
+            esac
             exit 1
         fi
     fi
@@ -344,11 +376,11 @@ deps:
 # both crates (see build-applet for why that must not produce
 # release artifacts).
 build-debug *args: deps
-    cargo build -p {{name}} {{args}}
+    {{just_executable()}} quietly 'cargo build -p {{name}} {{args}}'
 
 # Compiles with the release profile, throttled (see build-jobs).
 build-release *args: deps
-    nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}
+    {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}'
 
 # Compiles the applet with the release profile, throttled like
 # build-release. Per-package on purpose: a unified workspace release
@@ -356,7 +388,7 @@ build-release *args: deps
 # feature unification, and the wgpu renderer falls back to llvmpipe
 # on panel surfaces.
 build-applet *args: deps
-    nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}
+    {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}'
 
 # Both release artifacts, each per-package, in the shape `install`
 # expects. Exists as one recipe because `build-release` takes
@@ -371,8 +403,22 @@ build-all: build-release build-applet
 # [source."url"] redirect, so the config cannot be hand-written). The
 # working tree is cleaned afterward so dev builds keep using git deps.
 vendor:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p .cargo
-    cargo vendor --locked | head -n -1 > .cargo/config.toml
+    # pipefail: a failed `cargo vendor` must not hide behind `head`'s
+    # exit 0 and ship an incomplete vendor.tar as success. Its stderr
+    # (the per-crate "Vendoring …" progress) is captured and replayed
+    # only on failure.
+    log="$(mktemp)"
+    if cargo vendor --locked 2>"$log" | head -n -1 > .cargo/config.toml; then
+        rm -f "$log"
+    else
+        status=$?
+        cat "$log"
+        rm -f "$log"
+        exit "$status"
+    fi
     echo 'directory = "vendor"' >> .cargo/config.toml
     tar -cf vendor.tar vendor .cargo/config.toml
     rm -rf vendor .cargo
@@ -429,7 +475,7 @@ dev-applet-desktop := dev-data-dir / 'applications' / (applet-appid + '.Dev.desk
 # applet summons the dev launcher. Add it via COSMIC Settings →
 # Panel.
 dev-applet: dev-install
-    cargo build -p {{applet}} {{dev-identity-args}}
+    {{just_executable()}} quietly 'cargo build -p {{applet}} {{dev-identity-args}}'
     install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / (applet + '-dev')}}
     install -d {{dev-data-dir / 'applications'}}
     sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{applet}}-dev/' {{applet-desktop-src}} > {{dev-applet-desktop}}
@@ -461,6 +507,9 @@ clean:
 # schedule and is deliberately left alone.
 stop-stale-release:
     #!/usr/bin/env sh
+    # -e: a failed kill must abort before the success echo below — never
+    # announce a stop that did not happen.
+    set -eu
     for pid in $(pgrep -f '{{bin-dst}}' || true); do
         if [ "$(readlink /proc/"$pid"/exe 2>/dev/null)" = '{{bin-dst}} (deleted)' ]; then
             kill "$pid"
@@ -509,15 +558,298 @@ applet-flatpak-sources:
 # (deps pulled from flathub into the user installation). State lands
 # in .flatpak-builder/, the build tree under packaging/flatpak/build-dir.
 applet-flatpak-build:
-    flatpak-builder --user --install-deps-from=flathub --force-clean \
-        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
 
 # Install the built applet into the user installation (from the
 # builder's cache, so a prior applet-flatpak-build makes this quick).
 applet-flatpak-install:
-    flatpak-builder --user --install-deps-from=flathub --force-clean --install \
-        {{flatpak-dir / 'build-dir'}} {{applet-manifest}}
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean --install {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
 
 # Uninstall the applet flatpak from the user installation.
 applet-flatpak-remove:
-    flatpak uninstall --user -y {{applet-appid}}
+    {{just_executable()}} quietly 'flatpak uninstall --user -y {{applet-appid}}'
+
+# ── COSMIC validation VM ──
+#
+# Host-side plumbing for walking the manual checklist's applet rows
+# inside a clean Pop!_OS COSMIC VM (the item-5 evidence route; the
+# full recipe lives at docs/development.md#the-cosmic-validation-vm).
+# Delegates to scripts/vm.sh — ported from cosmic-ext-airlock's CP4
+# harness — which drives the guest through the QEMU guest agent (no
+# SSH): `just vm-status` is the preflight doctor, `just vm-help` the
+# command reference. The VM itself is the sibling repo's existing
+# PopOs24.04 domain on this host; every variable (VM_NAME, VM_USER,
+# BRIDGE_IP, PORT) overrides per run.
+vm-name := env_var_or_default("VM_NAME", "PopOs24.04")
+vm-user := env_var_or_default("VM_USER", "jpt-virt")
+# vm-push's tarball, under the ignored target/ so neither it nor its
+# staging tree (target/vm-stage) ever shows up as untracked files.
+vm-tarball := cargo-target-dir / 'dropterm-vm.tar.gz'
+
+vm-help:
+    scripts/vm.sh help
+
+vm-status:
+    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh status
+
+# Run a shell command in the guest as root, positionally (just's
+# `cmd=value` form leaks the `cmd=` prefix into the value for
+# space-carrying arguments): just vm-exec 'pgrep -a cosmic-comp'
+vm-exec cmd:
+    VM_NAME={{vm-name}} scripts/vm.sh exec "{{cmd}}"
+
+# Run it as the desktop user inside the session env (runtime dir, session
+# bus, Wayland socket): just vm-exec-user 'cosmic-ext-dropterm toggle'
+vm-exec-user cmd:
+    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh exec-user "{{cmd}}"
+
+# Transfer a file into the guest (sha256 verified both sides)
+vm-put file dest:
+    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh put "{{file}}" "{{dest}}"
+
+# The one-command install/update: builds both artifacts, stages the
+# usr/ tree exactly as release CI does (release.yml runs
+# `just rootdir=stage install` before tarring), ships the tarball into
+# the guest (sha256 verified both sides by vm.sh put), unpacks it over
+# / (--no-same-owner: the tarball records the host uid, and a root-side
+# extract would chown /usr files to it), refreshes the desktop
+# database, and stops anything still running a replaced binary — the
+# guest-side half of stop-stale-release, since a warm process keeps
+# its old inode and the applet waits for its panel supervisor to
+# respawn it. The stops match an anchored full-command pattern, never
+# `pkill -x`: this package's 19-char name overflows comm's 15-char
+# limit, so `-x` cannot match it at all; the `(^|/)…([ ]|$)` anchors
+# keep the exec wrapper shells (name mid-command-line) and the
+# pattern's own text out of the match. The next summon (keybind,
+# panel, CLI) runs this build;
+# no relogin. Install and update are the same command: the tarball
+# always overwrites the nine files `install` stages.
+vm-push:
+    #!/usr/bin/env sh
+    set -eu
+    {{just_executable()}} build-all
+    rm -rf {{cargo-target-dir / 'vm-stage'}} {{vm-tarball}}
+    {{just_executable()}} rootdir='{{cargo-target-dir / 'vm-stage'}}' install
+    tar -C {{cargo-target-dir / 'vm-stage'}} -czf {{vm-tarball}} usr
+    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh put {{vm-tarball}} /root/dropterm-vm.tar.gz
+    VM_NAME={{vm-name}} scripts/vm.sh exec 'tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && { update-desktop-database /usr/share/applications 2>/dev/null || true; }'
+    VM_NAME={{vm-name}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"; pkill -f "(^|/){{applet}}([ ]|$)" && echo "vm: stopped the panel applet; cosmic-panel respawns it on this build" || echo "vm: no applet was running"'
+
+# Capture the VM's display (evidence screenshots)
+vm-screenshot file:
+    VM_NAME={{vm-name}} scripts/vm.sh screenshot "{{file}}"
+
+vm-snapshot name="checkpoint":
+    VM_NAME={{vm-name}} scripts/vm.sh snapshot "{{name}}"
+
+vm-restore name:
+    VM_NAME={{vm-name}} scripts/vm.sh restore "{{name}}"
+
+# ── Release ──
+#
+# The release is two commands and a push, because one part of it is
+# necessarily post-publish: the applet's flatpak manifest pins the
+# *published* source archive (URL + sha256), and neither exists until
+# release.yml has run. The whole runbook lives at
+# docs/development.md#releasing.
+#
+# `just release X.Y.Z` cuts the release: it verifies the curated
+# release edits (the releases.md section, both metainfo entries, the
+# re-pointed install URLs — all written first, committed or left in
+# the tree), bumps both crates' versions, refreshes Cargo.lock (the
+# --locked recipes would otherwise fail), runs the full gate (`just
+# check` plus the appstream validation CI enforces), commits
+# everything as one release-hygiene commit (the v0.2.0 shape), and
+# tags. It never pushes: the push IS the publish (release.yml fires
+# on the tag), so it stays the maintainer's explicit act.
+#
+# The version may be given with or without the leading `v`. A failed
+# gate leaves the version bumps uncommitted in the tree — fix, re-run.
+release version:
+    #!/usr/bin/env sh
+    set -eu
+
+    ver='{{version}}'
+    ver="${ver#v}"
+    echo "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+        echo "release: version must be MAJOR.MINOR.PATCH, got '$ver'" >&2
+        exit 1
+    }
+
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    [ "$branch" = "main" ] || {
+        echo "release: cut releases from main, currently on '$branch'" >&2
+        exit 1
+    }
+    git rev-parse -q --verify "refs/tags/v$ver" >/dev/null && {
+        echo "release: tag v$ver already exists" >&2
+        exit 1
+    }
+
+    # Only release files may be in flight — anything else would ride
+    # into the release commit silently. Untracked files are fine;
+    # they are never added.
+    bad=$(git diff --name-only HEAD | grep -v -E '^(Cargo\.toml|applet/Cargo\.toml|Cargo\.lock|README\.md|ROADMAP\.md|docs/releases\.md|docs/testing\.md|res/[^/]+\.metainfo\.xml)$' || true)
+    [ -z "$bad" ] || {
+        echo "release: unrelated changes in the tree — commit or stash them first:" >&2
+        echo "$bad" | sed 's/^/  /' >&2
+        exit 1
+    }
+
+    old="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+    [ "$ver" != "$old" ] || {
+        echo "release: Cargo.toml already reads $ver" >&2
+        exit 1
+    }
+    today="$(date +%Y-%m-%d)"
+
+    # The curated pieces must already exist, in today's dated shape —
+    # fail before touching anything so a half-release is never left
+    # behind by missing notes.
+    for f in {{metainfo-src}} {{applet-metainfo-src}}; do
+        grep -q "<release version=\"$ver\" date=\"$today\">" "$f" || {
+            echo "release: $f carries no <release version=\"$ver\" date=\"$today\"> entry — write it first (docs/development.md#releasing)" >&2
+            exit 1
+        }
+    done
+    grep -q "^## v$ver ($today)$" docs/releases.md || {
+        echo "release: docs/releases.md carries no '## v$ver ($today)' section — write it first" >&2
+        exit 1
+    }
+    # Every living download URL must already point at the new version.
+    # releases.md keeps its history sections, and packaging/flatpak
+    # deliberately pins the last PUBLISHED release until
+    # release-flatpak-pin runs — both are excluded.
+    stale=$(grep -rn --exclude-dir=_site 'releases/download/v[0-9]' README.md docs res 2>/dev/null \
+        | grep -v "releases/download/v$ver/" | grep -v '^docs/releases\.md:' || true)
+    [ -z "$stale" ] || {
+        echo "release: stale release URLs still point elsewhere than v$ver:" >&2
+        echo "$stale" | sed 's/^/  /' >&2
+        exit 1
+    }
+
+    # Both crates bump together (first `version =` line only — the
+    # manifests carry dependency versions too), and the lock follows
+    # so every --locked recipe keeps holding.
+    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" Cargo.toml
+    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" applet/Cargo.toml
+    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)" = "$ver" ] || {
+        echo "release: Cargo.toml's package version no longer reads $old — bump it by hand" >&2
+        exit 1
+    }
+    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' applet/Cargo.toml | head -n1)" = "$ver" ] || {
+        echo "release: applet/Cargo.toml's package version no longer reads $old — bump it by hand" >&2
+        exit 1
+    }
+    cargo update -w
+    cargo metadata --locked --format-version 1 >/dev/null
+
+    # The gate: everything CI checks on a PR, plus the appstream
+    # validation (skipped silently where appstreamcli is absent — CI
+    # is the backstop).
+    {{just_executable()}} check
+    if command -v appstreamcli >/dev/null 2>&1; then
+        appstreamcli validate --no-net {{metainfo-src}} {{applet-metainfo-src}}
+    fi
+
+    git add Cargo.toml applet/Cargo.toml Cargo.lock README.md ROADMAP.md \
+        docs/releases.md docs/testing.md {{metainfo-src}} {{applet-metainfo-src}}
+    git commit -m "chore: release hygiene for v$ver — versions, release notes, install URLs"
+    git tag -a "v$ver" -m "Release $ver"
+
+    echo "v$ver committed and tagged. To publish:"
+    echo "  git push origin main && git push origin v$ver"
+    echo "release.yml then builds both arches + vendor.tar, guards tag == Cargo.toml, and publishes the GitHub release."
+    echo "Once the release page exists: just release-flatpak-pin $ver"
+
+# Re-pins the applet flatpak manifest to an already-PUBLISHED release:
+# downloads the release's source archive, records its sha256, and
+# commits the manifest's URL + hash pair (the one release edit that
+# cannot ride the release commit — neither the URL nor the hash
+# exists before publish). Runs after `just release` and the push.
+release-flatpak-pin version:
+    #!/usr/bin/env sh
+    set -eu
+    ver='{{version}}'
+    ver="${ver#v}"
+    url="https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v$ver/v$ver.tar.gz"
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    curl -fsSL -o "$tmp" "$url" || {
+        echo "release-flatpak-pin: $url is not downloadable yet — publish the release first" >&2
+        exit 1
+    }
+    sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    sed -i "s|releases/download/v[0-9.]*/v[0-9.]*\.tar\.gz|releases/download/v$ver/v$ver.tar.gz|" {{applet-manifest}}
+    sed -i "s|\"sha256\": \"[0-9a-f]\{64\}\"|\"sha256\": \"$sha\"|" {{applet-manifest}}
+    [ "$(grep -c "releases/download/v$ver/v$ver\.tar\.gz" {{applet-manifest}})" = "1" ] || {
+        echo "release-flatpak-pin: manifest's archive URL did not re-pin exactly once — pin by hand" >&2
+        exit 1
+    }
+    [ "$(grep -c "\"sha256\": \"$sha\"" {{applet-manifest}})" = "1" ] || {
+        echo "release-flatpak-pin: manifest's sha256 did not re-pin exactly once — pin by hand" >&2
+        exit 1
+    }
+    git add {{applet-manifest}}
+    git commit -m "chore: the applet manifest pins the v$ver archive"
+    echo "pinned and committed. To publish: git push origin main"
+
+# ── Release: the catalog leg ──
+#
+# The applet lists in pop-os/cosmic-flatpak (the COSMIC app store's
+# source); the listing ships as a branch on the maintainer's fork and
+# a PR from there. Everything up to the PR is mechanical and lives
+# here: `just release-catalog X.Y.Z` regenerates cargo-sources.json
+# from the current lockfile, re-cuts the fork's dropterm-applet branch
+# as one clean commit on current pop-os master (manifest + sources),
+# force-pushes it (safe by construction: the branch is always a
+# single commit over upstream master; a re-run while a PR is open
+# updates that PR in place and re-runs its CI), and prints the
+# compare URL. The PR click and the review stay human — a third-party
+# repo, and no gh token on this machine to assume either.
+#
+# The fork is an SSH remote (the recipe pushes to it); override per
+# invocation with DROPTERM_CATALOG_FORK. Run after
+# `just release-flatpak-pin`.
+catalog-upstream := 'https://github.com/pop-os/cosmic-flatpak'
+catalog-fork := env('DROPTERM_CATALOG_FORK', 'git@github.com:kulapoo/cosmic-flatpak.git')
+catalog-branch := 'dropterm-applet'
+catalog-dir := 'app' / applet-appid
+
+release-catalog version:
+    #!/usr/bin/env sh
+    set -eu
+    ver='{{version}}'
+    ver="${ver#v}"
+    # The repo's manifest must already pin vX — the release ran and
+    # its archive pin landed.
+    grep -q "releases/download/v$ver/v$ver.tar.gz" {{applet-manifest}} || {
+        echo "release-catalog: {{applet-manifest}} does not pin v$ver — run just release-flatpak-pin $ver first" >&2
+        exit 1
+    }
+    # Fresh cargo-sources.json from the current Cargo.lock (the flatpak
+    # catalog checks it in; ours is gitignored, theirs is generated
+    # per submission). The generator's per-package INFO log goes to
+    # /dev/null — this recipe stays silent on success like the rest.
+    {{just_executable()}} applet-flatpak-sources >/dev/null
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    git clone --quiet {{catalog-fork}} "$work/catalog"
+    cd "$work/catalog"
+    git remote add upstream {{catalog-upstream}}
+    git fetch --quiet upstream master
+    git checkout --quiet -B {{catalog-branch}} upstream/master
+    mkdir -p {{catalog-dir}}
+    cp "{{justfile_directory()}}/{{applet-manifest}}" "{{catalog-dir}}/{{applet-appid}}.json"
+    cp "{{justfile_directory()}}/{{flatpak-dir}}/cargo-sources.json" "{{catalog-dir}}/"
+    git add "{{catalog-dir}}"
+    # The fresh clone has no identity of its own and this machine sets
+    # none globally — carry the dropterm repo's configured author.
+    git -c "user.name=$(git -C '{{justfile_directory()}}' config user.name)" \
+        -c "user.email=$(git -C '{{justfile_directory()}}' config user.email)" \
+        commit --quiet -m "Add DropTerm v$ver"
+    git push --quiet --force origin {{catalog-branch}}
+    owner="$(printf '%s\n' '{{catalog-fork}}' | sed 's|.*github.com[:/]||; s|/.*||')"
+    echo "{{catalog-branch}} pushed at $(git rev-parse --short HEAD), based on pop-os master $(git rev-parse --short upstream/master)."
+    echo "Open the PR (the one human step left):"
+    echo "  {{catalog-upstream}}/compare/master...${owner}:{{catalog-branch}}?expand=1"

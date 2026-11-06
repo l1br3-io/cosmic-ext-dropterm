@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
+use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
@@ -48,6 +50,7 @@ use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
 use crate::tabs::{self, Tab, TabId};
+use crate::terminal::suggest;
 use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
 pub(crate) mod remote;
@@ -78,6 +81,10 @@ pub const APP_ID: &str = cosmic_ext_dropterm::APP_ID;
 const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "ConfigChanged carries the whole config by value — the message's existing shape; the config grew past the lint's threshold with the alias-map key (a file-format field, suggest-aliases spec), and boxing the variant now would touch every construction and match site for a size nit"
+)]
 pub enum Message {
     ToggleAction(ToggleAction),
     ConfigChanged(DropTermConfig),
@@ -140,6 +147,11 @@ pub enum Message {
     /// re-arm at the next deadline or stand down. Never periodic;
     /// it exists only while the active tab reports a deadline.
     SuggestRevealTick,
+    /// The progress report's decay window elapsed (osc94-progress
+    /// spec): expire the standing report if its window truly
+    /// passed — the chip with it — then re-arm while any report
+    /// stands. Never periodic; it exists only while one does.
+    StatusProgressDecayTick,
     /// The pending close-confirmation modal was dismissed: cancel —
     /// the tab, its process, and its selection state stay untouched
     /// (close-confirm criterion 4).
@@ -275,6 +287,15 @@ pub struct DropTerm {
     /// everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
+    /// The specs provider's table (suggest-specs-data spec): the
+    /// built-in five overlaid by `completions.toml` beside the
+    /// config, loaded here at init and re-read on every config
+    /// echo — an edited file applies to live tabs at the next
+    /// settings pass and to every new tab at spawn. The borrowed
+    /// fallback is the no-file default; the app never parses the
+    /// file itself, [`suggest::load_completions`] owns the whole
+    /// load-or-fallback contract.
+    specs_table: Cow<'static, [suggest::SpecCommand]>,
     /// The overlay's terminals in tab order. Never empty while a
     /// surface is shown: closing the last tab respawns a fresh one
     /// (see `ensure_tabs`).
@@ -327,6 +348,12 @@ pub struct DropTerm {
     /// ssh foreground all hold. `None` keeps the local path and
     /// branch — the stand-in never guesses a host.
     active_ssh_destination: Option<String>,
+    /// Our own hostname, read once at init (osc7-cwd spec): the
+    /// band's host-qualification base — a reported OSC 7 host
+    /// renders only when it differs from this. One `/proc` read at
+    /// construction, never per frame; `None` (unreadable) takes
+    /// every named host at its word.
+    local_hostname: Option<String>,
     /// The band segment currently flashing its `✓` after a
     /// click-to-copy — set on the copied message, cleared by the
     /// flash-lapse task (`status_bar::COPY_FLASH`).
@@ -350,6 +377,12 @@ pub struct DropTerm {
     /// may hold a withheld suggestion, cleared by each fire before
     /// the re-sync re-evaluates.
     reveal_armed: bool,
+    /// Whether a progress decay tick sleeps in the task queue
+    /// (osc94-progress spec) — the `clock_armed` shape again: one
+    /// outstanding one-shot at most, armed only while any tab holds
+    /// a standing OSC 9;4 report, cleared by each fire before the
+    /// re-sync re-evaluates.
+    progress_decay_armed: bool,
     /// The active inline rename, if any: which tab is being renamed
     /// and the current draft, mirrored into the input the tab bar
     /// overlays on the renamed button.
@@ -530,7 +563,11 @@ impl DropTerm {
             autosuggestions_enabled: self.config.autosuggestions_enabled,
             autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
+            autosuggestions_menu_enabled: self.config.autosuggestions_menu_enabled,
+            autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
             autosuggestions_delay_ms: self.config.autosuggestions_delay_ms,
+            autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
+            autosuggestions_specs_table: self.specs_table.clone(),
             ..TerminalOptions::default()
         }
     }
@@ -668,6 +705,41 @@ impl DropTerm {
         )
     }
 
+    /// Sync the progress decay arm to the standing OSC 9;4 reports
+    /// (osc94-progress spec): arm a one-shot sleep until the
+    /// soonest deadline any tab reports, stand down when no report
+    /// stands anywhere. Called where the state moves — a report's
+    /// arrival (the event arm) and the tick's own fire (which
+    /// expires and re-syncs) — so the arm exists exactly while a
+    /// report stands. Every tab, not the active one: the band can
+    /// switch to a background tab whose reporter died, and its
+    /// number must not have outlived its window there either.
+    /// Unlike the reveal arm, hidden is not a gate — decay is an
+    /// invalidation, not a render; a number that must not linger
+    /// does not linger behind a hidden surface. An early fire (a
+    /// refreshed anchor moved the deadline out — it only ever moves
+    /// out) expires nothing and re-arms at the true deadline; the
+    /// armed guard keeps the sleeps unstacked.
+    fn sync_progress_decay(&mut self) -> Task<Message> {
+        let deadline = self
+            .tabs
+            .iter()
+            .filter_map(|tab| tab.terminal.lock().unwrap().progress_decay_deadline())
+            .min();
+        let Some(deadline) = deadline else {
+            self.progress_decay_armed = false;
+            return Task::none();
+        };
+        if self.progress_decay_armed {
+            return Task::none();
+        }
+        self.progress_decay_armed = true;
+        Task::perform(
+            tokio::time::sleep(deadline.saturating_duration_since(std::time::Instant::now())),
+            |()| cosmic::Action::App(Message::StatusProgressDecayTick),
+        )
+    }
+
     /// The reveal arm for the Wakeup point (suggest-delay spec):
     /// damage just landed on the active tab, but the render that
     /// re-steps the suggest model runs after this handler — the
@@ -728,11 +800,44 @@ impl DropTerm {
         // the engine's frozen duration. The unnamed floor: a run
         // that was never sampled (a background tab's finished
         // command) keeps its duration with no name to lie about.
-        let (zoom_adj, grid, spawn_grid, scrolled_back, running_elapsed, frozen) = {
+        // The missed-activity latch joins under the same guard
+        // (status-activity spec), sampled only while its gate
+        // holds, with the scheme's red pair beside it — the pair
+        // ungated, because status-exit's chip reuses the attention
+        // token under its own key.
+        let (
+            zoom_adj,
+            grid,
+            spawn_grid,
+            scrolled_back,
+            running_elapsed,
+            frozen,
+            exit_status,
+            reported_cwd,
+            progress,
+            missed_activity,
+            attention_red,
+            attention_bright_red,
+        ) = {
             let terminal = tab.terminal.lock().unwrap();
             let frozen = terminal
                 .command_frozen()
                 .map(|duration| (tab.last_running_comm.clone().unwrap_or_default(), duration));
+            // The engine's u8 channels become the linear f32 tuple
+            // `attention_color` derives from.
+            let scheme_red = |rgb: alacritty_terminal::vte::ansi::Rgb| {
+                (
+                    f32::from(rgb.r) / 255.0,
+                    f32::from(rgb.g) / 255.0,
+                    f32::from(rgb.b) / 255.0,
+                )
+            };
+            let colors = terminal.colors();
+            // The timer's verdict joins its frozen sibling under the
+            // same guard (status-exit spec) — an in-memory read, but
+            // gated all the same: key off means never gathered, the
+            // resolver's hidden/absent indistinguishability.
+            let toggles = self.config.status_toggles();
             (
                 terminal.zoom_adj(),
                 terminal.grid(),
@@ -740,6 +845,31 @@ impl DropTerm {
                 Some(terminal.scrolled_back_lines()),
                 terminal.command_live().1,
                 frozen,
+                toggles.exit.then(|| terminal.command_exit()).flatten(),
+                // The path seat's authoritative source (osc7-cwd
+                // spec), gathered ungated like the ssh stand-in it
+                // outranks: the branch rule consumes the fact even
+                // when the path seat's own key hides the seat, and
+                // the resolver gates the seat itself.
+                terminal.reported_cwd(),
+                // The running command's own report (osc94-progress
+                // spec), an in-memory read gated all the same: key
+                // off means never gathered, the resolver's
+                // hidden/absent indistinguishability.
+                toggles
+                    .progress
+                    .then(|| terminal.reported_progress())
+                    .flatten(),
+                // Key off means never gathered and never rendered
+                // (status-activity spec); the red pair stays
+                // ungated beside it — status-exit's chip reuses the
+                // token under its own key.
+                status_bar::activity_mark_due(
+                    self.config.status_bar_enabled,
+                    self.config.status_bar_activity_mark,
+                ) && terminal.missed_activity(),
+                colors[NamedColor::Red as usize].map(scheme_red),
+                colors[NamedColor::BrightRed as usize].map(scheme_red),
             )
         };
         // The step the tab's terminal actually zooms by: the same
@@ -766,6 +896,13 @@ impl DropTerm {
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
             ssh_destination: self.active_ssh_destination.as_deref(),
+            hostname: self.local_hostname.as_deref(),
+            missed_activity,
+            attention_red,
+            attention_bright_red,
+            exit_status,
+            reported_cwd,
+            progress,
         };
         status_bar::resolve_segments(&inputs, self.config.status_toggles())
     }
@@ -1455,6 +1592,37 @@ fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
     }
 }
 
+/// Our own hostname, read once at init (osc7-cwd spec): the band's
+/// host-qualification base — a reported OSC 7 host renders only when
+/// it differs from this. One `/proc` read at construction, never per
+/// frame; `None` (unreadable) takes every named host at its word.
+fn read_local_hostname() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|host| host.trim().to_owned())
+}
+
+/// `DropTerm`'s cosmic config directory (suggest-specs-data spec):
+/// the same resolution cosmic-config performs for the config keys
+/// (its `Config` keeps the path private) — under a flatpak the
+/// host's config is the truth `DropTerm` edits, otherwise the XDG
+/// standard — then `cosmic/<APP_ID>/v<CONFIG_VERSION>`. The
+/// `completions.toml` the specs table loads rides beside the keys.
+fn completions_config_dir() -> Option<PathBuf> {
+    let base = if std::env::var_os("FLATPAK_ID").is_some() {
+        std::env::var_os("HOST_XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?
+    } else {
+        dirs::config_dir()?
+    };
+    Some(
+        base.join("cosmic")
+            .join(DropTerm::APP_ID)
+            .join(format!("v{CONFIG_VERSION}")),
+    )
+}
+
 /// Swaps the clipboard anchor to the configured body (shell-presence
 /// spec): destroys the live body first — the runtime drops the
 /// clipboard binding with it, so whatever is on the clipboard dies
@@ -1574,6 +1742,7 @@ impl Application for DropTerm {
             core,
             config_handler,
             config,
+            specs_table: suggest::load_completions(completions_config_dir().as_deref()),
             tabs: Vec::new(),
             active_tab: 0,
             terminal_id: widget::Id::unique(),
@@ -1586,11 +1755,13 @@ impl Application for DropTerm {
             active_process_name: None,
             active_branch: None,
             active_ssh_destination: None,
+            local_hostname: read_local_hostname(),
             copied_segment: None,
             status_clock: None,
             clock_armed: false,
             duration_armed: false,
             reveal_armed: false,
+            progress_decay_armed: false,
             rename: None,
             pending_close: None,
             drag: None,
@@ -2236,6 +2407,13 @@ impl DropTerm {
                 let old_title_mode = self.config.tab_title_mode;
                 let old_profiles = self.config.profiles.clone();
                 self.config = config;
+                // The spec table rides the echo (suggest-specs-data
+                // spec): the file beside the config re-reads on every
+                // config pass — our own write's echo and an external
+                // edit land here alike — so an edited
+                // `completions.toml` applies to live tabs without a
+                // restart.
+                self.specs_table = suggest::load_completions(completions_config_dir().as_deref());
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
                 // (keybinds-editor criterion 2: a hand-edited config
@@ -2720,6 +2898,22 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().needs_update = true;
                 }
                 return self.sync_suggest_reveal();
+            }
+            Message::StatusProgressDecayTick => {
+                // The fired sleep consumed itself — the deadline
+                // arrived (or an early fire caught a refreshed
+                // anchor, and `expire_progress` is the no-op that
+                // says so). The expiry is the point: a standing
+                // report whose window passed dies here, the chip
+                // with it (the snapshot refresh lands the
+                // re-render). The re-sync re-arms at a refreshed
+                // anchor or stands down.
+                self.progress_decay_armed = false;
+                for tab in &self.tabs {
+                    tab.terminal.lock().unwrap().expire_progress();
+                }
+                self.refresh_status_snapshot();
+                return self.sync_progress_decay();
             }
             Message::CloseConfirmCancel => {
                 return self.cancel_pending_close();

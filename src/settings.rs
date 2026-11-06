@@ -112,6 +112,7 @@ impl Section {
             Section::StatusBar => &[
                 ConfigKey::StatusBarEnabled,
                 ConfigKey::StatusBarBorder,
+                ConfigKey::StatusBarActivityMark,
                 ConfigKey::StatusBarShowProcess,
                 ConfigKey::StatusBarShowPath,
                 ConfigKey::StatusBarShowBranch,
@@ -121,6 +122,8 @@ impl Section {
                 ConfigKey::StatusBarShowZoom,
                 ConfigKey::StatusBarShowClock,
                 ConfigKey::StatusBarShowDuration,
+                ConfigKey::StatusBarShowExitStatus,
+                ConfigKey::StatusBarShowProgress,
                 ConfigKey::StatusBarShowScrollback,
             ],
             Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
@@ -135,6 +138,9 @@ impl Section {
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
+                ConfigKey::AutosuggestionsGeneratorsEnabled,
+                ConfigKey::AutosuggestionsMenuEnabled,
+                ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
             ],
             Section::Advanced => &[
@@ -157,7 +163,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (45 — default-spawn's two rows included).
+/// count (49 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -193,6 +199,29 @@ pub enum ConfigKey {
     /// at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsCommandsEnabled,
+    /// The git generators' own toggle (suggest-generators spec) —
+    /// the Terminal card's row beside its siblings: branch, tag,
+    /// and working-tree-change names completing git's argument
+    /// seats, read locally under the spawn contract (reviewed
+    /// read-only commands, scrubbed env, five-second kill, silence
+    /// on ssh and on every failure). An off flip stops every spawn
+    /// and serves nothing from the cache on the echo; on re-arms
+    /// the menu-open refresh.
+    AutosuggestionsGeneratorsEnabled,
+    /// The completion menu's own toggle (suggest-menu spec) — the
+    /// Terminal card's row beside its siblings: `Ctrl+Space`'s
+    /// candidate list over the tab's current input. An off flip
+    /// closes a showing menu on the echo's `set_config` pass while
+    /// the ghost keeps suggesting (the ghost and the trigger are
+    /// separable); on arms the chord again at its next press.
+    AutosuggestionsMenuEnabled,
+    /// The auto-popup opt-in (suggest-menu spec, OQ-1 decided) —
+    /// the Terminal card's row beside the menu toggle: with it on,
+    /// an idle prompt whose typed segment collects two or more
+    /// candidates pops the menu without the chord, closing on
+    /// narrowing or ineligibility. Default `false` — no peer ships
+    /// auto-popup on; the chord stays today's only opener.
+    AutosuggestionsMenuAuto,
     /// The autosuggest idle-delay display gate (suggest-delay spec) —
     /// the Terminal card's numeric row beside the provider toggles:
     /// a qualifying suggestion waits until the typed segment has
@@ -239,6 +268,16 @@ pub enum ConfigKey {
     /// engine's timestamps keep running, so re-enabling mid-command
     /// shows the live elapsed immediately.
     StatusBarShowDuration,
+    /// The exit-status chip (status-exit spec): the toggle hides the
+    /// chip and its verdict sampling — the engine's timer keeps
+    /// recording either way, so a re-enable shows whatever verdict
+    /// still stands.
+    StatusBarShowExitStatus,
+    /// The progress chip (osc94-progress spec): the toggle hides
+    /// the chip and its report sampling together — the engine's
+    /// fact and its decay clock keep running either way, so a
+    /// re-enable shows whatever report still stands.
+    StatusBarShowProgress,
     /// The scrolled-back chip (status-scrolled spec): the toggle
     /// hides the chip outright — the offset read rides the same
     /// view-assembly lock either way, so the flip costs nothing
@@ -250,6 +289,10 @@ pub enum ConfigKey {
     TabBarBorder,
     /// The band's border hairline — the strip key's twin.
     StatusBarBorder,
+    /// The band's missed-activity halo (status-activity spec): key
+    /// off means the fact is never gathered and never rendered —
+    /// the ring, not the latch, is what this key gates.
+    StatusBarActivityMark,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -345,6 +388,9 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
+            ConfigKey::AutosuggestionsGeneratorsEnabled => "autosuggestions_generators_enabled",
+            ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
+            ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
@@ -373,9 +419,12 @@ impl ConfigKey {
             ConfigKey::StatusBarShowZoom => "status_bar_show_zoom",
             ConfigKey::StatusBarShowClock => "status_bar_show_clock",
             ConfigKey::StatusBarShowDuration => "status_bar_show_duration",
+            ConfigKey::StatusBarShowExitStatus => "status_bar_show_exit_status",
+            ConfigKey::StatusBarShowProgress => "status_bar_show_progress",
             ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
+            ConfigKey::StatusBarActivityMark => "status_bar_activity_mark",
         }
     }
 }
@@ -405,6 +454,9 @@ pub enum PlannedWrite {
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
+    AutosuggestionsGeneratorsEnabled(bool),
+    AutosuggestionsMenuEnabled(bool),
+    AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
@@ -453,6 +505,16 @@ pub enum PlannedWrite {
     StatusBarShowClock(bool),
     /// The duration segment's own row (command-lifecycle spec).
     StatusBarShowDuration(bool),
+    /// The exit chip's own row (status-exit spec) — a display flip
+    /// like its duration sibling: the echo's next view pass
+    /// re-evaluates the sampling gate and the resolver's seat
+    /// together.
+    StatusBarShowExitStatus(bool),
+    /// The progress chip's own row (osc94-progress spec) — a
+    /// display flip like its exit sibling: the echo's next view
+    /// pass re-evaluates the sampling gate and the resolver's seat
+    /// together.
+    StatusBarShowProgress(bool),
     /// The scrolled chip's own row (status-scrolled spec).
     StatusBarShowScrollback(bool),
     /// The bars' border hairlines (bar-borders spec): pure display
@@ -461,6 +523,10 @@ pub enum PlannedWrite {
     TabBarBorder(bool),
     /// The band's twin of the strip's border write.
     StatusBarBorder(bool),
+    /// The band's missed-activity halo write (status-activity spec)
+    /// — a display flip like its border sibling: the echo's next
+    /// view pass re-evaluates the sampling gate.
+    StatusBarActivityMark(bool),
 }
 
 impl PlannedWrite {
@@ -490,6 +556,11 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
             }
+            PlannedWrite::AutosuggestionsGeneratorsEnabled(_) => {
+                ConfigKey::AutosuggestionsGeneratorsEnabled
+            }
+            PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
+            PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
@@ -518,9 +589,12 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowZoom(_) => ConfigKey::StatusBarShowZoom,
             PlannedWrite::StatusBarShowClock(_) => ConfigKey::StatusBarShowClock,
             PlannedWrite::StatusBarShowDuration(_) => ConfigKey::StatusBarShowDuration,
+            PlannedWrite::StatusBarShowExitStatus(_) => ConfigKey::StatusBarShowExitStatus,
+            PlannedWrite::StatusBarShowProgress(_) => ConfigKey::StatusBarShowProgress,
             PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
+            PlannedWrite::StatusBarActivityMark(_) => ConfigKey::StatusBarActivityMark,
         }
     }
 
@@ -593,6 +667,16 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsGeneratorsEnabled(value) => handler.set(
+                ConfigKey::AutosuggestionsGeneratorsEnabled.key_name(),
+                *value,
+            ),
+            PlannedWrite::AutosuggestionsMenuEnabled(value) => {
+                handler.set(ConfigKey::AutosuggestionsMenuEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsMenuAuto(value) => {
+                handler.set(ConfigKey::AutosuggestionsMenuAuto.key_name(), *value)
             }
             PlannedWrite::AutosuggestionsDelayMs(value) => {
                 handler.set(ConfigKey::AutosuggestionsDelayMs.key_name(), *value)
@@ -674,6 +758,12 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowDuration(value) => {
                 handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
             }
+            PlannedWrite::StatusBarShowExitStatus(value) => {
+                handler.set(ConfigKey::StatusBarShowExitStatus.key_name(), *value)
+            }
+            PlannedWrite::StatusBarShowProgress(value) => {
+                handler.set(ConfigKey::StatusBarShowProgress.key_name(), *value)
+            }
             PlannedWrite::StatusBarShowScrollback(value) => {
                 handler.set(ConfigKey::StatusBarShowScrollback.key_name(), *value)
             }
@@ -682,6 +772,9 @@ impl PlannedWrite {
             }
             PlannedWrite::StatusBarBorder(value) => {
                 handler.set(ConfigKey::StatusBarBorder.key_name(), *value)
+            }
+            PlannedWrite::StatusBarActivityMark(value) => {
+                handler.set(ConfigKey::StatusBarActivityMark.key_name(), *value)
             }
         }
     }
@@ -867,6 +960,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarEnabled
         | ConfigKey::TabBarBorder
         | ConfigKey::StatusBarBorder
+        | ConfigKey::StatusBarActivityMark
         | ConfigKey::StatusBarShowProcess
         | ConfigKey::StatusBarShowPath
         | ConfigKey::StatusBarShowBranch
@@ -876,6 +970,8 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::StatusBarShowZoom
         | ConfigKey::StatusBarShowClock
         | ConfigKey::StatusBarShowDuration
+        | ConfigKey::StatusBarShowExitStatus
+        | ConfigKey::StatusBarShowProgress
         | ConfigKey::StatusBarShowScrollback
         // A showing suggestion disappears the moment the kill switch
         // lands: the echo runs set_config, the next update's guard
@@ -887,6 +983,9 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
+        | ConfigKey::AutosuggestionsGeneratorsEnabled
+        | ConfigKey::AutosuggestionsMenuEnabled
+        | ConfigKey::AutosuggestionsMenuAuto
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2289,6 +2388,13 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::AutosuggestionsCommandsEnabled => {
             Some(PlannedWrite::AutosuggestionsCommandsEnabled(checked))
         }
+        ConfigKey::AutosuggestionsGeneratorsEnabled => {
+            Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(checked))
+        }
+        ConfigKey::AutosuggestionsMenuEnabled => {
+            Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))
+        }
+        ConfigKey::AutosuggestionsMenuAuto => Some(PlannedWrite::AutosuggestionsMenuAuto(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))
@@ -2301,6 +2407,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
+        ConfigKey::StatusBarActivityMark => Some(PlannedWrite::StatusBarActivityMark(checked)),
         ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
         ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
         ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),
@@ -2310,6 +2417,8 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::StatusBarShowZoom => Some(PlannedWrite::StatusBarShowZoom(checked)),
         ConfigKey::StatusBarShowClock => Some(PlannedWrite::StatusBarShowClock(checked)),
         ConfigKey::StatusBarShowDuration => Some(PlannedWrite::StatusBarShowDuration(checked)),
+        ConfigKey::StatusBarShowExitStatus => Some(PlannedWrite::StatusBarShowExitStatus(checked)),
+        ConfigKey::StatusBarShowProgress => Some(PlannedWrite::StatusBarShowProgress(checked)),
         ConfigKey::StatusBarShowScrollback => Some(PlannedWrite::StatusBarShowScrollback(checked)),
         _ => None,
     }
