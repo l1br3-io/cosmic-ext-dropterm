@@ -2084,7 +2084,14 @@ impl Terminal {
         }
         self.kitty_last = Some(id);
         let dims = rgba.dimensions();
-        self.images.lock().unwrap().insert(id, rgba);
+        {
+            let mut store = self.images.lock().unwrap();
+            store.insert(id, rgba);
+            // The layer rides the store beside the pixels (kitty
+            // z-layers): an absent `z` reads as beneath, the drawing
+            // every unrecorded id owns.
+            store.set_layer(id, keys.z.unwrap_or(-1));
+        }
         if keys.action == Some(b'T') {
             let (cols, rows) = kitty_cells(&keys, dims, &self.size);
             self.term.lock().place_image(id, cols, rows);
@@ -2113,12 +2120,21 @@ impl Terminal {
         {
             existing.cells
         } else if let Some(placement) = keys.placement_id {
+            let source_layer = self.images.lock().unwrap().layer_of(source);
             let Some(pixels) = self.images.lock().unwrap().get(source).cloned() else {
                 return;
             };
             self.image_seq += 1;
             let cells = self.image_seq;
-            self.images.lock().unwrap().insert(cells, pixels);
+            {
+                let mut store = self.images.lock().unwrap();
+                store.insert(cells, pixels);
+                // The placement carries its own layer — a fresh copy
+                // of the pixels is a fresh seat of them (kitty
+                // z-layers), inheriting its image's when `z` rides
+                // the wire absent.
+                store.set_layer(cells, keys.z.unwrap_or(source_layer));
+            }
             self.kitty_placements.insert(
                 placement,
                 KittyPlacement {
@@ -4211,6 +4227,13 @@ pub struct ImageStore {
     bytes: usize,
     /// Renderer handles by id — pixels-to-handle made exactly once.
     handles: HashMap<u64, cosmic::iced::widget::image::Handle>,
+    /// z-indexes by id (kitty-images spec): z < 0 draws beneath the
+    /// glyphs, z >= 0 above them and below the cursor. An unrecorded
+    /// id — every iterm image — draws beneath, the drawing the first
+    /// module shipped; kitty records its z at seat, an absent `z`
+    /// reading as beneath too (the conservative default, one line to
+    /// flip).
+    layers: HashMap<u64, i32>,
 }
 
 impl ImageStore {
@@ -4269,6 +4292,17 @@ impl ImageStore {
         self.insert_with_budget(id, rgba, IMAGE_STORE_BUDGET);
     }
 
+    /// Record one image's z-index (kitty-images spec).
+    pub fn set_layer(&mut self, id: u64, z: i32) {
+        self.layers.insert(id, z);
+    }
+
+    /// The layer an image's cells draw at (kitty-images spec): an
+    /// unrecorded id draws beneath the glyphs.
+    pub fn layer_of(&self, id: u64) -> i32 {
+        self.layers.get(&id).copied().unwrap_or(-1)
+    }
+
     /// Remove one image's pixels and handle by id (kitty-images
     /// spec's `a=d` free): a freed id draws the same blank an evicted
     /// one does. A missing id is silence.
@@ -4279,6 +4313,7 @@ impl ImageStore {
             self.bytes -= evicted.len();
         }
         self.handles.remove(&id);
+        self.layers.remove(&id);
     }
 
     /// Empty the store whole (kitty-images spec's `d=A`): every
@@ -4286,6 +4321,7 @@ impl ImageStore {
     pub fn clear(&mut self) {
         self.images.clear();
         self.handles.clear();
+        self.layers.clear();
         self.bytes = 0;
     }
 }

@@ -3959,3 +3959,83 @@ fn kitty_command_sequences_never_open_a_session() {
     assert!(terminal.kitty_chunks.is_empty());
     assert!(terminal.images.lock().unwrap().get(1).is_none());
 }
+
+// ===== Kitty z-layers (kitty-images spec) =====
+
+#[test]
+fn store_layers_default_beneath_and_record_on_ask() {
+    let mut store = super::ImageStore::default();
+    store.insert(
+        1,
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])),
+    );
+    assert_eq!(store.layer_of(1), -1, "an unrecorded id draws beneath");
+
+    store.set_layer(1, 2);
+    assert_eq!(store.layer_of(1), 2, "above the glyphs at z>=0");
+    store.set_layer(1, -3);
+    assert_eq!(store.layer_of(1), -3, "beneath at z<0");
+
+    // A freed or evicted id's layer dies with its pixels.
+    store.remove(1);
+    assert_eq!(store.layer_of(1), -1);
+
+    store.insert(
+        2,
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])),
+    );
+    store.set_layer(2, 1);
+    store.clear();
+    assert_eq!(store.layer_of(2), -1, "the free-all takes the layers too");
+}
+
+#[test]
+fn kitty_transmissions_record_the_asked_layer() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=1,a=T,f=100,c=1,r=1,z=3", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=2,a=T,f=100,c=1,r=1,z=-1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=3,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.layer_of(1), 3, "an explicit z>=0 asks above");
+    assert_eq!(store.layer_of(2), -1, "an explicit z<0 asks beneath");
+    assert_eq!(store.layer_of(3), -1, "an absent z reads as beneath");
+}
+
+#[test]
+fn kitty_placements_carry_and_inherit_their_layer() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,z=4", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=4,c=1,r=1,z=-2", b""));
+
+    let store = terminal.images.lock().unwrap();
+    let cells_three = terminal.kitty_placements.get(&3).map(|p| p.cells);
+    let cells_four = terminal.kitty_placements.get(&4).map(|p| p.cells);
+    assert_eq!(
+        store.layer_of(cells_three.expect("placement 3 seated")),
+        4,
+        "an absent z inherits its image's layer"
+    );
+    assert_eq!(
+        store.layer_of(cells_four.expect("placement 4 seated")),
+        -2,
+        "the placement's own z overrides"
+    );
+}
+
+#[test]
+fn iterm_images_stay_beneath_by_default() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(
+        terminal.images.lock().unwrap().layer_of(1),
+        -1,
+        "iterm images never enter the layer map"
+    );
+}

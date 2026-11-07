@@ -969,14 +969,18 @@ where
             }
         });
 
-        // Inline images (iterm-images spec): every covered cell
-        // carries its normalized sub-rect of the shared image; the
-        // pinned renderer's image pipeline has no source-rect seat,
-        // so each cell draws the whole image at the rect its sub-rect
-        // implies, clipped to the cell — the clip is the sub-rect.
-        // The layer renders images beneath the text pass (the same
-        // kind ordering the completion menu rides in reverse), so
-        // glyphs draw over the pixels and an evicted id draws blank.
+        // Inline images (iterm-images + kitty z-layers specs): every
+        // covered cell carries its normalized sub-rect of the shared
+        // image; the pinned renderer's image pipeline has no
+        // source-rect seat, so each cell draws the whole image at the
+        // rect its sub-rect implies, clipped to the cell — the clip
+        // is the sub-rect. Two passes over the same cells: a
+        // beneath-layer image (an unrecorded id — every iterm image —
+        // or kitty `z<0`) draws here, under the text pass that
+        // follows; an above-layer one (kitty `z>=0`) is collected and
+        // drawn after the glyphs, still below the cursor and ghost
+        // overlays. An evicted id draws blank either way (OQ-3).
+        let mut above_layer_images: Vec<(Image, Rectangle<f32>, Rectangle<f32>)> = Vec::new();
         {
             let size = terminal.size();
             let mut images = terminal.images.lock().unwrap();
@@ -1006,18 +1010,19 @@ where
                         ),
                     Size::new(size.cell_width, size.cell_height),
                 );
-                renderer.draw_image(
-                    Image {
-                        handle,
-                        filter_method: FilterMethod::Linear,
-                        rotation: Radians(0.0),
-                        border_radius: Radius::from(0.0),
-                        opacity: 1.0,
-                        snap: false,
-                    },
-                    image_draw_rect(cell_rect, sub),
-                    cell_rect,
-                );
+                let image = Image {
+                    handle,
+                    filter_method: FilterMethod::Linear,
+                    rotation: Radians(0.0),
+                    border_radius: Radius::from(0.0),
+                    opacity: 1.0,
+                    snap: false,
+                };
+                if images.layer_of(sub.image) < 0 {
+                    renderer.draw_image(image, image_draw_rect(cell_rect, sub), cell_rect);
+                } else {
+                    above_layer_images.push((image, image_draw_rect(cell_rect, sub), cell_rect));
+                }
             }
         }
 
@@ -1031,6 +1036,13 @@ where
             color: Color::from_rgba(1.0, 1.0, 1.0, 1.0), // TODO:
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
+
+        // The above-glyph image pass (kitty z-layers): the collected
+        // z>=0 seats draw over the text and under everything later —
+        // the cursor, the ghost, the completion menu.
+        for (image, rect, clip) in above_layer_images {
+            renderer.draw_image(image, rect, clip);
+        }
 
         // The ghost-text overlay (autosuggest + ghost-fit specs): the
         // showing's visible string as dim glyphs starting one cell
