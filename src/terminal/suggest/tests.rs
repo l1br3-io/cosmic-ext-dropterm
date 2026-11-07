@@ -717,6 +717,34 @@ fn source_rank_pins_the_ruled_priority() {
 }
 
 #[test]
+fn menu_source_rank_pins_the_scoped_first_order() {
+    // The menu's own order, stated as data (suggest-menu spec,
+    // amended 2026-11-06): the seat-scoped providers — path, specs,
+    // generator — above history, the command catalog last (the
+    // scope-less command seat keeps history as its leading
+    // context). The ghost's `source_rank` stays locked
+    // history-first; only the list leads with the keyword's scope.
+    assert_eq!(menu_source_rank(SuggestionSource::Path), 0);
+    assert_eq!(menu_source_rank(SuggestionSource::Specs), 1);
+    assert_eq!(menu_source_rank(SuggestionSource::Generator), 2);
+    assert_eq!(menu_source_rank(SuggestionSource::History), 3);
+    assert_eq!(menu_source_rank(SuggestionSource::Catalog), 4);
+    // The two orders are genuinely distinct seams: history is first
+    // in the ghost's table and demoted below the scoped tier in the
+    // menu's alone — the amendment would silently undo itself if
+    // either rank table collapsed into the other.
+    assert_eq!(
+        source_rank(SuggestionSource::History),
+        0,
+        "the ghost keeps history first"
+    );
+    assert!(
+        menu_source_rank(SuggestionSource::History) > menu_source_rank(SuggestionSource::Generator),
+        "history demoted below the scoped tier in the menu alone"
+    );
+}
+
+#[test]
 fn the_dispatch_asks_history_and_carries_its_provenance() {
     let suggest = adopted();
     let (suffix, source) =
@@ -1937,10 +1965,12 @@ fn checkout_menu_rows_dedupe_across_branches_and_tags() {
 }
 
 #[test]
-fn generator_rows_follow_the_local_providers_in_the_menu() {
-    // The collection's source order is the display order: history's
-    // rows first, the generator's after — the merge's ruled priority
-    // in list form.
+fn generator_rows_lead_history_in_the_menu() {
+    // The collection's source order is the display order, amended
+    // 2026-11-06: the seat's scope leads, so the generator's cached
+    // branch — git's own names, the keyword's context — rides above
+    // the history line, where the single-choice ghost keeps its
+    // locked history-first merge.
     let mut suggest = adopted();
     let mut ring = VecDeque::new();
     ring.push_back("git checkout main2".to_string());
@@ -1963,8 +1993,8 @@ fn generator_rows_follow_the_local_providers_in_the_menu() {
             .map(|row| (row.label.as_str(), row.source))
             .collect::<Vec<_>>(),
         vec![
-            ("git checkout main2", SuggestionSource::History),
             ("main", SuggestionSource::Generator),
+            ("git checkout main2", SuggestionSource::History),
         ],
     );
 }
@@ -2257,31 +2287,37 @@ fn a_two_match_path_token_lists_both_entries_where_the_ghost_yields_the_common_p
 }
 
 #[test]
-fn the_menu_ranks_history_on_top_under_the_merge_priority() {
-    // The merge's ruled priority orders the menu too (suggest-menu
-    // spec): history first — the tab's own truth — then the rest by
-    // source_rank. One token cannot seat every provider at once (the
-    // seats are mutually exclusive), so the pin composes two tokens
-    // that each seat two: `git st` (history + specs) and `~/s`
-    // (history + path).
+fn the_menu_ranks_the_seats_scope_above_history() {
+    // The menu's own order (suggest-menu spec, amended 2026-11-06 by
+    // the maintainer's scoping report): the keyword's scope leads —
+    // the seat-scoped providers above history — where the
+    // single-choice ghost keeps its locked history-first
+    // `source_rank`. One token cannot seat every provider at once
+    // (the seats are mutually exclusive), so the pin composes three
+    // tokens that each seat two: `git st` (specs over history), `~/s`
+    // (path over history), and `gi` (the command seat, where no
+    // keyword has settled and history still leads the catalog).
     let suggest = adopted();
-    let history_and_specs = candidates("git st", &suggest, &obs());
-    let sources: Vec<SuggestionSource> = history_and_specs.iter().map(|c| c.source).collect();
+    let specs_over_history = candidates("git st", &suggest, &obs());
+    let sources: Vec<SuggestionSource> = specs_over_history.iter().map(|c| c.source).collect();
     assert_eq!(
         sources,
         [
-            SuggestionSource::History,
             SuggestionSource::Specs,
-            SuggestionSource::Specs
+            SuggestionSource::Specs,
+            SuggestionSource::History
         ]
     );
-    let labels: Vec<&str> = history_and_specs.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["git status", "stash", "status"]);
+    let labels: Vec<&str> = specs_over_history
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(labels, ["stash", "status", "git status"]);
     assert!(
-        history_and_specs
+        specs_over_history
             .windows(2)
-            .all(|pair| source_rank(pair[0].source) <= source_rank(pair[1].source)),
-        "the whole list is non-decreasing in source_rank"
+            .all(|pair| menu_source_rank(pair[0].source) <= menu_source_rank(pair[1].source)),
+        "the whole list is non-decreasing in menu_source_rank"
     );
 
     let mut suggest = adopted();
@@ -2293,18 +2329,48 @@ fn the_menu_ranks_history_on_top_under_the_merge_priority() {
         path_listing: Some(&entries),
         ..obs()
     };
-    let history_and_path = candidates("~/s", &suggest, &observation);
-    let sources: Vec<SuggestionSource> = history_and_path.iter().map(|c| c.source).collect();
+    let path_over_history = candidates("~/s", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = path_over_history.iter().map(|c| c.source).collect();
+    assert_eq!(
+        sources,
+        [
+            SuggestionSource::Path,
+            SuggestionSource::Path,
+            SuggestionSource::History
+        ]
+    );
+    let labels: Vec<&str> = path_over_history.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["src/", "srv/", "~/src/project"]);
+
+    // The command seat is the scope-less one: no command word has
+    // completed, so history stays the leading context and the
+    // catalog follows (the amendment moves nothing here).
+    let names = catalog(&["giftopnm", "git", "gitk"]);
+    let suggest = adopted();
+    let observation = Observation {
+        command_catalog: &names,
+        ..obs()
+    };
+    let history_then_catalog = candidates("gi", &suggest, &observation);
+    let sources: Vec<SuggestionSource> = history_then_catalog.iter().map(|c| c.source).collect();
     assert_eq!(
         sources,
         [
             SuggestionSource::History,
-            SuggestionSource::Path,
-            SuggestionSource::Path
+            SuggestionSource::History,
+            SuggestionSource::Catalog,
+            SuggestionSource::Catalog,
+            SuggestionSource::Catalog
         ]
     );
-    let labels: Vec<&str> = history_and_path.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["~/src/project", "src/", "srv/"]);
+    let labels: Vec<&str> = history_then_catalog
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        ["git status", "git push", "giftopnm", "git", "gitk"]
+    );
 }
 
 #[test]
@@ -2376,6 +2442,62 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
     assert_eq!(
         labels, git.flags,
         "the bare `--` lists the whole flag table"
+    );
+}
+
+#[test]
+fn the_menu_lists_the_whole_subcommand_table_at_a_bare_command_word() {
+    // The ghost's empty-word floor is the ghost's alone (the bare
+    // `--` rule's twin): `git ` with the space echoed and nothing
+    // after lists git's whole curated subcommand table above the
+    // history lines (the 2026-11-06 amendment: the keyword's scope
+    // leads) — the scoped next level the command word settles the
+    // menu into, where an unscoped provider or a later seat
+    // contributes nothing.
+    let suggest = adopted();
+    let menu = candidates("git ", &suggest, &obs());
+    let git = SPECS
+        .iter()
+        .find(|spec| spec.command == "git")
+        .expect("git is curated");
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        &labels[..git.subcommands.len()],
+        git.subcommands,
+        "the whole subcommand table leads, the table's own order"
+    );
+    assert_eq!(
+        &labels[git.subcommands.len()..],
+        ["git status", "git push"],
+        "then the history lines, most recent first"
+    );
+    let suffixes: Vec<&str> = menu
+        .iter()
+        .take(git.subcommands.len())
+        .map(|c| c.suffix.as_str())
+        .collect();
+    assert_eq!(
+        suffixes, git.subcommands,
+        "an empty token accepts the whole word"
+    );
+    assert!(
+        menu.iter()
+            .take(git.subcommands.len())
+            .all(|c| c.source == SuggestionSource::Specs),
+        "the table rows carry the specs provenance"
+    );
+    // The seat rules hold at the boundary: a later seat with an
+    // empty token never consults the subcommand table, and an
+    // uncurated command's bare word collects nothing (the ring holds
+    // no match either — specs_suggest's `vim notes`).
+    let suggest = specs_suggest();
+    assert!(
+        candidates("git checkout ", &suggest, &obs()).is_empty(),
+        "a later argument seat stays out of the subcommand table"
+    );
+    assert!(
+        candidates("echo ", &suggest, &obs()).is_empty(),
+        "an uncurated command's bare word is silence"
     );
 }
 
@@ -2697,12 +2819,19 @@ fn the_builtin_fallback_is_todays_table() {
         let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(flags, spec.flags);
         assert!(
-            owned
-                .subcommands
-                .iter()
-                .chain(&owned.flags)
-                .all(|e| e.description.is_none()),
+            owned.subcommands.iter().all(|e| e.description.is_none())
+                && owned.flags.iter().all(|e| e.description.is_none()),
             "the built-in carries no descriptions"
+        );
+        assert_eq!(
+            *owned,
+            SpecCommand {
+                name: owned.name.clone(),
+                subcommands: owned.subcommands.clone(),
+                flags: owned.flags.clone(),
+                ..Default::default()
+            },
+            "the built-in carries every grown field at its default"
         );
     }
 }
@@ -2743,6 +2872,78 @@ name = "worktree"
         "a re-declaration replaces the built-in whole"
     );
     assert_eq!(git.subcommands[0].name, "worktree");
+}
+
+#[test]
+fn merge_whole_leaks_nothing_either_direction_at_depth() {
+    // The merge rule against the grown tree (suggest-schema spec,
+    // criterion 4, pinned for the three-layer merge suggest-embed
+    // builds on it): a re-declared command with nested content
+    // replaces its built-in whole — the built-in's flags never leak
+    // into the re-declaration, the re-declaration's nested tiers
+    // arrive intact, and no other command loses a leaf. Whole-tree
+    // equality is the pin: PartialEq now reaches every depth.
+    let file = parse_completions(
+        r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "worktree"
+description = "Manage multiple working trees"
+
+[[commands.subcommands.flags]]
+name = "--quiet"
+
+[[commands.subcommands.subcommands]]
+name = "add"
+"#,
+    )
+    .expect("a valid nested file parses");
+    let merged = merge_completions(file);
+    let git = merged
+        .iter()
+        .find(|c| c.name == "git")
+        .expect("git is re-declared");
+    assert!(
+        git.flags.is_empty(),
+        "the built-in's flags never leak into the re-declaration"
+    );
+    assert_eq!(
+        git.subcommands.len(),
+        1,
+        "the built-in's subcommands are gone whole"
+    );
+    let worktree = &git.subcommands[0];
+    assert_eq!(worktree.name, "worktree");
+    assert_eq!(
+        worktree.description.as_deref(),
+        Some("Manage multiple working trees")
+    );
+    assert_eq!(worktree.flags.len(), 1, "a flag on the nested tier arrives");
+    assert_eq!(worktree.flags[0].name, "--quiet");
+    assert_eq!(
+        worktree.subcommands.len(),
+        1,
+        "a third level arrives through the merge intact"
+    );
+    assert_eq!(worktree.subcommands[0].name, "add");
+    let untouched = |name: &str| {
+        let merged_command = merged
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} keeps its seat"));
+        let builtin_command = builtin_specs()
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is built in"));
+        assert_eq!(
+            *merged_command, *builtin_command,
+            "{name} is untouched to the last leaf"
+        );
+    };
+    untouched("docker");
+    untouched("cargo");
 }
 
 #[test]
@@ -2932,4 +3133,400 @@ description = "Switch branches or restore working tree files"
     let shown = step(&observation, &mut suggest).expect("the ghost answers the same");
     assert_eq!(shown.suffix, "ckout");
     assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+// --- the recursive spec tree (suggest-schema) ---
+
+/// The seed's flat projection — every command, then its subcommand
+/// and flag names beside their descriptions, one tab-separated line
+/// per row in parse order: the shape today's parse answered before
+/// the schema grew (suggest-schema spec, criterion 1), pinned in
+/// `fixtures/seed-golden.txt`. Reads only `name` and `description`,
+/// the two keys every tier kept, so the pin is the superset proof.
+fn seed_projection(table: &[SpecCommand]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for command in table {
+        lines.push(format!("command\t{}", command.name));
+        for entry in &command.subcommands {
+            lines.push(format!(
+                "sub\t{}\t{}",
+                entry.name,
+                entry.description.as_deref().unwrap_or_default()
+            ));
+        }
+        for entry in &command.flags {
+            lines.push(format!(
+                "flag\t{}\t{}",
+                entry.name,
+                entry.description.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+    lines
+}
+
+/// The golden rows read back as a table: every row's name and
+/// description seated, every other field at its default — the tree
+/// today's parse would have built had it known the new keys. Equal
+/// to the live parse means the seed exercises nothing the schema
+/// grew.
+fn table_from_projection(golden: &str) -> Vec<SpecCommand> {
+    let mut table: Vec<SpecCommand> = Vec::new();
+    for line in golden.lines() {
+        let mut fields = line.split('\t');
+        let kind = fields.next().expect("a row kind");
+        let name = fields.next().expect("a row name").to_string();
+        let description = fields
+            .next()
+            .filter(|description| !description.is_empty())
+            .map(str::to_string);
+        match kind {
+            "command" => table.push(SpecCommand {
+                name,
+                ..Default::default()
+            }),
+            "sub" => table
+                .last_mut()
+                .expect("a command row precedes its entries")
+                .subcommands
+                .push(SpecCommand {
+                    name,
+                    description,
+                    ..Default::default()
+                }),
+            "flag" => table
+                .last_mut()
+                .expect("a command row precedes its entries")
+                .flags
+                .push(SpecFlag {
+                    name,
+                    description,
+                    ..Default::default()
+                }),
+            other => panic!("unknown golden row kind {other}"),
+        }
+    }
+    table
+}
+
+/// The schema's whole shape at three levels, every new key seated
+/// (criterion 2); the file writes its lists out of order so the
+/// expected tree below is the normalized one.
+const NESTED_FILE: &str = include_str!("fixtures/nested.toml");
+
+/// A `script` key on a third-level subcommand (criterion 3) — valid
+/// but for that one line.
+const DEEP_SCRIPT_FILE: &str = include_str!("fixtures/deep-script.toml");
+
+#[test]
+fn the_seed_parses_golden_equal_to_todays_table() {
+    // The superset proof (suggest-schema spec, criterion 1): the
+    // shipped seed parses through the grown types to exactly the
+    // table today's flat types answered — the golden rows were
+    // captured from that parse before the schema grew — and to a
+    // tree whose every new field sits at its default, because the
+    // seed declares none of them. The row diff reads first; the
+    // whole-tree equality pins the defaults.
+    let seed = include_str!("../../../data/completions.toml");
+    let golden = include_str!("fixtures/seed-golden.txt");
+    let table = parse_completions(seed).expect("the seed parses under the grown schema");
+    let rows: Vec<&str> = golden.lines().collect();
+    assert_eq!(
+        seed_projection(&table),
+        rows,
+        "the seed's names and descriptions are today's"
+    );
+    assert_eq!(
+        table,
+        table_from_projection(golden),
+        "every field the schema grew sits at its default across the seed"
+    );
+}
+
+#[test]
+fn a_nested_fixture_round_trips_every_new_key() {
+    // Three levels (docker → compose → up) carrying every key the
+    // engine-rea §5 census admits plus `aliases` and
+    // `filter_strategy`: a flag's short-form aliases and persistence,
+    // `exclusive_on`, `hidden` on a flag and on a subcommand,
+    // `priority` on two tiers, a fuzzy `filter_strategy`, arguments
+    // with `template`, `optional`, `variadic`, literal `suggestions`,
+    // and the sudo shape (`command = true`). Lists arrive normalized;
+    // arguments keep their positional order.
+    let table = parse_completions(NESTED_FILE).expect("the nested fixture parses");
+    let expected = vec![SpecCommand {
+        name: "docker".into(),
+        description: Some("A self-sufficient runtime for containers".into()),
+        aliases: vec!["dock".into()],
+        priority: Some(60),
+        filter_strategy: FilterStrategy::Fuzzy,
+        flags: vec![SpecFlag {
+            name: "--config".into(),
+            description: Some("Location of client config files".into()),
+            aliases: vec!["-c".into()],
+            persistent: true,
+            args: vec![SpecArg {
+                name: "path".into(),
+                template: Some(ArgTemplate::Folders),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        subcommands: vec![
+            SpecCommand {
+                name: "compose".into(),
+                description: Some("Define and run multi-container applications".into()),
+                flags: vec![SpecFlag {
+                    name: "--file".into(),
+                    description: Some("Compose configuration files".into()),
+                    aliases: vec!["-f".into()],
+                    args: vec![SpecArg {
+                        name: "file".into(),
+                        template: Some(ArgTemplate::Filepaths),
+                        variadic: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                subcommands: vec![SpecCommand {
+                    name: "up".into(),
+                    description: Some("Create and start containers".into()),
+                    priority: Some(80),
+                    flags: vec![
+                        SpecFlag {
+                            name: "--attach".into(),
+                            description: Some("Attach to dependent containers".into()),
+                            hidden: true,
+                            ..Default::default()
+                        },
+                        SpecFlag {
+                            name: "--detach".into(),
+                            description: Some(
+                                "Detached mode: run containers in the background".into(),
+                            ),
+                            aliases: vec!["-d".into()],
+                            exclusive_on: vec!["--attach".into()],
+                            ..Default::default()
+                        },
+                    ],
+                    args: vec![SpecArg {
+                        name: "service".into(),
+                        optional: true,
+                        variadic: true,
+                        suggestions: vec![
+                            SpecEntry {
+                                name: "db".into(),
+                                description: None,
+                            },
+                            SpecEntry {
+                                name: "web".into(),
+                                description: Some("The web service".into()),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            SpecCommand {
+                name: "exec".into(),
+                description: Some("Execute a command in a running container".into()),
+                args: vec![
+                    SpecArg {
+                        name: "container".into(),
+                        ..Default::default()
+                    },
+                    SpecArg {
+                        name: "command".into(),
+                        command: true,
+                        variadic: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            SpecCommand {
+                name: "trust".into(),
+                hidden: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }];
+    assert_eq!(table, expected);
+}
+
+#[test]
+fn an_unknown_key_at_any_depth_rejects_the_file_whole() {
+    // The no-scripts boundary, as deep as the tree (suggest-schema
+    // spec, criterion 3): `deny_unknown_fields` on every tier means
+    // a `script` key on a third-level subcommand, a `generators` key
+    // on an argument, and an unknown key on a suggestion each fail
+    // the whole file. Each case carries its positive control — the
+    // same file without the offending line parses — so the rejection
+    // is the key's, never a tier the schema lacks.
+    let valid_deep = DEEP_SCRIPT_FILE
+        .lines()
+        .filter(|line| !line.starts_with("script"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        parse_completions(&valid_deep).is_ok(),
+        "the deep fixture is valid but for its script line"
+    );
+    assert!(
+        parse_completions(DEEP_SCRIPT_FILE).is_err(),
+        "a third-level `script` rejects the file"
+    );
+    let arg_tier = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+
+[[commands.subcommands.args]]
+name = "number"
+"#;
+    assert!(parse_completions(arg_tier).is_ok(), "the arg tier is valid");
+    assert!(
+        parse_completions(&format!("{arg_tier}generators = [\"gh pr list\"]\n")).is_err(),
+        "a `generators` key on an arg rejects the file"
+    );
+    let suggestion_tier = format!(
+        "{arg_tier}
+[[commands.subcommands.args.suggestions]]
+name = \"42\"
+"
+    );
+    assert!(
+        parse_completions(&suggestion_tier).is_ok(),
+        "the suggestion tier is valid"
+    );
+    assert!(
+        parse_completions(&format!("{suggestion_tier}icon = \"🔢\"\n")).is_err(),
+        "an unknown key on a suggestion rejects the file"
+    );
+    let dir = completions_fixture("deep-script");
+    std::fs::write(dir.join("completions.toml"), DEEP_SCRIPT_FILE).expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "a deep script answers the built-in floor"
+    );
+}
+
+#[test]
+fn sort_normalization_holds_at_every_tier() {
+    // The ruled order, recursive (suggest-schema spec, criterion 5):
+    // nested subcommands, nested flags, and literal suggestions —
+    // under a command's and a flag's arguments alike — sort by name
+    // at parse, stable among equals (two `--a` keep their file
+    // order, told apart by description); arguments are positional and
+    // keep their file order whole.
+    let unsorted = r#"
+[[commands]]
+name = "zz"
+
+[[commands]]
+name = "aa"
+
+[[commands.subcommands]]
+name = "sub-b"
+
+[[commands.subcommands.subcommands]]
+name = "deep-z"
+
+[[commands.subcommands.subcommands]]
+name = "deep-a"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--z"
+
+[[commands.subcommands.subcommands.flags.args]]
+name = "level"
+
+[[commands.subcommands.subcommands.flags.args.suggestions]]
+name = "zf"
+
+[[commands.subcommands.subcommands.flags.args.suggestions]]
+name = "af"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--a"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--a"
+description = "the second --a"
+
+[[commands.subcommands.subcommands.args]]
+name = "zeta"
+
+[[commands.subcommands.subcommands.args]]
+name = "alpha"
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "zs"
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "as"
+
+[[commands.subcommands]]
+name = "sub-a"
+"#;
+    let table = parse_completions(unsorted).expect("an unsorted nested file parses");
+    let names = |commands: &[SpecCommand]| -> Vec<String> {
+        commands.iter().map(|c| c.name.clone()).collect()
+    };
+    assert_eq!(names(&table), ["aa", "zz"], "commands sort by name");
+    let aa = &table[0];
+    assert_eq!(
+        names(&aa.subcommands),
+        ["sub-a", "sub-b"],
+        "subcommands sort"
+    );
+    let sub_b = &aa.subcommands[1];
+    assert_eq!(
+        names(&sub_b.subcommands),
+        ["deep-a", "deep-z"],
+        "nested subcommands sort"
+    );
+    let deep_a = &sub_b.subcommands[0];
+    let flags: Vec<(&str, Option<&str>)> = deep_a
+        .flags
+        .iter()
+        .map(|f| (f.name.as_str(), f.description.as_deref()))
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("--a", None),
+            ("--a", Some("the second --a")),
+            ("--z", None)
+        ],
+        "nested flags sort by name, stable among equals"
+    );
+    let args: Vec<&str> = deep_a.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        args,
+        ["zeta", "alpha"],
+        "arguments keep positional file order"
+    );
+    let suggestions: Vec<&str> = deep_a.args[1]
+        .suggestions
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(suggestions, ["as", "zs"], "an argument's suggestions sort");
+    let flag_suggestions: Vec<&str> = deep_a.flags[2].args[0]
+        .suggestions
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(
+        flag_suggestions,
+        ["af", "zf"],
+        "a flag argument's suggestions sort alike"
+    );
 }

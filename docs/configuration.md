@@ -309,13 +309,15 @@ description = "Manage pull requests"
 name = "pr-check"
 
 # Long flags complete the flag seat from any argument position
-# (`gh --rep` finishes `--repo`). No short flags - same ruling as
-# the built-in table: a single-choice ghost pays a wrong accept
-# for a wrong guess.
+# (`gh --rep` finishes `--repo`). A flag's other forms - short
+# ones included - belong in its `aliases`, never as their own
+# entries: short forms are recognized, never suggested.
 [[commands.flags]]
 name = "--repo"
 description = "Select another repository"
 ```
+
+The shape is recursive: a `[[commands.subcommands]]` entry is itself a command, taking the same keys and its own `subcommands`, `flags`, and positional `args`, so `docker compose` and everything under it are described exactly as `docker` is. A command or subcommand also takes `aliases` (its other names, `co` for `checkout`), `hidden` (suggested only when typed exactly), `priority` (a 0-100 ordering hint), and `filter_strategy` (`"prefix"`, the default, or `"fuzzy"`). A flag entry takes `aliases` for its other forms - short forms included, so the table knows a typed `-d` is `--detach`, while short forms themselves are never suggested - plus `persistent` (the flag rides into every subcommand), `exclusive_on` (flags that hide it once typed), `hidden`, `priority`, and the `args` it consumes. An `args` entry takes `optional`, `variadic` (consumes every following token), `command` (the argument is itself a command word - the `sudo` shape), `template` (`"filepaths"` or `"folders"`, a path-shaped argument), and literal `suggestions` (a list of `name` + `description` entries). Every key at every depth is optional with a default - an entry carrying none of them is the plain `name`-plus-`description` shape above - and the same rejection rule holds at every depth: an unknown key anywhere fails the whole file. The top level's `subcommands` and `flags` complete as they always have; the nested tiers ride the table for the completion walker that reads them.
 
 Rules the loader holds:
 
