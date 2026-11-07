@@ -3067,37 +3067,32 @@ fn file_descriptions_reach_the_menu_rows() {
 }
 
 #[test]
-fn the_shipped_seed_parses_and_never_shrinks_the_built_in_five() {
-    // The seed's own gates (suggest-specs-data spec, criterion 4):
-    // the audited file ships valid under the schema — the `script`
-    // boundary holds for what DropTerm itself distributes — and the
-    // five re-declared commands carry the complete built-in entry
-    // sets, because the merge replaces whole: a seed that dropped a
-    // built-in entry would shrink every table it touched.
+fn the_shipped_seed_parses_and_keeps_the_built_in_five_seated() {
+    // The seed's own gates, corpus era (suggest-corpus spec, the
+    // audit's rule 4 dissolved to its mechanizable core): the
+    // GENERATED file ships valid under the schema — the `script`
+    // boundary holds for what DropTerm itself distributes — and every
+    // one of the five seats with a real tree. Entry-level equality
+    // with the hand-curated table ended with the hand conversion:
+    // upstream seats `--amend` under `git commit` (not the root) and
+    // adds cargo's `fmt` behind a runtime conditional, so the
+    // curated hoists were a workaround for a root-only table — no
+    // capability is lost, the entries move to their true seats, and
+    // suggest-embed retires the in-code five wholesale. Command-level
+    // no-shrink across regenerations is the golden pin in
+    // `the_core_tier_never_shrinks_a_command`.
     let seed = include_str!("../../../data/completions.toml");
     let file = parse_completions(seed).expect("the shipped seed parses under the schema");
-    let merged = merge_completions(file);
     for spec in SPECS {
-        let command = merged
+        let command = file
             .iter()
             .find(|command| command.name == spec.command)
             .unwrap_or_else(|| panic!("{} keeps its seat in the seed", spec.command));
-        let subcommands: Vec<&str> = command
-            .subcommands
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(
-            subcommands, spec.subcommands,
-            "{} subcommands",
+        assert!(
+            !command.subcommands.is_empty() || !command.flags.is_empty(),
+            "{} seats a real tree, not a bare name",
             spec.command
         );
-        let flags: Vec<&str> = command
-            .flags
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(flags, spec.flags, "{} flags", spec.command);
     }
 }
 
@@ -3145,68 +3140,28 @@ description = "Switch branches or restore working tree files"
 /// the two keys every tier kept, so the pin is the superset proof.
 fn seed_projection(table: &[SpecCommand]) -> Vec<String> {
     let mut lines = Vec::new();
+    // The golden is line-oriented; some upstream descriptions carry
+    // literal newlines (`less`'s help text), so a row escapes them or
+    // `golden.lines()` would split one row into many.
+    let flat = |description: &str| description.replace(['\n', '\r'], "\\n");
     for command in table {
         lines.push(format!("command\t{}", command.name));
         for entry in &command.subcommands {
             lines.push(format!(
                 "sub\t{}\t{}",
                 entry.name,
-                entry.description.as_deref().unwrap_or_default()
+                flat(entry.description.as_deref().unwrap_or_default())
             ));
         }
         for entry in &command.flags {
             lines.push(format!(
                 "flag\t{}\t{}",
                 entry.name,
-                entry.description.as_deref().unwrap_or_default()
+                flat(entry.description.as_deref().unwrap_or_default())
             ));
         }
     }
     lines
-}
-
-/// The golden rows read back as a table: every row's name and
-/// description seated, every other field at its default — the tree
-/// today's parse would have built had it known the new keys. Equal
-/// to the live parse means the seed exercises nothing the schema
-/// grew.
-fn table_from_projection(golden: &str) -> Vec<SpecCommand> {
-    let mut table: Vec<SpecCommand> = Vec::new();
-    for line in golden.lines() {
-        let mut fields = line.split('\t');
-        let kind = fields.next().expect("a row kind");
-        let name = fields.next().expect("a row name").to_string();
-        let description = fields
-            .next()
-            .filter(|description| !description.is_empty())
-            .map(str::to_string);
-        match kind {
-            "command" => table.push(SpecCommand {
-                name,
-                ..Default::default()
-            }),
-            "sub" => table
-                .last_mut()
-                .expect("a command row precedes its entries")
-                .subcommands
-                .push(SpecCommand {
-                    name,
-                    description,
-                    ..Default::default()
-                }),
-            "flag" => table
-                .last_mut()
-                .expect("a command row precedes its entries")
-                .flags
-                .push(SpecFlag {
-                    name,
-                    description,
-                    ..Default::default()
-                }),
-            other => panic!("unknown golden row kind {other}"),
-        }
-    }
-    table
 }
 
 /// The schema's whole shape at three levels, every new key seated
@@ -3220,13 +3175,14 @@ const DEEP_SCRIPT_FILE: &str = include_str!("fixtures/deep-script.toml");
 
 #[test]
 fn the_seed_parses_golden_equal_to_todays_table() {
-    // The superset proof (suggest-schema spec, criterion 1): the
-    // shipped seed parses through the grown types to exactly the
-    // table today's flat types answered — the golden rows were
-    // captured from that parse before the schema grew — and to a
-    // tree whose every new field sits at its default, because the
-    // seed declares none of them. The row diff reads first; the
-    // whole-tree equality pins the defaults.
+    // The superset proof, corpus era (suggest-corpus spec): the seed
+    // is now GENERATED, and it exercises the grown schema by design —
+    // so the golden pins what must stay stable across a regeneration,
+    // the flat names-and-descriptions rows (the row diff reads
+    // first), while the every-grown-key-at-default proof moved to
+    // `a_nested_fixture_round_trips_every_new_key`, which seats each
+    // key explicitly. The rows were captured from the generated
+    // file's own parse.
     let seed = include_str!("../../../data/completions.toml");
     let golden = include_str!("fixtures/seed-golden.txt");
     let table = parse_completions(seed).expect("the seed parses under the grown schema");
@@ -3235,11 +3191,6 @@ fn the_seed_parses_golden_equal_to_todays_table() {
         seed_projection(&table),
         rows,
         "the seed's names and descriptions are today's"
-    );
-    assert_eq!(
-        table,
-        table_from_projection(golden),
-        "every field the schema grew sits at its default across the seed"
     );
 }
 
