@@ -1109,6 +1109,10 @@ impl DropTerm {
                 }
             }
             TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
+            // Parsed by the fork, dropped here until the engine-side
+            // session machine lands; never crosses to the grid half-
+            // handled.
+            TermEvent::InlineImage(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {

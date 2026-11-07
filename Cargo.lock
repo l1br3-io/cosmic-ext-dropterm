@@ -132,7 +132,7 @@ dependencies = [
 [[package]]
 name = "alacritty_terminal"
 version = "0.25.1"
-source = "git+https://github.com/l1br3-io/alacritty?rev=94ff9ffd30e7da69d4c8557684af6a7754452e78#94ff9ffd30e7da69d4c8557684af6a7754452e78"
+source = "git+https://github.com/l1br3-io/alacritty?rev=22a0762521d2b8ff99ae9ea35822f22893193562#22a0762521d2b8ff99ae9ea35822f22893193562"
 dependencies = [
  "base64",
  "bitflags 2.13.2",
@@ -5367,7 +5367,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vte"
 version = "0.15.0"
-source = "git+https://github.com/l1br3-io/vte?rev=61226f3e95bcf0b464933ec67a6f35fe8a99814c#61226f3e95bcf0b464933ec67a6f35fe8a99814c"
+source = "git+https://github.com/l1br3-io/vte?rev=de166da2a66ce19605ce00bd9a5e7e8caf823bb5#de166da2a66ce19605ce00bd9a5e7e8caf823bb5"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
