@@ -3081,8 +3081,9 @@ fn the_shipped_seed_parses_and_keeps_the_built_in_five_seated() {
     // suggest-embed retires the in-code five wholesale. Command-level
     // no-shrink across regenerations is the golden pin in
     // `the_core_tier_never_shrinks_a_command`.
-    let seed = include_str!("../../../data/completions.toml");
-    let file = parse_completions(seed).expect("the shipped seed parses under the schema");
+    // The parse rides the shared CORE_TABLE fixture (one core parse
+    // per run), whose expect is the schema gate.
+    let file = &*CORE_TABLE;
     for spec in SPECS {
         let command = file
             .iter()
@@ -3102,19 +3103,36 @@ fn the_shipped_seed_parses_and_keeps_the_built_in_five_seated() {
 /// `autosuggestions_completions_extended` (suggest-embed).
 const EXTENDED_TIER: &str = include_str!("../../../data/completions-extended.toml");
 
+/// The core tier's committed bytes, named beside its companion: the
+/// header pin reads this text, every parse-reading pin the fixtures
+/// below, so each raw path seats in exactly one place.
+const CORE_TIER: &str = include_str!("../../../data/completions.toml");
+
+/// The tiers parsed once per run and shared: a 4 MiB parse costs
+/// seconds and the corpus and seed pins all read the same two tables
+/// (the shared-fixture rule, testing.md §2), so each tier parses here
+/// exactly once. Each `expect` is the schema gate — the committed
+/// bytes failing it fails every consumer together, the tier named in
+/// the panic.
+static CORE_TABLE: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(CORE_TIER).expect("the generated core tier parses under the schema")
+});
+static EXTENDED_TABLE: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(EXTENDED_TIER).expect("the generated extended tier parses under the schema")
+});
+
 #[test]
 fn both_generated_tiers_parse_through_the_schema() {
     // The extractor's contract (suggest-corpus spec): the Rust parser
     // is the gate — if either generated file fails the schema, the
     // script is wrong, not the schema. Both files are committed, so
-    // this pin holds the committed bytes to it.
-    let core = parse_completions(include_str!("../../../data/completions.toml"))
-        .expect("the generated core tier parses under the schema");
-    assert!(!core.is_empty(), "the core tier carries its commands");
-    let extended = parse_completions(EXTENDED_TIER)
-        .expect("the generated extended tier parses under the schema");
+    // this pin holds the committed bytes to it. The parses live in
+    // the shared fixtures above, whose expects are that gate —
+    // touching either table here runs it — and the non-empty floors
+    // ride along.
+    assert!(!CORE_TABLE.is_empty(), "the core tier carries its commands");
     assert!(
-        !extended.is_empty(),
+        !EXTENDED_TABLE.is_empty(),
         "the extended tier carries its commands"
     );
 }
@@ -3141,8 +3159,7 @@ fn the_core_tier_never_shrinks_a_command() {
         "systemctl",
         "tar",
     ];
-    let core = parse_completions(include_str!("../../../data/completions.toml"))
-        .expect("the generated core tier parses");
+    let core = &*CORE_TABLE;
     for name in PREVIOUS_CORE {
         assert!(
             core.iter().any(|command| command.name == *name),
@@ -3156,10 +3173,9 @@ fn the_two_generated_tiers_are_disjoint() {
     // The extractor refuses a name in both tiers at run time; this
     // pin holds the committed bytes to the same rule, so a hand edit
     // or a bad regeneration cannot seat one command twice.
-    let core = parse_completions(include_str!("../../../data/completions.toml"))
-        .expect("the core tier parses");
-    let extended = parse_completions(EXTENDED_TIER).expect("the extended tier parses");
-    for command in &extended {
+    let core = &*CORE_TABLE;
+    let extended = &*EXTENDED_TABLE;
+    for command in extended {
         assert!(
             !core.iter().any(|seat| seat.name == command.name),
             "'{}' sits in both tiers — the extractor's disjointness broke",
@@ -3168,9 +3184,9 @@ fn the_two_generated_tiers_are_disjoint() {
     }
 }
 
-/// Walks a spec tree's every flag, the conversion rule in test form:
-/// a flag's primary name is its first `--` long form or first dashed
-/// form — an undashed name is a conversion bug, not data.
+/// Collects every flag name in a spec tree at every depth — the
+/// command's own flags, then each subcommand's whole tree — into
+/// `sink` in walk order.
 fn flag_names(command: &SpecCommand, sink: &mut Vec<String>) {
     for flag in &command.flags {
         sink.push(flag.name.clone());
@@ -3186,13 +3202,9 @@ fn every_generated_flag_name_keeps_its_dash() {
     // spec): every flag `name` in either tier starts with `-` — the
     // extractor asserts it at run time over the reduced trees; this
     // holds the committed bytes to the same truth.
-    for (tier, text) in [
-        ("core", include_str!("../../../data/completions.toml")),
-        ("extended", EXTENDED_TIER),
-    ] {
-        let table = parse_completions(text).expect("the tier parses");
+    for (tier, table) in [("core", &*CORE_TABLE), ("extended", &*EXTENDED_TABLE)] {
         let mut flags = Vec::new();
-        for command in &table {
+        for command in table {
             flag_names(command, &mut flags);
         }
         for name in flags {
@@ -3209,10 +3221,7 @@ fn both_generated_headers_carry_the_notice_and_the_pin() {
     // The provenance the spec demands in both headers: the MIT notice
     // verbatim, the pinned version, the pinned sha256 — so a file
     // separated from its recipe still tells where it came from.
-    for (tier, text) in [
-        ("core", include_str!("../../../data/completions.toml")),
-        ("extended", EXTENDED_TIER),
-    ] {
+    for (tier, text) in [("core", CORE_TIER), ("extended", EXTENDED_TIER)] {
         assert!(
             text.contains("MIT License"),
             "the {tier} header carries the notice"
@@ -3315,12 +3324,11 @@ fn the_seed_parses_golden_equal_to_todays_table() {
     // `a_nested_fixture_round_trips_every_new_key`, which seats each
     // key explicitly. The rows were captured from the generated
     // file's own parse.
-    let seed = include_str!("../../../data/completions.toml");
     let golden = include_str!("fixtures/seed-golden.txt");
-    let table = parse_completions(seed).expect("the seed parses under the grown schema");
+    let table = &*CORE_TABLE;
     let rows: Vec<&str> = golden.lines().collect();
     assert_eq!(
-        seed_projection(&table),
+        seed_projection(table),
         rows,
         "the seed's names and descriptions are today's"
     );
