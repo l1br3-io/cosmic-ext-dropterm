@@ -3096,6 +3096,138 @@ fn the_shipped_seed_parses_and_keeps_the_built_in_five_seated() {
     }
 }
 
+// --- the generated corpus tiers (suggest-corpus) ---
+
+/// The extended tier, never embedded: installed as a data file behind
+/// `autosuggestions_completions_extended` (suggest-embed).
+const EXTENDED_TIER: &str = include_str!("../../../data/completions-extended.toml");
+
+#[test]
+fn both_generated_tiers_parse_through_the_schema() {
+    // The extractor's contract (suggest-corpus spec): the Rust parser
+    // is the gate — if either generated file fails the schema, the
+    // script is wrong, not the schema. Both files are committed, so
+    // this pin holds the committed bytes to it.
+    let core = parse_completions(include_str!("../../../data/completions.toml"))
+        .expect("the generated core tier parses under the schema");
+    assert!(!core.is_empty(), "the core tier carries its commands");
+    let extended = parse_completions(EXTENDED_TIER)
+        .expect("the generated extended tier parses under the schema");
+    assert!(
+        !extended.is_empty(),
+        "the extended tier carries its commands"
+    );
+}
+
+#[test]
+fn the_core_tier_never_shrinks_a_command() {
+    // The no-shrink golden, generalized per regeneration (suggest-
+    // corpus spec): every command of the previous core file — the
+    // hand-converted seed's own list — still seats in the generated
+    // core tier. A regeneration that loses a command fails here; the
+    // list grows when a regeneration adds names worth keeping.
+    const PREVIOUS_CORE: &[&str] = &[
+        "apt",
+        "cargo",
+        "curl",
+        "docker",
+        "gh",
+        "git",
+        "kubectl",
+        "make",
+        "npm",
+        "pip",
+        "rsync",
+        "systemctl",
+        "tar",
+    ];
+    let core = parse_completions(include_str!("../../../data/completions.toml"))
+        .expect("the generated core tier parses");
+    for name in PREVIOUS_CORE {
+        assert!(
+            core.iter().any(|command| command.name == *name),
+            "'{name}' survives every regeneration"
+        );
+    }
+}
+
+#[test]
+fn the_two_generated_tiers_are_disjoint() {
+    // The extractor refuses a name in both tiers at run time; this
+    // pin holds the committed bytes to the same rule, so a hand edit
+    // or a bad regeneration cannot seat one command twice.
+    let core = parse_completions(include_str!("../../../data/completions.toml"))
+        .expect("the core tier parses");
+    let extended = parse_completions(EXTENDED_TIER).expect("the extended tier parses");
+    for command in &extended {
+        assert!(
+            !core.iter().any(|seat| seat.name == command.name),
+            "'{}' sits in both tiers — the extractor's disjointness broke",
+            command.name
+        );
+    }
+}
+
+/// Walks a spec tree's every flag, the conversion rule in test form:
+/// a flag's primary name is its first `--` long form or first dashed
+/// form — an undashed name is a conversion bug, not data.
+fn flag_names(command: &SpecCommand, sink: &mut Vec<String>) {
+    for flag in &command.flags {
+        sink.push(flag.name.clone());
+    }
+    for sub in &command.subcommands {
+        flag_names(sub, sink);
+    }
+}
+
+#[test]
+fn every_generated_flag_name_keeps_its_dash() {
+    // The seed audit's conversion rule, enforced (suggest-corpus
+    // spec): every flag `name` in either tier starts with `-` — the
+    // extractor asserts it at run time over the reduced trees; this
+    // holds the committed bytes to the same truth.
+    for (tier, text) in [
+        ("core", include_str!("../../../data/completions.toml")),
+        ("extended", EXTENDED_TIER),
+    ] {
+        let table = parse_completions(text).expect("the tier parses");
+        let mut flags = Vec::new();
+        for command in &table {
+            flag_names(command, &mut flags);
+        }
+        for name in flags {
+            assert!(
+                name.starts_with('-'),
+                "the {tier} tier's flag '{name}' lost its dash"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_generated_headers_carry_the_notice_and_the_pin() {
+    // The provenance the spec demands in both headers: the MIT notice
+    // verbatim, the pinned version, the pinned sha256 — so a file
+    // separated from its recipe still tells where it came from.
+    for (tier, text) in [
+        ("core", include_str!("../../../data/completions.toml")),
+        ("extended", EXTENDED_TIER),
+    ] {
+        assert!(
+            text.contains("MIT License"),
+            "the {tier} header carries the notice"
+        );
+        assert!(
+            text.contains("2.692.3"),
+            "the {tier} header carries the pinned version"
+        );
+        assert!(
+            text.contains("b07159ef0811bc8cec28e3a3016e6ba9568d774b75b8333dc6a5f2acf7d2c3af"),
+            "the {tier} header carries the pinned sha256"
+        );
+    }
+}
+
 #[test]
 fn the_ghost_ignores_descriptions() {
     // Locked (suggest-specs-data spec, OQ 3): descriptions are the
