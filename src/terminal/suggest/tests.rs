@@ -2875,6 +2875,78 @@ name = "worktree"
 }
 
 #[test]
+fn merge_whole_leaks_nothing_either_direction_at_depth() {
+    // The merge rule against the grown tree (suggest-schema spec,
+    // criterion 4, pinned for the three-layer merge suggest-embed
+    // builds on it): a re-declared command with nested content
+    // replaces its built-in whole — the built-in's flags never leak
+    // into the re-declaration, the re-declaration's nested tiers
+    // arrive intact, and no other command loses a leaf. Whole-tree
+    // equality is the pin: PartialEq now reaches every depth.
+    let file = parse_completions(
+        r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "worktree"
+description = "Manage multiple working trees"
+
+[[commands.subcommands.flags]]
+name = "--quiet"
+
+[[commands.subcommands.subcommands]]
+name = "add"
+"#,
+    )
+    .expect("a valid nested file parses");
+    let merged = merge_completions(file);
+    let git = merged
+        .iter()
+        .find(|c| c.name == "git")
+        .expect("git is re-declared");
+    assert!(
+        git.flags.is_empty(),
+        "the built-in's flags never leak into the re-declaration"
+    );
+    assert_eq!(
+        git.subcommands.len(),
+        1,
+        "the built-in's subcommands are gone whole"
+    );
+    let worktree = &git.subcommands[0];
+    assert_eq!(worktree.name, "worktree");
+    assert_eq!(
+        worktree.description.as_deref(),
+        Some("Manage multiple working trees")
+    );
+    assert_eq!(worktree.flags.len(), 1, "a flag on the nested tier arrives");
+    assert_eq!(worktree.flags[0].name, "--quiet");
+    assert_eq!(
+        worktree.subcommands.len(),
+        1,
+        "a third level arrives through the merge intact"
+    );
+    assert_eq!(worktree.subcommands[0].name, "add");
+    let untouched = |name: &str| {
+        let merged_command = merged
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} keeps its seat"));
+        let builtin_command = builtin_specs()
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is built in"));
+        assert_eq!(
+            *merged_command, *builtin_command,
+            "{name} is untouched to the last leaf"
+        );
+    };
+    untouched("docker");
+    untouched("cargo");
+}
+
+#[test]
 fn no_file_and_no_config_dir_answer_the_builtin_table() {
     // The fallback contract: an absent directory and an absent
     // file are both today's table — the default state is
