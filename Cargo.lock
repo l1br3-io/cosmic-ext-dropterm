@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-dropterm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "alacritty_terminal",
  "base64",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-dropterm-applet"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cosmic-ext-dropterm",
  "env_logger",

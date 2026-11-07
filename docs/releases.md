@@ -2,6 +2,13 @@
 
 What each tagged release changed, newest first - a curated, linkable summary; the GitHub release pages carry the exhaustive auto-generated lists, and the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md) carries what comes next. A section is added here at release time, by the release commit; nothing in between.
 
+## v0.3.1 (2026-11-07)
+
+The store-listing release: the applet and the terminal both ship their AppStream `<categories>`, clearing the one blocker between DropTerm and the COSMIC Flatpak source — its CI's `appstreamcli compose` drops a category-less component and aborts the export, the 2026-11-04 validation walk's recorded find, now fixed in the shipped bytes (the applet `System`, the terminal `System` + `TerminalEmulator`) so the catalog branch recuts from this tree with no patched manifest. Alongside, the kitty image z-layers tighten under review: eviction keeps the layer with its pixels, re-placing honors an explicit z, and the above-glyph pass composites by z — kitty's own overlap rule.
+
+- The store listing unblocked - both metainfo files carry their categories, the manifest pinning this release's bytes, the catalog submission cleared to file ([applet](applet.md))
+- Kitty images, review pass - eviction takes the layer with the pixels, an explicit z moves an existing placement's seat on the wire's ask (an absent z keeps what the seat holds), and the above-glyph pass composites by z ([images](images.md))
+
 ## v0.3.0 (2026-10-24)
 
 The autosuggestions release: fish-style ghost text computed entirely terminal-side - no shell integration, no scripts shipped, no environment injected. As you type, the rest of the most recent matching command from this tab's own history renders as dim ghost text after the cursor; Right accepts all of it, Alt+Right accepts one shell-word, and nothing ever executes without an explicit accept. Beyond history, typed path tokens complete from the filesystem, command names complete from the spawn-time PATH snapshot, and the curated table finishes subcommands and long flags for git, cargo, docker, systemctl, and npm; an optional idle delay holds the ghost back until typing pauses, and every provider carries its own settings toggle. Around it: the status band's command-lifecycle tier, the settings font picker, the howto/FAQ/sample-config docs layer, and the empty-desktop and caret fixes.
