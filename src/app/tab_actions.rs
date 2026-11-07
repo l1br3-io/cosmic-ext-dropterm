@@ -1121,6 +1121,11 @@ impl DropTerm {
                     .unwrap()
                     .note_inline_image(&params);
             }
+            // An APC string payload (kitty-images spec): the fork's
+            // accumulated bytes raw — parsed by the fork's state
+            // machine only, inert at the boundary until the kitty
+            // session machine lands, never half-handled to the grid.
+            TermEvent::ApcPayload(_) => {}
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
