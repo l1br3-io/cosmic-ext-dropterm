@@ -110,6 +110,15 @@ toml = "0.5"
 # code enters the build.
 dirs = "6"
 
+# The embedded completions floor's one-shot inflate (suggest-embed
+# spec, sanctioned 2026-11-07): `completions.toml.gz` — the
+# extractor-emitted compressed core tier — decompresses once per
+# process inside the table's `LazyLock`. Default features off with
+# the `rust_backend` (miniz_oxide — pure Rust, no C); version-matched
+# to the 1.1.10 line the lock already carries on that same backend,
+# so no new code enters the build.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+
 [dependencies.cosmic-text]
 version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]

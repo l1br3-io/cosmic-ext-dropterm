@@ -620,149 +620,6 @@ fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     escape_for_shell(&name[word.len()..])
 }
 
-/// One curated command's completion table (flag-specs spec): the
-/// hand-curated high-traffic subcommands and long flags — every
-/// entry ASCII, non-empty, and trimmed by construction, pinned by
-/// test, so a table entry is safe to write by construction. The
-/// lists are sorted, which is what makes the ruled tiebreak
-/// (shortest wins, ties alphabetical) fall out of `min_by_key` the
-/// same way the sorted catalog's does.
-struct CommandSpec {
-    /// The command word this entry completes.
-    command: &'static str,
-    /// Its high-traffic subcommands.
-    subcommands: &'static [&'static str],
-    /// Its long flags — uniform across subcommands in v1 (the flat
-    /// table; per-subcommand flag trees are the growth path's, not
-    /// v1's). No short flags, ruled: a single-choice ghost pays a
-    /// wrong accept for a wrong guess.
-    flags: &'static [&'static str],
-}
-
-/// The curated-specs table (flag-specs spec, OQ 5): the ruled v1
-/// five — git, cargo, docker, systemctl, npm. Curated means
-/// curated: no attempt at completeness. Static in-code data,
-/// demoted to the fallback's storage by the loadable data file
-/// (suggest-specs-data spec): no file, an unreadable file, or an
-/// invalid file answers this table, byte-equivalent to the
-/// pre-file behavior; the lookup sits behind `specs_candidate`
-/// alone, so neither merge nor guards know which table answers.
-const SPECS: &[CommandSpec] = &[
-    CommandSpec {
-        command: "cargo",
-        subcommands: &[
-            "build", "check", "clean", "doc", "fetch", "fix", "fmt", "init", "install", "publish",
-            "run", "test", "update",
-        ],
-        flags: &[
-            "--bin",
-            "--frozen",
-            "--lib",
-            "--locked",
-            "--manifest-path",
-            "--offline",
-            "--quiet",
-            "--release",
-            "--verbose",
-        ],
-    },
-    CommandSpec {
-        command: "docker",
-        subcommands: &[
-            "build", "commit", "cp", "create", "exec", "images", "inspect", "logs", "pull", "push",
-            "rm", "rmi", "run", "start", "stop", "version",
-        ],
-        flags: &[
-            "--detach",
-            "--env",
-            "--interactive",
-            "--name",
-            "--publish",
-            "--tty",
-            "--volume",
-        ],
-    },
-    CommandSpec {
-        command: "git",
-        subcommands: &[
-            "add",
-            "branch",
-            "checkout",
-            "cherry-pick",
-            "clone",
-            "commit",
-            "diff",
-            "fetch",
-            "init",
-            "log",
-            "merge",
-            "mv",
-            "pull",
-            "push",
-            "rebase",
-            "reset",
-            "restore",
-            "revert",
-            "rm",
-            "show",
-            "stash",
-            "status",
-            "switch",
-            "tag",
-        ],
-        flags: &[
-            "--all",
-            "--amend",
-            "--branch",
-            "--dry-run",
-            "--force",
-            "--global",
-            "--help",
-            "--interactive",
-            "--message",
-            "--quiet",
-            "--set-upstream",
-            "--verbose",
-            "--version",
-        ],
-    },
-    CommandSpec {
-        command: "npm",
-        subcommands: &[
-            "ci",
-            "config",
-            "install",
-            "publish",
-            "run",
-            "test",
-            "uninstall",
-            "update",
-        ],
-        flags: &[
-            "--global",
-            "--legacy-peer-deps",
-            "--prefix",
-            "--registry",
-            "--save-dev",
-            "--save-exact",
-            "--verbose",
-        ],
-    },
-    CommandSpec {
-        command: "systemctl",
-        subcommands: &[
-            "daemon-reload",
-            "disable",
-            "enable",
-            "restart",
-            "start",
-            "status",
-            "stop",
-        ],
-        flags: &["--force", "--host", "--no-pager", "--quiet", "--type"],
-    },
-];
-
 /// One literal suggestion entry as the data file carries it
 /// (suggest-specs-data spec; kept by suggest-schema for an
 /// argument's `suggestions` — the one place the two-field shape is
@@ -930,45 +787,38 @@ struct SpecsFile {
     commands: Vec<SpecCommand>,
 }
 
-/// The built-in table, file-shaped: the curated const converted
-/// once, on first use — the fallback every load failure answers,
-/// and the floor a valid file's commands merge over. The five's
-/// flag lists convert as `persistent`: the flat era's own ruling
-/// (flag-specs OQ 2 — git accepts flags before and after subcommands
-/// alike) is, under the recursive tree the walker walks, exactly
-/// persistence — a subcommand seat keeps answering them until the
-/// corpus's per-subcommand truth replaces the five wholesale
-/// (suggest-embed).
+/// The embedded completions floor (suggest-embed spec, the
+/// 2026-11-07 compressed-floor amendment): the extractor-emitted
+/// `data/completions.toml.gz` — the same bytes as the raw,
+/// human-editable `data/completions.toml` beside it, gzip-compressed
+/// with a zeroed mtime so the artifact is deterministic — inflated
+/// and parsed once per process, here inside the same `LazyLock` the
+/// in-code five used to convert in. A single-shot inflate of ~4 MiB
+/// is milliseconds beside its parse, and nothing downstream knows
+/// the floor was ever compressed: [`builtin_specs`] keeps its
+/// contract, and the corpus suite pins the `.gz` against the raw
+/// file so the two cannot drift.
 static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
-    SPECS
-        .iter()
-        .map(|spec| SpecCommand {
-            name: spec.command.to_string(),
-            subcommands: spec
-                .subcommands
-                .iter()
-                .map(|entry| SpecCommand {
-                    name: (*entry).to_string(),
-                    ..Default::default()
-                })
-                .collect(),
-            flags: spec
-                .flags
-                .iter()
-                .map(|entry| SpecFlag {
-                    name: (*entry).to_string(),
-                    persistent: true,
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        })
-        .collect()
+    use std::io::Read as _;
+
+    let compressed: &[u8] = include_bytes!("../../data/completions.toml.gz");
+    let mut text = String::new();
+    // The bytes are ours — committed beside this source, schema-gated
+    // by the corpus suite on every test run — so a failed inflate or
+    // parse is a corrupted tree the tests would have caught, not a
+    // runtime condition to answer silently: there is no deeper table
+    // to fall back to, this IS the floor.
+    flate2::read::GzDecoder::new(compressed)
+        .read_to_string(&mut text)
+        .expect("the embedded floor inflates as UTF-8");
+    parse_completions(&text).expect("the embedded floor parses under the schema")
 });
 
-/// The built-in fallback table (suggest-specs-data spec): exactly
-/// the curated const, file-shaped, descriptions `None` — what no
-/// file, an unreadable file, and an invalid file all answer.
+/// The embedded floor (suggest-embed spec): the generated core tier —
+/// the high-traffic corpus at a pinned withfig/autocomplete version —
+/// what no data file, an unreadable data file, and an invalid data
+/// file all answer, and the floor the extended tier's installed file
+/// and the user's `completions.toml` both overlay.
 pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
     &BUILTIN_SPECS
 }

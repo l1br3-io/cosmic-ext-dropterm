@@ -1334,17 +1334,22 @@ fn history_outranks_specs_when_both_match() {
 }
 
 #[test]
-fn subcommands_complete_only_at_the_first_argument_seat() {
-    // Once a subcommand (or any argument) holds the first seat, a
-    // later trailing word never consults the subcommand table.
+fn subcommand_seats_follow_the_walked_tree() {
+    // The corpus era (suggest-embed): the walked tree answers at
+    // every depth it seats — `git stash dr` finishes to stash's own
+    // nested `drop` — while a word seat a leaf does not seat stays
+    // silent (checkout takes a ref argument, not subcommands).
+    let mut suggest = specs_suggest();
+    let nested =
+        step_typed("git stash dr", &mut suggest).expect("stash's own subcommand answers its depth");
+    assert_eq!(nested.suffix, "op");
+    assert_eq!(nested.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
     assert_eq!(
         step_typed("git checkout che", &mut suggest),
         None,
-        "a later argument seat never consults subcommands"
+        "a leaf's argument seat consults nothing it does not seat"
     );
-    let mut suggest = specs_suggest();
-    assert_eq!(step_typed("git stash dr", &mut suggest), None);
 }
 
 #[test]
@@ -1356,37 +1361,39 @@ fn a_bare_trailing_space_is_no_subcommand_word_at_all() {
 }
 
 #[test]
-fn a_flag_prefixed_token_completes_from_any_argument_seat() {
-    // OQ 2: git genuinely accepts flags before and after
-    // subcommands alike, so a `--`-prefixed trailing token consults
-    // the command's flag list from any argument seat — and the
-    // hyphens ride verbatim through the escape rule's whitelist.
+fn flags_answer_at_the_node_that_seats_them() {
+    // The corpus era (suggest-embed): the walked tree seats each
+    // flag where upstream seats it — `git commit --am` finishes to
+    // commit's own `--amend`, and git's root flags are not in that
+    // list — while the root's own flags answer at the root
+    // (`git --ba` → `--bare`), the hyphens riding verbatim through
+    // the escape rule's whitelist.
     let mut suggest = specs_suggest();
-    let after = step_typed("git checkout --dr", &mut suggest)
-        .expect("the flag seat answers past a subcommand");
-    assert_eq!(after.suffix, "y-run");
-    assert_eq!(after.source, SuggestionSource::Specs);
+    let own =
+        step_typed("git commit --am", &mut suggest).expect("commit's own flag answers its node");
+    assert_eq!(own.suffix, "end");
+    assert_eq!(own.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
-    let before =
-        step_typed("git --dr", &mut suggest).expect("the flag seat answers at the first seat");
-    assert_eq!(before.suffix, "y-run");
+    let root =
+        step_typed("git --ba", &mut suggest).expect("the root's own flag answers the root seat");
+    assert_eq!(root.suffix, "re");
 }
 
 #[test]
-fn flag_matches_follow_the_ruled_policy() {
-    // The same policy the subcommand seat pins: `--v` lands on the
-    // alphabetically-first of git's equal-length --verbose and
-    // --version (shortest wins, ties alphabetical), and a fully
-    // typed --dry-run has nothing left to add (the match must
-    // extend).
+fn flag_and_subcommand_matches_follow_the_ruled_policy() {
+    // The same policy over the corpus's own names: `docker pu` lands
+    // on the alphabetically-first of the equal-length pull and push
+    // (shortest wins, ties alphabetical), and a fully typed
+    // subcommand has nothing left to add (the match must extend).
     let mut suggest = specs_suggest();
-    let tied = step_typed("git checkout --v", &mut suggest).expect("a tie still answers");
-    assert_eq!(tied.suffix, "erbose");
+    let tied = step_typed("docker pu", &mut suggest).expect("a tie still answers");
+    assert_eq!(tied.suffix, "ll");
+    assert_eq!(tied.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
     assert_eq!(
-        step_typed("git checkout --dry-run", &mut suggest),
+        step_typed("git checkout", &mut suggest),
         None,
-        "the exactly-typed flag suggests nothing"
+        "the exactly-typed subcommand suggests nothing"
     );
 }
 
@@ -1404,8 +1411,8 @@ fn a_bare_double_dash_is_silence_at_the_flag_seat() {
         "a bare `--` carries no discrimination among flags"
     );
     let mut suggest = specs_suggest();
-    let shown = step_typed("git --a", &mut suggest).expect("one character past the dashes answers");
-    assert_eq!(shown.suffix, "ll");
+    let shown = step_typed("git --b", &mut suggest).expect("one character past the dashes answers");
+    assert_eq!(shown.suffix, "are");
     assert_eq!(shown.source, SuggestionSource::Specs);
 }
 
@@ -1422,14 +1429,15 @@ fn the_subcommand_seat_stays_strong_at_one_character() {
 }
 
 #[test]
-fn the_five_commands_subcommands_answer_their_seats() {
-    // One behavioral sample per command beyond git — the table pin
-    // below holds the membership; these prove the entries reach the
-    // seat (`docker p` also re-pins the tie rule on fresh data:
-    // pull and push tie, pull wins alphabetically).
+fn the_core_tiers_commands_subcommands_answer_their_seats() {
+    // One behavioral sample per old-five command over the embedded
+    // floor (suggest-embed): the corpus's own trees answer the seats
+    // — docker's `ps` is the shortest `p` word, npm's `it` the
+    // shortest `i`, systemctl's `stop` the shortest `st` — the same
+    // policy over the wider pool.
     let mut suggest = specs_suggest();
-    let tied = step_typed("docker p", &mut suggest).expect("docker's seat answers");
-    assert_eq!(tied.suffix, "ull");
+    let shortest = step_typed("docker p", &mut suggest).expect("docker's seat answers");
+    assert_eq!(shortest.suffix, "s");
     let mut suggest = specs_suggest();
     let stopped = step_typed("systemctl st", &mut suggest).expect("systemctl's seat answers");
     assert_eq!(
@@ -1438,59 +1446,16 @@ fn the_five_commands_subcommands_answer_their_seats() {
     );
     let mut suggest = specs_suggest();
     let installed = step_typed("npm i", &mut suggest).expect("npm's seat answers");
-    assert_eq!(installed.suffix, "nstall");
+    assert_eq!(installed.suffix, "t");
 }
 
 #[test]
 fn a_command_outside_the_table_stays_silent() {
-    // The provider is silent, never a guess: python3 is not one of
-    // the five, so its argument seats answer nothing.
+    // The provider is silent, never a guess: zzz is not in the
+    // embedded floor, so its argument seats answer nothing (python3
+    // IS seated now — the corpus era's generosity).
     let mut suggest = specs_suggest();
-    assert_eq!(step_typed("python3 wha", &mut suggest), None);
-}
-
-#[test]
-fn the_table_pins_the_five_curated_commands_and_their_shape() {
-    // The ruled v1 set, pinned as data: exactly the five, no
-    // others. Every entry ASCII, non-empty, trimmed — safe to
-    // write by construction, so a careless future entry fails
-    // here, never a shell — every list strictly sorted (which is
-    // what makes ties-alphabetical hold), and every flag
-    // `--`-shaped while no subcommand is dash-led.
-    let mut commands: Vec<_> = SPECS.iter().map(|spec| spec.command).collect();
-    commands.sort_unstable();
-    assert_eq!(commands, ["cargo", "docker", "git", "npm", "systemctl"]);
-    for spec in SPECS {
-        pin_shape(spec.command, spec.subcommands, "subcommand");
-        pin_shape(spec.command, spec.flags, "flag");
-    }
-}
-
-/// One table list's shape pin: ASCII, non-empty, trimmed, strictly
-/// sorted, and `--`-shaped exactly when it is a flag list.
-fn pin_shape(command: &str, entries: &[&str], list: &str) {
-    for entry in entries {
-        assert!(!entry.is_empty(), "{command} {list}: an empty entry");
-        assert!(entry.is_ascii(), "{command} {list}: {entry} leaves ASCII");
-        assert_eq!(
-            entry.trim(),
-            *entry,
-            "{command} {list}: {entry} carries whitespace"
-        );
-        assert_eq!(
-            entry.starts_with("--"),
-            list == "flag",
-            "{command} {list}: {entry} sits in the wrong list"
-        );
-    }
-    for pair in entries.windows(2) {
-        assert!(
-            pair[0] < pair[1],
-            "{command} {list}: {} must sort ahead of {}",
-            pair[0],
-            pair[1]
-        );
-    }
+    assert_eq!(step_typed("zzz wha", &mut suggest), None);
 }
 
 // --- the spec walker (suggest-walker; engine-rea §7 end to end) ---
@@ -1656,14 +1621,16 @@ fn a_command_arg_restarts_the_walk_on_its_own_entry() {
 fn an_unknown_flag_mid_line_is_skipped_as_a_bare_flag() {
     // The locked tolerance: `git --whatever st` keeps answering the
     // subcommand seat — the flat seats never inspected intermediate
-    // tokens, and the walker keeps that.
+    // tokens, and the walker keeps that. Over the corpus floor the
+    // `st` words are stage, stash, and status: the shortest tie
+    // resolves alphabetically to `stage`.
     let mut suggest = specs_suggest();
     let shown = step_typed_table("git --whatever st", builtin_specs(), &mut suggest)
         .expect("the tolerance holds");
-    assert_eq!(shown.suffix, "ash");
+    assert_eq!(shown.suffix, "age");
     let suggest = specs_suggest();
     let rows = candidates("git --whatever st", &suggest, &obs());
-    assert_eq!(menu_labels(&rows), ["stash", "status"]);
+    assert_eq!(menu_labels(&rows), ["stage", "stash", "status"]);
 }
 
 // --- the alias map (suggest-aliases) ---
@@ -1704,14 +1671,14 @@ fn a_mapped_alias_ghosts_its_expansion_subcommand() {
 
 #[test]
 fn a_mapped_alias_ghosts_its_expansion_flags() {
-    // The record's other flagship: `gc --dr` ghosts git's
-    // `--dry-run` — the flag seat consults the expansion command's
-    // flag list from any argument seat, as for the typed command.
+    // The record's other flagship, corpus era: `gc --ba` ghosts
+    // git's root `--bare` — the flag seat consults the expansion
+    // command's own flag list, as for the typed command.
     let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
     let mut suggest = specs_suggest();
-    let shown = step_typed_aliased("gc --dr", &aliases, &mut suggest)
+    let shown = step_typed_aliased("gc --ba", &aliases, &mut suggest)
         .expect("the flag seat rides the expansion command");
-    assert_eq!(shown.suffix, "y-run");
+    assert_eq!(shown.suffix, "re");
     assert_eq!(shown.source, SuggestionSource::Specs);
 }
 
@@ -2478,6 +2445,7 @@ fn the_menu_ranks_the_seats_scope_above_history() {
         [
             SuggestionSource::Specs,
             SuggestionSource::Specs,
+            SuggestionSource::Specs,
             SuggestionSource::History
         ]
     );
@@ -2485,7 +2453,7 @@ fn the_menu_ranks_the_seats_scope_above_history() {
         .iter()
         .map(|c| c.label.as_str())
         .collect();
-    assert_eq!(labels, ["stash", "status", "git status"]);
+    assert_eq!(labels, ["stage", "stash", "status", "git status"]);
     assert!(
         specs_over_history
             .windows(2)
@@ -2600,21 +2568,28 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
     // The specs table's whole strict-prefix set at each seat — and
     // the bare `--` the single-choice ghost floors to silence lists
     // the flag table whole (a list is information, not a guess; the
-    // floor is the ghost's alone).
+    // floor is the ghost's alone). Over the embedded floor the
+    // expected lists are read from it, never hand-written.
     let suggest = specs_suggest();
     let subcommands = candidates("git st", &suggest, &obs());
     let labels: Vec<&str> = subcommands.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["stash", "status"]);
+    assert_eq!(labels, ["stage", "stash", "status"]);
     let suggest = specs_suggest();
     let flags = candidates("git --", &suggest, &obs());
-    let git = SPECS
+    let git = builtin_specs()
         .iter()
-        .find(|spec| spec.command == "git")
-        .expect("git is curated");
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    let long_flags: Vec<&str> = git
+        .flags
+        .iter()
+        .filter(|flag| flag.name.starts_with("--"))
+        .map(|flag| flag.name.as_str())
+        .collect();
     let labels: Vec<&str> = flags.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
-        labels, git.flags,
-        "the bare `--` lists the whole flag table"
+        labels, long_flags,
+        "the bare `--` lists the whole long-flag table"
     );
 }
 
@@ -2622,55 +2597,77 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
 fn the_menu_lists_the_whole_subcommand_table_at_a_bare_command_word() {
     // The ghost's empty-word floor is the ghost's alone (the bare
     // `--` rule's twin): `git ` with the space echoed and nothing
-    // after lists git's whole curated subcommand table above the
-    // history lines (the 2026-11-06 amendment: the keyword's scope
-    // leads) — the scoped next level the command word settles the
-    // menu into, where an unscoped provider or a later seat
-    // contributes nothing.
+    // after lists git's whole subcommand table above the history
+    // lines (the 2026-11-06 amendment: the keyword's scope leads) —
+    // the scoped next level the command word settles the menu into,
+    // where an unscoped provider or a later seat contributes
+    // nothing. Over the embedded floor the expected lists are read
+    // from it, never hand-written.
     let suggest = adopted();
     let menu = candidates("git ", &suggest, &obs());
-    let git = SPECS
+    let git = builtin_specs()
         .iter()
-        .find(|spec| spec.command == "git")
-        .expect("git is curated");
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    let subcommands: Vec<&str> = git
+        .subcommands
+        .iter()
+        .map(|command| command.name.as_str())
+        .collect();
     let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
-        &labels[..git.subcommands.len()],
-        git.subcommands,
+        &labels[..subcommands.len()],
+        &subcommands[..],
         "the whole subcommand table leads, the table's own order"
     );
     assert_eq!(
-        &labels[git.subcommands.len()..],
+        &labels[subcommands.len()..],
         ["git status", "git push"],
         "then the history lines, most recent first"
     );
     let suffixes: Vec<&str> = menu
         .iter()
-        .take(git.subcommands.len())
+        .take(subcommands.len())
         .map(|c| c.suffix.as_str())
         .collect();
     assert_eq!(
-        suffixes, git.subcommands,
+        suffixes, subcommands,
         "an empty token accepts the whole word"
     );
     assert!(
         menu.iter()
-            .take(git.subcommands.len())
+            .take(subcommands.len())
             .all(|c| c.source == SuggestionSource::Specs),
         "the table rows carry the specs provenance"
     );
     // The seat rules hold at the boundary: a later seat with an
-    // empty token never consults the subcommand table, and an
-    // uncurated command's bare word collects nothing (the ring holds
-    // no match either — specs_suggest's `vim notes`).
+    // empty token never consults the subcommand table — checkout's
+    // empty word seat answers its own argument's literal
+    // suggestions and nothing else — and an unseated command's bare
+    // word collects nothing (the ring holds no match either —
+    // specs_suggest's `vim notes`).
     let suggest = specs_suggest();
-    assert!(
-        candidates("git checkout ", &suggest, &obs()).is_empty(),
-        "a later argument seat stays out of the subcommand table"
+    let checkout = candidates("git checkout ", &suggest, &obs());
+    let suggestions: Vec<&str> = git
+        .subcommands
+        .iter()
+        .find(|command| command.name == "checkout")
+        .and_then(|checkout| checkout.args.first())
+        .map(|arg| {
+            arg.suggestions
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let labels: Vec<&str> = checkout.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels, suggestions,
+        "the leaf's empty word seat answers its argument's suggestions alone"
     );
     assert!(
         candidates("echo ", &suggest, &obs()).is_empty(),
-        "an uncurated command's bare word is silence"
+        "an unseated command's bare word is silence"
     );
 }
 
@@ -2980,31 +2977,42 @@ name = "--a"
 }
 
 #[test]
-fn the_builtin_fallback_is_todays_table() {
-    // Byte-equivalence pinned (suggest-specs-data spec, criterion
-    // 2): the fallback answers exactly the curated const — every
-    // command, every list, every description None.
-    assert_eq!(builtin_specs().len(), SPECS.len());
-    for (owned, spec) in builtin_specs().iter().zip(SPECS) {
-        assert_eq!(owned.name, spec.command);
-        let subcommands: Vec<&str> = owned.subcommands.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(subcommands, spec.subcommands);
-        let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(flags, spec.flags);
+fn the_embedded_floor_is_the_core_tier() {
+    // The compressed floor IS the generated core tier (suggest-embed
+    // spec, the 2026-11-07 amendment): the `.gz` carries gzip's magic
+    // and stays under the 1 MiB pin on its compressed bytes, it
+    // inflates to exactly the raw file's bytes — the two cannot drift
+    // apart — the parsed table is byte-identical to the corpus
+    // fixture's own parse of the same text, and the old five all
+    // keep their seats in it.
+    use std::io::Read as _;
+
+    let raw = include_str!("../../../data/completions.toml");
+    let compressed: &[u8] = include_bytes!("../../../data/completions.toml.gz");
+    assert_eq!(
+        &compressed[..2],
+        &[0x1f, 0x8b],
+        "the embedded floor carries gzip's magic bytes"
+    );
+    assert!(
+        !compressed.is_empty() && compressed.len() <= 1024 * 1024,
+        "the compressed floor stays under the 1 MiB pin ({} bytes)",
+        compressed.len()
+    );
+    let mut inflated = String::new();
+    flate2::read::GzDecoder::new(compressed)
+        .read_to_string(&mut inflated)
+        .expect("the embedded bytes inflate");
+    assert_eq!(inflated, raw, "the .gz and the raw file cannot drift apart");
+    assert_eq!(
+        builtin_specs(),
+        &*CORE_TABLE,
+        "the floor is the core tier's own parse"
+    );
+    for name in ["cargo", "docker", "git", "npm", "systemctl"] {
         assert!(
-            owned.subcommands.iter().all(|e| e.description.is_none())
-                && owned.flags.iter().all(|e| e.description.is_none()),
-            "the built-in carries no descriptions"
-        );
-        assert_eq!(
-            *owned,
-            SpecCommand {
-                name: owned.name.clone(),
-                subcommands: owned.subcommands.clone(),
-                flags: owned.flags.clone(),
-                ..Default::default()
-            },
-            "the built-in carries every grown field at its default"
+            builtin_specs().iter().any(|command| command.name == name),
+            "{name} keeps its seat in the embedded floor"
         );
     }
 }
@@ -3030,10 +3038,10 @@ name = "worktree"
     .expect("a valid file parses");
     let merged = merge_completions(file);
     let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
+    let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
-        names,
-        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
-        "the file's command adds, the built-in keep their seats"
+        names, floor,
+        "the floor keeps every seat (gh already seated — re-declared whole)"
     );
     let git = merged
         .iter()
@@ -3169,10 +3177,10 @@ fn a_valid_file_answers_the_merged_table() {
     std::fs::write(dir.join("completions.toml"), GH_FILE).expect("fixture file");
     let table = load_completions(Some(&dir));
     let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
-        names,
-        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
-        "a valid file's table is the merge"
+        names, floor,
+        "a valid file's table is the merge over the floor"
     );
 }
 
@@ -3237,37 +3245,6 @@ fn file_descriptions_reach_the_menu_rows() {
         Some("Select another repository"),
         "flag entries carry descriptions alike"
     );
-}
-
-#[test]
-fn the_shipped_seed_parses_and_keeps_the_built_in_five_seated() {
-    // The seed's own gates, corpus era (suggest-corpus spec, the
-    // audit's rule 4 dissolved to its mechanizable core): the
-    // GENERATED file ships valid under the schema — the `script`
-    // boundary holds for what DropTerm itself distributes — and every
-    // one of the five seats with a real tree. Entry-level equality
-    // with the hand-curated table ended with the hand conversion:
-    // upstream seats `--amend` under `git commit` (not the root) and
-    // adds cargo's `fmt` behind a runtime conditional, so the
-    // curated hoists were a workaround for a root-only table — no
-    // capability is lost, the entries move to their true seats, and
-    // suggest-embed retires the in-code five wholesale. Command-level
-    // no-shrink across regenerations is the golden pin in
-    // `the_core_tier_never_shrinks_a_command`.
-    // The parse rides the shared CORE_TABLE fixture (one core parse
-    // per run), whose expect is the schema gate.
-    let file = &*CORE_TABLE;
-    for spec in SPECS {
-        let command = file
-            .iter()
-            .find(|command| command.name == spec.command)
-            .unwrap_or_else(|| panic!("{} keeps its seat in the seed", spec.command));
-        assert!(
-            !command.subcommands.is_empty() || !command.flags.is_empty(),
-            "{} seats a real tree, not a bare name",
-            spec.command
-        );
-    }
 }
 
 // --- the generated corpus tiers (suggest-corpus) ---

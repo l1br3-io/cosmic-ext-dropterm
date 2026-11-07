@@ -1059,6 +1059,7 @@ dependencies = [
  "dirs",
  "enumflags2",
  "env_logger",
+ "flate2",
  "fontdb",
  "indexmap",
  "jiff",

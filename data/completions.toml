@@ -8,7 +8,8 @@
 #     --sha256 b07159ef0811bc8cec28e3a3016e6ba9568d774b75b8333dc6a5f2acf7d2c3af \
 #     --core scripts/completions-core.txt \
 #     --out-core data/completions.toml \
-#     --out-extended data/completions-extended.toml
+#     --out-extended data/completions-extended.toml \
+#     --out-gz data/completions.toml.gz
 # The Rust suite is the schema gate (cargo test suggest): if it
 # fails, this script is wrong, not the schema.
 #
@@ -20,16 +21,16 @@
 # companion tier, every other spec at the pin, is
 # data/completions-extended.toml; the two are disjoint by construction.
 #
-# This table is the floor suggest-embed builds into the binary;
-# copy this file to
+# This table is the floor suggest-embed embeds into the binary,
+# gzip-compressed (the raw file beside it is the human-editable
+# form); copy this file to
 #   ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml
-# to extend the built-in table: every command here adds beside the
-# built-in five, and a re-declared one (cargo, docker, git, npm,
-# systemctl) replaces its built-in entry whole with upstream's own
-# tree — entries the hand-curated table hoisted to the root (git's
-# --amend, cargo's fmt) ride at their true seats instead. Descriptions
-# render in the completion menu's dim second column; the ghost
-# ignores them.
+# only to override the embedded floor — a command you re-declare
+# replaces its embedded entry whole, and a command you add sits
+# beside it. Entries upstream seats below the root (git's --amend
+# under commit) ride at their true seats. Descriptions render in
+# the completion menu's dim second column; the ghost ignores
+# them.
 #
 # Conversion (the engine-rea §5 census, mechanical, by type): a
 # name's first form is primary and the rest aliases (a flag's first

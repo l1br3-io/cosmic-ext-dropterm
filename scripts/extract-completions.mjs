@@ -3,10 +3,16 @@
 // never a build step, never run on a user's machine.
 //
 // Reduces the pinned withfig/autocomplete corpus to DropTerm's static
-// completion subset as two generated TOML tiers (SPEC-suggest-corpus):
-//   data/completions.toml          the core tier (the embedded floor)
+// completion subset as two generated TOML tiers (SPEC-suggest-corpus,
+// grown by suggest-embed's compressed-floor amendment) and the
+// compressed floor the binary embeds:
+//   data/completions.toml          the core tier (the embedded floor's
+//                                  human-editable form)
+//   data/completions.toml.gz       the same bytes gzip-compressed with a
+//                                  zeroed mtime — deterministic, the one
+//                                  the binary include_bytes!s
 //   data/completions-extended.toml every other spec with a non-empty
-//                                 static subset (installed data file)
+//                                  static subset (installed data file)
 //
 // Pins (one version, one sha256, verified before extraction):
 //   @withfig/autocomplete@2.692.3 — the published build of
@@ -25,19 +31,21 @@
 //     --sha256 b07159ef0811bc8cec28e3a3016e6ba9568d774b75b8333dc6a5f2acf7d2c3af \
 //     --core scripts/completions-core.txt \
 //     --out-core data/completions.toml \
-//     --out-extended data/completions-extended.toml
+//     --out-extended data/completions-extended.toml \
+//     --out-gz data/completions.toml.gz
 //   git diff --exit-code data/   # the second run must be diff-clean
 //
 // Zero npm dependencies: node:fs, node:path, node:crypto, node:url,
-// node:child_process (tar). Anything function-valued in a spec is
-// dropped BY TYPE before a key is ever looked at; generators, script,
-// and loadSpec functions are never invoked.
+// node:zlib, node:child_process (tar). Anything function-valued in a
+// spec is dropped BY TYPE before a key is ever looked at; generators,
+// script, and loadSpec functions are never invoked.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import process from "node:process";
 
 const PINNED_VERSION = "2.692.3";
@@ -358,6 +366,11 @@ const reduceProbe = async (names) => {
 const EXTRACTION_DATE = "2026-11-07"; // pinned so regenerations are byte-identical
 const CORE_LIST = flag("core") ?? "scripts/completions-core.txt";
 const OUT_CORE = flag("out-core") ?? "data/completions.toml";
+// The compressed floor (suggest-embed's 2026-11-07 amendment): the
+// same coreText bytes under gzip with a zeroed mtime, so the output
+// is deterministic run over run and the raw file stays the
+// human-diffable form.
+const OUT_GZ = flag("out-gz") ?? "data/completions.toml.gz";
 const OUT_EXTENDED = flag("out-extended") ?? "data/completions-extended.toml";
 // The per-command byte cap (decided 2026-11-07 under the maintainer's
 // generous-by-default delegation): ~590 of the extended specs are
@@ -480,7 +493,8 @@ const RECIPE = [
   `#     --sha256 ${PINNED_SHA256} \\`,
   `#     --core ${CORE_LIST} \\`,
   `#     --out-core ${OUT_CORE} \\`,
-  `#     --out-extended ${OUT_EXTENDED}`,
+  `#     --out-extended ${OUT_EXTENDED} \\`,
+  `#     --out-gz ${OUT_GZ}`,
   "# The Rust suite is the schema gate (cargo test suggest): if it",
   "# fails, this script is wrong, not the schema.",
 ];
@@ -544,16 +558,16 @@ const coreHeader = () => [
   "# companion tier, every other spec at the pin, is",
   `# ${OUT_EXTENDED}; the two are disjoint by construction.`,
   "#",
-  "# This table is the floor suggest-embed builds into the binary;",
-  "# copy this file to",
+  "# This table is the floor suggest-embed embeds into the binary,",
+  "# gzip-compressed (the raw file beside it is the human-editable",
+  "# form); copy this file to",
   "#   ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml",
-  "# to extend the built-in table: every command here adds beside the",
-  "# built-in five, and a re-declared one (cargo, docker, git, npm,",
-  "# systemctl) replaces its built-in entry whole with upstream's own",
-  "# tree — entries the hand-curated table hoisted to the root (git's",
-  "# --amend, cargo's fmt) ride at their true seats instead. Descriptions",
-  "# render in the completion menu's dim second column; the ghost",
-  "# ignores them.",
+  "# only to override the embedded floor — a command you re-declare",
+  "# replaces its embedded entry whole, and a command you add sits",
+  "# beside it. Entries upstream seats below the root (git's --amend",
+  "# under commit) ride at their true seats. Descriptions render in",
+  "# the completion menu's dim second column; the ghost ignores",
+  "# them.",
   "#",
   ...RULES,
   "#",
@@ -752,6 +766,11 @@ const emit = async () => {
 
   const coreText = serializeTier(core.map((entry) => entry.text), coreHeader());
   writeFileSync(OUT_CORE, coreText);
+  // Zeroed mtime: the gzip bytes are a pure function of coreText, so
+  // regenerations stay diff-clean and the embed's ≤ 1 MiB pin has a
+  // deterministic subject.
+  const coreGz = gzipSync(coreText, { mtime: 0 });
+  writeFileSync(OUT_GZ, coreGz);
   writeFileSync(OUT_EXTENDED, text);
 
   const kib = (name) => {
@@ -760,6 +779,9 @@ const emit = async () => {
   };
   console.log(
     `core: ${core.length} commands → ${OUT_CORE} (${Math.round(Buffer.byteLength(coreText) / 1024)} KiB)`,
+  );
+  console.log(
+    `core compressed → ${OUT_GZ} (${coreGz.length} bytes, the embedded floor)`,
   );
   console.log(
     `extended: ${extended.length} commands → ${OUT_EXTENDED} (${Math.round((Buffer.byteLength(text) / 1024 / 1024) * 100) / 100} MiB)` +
