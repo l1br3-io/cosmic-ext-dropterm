@@ -110,6 +110,14 @@ metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / metainfo
 icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (appid + '.svg')
 
+# The installed extended completions tier (suggest-embed spec): the
+# generated data file the XDG walk finds behind the
+# `autosuggestions_completions_extended` toggle — never embedded,
+# sitting in the app id's own share directory.
+completions-extended-src := 'data' / 'completions-extended.toml'
+completions-extended-dir := clean(rootdir / prefix) / 'share' / appid
+completions-extended-dst := completions-extended-dir / 'completions-extended.toml'
+
 # The panel applet: its own workspace package so its libcosmic feature
 # set never meets the terminal's wgpu renderer.
 applet := name + '-applet'
@@ -446,6 +454,11 @@ dev-install: (build-debug dev-identity-args) dev-image-install
     ln -sfn {{dev-image}} {{dev-bin}}
     install -d {{dev-data-dir / 'applications'}}
     sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{name}}-dev/' -e 's/^StartupWMClass=.*/StartupWMClass={{appid}}.Dev/' {{desktop-src}} > {{dev-desktop}}
+    # The installed extended tier for the dev identity: both seats,
+    # so the .Dev walk's primary and its un-suffixed fallback both
+    # find what a release install stages.
+    install -Dm0644 {{completions-extended-src}} {{dev-data-dir / appid / 'completions-extended.toml'}}
+    install -Dm0644 {{completions-extended-src}} {{dev-data-dir / (appid + '.Dev') / 'completions-extended.toml'}}
 
 # Kill the running dev instance and restart on the dev image. An
 # installed release keeps running — the two identities coexist, each
@@ -489,6 +502,7 @@ dev-applet: dev-install
 # behind for the user to keep or delete.
 dev-uninstall:
     rm -f {{dev-bin}} {{dev-desktop}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
+    rm -rf {{dev-data-dir / appid}} {{dev-data-dir / (appid + '.Dev')}}
 
 clean:
     cargo clean
@@ -526,6 +540,7 @@ install: deps
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
     install -Dm0644 {{icon-src}} {{icon-dst}}
+    install -Dm0644 {{completions-extended-src}} {{completions-extended-dst}}
     install -Dm0755 {{applet-bin-src}} {{applet-bin-dst}}
     install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
     install -Dm0644 {{applet-metainfo-src}} {{applet-metainfo-dst}}
@@ -536,6 +551,7 @@ install: deps
 # the removed binary)
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
+    rm -rf {{completions-extended-dir}}
     rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}} {{applet-metainfo-dst}}
     @{{just_executable()}} stop-stale-release
 
