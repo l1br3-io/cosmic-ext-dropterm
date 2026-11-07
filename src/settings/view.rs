@@ -968,6 +968,21 @@ pub(super) fn drawer_description(key: ConfigKey) -> String {
             "{} — a default profile still owns plain spawns",
             apply_timing(key).label()
         ),
+        // The extended tier's honest state line (suggest-embed spec,
+        // OQ-1's recommended wording): the count and the path — the
+        // one thing a user needs when it reads "not installed".
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            let timing = apply_timing(key).label();
+            match crate::terminal::suggest::extended_tier_status() {
+                Some((count, path)) => {
+                    format!(
+                        "{timing} — {count} more commands — found at {}",
+                        path.display()
+                    )
+                }
+                None => format!("{timing} — not installed"),
+            }
+        }
         _ => apply_timing(key).label().to_string(),
     }
 }

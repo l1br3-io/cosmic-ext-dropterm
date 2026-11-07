@@ -4044,3 +4044,24 @@ name = "zzz-cached"
         "the second load answers the cached parse, not a re-read"
     );
 }
+
+#[test]
+fn the_command_counter_counts_only_top_level_tables() {
+    // The caption's count (suggest-embed spec): one line opening a
+    // top-level `[[commands]]` table is one command — nested
+    // `[[commands.…]]` tables are a command's own shape, never
+    // another command — pinned against the generated tier itself
+    // (532 commands, the corpus's own census).
+    assert_eq!(count_commands(b"[[commands]]\nname = \"a\""), 1);
+    assert_eq!(
+        count_commands(b"# header\n[[commands]]\n[[commands.subcommands]]\n[[commands]]"),
+        2,
+        "nested tables are not commands"
+    );
+    assert_eq!(count_commands(b""), 0);
+    assert_eq!(
+        count_commands(EXTENDED_TIER.as_bytes()),
+        532,
+        "the generated extended tier carries its census'd 532 commands"
+    );
+}

@@ -993,6 +993,31 @@ fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Opti
     candidates.into_iter().find(|path| path.is_file())
 }
 
+/// The installed tier's status for the settings caption
+/// (suggest-embed spec): the resolved path and its command count —
+/// one read of the file's bytes, counting the table marker every
+/// command of this schema seats exactly once — cached for the
+/// process like the parse (a system data file does not change under
+/// a running app). `None` is "not installed": the caption says so.
+pub(crate) fn extended_tier_status() -> Option<(usize, PathBuf)> {
+    static STATUS: LazyLock<Option<(usize, PathBuf)>> = LazyLock::new(|| {
+        let path = extended_completions_path()?;
+        let bytes = std::fs::read(&path).ok()?;
+        Some((count_commands(&bytes), path))
+    });
+    STATUS.clone()
+}
+
+/// One completions file's command count: the number of lines that
+/// open a top-level `[[commands]]` table — the marker every command
+/// of this schema seats exactly once, whatever wrote the file.
+fn count_commands(bytes: &[u8]) -> usize {
+    bytes
+        .split(|&byte| byte == b'\n')
+        .filter(|line| line.starts_with(b"[[commands]]"))
+        .count()
+}
+
 /// The extended tier's parse cache (suggest-embed spec): one parse
 /// per process per resolved path — a system data file does not
 /// change under a running app, so a toggle flip reuses the table it

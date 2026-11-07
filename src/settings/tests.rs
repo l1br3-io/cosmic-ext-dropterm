@@ -928,6 +928,20 @@ fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
     }
     // Every other row keeps the plain timing label.
     assert_eq!(drawer_description(ConfigKey::Args), "new tabs only");
+    // The extended tier's row carries the honest state line
+    // (suggest-embed spec): the timing plus one of the two states —
+    // the count and path when the data file is installed, "not
+    // installed" when it is not. The real XDG walk decides which;
+    // the pin holds on either machine.
+    let caption = drawer_description(ConfigKey::AutosuggestionsCompletionsExtended);
+    assert!(
+        caption.starts_with("applies live — "),
+        "the caption leads with the timing: {caption}"
+    );
+    assert!(
+        caption.contains("more commands — found at ") || caption.ends_with("not installed"),
+        "the caption is one of the two honest states: {caption}"
+    );
 }
 
 // --- registry-fed scheme dropdowns ---

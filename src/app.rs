@@ -1739,17 +1739,15 @@ impl Application for DropTerm {
         // keeps customizations from the first press (keybinds-editor
         // criterion 5).
         let key_binds = keybinds::effective_key_binds(&config.custom_key_binds);
+        let completions_extended = config.autosuggestions_completions_extended;
 
         let mut app = Self {
             core,
             config_handler,
             config,
             specs_table: suggest::load_completions(
-                // The extended tier's key ships whole in its own
-                // task; the amended generous default stands in
-                // until that wiring lands.
                 completions_config_dir().as_deref(),
-                true,
+                completions_extended,
             ),
             tabs: Vec::new(),
             active_tab: 0,
@@ -2421,8 +2419,10 @@ impl DropTerm {
                 // edit land here alike — so an edited
                 // `completions.toml` applies to live tabs without a
                 // restart.
-                self.specs_table =
-                    suggest::load_completions(completions_config_dir().as_deref(), true);
+                self.specs_table = suggest::load_completions(
+                    completions_config_dir().as_deref(),
+                    self.config.autosuggestions_completions_extended,
+                );
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
                 // (keybinds-editor criterion 2: a hand-edited config
