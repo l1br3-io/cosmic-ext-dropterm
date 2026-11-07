@@ -2118,23 +2118,29 @@ impl Terminal {
             .placement_id
             .and_then(|placement| self.kitty_placements.get(&placement))
         {
-            existing.cells
+            // A re-place keeps its seat — an explicit `z` moves its
+            // layer, an absent one keeps what it already holds.
+            let cells = existing.cells;
+            if let Some(z) = keys.z {
+                self.images.lock().unwrap().set_layer(cells, z);
+            }
+            cells
         } else if let Some(placement) = keys.placement_id {
-            let source_layer = self.images.lock().unwrap().layer_of(source);
-            let Some(pixels) = self.images.lock().unwrap().get(source).cloned() else {
+            let mut store = self.images.lock().unwrap();
+            let Some(pixels) = store.get(source).cloned() else {
                 return;
             };
+            // The layer reads before the insert — the budget's
+            // eviction could take `source` itself with the bytes.
+            let source_layer = store.layer_of(source);
             self.image_seq += 1;
             let cells = self.image_seq;
-            {
-                let mut store = self.images.lock().unwrap();
-                store.insert(cells, pixels);
-                // The placement carries its own layer — a fresh copy
-                // of the pixels is a fresh seat of them (kitty
-                // z-layers), inheriting its image's when `z` rides
-                // the wire absent.
-                store.set_layer(cells, keys.z.unwrap_or(source_layer));
-            }
+            store.insert(cells, pixels);
+            // The placement carries its own layer — a fresh copy
+            // of the pixels is a fresh seat of them (kitty
+            // z-layers), inheriting its image's when `z` rides
+            // the wire absent.
+            store.set_layer(cells, keys.z.unwrap_or(source_layer));
             self.kitty_placements.insert(
                 placement,
                 KittyPlacement {
@@ -2144,6 +2150,11 @@ impl Terminal {
             );
             cells
         } else {
+            // The image's own cells: an explicit `z` moves the
+            // transmission's layer too, an absent one keeps it.
+            if let Some(z) = keys.z {
+                self.images.lock().unwrap().set_layer(source, z);
+            }
             source
         };
 
@@ -4274,8 +4285,8 @@ impl ImageStore {
     /// the budget holds — but never evicting the image just inserted:
     /// a single image larger than the whole budget still shows (the
     /// cap is a ceiling, and decode's own allocation limit keeps any
-    /// single image far under it). An evicted id's handle dies with
-    /// its pixels.
+    /// single image far under it). An evicted id's handle and layer
+    /// die with its pixels.
     fn insert_with_budget(&mut self, id: u64, rgba: image::RgbaImage, budget: usize) {
         self.bytes += rgba.len();
         self.images.push_back((id, rgba));
@@ -4283,6 +4294,7 @@ impl ImageStore {
             if let Some((oldest, evicted)) = self.images.pop_front() {
                 self.bytes -= evicted.len();
                 self.handles.remove(&oldest);
+                self.layers.remove(&oldest);
             }
         }
     }
@@ -4303,7 +4315,7 @@ impl ImageStore {
         self.layers.get(&id).copied().unwrap_or(-1)
     }
 
-    /// Remove one image's pixels and handle by id (kitty-images
+    /// Remove one image's pixels, handle, and layer by id (kitty-images
     /// spec's `a=d` free): a freed id draws the same blank an evicted
     /// one does. A missing id is silence.
     pub fn remove(&mut self, id: u64) {

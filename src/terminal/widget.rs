@@ -980,7 +980,7 @@ where
         // follows; an above-layer one (kitty `z>=0`) is collected and
         // drawn after the glyphs, still below the cursor and ghost
         // overlays. An evicted id draws blank either way (OQ-3).
-        let mut above_layer_images: Vec<(Image, Rectangle<f32>, Rectangle<f32>)> = Vec::new();
+        let mut above_layer_images: Vec<(i32, Image, Rectangle<f32>, Rectangle<f32>)> = Vec::new();
         {
             let size = terminal.size();
             let mut images = terminal.images.lock().unwrap();
@@ -1018,10 +1018,16 @@ where
                     opacity: 1.0,
                     snap: false,
                 };
-                if images.layer_of(sub.image) < 0 {
+                let layer = images.layer_of(sub.image);
+                if layer < 0 {
                     renderer.draw_image(image, image_draw_rect(cell_rect, sub), cell_rect);
                 } else {
-                    above_layer_images.push((image, image_draw_rect(cell_rect, sub), cell_rect));
+                    above_layer_images.push((
+                        layer,
+                        image,
+                        image_draw_rect(cell_rect, sub),
+                        cell_rect,
+                    ));
                 }
             }
         }
@@ -1039,8 +1045,13 @@ where
 
         // The above-glyph image pass (kitty z-layers): the collected
         // z>=0 seats draw over the text and under everything later —
-        // the cursor, the ghost, the completion menu.
-        for (image, rect, clip) in above_layer_images {
+        // the cursor, the ghost, the completion menu. Overlapping
+        // above-layer images composite by z, the higher on top
+        // (kitty's own overlap rule); the sort is stable and one
+        // image's cells never overlap, so the walk order inside a z
+        // stands.
+        above_layer_images.sort_by_key(|&(z, ..)| z);
+        for (_, image, rect, clip) in above_layer_images {
             renderer.draw_image(image, rect, clip);
         }
 

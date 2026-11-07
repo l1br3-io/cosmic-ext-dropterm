@@ -4039,3 +4039,54 @@ fn iterm_images_stay_beneath_by_default() {
         "iterm images never enter the layer map"
     );
 }
+
+#[test]
+fn evicted_layers_die_with_their_pixels() {
+    let mut store = super::ImageStore::default();
+    let pixel = || image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+    // A zero budget evicts on the second insert — the oldest dies
+    // while the newest stands.
+    store.insert_with_budget(1, pixel(), 0);
+    store.set_layer(1, 2);
+    store.insert_with_budget(2, pixel(), 0);
+
+    assert!(store.get(1).is_none(), "the pixels went with the budget");
+    assert_eq!(
+        store.layer_of(1),
+        -1,
+        "eviction takes the layer with the pixels, like a free"
+    );
+    assert!(store.get(2).is_some(), "the newest stands under the cap");
+}
+
+#[test]
+fn kitty_replaces_move_their_layer_on_an_explicit_z() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,z=4", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1,z=-2", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,c=1,r=1,z=1", b""));
+
+    let store = terminal.images.lock().unwrap();
+    let cells = terminal
+        .kitty_placements
+        .get(&3)
+        .map(|p| p.cells)
+        .expect("placement 3 seated");
+    assert_eq!(
+        store.layer_of(cells),
+        -2,
+        "an explicit z moves the seat; the later absent one keeps it"
+    );
+    let image_id = terminal
+        .kitty_ids
+        .get(&7)
+        .copied()
+        .expect("image 7 transmitted");
+    assert_eq!(
+        store.layer_of(image_id),
+        1,
+        "a z on the image's own re-place moves the transmission too"
+    );
+}
