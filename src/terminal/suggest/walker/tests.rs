@@ -469,3 +469,159 @@ fn a_depleted_positional_silences_the_later_seats() {
         "a flag's argument depleting keeps the names answering"
     );
 }
+
+// --- the rows' dressing (suggest-walker Task 3; engine-rea §4) ---
+
+#[test]
+fn accepted_names_are_dressed_out_of_the_rows() {
+    // `suggestion.ts:329-332`: a name already accepted on the line
+    // never lists again — including the persistent flag riding into
+    // the child it was accepted before.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git --no-pager log --no-p", trees),
+        Some(Vec::new()),
+        "the accepted --no-pager does not list again inside log"
+    );
+    assert_eq!(
+        row_labels("git --no-pager --no-p", trees),
+        Some(Vec::new()),
+        "nor again at its own node"
+    );
+    assert_eq!(
+        row_labels("git --no-pager log --one", trees),
+        Some(vec!["--oneline".to_string()]),
+        "other rows are untouched"
+    );
+}
+
+#[test]
+fn a_flag_excluded_by_an_accepted_one_is_dressed_out() {
+    // `suggestion.ts:305`: a flag whose `exclusive_on` names an
+    // accepted flag is gone — accepting `--attach` hides `--detach`.
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("docker compose up --det", nested),
+        Some(vec!["--detach".to_string()]),
+        "the exclusion has not fired yet"
+    );
+    assert_eq!(
+        row_labels("docker compose up --attach --det", nested),
+        Some(Vec::new()),
+        "the accepted excluder hides its exclusive"
+    );
+}
+
+#[test]
+fn hidden_entries_drop_unless_the_partial_is_exact() {
+    // `suggestion.ts:345-347`: hidden never offers — and with the
+    // must-extend rule an exactly-typed hidden name has nothing left
+    // to add either, so hidden is silence at every partial.
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("docker tr", nested),
+        Some(Vec::new()),
+        "the hidden `trust` never offers"
+    );
+    assert_eq!(
+        row_labels("docker compose up --att", nested),
+        Some(Vec::new()),
+        "the hidden `--attach` never offers"
+    );
+    assert_eq!(
+        row_labels("docker compose up --det", nested),
+        Some(vec!["--detach".to_string()]),
+        "the visible sibling still answers"
+    );
+}
+
+#[test]
+fn short_named_flags_are_recognized_never_listed() {
+    // The standing ruling: a flag whose `name` is short (no `--`) is
+    // recognized when typed — its arguments consume — and never
+    // offered.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("rustc -o build/out --e", trees),
+        Some(vec!["--emit".to_string()]),
+        "the typed short name is recognized and its argument consumed"
+    );
+    assert_eq!(
+        row_labels("rustc --", trees),
+        Some(vec!["--emit".to_string()]),
+        "the short-named -v and -o never list"
+    );
+    assert_eq!(
+        row_labels("rustc -", trees),
+        Some(vec!["--emit".to_string()]),
+        "even a `-` partial that would prefix them"
+    );
+}
+
+#[test]
+fn priority_orders_rows_descending_then_name() {
+    // `suggestion.ts:143-158` with the engine's own defaults: an
+    // explicit `priority` outranks the 50/45 fill-ins, and equals
+    // fall to name order.
+    let table = parse_completions(
+        r#"
+[[commands]]
+name = "ord"
+
+[[commands.subcommands]]
+name = "zed"
+priority = 90
+
+[[commands.subcommands]]
+name = "alpha"
+
+[[commands.subcommands]]
+name = "beta"
+
+[[commands.flags]]
+name = "--zulu"
+priority = 70
+
+[[commands.flags]]
+name = "--alpha"
+"#,
+    )
+    .expect("the order fixture parses");
+    assert_eq!(
+        row_labels("ord ", &table),
+        Some(
+            ["zed", "alpha", "beta"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        ),
+        "zed's 90 leads; the unprioritized 50s keep name order"
+    );
+    assert_eq!(
+        row_labels("ord --", &table),
+        Some(
+            ["--zulu", "--alpha"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        ),
+        "zulu's 70 leads over the default 45; names order the rest"
+    );
+}
+
+#[test]
+fn arg_suggestions_carry_their_descriptions() {
+    // Every row carries its entry's description to the menu's dim
+    // column — nested subcommands and literal arg suggestions alike.
+    let nested = &*NESTED;
+    let tokens = lex("docker compose up w");
+    let entry = nested
+        .iter()
+        .find(|command| command.name == "docker")
+        .expect("docker is seated");
+    let stop = walk(&tokens[1..], entry, nested).expect("the walk stops");
+    let rows = stop.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].label, "web");
+    assert_eq!(rows[0].description.as_deref(), Some("The web service"));
+}

@@ -11,7 +11,17 @@
 
 use std::borrow::Cow;
 
-use super::{MenuCandidate, SpecArg, SpecCommand, SpecFlag, SuggestionSource, escape_for_shell};
+use super::{
+    FilterStrategy, MenuCandidate, SpecArg, SpecCommand, SpecFlag, SuggestionSource,
+    escape_for_shell,
+};
+
+/// The engine's default row priority for names
+/// (`suggestion.ts:119-127`): the spec's `priority`, or 50.
+const NAME_PRIORITY: u8 = 50;
+/// The engine's default for options — they sit beneath names until a
+/// spec's `priority` says otherwise.
+const FLAG_PRIORITY: u8 = 45;
 
 /// One lexed shell word (suggest-walker spec, engine-rea §2): the
 /// text, whether whitespace closed it (`complete`), and whether it
@@ -252,12 +262,6 @@ pub(super) struct StopPoint<'s> {
     node: &'s SpecCommand,
     partial: String,
     persistent: Vec<&'s SpecFlag>,
-    /// The walk's dressing input, landed ahead of its reader (the
-    /// same module run): Task 3's step reads it out of the rows.
-    #[expect(
-        dead_code,
-        reason = "the row dressing (Task 3 of this module run) consumes it"
-    )]
     accepted: Vec<&'s SpecFlag>,
     active_arg: Option<&'s SpecArg>,
     arg_driven: bool,
@@ -272,6 +276,13 @@ impl StopPoint<'_> {
         &self.partial
     }
 
+    /// Whether the node declares the fuzzy filter strategy — the
+    /// menu's route through the pinned `filter_rank` (its first
+    /// caller); the ghost stays prefix under its locked policy.
+    pub(super) fn is_fuzzy(&self) -> bool {
+        self.node.filter_strategy == FilterStrategy::Fuzzy
+    }
+
     /// The stop point's candidate rows (engine-rea §4): a `-`-shaped
     /// partial is the flag seat — the node's flags plus the persistent
     /// ones carried in; a value seat (the walk stopped inside argument
@@ -282,104 +293,117 @@ impl StopPoint<'_> {
     /// alone), and the first unconsumed positional's suggestions.
     /// Every row extends the partial (strict prefix, must extend),
     /// every suffix is the escaped remainder an accept writes, and
-    /// positional slots already full answer nothing. Ordered
-    /// names-first — Fig's own 50/45 default split, the priority knob
-    /// rides on top at Task 3's step — and deduplicated by label.
+    /// positional slots already full answer nothing. The dressing
+    /// (`suggestion.ts:296-408`): accepted names and `exclusive_on`
+    /// hits never list, `hidden` never offers, short-named flags are
+    /// recognized when typed and never offered, and the order is
+    /// `priority` descending — the engine's 50/45 fill-ins beneath a
+    /// spec's own number — then name, deduplicated by label.
     pub(super) fn rows(&self) -> Vec<MenuCandidate> {
         if self.positional_slots_full {
             return Vec::new();
         }
         let partial = self.partial.as_str();
-        let mut rows = Vec::new();
+        let mut ranked: Vec<(u8, MenuCandidate)> = Vec::new();
         if partial.starts_with('-') {
-            self.flag_rows(partial, &mut rows);
+            self.flag_rows(partial, &mut ranked);
         } else if self.arg_driven {
             if let Some(arg) = self.active_arg {
-                arg_rows(arg, partial, &mut rows);
+                self.arg_rows(arg, partial, &mut ranked);
             }
         } else {
-            self.subcommand_rows(partial, &mut rows);
+            self.subcommand_rows(partial, &mut ranked);
             if !partial.is_empty() {
-                self.flag_rows(partial, &mut rows);
+                self.flag_rows(partial, &mut ranked);
             }
             if let Some(arg) = self.active_arg {
-                arg_rows(arg, partial, &mut rows);
+                self.arg_rows(arg, partial, &mut ranked);
             }
         }
-        rows.sort_by(|a, b| menu_order(a).cmp(&menu_order(b)));
+        ranked.sort_by(|(pa, a), (pb, b)| {
+            (std::cmp::Reverse(*pa), a.label.as_str())
+                .cmp(&(std::cmp::Reverse(*pb), b.label.as_str()))
+        });
+        let mut rows: Vec<MenuCandidate> = ranked.into_iter().map(|(_, row)| row).collect();
         rows.dedup_by(|a, b| a.label == b.label);
         rows
     }
 
+    /// Whether a name was accepted on the line and so never lists
+    /// again (`suggestion.ts:329-332`) — the persistent acceptances
+    /// that rode into the node included.
+    fn accepted(&self, name: &str) -> bool {
+        self.accepted.iter().any(|flag| flag.name == name)
+    }
+
+    /// The engine's hidden rule (`suggestion.ts:345-347`): hidden
+    /// drops unless the partial equals the name exactly — and the
+    /// must-extend rule leaves that exact name nothing to add, so
+    /// hidden is silence at every partial.
+    fn hidden(hidden: bool, name: &str, partial: &str) -> bool {
+        hidden && partial != name
+    }
+
     /// The node's subcommands as candidate rows.
-    fn subcommand_rows(&self, partial: &str, rows: &mut Vec<MenuCandidate>) {
-        entry_rows(
-            partial,
-            self.node
-                .subcommands
-                .iter()
-                .map(|command| (&command.name, command.description.as_deref())),
-            rows,
-        );
+    fn subcommand_rows(&self, partial: &str, ranked: &mut Vec<(u8, MenuCandidate)>) {
+        for command in &self.node.subcommands {
+            if Self::hidden(command.hidden, &command.name, partial) || self.accepted(&command.name)
+            {
+                continue;
+            }
+            if let Some(row) = entry_row(partial, &command.name, command.description.as_deref()) {
+                ranked.push((command.priority.unwrap_or(NAME_PRIORITY), row));
+            }
+        }
     }
 
     /// The flag seat's rows: the node's own flags plus the persistent
     /// ones carried in — a carried flag shadowed by an own flag of the
     /// same name lists once (the engine's dedup-by-name).
-    fn flag_rows(&self, partial: &str, rows: &mut Vec<MenuCandidate>) {
-        entry_rows(
-            partial,
-            self.node
-                .flags
-                .iter()
-                .map(|flag| (&flag.name, flag.description.as_deref())),
-            rows,
-        );
+    fn flag_rows(&self, partial: &str, ranked: &mut Vec<(u8, MenuCandidate)>) {
+        for flag in &self.node.flags {
+            self.push_flag_row(flag, partial, ranked);
+        }
         for flag in &self.persistent {
             if self.node.flags.iter().any(|own| own.name == flag.name) {
                 continue;
             }
-            if let Some(row) = entry_row(partial, &flag.name, flag.description.as_deref()) {
-                rows.push(row);
-            }
+            self.push_flag_row(flag, partial, ranked);
         }
     }
-}
 
-/// The value seat's rows: the active argument's literal suggestions —
-/// a template arg contributes none of its own (the Path provider owns
-/// that seat).
-fn arg_rows(arg: &SpecArg, partial: &str, rows: &mut Vec<MenuCandidate>) {
-    if arg.template.is_some() {
-        return;
+    /// One flag's row, dressed — the standing rulings made rows: a
+    /// short-named flag (no `--`) is recognized when typed and never
+    /// offered; an accepted name never lists again; a flag whose
+    /// `exclusive_on` names an accepted one is gone (`suggestion.ts:305`);
+    /// hidden never offers.
+    fn push_flag_row(&self, flag: &SpecFlag, partial: &str, ranked: &mut Vec<(u8, MenuCandidate)>) {
+        if !flag.name.starts_with("--")
+            || self.accepted(&flag.name)
+            || Self::hidden(flag.hidden, &flag.name, partial)
+            || flag.exclusive_on.iter().any(|name| self.accepted(name))
+        {
+            return;
+        }
+        if let Some(row) = entry_row(partial, &flag.name, flag.description.as_deref()) {
+            ranked.push((flag.priority.unwrap_or(FLAG_PRIORITY), row));
+        }
     }
-    entry_rows(
-        partial,
-        arg.suggestions
-            .iter()
-            .map(|entry| (&entry.name, entry.description.as_deref())),
-        rows,
-    );
-}
 
-/// One candidate's row order: non-flag names first, then flags,
-/// alphabetical within each — Fig's own default priorities (50 for
-/// names, 45 for options) ahead of the spec-declared knob.
-fn menu_order(row: &MenuCandidate) -> (bool, &str) {
-    (row.label.starts_with('-'), row.label.as_str())
-}
-
-/// One name/description list's rows: every entry that extends the
-/// partial, dressed as specs-provenance rows with the escaped
-/// remainder as the suffix.
-fn entry_rows<'a, 'd>(
-    partial: &str,
-    entries: impl Iterator<Item = (&'a String, Option<&'d str>)>,
-    rows: &mut Vec<MenuCandidate>,
-) {
-    for (name, description) in entries {
-        if let Some(row) = entry_row(partial, name, description) {
-            rows.push(row);
+    /// The value seat's rows: the active argument's literal
+    /// suggestions — a template arg contributes none of its own (the
+    /// Path provider owns that seat).
+    fn arg_rows(&self, arg: &SpecArg, partial: &str, ranked: &mut Vec<(u8, MenuCandidate)>) {
+        if arg.template.is_some() {
+            return;
+        }
+        for entry in &arg.suggestions {
+            if self.accepted(&entry.name) {
+                continue;
+            }
+            if let Some(row) = entry_row(partial, &entry.name, entry.description.as_deref()) {
+                ranked.push((NAME_PRIORITY, row));
+            }
         }
     }
 }

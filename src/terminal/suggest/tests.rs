@@ -3794,3 +3794,35 @@ name = "sub-a"
         "a flag argument's suggestions sort alike"
     );
 }
+
+#[test]
+fn an_accepted_flag_never_suggests_again() {
+    // The dressing, end to end: `git --no-pager log --no-p` — the
+    // persistent flag accepted before the descent never lists inside
+    // the child, so the ghost stays silent on its own name.
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed_table("git --no-pager log --no-p", &WALKER_TABLE, &mut suggest),
+        None,
+        "the accepted flag does not complete itself"
+    );
+}
+
+#[test]
+fn a_fuzzy_node_routes_its_rows_through_filter_rank() {
+    // `filter_strategy = "fuzzy"` (locked at the map gate): the docker
+    // fixture's node routes through the pinned filter_rank — the
+    // ranker's first caller — with the partial as the query. The
+    // honest-write discipline holds under it too: a subsequence hit
+    // that does not extend the typed word has no append-only suffix,
+    // so it never lists (an accept writes only what extends).
+    assert!(
+        menu_table("docker cse", &NESTED_TABLE).is_empty(),
+        "a subsequence hit that does not extend the word never carries a suffix"
+    );
+    assert_eq!(
+        menu_labels(&menu_table("docker co", &NESTED_TABLE)),
+        ["compose"],
+        "an extending prefix at the fuzzy node still answers"
+    );
+}

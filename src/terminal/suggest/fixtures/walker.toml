@@ -86,6 +86,17 @@ name = "metadata"
 [[commands.flags.args.suggestions]]
 name = "mir"
 
+# Short-named flags: recognized when typed (their arguments consume),
+# never offered — the standing ruling the rows' dressing pins.
+[[commands.flags]]
+name = "-o"
+
+[[commands.flags.args]]
+name = "file"
+
+[[commands.flags]]
+name = "-v"
+
 [[commands]]
 name = "sudo"
 

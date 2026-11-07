@@ -1538,14 +1538,26 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
 /// single-choice text). The single-choice ghost's no-information
 /// floors are the ghost's alone: a list is information, so the bare
 /// `--` lists the flag seat whole and an empty trailing token lists
-/// the scoped next level the command word settled into.
+/// the scoped next level the command word settled into. A node that
+/// declares `filter_strategy = "fuzzy"` routes its rows through the
+/// pinned `filter_rank` (its first caller) with the partial as the
+/// query — and the honest-write discipline holds there too: a row
+/// that does not extend the partial has no append-only suffix, so it
+/// never carries one (an accept writes only what extends the typed
+/// word).
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
     }
-    specs_stop(typed, obs)
-        .map(|stop| stop.rows())
-        .unwrap_or_default()
+    let Some(stop) = specs_stop(typed, obs) else {
+        return Vec::new();
+    };
+    let rows = stop.rows();
+    if stop.is_fuzzy() {
+        filter_rank(stop.partial(), rows)
+    } else {
+        rows
+    }
 }
 
 /// The command-name provider's whole set (suggest-menu spec): every
