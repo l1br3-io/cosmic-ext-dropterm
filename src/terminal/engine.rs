@@ -719,6 +719,17 @@ pub struct Terminal {
     /// `set_config`; false makes OSC 1337 inert end to end (the arm
     /// never places).
     images_enabled: bool,
+    /// The kitty graphics transmissions in flight (kitty-images
+    /// spec), keyed by the first chunk's client `i` — `None` is the
+    /// anonymous slot, one at a time; a new header replaces whatever
+    /// stood under its key. Dies with the terminal, so a respawn
+    /// starts clean by construction.
+    kitty_chunks: HashMap<Option<u32>, KittyChunk>,
+    /// The kitty client-id → store-id map (kitty-images spec): `i=`
+    /// remaps on every retransmit; deletion and queries by `i`
+    /// resolve through it. `I=` numbers are the store ids themselves —
+    /// sequential from 1 by construction (OQ-1's default).
+    kitty_ids: HashMap<u32, u64>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1484,6 +1495,8 @@ impl Terminal {
             image_session: None,
             image_seq: 0,
             images: Arc::new(Mutex::new(ImageStore::default())),
+            kitty_chunks: HashMap::new(),
+            kitty_ids: HashMap::new(),
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1915,6 +1928,130 @@ impl Terminal {
         self.images.lock().unwrap().insert(id, rgba);
         let (cols, rows) = resolve_placement(&args, inherent, &self.size);
         self.term.lock().place_image(id, cols, rows);
+        self.needs_update = true;
+    }
+
+    /// One APC payload from the fork (kitty-images spec): the leading
+    /// `G` gates the protocol — SOS/PM strings share the fork's APC
+    /// state and arrive here too — then the control data parses under
+    /// the subset's grammar and the transmission machine runs: chunks
+    /// assemble keyed by the first chunk's `i` until a final chunk
+    /// commits through decode and (for `a=T`) placement. A
+    /// kill-switched pipeline, a forbidden medium, or malformed
+    /// control data drops whole; the forbidden media answer the one
+    /// uniform error on the PTY write path (`q=2` silences it).
+    pub fn note_apc_payload(&mut self, payload: &[u8]) {
+        if !self.images_enabled {
+            return;
+        }
+        let Some(body) = payload.strip_prefix(b"G") else {
+            return;
+        };
+        let (control, encoded) = match body.iter().position(|&byte| byte == b';') {
+            Some(sep) => (&body[..sep], Some(&body[sep + 1..])),
+            None => (body, None),
+        };
+        let Some(keys) = parse_kitty_keys(control) else {
+            return;
+        };
+
+        // The medium is direct in-band or the sequence is refused —
+        // file, temp-file, and shared-memory transmission never cross
+        // the seam, and every refusal answers identically so nothing
+        // about the filesystem is probeable.
+        if keys.transmission.is_some_and(|medium| medium != b'd') {
+            if keys.quiet < 2 {
+                self.input_no_scroll(kitty_error_reply(keys.image_id));
+            }
+            return;
+        }
+
+        // The command arms (query, delete, place) are standalone —
+        // never chunk payloads.
+        if matches!(keys.action, Some(b'q' | b'd' | b'p')) {
+            return;
+        }
+
+        let mut bytes = Vec::new();
+        if let Some(encoded) = encoded {
+            // A malformed base64 slice drops the sequence whole,
+            // never half-carried.
+            match decode_base64(encoded) {
+                Some(decoded) => bytes = decoded,
+                None => return,
+            }
+        }
+
+        if keys.opens() {
+            // The first chunk carries the control keys; a new header
+            // replaces whatever stood under its key.
+            if keys.more {
+                if bytes.len() <= IMAGE_PAYLOAD_CAP {
+                    self.kitty_chunks.insert(
+                        keys.image_id,
+                        KittyChunk {
+                            keys,
+                            payload: bytes,
+                        },
+                    );
+                }
+            } else {
+                self.kitty_commit(keys, &bytes);
+            }
+        } else if let Some(session) = self.kitty_chunks.get_mut(&keys.image_id) {
+            // A continuation joins its key's session — the anonymous
+            // slot when no `i` rides the wire.
+            session.payload.extend_from_slice(&bytes);
+            if session.payload.len() > IMAGE_PAYLOAD_CAP {
+                // The cap drops the session whole, never a
+                // half-buffered image.
+                self.kitty_chunks.remove(&keys.image_id);
+            } else if !keys.more
+                && let Some(finished) = self.kitty_chunks.remove(&keys.image_id)
+            {
+                self.kitty_commit(finished.keys, &finished.payload);
+            }
+        }
+        // A continuation without a session is silence.
+    }
+
+    /// Decode and seat one completed kitty transmission (kitty-images
+    /// spec): the iterm module's own ceilings drop whole before any
+    /// decode, the pixels enter the shared store under a fresh id
+    /// (the client `i`, when sent, maps to it), `x`/`y` crop the
+    /// displayed region to its far edges, and `a=T` alone places —
+    /// `a=t` and the default transmit-only store.
+    fn kitty_commit(&mut self, keys: KittyKeys, payload: &[u8]) {
+        if payload.is_empty() || payload.len() > IMAGE_PAYLOAD_CAP {
+            return;
+        }
+        let Some(mut rgba) = decode_kitty_payload(&keys, payload) else {
+            return;
+        };
+
+        // The displayed region's source offset: a crop extending to
+        // the image's far edges, so only what shows is seated.
+        if let (Some(x), Some(y)) = (keys.offset_x, keys.offset_y) {
+            let (width, height) = rgba.dimensions();
+            if x >= width || y >= height {
+                return;
+            }
+            rgba = image::DynamicImage::ImageRgba8(rgba)
+                .crop_imm(x, y, width - x, height - y)
+                .to_rgba8();
+        }
+
+        self.image_seq += 1;
+        let id = self.image_seq;
+        if let Some(client) = keys.image_id {
+            self.kitty_ids.insert(client, id);
+        }
+        let dims = rgba.dimensions();
+        self.images.lock().unwrap().insert(id, rgba);
+        if keys.action == Some(b'T') {
+            let (cols, rows) = kitty_cells(&keys, dims, &self.size);
+            self.term.lock().place_image(id, cols, rows);
+        }
         self.needs_update = true;
     }
 
@@ -4029,4 +4166,233 @@ fn resolve_placement(args: &ImageArgs, image: (f32, f32), size: &Size) -> (usize
 fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(data).ok()
+}
+
+// ===== Kitty graphics (kitty-images spec) =====
+
+/// The one error every forbidden transmission form answers with
+/// (kitty-images spec): file, temp-file, and shared-memory
+/// transmission never cross the seam, and the answer is byte-identical
+/// for all three so nothing about the filesystem is probeable —
+/// kitty's own uniform refusal wording.
+const KITTY_UNIFORM_ERROR: &str = "EBADF:Failed to read image file";
+
+/// The control keys of one APC `G` sequence (kitty-images spec) — the
+/// transmission subset's grammar. Unknown keys are ignored by the
+/// spec's own rule; a known key with a value outside its grammar
+/// drops the sequence whole.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct KittyKeys {
+    /// `a` — action: `t` transmit-only (the default), `T`
+    /// transmit-and-display; `p`/`q`/`d` are the command arms.
+    action: Option<u8>,
+    /// `f` — format: 24 and 100 ride the container decode path, 32 is
+    /// raw RGBA sized by `s`×`v`. Absent means 32 (kitty's default).
+    format: Option<u32>,
+    /// `t` — transmission medium: `d` direct in-band, the default and
+    /// the only accepted form.
+    transmission: Option<u8>,
+    /// `m=1` — more chunks follow; absent or `m=0` is the final chunk
+    /// (possibly empty, the observed chafa shape).
+    more: bool,
+    /// `o=z` — the payload arrives zlib-compressed.
+    compressed: bool,
+    /// `s`/`v` — the image's pixel width and height.
+    width_px: Option<u32>,
+    height_px: Option<u32>,
+    /// `c`/`r` — the display region in cells.
+    cols: Option<u32>,
+    rows: Option<u32>,
+    /// `x`/`y` — the displayed region's source offset; the region
+    /// extends to the image's far edges.
+    offset_x: Option<u32>,
+    offset_y: Option<u32>,
+    /// `i` — the client-chosen image id.
+    image_id: Option<u32>,
+    /// `p` — the placement id.
+    placement_id: Option<u32>,
+    /// `z` — the z-index layer (consumed at paint).
+    z: Option<i32>,
+    /// `q` — reply suppression: 1 silences OK replies, 2 errors too.
+    quiet: u8,
+}
+
+impl KittyKeys {
+    /// Whether this chunk opens a transmission: it carries any control
+    /// key beyond the chunking keys `m`/`i`/`q` — kitty's own rule
+    /// that all control keys ride the first chunk, inverted.
+    fn opens(&self) -> bool {
+        self.action.is_some()
+            || self.format.is_some()
+            || self.transmission.is_some()
+            || self.compressed
+            || self.width_px.is_some()
+            || self.height_px.is_some()
+            || self.cols.is_some()
+            || self.rows.is_some()
+            || self.offset_x.is_some()
+            || self.offset_y.is_some()
+            || self.placement_id.is_some()
+            || self.z.is_some()
+    }
+}
+
+/// Parse one `G` sequence's control data (kitty-images spec):
+/// comma-separated single-character `key=value` pairs. Unknown keys
+/// are ignored; a known key with a malformed value drops the sequence
+/// whole. Pure; never panics.
+fn parse_kitty_keys(control: &[u8]) -> Option<KittyKeys> {
+    fn number(value: &[u8]) -> Option<u32> {
+        std::str::from_utf8(value).ok()?.parse().ok()
+    }
+
+    let mut keys = KittyKeys::default();
+    for token in control.split(|&byte| byte == b',') {
+        let eq = token.iter().position(|&byte| byte == b'=')?;
+        let (key, value) = token.split_at(eq);
+        let value = &value[1..];
+        // Kitty's keys are single characters; anything longer is
+        // malformed control data.
+        if key.len() != 1 {
+            return None;
+        }
+        match key[0] {
+            b'a' => {
+                keys.action = match value {
+                    [byte] if b"tTpqd".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b't' => {
+                keys.transmission = match value {
+                    [byte] if b"dfts".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b'f' => keys.format = Some(number(value)?),
+            b'm' => {
+                keys.more = match value {
+                    b"1" => true,
+                    b"0" => false,
+                    _ => return None,
+                };
+            }
+            b'o' => {
+                if value != b"z" {
+                    return None;
+                }
+                keys.compressed = true;
+            }
+            b's' => keys.width_px = Some(number(value)?),
+            b'v' => keys.height_px = Some(number(value)?),
+            b'c' => keys.cols = Some(number(value)?),
+            b'r' => keys.rows = Some(number(value)?),
+            b'x' => keys.offset_x = Some(number(value)?),
+            b'y' => keys.offset_y = Some(number(value)?),
+            b'i' => keys.image_id = Some(number(value)?),
+            b'p' => keys.placement_id = Some(number(value)?),
+            b'z' => keys.z = Some(std::str::from_utf8(value).ok()?.parse().ok()?),
+            b'q' => {
+                keys.quiet = match value {
+                    b"0" => 0,
+                    b"1" => 1,
+                    b"2" => 2,
+                    _ => return None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Some(keys)
+}
+
+/// One kitty transmission in flight (kitty-images spec): the first
+/// chunk's parsed keys plus the accumulated decoded payload, keyed by
+/// the client `i` (`None` is the anonymous slot).
+struct KittyChunk {
+    keys: KittyKeys,
+    payload: Vec<u8>,
+}
+
+/// The uniform-refusal reply bytes (kitty-images spec): `i=` rides the
+/// reply only when the client sent one. Byte-exact per the spec's own
+/// detection contract — a DA1 reply without a graphics reply means no
+/// support, so every refusal still answers.
+fn kitty_error_reply(id: Option<u32>) -> Vec<u8> {
+    match id {
+        Some(id) => format!("\x1b_Gi={id};{KITTY_UNIFORM_ERROR}\x1b\\"),
+        None => format!("\x1b_G{KITTY_UNIFORM_ERROR}\x1b\\"),
+    }
+    .into_bytes()
+}
+
+/// Inflate one `o=z` payload (kitty-images spec) under the same cap
+/// the wire bytes obey — a decompression bomb dies at the cap, never
+/// inside a decoder. `None` on a corrupt stream or an over-cap
+/// inflate; pure; never panics.
+fn inflate_capped(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    // One byte past the cap, so an over-cap stream is detected rather
+    // than silently truncated.
+    let mut limited = ZlibDecoder::new(data).take(IMAGE_PAYLOAD_CAP as u64 + 1);
+    let mut out = Vec::new();
+    limited.read_to_end(&mut out).ok()?;
+    if out.len() > IMAGE_PAYLOAD_CAP {
+        return None;
+    }
+    Some(out)
+}
+
+/// Decode one completed kitty payload (kitty-images spec) under the
+/// iterm module's own ceilings — the dimension and allocation limits
+/// apply before any pixel exists. `f=24`/`f=100` ride the container
+/// decode path (the `image` crate's format detection under the strict
+/// `Limits`); `f=32` is raw RGBA whose byte count must be exactly
+/// `s`×`v`×4. Anything else drops whole. Pure; never panics.
+fn decode_kitty_payload(keys: &KittyKeys, payload: &[u8]) -> Option<image::RgbaImage> {
+    let payload = if keys.compressed {
+        &inflate_capped(payload)?
+    } else {
+        payload
+    };
+    match keys.format.unwrap_or(32) {
+        24 | 100 => decode_image(payload),
+        32 => {
+            let width = keys.width_px?;
+            let height = keys.height_px?;
+            if width > IMAGE_MAX_DIMENSION
+                || height > IMAGE_MAX_DIMENSION
+                || u64::from(width) * u64::from(height) > IMAGE_MAX_ALLOC / 4
+            {
+                return None;
+            }
+            if payload.len() != width as usize * height as usize * 4 {
+                return None;
+            }
+            image::RgbaImage::from_raw(width, height, payload.to_vec())
+        }
+        // An off-subset format never crosses the seam.
+        _ => None,
+    }
+}
+
+/// The display region in cells (kitty-images spec): `c`/`r` when
+/// given (zero reads as absent — kitty's natural-size marker), else
+/// the image's inherent pixels against the cell size.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "decode-capped dimensions (8192) are exact in f32"
+)]
+fn kitty_cells(keys: &KittyKeys, image: (u32, u32), size: &Size) -> (usize, usize) {
+    let cols = keys.cols.filter(|cols| *cols > 0).map_or_else(
+        || pixels_to_cells(image.0 as f32, size.cell_width),
+        |cols| cols as usize,
+    );
+    let rows = keys.rows.filter(|rows| *rows > 0).map_or_else(
+        || pixels_to_cells(image.1 as f32, size.cell_height),
+        |rows| rows as usize,
+    );
+    (cols, rows)
 }

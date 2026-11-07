@@ -1122,10 +1122,18 @@ impl DropTerm {
                     .note_inline_image(&params);
             }
             // An APC string payload (kitty-images spec): the fork's
-            // accumulated bytes raw — parsed by the fork's state
-            // machine only, inert at the boundary until the kitty
-            // session machine lands, never half-handled to the grid.
-            TermEvent::ApcPayload(_) => {}
+            // accumulated bytes forwarded to the engine under the lock
+            // exactly as its OSC siblings are — the kitty session
+            // machine, caps, decode, and placement all live there; a
+            // kill-switched pipeline, forbidden medium, or malformed
+            // payload drops whole.
+            TermEvent::ApcPayload(payload) => {
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_apc_payload(&payload);
+            }
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
