@@ -3602,3 +3602,360 @@ fn kitty_images_enabled_false_is_inert() {
     assert_eq!(cell_image(&terminal, 0, 0), None);
     assert!(terminal.images.lock().unwrap().get(1).is_none());
 }
+
+// ===== Kitty queries, placements, deletion (kitty-images spec) =====
+
+#[test]
+fn kitty_reply_builder_is_byte_exact() {
+    assert_eq!(
+        super::kitty_reply(Some(7), "OK"),
+        b"\x1b_Gi=7;OK\x1b\\".to_vec()
+    );
+    assert_eq!(super::kitty_reply(None, "OK"), b"\x1b_GOK\x1b\\".to_vec());
+    assert_eq!(
+        super::kitty_error_reply(Some(9)),
+        b"\x1b_Gi=9;EBADF:Failed to read image file\x1b\\".to_vec()
+    );
+}
+
+#[test]
+fn kitty_feature_lists_are_true_of_the_implementation() {
+    // Exactly what each e= group's answer names — the keys this
+    // implementation parses and honors, nothing more.
+    assert_eq!(
+        super::kitty_feature_list(b'T'),
+        "t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q"
+    );
+    assert_eq!(super::kitty_feature_list(b't'), "a=T,a=t,c,r,x,y");
+    assert_eq!(super::kitty_feature_list(b'p'), "a=p,p,i,I,z");
+    assert_eq!(
+        super::kitty_feature_list(b'd'),
+        "d=a,d=A,d=i,d=I,d=n,d=N,d=c,d=C"
+    );
+}
+
+#[test]
+fn kitty_query_answers_ok_for_a_live_image() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    let keys = super::parse_kitty_keys(b"i=7").expect("the query's keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&keys, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=7;OK\x1b\\".to_vec())
+    );
+
+    // A number names the image too — the store id itself (OQ-1).
+    let by_number = super::parse_kitty_keys(b"I=1").expect("the number query");
+    assert_eq!(
+        super::kitty_query_reply(&by_number, &terminal.kitty_ids, &images),
+        Some(b"\x1b_GOK\x1b\\".to_vec()),
+        "I= names by number; no i= rides the reply"
+    );
+}
+
+#[test]
+fn kitty_query_answers_the_error_for_unknown_or_freed_images() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+    // Free the pixels: the id maps but nothing stands behind it.
+    terminal.images.lock().unwrap().remove(1);
+
+    let unknown = super::parse_kitty_keys(b"i=7").expect("the query's keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&unknown, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=7;EBADF:Failed to read image file\x1b\\".to_vec())
+    );
+}
+
+#[test]
+fn kitty_query_suppression_honors_q1_and_q2() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    // q=1 silences the OK answer; the error answer still goes.
+    let quiet_ok = super::parse_kitty_keys(b"i=7,q=1").expect("keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&quiet_ok, &terminal.kitty_ids, &images),
+        None
+    );
+    let quiet_error = super::parse_kitty_keys(b"i=9,q=1").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&quiet_error, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=9;EBADF:Failed to read image file\x1b\\".to_vec())
+    );
+
+    // q=2 silences everything.
+    let quiet_all = super::parse_kitty_keys(b"i=9,q=2").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&quiet_all, &terminal.kitty_ids, &images),
+        None
+    );
+    drop(images);
+
+    // A query naming no image at all is silence, never a reply.
+    let bare = super::parse_kitty_keys(b"").expect("keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&bare, &terminal.kitty_ids, &images),
+        None
+    );
+}
+
+#[test]
+fn kitty_e_queries_answer_the_feature_lists() {
+    let keys = super::parse_kitty_keys(b"i=1,e=T").expect("keys");
+    let ids = std::collections::HashMap::new();
+    let images = super::ImageStore::default();
+    assert_eq!(
+        super::kitty_query_reply(&keys, &ids, &images),
+        Some(b"\x1b_Gi=1;OK t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q\x1b\\".to_vec())
+    );
+
+    let display = super::parse_kitty_keys(b"e=t").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&display, &ids, &images),
+        Some(b"\x1b_GOK a=T,a=t,c,r,x,y\x1b\\".to_vec())
+    );
+}
+
+#[test]
+fn kitty_place_seats_a_transmitted_image_at_the_cursor() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,c=2,r=2", &png_bytes(8, 8)));
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "transmit-only placed nothing"
+    );
+
+    // Without a placement id the cells ride the image's own id.
+    terminal.note_apc_payload(&apc("a=p,i=7,c=2,r=2", b""));
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+}
+
+#[test]
+fn kitty_re_place_moves_the_placements_cells_and_reuses_data() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    // The placement seats under its own id (a fresh store entry), so
+    // the move sweep takes exactly it.
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=2,r=2", b""));
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(2),
+                "cell ({line},{col})"
+            );
+        }
+    }
+
+    // The re-place at the cursor (now below the first placement)
+    // clears the old cells and seats the same id again — the data
+    // reused, no fresh store entry.
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "the old cells moved away"
+    );
+    assert_eq!(
+        cell_image(&terminal, 2, 0),
+        Some(2),
+        "the same id re-seated"
+    );
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(2).is_some(), "the placement's pixels stand");
+    assert!(
+        store.get(3).is_none(),
+        "no fresh entry — the data is reused"
+    );
+    assert_eq!(terminal.kitty_placements.get(&3).map(|p| p.cells), Some(2));
+}
+
+#[test]
+fn kitty_delete_by_name_clears_placements_and_uppercase_frees() {
+    // Lowercase: the cells go, the pixels stand.
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=d,d=i7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_some(),
+        "lowercase keeps the data"
+    );
+
+    // Uppercase: the pixels free too, and the id map forgets.
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=d,d=I7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_none(),
+        "uppercase frees"
+    );
+    assert!(!terminal.kitty_ids.contains_key(&7));
+}
+
+#[test]
+fn kitty_delete_by_name_sweeps_the_placements_too() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), Some(2));
+
+    // Deleting the image takes its placements' cells and pixels.
+    terminal.note_apc_payload(&apc("a=d,d=I7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(1).is_none() && store.get(2).is_none());
+    assert!(terminal.kitty_placements.is_empty());
+}
+
+#[test]
+fn kitty_delete_by_name_resolves_as_a_number_when_no_client_id_matches() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    // No client id 1 was ever declared; the name resolves as the
+    // number (the store id itself).
+    terminal.note_apc_payload(&apc("a=d,d=i1", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+}
+
+#[test]
+fn kitty_delete_newest_takes_the_last_transmitted_image() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    // The cursor moved below the first placement; both images stand.
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    assert_eq!(cell_image(&terminal, 1, 0), Some(2));
+
+    terminal.note_apc_payload(&apc("a=d,d=N", b""));
+    assert_eq!(
+        cell_image(&terminal, 1, 0),
+        None,
+        "the newest image's cells go"
+    );
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(2).is_none(), "N frees the newest");
+    assert!(store.get(1).is_some(), "the older image stands");
+}
+
+#[test]
+fn kitty_delete_all_sweeps_everything() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    terminal.note_apc_payload(&apc("a=d,d=a", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert_eq!(cell_image(&terminal, 1, 0), None);
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_some() && store.get(2).is_some(),
+            "a keeps the data"
+        );
+    }
+
+    // Re-place from the standing pixels, then A takes everything.
+    terminal.note_apc_payload(&apc("a=p,i=1,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=d,d=A", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_none() && store.get(2).is_none(),
+            "A frees all"
+        );
+    }
+    assert!(terminal.kitty_ids.is_empty());
+}
+
+#[test]
+fn kitty_delete_visible_sweeps_the_shown_rows_and_c_frees_them() {
+    let mut terminal = image_terminal();
+    // The fixture's grid is 80x24: a one-row full-width image, then a
+    // thirty-row placement whose scroll push rides the first image's
+    // row six lines into scrollback — its cells survive only there,
+    // at columns past the tall placement's three-column width.
+    terminal.note_apc_payload(&apc("i=1,a=T,f=100,c=80,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=2,a=T,f=100,c=3,r=30", &png_bytes(8, 8)));
+    assert!(
+        cell_image(&terminal, -7, 3).is_some(),
+        "the first image rides in scrollback"
+    );
+    assert!(
+        cell_image(&terminal, 0, 0).is_some(),
+        "the tall placement covers the screen"
+    );
+
+    // c: the visible screen's placements go; the scrollback stands.
+    terminal.note_apc_payload(&apc("a=d,d=c", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None, "the visible cells swept");
+    assert!(cell_image(&terminal, -7, 3).is_some(), "scrollback stands");
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_some() && store.get(2).is_some(),
+            "c keeps the data"
+        );
+    }
+
+    // C on the re-placed tall image frees what was visible; the
+    // scrollback image's pixels and cells stand.
+    terminal.note_apc_payload(&apc("a=p,i=2,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=d,d=C", b""));
+    assert_eq!(
+        cell_image(&terminal, 23, 0),
+        None,
+        "the re-placed cells swept"
+    );
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(2).is_none(),
+            "the freed visible image's pixels go"
+        );
+        assert!(
+            store.get(1).is_some(),
+            "the scrollback image's pixels stand"
+        );
+    }
+}
+
+#[test]
+fn kitty_region_and_unknown_deletes_are_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    for ignored in ["d=x0,0,1,1", "d=y", "d=z5", "d=q"] {
+        terminal.note_apc_payload(&apc(&format!("a=d,{ignored}"), b""));
+    }
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1), "nothing was deleted");
+    assert!(terminal.images.lock().unwrap().get(1).is_some());
+}
+
+#[test]
+fn kitty_command_sequences_never_open_a_session() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=q,i=1,m=1", b""));
+    terminal.note_apc_payload(&apc("m=0", b""));
+    assert!(terminal.kitty_chunks.is_empty());
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}

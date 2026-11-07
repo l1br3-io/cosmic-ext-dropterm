@@ -730,6 +730,15 @@ pub struct Terminal {
     /// resolve through it. `I=` numbers are the store ids themselves —
     /// sequential from 1 by construction (OQ-1's default).
     kitty_ids: HashMap<u32, u64>,
+    /// The kitty placements by placement id (kitty-images spec):
+    /// each seats under its own cell id so the move sweep takes
+    /// exactly it, while its pixels — copied once at creation — are
+    /// reused across every move (the same id, the same renderer
+    /// handle, no flicker). Dies with the terminal.
+    kitty_placements: HashMap<u32, KittyPlacement>,
+    /// The most recently transmitted kitty image's store id
+    /// (kitty-images spec) — `d=n`/`d=N`'s target.
+    kitty_last: Option<u64>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1497,6 +1506,8 @@ impl Terminal {
             images: Arc::new(Mutex::new(ImageStore::default())),
             kitty_chunks: HashMap::new(),
             kitty_ids: HashMap::new(),
+            kitty_placements: HashMap::new(),
+            kitty_last: None,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1968,19 +1979,45 @@ impl Terminal {
 
         // The command arms (query, delete, place) are standalone —
         // never chunk payloads.
-        if matches!(keys.action, Some(b'q' | b'd' | b'p')) {
-            return;
-        }
-
-        let mut bytes = Vec::new();
-        if let Some(encoded) = encoded {
-            // A malformed base64 slice drops the sequence whole,
-            // never half-carried.
-            match decode_base64(encoded) {
-                Some(decoded) => bytes = decoded,
-                None => return,
+        match keys.action {
+            // The reply is computed pure over the ids and pixels,
+            // then written on the PTY path synchronously during event
+            // processing — so the answer always precedes the DA1
+            // that follows it, the detection fence by construction.
+            Some(b'q') => {
+                if let Some(reply) =
+                    kitty_query_reply(&keys, &self.kitty_ids, &self.images.lock().unwrap())
+                {
+                    self.input_no_scroll(reply);
+                }
+            }
+            Some(b'd') => {
+                if let Some(delete) = keys.delete {
+                    self.kitty_delete(delete);
+                }
+            }
+            Some(b'p') => self.kitty_place(&keys),
+            _ => {
+                self.kitty_transmit(keys, encoded);
             }
         }
+    }
+
+    /// The transmission arm of one APC `G` sequence (kitty-images
+    /// spec): an opening chunk starts or replaces its key's session,
+    /// a continuation extends it, and the final chunk commits. A
+    /// continuation without a session is silence.
+    fn kitty_transmit(&mut self, keys: KittyKeys, encoded: Option<&[u8]>) {
+        // A malformed base64 slice drops the sequence whole, never
+        // half-carried.
+        let bytes = if let Some(encoded) = encoded {
+            match decode_base64(encoded) {
+                Some(decoded) => decoded,
+                None => return,
+            }
+        } else {
+            Vec::new()
+        };
 
         if keys.opens() {
             // The first chunk carries the control keys; a new header
@@ -2012,7 +2049,6 @@ impl Terminal {
                 self.kitty_commit(finished.keys, &finished.payload);
             }
         }
-        // A continuation without a session is silence.
     }
 
     /// Decode and seat one completed kitty transmission (kitty-images
@@ -2046,6 +2082,7 @@ impl Terminal {
         if let Some(client) = keys.image_id {
             self.kitty_ids.insert(client, id);
         }
+        self.kitty_last = Some(id);
         let dims = rgba.dimensions();
         self.images.lock().unwrap().insert(id, rgba);
         if keys.action == Some(b'T') {
@@ -2053,6 +2090,173 @@ impl Terminal {
             self.term.lock().place_image(id, cols, rows);
         }
         self.needs_update = true;
+    }
+
+    /// The `a=p` arm (kitty-images spec): re-place a transmitted
+    /// image at the cursor. A placement id seats under its own cell id
+    /// — the pixels copied once at creation, then reused across every
+    /// move (the same id, the same renderer handle, no flicker) — so
+    /// the move sweep takes exactly it; without one, the cells ride
+    /// the image's own id, deletable by name, never re-placed alone.
+    fn kitty_place(&mut self, keys: &KittyKeys) {
+        let Some(source) = keys
+            .image_id
+            .and_then(|name| self.kitty_ids.get(&name).copied())
+            .or_else(|| keys.number.map(u64::from))
+        else {
+            return;
+        };
+
+        let cells = if let Some(existing) = keys
+            .placement_id
+            .and_then(|placement| self.kitty_placements.get(&placement))
+        {
+            existing.cells
+        } else if let Some(placement) = keys.placement_id {
+            let Some(pixels) = self.images.lock().unwrap().get(source).cloned() else {
+                return;
+            };
+            self.image_seq += 1;
+            let cells = self.image_seq;
+            self.images.lock().unwrap().insert(cells, pixels);
+            self.kitty_placements.insert(
+                placement,
+                KittyPlacement {
+                    cells,
+                    image: source,
+                },
+            );
+            cells
+        } else {
+            source
+        };
+
+        // The geometry resolves against the seat's own pixels — the
+        // placement's copy or the image itself — so a natural-sized
+        // re-place keeps its shape; evicted pixels drop the move (the
+        // cells would draw blank, and the geometry is unknowable).
+        let Some(dims) = self
+            .images
+            .lock()
+            .unwrap()
+            .get(cells)
+            .map(image::RgbaImage::dimensions)
+        else {
+            return;
+        };
+        let (cols, rows) = kitty_cells(keys, dims, &self.size);
+        self.term.lock().clear_images(Some(cells), false);
+        self.term.lock().place_image(cells, cols, rows);
+        self.needs_update = true;
+    }
+
+    /// The `a=d` arm (kitty-images spec): each subset selector sweeps
+    /// placements, the uppercase twins freeing pixels with them.
+    fn kitty_delete(&mut self, delete: KittyDelete) {
+        match delete.target {
+            DeleteTarget::All => {
+                self.term.lock().clear_images(None, false);
+                if delete.free {
+                    self.images.lock().unwrap().clear();
+                    self.kitty_ids.clear();
+                    self.kitty_placements.clear();
+                    self.kitty_last = None;
+                }
+            }
+            DeleteTarget::Image(name) => {
+                // The name resolves as a client id first, a number
+                // (the store id itself, OQ-1) second.
+                let source = self
+                    .kitty_ids
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(u64::from(name));
+                self.kitty_delete_image(source, delete.free);
+            }
+            DeleteTarget::Newest => {
+                if let Some(source) = self.kitty_last {
+                    self.kitty_delete_image(source, delete.free);
+                }
+            }
+            DeleteTarget::Visible => {
+                // The free list must be collected before the sweep
+                // clears the very cells it reads.
+                let visible = self.visible_image_ids();
+                self.term.lock().clear_images(None, true);
+                if delete.free {
+                    let mut store = self.images.lock().unwrap();
+                    for id in &visible {
+                        store.remove(*id);
+                    }
+                    self.kitty_ids
+                        .retain(|_, mapped| store.get(*mapped).is_some());
+                    self.kitty_placements
+                        .retain(|_, placement| store.get(placement.cells).is_some());
+                    if self
+                        .kitty_last
+                        .is_some_and(|last| store.get(last).is_none())
+                    {
+                        self.kitty_last = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete one image whole (kitty-images spec): its own cells plus
+    /// every placement's sweep; `free` takes the pixels from the store
+    /// and forgets both maps' entries.
+    fn kitty_delete_image(&mut self, source: u64, free: bool) {
+        let mut cells = vec![source];
+        for placement in self.kitty_placements.values() {
+            if placement.image == source && !cells.contains(&placement.cells) {
+                cells.push(placement.cells);
+            }
+        }
+        {
+            let mut term = self.term.lock();
+            for id in &cells {
+                term.clear_images(Some(*id), false);
+            }
+        }
+        if free {
+            let mut store = self.images.lock().unwrap();
+            for id in &cells {
+                store.remove(*id);
+            }
+            self.kitty_ids.retain(|_, mapped| !cells.contains(mapped));
+            self.kitty_placements
+                .retain(|_, placement| !cells.contains(&placement.cells));
+            if self.kitty_last.is_some_and(|last| cells.contains(&last)) {
+                self.kitty_last = None;
+            }
+        }
+    }
+
+    /// The image ids standing on the visible screen (kitty-images
+    /// spec's `d=C` free list) — the rows the display offset shows,
+    /// deduplicated, read before any sweep clears them.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "grid line counts and display offsets are window-sized, far below i32 range"
+    )]
+    fn visible_image_ids(&self) -> Vec<u64> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let top = Line(-(grid.display_offset() as i32));
+        let rows = term.screen_lines() as i32;
+        let mut ids: Vec<u64> = Vec::new();
+        for line in top.0..top.0 + rows {
+            for column in 0..term.columns() {
+                if let Some(image) = grid[Line(line)][Column(column)].image()
+                    && !ids.contains(&image.image)
+                {
+                    ids.push(image.image);
+                }
+            }
+        }
+        ids
     }
 
     /// Drains the finish latch once (command-lifecycle spec): the
@@ -4064,6 +4268,26 @@ impl ImageStore {
     fn insert(&mut self, id: u64, rgba: image::RgbaImage) {
         self.insert_with_budget(id, rgba, IMAGE_STORE_BUDGET);
     }
+
+    /// Remove one image's pixels and handle by id (kitty-images
+    /// spec's `a=d` free): a freed id draws the same blank an evicted
+    /// one does. A missing id is silence.
+    pub fn remove(&mut self, id: u64) {
+        if let Some(index) = self.images.iter().position(|(stored, _)| *stored == id)
+            && let Some((_, evicted)) = self.images.remove(index)
+        {
+            self.bytes -= evicted.len();
+        }
+        self.handles.remove(&id);
+    }
+
+    /// Empty the store whole (kitty-images spec's `d=A`): every
+    /// placement left standing draws blank, the grid's own honesty.
+    pub fn clear(&mut self) {
+        self.images.clear();
+        self.handles.clear();
+        self.bytes = 0;
+    }
 }
 
 /// One accumulating `MultipartFile` session (iterm-images spec): the
@@ -4209,12 +4433,43 @@ struct KittyKeys {
     offset_y: Option<u32>,
     /// `i` — the client-chosen image id.
     image_id: Option<u32>,
+    /// `I` — the terminal-assigned number; `DropTerm`'s numbers are
+    /// the store ids themselves (OQ-1), so this names one directly.
+    number: Option<u32>,
     /// `p` — the placement id.
     placement_id: Option<u32>,
     /// `z` — the z-index layer (consumed at paint).
     z: Option<i32>,
     /// `q` — reply suppression: 1 silences OK replies, 2 errors too.
     quiet: u8,
+    /// `e` — the feature-query group (`T`/`t`/`p`/`d`).
+    query_keys: Option<u8>,
+    /// `d` — the deletion target, with whether the pixels free too.
+    delete: Option<KittyDelete>,
+}
+
+/// One `a=d` deletion's target (kitty-images spec): the four subset
+/// selectors, the uppercase twins of the letter keys carrying the
+/// free flag in [`KittyDelete`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DeleteTarget {
+    /// `a`/`A` — every image.
+    All,
+    /// `i<x>`/`I<x>` — one image, named as a client id first, a
+    /// number (the store id itself) second.
+    Image(u32),
+    /// `n`/`N` — the most recently transmitted image.
+    Newest,
+    /// `c`/`C` — the visible screen's placements.
+    Visible,
+}
+
+/// One `a=d` deletion (kitty-images spec): the target plus whether
+/// the pixels free with the placements — the uppercase letter's doing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KittyDelete {
+    target: DeleteTarget,
+    free: bool,
 }
 
 impl KittyKeys {
@@ -4247,6 +4502,11 @@ fn parse_kitty_keys(control: &[u8]) -> Option<KittyKeys> {
     }
 
     let mut keys = KittyKeys::default();
+    // A bare `G` string carries no control data at all — empty parses
+    // as no keys, the same silence a payload-only chunk owns.
+    if control.is_empty() {
+        return Some(keys);
+    }
     for token in control.split(|&byte| byte == b',') {
         let eq = token.iter().position(|&byte| byte == b'=')?;
         let (key, value) = token.split_at(eq);
@@ -4290,8 +4550,56 @@ fn parse_kitty_keys(control: &[u8]) -> Option<KittyKeys> {
             b'x' => keys.offset_x = Some(number(value)?),
             b'y' => keys.offset_y = Some(number(value)?),
             b'i' => keys.image_id = Some(number(value)?),
+            b'I' => keys.number = Some(number(value)?),
             b'p' => keys.placement_id = Some(number(value)?),
             b'z' => keys.z = Some(std::str::from_utf8(value).ok()?.parse().ok()?),
+            b'e' => {
+                keys.query_keys = match value {
+                    [byte] if b"Ttpd".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b'd' => {
+                keys.delete = match value.split_first() {
+                    // The four subset selectors, uppercase freeing too.
+                    Some((b'a', _)) => Some(KittyDelete {
+                        target: DeleteTarget::All,
+                        free: false,
+                    }),
+                    Some((b'A', _)) => Some(KittyDelete {
+                        target: DeleteTarget::All,
+                        free: true,
+                    }),
+                    Some((b'n', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Newest,
+                        free: false,
+                    }),
+                    Some((b'N', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Newest,
+                        free: true,
+                    }),
+                    Some((b'c', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Visible,
+                        free: false,
+                    }),
+                    Some((b'C', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Visible,
+                        free: true,
+                    }),
+                    Some((selector @ (b'i' | b'I'), tail)) => {
+                        // A bare selector with no name is malformed;
+                        // every other value is ignored silently day
+                        // one (the region deletes, OQ-2).
+                        let name = number(tail)?;
+                        let free = *selector == b'I';
+                        Some(KittyDelete {
+                            target: DeleteTarget::Image(name),
+                            free,
+                        })
+                    }
+                    _ => None,
+                };
+            }
             b'q' => {
                 keys.quiet = match value {
                     b"0" => 0,
@@ -4314,16 +4622,75 @@ struct KittyChunk {
     payload: Vec<u8>,
 }
 
-/// The uniform-refusal reply bytes (kitty-images spec): `i=` rides the
+/// One kitty placement (kitty-images spec): the cells' own id — the
+/// move sweep's exact target — and the image whose pixels it shows.
+struct KittyPlacement {
+    cells: u64,
+    image: u64,
+}
+
+/// One graphics reply's bytes (kitty-images spec): `i=` rides the
 /// reply only when the client sent one. Byte-exact per the spec's own
 /// detection contract — a DA1 reply without a graphics reply means no
-/// support, so every refusal still answers.
-fn kitty_error_reply(id: Option<u32>) -> Vec<u8> {
+/// support, so every query and refusal still answers.
+fn kitty_reply(id: Option<u32>, body: &str) -> Vec<u8> {
     match id {
-        Some(id) => format!("\x1b_Gi={id};{KITTY_UNIFORM_ERROR}\x1b\\"),
-        None => format!("\x1b_G{KITTY_UNIFORM_ERROR}\x1b\\"),
+        Some(id) => format!("\x1b_Gi={id};{body}\x1b\\"),
+        None => format!("\x1b_G{body}\x1b\\"),
     }
     .into_bytes()
+}
+
+/// The uniform-refusal reply bytes (kitty-images spec) — the one
+/// error every refusal and failed load answers with.
+fn kitty_error_reply(id: Option<u32>) -> Vec<u8> {
+    kitty_reply(id, KITTY_UNIFORM_ERROR)
+}
+
+/// The feature-true key list for one `e=` query group (kitty-images
+/// spec): exactly what this implementation parses and honors, by the
+/// group the protocol splits the keys into — the answer `kitten icat`
+/// reads when it probes.
+fn kitty_feature_list(group: u8) -> &'static str {
+    match group {
+        // Transmission: medium, formats, compression, source dims,
+        // chunking, ids, suppression.
+        b'T' => "t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q",
+        // Display: the actions and the cell geometry.
+        b't' => "a=T,a=t,c,r,x,y",
+        // Placement: re-placement and its ids.
+        b'p' => "a=p,p,i,I,z",
+        // Deletion: the target grammar.
+        _ => "d=a,d=A,d=i,d=I,d=n,d=N,d=c,d=C",
+    }
+}
+
+/// The `a=q` answer's bytes (kitty-images spec), suppression applied:
+/// an `e=` group answers its feature list regardless of any image; a
+/// test-load resolves `i` through the client-id map or `I` as the
+/// number itself and answers OK for live pixels, the uniform error
+/// otherwise; a query naming nothing is silence. `None` writes
+/// nothing. Pure; never panics.
+fn kitty_query_reply(
+    keys: &KittyKeys,
+    ids: &HashMap<u32, u64>,
+    store: &ImageStore,
+) -> Option<Vec<u8>> {
+    if let Some(group) = keys.query_keys {
+        let body = format!("OK {}", kitty_feature_list(group));
+        return (keys.quiet < 1).then(|| kitty_reply(keys.image_id, &body));
+    }
+
+    let image = match (keys.image_id, keys.number) {
+        (Some(client), _) => ids.get(&client).copied(),
+        (None, Some(number)) => Some(u64::from(number)),
+        (None, None) => return None,
+    };
+    if image.is_some_and(|id| store.get(id).is_some()) {
+        (keys.quiet < 1).then(|| kitty_reply(keys.image_id, "OK"))
+    } else {
+        (keys.quiet < 2).then(|| kitty_error_reply(keys.image_id))
+    }
 }
 
 /// Inflate one `o=z` payload (kitty-images spec) under the same cap
