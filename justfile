@@ -863,7 +863,7 @@ release-catalog version:
     # none globally — carry the dropterm repo's configured author.
     git -c "user.name=$(git -C '{{justfile_directory()}}' config user.name)" \
         -c "user.email=$(git -C '{{justfile_directory()}}' config user.email)" \
-        commit --quiet -m "Add DropTerm v$ver"
+        commit --quiet -s -m "Add DropTerm v$ver"
     git push --quiet --force origin {{catalog-branch}}
     owner="$(printf '%s\n' '{{catalog-fork}}' | sed 's|.*github.com[:/]||; s|/.*||')"
     echo "{{catalog-branch}} pushed at $(git rev-parse --short HEAD), based on pop-os master $(git rev-parse --short upstream/master)."
