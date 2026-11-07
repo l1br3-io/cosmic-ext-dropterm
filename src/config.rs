@@ -564,6 +564,17 @@ pub struct DropTermConfig {
     /// invalid file answers the floor whatever the key says.
     /// Flips apply live on the config echo.
     pub autosuggestions_completions_extended: bool,
+    /// Whether inline images render (iterm-images spec): OSC 1337
+    /// sequences — iTerm2's `imgcat` both forms, `wezterm imgcat`,
+    /// forced-mode `chafa`/`timg`/`viu` — decode in place and ride
+    /// the grid like text, scrolling and reflowing with it. Defaults
+    /// to `true` (kitty and Ghostty ship images on); `false` makes
+    /// the whole pipeline inert: the fork's arm stays parsed but
+    /// nothing ever decodes or places. Sixel stays deferred — DA1
+    /// answers honestly without `;4` — and `inline=0` sequences
+    /// render nothing either way. Flips apply live on the config
+    /// echo.
+    pub images_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -630,6 +641,7 @@ impl Default for DropTermConfig {
             autosuggestions_aliases: HashMap::new(),
             autosuggestions_generators_enabled: true,
             autosuggestions_completions_extended: true,
+            images_enabled: true,
         }
     }
 }

@@ -17,7 +17,7 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 | Tab | Carries |
 |---|---|
 | **Appearance** | How the terminal looks: the Appearance card (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
-| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions). |
+| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images). |
 | **Profiles** | The profile manager - its own section below. |
 | **Keybindings** | The shortcut editor - its own section below. |
 | **Advanced** | The power controls: `respect_panel`, `layer`, and `keyboard_mode`. |
@@ -100,6 +100,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `autosuggestions_menu_auto` | live - the next typed prefix pops (or declines) the menu on its own; off restores the chord as the only opener |
 | `autosuggestions_generators_enabled` | live - off stops every git spawn and serves nothing from the cache on the echo; on re-arms the menu-open refresh (the first Ctrl+Space after re-enabling revalidates) |
 | `autosuggestions_completions_extended` | live - the table reloads on the echo: off answers the embedded floor alone (the installed file's commands stop completing), on adds the tier beside it again (a re-toggle reuses the already-parsed file; a system data file does not change under a running app) |
+| `images_enabled` | live - off makes the next OSC 1337 sequence inert (nothing decodes or places, no error; already-placed images keep rendering), on renders from the next sequence ([images](images.md)) |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 

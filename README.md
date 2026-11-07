@@ -78,7 +78,7 @@ The details live in the `docs/` directory:
 
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
-- [Configuration](docs/configuration.md) - all 51 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 52 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
@@ -88,6 +88,7 @@ The details live in the `docs/` directory:
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
+- [Inline images](docs/images.md) - `imgcat` and OSC 1337: images render in the terminal and scroll away with the output
 - [FAQ](docs/faq.md) - the recurring questions, answered directly
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
 - [Release notes](docs/releases.md) - what each tagged release changed, curated and linked

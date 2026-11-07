@@ -144,6 +144,7 @@ impl Section {
                 ConfigKey::AutosuggestionsMenuEnabled,
                 ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
+                ConfigKey::ImagesEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::ShowInDock,
@@ -241,6 +242,13 @@ pub enum ConfigKey {
     /// and it changes *when* a suggestion is seen, never *which* one
     /// wins.
     AutosuggestionsDelayMs,
+    /// The inline-image kill switch (iterm-images spec) — the
+    /// Terminal card's row: OSC 1337 sequences decode and ride the
+    /// grid like text while on. An off flip makes the arm inert at
+    /// the next arrival — nothing decodes, nothing places; placed
+    /// cells and stored pixels stand either way. Sixel stays
+    /// deferred; `inline=0` renders nothing whatever the key says.
+    ImagesEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -407,6 +415,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
             ConfigKey::AutosuggestionsGeneratorsEnabled => "autosuggestions_generators_enabled",
             ConfigKey::AutosuggestionsCompletionsExtended => "autosuggestions_completions_extended",
+            ConfigKey::ImagesEnabled => "images_enabled",
             ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
             ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
@@ -475,6 +484,7 @@ pub enum PlannedWrite {
     AutosuggestionsCommandsEnabled(bool),
     AutosuggestionsGeneratorsEnabled(bool),
     AutosuggestionsCompletionsExtended(bool),
+    ImagesEnabled(bool),
     AutosuggestionsMenuEnabled(bool),
     AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
@@ -587,6 +597,7 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCompletionsExtended(_) => {
                 ConfigKey::AutosuggestionsCompletionsExtended
             }
+            PlannedWrite::ImagesEnabled(_) => ConfigKey::ImagesEnabled,
             PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
             PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
@@ -701,6 +712,9 @@ impl PlannedWrite {
                 ConfigKey::AutosuggestionsGeneratorsEnabled.key_name(),
                 *value,
             ),
+            PlannedWrite::ImagesEnabled(value) => {
+                handler.set(ConfigKey::ImagesEnabled.key_name(), *value)
+            }
             PlannedWrite::AutosuggestionsCompletionsExtended(value) => handler.set(
                 ConfigKey::AutosuggestionsCompletionsExtended.key_name(),
                 *value,
@@ -1024,6 +1038,10 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsCompletionsExtended
         | ConfigKey::AutosuggestionsMenuEnabled
         | ConfigKey::AutosuggestionsMenuAuto
+        // The images kill switch rides the same live pass
+        // (iterm-images spec): the echo's set_config swaps the flag,
+        // the next 1337 arrival answers it.
+        | ConfigKey::ImagesEnabled
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2432,6 +2450,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::AutosuggestionsCompletionsExtended => {
             Some(PlannedWrite::AutosuggestionsCompletionsExtended(checked))
         }
+        ConfigKey::ImagesEnabled => Some(PlannedWrite::ImagesEnabled(checked)),
         ConfigKey::AutosuggestionsMenuEnabled => {
             Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))
         }

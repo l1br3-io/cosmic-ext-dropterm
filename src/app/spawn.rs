@@ -503,6 +503,7 @@ impl DropTerm {
             &TerminalOptions {
                 font_size,
                 autosuggestions_enabled: self.config.autosuggestions_enabled,
+                images_enabled: self.config.images_enabled,
                 autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
                 autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
                 autosuggestions_menu_enabled: self.config.autosuggestions_menu_enabled,

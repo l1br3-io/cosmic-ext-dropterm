@@ -91,6 +91,11 @@ pub struct TerminalOptions {
     /// showing suggestion disappears the moment the kill switch
     /// lands.
     pub autosuggestions_enabled: bool,
+    /// Whether inline images render (iterm-images spec): resolved
+    /// from the app config's `images_enabled` where options are
+    /// built — flips apply at the next `set_config` pass, making the
+    /// 1337 arm inert end to end while off.
+    pub images_enabled: bool,
     /// The program the tab is spawned as (path-suggest spec): the
     /// spawn-resolved program word — the configured or recorded
     /// shell, a command line's leading program, or a profile
@@ -191,6 +196,7 @@ impl Default for TerminalOptions {
             font_size: 14,
             font_size_zoom_step_mul_100: 100,
             autosuggestions_enabled: true,
+            images_enabled: true,
             spawned_program: String::new(),
             spawn_home: None,
             spawn_path: None,
@@ -1453,6 +1459,7 @@ impl Terminal {
             needs_update: true,
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
+            images_enabled: options.images_enabled,
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
@@ -1477,7 +1484,6 @@ impl Terminal {
             image_session: None,
             image_seq: 0,
             images: Arc::new(Mutex::new(ImageStore::default())),
-            images_enabled: true,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -2504,6 +2510,17 @@ impl Terminal {
 
         if self.autosuggestions_enabled != options.autosuggestions_enabled {
             self.autosuggestions_enabled = options.autosuggestions_enabled;
+            update = true;
+        }
+
+        if self.images_enabled != options.images_enabled {
+            // The images kill switch (iterm-images spec): an off flip
+            // makes the 1337 arm inert at the next arrival — nothing
+            // decodes, nothing places; an on flip renders from the
+            // next sequence. Placed cells and stored pixels stand
+            // either way (the grid is the bookkeeping, not the
+            // toggle).
+            self.images_enabled = options.images_enabled;
             update = true;
         }
 

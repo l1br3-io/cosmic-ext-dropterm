@@ -198,6 +198,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
             ConfigKey::AutosuggestionsGeneratorsEnabled => "Git completions",
             ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
+            ConfigKey::ImagesEnabled => "Inline images",
             ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
             ConfigKey::AutosuggestionsMenuAuto => "Open the menu as you type",
             ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
@@ -1172,6 +1173,7 @@ fn toggle_control(
         ConfigKey::AutosuggestionsCompletionsExtended => {
             config.autosuggestions_completions_extended
         }
+        ConfigKey::ImagesEnabled => config.images_enabled,
         ConfigKey::AutosuggestionsMenuEnabled => config.autosuggestions_menu_enabled,
         ConfigKey::AutosuggestionsMenuAuto => config.autosuggestions_menu_auto,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
