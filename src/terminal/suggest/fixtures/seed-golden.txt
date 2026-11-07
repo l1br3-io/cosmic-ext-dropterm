@@ -1,0 +1,316 @@
+command	apt
+sub	autoclean	Like clean, but only removes package files that can no longer be downloaded
+sub	autoremove	Remove unused packages
+sub	build-dep	Install/remove packages in an attempt to satisfy the build dependencies for a source package
+sub	changelog	Show the changelog for a package
+sub	clean	Remove downloaded package files
+sub	download	Download package binary into the current directory
+sub	edit-sources	Edit the list of package sources
+sub	full-upgrade	Install available upgrades, removing currently installed packages if needed to upgrade the system as a whole
+sub	install	Install package(s)
+sub	list	List packages
+sub	purge	Remove package(s) and their configuration files
+sub	reinstall	Reinstall package(s)
+sub	remove	Remove package(s)
+sub	satisfy	Satisfy package dependencies
+sub	search	Search for packages
+sub	show	Show package details
+sub	source	Fetch package source files
+sub	update	Update the package database
+sub	upgrade	Install all available upgrades
+flag	--help	Print help message and exit
+flag	--version	Print version information and exit
+command	cargo
+sub	build	Compile a local package and all of its dependencies
+sub	check	Check a local package and all of its dependencies for errors
+sub	clean	Remove artifacts that cargo has generated in the past
+sub	doc	Build a package's documentation
+sub	fetch	Fetch dependencies of a package from the network
+sub	fix	Automatically fix lint warnings reported by rustc
+sub	fmt	
+sub	init	Create a new cargo package in an existing directory
+sub	install	Install a Rust binary. Default location is $HOME/.cargo/bin
+sub	publish	Upload a package to the registry
+sub	run	Run a binary or example of the local package
+sub	test	Execute all unit and integration tests and build examples of a local package
+sub	update	Update dependencies as recorded in the local lock file
+flag	--bin	
+flag	--frozen	Require Cargo.lock and cache are up to date
+flag	--lib	
+flag	--locked	Require Cargo.lock is up to date
+flag	--manifest-path	
+flag	--offline	Run without accessing the network
+flag	--quiet	Do not print cargo log messages
+flag	--release	
+flag	--verbose	Use verbose output (-vv very verbose/build.rs output)
+command	curl
+flag	--config	Read config from a file
+flag	--continue-at	Resumed transfer offset
+flag	--cookie	Send cookies from string/file
+flag	--cookie-jar	Write cookies to <filename> after operation
+flag	--data	HTTP POST data
+flag	--dump-header	Write the received headers to <filename>
+flag	--fail	Fail silently (no output at all) on HTTP errors
+flag	--form	Specify multipart MIME data
+flag	--head	Show document info only
+flag	--header	Pass custom header(s) to server
+flag	--help	This help text
+flag	--include	Include protocol response headers in the output
+flag	--insecure	Allow insecure server connections when using SSL
+flag	--location	Follow redirects
+flag	--max-time	Maximum time allowed for the transfer
+flag	--output	Write to file instead of stdout
+flag	--progress-bar	Display transfer progress as a bar
+flag	--proxy	[protocol://]host[:port] Use this proxy
+flag	--range	Retrieve only the bytes within RANGE
+flag	--referer	Referrer URL
+flag	--remote-name	Write output to a file named as the remote file
+flag	--request	Specify request command to use
+flag	--silent	Silent mode
+flag	--upload-file	Transfer local FILE to destination
+flag	--user	Server user and password
+flag	--user-agent	Send User-Agent <name> to server
+flag	--verbose	Make the operation more talkative
+flag	--version	Show version number and quit
+flag	--write-out	Use output FORMAT after completion
+command	docker
+sub	build	Build an image from a Dockerfile
+sub	commit	Create a new image from a container's changes
+sub	cp	Copy files/folders between a container and the local filesystem
+sub	create	Create a new container
+sub	exec	Run a command in a running container
+sub	images	List images
+sub	inspect	Return low-level information on Docker objects
+sub	logs	Fetch the logs of a container
+sub	pull	Pull an image or a repository from a registry
+sub	push	Push an image or a repository to a registry
+sub	rm	Remove one or more containers
+sub	rmi	Remove one or more images
+sub	run	Run a command in a new container
+sub	start	Start one or more stopped containers
+sub	stop	Stop one or more running containers
+sub	version	Show the Docker version information
+flag	--detach	
+flag	--env	
+flag	--interactive	
+flag	--name	
+flag	--publish	
+flag	--tty	
+flag	--volume	
+command	gh
+sub	alias	Create command shortcuts
+sub	api	Make an authenticated GitHub API request
+sub	auth	Login, logout, and refresh your authentication
+sub	browse	Open the repository in the browser
+sub	codespace	Connect to and manage codespaces
+sub	completion	Generate shell completion scripts
+sub	config	Manage configuration for gh
+sub	extensions	Manage gh extensions
+sub	gist	Manage gists
+sub	gpg-key	Manage GPG keys registered with your GitHub account
+sub	issue	Manage issues
+sub	pr	Manage pull requests
+sub	project	Manage projects
+sub	release	Manage GitHub releases
+sub	repo	Work with GitHub repositories
+sub	run	View details about workflow runs
+sub	secret	Manage GitHub secrets
+sub	ssh-key	Manage SSH keys
+sub	workflow	View details about GitHub Actions workflows
+flag	--help	Show help for command
+command	git
+sub	add	Add file contents to the index
+sub	branch	List, create, or delete branches
+sub	checkout	Switch branches or restore working tree files
+sub	cherry-pick	Apply the changes introduced by some existing commits
+sub	clone	Clone a repository into a new directory
+sub	commit	Record changes to the repository
+sub	diff	Show changes between commits, commit and working tree, etc
+sub	fetch	Download objects and refs from another repository
+sub	init	Create an empty Git repository or reinitialize an existing one
+sub	log	Show commit logs
+sub	merge	Join two or more development histories together
+sub	mv	Move or rename a file, a directory, or a symlink
+sub	pull	Integrate with another repository
+sub	push	Update remote refs
+sub	rebase	Reapply commits on top of another base tip
+sub	reset	Reset current HEAD to the specified state
+sub	restore	Restore working tree files
+sub	revert	Create new commit that undoes all of the changes made in <commit>, then apply it to the current branch
+sub	rm	Remove files from the working tree and from the index
+sub	show	Show various types of objects
+sub	stash	Temporarily stores all of the modified tracked files
+sub	status	Show the working tree status
+sub	switch	Switch branches
+sub	tag	Create, list, delete or verify a tag object signed with GPG
+flag	--all	
+flag	--amend	
+flag	--branch	
+flag	--dry-run	
+flag	--force	
+flag	--global	
+flag	--help	Output help
+flag	--interactive	
+flag	--message	
+flag	--quiet	
+flag	--set-upstream	
+flag	--verbose	
+flag	--version	Output version
+command	kubectl
+sub	annotate	Update the annotations on one or more resources
+sub	api-resources	Print the supported API resources on the server
+sub	api-versions	Print the supported API versions on the server, in the form of "group/version"
+sub	apply	Apply a configuration to a resource by filename or stdin. The resource name must be specified. This resource will be created if it doesn't exist yet. To use 'apply', always create the resource initially with either 'apply' or 'create --save-config'
+sub	attach	Attach to a process that is already running inside an existing container
+sub	cluster-info	Display addresses of the master and services with label kubernetes.io/cluster-service=true To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'
+sub	completion	Output shell completion code for the specified shell (bash or zsh). The shell code must be evaluated to provide interactive completion of kubectl commands.  This can be done by sourcing it from the .bash_profile
+sub	config	Modify kubeconfig files using subcommands like "kubectl config set current-context my-context"
+sub	cordon	Mark node as unschedulable
+sub	cp	Copy files and directories to and from containers
+sub	create	Create a resource from a file or from stdin
+sub	delete	Delete resources by filenames, stdin, resources and names, or by resources and label selector
+sub	describe	Show details of a specific resource or group of resources
+sub	diff	Diff configurations specified by filename or stdin between the current online configuration, and the configuration as it would be if applied
+sub	drain	Drain node in preparation for maintenance
+sub	edit	Edit a resource from the default editor
+sub	exec	Execute a command in a container
+sub	explain	List the fields for supported resources
+sub	expose	Expose a resource as a new Kubernetes service
+sub	get	Display one or many resources
+sub	label	Update the labels on a resource
+sub	logs	Print the logs for a container in a pod or specified resource. If the pod has only one container, the container name is optional
+sub	patch	Update field(s) of a resource using strategic merge patch, a JSON merge patch, or a JSON patch
+sub	port-forward	Forward one or more local ports to a pod. This command requires the node to have 'socat' installed
+sub	replace	Replace a resource by filename or stdin
+sub	rollout	Manage the rollout of a resource
+sub	run	Create and run a particular image in a pod
+sub	scale	Set a new size for a Deployment, ReplicaSet, Replication Controller, or StatefulSet
+sub	top	Display Resource (CPU/Memory/Storage) usage
+sub	uncordon	Mark node as schedulable
+sub	version	Print the client and server version information for the current context
+sub	wait	Experimental: Wait for a specific condition on one or many resources
+flag	--namespace	If present, the namespace scope for this CLI request
+command	make
+flag	--always-make	Unconditionally make all targets
+flag	--debug	Print various types of debugging information
+flag	--directory	Change to DIRECTORY before doing anything
+flag	--environment-overrides	Environment variables override makefiles
+flag	--file	Read FILE as a makefile
+flag	--help	Print this message and exit
+flag	--ignore-errors	Ignore errors from commands
+flag	--include-dir	Search directory for included makefiles
+flag	--keep-going	Keep going when some targets can't be made
+flag	--load-average	Don't start multiple jobs unless load is below N
+flag	--no-print-directory	Turn off -w, even if it was turned on implicitly
+flag	--old-file	Consider file to be very old and don't remake it
+flag	--print-directory	Print the current directory
+flag	--question	Run no commands; exit status says if up to date
+flag	--touch	Touch targets instead of remaking them
+flag	--version	Print the version number of make and exit
+flag	--warn-undefined-variables	Warn when an undefined variable is referenced
+flag	--what-if	Consider file to be infinitely new
+command	npm
+sub	ci	Install a project with a clean slate
+sub	config	Manage the npm configuration files
+sub	install	Install a package and its dependencies
+sub	publish	Publish a package
+sub	run	Run arbitrary package scripts
+sub	test	Test a package
+sub	uninstall	Uninstall a package
+sub	update	Update a package
+flag	--global	
+flag	--legacy-peer-deps	
+flag	--prefix	
+flag	--registry	
+flag	--save-dev	
+flag	--save-exact	
+flag	--verbose	
+command	pip
+sub	cache	Inspect and manage pip's wheel cache
+sub	check	Verify installed packages have compatible dependencies
+sub	completion	A helper command used for command completion
+sub	config	Manage local and global configuration
+sub	debug	Show information useful for debugging
+sub	download	Download packages
+sub	freeze	Output installed packages in requirements format
+sub	hash	Compute hashes of package archives
+sub	help	Show help for commands
+sub	install	Install packages
+sub	list	List installed packages
+sub	search	Search PyPI for packages
+sub	show	Show information about installed packages
+sub	uninstall	Uninstall packages
+sub	wheel	Build wheels from your requirements
+command	rsync
+flag	--append	Append data onto shorter files
+flag	--archive	Archive mode; equals -rlptgoD (no -H,-A,-X)
+flag	--backup	Make backups (see --suffix & --backup-dir)
+flag	--backup-dir	Make backups into hierarchy based in DIR
+flag	--checksum	Skip based on checksum, not mod-time & size
+flag	--chmod	Affect file and/or directory permissions
+flag	--copy-links	Transform symlink into referent file/dir
+flag	--delete	Delete extraneous files from destination dirs
+flag	--delete-after	Receiver deletes after transfer, not during
+flag	--delete-before	Receiver deletes before transfer, not during
+flag	--delete-during	Receiver deletes during the transfer
+flag	--dirs	Transfer directories without recursing
+flag	--dry-run	Perform a trial run with no changes made
+flag	--executability	Preserve the file's executability
+flag	--existing	Skip creating new files on receiver
+flag	--group	Preserve group
+flag	--hard-links	Preserve hard links
+flag	--ignore-existing	Skip updating files that already exist on receiver
+flag	--inplace	Update destination files in-place (SEE MAN PAGE)
+flag	--links	Copy symlinks as symlinks
+flag	--one-file-system	Don't cross filesystem boundaries
+flag	--owner	Preserve owner (super-user only)
+flag	--perms	Preserve permissions
+flag	--quiet	Suppress non-error messages
+flag	--recursive	Recurse into directories
+flag	--relative	Use relative path names
+flag	--rsh	Specify the remote shell to use
+flag	--rsync-path	Specify the rsync to run on the remote machine
+flag	--sparse	Turn sequences of nulls into sparse blocks
+flag	--suffix	Set backup suffix (default ~ w/o --backup-dir)
+flag	--times	Preserve modification times
+flag	--update	Skip files that are newer on the receiver
+flag	--verbose	Increase verbosity
+flag	--whole-file	Copy whole (without delta-xfer algorithm)
+command	systemctl
+sub	daemon-reload	Reload systemd manager configuration
+sub	disable	Disable one or more unit files
+sub	enable	Enable one or more unit files
+sub	restart	Start or restart one or more units
+sub	start	Start (activate) one or more units
+sub	status	Show runtime status of one or more units
+sub	stop	Stop (deactivate) one or more units
+flag	--force	When enabling unit files, override existing symlinks. When shutting down, execute action immediately
+flag	--host	Operate on remote host
+flag	--no-pager	Do not pipe output into a pager
+flag	--quiet	Supress output
+flag	--type	List units of a particular type
+command	tar
+flag	--append	Append files to the end of an archive
+flag	--block-number	Show block number within archive with each message
+flag	--create	Create a new archive
+flag	--delete	Delete from the archive
+flag	--diff	Find differences between archive and file system
+flag	--directory	Change to DIR before performing any operations
+flag	--exclude-from	Exclude files matching patterns listed in FILE
+flag	--extract	Extract files from an archive
+flag	--files-from	Get names to extract or create from FILE
+flag	--help	Display a short option summary and exit
+flag	--interactive	Ask for confirmation for every action
+flag	--list	List the contents of an archive
+flag	--no-recursion	Avoid descending automatically in directories
+flag	--numeric-owner	Always use numbers for user/group names
+flag	--show-defaults	Show built-in defaults for various tar options and exit
+flag	--show-transformed-names	Show file or archive names after transformation by --strip and --transform options
+flag	--sparse	Handle sparse files efficiently
+flag	--test-label	Test the archive volume label and exit
+flag	--totals	Print total bytes after processing the archive
+flag	--update	Append files which are newer than the corresponding copy in  the archive
+flag	--usage	Display a list of available options and exit
+flag	--verbatim-files-from	Treat each line obtained from a file list as a file name, even if it starts with a dash
+flag	--verbose	Verbosely list files processed
+flag	--version	Print program version and copyright information and exit

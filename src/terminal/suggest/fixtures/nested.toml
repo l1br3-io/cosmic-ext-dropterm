@@ -1,0 +1,81 @@
+# The schema's whole shape at three levels (suggest-schema spec,
+# criterion 2): docker → compose → up, every key the engine-rea §5
+# census admits plus `aliases` and `filter_strategy`, and the sudo
+# shape — an argument that is itself a command. Lists are written
+# out of order on purpose: the parse normalizes every entry list by
+# name, and keeps arguments in their positional file order.
+
+[[commands]]
+name = "docker"
+description = "A self-sufficient runtime for containers"
+aliases = ["dock"]
+priority = 60
+filter_strategy = "fuzzy"
+
+[[commands.flags]]
+name = "--config"
+description = "Location of client config files"
+aliases = ["-c"]
+persistent = true
+
+[[commands.flags.args]]
+name = "path"
+template = "folders"
+
+[[commands.subcommands]]
+name = "exec"
+description = "Execute a command in a running container"
+
+[[commands.subcommands.args]]
+name = "container"
+
+[[commands.subcommands.args]]
+name = "command"
+command = true
+variadic = true
+
+[[commands.subcommands]]
+name = "compose"
+description = "Define and run multi-container applications"
+
+[[commands.subcommands.flags]]
+name = "--file"
+description = "Compose configuration files"
+aliases = ["-f"]
+
+[[commands.subcommands.flags.args]]
+name = "file"
+template = "filepaths"
+variadic = true
+
+[[commands.subcommands.subcommands]]
+name = "up"
+description = "Create and start containers"
+priority = 80
+
+[[commands.subcommands.subcommands.flags]]
+name = "--detach"
+description = "Detached mode: run containers in the background"
+aliases = ["-d"]
+exclusive_on = ["--attach"]
+
+[[commands.subcommands.subcommands.flags]]
+name = "--attach"
+description = "Attach to dependent containers"
+hidden = true
+
+[[commands.subcommands.subcommands.args]]
+name = "service"
+optional = true
+variadic = true
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "web"
+description = "The web service"
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "db"
+
+[[commands.subcommands]]
+name = "trust"
+hidden = true

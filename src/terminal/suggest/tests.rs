@@ -2819,12 +2819,19 @@ fn the_builtin_fallback_is_todays_table() {
         let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(flags, spec.flags);
         assert!(
-            owned
-                .subcommands
-                .iter()
-                .chain(&owned.flags)
-                .all(|e| e.description.is_none()),
+            owned.subcommands.iter().all(|e| e.description.is_none())
+                && owned.flags.iter().all(|e| e.description.is_none()),
             "the built-in carries no descriptions"
+        );
+        assert_eq!(
+            *owned,
+            SpecCommand {
+                name: owned.name.clone(),
+                subcommands: owned.subcommands.clone(),
+                flags: owned.flags.clone(),
+                ..Default::default()
+            },
+            "the built-in carries every grown field at its default"
         );
     }
 }
@@ -3054,4 +3061,400 @@ description = "Switch branches or restore working tree files"
     let shown = step(&observation, &mut suggest).expect("the ghost answers the same");
     assert_eq!(shown.suffix, "ckout");
     assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+// --- the recursive spec tree (suggest-schema) ---
+
+/// The seed's flat projection — every command, then its subcommand
+/// and flag names beside their descriptions, one tab-separated line
+/// per row in parse order: the shape today's parse answered before
+/// the schema grew (suggest-schema spec, criterion 1), pinned in
+/// `fixtures/seed-golden.txt`. Reads only `name` and `description`,
+/// the two keys every tier kept, so the pin is the superset proof.
+fn seed_projection(table: &[SpecCommand]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for command in table {
+        lines.push(format!("command\t{}", command.name));
+        for entry in &command.subcommands {
+            lines.push(format!(
+                "sub\t{}\t{}",
+                entry.name,
+                entry.description.as_deref().unwrap_or_default()
+            ));
+        }
+        for entry in &command.flags {
+            lines.push(format!(
+                "flag\t{}\t{}",
+                entry.name,
+                entry.description.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+    lines
+}
+
+/// The golden rows read back as a table: every row's name and
+/// description seated, every other field at its default — the tree
+/// today's parse would have built had it known the new keys. Equal
+/// to the live parse means the seed exercises nothing the schema
+/// grew.
+fn table_from_projection(golden: &str) -> Vec<SpecCommand> {
+    let mut table: Vec<SpecCommand> = Vec::new();
+    for line in golden.lines() {
+        let mut fields = line.split('\t');
+        let kind = fields.next().expect("a row kind");
+        let name = fields.next().expect("a row name").to_string();
+        let description = fields
+            .next()
+            .filter(|description| !description.is_empty())
+            .map(str::to_string);
+        match kind {
+            "command" => table.push(SpecCommand {
+                name,
+                ..Default::default()
+            }),
+            "sub" => table
+                .last_mut()
+                .expect("a command row precedes its entries")
+                .subcommands
+                .push(SpecCommand {
+                    name,
+                    description,
+                    ..Default::default()
+                }),
+            "flag" => table
+                .last_mut()
+                .expect("a command row precedes its entries")
+                .flags
+                .push(SpecFlag {
+                    name,
+                    description,
+                    ..Default::default()
+                }),
+            other => panic!("unknown golden row kind {other}"),
+        }
+    }
+    table
+}
+
+/// The schema's whole shape at three levels, every new key seated
+/// (criterion 2); the file writes its lists out of order so the
+/// expected tree below is the normalized one.
+const NESTED_FILE: &str = include_str!("fixtures/nested.toml");
+
+/// A `script` key on a third-level subcommand (criterion 3) — valid
+/// but for that one line.
+const DEEP_SCRIPT_FILE: &str = include_str!("fixtures/deep-script.toml");
+
+#[test]
+fn the_seed_parses_golden_equal_to_todays_table() {
+    // The superset proof (suggest-schema spec, criterion 1): the
+    // shipped seed parses through the grown types to exactly the
+    // table today's flat types answered — the golden rows were
+    // captured from that parse before the schema grew — and to a
+    // tree whose every new field sits at its default, because the
+    // seed declares none of them. The row diff reads first; the
+    // whole-tree equality pins the defaults.
+    let seed = include_str!("../../../data/completions.toml");
+    let golden = include_str!("fixtures/seed-golden.txt");
+    let table = parse_completions(seed).expect("the seed parses under the grown schema");
+    let rows: Vec<&str> = golden.lines().collect();
+    assert_eq!(
+        seed_projection(&table),
+        rows,
+        "the seed's names and descriptions are today's"
+    );
+    assert_eq!(
+        table,
+        table_from_projection(golden),
+        "every field the schema grew sits at its default across the seed"
+    );
+}
+
+#[test]
+fn a_nested_fixture_round_trips_every_new_key() {
+    // Three levels (docker → compose → up) carrying every key the
+    // engine-rea §5 census admits plus `aliases` and
+    // `filter_strategy`: a flag's short-form aliases and persistence,
+    // `exclusive_on`, `hidden` on a flag and on a subcommand,
+    // `priority` on two tiers, a fuzzy `filter_strategy`, arguments
+    // with `template`, `optional`, `variadic`, literal `suggestions`,
+    // and the sudo shape (`command = true`). Lists arrive normalized;
+    // arguments keep their positional order.
+    let table = parse_completions(NESTED_FILE).expect("the nested fixture parses");
+    let expected = vec![SpecCommand {
+        name: "docker".into(),
+        description: Some("A self-sufficient runtime for containers".into()),
+        aliases: vec!["dock".into()],
+        priority: Some(60),
+        filter_strategy: FilterStrategy::Fuzzy,
+        flags: vec![SpecFlag {
+            name: "--config".into(),
+            description: Some("Location of client config files".into()),
+            aliases: vec!["-c".into()],
+            persistent: true,
+            args: vec![SpecArg {
+                name: "path".into(),
+                template: Some(ArgTemplate::Folders),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        subcommands: vec![
+            SpecCommand {
+                name: "compose".into(),
+                description: Some("Define and run multi-container applications".into()),
+                flags: vec![SpecFlag {
+                    name: "--file".into(),
+                    description: Some("Compose configuration files".into()),
+                    aliases: vec!["-f".into()],
+                    args: vec![SpecArg {
+                        name: "file".into(),
+                        template: Some(ArgTemplate::Filepaths),
+                        variadic: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                subcommands: vec![SpecCommand {
+                    name: "up".into(),
+                    description: Some("Create and start containers".into()),
+                    priority: Some(80),
+                    flags: vec![
+                        SpecFlag {
+                            name: "--attach".into(),
+                            description: Some("Attach to dependent containers".into()),
+                            hidden: true,
+                            ..Default::default()
+                        },
+                        SpecFlag {
+                            name: "--detach".into(),
+                            description: Some(
+                                "Detached mode: run containers in the background".into(),
+                            ),
+                            aliases: vec!["-d".into()],
+                            exclusive_on: vec!["--attach".into()],
+                            ..Default::default()
+                        },
+                    ],
+                    args: vec![SpecArg {
+                        name: "service".into(),
+                        optional: true,
+                        variadic: true,
+                        suggestions: vec![
+                            SpecEntry {
+                                name: "db".into(),
+                                description: None,
+                            },
+                            SpecEntry {
+                                name: "web".into(),
+                                description: Some("The web service".into()),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            SpecCommand {
+                name: "exec".into(),
+                description: Some("Execute a command in a running container".into()),
+                args: vec![
+                    SpecArg {
+                        name: "container".into(),
+                        ..Default::default()
+                    },
+                    SpecArg {
+                        name: "command".into(),
+                        command: true,
+                        variadic: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            SpecCommand {
+                name: "trust".into(),
+                hidden: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }];
+    assert_eq!(table, expected);
+}
+
+#[test]
+fn an_unknown_key_at_any_depth_rejects_the_file_whole() {
+    // The no-scripts boundary, as deep as the tree (suggest-schema
+    // spec, criterion 3): `deny_unknown_fields` on every tier means
+    // a `script` key on a third-level subcommand, a `generators` key
+    // on an argument, and an unknown key on a suggestion each fail
+    // the whole file. Each case carries its positive control — the
+    // same file without the offending line parses — so the rejection
+    // is the key's, never a tier the schema lacks.
+    let valid_deep = DEEP_SCRIPT_FILE
+        .lines()
+        .filter(|line| !line.starts_with("script"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        parse_completions(&valid_deep).is_ok(),
+        "the deep fixture is valid but for its script line"
+    );
+    assert!(
+        parse_completions(DEEP_SCRIPT_FILE).is_err(),
+        "a third-level `script` rejects the file"
+    );
+    let arg_tier = r#"
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+
+[[commands.subcommands.args]]
+name = "number"
+"#;
+    assert!(parse_completions(arg_tier).is_ok(), "the arg tier is valid");
+    assert!(
+        parse_completions(&format!("{arg_tier}generators = [\"gh pr list\"]\n")).is_err(),
+        "a `generators` key on an arg rejects the file"
+    );
+    let suggestion_tier = format!(
+        "{arg_tier}
+[[commands.subcommands.args.suggestions]]
+name = \"42\"
+"
+    );
+    assert!(
+        parse_completions(&suggestion_tier).is_ok(),
+        "the suggestion tier is valid"
+    );
+    assert!(
+        parse_completions(&format!("{suggestion_tier}icon = \"🔢\"\n")).is_err(),
+        "an unknown key on a suggestion rejects the file"
+    );
+    let dir = completions_fixture("deep-script");
+    std::fs::write(dir.join("completions.toml"), DEEP_SCRIPT_FILE).expect("fixture file");
+    assert_eq!(
+        load_completions(Some(&dir)).as_ref(),
+        builtin_specs(),
+        "a deep script answers the built-in floor"
+    );
+}
+
+#[test]
+fn sort_normalization_holds_at_every_tier() {
+    // The ruled order, recursive (suggest-schema spec, criterion 5):
+    // nested subcommands, nested flags, and literal suggestions —
+    // under a command's and a flag's arguments alike — sort by name
+    // at parse, stable among equals (two `--a` keep their file
+    // order, told apart by description); arguments are positional and
+    // keep their file order whole.
+    let unsorted = r#"
+[[commands]]
+name = "zz"
+
+[[commands]]
+name = "aa"
+
+[[commands.subcommands]]
+name = "sub-b"
+
+[[commands.subcommands.subcommands]]
+name = "deep-z"
+
+[[commands.subcommands.subcommands]]
+name = "deep-a"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--z"
+
+[[commands.subcommands.subcommands.flags.args]]
+name = "level"
+
+[[commands.subcommands.subcommands.flags.args.suggestions]]
+name = "zf"
+
+[[commands.subcommands.subcommands.flags.args.suggestions]]
+name = "af"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--a"
+
+[[commands.subcommands.subcommands.flags]]
+name = "--a"
+description = "the second --a"
+
+[[commands.subcommands.subcommands.args]]
+name = "zeta"
+
+[[commands.subcommands.subcommands.args]]
+name = "alpha"
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "zs"
+
+[[commands.subcommands.subcommands.args.suggestions]]
+name = "as"
+
+[[commands.subcommands]]
+name = "sub-a"
+"#;
+    let table = parse_completions(unsorted).expect("an unsorted nested file parses");
+    let names = |commands: &[SpecCommand]| -> Vec<String> {
+        commands.iter().map(|c| c.name.clone()).collect()
+    };
+    assert_eq!(names(&table), ["aa", "zz"], "commands sort by name");
+    let aa = &table[0];
+    assert_eq!(
+        names(&aa.subcommands),
+        ["sub-a", "sub-b"],
+        "subcommands sort"
+    );
+    let sub_b = &aa.subcommands[1];
+    assert_eq!(
+        names(&sub_b.subcommands),
+        ["deep-a", "deep-z"],
+        "nested subcommands sort"
+    );
+    let deep_a = &sub_b.subcommands[0];
+    let flags: Vec<(&str, Option<&str>)> = deep_a
+        .flags
+        .iter()
+        .map(|f| (f.name.as_str(), f.description.as_deref()))
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("--a", None),
+            ("--a", Some("the second --a")),
+            ("--z", None)
+        ],
+        "nested flags sort by name, stable among equals"
+    );
+    let args: Vec<&str> = deep_a.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        args,
+        ["zeta", "alpha"],
+        "arguments keep positional file order"
+    );
+    let suggestions: Vec<&str> = deep_a.args[1]
+        .suggestions
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(suggestions, ["as", "zs"], "an argument's suggestions sort");
+    let flag_suggestions: Vec<&str> = deep_a.flags[2].args[0]
+        .suggestions
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(
+        flag_suggestions,
+        ["af", "zf"],
+        "a flag argument's suggestions sort alike"
+    );
 }

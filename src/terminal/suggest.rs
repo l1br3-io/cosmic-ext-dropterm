@@ -761,16 +761,18 @@ const SPECS: &[CommandSpec] = &[
     },
 ];
 
-/// One table entry as the data file carries it
-/// (suggest-specs-data spec): the name the seats complete, beside
-/// the description the menu renders — new cargo the format ships;
-/// the ghost ignores it (locked: single-choice text).
+/// One literal suggestion entry as the data file carries it
+/// (suggest-specs-data spec; kept by suggest-schema for an
+/// argument's `suggestions` — the one place the two-field shape is
+/// still exactly right): the name the seats complete, beside the
+/// description the menu renders — new cargo the format ships; the
+/// ghost ignores it (locked: single-choice text).
 // The no-scripts boundary, made structural (suggest-specs-data
-// spec): every schema type denies unknown fields, so a file that
-// carries a `script` key — the Fig format's executable half, the
-// generators record's permanent rejection — fails the whole file
-// and falls back to the built-in table. Data imports; scripts
-// never arrive.
+// spec, grown as deep as the tree by suggest-schema): every schema
+// type denies unknown fields, so a file that carries a `script` key
+// at any depth — the Fig format's executable half, the generators
+// record's permanent rejection — fails the whole file and falls
+// back to the built-in table. Data imports; scripts never arrive.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SpecEntry {
@@ -779,21 +781,164 @@ pub(crate) struct SpecEntry {
     description: Option<String>,
 }
 
-/// One command's completion table, file-shaped
-/// (suggest-specs-data spec): the command word the lookup keys on,
-/// its high-traffic subcommands, and its long flags — every entry
-/// carrying its optional description. `pub` for the field-type
-/// visibility `TerminalOptions` needs; the module's own `pub(crate)`
-/// keeps it crate-reach in truth, and the fields stay private to
-/// this module — only the seam's lookups read them.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+/// How a node's own candidates filter against the partial token
+/// (suggest-schema spec): strict prefix by default — the ghost's
+/// policy — or fuzzy where the spec says so (Fig's
+/// `filterStrategy`), honored per node by the walker through the
+/// pinned `filter_rank`; the parse only carries it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FilterStrategy {
+    #[default]
+    Prefix,
+    Fuzzy,
+}
+
+/// An argument's filesystem template (suggest-schema spec): the two
+/// Fig templates whose candidates the Path provider already owns —
+/// the walker hands the seat over rather than listing anything
+/// itself. No other template exists to parse.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ArgTemplate {
+    Filepaths,
+    Folders,
+}
+
+/// One positional or flag argument (suggest-schema spec): what a
+/// command or flag consumes next. `optional` lets the walker re-try
+/// the token as a flag or subcommand, `variadic` loops it, `command`
+/// restarts the walk on the token's own spec (the sudo shape) —
+/// inshellisense's `isOptional`/`isVariadic`/`isCommand`. Candidates
+/// come from `template` (the Path provider's seat) or the literal
+/// `suggestions`; a Fig generator never crosses, by type. Arguments
+/// are positional: the parse keeps their file order.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpecArg {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    variadic: bool,
+    #[serde(default)]
+    command: bool,
+    #[serde(default)]
+    template: Option<ArgTemplate>,
+    #[serde(default)]
+    suggestions: Vec<SpecEntry>,
+}
+
+/// One flag's completion entry (suggest-schema spec): the primary
+/// long form the surface shows, every other form Fig lists in
+/// `aliases` — short forms included, so the walker recognizes a
+/// typed `-m` and consumes its argument, while the short-flag ruling
+/// still keeps them off the surface. `persistent` rides into child
+/// subcommands (inshellisense's `isPersistent`); `exclusive_on`
+/// names the flags that hide this one once typed; `hidden` drops it
+/// unless typed exactly; `priority` orders it at the stop point.
+/// `args` is what the flag consumes next; `deny_unknown_fields` is
+/// the no-scripts boundary.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpecFlag {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    persistent: bool,
+    #[serde(default)]
+    exclusive_on: Vec<String>,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    priority: Option<u8>,
+    #[serde(default)]
+    args: Vec<SpecArg>,
+}
+
+/// One command's completion tree, file-shaped (suggest-specs-data
+/// spec, grown recursive by suggest-schema): the command word the
+/// lookup keys on — or a subcommand's, the same shape at every
+/// depth — its other names in `aliases` (Fig's `co` for `checkout`),
+/// its `subcommands`, its `flags`, and the positional `args` it
+/// consumes; `hidden`, `priority`, and `filter_strategy` as the
+/// walker's stop point reads them. Every key beyond `name`,
+/// `description`, `subcommands`, and `flags` is optional with a
+/// default, so an entry carrying none of them is today's entry — the
+/// superset the seed and every user file parse unchanged through.
+/// `pub` for the field-type visibility `TerminalOptions` needs; the
+/// module's own `pub(crate)` keeps it crate-reach in truth, and the
+/// fields stay private to this module — only the seam's lookups read
+/// them.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCommand {
     name: String,
     #[serde(default)]
-    subcommands: Vec<SpecEntry>,
+    description: Option<String>,
     #[serde(default)]
-    flags: Vec<SpecEntry>,
+    aliases: Vec<String>,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    priority: Option<u8>,
+    #[serde(default)]
+    filter_strategy: FilterStrategy,
+    #[serde(default)]
+    subcommands: Vec<SpecCommand>,
+    #[serde(default)]
+    flags: Vec<SpecFlag>,
+    #[serde(default)]
+    args: Vec<SpecArg>,
+}
+
+impl SpecCommand {
+    /// Today's flat seat view (suggest-schema spec): the root entry's
+    /// flag names or subcommand names beside their descriptions — the
+    /// one shape both unwalked seats read until suggest-walker
+    /// replaces them. The nested tiers are parsed and carried, not
+    /// yet consulted. A filter on each list and one chain shape a
+    /// single iterator type over the two lists; exactly one list
+    /// contributes per call.
+    fn seat_entries(&self, flag_seat: bool) -> impl Iterator<Item = (&str, Option<&str>)> {
+        let flags = self
+            .flags
+            .iter()
+            .filter(move |_| flag_seat)
+            .map(|flag| (flag.name.as_str(), flag.description.as_deref()));
+        let subcommands = self
+            .subcommands
+            .iter()
+            .filter(move |_| !flag_seat)
+            .map(|command| (command.name.as_str(), command.description.as_deref()));
+        flags.chain(subcommands)
+    }
+
+    /// The ruled order, recursive (suggest-schema spec): every entry
+    /// list — subcommands, flags, and the literal suggestions under a
+    /// command's or a flag's arguments — sorts by name at every
+    /// depth, stable among equals, so the shortest-wins,
+    /// ties-alphabetical policy keeps falling out of `min_by_key`.
+    /// Arguments are positional and keep their file order; `priority`
+    /// is the walker's ordering, not the parse's.
+    fn normalize(&mut self) {
+        self.subcommands.sort_by(|a, b| a.name.cmp(&b.name));
+        self.flags.sort_by(|a, b| a.name.cmp(&b.name));
+        for command in &mut self.subcommands {
+            command.normalize();
+        }
+        for arg in self.flags.iter_mut().flat_map(|flag| &mut flag.args) {
+            arg.suggestions.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        for arg in &mut self.args {
+            arg.suggestions.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+    }
 }
 
 /// The data file's root shape: one key, the command table.
@@ -815,19 +960,20 @@ static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
             subcommands: spec
                 .subcommands
                 .iter()
-                .map(|entry| SpecEntry {
+                .map(|entry| SpecCommand {
                     name: (*entry).to_string(),
-                    description: None,
+                    ..Default::default()
                 })
                 .collect(),
             flags: spec
                 .flags
                 .iter()
-                .map(|entry| SpecEntry {
+                .map(|entry| SpecFlag {
                     name: (*entry).to_string(),
-                    description: None,
+                    ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
         })
         .collect()
 });
@@ -840,21 +986,20 @@ pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
 }
 
 /// Parses the data file's text into the normalized table
-/// (suggest-specs-data spec): every schema tier rejects unknown
-/// keys (`deny_unknown_fields`), and the survivors normalize to the
-/// ruled order — commands and every entry list sorted by name, a
-/// stable sort keeping file order among equals — because the
-/// shortest-wins, ties-alphabetical policy falls out of
-/// `min_by_key` over sorted lists exactly the way the built-in's
-/// does. A file with no commands parses to an empty table (the
-/// merge answers the built-in alone).
+/// (suggest-specs-data spec, recursive since suggest-schema): every
+/// schema tier rejects unknown keys (`deny_unknown_fields`), and the
+/// survivors normalize to the ruled order — commands and every entry
+/// list at every depth sorted by name, a stable sort keeping file
+/// order among equals — because the shortest-wins, ties-alphabetical
+/// policy falls out of `min_by_key` over sorted lists exactly the
+/// way the built-in's does. A file with no commands parses to an
+/// empty table (the merge answers the built-in alone).
 fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error> {
     let file: SpecsFile = toml::from_str(contents)?;
     let mut commands = file.commands;
     commands.sort_by(|a, b| a.name.cmp(&b.name));
     for command in &mut commands {
-        command.subcommands.sort_by(|a, b| a.name.cmp(&b.name));
-        command.flags.sort_by(|a, b| a.name.cmp(&b.name));
+        command.normalize();
     }
     Ok(commands)
 }
@@ -1044,16 +1189,11 @@ fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
         return None;
     }
     let spec = obs.specs_table.iter().find(|spec| spec.name == command)?;
-    let entries = if token.starts_with("--") {
-        &spec.flags
-    } else {
-        &spec.subcommands
-    };
-    let entry = entries
-        .iter()
-        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
-        .min_by_key(|entry| entry.name.len())?;
-    escape_for_shell(&entry.name[token.len()..])
+    let (name, _) = spec
+        .seat_entries(token.starts_with("--"))
+        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
+        .min_by_key(|(name, _)| name.len())?;
+    escape_for_shell(&name[token.len()..])
 }
 
 /// The generator seat's set choice (suggest-generators spec): which
@@ -1457,20 +1597,14 @@ fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
         return Vec::new();
     };
-    let entries = if token.starts_with("--") {
-        &spec.flags
-    } else {
-        &spec.subcommands
-    };
-    entries
-        .iter()
-        .filter(|entry| entry.name.starts_with(token) && entry.name.len() > token.len())
-        .filter_map(|entry| {
-            let suffix = escape_for_shell(&entry.name[token.len()..])?;
+    spec.seat_entries(token.starts_with("--"))
+        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
+        .filter_map(|(name, description)| {
+            let suffix = escape_for_shell(&name[token.len()..])?;
             Some(MenuCandidate {
-                label: entry.name.clone(),
+                label: name.to_string(),
                 suffix,
-                description: entry.description.clone(),
+                description: description.map(str::to_string),
                 source: SuggestionSource::Specs,
             })
         })

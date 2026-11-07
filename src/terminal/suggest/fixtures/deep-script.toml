@@ -1,0 +1,14 @@
+# The no-scripts boundary three levels down (suggest-schema spec,
+# criterion 3): a `script` key on a third-level subcommand — the Fig
+# format's executable half — fails the whole file, and the built-in
+# floor answers. Without that one line this file is valid.
+
+[[commands]]
+name = "docker"
+
+[[commands.subcommands]]
+name = "compose"
+
+[[commands.subcommands.subcommands]]
+name = "up"
+script = "docker compose ls"
