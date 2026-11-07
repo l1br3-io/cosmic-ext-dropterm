@@ -84,7 +84,9 @@ const sha256 = (path) =>
 /// fetch is the only network access; it happens at most once because
 /// the tarball is kept in the scratch dir for offline re-runs.
 const ensureCorpus = async () => {
-  if (existsSync(PACKAGE)) return;
+  // `package/package.json` marks a complete extraction — a partial
+  // peek at three bundles must not pose as the corpus.
+  if (existsSync(`${PACKAGE}/package.json`)) return;
   mkdirSync(SCRATCH, { recursive: true });
   if (!existsSync(TARBALL)) await fetchTarball();
   const digest = sha256(TARBALL);
@@ -125,12 +127,194 @@ const probe = async () => {
   }
 };
 
+// --- the reducer: DropTerm's static subset, by type -----------------
+//
+// The engine-rea §5 census, mechanical: keep only the keys the live
+// engine reads, mapped to the suggest-schema's names; any value whose
+// JS type is `function` is dropped before a key is even looked at —
+// the type check is the boundary, not a key list.
+
+const isData = (value) => typeof value !== "function";
+const asList = (value) => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
+const str = (value) =>
+  typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
+
+/// A name that may be a single string or an array of forms: the first
+/// element is the primary `name`, the rest become `aliases`.
+const nameAndAliases = (raw) => {
+  const forms = asList(raw).map(str).filter(Boolean);
+  return forms.length === 0 ? null : [forms[0], forms.slice(1)];
+};
+
+/// A flag's names: the first `--` long form is the primary `name`,
+/// every other form an alias (short forms recognized, never offered);
+/// with no long form at all, the first form is the name.
+const flagNameAndAliases = (raw) => {
+  const forms = asList(raw).map(str).filter(Boolean);
+  if (forms.length === 0) return null;
+  const longAt = forms.findIndex((form) => form.startsWith("--"));
+  const primaryAt = longAt === -1 ? 0 : longAt;
+  return [forms[primaryAt], forms.filter((_, at) => at !== primaryAt)];
+};
+
+/// The two template kinds whose candidates the Path provider already
+/// owns; an array names kinds in preference order, so the first kept
+/// kind wins. Every other kind (`help`, `history`, …) drops.
+const templateKind = (raw) => {
+  for (const kind of asList(raw).map(str)) {
+    if (kind === "filepaths" || kind === "folders") return kind;
+  }
+  return null;
+};
+
+/// Literal suggestions: strings become entries, objects keep `name`
+/// (+ `description`), everything else — functions, in particular —
+/// drops. Not a suggestion survives as data unless it has a name.
+const reduceSuggestions = (raw) =>
+  asList(raw)
+    .filter(isData)
+    .map((suggestion) => {
+      const name = str(suggestion);
+      if (name !== null) return { name };
+      if (suggestion && typeof suggestion === "object" && str(suggestion.name) !== null) {
+        return {
+          name: str(suggestion.name),
+          ...(str(suggestion.description) !== null && { description: str(suggestion.description) }),
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+/// `priority` seats as a u8: Fig's negative de-priorities have no
+/// seat, so out-of-range integers drop (never clamp — ordering lies).
+const reducePriority = (raw) =>
+  typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 255 ? raw : null;
+
+const reduceArg = (raw) => {
+  if (!isData(raw) || !raw || typeof raw !== "object") return null;
+  const name = str(raw.name);
+  if (name === null) return null;
+  return {
+    name,
+    ...(str(raw.description) !== null && { description: str(raw.description) }),
+    ...(raw.isOptional === true && { optional: true }),
+    ...(raw.isVariadic === true && { variadic: true }),
+    ...(raw.isCommand === true && { command: true }),
+    ...(templateKind(raw.template) !== null && { template: templateKind(raw.template) }),
+    ...(reduceSuggestions(raw.suggestions).length > 0 && { suggestions: reduceSuggestions(raw.suggestions) }),
+  };
+};
+
+const reduceFlag = (raw) => {
+  if (!isData(raw) || !raw || typeof raw !== "object") return null;
+  const named = flagNameAndAliases(raw.name);
+  if (named === null) return null;
+  const [name, aliases] = named;
+  return {
+    name,
+    ...(str(raw.description) !== null && { description: str(raw.description) }),
+    ...(aliases.length > 0 && { aliases }),
+    ...(raw.isPersistent === true && { persistent: true }),
+    ...(asList(raw.exclusiveOn).map(str).filter(Boolean).length > 0 && {
+      exclusive_on: asList(raw.exclusiveOn).map(str).filter(Boolean),
+    }),
+    ...(raw.hidden === true && { hidden: true }),
+    ...(reducePriority(raw.priority) !== null && { priority: reducePriority(raw.priority) }),
+    ...(asList(raw.args).map(reduceArg).filter(Boolean).length > 0 && {
+      args: asList(raw.args).map(reduceArg).filter(Boolean),
+    }),
+  };
+};
+
+/// String-form `loadSpec` resolves statically, exactly one level
+/// (OQ-3): the named sibling module's subcommands/options/args splice
+/// in place of the stub's, and nothing the sibling itself loads
+/// resolves any deeper — a loadSpec inside resolved content stays a
+/// name-and-description stub, whatever its form.
+const spliceLoadSpec = async (raw) => {
+  if (typeof raw.loadSpec !== "string") return raw;
+  const file = `${PACKAGE}/build/${raw.loadSpec}.js`;
+  if (!existsSync(file)) {
+    process.stderr.write(`note: loadSpec '${raw.loadSpec}' has no sibling bundle — stub kept\n`);
+    return raw;
+  }
+  const sibling = await import(pathToFileURL(file).href).then((m) => m.default);
+  if (sibling === undefined || typeof sibling !== "object") return raw;
+  return {
+    ...raw,
+    subcommands: sibling.subcommands ?? raw.subcommands,
+    options: sibling.options ?? raw.options,
+    args: sibling.args ?? raw.args,
+  };
+};
+
+const reduceCommand = async (raw, { resolve = true } = {}) => {
+  if (!isData(raw) || !raw || typeof raw !== "object") return null;
+  const named = nameAndAliases(raw.name);
+  if (named === null) return null;
+  const [name, aliases] = named;
+  const source = resolve ? await spliceLoadSpec(raw) : raw;
+  const subcommands = (
+    await Promise.all(asList(source.subcommands).map((sub) => reduceCommand(sub, { resolve })))
+  ).filter(Boolean);
+  const flags = asList(source.options).map(reduceFlag).filter(Boolean);
+  const args = asList(source.args).map(reduceArg).filter(Boolean);
+  return {
+    name,
+    ...(str(raw.description) !== null && { description: str(raw.description) }),
+    ...(aliases.length > 0 && { aliases }),
+    ...(raw.hidden === true && { hidden: true }),
+    ...(reducePriority(raw.priority) !== null && { priority: reducePriority(raw.priority) }),
+    ...(raw.filterStrategy === "fuzzy" && { filter_strategy: "fuzzy" }),
+    ...(subcommands.length > 0 && { subcommands }),
+    ...(flags.length > 0 && { flags }),
+    ...(args.length > 0 && { args }),
+  };
+};
+
+// --- the invariants: nothing function-valued survives, every flag
+// name carries its dash — asserted on every reduced tree, loudly. ----
+
+const assertStatic = (value, path) => {
+  if (typeof value === "function") fail(`invariant broken: a function survived at ${path}`);
+  if (value && typeof value === "object") {
+    for (const [key, inner] of Object.entries(value)) assertStatic(inner, `${path}.${key}`);
+  }
+};
+
+const assertFlagNames = (command, path) => {
+  for (const flag of command.flags ?? []) {
+    if (!String(flag.name).startsWith("-")) {
+      fail(`invariant broken: flag '${flag.name}' at ${path} lost its dash`);
+    }
+  }
+  for (const sub of command.subcommands ?? []) assertFlagNames(sub, path);
+};
+
+const reduceProbe = async (names) => {
+  await ensureCorpus();
+  for (const cli of names) {
+    const reduced = await reduceCommand(await importSpec(cli));
+    if (reduced === null) fail(`'${cli}' reduced to nothing (no name at the root)`);
+    assertStatic(reduced, cli);
+    assertFlagNames(reduced, cli);
+    console.log(`// ${cli}: ${reduced.subcommands?.length ?? 0} subcommands, ${reduced.flags?.length ?? 0} flags, ${reduced.args?.length ?? 0} args`);
+    console.log(JSON.stringify(reduced, null, 2));
+  }
+};
+
 const main = async () => {
   if (args.includes("--probe")) {
     await probe();
     return;
   }
-  fail("nothing to do — pass --probe (the reducer and the emit land with their tasks)");
+  const reduce = flag("reduce");
+  if (reduce !== undefined) {
+    await reduceProbe(reduce.split(",").map((name) => name.trim()).filter(Boolean));
+    return;
+  }
+  fail("nothing to do — pass --probe or --reduce a,b (the emit lands with its task)");
 };
 
 main().catch((error) => fail(error?.stack ?? String(error)));
