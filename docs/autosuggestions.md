@@ -94,7 +94,7 @@ The names come from git itself, read under a contract stricter than any peer shi
 - **Typing never spawns anything**: results cache and serve instantly; the cache refreshes when the completions menu opens and at the tab's spawn. Plain typing - even fast, even long - runs no command.
 - A cached name suggests only when no live provider answers: your history always wins, and path and table completions outrank the cache.
 
-Toggle the provider with `autosuggestions_generators_enabled` (default `true`, the Behavior section's Terminal card - "Git completions"). `false` stops every spawn and serves nothing from the cache; a flip applies live, and re-enabling refreshes at the next menu open.
+The generators are always on - there is no toggle. They ride the same silent, cached, spawn-on-trigger contract as the packaged completions: nothing runs while you type, and a flip-free design means the only failure surface is the five-second silence above.
 
 ## The menu
 

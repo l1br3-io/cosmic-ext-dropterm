@@ -166,23 +166,21 @@ pub struct TerminalOptions {
     /// nothing, today byte-for-byte.
     pub autosuggestions_aliases: HashMap<String, String>,
     /// The specs provider's table (suggest-specs-data spec): the
-    /// built-in five overlaid by `completions.toml` beside the
-    /// config, app-loaded and handed down engine-side — the
-    /// `Cow::Borrowed` default is the built-in fallback itself, so
-    /// no file is today's table without an allocation. A changed
-    /// table applies at the next `set_config` pass, the next typed
-    /// prefix borrowing the fresh rows.
-    pub autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
-    /// Whether the generator provider runs (suggest-generators
-    /// spec): resolved from the app config's
-    /// `autosuggestions_generators_enabled` — a flip applies at the
-    /// next `set_config` pass: `false` stops every spawn and blanks
-    /// the observation's cache read on the echo (the stale rows
-    /// never serve), `true` re-arms the ruled triggers. The shell
-    /// gate and the resolved binary are spawn truth, never re-read
-    /// by `set_config` — a respawn (a fresh terminal) is the only
-    /// path that changes them.
-    pub autosuggestions_generators_enabled: bool,
+    /// built-in floor overlaid by `completions.toml` beside the
+    /// config and the installed extended tier, app-loaded and handed
+    /// down engine-side as a shared slice — the no-file default is
+    /// the built-in fallback itself, so no file is today's table
+    /// without an allocation. A changed table applies at the next
+    /// `set_config` pass, the next typed prefix borrowing the fresh
+    /// rows.
+    pub autosuggestions_specs_table: Arc<[suggest::SpecCommand]>,
+    /// Whether the completion files still load on a background thread
+    /// (async-completions): while `true` the menu prepends a loading
+    /// row instead of specs rows, and the ghost's specs tier stays
+    /// silent. The app flips it `false` the moment the background
+    /// load lands, on the `set_config` pass that hands down the
+    /// fresh table.
+    pub autosuggestions_specs_loading: bool,
 }
 
 impl Default for TerminalOptions {
@@ -207,8 +205,8 @@ impl Default for TerminalOptions {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
-            autosuggestions_specs_table: Cow::Borrowed(suggest::builtin_specs()),
-            autosuggestions_generators_enabled: true,
+            autosuggestions_specs_table: suggest::builtin_specs_arc(),
+            autosuggestions_specs_loading: false,
         }
     }
 }
@@ -581,12 +579,18 @@ pub struct Terminal {
     /// snapshot it follows the config, not the pty's birth.
     autosuggestions_aliases: HashMap<String, String>,
     /// The specs provider's table (suggest-specs-data spec): the
-    /// built-in five overlaid by `completions.toml`, re-read at
-    /// every `set_config` so an edited or dropped file applies live
-    /// at the next typed prefix — config truth beside the config,
-    /// never spawn truth. `Cow::Borrowed` holds the built-in
-    /// fallback without owning a copy of it.
-    autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
+    /// built-in floor overlaid by `completions.toml` and the
+    /// installed extended tier, re-read at every `set_config` so an
+    /// edited or dropped file applies live at the next typed prefix —
+    /// config truth beside the config, never spawn truth. A shared
+    /// slice, so the whole-table swap is an `Arc` pointer swap.
+    autosuggestions_specs_table: Arc<[suggest::SpecCommand]>,
+    /// Whether the completion files still load on a background thread
+    /// (async-completions): `true` until the app's load lands, the
+    /// menu answering with a loading row while the specs tier stays
+    /// silent. Set on the same `set_config` pass that swaps in the
+    /// table.
+    autosuggestions_specs_loading: bool,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -1117,12 +1121,6 @@ struct GenShared {
 /// to the empty set (no TTL, no wall clock; a re-trigger refreshes,
 /// serve-forever-until-revalidation being the ruled horizon).
 struct GeneratorRunner {
-    /// The config gate (suggest-generators spec): the resolved
-    /// `autosuggestions_generators_enabled`, re-read at every
-    /// `set_config` — `false` stops every spawn and blanks the
-    /// cache read (a warm cache never serves), `true` re-arms the
-    /// ruled triggers. Config truth, never spawn truth.
-    enabled: bool,
     /// The standing ssh gate, spawn truth: the tab's program is an
     /// allowlisted shell. An ineligible tab never spawns.
     eligible: bool,
@@ -1143,18 +1141,16 @@ struct GeneratorRunner {
 impl GeneratorRunner {
     /// The runner for a fresh terminal: spawn truth only — the
     /// shell gate, the resolved binary, the spawn HOME, and the
-    /// wakeup channel — plus the resolved config gate. The cache
-    /// starts empty; nothing spawns until a trigger asks.
+    /// wakeup channel. The generators run always (no toggle; the
+    /// cache starts empty and nothing spawns until a trigger asks).
     fn new(
         spawned_program: &str,
         spawn_path: Option<&str>,
         spawn_home: Option<&str>,
-        enabled: bool,
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
     ) -> Self {
         Self {
-            enabled,
             eligible: suggest::is_allowlisted_shell(spawned_program),
             binary: resolve_generator_binary(spawn_path, "git"),
             home: spawn_home.map(str::to_owned),
@@ -1173,13 +1169,12 @@ impl GeneratorRunner {
 
     /// The cached sets for `cwd` — the observation's spawn-free
     /// read. `None` until the runner has cached anything for this
-    /// cwd (no generator context), on an ineligible tab, with no
-    /// resolvable git, or under a live `false` flip (a warm cache
-    /// never serves); once any set is cached the three arrive
+    /// cwd (no generator context), on an ineligible tab, or with no
+    /// resolvable git; once any set is cached the three arrive
     /// whole, a set the cache lacks reading empty — an honest
     /// silence, not a missing context.
     fn sets_for(&self, cwd: Option<&Path>) -> Option<GenCached> {
-        if !self.enabled || !self.eligible || self.binary.is_none() {
+        if !self.eligible || self.binary.is_none() {
             return None;
         }
         let cwd = cwd?;
@@ -1206,10 +1201,9 @@ impl GeneratorRunner {
     /// keeps serving while a worker per argv revalidates — skipped
     /// where one is already in flight (the SWR dedup). Menu-open
     /// and the eligibility onset call this; the damage-driven
-    /// update path never does. A live `false` flip blocks the
-    /// trigger with everything else.
+    /// update path never does.
     fn revalidate(&self, cwd: Option<&Path>) {
-        if !self.enabled || !self.eligible || self.binary.is_none() {
+        if !self.eligible || self.binary.is_none() {
             return;
         }
         let Some(cwd) = cwd else {
@@ -1406,14 +1400,12 @@ impl Terminal {
         };
         // The generator runner (suggest-generators spec): spawn
         // truth only — the shell gate, the spawn-PATH git binary,
-        // the spawn HOME — plus the resolved config gate and the
-        // wakeup channel the landed fetches nudge (the clone; the
-        // proxy owns the original).
+        // the spawn HOME — plus the wakeup channel the landed
+        // fetches nudge (the clone; the proxy owns the original).
         let generator = GeneratorRunner::new(
             &options.spawned_program,
             options.spawn_path.as_deref(),
             options.spawn_home.as_deref(),
-            options.autosuggestions_generators_enabled,
             tab_id,
             event_tx.clone(),
         );
@@ -1485,6 +1477,7 @@ impl Terminal {
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
             autosuggestions_aliases: options.autosuggestions_aliases.clone(),
             autosuggestions_specs_table: options.autosuggestions_specs_table.clone(),
+            autosuggestions_specs_loading: options.autosuggestions_specs_loading,
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -2548,7 +2541,16 @@ impl Terminal {
             delay_ms: self.autosuggestions_delay_ms,
             typed_idle_ms: 0,
         };
-        suggest::candidates(typed, &self.suggest, &observation)
+        let mut rows = suggest::candidates(typed, &self.suggest, &observation);
+        // The loading row (async-completions): while the completion
+        // files still load on a background thread, the menu leads
+        // with an honest "wait" row instead of a specs tier that
+        // has not arrived. History, path, catalog, and generator
+        // rows still answer normally.
+        if self.autosuggestions_specs_loading {
+            rows.insert(0, suggest::loading_candidate());
+        }
+        rows
     }
 
     /// The active reveal deadline (suggest-delay spec): the instant
@@ -2936,25 +2938,19 @@ impl Terminal {
             update = true;
         }
 
-        if self.autosuggestions_specs_table != options.autosuggestions_specs_table {
+        if self.autosuggestions_specs_table != options.autosuggestions_specs_table
+            || self.autosuggestions_specs_loading != options.autosuggestions_specs_loading
+        {
             // The spec table's live flip (suggest-specs-data spec):
             // one whole-table swap — an edited, extended, or removed
             // `completions.toml` applies at the next typed prefix,
-            // the next observation borrowing the fresh rows.
-            // `Cow::clone_from` keeps the borrowed fallback a
-            // pointer swap, never a table copy.
+            // the next observation borrowing the fresh rows — and the
+            // loading fact rides the same pass (async-completions):
+            // the background load's landing is the `false` that clears
+            // the menu's loading row.
             self.autosuggestions_specs_table
                 .clone_from(&options.autosuggestions_specs_table);
-            update = true;
-        }
-
-        if self.generator.enabled != options.autosuggestions_generators_enabled {
-            // The generators' live flip (suggest-generators spec):
-            // `false` stops every spawn and blanks the cache read on
-            // this very pass (a warm cache never serves the stale
-            // rows); `true` re-arms the ruled triggers — the next
-            // menu-open revalidates.
-            self.generator.enabled = options.autosuggestions_generators_enabled;
+            self.autosuggestions_specs_loading = options.autosuggestions_specs_loading;
             update = true;
         }
 

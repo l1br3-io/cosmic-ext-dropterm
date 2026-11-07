@@ -19,7 +19,6 @@ use alacritty_terminal::{
     vte::ansi::{NamedColor, Rgb},
 };
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -824,6 +823,29 @@ pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
     &BUILTIN_SPECS
 }
 
+/// The embedded floor as a shared slice (suggest-embed spec,
+/// async-completions): the `Arc` form of [`builtin_specs`], cloned
+/// once per process so the borrowed floor rides an `Arc` pointer
+/// without a per-call table copy — the loading placeholder and every
+/// no-overlay load share this one allocation.
+static BUILTIN_SPECS_ARC: LazyLock<Arc<[SpecCommand]>> =
+    LazyLock::new(|| Arc::from(builtin_specs()));
+
+/// The embedded floor as a cheap `Arc` clone — the no-overlay load
+/// and the `TerminalOptions` default both point at one process-wide
+/// allocation, never copying the table per call.
+pub(crate) fn builtin_specs_arc() -> Arc<[SpecCommand]> {
+    Arc::clone(&BUILTIN_SPECS_ARC)
+}
+
+/// The loading placeholder (async-completions): an empty shared table
+/// the app hands down while the completion files still load on a
+/// background thread — the specs tier answers nothing until the real
+/// table lands, and the menu's loading row is the only specs surface.
+pub(crate) fn empty_specs() -> Arc<[SpecCommand]> {
+    Arc::from(&[][..])
+}
+
 /// Parses the data file's text into the normalized table
 /// (suggest-specs-data spec, recursive since suggest-schema): every
 /// schema tier rejects unknown keys (`deny_unknown_fields`), and the
@@ -886,7 +908,7 @@ fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecComm
 /// layer whole with a `debug!` log, never a half-loaded table; the
 /// caller is the app layer, engine-side and once per load point, so
 /// the model never touches the filesystem.
-pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Cow<'static, [SpecCommand]> {
+pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Arc<[SpecCommand]> {
     let extended_path = extended.then(extended_completions_path).flatten();
     load_completions_from(dir, extended_path.as_deref())
 }
@@ -894,19 +916,16 @@ pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Cow<'stati
 /// The loader over explicit seats (suggest-embed spec): the user
 /// file under `dir`, the extended tier at `extended_path` — the
 /// XDG walk's answer in the app, a fixture's in the tests. No
-/// overlay at all keeps the floor borrowed: no clone, no parse
+/// overlay at all keeps the floor shared: no table copy, no parse
 /// beyond the embed's own.
-fn load_completions_from(
-    dir: Option<&Path>,
-    extended_path: Option<&Path>,
-) -> Cow<'static, [SpecCommand]> {
+fn load_completions_from(dir: Option<&Path>, extended_path: Option<&Path>) -> Arc<[SpecCommand]> {
     let extended = extended_path.and_then(extended_table);
     let user = dir.and_then(user_completions);
     if user.is_none() && extended.is_none() {
-        return Cow::Borrowed(builtin_specs());
+        return builtin_specs_arc();
     }
     let extended: &[SpecCommand] = extended.as_deref().map_or(&[], Vec::as_slice);
-    Cow::Owned(merge_tiers(extended, user.unwrap_or_default()))
+    Arc::from(merge_tiers(extended, user.unwrap_or_default()))
 }
 
 /// The user's `completions.toml` under the config directory
@@ -1403,6 +1422,21 @@ pub struct MenuCandidate {
     pub(crate) suffix: String,
     pub(crate) description: Option<String>,
     pub(crate) source: SuggestionSource,
+}
+
+/// The completion menu's loading row (async-completions): the engine
+/// prepends this while the completion files still load on a
+/// background thread — an honest "wait" surface, never a wrong
+/// completion. The suffix is empty, so an accept writes nothing and
+/// simply closes; the Specs source keeps it in the specs tier's
+/// display seat.
+pub(crate) fn loading_candidate() -> MenuCandidate {
+    MenuCandidate {
+        label: "Loading completions…".to_string(),
+        suffix: String::new(),
+        description: None,
+        source: SuggestionSource::Specs,
+    }
 }
 
 /// The menu's candidate collection (suggest-menu spec): every

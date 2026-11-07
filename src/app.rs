@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -94,6 +93,11 @@ pub enum Message {
     /// colors were already resolved correctly in the same pass via
     /// `effective_is_dark` when the change arrived.
     ReapplyColors,
+    /// The completion files finished their background load
+    /// (async-completions): the shared specs table, swapped in and
+    /// pushed to every live tab on the next `set_config` pass — the
+    /// loading row clears the moment this lands.
+    CompletionsLoaded(Arc<[suggest::SpecCommand]>),
     TermEventTx(mpsc::UnboundedSender<(TabId, TermEvent)>),
     TermEvent(TabId, TermEvent),
     SurfaceOpened(window::Id, cosmic::iced::Size),
@@ -279,15 +283,16 @@ pub struct DropTerm {
     /// everything else works.
     config_handler: Option<cosmic_config::Config>,
     config: DropTermConfig,
-    /// The specs provider's table (suggest-specs-data spec): the
-    /// built-in five overlaid by `completions.toml` beside the
-    /// config, loaded here at init and re-read on every config
-    /// echo — an edited file applies to live tabs at the next
-    /// settings pass and to every new tab at spawn. The borrowed
-    /// fallback is the no-file default; the app never parses the
-    /// file itself, [`suggest::load_completions`] owns the whole
-    /// load-or-fallback contract.
-    specs_table: Cow<'static, [suggest::SpecCommand]>,
+    /// The specs provider's table (suggest-specs-data spec,
+    /// async-completions): the built-in floor overlaid by
+    /// `completions.toml` beside the config and the installed
+    /// extended tier. `None` reads "still loading" — the background
+    /// load armed at init and re-armed on every config echo has not
+    /// landed, and tabs carry the empty placeholder with the loading
+    /// flag until it does. [`suggest::load_completions`] owns the
+    /// whole load-or-fallback contract; the app only swaps the shared
+    /// slice in and out.
+    specs_table: Option<Arc<[suggest::SpecCommand]>>,
     /// The overlay's terminals in tab order. Never empty while a
     /// surface is shown: closing the last tab respawns a fresh one
     /// (see `ensure_tabs`).
@@ -560,9 +565,35 @@ impl DropTerm {
             autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
             autosuggestions_delay_ms: self.config.autosuggestions_delay_ms,
             autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
-            autosuggestions_specs_table: self.specs_table.clone(),
+            autosuggestions_specs_table: self
+                .specs_table
+                .clone()
+                .unwrap_or_else(suggest::empty_specs),
+            autosuggestions_specs_loading: self.specs_table.is_none(),
             ..TerminalOptions::default()
         }
+    }
+
+    /// The completion files' background load (async-completions): the
+    /// CPU-bound read + parse runs on a blocking thread, and the
+    /// shared table lands as [`Message::CompletionsLoaded`] — the
+    /// app swaps it in and pushes it to live tabs without ever
+    /// blocking startup or a config echo on the parse. Armed at init
+    /// and re-armed on every config echo (an edited `completions.toml`
+    /// applies live, and the extended toggle's flip reloads).
+    fn completions_reload_task(&self) -> Task<Message> {
+        let dir = completions_config_dir();
+        let extended = self.config.autosuggestions_completions_extended;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    suggest::load_completions(dir.as_deref(), extended)
+                })
+                .await
+                .expect("the completions loader thread never panics")
+            },
+            |table| cosmic::Action::App(Message::CompletionsLoaded(table)),
+        )
     }
 
     /// Refreshes the active tab's status snapshot — the foreground
@@ -1740,16 +1771,16 @@ impl Application for DropTerm {
         // keeps customizations from the first press (keybinds-editor
         // criterion 5).
         let key_binds = keybinds::effective_key_binds(&config.custom_key_binds);
-        let completions_extended = config.autosuggestions_completions_extended;
 
         let mut app = Self {
             core,
             config_handler,
             config,
-            specs_table: suggest::load_completions(
-                completions_config_dir().as_deref(),
-                completions_extended,
-            ),
+            // The completion files load on a background thread
+            // (async-completions): `None` is the loading placeholder
+            // the init batch arms against below — tabs spawned before
+            // the load lands answer the menu with a loading row.
+            specs_table: None,
             tabs: Vec::new(),
             active_tab: 0,
             terminal_id: widget::Id::unique(),
@@ -1850,6 +1881,9 @@ impl Application for DropTerm {
             // The clock starts with the config's gate — armed here,
             // kept alive or stood down at every gate re-evaluation.
             app.sync_status_clock(),
+            // The completion files' first load (async-completions):
+            // armed at init so startup never blocks on the parse.
+            app.completions_reload_task(),
         ]);
         (app, task)
     }
@@ -2415,15 +2449,14 @@ impl DropTerm {
                 let old_profiles = self.config.profiles.clone();
                 self.config = config;
                 // The spec table rides the echo (suggest-specs-data
-                // spec): the file beside the config re-reads on every
-                // config pass — our own write's echo and an external
-                // edit land here alike — so an edited
+                // spec, async-completions): the file beside the config
+                // re-reads on every config pass — our own write's echo
+                // and an external edit land here alike — so an edited
                 // `completions.toml` applies to live tabs without a
-                // restart.
-                self.specs_table = suggest::load_completions(
-                    completions_config_dir().as_deref(),
-                    self.config.autosuggestions_completions_extended,
-                );
+                // restart. The reload runs on a background thread and
+                // lands as `CompletionsLoaded`; the current table
+                // keeps serving until it does (no loading flicker on
+                // a mid-session toggle).
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
                 // (keybinds-editor criterion 2: a hand-edited config
@@ -2449,7 +2482,8 @@ impl DropTerm {
                 let ticks_task = anchor_task
                     .chain(self.sync_status_clock())
                     .chain(self.sync_status_duration())
-                    .chain(self.sync_suggest_reveal());
+                    .chain(self.sync_suggest_reveal())
+                    .chain(self.completions_reload_task());
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -2522,6 +2556,14 @@ impl DropTerm {
                 return ticks_task;
             }
             Message::ReapplyColors => self.reapply_colors(),
+            Message::CompletionsLoaded(table) => {
+                // The background load landed (async-completions):
+                // swap the shared table in and push it to every live
+                // tab on one `set_config` pass — the loading row
+                // clears and the specs tier answers from here on.
+                self.specs_table = Some(table);
+                self.apply_config_to_tabs();
+            }
             Message::TermEventTx(tx) => {
                 if self.term_event_tx.is_none() {
                     self.term_event_tx = Some(tx);

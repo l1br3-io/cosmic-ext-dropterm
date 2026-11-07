@@ -196,7 +196,6 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
-            ConfigKey::AutosuggestionsGeneratorsEnabled => "Git completions",
             ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
             ConfigKey::ImagesEnabled => "Inline images",
             ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
@@ -1169,7 +1168,6 @@ fn toggle_control(
         ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
         ConfigKey::AutosuggestionsPathsEnabled => config.autosuggestions_paths_enabled,
         ConfigKey::AutosuggestionsCommandsEnabled => config.autosuggestions_commands_enabled,
-        ConfigKey::AutosuggestionsGeneratorsEnabled => config.autosuggestions_generators_enabled,
         ConfigKey::AutosuggestionsCompletionsExtended => {
             config.autosuggestions_completions_extended
         }

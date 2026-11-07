@@ -3909,15 +3909,16 @@ name = "aaa-ext"
 }
 
 #[test]
-fn an_absent_extended_file_leaves_the_floor_borrowed() {
-    // No overlay at all keeps the no-clone rule (suggest-embed
-    // spec): the floor answers as a borrowed `Cow`, byte for byte.
+fn an_absent_extended_file_answers_the_floor() {
+    // No overlay at all keeps the shared-floor rule (suggest-embed
+    // spec, async-completions): the floor answers through the
+    // process-wide `Arc`, byte for byte.
     let table = load_completions_from(None, None);
-    assert!(
-        matches!(table, Cow::Borrowed(_)),
-        "nothing overlays: no clone"
-    );
     assert_eq!(table.as_ref(), builtin_specs());
+    assert!(
+        Arc::ptr_eq(&table, &builtin_specs_arc()),
+        "nothing overlays: the shared floor Arc is reused, not copied"
+    );
 }
 
 #[test]
