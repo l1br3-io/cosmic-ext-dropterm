@@ -1744,7 +1744,13 @@ impl Application for DropTerm {
             core,
             config_handler,
             config,
-            specs_table: suggest::load_completions(completions_config_dir().as_deref()),
+            specs_table: suggest::load_completions(
+                // The extended tier's key ships whole in its own
+                // task; the amended generous default stands in
+                // until that wiring lands.
+                completions_config_dir().as_deref(),
+                true,
+            ),
             tabs: Vec::new(),
             active_tab: 0,
             terminal_id: widget::Id::unique(),
@@ -2415,7 +2421,8 @@ impl DropTerm {
                 // edit land here alike — so an edited
                 // `completions.toml` applies to live tabs without a
                 // restart.
-                self.specs_table = suggest::load_completions(completions_config_dir().as_deref());
+                self.specs_table =
+                    suggest::load_completions(completions_config_dir().as_deref(), true);
                 // The live bind map follows every config change — our
                 // own write's echo and an external edit land here alike
                 // (keybinds-editor criterion 2: a hand-edited config

@@ -515,7 +515,11 @@ impl DropTerm {
                 // dropped or edited `completions.toml` applies at —
                 // live tabs pick it up at the next config echo.
                 autosuggestions_specs_table: suggest::load_completions(
+                    // The extended tier's key ships whole in its own
+                    // task; the amended generous default stands in
+                    // until that wiring lands.
                     super::completions_config_dir().as_deref(),
+                    true,
                 ),
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,

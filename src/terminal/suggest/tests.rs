@@ -3036,7 +3036,7 @@ name = "worktree"
 "#,
     )
     .expect("a valid file parses");
-    let merged = merge_completions(file);
+    let merged = merge_tiers(&[], file);
     let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
     let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
@@ -3081,7 +3081,7 @@ name = "add"
 "#,
     )
     .expect("a valid nested file parses");
-    let merged = merge_completions(file);
+    let merged = merge_tiers(&[], file);
     let git = merged
         .iter()
         .find(|c| c.name == "git")
@@ -3134,12 +3134,12 @@ fn no_file_and_no_config_dir_answer_the_builtin_table() {
     // byte-equivalent to the built-in (criterion 2).
     let dir = completions_fixture("absent");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "no file answers the built-in"
     );
     assert_eq!(
-        load_completions(None).as_ref(),
+        load_completions_from(None, None).as_ref(),
         builtin_specs(),
         "no config directory answers the built-in"
     );
@@ -3154,7 +3154,7 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
     std::fs::write(dir.join("completions.toml"), b"[[commands\nname = broken")
         .expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "broken TOML answers the built-in"
     );
@@ -3165,7 +3165,7 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
     )
     .expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "a scripted entry answers the built-in"
     );
@@ -3175,7 +3175,7 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
 fn a_valid_file_answers_the_merged_table() {
     let dir = completions_fixture("valid");
     std::fs::write(dir.join("completions.toml"), GH_FILE).expect("fixture file");
-    let table = load_completions(Some(&dir));
+    let table = load_completions_from(Some(&dir), None);
     let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
     let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
@@ -3192,7 +3192,7 @@ fn the_ghosts_spec_tier_answers_from_a_wider_table() {
     // must-extend, shortest-wins policy — `gh pr` finishing to
     // `pr-check` past the exactly-typed `pr` — and the flag seat
     // answers from the file's flags alike.
-    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let table = merge_tiers(&[], parse_completions(GH_FILE).expect("valid"));
     let mut suggest = specs_suggest();
     let before = String::from("$ gh pr");
     let observation = Observation {
@@ -3224,7 +3224,7 @@ fn file_descriptions_reach_the_menu_rows() {
     // already shapes — while an entry without one stays clean
     // (`None`), and every other provider's rows stay as bare as
     // ever.
-    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let table = merge_tiers(&[], parse_completions(GH_FILE).expect("valid"));
     let suggest = specs_suggest();
     let observation = Observation {
         specs_table: &table,
@@ -3395,7 +3395,8 @@ fn the_ghost_ignores_descriptions() {
     // carries no description field, so the lock is structural;
     // this pins the behavior it buys: a re-declared, described
     // checkout ghosts the same `ckout` the bare built-in does.
-    let table = merge_completions(
+    let table = merge_tiers(
+        &[],
         parse_completions(
             r#"
 [[commands]]
@@ -3652,7 +3653,7 @@ name = \"42\"
     let dir = completions_fixture("deep-script");
     std::fs::write(dir.join("completions.toml"), DEEP_SCRIPT_FILE).expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "a deep script answers the built-in floor"
     );
@@ -3801,5 +3802,245 @@ fn a_fuzzy_node_routes_its_rows_through_filter_rank() {
         menu_labels(&menu_table("docker co", &NESTED_TABLE)),
         ["compose"],
         "an extending prefix at the fuzzy node still answers"
+    );
+}
+
+// --- the installed extended tier (suggest-embed Task 2) ---
+
+/// One extended-tier fixture (suggest-embed spec): a data dir whose
+/// `completions-extended.toml` seat holds `contents`. The loader
+/// takes the path directly, so the fixture doubles as the seat the
+/// resolver would have found.
+fn extended_fixture(name: &str, contents: &str) -> std::path::PathBuf {
+    let dir = completions_fixture(name);
+    let path = dir.join("completions-extended.toml");
+    std::fs::write(&path, contents).expect("fixture file");
+    path
+}
+
+#[test]
+fn the_xdg_walk_finds_the_first_seated_file() {
+    // The resolver over explicit roots (suggest-embed spec): the
+    // data-local root leads, each root tries the running identity's
+    // seat first, and a dev build's walk also finds the release
+    // install's un-suffixed seat.
+    let release_id = cosmic_ext_dropterm::APP_ID
+        .strip_suffix(".Dev")
+        .unwrap_or(cosmic_ext_dropterm::APP_ID);
+    let primary_root = completions_fixture("walk-primary");
+    let primary_seat = primary_root
+        .join(cosmic_ext_dropterm::APP_ID)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(primary_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&primary_seat, "").expect("seat file");
+    let fallback_root = completions_fixture("walk-fallback");
+    let fallback_seat = fallback_root
+        .join(release_id)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(fallback_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&fallback_seat, "").expect("seat file");
+    let later_root = completions_fixture("walk-later");
+    let later_seat = later_root
+        .join(cosmic_ext_dropterm::APP_ID)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(later_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&later_seat, "").expect("seat file");
+
+    // The data-local root's seat wins over every data-dirs entry.
+    assert_eq!(
+        resolve_extended_in(Some(&primary_root), std::slice::from_ref(&later_root)),
+        Some(primary_seat),
+        "the data-local root leads the walk"
+    );
+    // Its un-suffixed fallback seat is found ahead of a later root's
+    // primary seat — the dev build finds a release install.
+    assert_eq!(
+        resolve_extended_in(Some(&fallback_root), std::slice::from_ref(&later_root)),
+        Some(fallback_seat),
+        "the running root's fallback seat precedes later roots"
+    );
+    // With no data-local file, the first data-dirs entry answers.
+    assert_eq!(
+        resolve_extended_in(None, std::slice::from_ref(&later_root)),
+        Some(later_seat),
+        "the first data-dirs root with a file wins"
+    );
+    // Nothing seated anywhere: "not installed".
+    let empty_root = completions_fixture("walk-empty");
+    assert_eq!(
+        resolve_extended_in(Some(&empty_root), std::slice::from_ref(&empty_root)),
+        None,
+        "no seated file is not installed"
+    );
+}
+
+#[test]
+fn an_installed_extended_file_adds_beside_the_floor() {
+    // The three-layer merge's middle (suggest-embed spec): the
+    // installed tier's commands add beside the embedded floor,
+    // descriptions riding, the floor intact command for command.
+    let path = extended_fixture(
+        "adds",
+        r#"
+[[commands]]
+name = "zzz-ext"
+description = "An extended-tier command"
+
+[[commands.subcommands]]
+name = "frobnicate"
+
+[[commands]]
+name = "aaa-ext"
+"#,
+    );
+    let table = load_completions_from(None, Some(&path));
+    let floor_len = builtin_specs().len();
+    assert_eq!(table.len(), floor_len + 2, "the tier adds beside the floor");
+    let ext = table
+        .iter()
+        .find(|command| command.name == "zzz-ext")
+        .expect("the extended command is seated");
+    assert_eq!(
+        ext.description.as_deref(),
+        Some("An extended-tier command"),
+        "the tier's descriptions ride"
+    );
+    assert_eq!(ext.subcommands[0].name, "frobnicate");
+}
+
+#[test]
+fn an_absent_extended_file_leaves_the_floor_borrowed() {
+    // No overlay at all keeps the no-clone rule (suggest-embed
+    // spec): the floor answers as a borrowed `Cow`, byte for byte.
+    let table = load_completions_from(None, None);
+    assert!(
+        matches!(table, Cow::Borrowed(_)),
+        "nothing overlays: no clone"
+    );
+    assert_eq!(table.as_ref(), builtin_specs());
+}
+
+#[test]
+fn an_invalid_extended_file_answers_the_floor() {
+    // The schema is the gate at this tier too (suggest-embed spec):
+    // a `script` key at depth two — the Fig format's executable
+    // half — fails the whole file, and the core floor answers alone.
+    let path = extended_fixture(
+        "invalid",
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "frobnicate"
+script = "zzz frobnicate"
+"#,
+    );
+    assert_eq!(
+        load_completions_from(None, Some(&path)).as_ref(),
+        builtin_specs(),
+        "an invalid tier file is silence, never a partial table"
+    );
+}
+
+#[test]
+fn a_colliding_name_keeps_the_floor() {
+    // The tiers are disjoint by construction; if a name collides
+    // anyway the floor wins — it is authoritative (suggest-embed
+    // spec).
+    let path = extended_fixture(
+        "collide",
+        r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "definitely-not-upstream"
+"#,
+    );
+    let table = load_completions_from(None, Some(&path));
+    let git = table
+        .iter()
+        .find(|command| command.name == "git")
+        .expect("git keeps its seat");
+    let floor_git = builtin_specs()
+        .iter()
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    assert_eq!(*git, *floor_git, "the floor's git wins the collision");
+}
+
+#[test]
+fn the_user_file_overrides_both_tiers_whole() {
+    // The third layer (suggest-embed spec): a user re-declaration
+    // replaces its entry in EITHER tier whole — no per-entry
+    // merging, the one way to describe a floor or tier command —
+    // and a fresh user command adds beside both.
+    let path = extended_fixture(
+        "override",
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "from-tier"
+"#,
+    );
+    let user_dir = completions_fixture("override-user");
+    std::fs::write(
+        user_dir.join("completions.toml"),
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "from-user"
+
+[[commands]]
+name = "zzz-user"
+"#,
+    )
+    .expect("user file");
+    let table = load_completions_from(Some(&user_dir), Some(&path));
+    let overridden = table
+        .iter()
+        .find(|command| command.name == "zzz-ext")
+        .expect("the re-declared command is seated");
+    let names: Vec<&str> = overridden
+        .subcommands
+        .iter()
+        .map(|command| command.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["from-user"],
+        "the user file replaces the tier's entry whole"
+    );
+    assert!(
+        table.iter().any(|command| command.name == "zzz-user"),
+        "a fresh user command adds beside both tiers"
+    );
+}
+
+#[test]
+fn the_extended_parse_happens_once_per_process() {
+    // Once per process per resolved path (suggest-embed spec): the
+    // first load caches the parse, and a later load reuses it even
+    // after the file is gone — a system data file does not change
+    // under a running app.
+    let path = extended_fixture(
+        "cached",
+        r#"
+[[commands]]
+name = "zzz-cached"
+"#,
+    );
+    let first = load_completions_from(None, Some(&path));
+    assert!(first.iter().any(|command| command.name == "zzz-cached"));
+    std::fs::remove_file(&path).expect("the fixture file removes");
+    let second = load_completions_from(None, Some(&path));
+    assert_eq!(
+        first, second,
+        "the second load answers the cached parse, not a re-read"
     );
 }

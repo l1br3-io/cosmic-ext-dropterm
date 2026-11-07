@@ -22,8 +22,9 @@ use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{LazyLock, Mutex};
 
 use super::engine::WINDOW_BG_COLOR;
 
@@ -849,9 +850,21 @@ fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error
 /// the only way to describe a built-in entry). Deterministic
 /// throughout: equal names resolve by the stable sort's file
 /// order, and the merged table ends sorted by command name.
-fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
+/// The three-layer merge (suggest-embed spec): the embedded core
+/// floor; the extended tier **adding beside it** — disjoint by
+/// construction, and if a name collides anyway the floor wins, being
+/// authoritative; then the user's file **overriding whole** across
+/// both tiers, exactly as it always has. Deterministic throughout:
+/// equal names resolve by the stable sort's file order, and the
+/// merged table ends sorted by name.
+fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecCommand> {
     let mut table = BUILTIN_SPECS.clone();
-    for command in file {
+    for command in extended {
+        if !table.iter().any(|existing| existing.name == command.name) {
+            table.push(command.clone());
+        }
+    }
+    for command in user {
         match table
             .iter_mut()
             .find(|existing| existing.name == command.name)
@@ -864,39 +877,171 @@ fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
     table
 }
 
-/// The loadable spec table's whole truth (suggest-specs-data spec):
-/// resolve `completions.toml` under the config directory, parse
-/// it, and merge it over the built-in floor. Failure is always
+/// The loadable spec table's whole truth (suggest-specs-data spec,
+/// three layers since suggest-embed): the user's `completions.toml`
+/// under the config directory, the installed extended tier behind
+/// its toggle, over the embedded core floor. Failure is always
 /// silence-shaped — no directory, no file, an unreadable file, or
-/// an invalid file (any unknown key, `script` included) answers
-/// the built-in table with a `debug!` log, never a half-loaded
-/// table; the caller is the app layer, engine-side and once per
-/// load point, so the model never touches the filesystem.
-pub(crate) fn load_completions(dir: Option<&Path>) -> Cow<'static, [SpecCommand]> {
-    let Some(dir) = dir else {
-        log::debug!("no config directory: the spec table stays built-in");
+/// an invalid file (any unknown key, `script` included) drops its
+/// layer whole with a `debug!` log, never a half-loaded table; the
+/// caller is the app layer, engine-side and once per load point, so
+/// the model never touches the filesystem.
+pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Cow<'static, [SpecCommand]> {
+    let extended_path = extended.then(extended_completions_path).flatten();
+    load_completions_from(dir, extended_path.as_deref())
+}
+
+/// The loader over explicit seats (suggest-embed spec): the user
+/// file under `dir`, the extended tier at `extended_path` — the
+/// XDG walk's answer in the app, a fixture's in the tests. No
+/// overlay at all keeps the floor borrowed: no clone, no parse
+/// beyond the embed's own.
+fn load_completions_from(
+    dir: Option<&Path>,
+    extended_path: Option<&Path>,
+) -> Cow<'static, [SpecCommand]> {
+    let extended = extended_path.and_then(extended_table);
+    let user = dir.and_then(user_completions);
+    if user.is_none() && extended.is_none() {
         return Cow::Borrowed(builtin_specs());
-    };
+    }
+    let extended: &[SpecCommand] = extended.as_deref().map_or(&[], Vec::as_slice);
+    Cow::Owned(merge_tiers(extended, user.unwrap_or_default()))
+}
+
+/// The user's `completions.toml` under the config directory
+/// (suggest-specs-data spec): `None` is no directory, no file, an
+/// unreadable file, or an invalid one — each with its one `debug!`
+/// line, silence-shaped, never a half-loaded table.
+fn user_completions(dir: &Path) -> Option<Vec<SpecCommand>> {
     let path = dir.join("completions.toml");
     match std::fs::read_to_string(&path) {
         Ok(contents) => match parse_completions(&contents) {
-            Ok(file) => Cow::Owned(merge_completions(file)),
+            Ok(file) => Some(file),
             Err(err) => {
                 log::debug!(
-                    "completions.toml rejected, the built-in table answers: {}: {err}",
+                    "completions.toml rejected, the embedded floor answers: {}: {err}",
                     path.display()
                 );
-                Cow::Borrowed(builtin_specs())
+                None
             }
         },
         Err(err) => {
             log::debug!(
-                "completions.toml unreadable, the built-in table answers: {}: {err}",
+                "completions.toml unreadable, the embedded floor answers: {}: {err}",
                 path.display()
             );
-            Cow::Borrowed(builtin_specs())
+            None
         }
     }
+}
+
+/// The extended tier's file name, seated under the app id in the
+/// XDG data dirs (suggest-embed spec).
+const EXTENDED_FILE: &str = "completions-extended.toml";
+
+/// `$XDG_DATA_DIRS` (suggest-embed spec): the colon list, blanks
+/// dropped, with the spec's own default when unset or empty — a
+/// Flatpak sandbox lists `/app/share` here, which is how the
+/// packaged file seats inside the sandbox without `DropTerm` knowing
+/// a Flatpak exists.
+fn xdg_data_dirs() -> Vec<PathBuf> {
+    std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into())
+        .split(':')
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Where the extended tier lives (suggest-embed spec): the XDG data
+/// walk — `$XDG_DATA_HOME` (`~/.local/share`) first, then every
+/// `$XDG_DATA_DIRS` entry — each joined with the app id and the
+/// file name, first existing path wins. A dev build (the `.Dev`
+/// identity) also tries the un-suffixed release id per directory,
+/// so `just dev` finds a release install's data file. `None` is
+/// "not installed": the core floor answers, the settings caption
+/// says so.
+fn extended_completions_path() -> Option<PathBuf> {
+    resolve_extended_in(dirs::data_local_dir().as_deref(), &xdg_data_dirs())
+}
+
+/// The walk itself, over caller-supplied roots (the tests' seat).
+fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Option<PathBuf> {
+    // The lib's own const is the canonical seat (app.rs re-exports
+    // it for its tree); the `.Dev` suffix marks the dev identity,
+    // whose walk also tries the release install's un-suffixed seat.
+    let app_id = cosmic_ext_dropterm::APP_ID;
+    let release_id = app_id.strip_suffix(".Dev").unwrap_or(app_id);
+    let ids = if release_id == app_id {
+        vec![app_id]
+    } else {
+        vec![app_id, release_id]
+    };
+    let mut candidates = Vec::new();
+    for dir in data_local
+        .into_iter()
+        .map(PathBuf::from)
+        .chain(data_dirs.iter().cloned())
+    {
+        for id in &ids {
+            candidates.push(dir.join(id).join(EXTENDED_FILE));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// The extended tier's parse cache (suggest-embed spec): one parse
+/// per process per resolved path — a system data file does not
+/// change under a running app, so a toggle flip reuses the table it
+/// already loaded (failures cached too: a broken file is not re-read
+/// per toggle). Keyed by path — the spec's once-per-process, made
+/// per-path so the walk's real answer and any test fixture stay
+/// independent.
+/// One resolved path's cached answer (suggest-embed spec): the
+/// parsed table, or `None` for an absent, unreadable, or invalid
+/// file — failures cache too, so a broken file is not re-read per
+/// toggle.
+type ExtendedTable = Option<Arc<Vec<SpecCommand>>>;
+
+static EXTENDED_TABLES: LazyLock<Mutex<HashMap<PathBuf, ExtendedTable>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The installed tier's table (suggest-embed spec): read and parse
+/// once per path per process, cached; absent, unreadable, or
+/// invalid (the schema is the gate — any unknown key at any depth)
+/// is `None` with one `debug!` line, and the core floor and the
+/// user file answer alone. Never a partial table.
+fn extended_table(path: &Path) -> ExtendedTable {
+    let mut cache = EXTENDED_TABLES
+        .lock()
+        .expect("the extended cache is never poisoned");
+    if let Some(cached) = cache.get(path) {
+        return cached.clone();
+    }
+    let parsed = match std::fs::read_to_string(path) {
+        Ok(contents) => match parse_completions(&contents) {
+            Ok(table) => Some(Arc::new(table)),
+            Err(err) => {
+                log::debug!(
+                    "completions-extended.toml rejected, the core floor answers: {}: {err}",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(err) => {
+            log::debug!(
+                "completions-extended.toml unreadable, the core floor answers: {}: {err}",
+                path.display()
+            );
+            None
+        }
+    };
+    cache.insert(path.to_path_buf(), parsed.clone());
+    parsed
 }
 
 /// The alias chain's depth cap (suggest-aliases spec, OQ-2,
