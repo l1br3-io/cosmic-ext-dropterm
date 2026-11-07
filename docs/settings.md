@@ -99,6 +99,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `autosuggestions_menu_enabled` | live - a showing menu closes the moment the switch lands; re-enabling arms the chord again at its next press |
 | `autosuggestions_menu_auto` | live - the next typed prefix pops (or declines) the menu on its own; off restores the chord as the only opener |
 | `autosuggestions_generators_enabled` | live - off stops every git spawn and serves nothing from the cache on the echo; on re-arms the menu-open refresh (the first Ctrl+Space after re-enabling revalidates) |
+| `autosuggestions_completions_extended` | live - the table reloads on the echo: off answers the embedded floor alone (the installed file's commands stop completing), on adds the tier beside it again (a re-toggle reuses the already-parsed file; a system data file does not change under a running app) |
 
 These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly the pre-settings behavior:
 

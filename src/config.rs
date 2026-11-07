@@ -552,6 +552,18 @@ pub struct DropTermConfig {
     /// and serves nothing from the cache. Flips apply live on the
     /// config echo.
     pub autosuggestions_generators_enabled: bool,
+    /// The installed extended completions tier (suggest-embed spec,
+    /// the 2026-11-07 generous-default amendment): the packaged
+    /// `completions-extended.toml` — every corpus command beyond the
+    /// embedded floor's core tranche, seated in the XDG data dirs —
+    /// adds beside the floor while the key is on. Defaults to `true`
+    /// (the file ships inside the package, so generosity costs no
+    /// download and no network; the toggle is the kill switch, not
+    /// the opt-in); `false` answers the embedded floor and the
+    /// user's `completions.toml` alone. An absent, unreadable, or
+    /// invalid file answers the floor whatever the key says.
+    /// Flips apply live on the config echo.
+    pub autosuggestions_completions_extended: bool,
 }
 
 impl Default for DropTermConfig {
@@ -617,6 +629,7 @@ impl Default for DropTermConfig {
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
             autosuggestions_generators_enabled: true,
+            autosuggestions_completions_extended: true,
         }
     }
 }

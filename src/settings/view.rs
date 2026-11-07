@@ -197,6 +197,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
             ConfigKey::AutosuggestionsGeneratorsEnabled => "Git completions",
+            ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
             ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
             ConfigKey::AutosuggestionsMenuAuto => "Open the menu as you type",
             ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
@@ -1153,6 +1154,9 @@ fn toggle_control(
         ConfigKey::AutosuggestionsPathsEnabled => config.autosuggestions_paths_enabled,
         ConfigKey::AutosuggestionsCommandsEnabled => config.autosuggestions_commands_enabled,
         ConfigKey::AutosuggestionsGeneratorsEnabled => config.autosuggestions_generators_enabled,
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            config.autosuggestions_completions_extended
+        }
         ConfigKey::AutosuggestionsMenuEnabled => config.autosuggestions_menu_enabled,
         ConfigKey::AutosuggestionsMenuAuto => config.autosuggestions_menu_auto,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,

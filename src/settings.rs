@@ -140,6 +140,7 @@ impl Section {
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
                 ConfigKey::AutosuggestionsGeneratorsEnabled,
+                ConfigKey::AutosuggestionsCompletionsExtended,
                 ConfigKey::AutosuggestionsMenuEnabled,
                 ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
@@ -209,6 +210,15 @@ pub enum ConfigKey {
     /// and serves nothing from the cache on the echo; on re-arms
     /// the menu-open refresh.
     AutosuggestionsGeneratorsEnabled,
+    /// The installed extended tier's kill switch (suggest-embed
+    /// spec, the generous default) — the Terminal card's row beside
+    /// its siblings: the packaged `completions-extended.toml` adds
+    /// beside the embedded floor while on. An off flip reloads the
+    /// table on the echo's `set_config` pass (the floor answers
+    /// alone); on adds the tier again, the already-parsed file
+    /// reused — a system data file does not change under a running
+    /// app.
+    AutosuggestionsCompletionsExtended,
     /// The completion menu's own toggle (suggest-menu spec) — the
     /// Terminal card's row beside its siblings: `Ctrl+Space`'s
     /// candidate list over the tab's current input. An off flip
@@ -396,6 +406,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
             ConfigKey::AutosuggestionsGeneratorsEnabled => "autosuggestions_generators_enabled",
+            ConfigKey::AutosuggestionsCompletionsExtended => "autosuggestions_completions_extended",
             ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
             ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
@@ -463,6 +474,7 @@ pub enum PlannedWrite {
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
     AutosuggestionsGeneratorsEnabled(bool),
+    AutosuggestionsCompletionsExtended(bool),
     AutosuggestionsMenuEnabled(bool),
     AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
@@ -571,6 +583,9 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsGeneratorsEnabled(_) => {
                 ConfigKey::AutosuggestionsGeneratorsEnabled
+            }
+            PlannedWrite::AutosuggestionsCompletionsExtended(_) => {
+                ConfigKey::AutosuggestionsCompletionsExtended
             }
             PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
             PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
@@ -684,6 +699,10 @@ impl PlannedWrite {
             }
             PlannedWrite::AutosuggestionsGeneratorsEnabled(value) => handler.set(
                 ConfigKey::AutosuggestionsGeneratorsEnabled.key_name(),
+                *value,
+            ),
+            PlannedWrite::AutosuggestionsCompletionsExtended(value) => handler.set(
+                ConfigKey::AutosuggestionsCompletionsExtended.key_name(),
                 *value,
             ),
             PlannedWrite::AutosuggestionsMenuEnabled(value) => {
@@ -1002,6 +1021,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
         | ConfigKey::AutosuggestionsGeneratorsEnabled
+        | ConfigKey::AutosuggestionsCompletionsExtended
         | ConfigKey::AutosuggestionsMenuEnabled
         | ConfigKey::AutosuggestionsMenuAuto
         // The delay resolves per update like the toggles
@@ -2408,6 +2428,9 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         }
         ConfigKey::AutosuggestionsGeneratorsEnabled => {
             Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(checked))
+        }
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            Some(PlannedWrite::AutosuggestionsCompletionsExtended(checked))
         }
         ConfigKey::AutosuggestionsMenuEnabled => {
             Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))

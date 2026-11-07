@@ -231,6 +231,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
         PlannedWrite::AutosuggestionsGeneratorsEnabled(true),
+        PlannedWrite::AutosuggestionsCompletionsExtended(true),
         PlannedWrite::AutosuggestionsMenuEnabled(true),
         PlannedWrite::AutosuggestionsMenuAuto(false),
         PlannedWrite::AutosuggestionsDelayMs(0),
@@ -326,6 +327,10 @@ fn key_names_match_the_config_file_fields() {
         (
             ConfigKey::AutosuggestionsGeneratorsEnabled,
             "autosuggestions_generators_enabled",
+        ),
+        (
+            ConfigKey::AutosuggestionsCompletionsExtended,
+            "autosuggestions_completions_extended",
         ),
         (
             ConfigKey::AutosuggestionsDelayMs,
@@ -974,6 +979,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
             ConfigKey::AutosuggestionsGeneratorsEnabled,
+            ConfigKey::AutosuggestionsCompletionsExtended,
             ConfigKey::AutosuggestionsMenuEnabled,
             ConfigKey::AutosuggestionsMenuAuto,
             ConfigKey::AutosuggestionsDelayMs,
