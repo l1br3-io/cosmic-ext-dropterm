@@ -1,3 +1,4 @@
+use super::super::{SpecCommand, parse_completions};
 use super::*;
 
 /// One lexer row's expectation: the token's text, whether whitespace (or
@@ -213,4 +214,258 @@ fn unicode_rides_whole_inside_words() {
         &[("echo", true, false), ("café", true, false)],
     );
     assert_lex("\"café\" ", &[("café", true, false)]);
+}
+
+// --- the walk (suggest-walker Task 2; engine-rea §3, §7) ---
+
+/// The walker fixture's table, parsed once per run (the shared-fixture
+/// rule): git with per-subcommand flags and persistence, mkdir with a
+/// mode flag and a folders arg, rustc with `--emit`'s literal
+/// suggestions, the sudo shape beside apt, gh's two-level nesting, and
+/// flit's depleted-positional pair.
+static TREES: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(include_str!("../fixtures/walker.toml")).expect("the walker fixture parses")
+});
+
+/// The schema fixture's docker tree (suggest-schema's own shape
+/// exercise), parsed once — nesting, persistence, exclusivity,
+/// hidden, priority, and the exec arg pair live here.
+static NESTED: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(include_str!("../fixtures/nested.toml")).expect("the nested fixture parses")
+});
+
+/// Walks `typed` (command word and all) against `table` and answers
+/// the stop point's row labels — the shape every walker-table
+/// assertion reads. `None` is no entry for the command word, or a
+/// command-restart onto an unknown entry — silence, never a guess.
+fn row_labels(typed: &str, table: &[SpecCommand]) -> Option<Vec<String>> {
+    let tokens = lex(typed);
+    let entry = table.iter().find(|command| {
+        command.name == tokens[0].text
+            || command.aliases.iter().any(|alias| *alias == tokens[0].text)
+    })?;
+    let stop = walk(&tokens[1..], entry, table)?;
+    Some(stop.rows().into_iter().map(|row| row.label).collect())
+}
+
+/// The same walk's row suffixes — what an accept writes for each row.
+fn row_suffixes(typed: &str, table: &[SpecCommand]) -> Option<Vec<String>> {
+    let tokens = lex(typed);
+    let entry = table.iter().find(|command| {
+        command.name == tokens[0].text
+            || command.aliases.iter().any(|alias| *alias == tokens[0].text)
+    })?;
+    let stop = walk(&tokens[1..], entry, table)?;
+    Some(stop.rows().into_iter().map(|row| row.suffix).collect())
+}
+
+#[test]
+fn per_subcommand_flags_answer_their_own_node() {
+    // §7.1: `git commit --am` lists commit's flags, not git's whole
+    // flag table — a non-persistent root flag never rides down, and a
+    // persistent one does.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git commit --am", trees),
+        Some(vec!["--amend".to_string()])
+    );
+    assert_eq!(
+        row_labels("git commit --", trees),
+        Some(
+            ["--amend", "--no-edit", "--no-pager"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        ),
+        "the persistent root flag rides; --version does not"
+    );
+    assert_eq!(
+        row_labels("git --", trees),
+        Some(
+            ["--no-pager", "--version"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        )
+    );
+}
+
+#[test]
+fn a_flags_argument_takes_the_value_seat() {
+    // §7.2: after `--emit` or `--emit=` the next seat is the option's
+    // argument — its literal suggestions, never another flag.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("rustc --emit=", trees),
+        Some(
+            ["asm", "link", "metadata", "mir"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        ),
+        "the = form answers the value seat with the whole vocabulary"
+    );
+    assert_eq!(
+        row_labels("rustc --emit=a", trees),
+        Some(vec!["asm".to_string()])
+    );
+    assert_eq!(
+        row_labels("rustc --emit lin", trees),
+        Some(vec!["link".to_string()]),
+        "the space form is the same seat"
+    );
+    // The value seat never writes an `=` — the suffix is the bare
+    // remainder of the row's name beyond the partial.
+    assert_eq!(
+        row_suffixes("rustc --emit=a", trees),
+        Some(vec!["sm".to_string()])
+    );
+    // A flag's argument with no suggestions is silence: `mkdir -m `
+    // lists no flags, no subcommands, nothing.
+    assert_eq!(row_labels("mkdir -m ", trees), Some(Vec::new()));
+}
+
+#[test]
+fn nested_subcommands_descend_to_any_depth() {
+    // §7.3: `docker compose up`, `gh pr create` — the walk descends
+    // one node per complete token, to any depth.
+    let trees = &*TREES;
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("docker compose u", nested),
+        Some(vec!["up".to_string()])
+    );
+    assert_eq!(
+        row_labels("gh pr cre", trees),
+        Some(vec!["create".to_string()])
+    );
+}
+
+#[test]
+fn persistent_flags_ride_into_children() {
+    // §7.4: `git --no-pager log --one` still finds `--oneline` — the
+    // accepted persistent flag rode through the descent.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git --no-pager log --one", trees),
+        Some(vec!["--oneline".to_string()])
+    );
+}
+
+#[test]
+fn variadic_args_keep_the_path_seat_until_a_flag_appears() {
+    // §7.5: a variadic filepaths arg keeps handing the seat to the
+    // Path provider (no spec rows) until a flag-shaped word appears —
+    // then the node's flags answer.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git add a b src/", trees),
+        Some(Vec::new()),
+        "the template arg answers no spec rows — the Path provider's seat"
+    );
+    assert_eq!(
+        row_labels("git add src/ --", trees),
+        Some(
+            ["--force", "--no-pager", "--patch"]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        ),
+        "the flag breaks the variadic and takes the seat (the persistent root flag rides)"
+    );
+}
+
+#[test]
+fn optional_args_retry_flags_and_suggestions_first() {
+    // The optional re-try (engine-rea §3): when every remaining arg is
+    // optional, a flag word is tried as a flag — and at a node stop
+    // the first arg's literal suggestions answer word partials beside
+    // the node's own names.
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("docker compose up --det", nested),
+        Some(vec!["--detach".to_string()]),
+        "the optional arg yields to a flag"
+    );
+    assert_eq!(
+        row_labels("docker compose up we", nested),
+        Some(vec!["web".to_string()]),
+        "the service arg's suggestions answer the word partial"
+    );
+}
+
+#[test]
+fn a_command_arg_restarts_the_walk_on_its_own_entry() {
+    // §7.6: the sudo shape — a `command` arg restarts the walk on the
+    // named command's own spec; a command with no entry is silence,
+    // never a guess.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("sudo apt ins", trees),
+        Some(vec!["install".to_string()])
+    );
+    assert_eq!(
+        row_labels("sudo frobnicate ins", trees),
+        None,
+        "the restart onto an unknown command silences"
+    );
+}
+
+#[test]
+fn an_unknown_flag_mid_line_is_skipped_as_a_bare_flag() {
+    // The locked tolerance: the flat seats never inspected
+    // intermediate tokens, and `git --whatever commit --am` keeps
+    // answering — an unknown flag is skipped, not fatal.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git --whatever commit --am", trees),
+        Some(vec!["--amend".to_string()])
+    );
+}
+
+#[test]
+fn a_word_the_node_does_not_know_is_skipped_when_no_args() {
+    // Today's flat tolerance kept: a word that names neither flag nor
+    // subcommand at an arg-less node is skipped and the walk stays.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("git xyz commit --am", trees),
+        Some(vec!["--amend".to_string()])
+    );
+}
+
+#[test]
+fn the_root_entry_answers_by_name_or_alias() {
+    // The entry lookup honors the table's own aliases (the engine's
+    // root prefix-match over names plus alias names).
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("dock compose u", nested),
+        Some(vec!["up".to_string()])
+    );
+}
+
+#[test]
+fn a_depleted_positional_silences_the_later_seats() {
+    // The engine's slots-full rule (§4.1): once a node's own
+    // positional args are exhausted by values, later seats answer
+    // nothing — the positional slots are full. A flag's argument
+    // depleting does not: names still answer.
+    let trees = &*TREES;
+    assert_eq!(
+        row_labels("flit one bu", trees),
+        Some(Vec::new()),
+        "the one positional consumed by `one` — slots full, silence"
+    );
+    assert_eq!(
+        row_labels("flit bu", trees),
+        Some(vec!["build".to_string()]),
+        "no positional consumed — the subcommands answer"
+    );
+    let nested = &*NESTED;
+    assert_eq!(
+        row_labels("docker --config x exe", nested),
+        Some(vec!["exec".to_string()]),
+        "a flag's argument depleting keeps the names answering"
+    );
 }

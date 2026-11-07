@@ -1,0 +1,129 @@
+# The walker's whole surface in miniature (suggest-walker spec): the
+# engine-rea §7 shapes as one table — per-subcommand flags, a flag
+# that takes an argument, nesting, persistence (one persistent root
+# flag beside one that is not), a variadic filepaths arg, literal
+# argument suggestions, the sudo shape, and a depleted-positional
+# pair. Shared by the walker's unit table (walker/tests.rs) and the
+# end-to-end seat tests (suggest/tests.rs).
+
+[[commands]]
+name = "git"
+
+[[commands.flags]]
+name = "--no-pager"
+description = "Do not pipe git output into a pager"
+persistent = true
+
+[[commands.flags]]
+name = "--version"
+description = "Print git's version"
+
+[[commands.subcommands]]
+name = "add"
+
+[[commands.subcommands.flags]]
+name = "--force"
+description = "Add ignored files too"
+
+[[commands.subcommands.flags]]
+name = "--patch"
+description = "Interactively choose hunks"
+
+[[commands.subcommands.args]]
+name = "paths"
+template = "filepaths"
+variadic = true
+
+[[commands.subcommands]]
+name = "commit"
+
+[[commands.subcommands.flags]]
+name = "--amend"
+description = "Replace the tip of the current branch"
+
+[[commands.subcommands.flags]]
+name = "--no-edit"
+
+[[commands.subcommands]]
+name = "log"
+
+[[commands.subcommands.flags]]
+name = "--oneline"
+description = "Shrink each commit to one line"
+
+[[commands]]
+name = "mkdir"
+
+[[commands.flags]]
+name = "--mode"
+aliases = ["-m"]
+
+[[commands.flags.args]]
+name = "mode"
+
+[[commands.args]]
+name = "dirs"
+template = "folders"
+
+[[commands]]
+name = "rustc"
+
+[[commands.flags]]
+name = "--emit"
+
+[[commands.flags.args]]
+name = "kind"
+
+[[commands.flags.args.suggestions]]
+name = "asm"
+
+[[commands.flags.args.suggestions]]
+name = "link"
+
+[[commands.flags.args.suggestions]]
+name = "metadata"
+
+[[commands.flags.args.suggestions]]
+name = "mir"
+
+[[commands]]
+name = "sudo"
+
+[[commands.args]]
+name = "command"
+command = true
+
+[[commands]]
+name = "apt"
+
+[[commands.subcommands]]
+name = "install"
+description = "Install packages"
+
+[[commands.subcommands]]
+name = "update"
+
+[[commands]]
+name = "gh"
+
+[[commands.subcommands]]
+name = "pr"
+
+[[commands.subcommands.subcommands]]
+name = "checkout"
+
+[[commands.subcommands.subcommands]]
+name = "create"
+description = "Create a pull request"
+
+[[commands]]
+name = "flit"
+
+[[commands.subcommands]]
+name = "build"
+
+[[commands.subcommands]]
+name = "run"
+
+[[commands.args]]
+name = "target"

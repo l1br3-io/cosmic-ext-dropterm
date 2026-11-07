@@ -1493,6 +1493,179 @@ fn pin_shape(command: &str, entries: &[&str], list: &str) {
     }
 }
 
+// --- the spec walker (suggest-walker; engine-rea §7 end to end) ---
+
+/// The walker fixture's table, parsed once per run (the shared-fixture
+/// rule): the §7 shapes as one table, seated beside the built-in five
+/// the way a user's file seats them.
+static WALKER_TABLE: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
+    parse_completions(include_str!("fixtures/walker.toml")).expect("the walker fixture parses")
+});
+
+/// The schema fixture's docker tree, parsed once — the nesting and
+/// persistence shapes its file seats at every depth.
+static NESTED_TABLE: LazyLock<Vec<SpecCommand>> =
+    LazyLock::new(|| parse_completions(NESTED_FILE).expect("the nested fixture parses"));
+
+/// One anchored step with `typed` after the "$ " anchor against a
+/// walker fixture table — the walker's end-to-end ghost shape.
+fn step_typed_table(typed: &str, table: &[SpecCommand], suggest: &mut Suggest) -> Option<Showing> {
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: table,
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+/// The menu's whole collection against a walker fixture table — the
+/// walker's end-to-end list shape.
+fn menu_table(typed: &str, table: &[SpecCommand]) -> Vec<MenuCandidate> {
+    let suggest = specs_suggest();
+    let observation = Observation {
+        specs_table: table,
+        ..obs()
+    };
+    candidates(typed, &suggest, &observation)
+}
+
+/// One collection's labels, in display order.
+fn menu_labels(rows: &[MenuCandidate]) -> Vec<&str> {
+    rows.iter().map(|row| row.label.as_str()).collect()
+}
+
+#[test]
+fn a_subcommands_own_flags_complete_at_its_seat() {
+    // §7.1: `git commit --am` finishes to commit's own `--amend` —
+    // not git's root table. A persistent root flag rides into the
+    // child; a plain one stays at the root.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git commit --am", table, &mut suggest)
+        .expect("commit's own flag answers");
+    assert_eq!(shown.suffix, "end");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    assert_eq!(
+        menu_labels(&menu_table("git commit --", table)),
+        ["--amend", "--no-edit", "--no-pager"],
+        "the persistent --no-pager rides; --version does not"
+    );
+    assert_eq!(
+        menu_labels(&menu_table("git --", table)),
+        ["--no-pager", "--version"]
+    );
+}
+
+#[test]
+fn a_flags_argument_takes_the_value_seat() {
+    // §7.2: after `--emit` — `=` or space — the next seat is the
+    // option's argument: its literal suggestions, and an accept
+    // writes the bare value (never an `=`). A flag whose argument
+    // carries no suggestions is silence (`mkdir -m `), and the
+    // depleted mode seat hands `mkdir -m 755 ` to the Path provider.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("rustc --emit=a", table, &mut suggest)
+        .expect("the value seat answers from the suggestions");
+    assert_eq!(shown.suffix, "sm");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    assert_eq!(
+        menu_labels(&menu_table("rustc --emit=", table)),
+        ["asm", "link", "metadata", "mir"],
+        "the whole vocabulary lists at the empty value partial"
+    );
+    let rows = menu_table("rustc --emit=a", table);
+    assert_eq!(rows[0].suffix, "sm", "the suffix is the bare remainder");
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed_table("mkdir -m ", table, &mut suggest),
+        None,
+        "the mode seat has nothing to say"
+    );
+    assert!(
+        menu_table("mkdir -m ", table).is_empty(),
+        "no flags list at a value seat"
+    );
+    assert!(
+        menu_table("mkdir -m 755 ", table).is_empty(),
+        "the folder seat is the Path provider's to answer"
+    );
+}
+
+#[test]
+fn nested_subcommands_complete_to_any_depth() {
+    // §7.3: `docker compose u` finishes to `up`, `gh pr cre` to
+    // `create` — the menu's rows carrying the nested entries'
+    // descriptions through.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("docker compose u", &NESTED_TABLE, &mut suggest)
+        .expect("the nested subcommand answers");
+    assert_eq!(shown.suffix, "p");
+    let rows = menu_table("docker compose u", &NESTED_TABLE);
+    assert_eq!(
+        rows[0].description.as_deref(),
+        Some("Create and start containers")
+    );
+    let mut suggest = specs_suggest();
+    let shown =
+        step_typed_table("gh pr cre", table, &mut suggest).expect("the second level answers");
+    assert_eq!(shown.suffix, "ate");
+}
+
+#[test]
+fn persistent_flags_ride_into_children() {
+    // §7.4: `git --no-pager log --one` still finds `--oneline`
+    // because `--no-pager` rode through the descent.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git --no-pager log --one", &WALKER_TABLE, &mut suggest)
+        .expect("the persistent flag rode through");
+    assert_eq!(shown.suffix, "line");
+}
+
+#[test]
+fn variadic_args_keep_the_path_seat_until_a_flag_appears() {
+    // §7.5: `git add src/ --` answers add's own flags (the persistent
+    // root flag riding with them); the variadic path seat between
+    // them answers no spec rows — the Path provider's seat alone.
+    let table = &*WALKER_TABLE;
+    assert_eq!(
+        menu_labels(&menu_table("git add src/ --", table)),
+        ["--force", "--no-pager", "--patch"]
+    );
+    assert!(
+        menu_table("git add a b src/", table).is_empty(),
+        "the path seat is not the specs' to answer"
+    );
+}
+
+#[test]
+fn a_command_arg_restarts_the_walk_on_its_own_entry() {
+    // §7.6: the sudo shape — `sudo apt ins` walks apt's own entry.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("sudo apt ins", &WALKER_TABLE, &mut suggest)
+        .expect("the restarted walk answers");
+    assert_eq!(shown.suffix, "tall");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn an_unknown_flag_mid_line_is_skipped_as_a_bare_flag() {
+    // The locked tolerance: `git --whatever st` keeps answering the
+    // subcommand seat — the flat seats never inspected intermediate
+    // tokens, and the walker keeps that.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git --whatever st", builtin_specs(), &mut suggest)
+        .expect("the tolerance holds");
+    assert_eq!(shown.suffix, "ash");
+    let suggest = specs_suggest();
+    let rows = candidates("git --whatever st", &suggest, &obs());
+    assert_eq!(menu_labels(&rows), ["stash", "status"]);
+}
+
 // --- the alias map (suggest-aliases) ---
 
 /// One anchored step with `typed` after the "$ " anchor and a

@@ -900,27 +900,6 @@ pub struct SpecCommand {
 }
 
 impl SpecCommand {
-    /// Today's flat seat view (suggest-schema spec): the root entry's
-    /// flag names or subcommand names beside their descriptions — the
-    /// one shape both unwalked seats read until suggest-walker
-    /// replaces them. The nested tiers are parsed and carried, not
-    /// yet consulted. A filter on each list and one chain shape a
-    /// single iterator type over the two lists; exactly one list
-    /// contributes per call.
-    fn seat_entries(&self, flag_seat: bool) -> impl Iterator<Item = (&str, Option<&str>)> {
-        let flags = self
-            .flags
-            .iter()
-            .filter(move |_| flag_seat)
-            .map(|flag| (flag.name.as_str(), flag.description.as_deref()));
-        let subcommands = self
-            .subcommands
-            .iter()
-            .filter(move |_| !flag_seat)
-            .map(|command| (command.name.as_str(), command.description.as_deref()));
-        flags.chain(subcommands)
-    }
-
     /// The ruled order, recursive (suggest-schema spec): every entry
     /// list — subcommands, flags, and the literal suggestions under a
     /// command's or a flag's arguments — sorts by name at every
@@ -953,7 +932,13 @@ struct SpecsFile {
 
 /// The built-in table, file-shaped: the curated const converted
 /// once, on first use — the fallback every load failure answers,
-/// and the floor a valid file's commands merge over.
+/// and the floor a valid file's commands merge over. The five's
+/// flag lists convert as `persistent`: the flat era's own ruling
+/// (flag-specs OQ 2 — git accepts flags before and after subcommands
+/// alike) is, under the recursive tree the walker walks, exactly
+/// persistence — a subcommand seat keeps answering them until the
+/// corpus's per-subcommand truth replaces the five wholesale
+/// (suggest-embed).
 static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
     SPECS
         .iter()
@@ -972,6 +957,7 @@ static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
                 .iter()
                 .map(|entry| SpecFlag {
                     name: (*entry).to_string(),
+                    persistent: true,
                     ..Default::default()
                 })
                 .collect(),
@@ -1094,42 +1080,26 @@ fn resolve_alias<'a>(word: &'a str, aliases: &'a HashMap<String, String>) -> &'a
     current
 }
 
-/// The specs provider's context carve (flag-specs spec): the line's
-/// command word and the trailing token, when the token holds a
-/// seat the table answers. A `--`-prefixed token is the **flag
-/// seat**, consulted from any argument seat (OQ 2: git accepts
-/// flags before and after subcommands alike — the flat table's
-/// approximation of fish's per-subcommand gating, which is where
-/// the growth path refines if the table ever grows flags worth
-/// separating). Any other token is the **subcommand seat**, the
-/// first argument seat only (ruled: once an argument holds it, a
-/// later word never consults the subcommand table). `None` is no
-/// specs context: the command word itself being entered (the
-/// catalog's seat) or a later non-flag argument seat. The command
-/// word resolves through the alias map (suggest-aliases spec) —
-/// re-target, never rewrite: a mapped alias's expansion command
-/// becomes the lookup context, the seats still judged on the typed
-/// line.
-fn specs_context<'a>(
-    typed: &'a str,
-    aliases: &'a HashMap<String, String>,
-) -> Option<(&'a str, &'a str)> {
+/// The specs provider's seat carve, walker era (suggest-walker
+/// spec): lex the typed segment, take the command word through the
+/// alias map — re-target, never rewrite (suggest-aliases spec): a
+/// mapped alias answers what its expansion's command answers, and an
+/// accept still writes only the suffix — and walk the remaining
+/// tokens into the entry. `None` is command position, no command
+/// word, an unknown command, or a command-restart onto an unknown
+/// entry: silence, never a guess.
+fn specs_stop<'o>(typed: &str, obs: &'o Observation<'_>) -> Option<walker::StopPoint<'o>> {
     if is_command_position(typed) {
         return None;
     }
-    let token = trailing_token(typed);
-    let completed = completed_words(&typed[..typed.len() - token.len()]);
-    // Re-target, never rewrite (suggest-aliases spec): the map's
-    // word becomes the lookup context — `gc --dr` answers what
-    // `git --dr` answers — but an accept still writes only the
-    // suffix; DropTerm never sends the expansion unless the user
-    // accepted ghost text that spelled it.
-    let command = resolve_alias(completed.first()?, aliases);
-    if token.starts_with("--") || completed.len() == 1 {
-        Some((command, token))
-    } else {
-        None
-    }
+    let tokens = walker::lex(typed);
+    let first = tokens.first()?;
+    let command = resolve_alias(first.text.as_ref(), obs.aliases);
+    let entry = obs
+        .specs_table
+        .iter()
+        .find(|spec| spec.name == command || spec.aliases.iter().any(|alias| alias == command))?;
+    walker::walk(&tokens[1..], entry, obs.specs_table)
 }
 
 /// The typed segment's completed shell words (flag-specs spec):
@@ -1156,46 +1126,30 @@ fn completed_words(typed: &str) -> Vec<&str> {
     words
 }
 
-/// The curated-specs provider's candidate function (flag-specs
-/// spec): complete the trailing token from the curated table —
-/// subcommands at the subcommand seat, `--`-prefixed long flags
-/// from any argument seat (no short flags, ruled: the collision
-/// space with bundled short flags is guesswork in a single-choice
-/// ghost). Strict prefix, must extend, shortest wins, ties
-/// alphabetical — the catalog's ruled match policy reused verbatim
-/// (the table's sorted lists make `min_by_key` keep the
-/// alphabetically-first of equal-length ties). A bare trailing
-/// space is no word at all (the catalog's empty-word rule, one
-/// policy across providers), and the suffix rides
-/// `escape_for_shell` like every provider even though the table is
-/// safe by construction. Gated on the config toggle and the shared
-/// spawn allowlist (OQ 1: one gate is simpler to explain); an
-/// unknown command is silence, never a guess — and so is a
-/// flag-seat token of exactly `--`, the no-information floor
-/// (suggest-accuracy spec: a bare `--` matches every flag equally;
-/// `--a` and longer discriminate).
+/// The curated-specs provider's candidate function, walker era
+/// (suggest-walker spec): the stop point's rows under the unchanged
+/// policy — strict prefix, must extend (the rows arrive already
+/// extended), shortest wins, ties in the rows' own order
+/// (alphabetical at equal rank). The ghost's own floors stay the
+/// ghost's: a bare trailing space is no word at all (the catalog's
+/// empty-word rule, one policy across providers), and a partial of
+/// exactly `--` is the no-information floor (suggest-accuracy spec:
+/// a bare `--` matches every flag equally; `--a` and longer
+/// discriminate) — the walker returns rows for both, the ghost
+/// declines them. Gated on the config toggle and the shared spawn
+/// allowlist (OQ 1); an unknown command is silence, never a guess.
 fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return None;
     }
-    let (command, token) = specs_context(typed, obs.aliases)?;
-    if token.is_empty() {
+    let stop = specs_stop(typed, obs)?;
+    if stop.partial().is_empty() || stop.partial() == "--" {
         return None;
     }
-    // The no-information floor (suggest-accuracy spec): a token of
-    // exactly `--` matches every long flag in the table equally — the
-    // tiebreak picks one with no evidence. One character past the
-    // dashes (`--a`) is a strict prefix that discriminates, and stays
-    // ruled behavior.
-    if token == "--" {
-        return None;
-    }
-    let spec = obs.specs_table.iter().find(|spec| spec.name == command)?;
-    let (name, _) = spec
-        .seat_entries(token.starts_with("--"))
-        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
-        .min_by_key(|(name, _)| name.len())?;
-    escape_for_shell(&name[token.len()..])
+    stop.rows()
+        .into_iter()
+        .min_by_key(|row| row.label.len())
+        .map(|row| row.suffix)
 }
 
 /// The generator seat's set choice (suggest-generators spec): which
@@ -1576,41 +1530,22 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
         .collect()
 }
 
-/// The curated-specs provider's whole set (suggest-menu spec): every
-/// table entry with the trailing token as a strict prefix —
-/// subcommands at the subcommand seat, long flags from any argument
-/// seat. The single-choice ghost's no-information floors are the
-/// ghost's alone: a list is information, not a guess, so the bare
-/// `--` lists the flag table whole and an empty trailing token at
-/// the subcommand seat (`git ` with the space echoed) lists the
-/// command's whole subcommand table — the scoped next level the
-/// command word settles the menu into. Each remainder rides the
-/// escape rule like every provider's, and each row carries its table
-/// entry's description where one exists (suggest-specs-data spec) —
-/// the menu's dim second column; the ghost never sees it (locked:
-/// single-choice text).
+/// The curated-specs provider's whole set, walker era (suggest-menu +
+/// suggest-walker specs): the stop point's rows — the menu's
+/// strict-prefix list over the walked tree, every row carrying its
+/// entry's description where one exists (suggest-specs-data spec)
+/// into the dim second column; the ghost never sees it (locked:
+/// single-choice text). The single-choice ghost's no-information
+/// floors are the ghost's alone: a list is information, so the bare
+/// `--` lists the flag seat whole and an empty trailing token lists
+/// the scoped next level the command word settled into.
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
     }
-    let Some((command, token)) = specs_context(typed, obs.aliases) else {
-        return Vec::new();
-    };
-    let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
-        return Vec::new();
-    };
-    spec.seat_entries(token.starts_with("--"))
-        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
-        .filter_map(|(name, description)| {
-            let suffix = escape_for_shell(&name[token.len()..])?;
-            Some(MenuCandidate {
-                label: name.to_string(),
-                suffix,
-                description: description.map(str::to_string),
-                source: SuggestionSource::Specs,
-            })
-        })
-        .collect()
+    specs_stop(typed, obs)
+        .map(|stop| stop.rows())
+        .unwrap_or_default()
 }
 
 /// The command-name provider's whole set (suggest-menu spec): every
