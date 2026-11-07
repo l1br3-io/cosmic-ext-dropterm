@@ -42,7 +42,7 @@ use indexmap::IndexSet;
 use std::{
     borrow::Cow,
     cell::Cell,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -692,6 +692,27 @@ pub struct Terminal {
     /// death. Dies with the terminal, so a respawn starts clean by
     /// construction.
     program_status: Option<ProgramStatus>,
+    /// The inline-image session machine's open half (iterm-images
+    /// spec): one `MultipartFile` per terminal (OQ-1 — imgcat never
+    /// interleaves), a new header aborting whatever stood. `None` is
+    /// idle. Dies with the terminal, so a respawn starts clean by
+    /// construction.
+    image_session: Option<PendingImage>,
+    /// The inline-image id issuer (iterm-images spec): monotonic per
+    /// terminal — ids outlive eviction, and a respawn's ids restart
+    /// with the fresh store beside them.
+    image_seq: u64,
+    /// The decoded-image store (iterm-images spec): id → pixels,
+    /// oldest-evicted under the budget. Shared to the widget through
+    /// the Arc — the grid carries ids, this is the pixel side. Dies
+    /// with the terminal, so a respawn starts it empty by
+    /// construction.
+    pub images: Arc<Mutex<ImageStore>>,
+    /// Whether the inline-image pipeline runs (iterm-images spec) —
+    /// the resolved `images_enabled` flag, re-read at every
+    /// `set_config`; false makes OSC 1337 inert end to end (the arm
+    /// never places).
+    images_enabled: bool,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1453,6 +1474,10 @@ impl Terminal {
             last_foreground_child: false,
             reported_progress: None,
             program_status: None,
+            image_session: None,
+            image_seq: 0,
+            images: Arc::new(Mutex::new(ImageStore::default())),
+            images_enabled: true,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1803,6 +1828,88 @@ impl Terminal {
     /// clearing even the persistent `done`/`error`.
     pub fn note_terminal_reset(&mut self) {
         self.program_status = None;
+    }
+
+    /// Records one OSC 1337 arrival (iterm-images spec): the fork's
+    /// raw parameter slices, forwarded from the event surface. The
+    /// session machine runs here — the legacy `File=` single-shot
+    /// decodes and places at once; the chunked session accumulates
+    /// `FilePart`s under one open `MultipartFile` header until
+    /// `FileEnd` (a new header aborts whatever stood; a part or end
+    /// without a session is ignored). A kill-switched pipeline, a
+    /// malformed payload, or a blown cap drops whole — nothing
+    /// half-places, nothing logs.
+    pub fn note_inline_image(&mut self, params: &[Vec<u8>]) {
+        if !self.images_enabled {
+            return;
+        }
+        let Some(first) = params.first() else { return };
+
+        if first.starts_with(b"File=") {
+            // Legacy single-shot: args and payload in one sequence —
+            // the payload still base64 on the wire, decoded here, a
+            // malformed one dropped whole.
+            let (args, encoded) = parse_image_args(params);
+            if let Some(encoded) = encoded
+                && let Some(payload) = decode_base64(&encoded)
+            {
+                self.place_inline_image(args, &payload);
+            }
+        } else if first.starts_with(b"MultipartFile=") {
+            // A second header aborts the first by replacement (the
+            // first session's bytes are simply dropped).
+            let (args, _) = parse_image_args(params);
+            self.image_session = Some(PendingImage {
+                args,
+                payload: Vec::new(),
+            });
+        } else if let Some(chunk) = first.strip_prefix(b"FilePart=") {
+            if let Some(session) = self.image_session.as_mut() {
+                match decode_base64(chunk) {
+                    Some(bytes) => {
+                        session.payload.extend_from_slice(&bytes);
+                        if session.payload.len() > IMAGE_PAYLOAD_CAP {
+                            // The cap drops the session whole, never a
+                            // half-buffered image.
+                            self.image_session = None;
+                        }
+                    }
+                    None => self.image_session = None,
+                }
+            }
+        } else if first == b"FileEnd"
+            && let Some(session) = self.image_session.take()
+        {
+            self.place_inline_image(session.args, &session.payload);
+        }
+        // Anything else — a bare or unknown opcode — is silence.
+    }
+
+    /// Decode one completed payload and place it (iterm-images
+    /// spec): `inline=0` renders nothing (no download UI — a map-gate
+    /// never), the caps drop whole before any decode, the decoded
+    /// pixels enter the store under a fresh id, and the grid's cells
+    /// are diced through the fork's `Term::place_image` — the
+    /// placement rides the grid like text from there.
+    fn place_inline_image(&mut self, args: ImageArgs, payload: &[u8]) {
+        if !args.inline || payload.is_empty() || payload.len() > IMAGE_PAYLOAD_CAP {
+            return;
+        }
+        let Some(rgba) = decode_image(payload) else {
+            return;
+        };
+        let (width, height) = rgba.dimensions();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "decode-capped dimensions (8192) are exact in f32"
+        )]
+        let inherent = (width as f32, height as f32);
+        self.image_seq += 1;
+        let id = self.image_seq;
+        self.images.lock().unwrap().insert(id, rgba);
+        let (cols, rows) = resolve_placement(&args, inherent, &self.size);
+        self.term.lock().place_image(id, cols, rows);
+        self.needs_update = true;
     }
 
     /// Drains the finish latch once (command-lifecycle spec): the
@@ -3586,3 +3693,298 @@ fn is_invisible(c: char) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+// ===== Inline images (iterm-images spec) =====
+
+/// The per-image payload cap (iterm-images spec): the largest
+/// base64-decoded image bytes one sequence may carry, enforced while
+/// chunks accumulate — a bigger sequence drops whole, never
+/// half-buffered. A default; flip = one line (OQ-4).
+const IMAGE_PAYLOAD_CAP: usize = 32 * 1024 * 1024;
+
+/// The decode dimension ceiling (iterm-images spec): the `image`
+/// crate's width/height limit, applied before any decode — half the
+/// decompression-bomb guard. A default; flip = one line (OQ-4).
+const IMAGE_MAX_DIMENSION: u32 = 8192;
+
+/// The decode allocation ceiling (iterm-images spec): the `image`
+/// crate's allocation limit, applied before any decode — the other
+/// half of the guard. A default; flip = one line (OQ-4).
+const IMAGE_MAX_ALLOC: u64 = 64 * 1024 * 1024;
+
+/// The store's decoded-byte budget across all live images
+/// (iterm-images spec): kitty's and `WezTerm`'s own number. A ceiling,
+/// not an allocation — the oldest image is evicted to stay under it.
+/// A default; flip = one line (OQ-4).
+const IMAGE_STORE_BUDGET: usize = 320 * 1024 * 1024;
+
+/// One `width`/`height` argument in iTerm2's unit grammar
+/// (iterm-images spec): `N` cells, `Npx` pixels, `N%` of the session,
+/// or `auto` — the image's inherent size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SizeUnit {
+    Cells(u32),
+    Pixels(u32),
+    Percent(u32),
+    Auto,
+}
+
+impl SizeUnit {
+    /// Parse `N`, `Npx`, `N%`, or `auto`; anything else is `None` —
+    /// the argument reads as absent, the same silence unknown args
+    /// get. Never panics: the wire is untrusted.
+    fn parse(value: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(value).ok()?;
+        if text.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if let Some(number) = text.strip_suffix("px") {
+            number.parse().ok().map(Self::Pixels)
+        } else if let Some(number) = text.strip_suffix('%') {
+            number.parse().ok().map(Self::Percent)
+        } else {
+            text.parse().ok().map(Self::Cells)
+        }
+    }
+
+    /// Resolve to a pixel length against the cell size, the session
+    /// width, and the image's inherent axis — the units' one
+    /// conversion point.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "unit numbers are user-typed counts far below 2^24; exactness past it is meaningless"
+    )]
+    fn to_pixels(self, cell: f32, session: f32, inherent: f32) -> f32 {
+        match self {
+            Self::Cells(n) => n as f32 * cell,
+            Self::Pixels(n) => n as f32,
+            Self::Percent(n) => session * n as f32 / 100.0,
+            Self::Auto => inherent,
+        }
+    }
+}
+
+/// The placement-relevant args of a `File=`/`MultipartFile=` sequence
+/// (iterm-images spec): the size grammar, the aspect switch, and the
+/// inline gate. `size`/`name`/`type` are hints — carried nowhere day
+/// one — and unknown keys are ignored by the same silence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ImageArgs {
+    width: Option<SizeUnit>,
+    height: Option<SizeUnit>,
+    /// `preserveAspectRatio` — iTerm2's default 1; `0` alone disables.
+    preserve_aspect: bool,
+    /// `inline` — iTerm2's default 0 (a download there); `DropTerm`
+    /// renders nothing and logs nothing when off.
+    inline: bool,
+}
+
+impl Default for ImageArgs {
+    fn default() -> Self {
+        Self {
+            width: None,
+            height: None,
+            preserve_aspect: true,
+            inline: false,
+        }
+    }
+}
+
+impl ImageArgs {
+    /// Apply one `key=value` pair; a malformed known value reads as
+    /// absent (None), an unknown key is silence.
+    fn apply(&mut self, key: &[u8], value: &[u8]) {
+        match key {
+            b"width" => self.width = SizeUnit::parse(value),
+            b"height" => self.height = SizeUnit::parse(value),
+            b"preserveAspectRatio" => self.preserve_aspect = value != b"0",
+            b"inline" => self.inline = value == b"1",
+            _ => {}
+        }
+    }
+}
+
+/// Parse a `File=`/`MultipartFile=` sequence's parameter slices into
+/// args and (for the legacy single-shot form) its payload: the first
+/// slice carrying a `:` splits there — the pre-colon bytes are one
+/// more arg, the post-colon bytes the base64 payload. Chunked headers
+/// carry no colon and therefore no payload. Pure; never panics.
+fn parse_image_args(slices: &[Vec<u8>]) -> (ImageArgs, Option<Vec<u8>>) {
+    let mut args = ImageArgs::default();
+    let mut payload = None;
+    for (index, slice) in slices.iter().enumerate() {
+        // The first slice carries its opcode prefix; its remainder is
+        // an arg like every other slice.
+        let body = if index == 0 {
+            slice
+                .strip_prefix(b"File=")
+                .or_else(|| slice.strip_prefix(b"MultipartFile="))
+        } else {
+            Some(&slice[..])
+        };
+        let Some(mut body) = body else { continue };
+        // The legacy single-shot form carries its payload after the
+        // first `:` of the slice that has one; the pre-colon bytes
+        // remain an arg.
+        if payload.is_none()
+            && let Some(colon) = body.iter().position(|&byte| byte == b':')
+        {
+            payload = Some(body[colon + 1..].to_vec());
+            body = &body[..colon];
+        }
+        if let Some(equals) = body.iter().position(|&byte| byte == b'=') {
+            args.apply(&body[..equals], &body[equals + 1..]);
+        }
+    }
+    (args, payload)
+}
+
+/// The engine's decoded-image store (iterm-images spec): id → pixels
+/// plus the running decoded-byte total, oldest-evicted to stay under
+/// the budget. Evicted ids draw blank — cells outlive their pixels by
+/// design (OQ-3); the grid's own honesty.
+#[derive(Default)]
+pub struct ImageStore {
+    /// Insertion order doubles as age: the front is the oldest.
+    images: VecDeque<(u64, image::RgbaImage)>,
+    /// The running decoded-byte total across live images.
+    bytes: usize,
+}
+
+impl ImageStore {
+    /// The pixels standing behind an id — `None` when the id never
+    /// existed or was evicted; the blank the widget draws.
+    pub fn get(&self, id: u64) -> Option<&image::RgbaImage> {
+        self.images
+            .iter()
+            .find(|(stored, _)| *stored == id)
+            .map(|(_, rgba)| rgba)
+    }
+
+    /// The running decoded-byte total (test surface for the budget).
+    #[cfg(test)]
+    fn total_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Insert an image under its id, evicting from the oldest until
+    /// the budget holds — but never evicting the image just inserted:
+    /// a single image larger than the whole budget still shows (the
+    /// cap is a ceiling, and decode's own allocation limit keeps any
+    /// single image far under it).
+    fn insert_with_budget(&mut self, id: u64, rgba: image::RgbaImage, budget: usize) {
+        self.bytes += rgba.len();
+        self.images.push_back((id, rgba));
+        while self.bytes > budget && self.images.len() > 1 {
+            if let Some((_, oldest)) = self.images.pop_front() {
+                self.bytes -= oldest.len();
+            }
+        }
+    }
+
+    /// Insert under the shipped budget.
+    fn insert(&mut self, id: u64, rgba: image::RgbaImage) {
+        self.insert_with_budget(id, rgba, IMAGE_STORE_BUDGET);
+    }
+}
+
+/// One accumulating `MultipartFile` session (iterm-images spec): the
+/// header's parsed args plus the growing decoded-payload bytes. One
+/// per terminal (OQ-1 — imgcat never interleaves); a new header
+/// aborts whatever stood by replacement.
+struct PendingImage {
+    args: ImageArgs,
+    payload: Vec<u8>,
+}
+
+/// Decode one image payload under the strict limits (iterm-images
+/// spec): dimension and allocation ceilings applied before any decode
+/// — the decompression-bomb guard — and only the four sanctioned
+/// formats (png/jpeg/gif/webp; anything else fails format detection
+/// and drops whole). Synchronous by design: no threads touch the
+/// damage path.
+fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
+    use image::ImageDecoder;
+
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_MAX_DIMENSION);
+    limits.max_image_height = Some(IMAGE_MAX_DIMENSION);
+    limits.max_alloc = Some(IMAGE_MAX_ALLOC);
+    let mut reader = image::ImageReader::new(io::Cursor::new(payload))
+        .with_guessed_format()
+        .ok()?;
+    // The reader's limits seat covers PNG; every other decoder needs
+    // them set on the decoder itself (the crate's own split), so both
+    // are applied before any decode runs.
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().ok()?;
+    decoder.set_limits(limits).ok()?;
+    // The allocation ceiling, enforced where the decoder exposes its
+    // header dimensions but not its allocations (PNG ignores
+    // max_alloc — the crate's own documented gap): the pixel budget
+    // the ceiling buys at four bytes a pixel, xterm.js's `pixelLimit`
+    // shape. Checked before any pixel is read.
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > IMAGE_MAX_ALLOC / 4 {
+        return None;
+    }
+    image::DynamicImage::from_decoder(decoder)
+        .ok()
+        .map(|dynamic| dynamic.to_rgba8())
+}
+
+/// Pixels to whole cells, never fewer than one (iterm-images spec).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the max(1.0) floors the value into usize range; rounding is the whole point"
+)]
+fn pixels_to_cells(pixels: f32, cell: f32) -> usize {
+    (pixels / cell).round().max(1.0) as usize
+}
+
+/// Resolve a placement's cell dimensions (iterm-images spec): the unit
+/// grammar against the cell pixel size and the session dims, aspect
+/// preserved unless `preserveAspectRatio=0` — one given axis scales
+/// the other along, both given fit within, neither leaves the image
+/// inherent. Every result is at least one cell. Pure; never panics.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "session pixel dims are window-sized, far below 2^24"
+)]
+fn resolve_placement(args: &ImageArgs, image: (f32, f32), size: &Size) -> (usize, usize) {
+    let (inherent_w, inherent_h) = image;
+    let box_w = args.width.unwrap_or(SizeUnit::Auto).to_pixels(
+        size.cell_width,
+        size.width as f32,
+        inherent_w,
+    );
+    let box_h = args.height.unwrap_or(SizeUnit::Auto).to_pixels(
+        size.cell_height,
+        size.height as f32,
+        inherent_h,
+    );
+
+    let (target_w, target_h) = if args.preserve_aspect {
+        let scale = match (args.width, args.height) {
+            (Some(_), Some(_)) => f32::min(box_w / inherent_w, box_h / inherent_h),
+            (Some(_), None) => box_w / inherent_w,
+            (None, Some(_)) => box_h / inherent_h,
+            (None, None) => 1.0,
+        };
+        (inherent_w * scale, inherent_h * scale)
+    } else {
+        (box_w, box_h)
+    };
+
+    (
+        pixels_to_cells(target_w, size.cell_width),
+        pixels_to_cells(target_h, size.cell_height),
+    )
+}
+
+/// Decode a base64 slice from the wire (iterm-images spec); a
+/// malformed slice is `None` — dropped whole, never half-carried.
+fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(data).ok()
+}

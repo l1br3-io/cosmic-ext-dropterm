@@ -1109,10 +1109,18 @@ impl DropTerm {
                 }
             }
             TermEvent::CursorBlinkingChange | TermEvent::ChildExit(_) => {}
-            // Parsed by the fork, dropped here until the engine-side
-            // session machine lands; never crosses to the grid half-
-            // handled.
-            TermEvent::InlineImage(_) => {}
+            // An inline image (iterm-images spec): the fork's raw
+            // parameter slices forwarded to the engine under the lock
+            // exactly as its OSC siblings are — the session machine,
+            // caps, decode, and placement all live there; a kill-
+            // switched pipeline or malformed payload drops whole.
+            TermEvent::InlineImage(params) => {
+                self.tabs[tab_index]
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .note_inline_image(&params);
+            }
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {

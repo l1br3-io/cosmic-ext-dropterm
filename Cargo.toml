@@ -119,6 +119,19 @@ dirs = "6"
 # so no new code enters the build.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
+# The inline-image decode (iterm-images spec, sanctioned at the
+# 2026-11-05 map gate): OSC 1337 payloads decoded synchronously under
+# strict `Limits`. Default features off — only the four formats the
+# spec names (png/jpeg/gif/webp); version-matched to the 0.25.10 line
+# the lock already carries, so no new code enters the build.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# The inline-image wire's base64 (iterm-images spec): OSC 1337
+# payloads and the chunked FileParts arrive base64-encoded.
+# Version-matched to the 0.22.1 line the lock already carries (zbus
+# pulls it), so no new code enters the build.
+base64 = "0.22"
+
 [dependencies.cosmic-text]
 version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]

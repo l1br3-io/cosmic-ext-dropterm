@@ -2683,3 +2683,492 @@ fn a_report_naming_another_host_is_remote() {
     // its word.
     assert!(report.names_remote_host(None));
 }
+
+// ===== Inline images (iterm-images spec) =====
+
+/// A test terminal whose pty never writes (the
+/// `progress_report_terminal` precedent, but `/bin/cat` instead of
+/// `/bin/sh`): the image pins assert exact cell coordinates, and an
+/// interactive shell's prompt would have moved the cursor before the
+/// placement — a silent pty keeps the grid pristine.
+fn image_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/cat".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/cat inline-image test terminal")
+}
+
+/// A small solid-color PNG of the given dimensions, as wire bytes.
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+/// Base64-encode wire bytes.
+fn b64(data: &[u8]) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .encode(data)
+        .into_bytes()
+}
+
+/// The image id standing behind the cell at the given grid point, if
+/// one was placed.
+fn cell_image(terminal: &Terminal, line: i32, col: usize) -> Option<u64> {
+    let term = terminal.term.lock();
+    term.grid()[alacritty_terminal::index::Line(line)][alacritty_terminal::index::Column(col)]
+        .image()
+        .map(|cell| cell.image)
+}
+
+/// A synthetic size for the pure resolver pins: 8×16 px cells in an
+/// 800×480 session — every expected value below is exact arithmetic
+/// on those numbers.
+fn resolver_size() -> Size {
+    Size {
+        width: 800,
+        height: 480,
+        cell_width: 8.0,
+        cell_height: 16.0,
+    }
+}
+
+#[test]
+fn size_unit_parses_every_documented_form() {
+    use super::SizeUnit;
+
+    assert_eq!(SizeUnit::parse(b"12"), Some(SizeUnit::Cells(12)));
+    assert_eq!(SizeUnit::parse(b"12px"), Some(SizeUnit::Pixels(12)));
+    assert_eq!(SizeUnit::parse(b"50%"), Some(SizeUnit::Percent(50)));
+    assert_eq!(SizeUnit::parse(b"auto"), Some(SizeUnit::Auto));
+    assert_eq!(SizeUnit::parse(b"AUTO"), Some(SizeUnit::Auto));
+    // Malformed values read as absent, never a panic.
+    assert_eq!(SizeUnit::parse(b"garbage"), None);
+    assert_eq!(SizeUnit::parse(b"-3"), None);
+    assert_eq!(SizeUnit::parse(b""), None);
+}
+
+#[test]
+fn args_parse_the_placement_grammar_and_ignore_the_rest() {
+    let (args, payload) = super::parse_image_args(&[
+        b"File=inline=1".to_vec(),
+        b"size=428".to_vec(),
+        b"name=aGk=".to_vec(),
+        b"width=2px".to_vec(),
+        b"unknown=zzz".to_vec(),
+    ]);
+
+    assert!(args.inline);
+    assert!(args.preserve_aspect);
+    assert_eq!(args.width, Some(super::SizeUnit::Pixels(2)));
+    assert_eq!(args.height, None);
+    assert_eq!(payload, None, "no colon on the wire, no payload");
+}
+
+#[test]
+fn legacy_payload_splits_at_the_first_colon() {
+    let (args, payload) = super::parse_image_args(&[
+        b"File=inline=1".to_vec(),
+        b"name=aGk=:cGF5bG9hZA==".to_vec(),
+    ]);
+
+    assert!(args.inline);
+    assert_eq!(payload, Some(b"cGF5bG9hZA==".to_vec()));
+}
+
+#[test]
+fn preserve_aspect_zero_parses_as_off() {
+    // The chunked header reaches the parser already split by vte —
+    // each arg its own slice.
+    let (args, _) = super::parse_image_args(&[
+        b"MultipartFile=inline=1".to_vec(),
+        b"preserveAspectRatio=0".to_vec(),
+    ]);
+    assert!(args.inline);
+    assert!(!args.preserve_aspect);
+}
+
+#[test]
+fn resolver_auto_auto_leaves_the_image_inherent() {
+    let args = super::ImageArgs::default();
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (8, 2)
+    );
+}
+
+#[test]
+fn resolver_cells_unit_scales_the_other_axis_along() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(4)),
+        ..Default::default()
+    };
+    // 4 cells = 32px; the 64px-wide image halves, carrying its 32px
+    // height to 16px = exactly one row.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (4, 1)
+    );
+}
+
+#[test]
+fn resolver_pixels_unit_resolves_through_the_cell_size() {
+    let args = super::ImageArgs {
+        height: Some(super::SizeUnit::Pixels(64)),
+        ..Default::default()
+    };
+    // 64px tall = 4 rows; the 32px-tall image doubles, its width to
+    // 128px = 16 cols.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (16, 4)
+    );
+}
+
+#[test]
+fn resolver_percent_unit_resolves_against_the_session() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Percent(25)),
+        ..Default::default()
+    };
+    // 25% of 800px = 200px wide; scale 200/64 = 3.125, height 100px =
+    // 6.25 rows -> 6.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (25, 6)
+    );
+}
+
+#[test]
+fn resolver_both_given_fits_within_preserving_aspect() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(10)),
+        height: Some(super::SizeUnit::Cells(2)),
+        ..Default::default()
+    };
+    // Box 80x32px; height binds (scale 1.0 vs width's 1.25).
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (8, 2)
+    );
+}
+
+#[test]
+fn resolver_zero_aspect_honors_both_axes_exactly() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(10)),
+        height: Some(super::SizeUnit::Cells(2)),
+        preserve_aspect: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (10, 2)
+    );
+}
+
+#[test]
+fn resolver_never_returns_zero_cells() {
+    let args = super::ImageArgs::default();
+    assert_eq!(
+        super::resolve_placement(&args, (1.0, 1.0), &resolver_size()),
+        (1, 1)
+    );
+}
+
+#[test]
+fn image_caps_are_the_documented_defaults() {
+    assert_eq!(super::IMAGE_PAYLOAD_CAP, 32 * 1024 * 1024);
+    assert_eq!(super::IMAGE_MAX_DIMENSION, 8192);
+    assert_eq!(super::IMAGE_MAX_ALLOC, 64 * 1024 * 1024);
+    assert_eq!(super::IMAGE_STORE_BUDGET, 320 * 1024 * 1024);
+}
+
+#[test]
+fn legacy_single_shot_places_diced_cells_and_stores_pixels() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    let params = vec![
+        b"File=inline=1".to_vec(),
+        b"width=4".to_vec(),
+        b"height=4".to_vec(),
+        // The live grid's cell shape is font-measured, so the pin
+        // forces exact cells; aspect pins live on the pure resolver.
+        b"preserveAspectRatio=0".to_vec(),
+        name,
+    ];
+
+    terminal.note_inline_image(&params);
+
+    // The placement is diced across exactly the requested cells.
+    for line in 0..4 {
+        for col in 0..4 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    assert_eq!(cell_image(&terminal, 4, 0), None, "the line below is fresh");
+    // The cursor landed below the placement.
+    assert_eq!(
+        terminal.term.lock().grid().cursor.point.line.0,
+        4,
+        "cursor below the placement"
+    );
+    // The store holds the decoded pixels.
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+}
+
+#[test]
+fn chunked_session_accumulates_parts_until_the_end() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    // Split at a 4-character base64 boundary so each part decodes
+    // standalone, exactly like imgcat's chunks.
+    let split = (wire.len() / 2) & !3;
+    let (head, tail) = wire.split_at(split);
+
+    let header = vec![
+        b"MultipartFile=inline=1".to_vec(),
+        b"width=2".to_vec(),
+        b"height=2".to_vec(),
+        b"preserveAspectRatio=0".to_vec(),
+    ];
+    terminal.note_inline_image(&header);
+    terminal.note_inline_image(&[
+        format!("FilePart={}", std::str::from_utf8(head).unwrap()).into_bytes()
+    ]);
+    terminal.note_inline_image(&[
+        format!("FilePart={}", std::str::from_utf8(tail).unwrap()).into_bytes()
+    ]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    assert_eq!(
+        terminal
+            .images
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(image::RgbaImage::dimensions),
+        Some((8, 8))
+    );
+}
+
+#[test]
+fn a_second_header_aborts_the_first_session() {
+    let mut terminal = image_terminal();
+    let first = b64(&png_bytes(16, 16));
+    let second = b64(&png_bytes(8, 8));
+    let mut second_name = b"FilePart=".to_vec();
+    second_name.extend_from_slice(&second);
+
+    let header = || {
+        vec![
+            b"MultipartFile=inline=1".to_vec(),
+            b"width=2".to_vec(),
+            b"height=2".to_vec(),
+            b"preserveAspectRatio=0".to_vec(),
+        ]
+    };
+    terminal.note_inline_image(&header());
+    let mut first_part = b"FilePart=".to_vec();
+    first_part.extend_from_slice(&first);
+    terminal.note_inline_image(&[first_part]);
+    // The second header replaces the first session: its part is the
+    // only payload left standing.
+    terminal.note_inline_image(&header());
+    terminal.note_inline_image(&[second_name]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(
+        terminal
+            .images
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(image::RgbaImage::dimensions),
+        Some((8, 8)),
+        "the first session's bytes died with its header"
+    );
+}
+
+#[test]
+fn file_end_without_a_session_is_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn file_part_without_a_session_is_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"FilePart=aGVsbG8=".to_vec()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+}
+
+#[test]
+fn a_malformed_part_aborts_the_session_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[
+        b"MultipartFile=inline=1".to_vec(),
+        b"width=2".to_vec(),
+        b"height=2".to_vec(),
+    ]);
+    terminal.note_inline_image(&[b"FilePart=@@@".to_vec()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None, "nothing half-places");
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn a_malformed_payload_never_places() {
+    let mut terminal = image_terminal();
+    let wire = b64(b"not an image at all");
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn inline_zero_renders_nothing() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=0".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn images_enabled_false_makes_the_arm_inert() {
+    let mut terminal = image_terminal();
+    terminal.images_enabled = false;
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_cap_payload_drops_the_session_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"MultipartFile=inline=1".to_vec()]);
+    let huge = vec![b'A'; super::IMAGE_PAYLOAD_CAP + 1];
+    let part = format!("FilePart={}", {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(&huge)
+    });
+    terminal.note_inline_image(&[part.into_bytes()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "never half-buffered, never placed"
+    );
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_dimension_image_drops_whole() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(super::IMAGE_MAX_DIMENSION + 1, 1));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_allocation_image_drops_whole() {
+    let mut terminal = image_terminal();
+    // 5000x4000 RGBA decodes to ~80 MiB, past the 64 MiB allocation
+    // ceiling; flat color keeps the PNG itself tiny.
+    let wire = b64(&png_bytes(5000, 4000));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn store_evicts_oldest_under_its_budget() {
+    let mut store = super::ImageStore::default();
+    let image = || image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+    let budget = 2 * image().len();
+
+    store.insert_with_budget(1, image(), budget);
+    store.insert_with_budget(2, image(), budget);
+    assert_eq!(store.total_bytes(), budget);
+
+    store.insert_with_budget(3, image(), budget);
+    // The oldest id left; the other two stand.
+    assert!(store.get(1).is_none(), "evicted ids draw blank");
+    assert!(store.get(2).is_some());
+    assert!(store.get(3).is_some());
+    assert_eq!(store.total_bytes(), budget);
+}
+
+#[test]
+fn store_never_evicts_the_image_just_inserted() {
+    let mut store = super::ImageStore::default();
+    let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+    let len = image.len();
+
+    store.insert_with_budget(1, image, len / 2);
+    // Over budget alone, it still stands: the cap is a ceiling, not a
+    // denial — decode's own limits keep any single image far under
+    // the shipped budget.
+    assert!(store.get(1).is_some());
+    assert_eq!(store.total_bytes(), len);
+}
