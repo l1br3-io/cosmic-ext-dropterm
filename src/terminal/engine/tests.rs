@@ -3172,3 +3172,22 @@ fn store_never_evicts_the_image_just_inserted() {
     assert!(store.get(1).is_some());
     assert_eq!(store.total_bytes(), len);
 }
+
+#[test]
+fn handle_for_builds_once_and_dies_with_eviction() {
+    let mut store = super::ImageStore::default();
+    let image = || image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]));
+    let budget = 2 * image().len();
+    store.insert_with_budget(1, image(), budget);
+    store.insert_with_budget(2, image(), budget);
+
+    // One build, then clones: the ids match, so the renderer's cache
+    // sees one handle — one upload — for the id's whole life.
+    let first = store.handle_for(1).expect("the id stands behind pixels");
+    assert_eq!(store.handle_for(1), Some(first));
+
+    // Evicting id 1 drops its handle with its pixels.
+    store.insert_with_budget(3, image(), budget);
+    assert!(store.get(1).is_none());
+    assert_eq!(store.handle_for(1), None);
+}

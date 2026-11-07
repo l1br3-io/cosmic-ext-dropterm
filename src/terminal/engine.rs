@@ -3841,13 +3841,18 @@ fn parse_image_args(slices: &[Vec<u8>]) -> (ImageArgs, Option<Vec<u8>>) {
 /// The engine's decoded-image store (iterm-images spec): id → pixels
 /// plus the running decoded-byte total, oldest-evicted to stay under
 /// the budget. Evicted ids draw blank — cells outlive their pixels by
-/// design (OQ-3); the grid's own honesty.
+/// design (OQ-3); the grid's own honesty. The renderer handles ride
+/// beside the pixels: `from_rgba` mints a fresh identity per call, so
+/// each id's pixels become a handle exactly once and the renderer's
+/// own cache holds the upload from there.
 #[derive(Default)]
 pub struct ImageStore {
     /// Insertion order doubles as age: the front is the oldest.
     images: VecDeque<(u64, image::RgbaImage)>,
     /// The running decoded-byte total across live images.
     bytes: usize,
+    /// Renderer handles by id — pixels-to-handle made exactly once.
+    handles: HashMap<u64, cosmic::iced::widget::image::Handle>,
 }
 
 impl ImageStore {
@@ -3860,6 +3865,24 @@ impl ImageStore {
             .map(|(_, rgba)| rgba)
     }
 
+    /// The renderer handle for an id, building it from the pixels on
+    /// first ask and serving the clone after — the renderer's cache
+    /// keys on the handle, so one build is one upload, forever.
+    /// `None` when the id stands behind no pixels.
+    pub fn handle_for(&mut self, id: u64) -> Option<cosmic::iced::widget::image::Handle> {
+        if let Some(handle) = self.handles.get(&id) {
+            return Some(handle.clone());
+        }
+        let rgba = self.get(id)?;
+        let handle = cosmic::iced::widget::image::Handle::from_rgba(
+            rgba.width(),
+            rgba.height(),
+            rgba.as_raw().clone(),
+        );
+        self.handles.insert(id, handle.clone());
+        Some(handle)
+    }
+
     /// The running decoded-byte total (test surface for the budget).
     #[cfg(test)]
     fn total_bytes(&self) -> usize {
@@ -3870,13 +3893,15 @@ impl ImageStore {
     /// the budget holds — but never evicting the image just inserted:
     /// a single image larger than the whole budget still shows (the
     /// cap is a ceiling, and decode's own allocation limit keeps any
-    /// single image far under it).
+    /// single image far under it). An evicted id's handle dies with
+    /// its pixels.
     fn insert_with_budget(&mut self, id: u64, rgba: image::RgbaImage, budget: usize) {
         self.bytes += rgba.len();
         self.images.push_back((id, rgba));
         while self.bytes > budget && self.images.len() > 1 {
-            if let Some((_, oldest)) = self.images.pop_front() {
-                self.bytes -= oldest.len();
+            if let Some((oldest, evicted)) = self.images.pop_front() {
+                self.bytes -= evicted.len();
+                self.handles.remove(&oldest);
             }
         }
     }
