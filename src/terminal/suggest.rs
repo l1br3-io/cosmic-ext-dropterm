@@ -27,6 +27,8 @@ use std::sync::atomic::Ordering;
 
 use super::engine::WINDOW_BG_COLOR;
 
+mod walker;
+
 /// The ring's bound (OQ-1, ruled at approval): generous for a
 /// drop-down's working set, trivially cheap in memory.
 const RING_CAP: usize = 256;
