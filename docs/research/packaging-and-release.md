@@ -251,6 +251,16 @@ NOT viable on COSMIC today.** (UNVERIFIED: whether cosmic-comp will grow an
 intended path for sandboxed layer-shell clients — the #259 author reports asking;
 nothing has landed in master as of `4d14528`.)
 
+2026-11-08, first-party confirmation: the terminal experiment
+(`packaging/flatpak/EXPERIMENT-layer-shell.md`, walked on the validation
+VM against the pinned v0.3.1 archive) reproduced the #259 failure on
+DropTerm's own binary — sandboxed client sees 33 of the native session's
+56 globals, `xdg_wm_base` present, `zwlr_layer_shell_v1` absent, the app
+silently never surfaces while reporting `--is-visible` true. The silent
+hang is an app-side robustness gap (no error without `RUST_LOG=debug`;
+any compositor without wlr-layer-shell hits it) — logged as its own
+follow-up, independent of packaging.
+
 #### 2.5 The cosmic-flatpak submission flow (the applet's home)
 
 [pop-os/cosmic-flatpak](https://github.com/pop-os/cosmic-flatpak) README: "This

@@ -140,6 +140,12 @@ applet-appid := appid + '.Applet'
 flatpak-dir := 'packaging' / 'flatpak'
 applet-manifest := flatpak-dir / (applet-appid + '.json')
 
+# The terminal experiment's flatpak: the main app id, no .Applet
+# suffix. EXPERIMENT-layer-shell.md in the same directory is the
+# walk record; this is not a submission candidate.
+terminal-manifest := flatpak-dir / (appid + '.json')
+terminal-build-dir := flatpak-dir / 'build-dir-terminal'
+
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 
@@ -584,6 +590,20 @@ applet-flatpak-install:
 # Uninstall the applet flatpak from the user installation.
 applet-flatpak-remove:
     {{just_executable()}} quietly 'flatpak uninstall --user -y {{applet-appid}}'
+
+# Build the terminal experiment flatpak (EXPERIMENT-layer-shell.md):
+# same pinned archive and shared cargo-sources.json as the applet, its
+# own build tree so neither clobbers the other.
+terminal-flatpak-build:
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean {{terminal-build-dir}} {{terminal-manifest}}'
+
+# Install the built terminal experiment into the user installation.
+terminal-flatpak-install:
+    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean --install {{terminal-build-dir}} {{terminal-manifest}}'
+
+# Uninstall the terminal experiment from the user installation.
+terminal-flatpak-remove:
+    {{just_executable()}} quietly 'flatpak uninstall --user -y {{appid}}'
 
 # ── COSMIC validation VM ──
 #
