@@ -280,9 +280,21 @@ pub enum Message {
     /// The panel's Re-paste verb: the row's path through the same
     /// paste channel the original paste used.
     ImagesPanelRepaste(std::path::PathBuf),
-    /// The panel's Remove verb: the row, its thumbnail, and —
-    /// best-effort off-thread — its file.
-    ImagesPanelRemove(std::path::PathBuf),
+    /// The panel's Delete verb, armed (the panel's door work): the
+    /// pressed row's Delete becomes the inline Confirm/Keep pair —
+    /// the profiles page's two-step idiom, because the cache file is
+    /// the paste's only durable copy. Arming another row swaps the
+    /// pair to it (the `Option<PathBuf>` single-arm rule).
+    ImagesPanelArmDelete(std::path::PathBuf),
+    /// The armed pair's Keep: disarm, delete nothing.
+    ImagesPanelKeepDelete,
+    /// The panel's Delete verb, confirmed: the row, its thumbnail,
+    /// and — best-effort off-thread — its file.
+    ImagesPanelDelete(std::path::PathBuf),
+    /// The panel's Open-folder header action: the paste cache
+    /// directory in the file manager — the docs' "clear the
+    /// directory" cleanup path, given a door.
+    ImagesPanelOpenCache,
     /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
@@ -533,6 +545,14 @@ pub struct DropTerm {
     /// Opening it closes the settings drawer — one drawer at a
     /// time by construction.
     images_panel_open: bool,
+    /// The images panel's armed Delete row, by cache-file path (the
+    /// panel's door work): `Some(path)` swaps that row's Delete for
+    /// the inline Confirm/Keep pair — the profiles page's armed
+    /// delete idiom — because the cache file is the paste's only
+    /// durable copy and one click must not erase it. Keep, Confirm,
+    /// and either panel toggle clear it; the armed row is the only
+    /// armed one.
+    images_panel_delete_armed: Option<std::path::PathBuf>,
     /// The images panel's decoded thumbnails, keyed by cache-file
     /// path (paste-panel spec): filled at panel open by background
     /// decodes — never on the paste path — and read by the row
@@ -1304,28 +1324,90 @@ fn drawer_escape_routing(
 }
 
 /// The images panel's pane (paste-panel spec): the active tab's
-/// pasted images, newest first — the thumbnail when its decode has
-/// landed (bounded ≤256 px, `Handle::from_rgba`'s own path), the
-/// stamp and dimensions always, a hint line when the prune left
-/// nothing to show. Actions ride PP-3.
+/// pasted images, newest first — each row an identity line (the
+/// thumbnail when its decode has landed, bounded ≤256 px through
+/// `Handle::from_rgba`'s own path, beside the stamp restated for
+/// reading ([`crate::tabs::stamp_display`]) with the dimensions
+/// dimmed beneath it: the image is the row's subject, its
+/// bookkeeping is secondary) over a full-width action line, and a
+/// hint line when the prune left nothing to show. The identity line
+/// is itself the Open button — every image browser teaches
+/// click-the-image, and the row's subject is the row's largest
+/// target for its standard verb. Actions ride PP-3, weighted
+/// honestly: Open the one standard verb, the three transfer verbs
+/// quiet text buttons beside it, and Delete pinned to the action
+/// line's far edge in the destructive style — the verb that erases
+/// the file never wears the costume of the verbs that only read it,
+/// and its press arms rather than fires: the cache file is the
+/// paste's only durable copy, so the row's Delete swaps for the
+/// inline Confirm/Keep pair (the profiles page's idiom) and only
+/// Confirm erases.
 fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
     let rows = app
         .active()
         .map(|tab| images_panel_rows(&tab.pasted_images))
         .unwrap_or_default();
     if rows.is_empty() {
-        return widget::text::body("No pasted images in this tab").into();
+        return widget::column(Vec::<Element<'_, Message>>::new())
+            .spacing(4)
+            .push(widget::text::body("No pasted images in this tab"))
+            .push(
+                widget::text::body("Images you paste land here, newest first.")
+                    .class(cosmic::theme::Text::Custom(settings::view::dim_text_style)),
+            )
+            .into();
     }
     let mut list = widget::column(Vec::<Element<'_, Message>>::new()).spacing(12);
     for row in rows {
         let mut text = widget::column(Vec::<Element<'_, Message>>::new())
             .spacing(2)
-            .push(widget::text::body(row.stamp.clone()));
+            .push(widget::text::body(crate::tabs::stamp_display(&row.stamp)));
         if let Some((width, height)) = row.dims {
-            text = text.push(widget::text(format!("{width}×{height}")));
+            text = text.push(
+                widget::text::body(format!("{width}×{height}"))
+                    .class(cosmic::theme::Text::Custom(settings::view::dim_text_style)),
+            );
         }
+        // The identity line: the thumbnail beside its stamp and
+        // dimensions — the image is the row's subject, its
+        // bookkeeping secondary — and the whole line the Open
+        // button: the subject is its own target for its standard
+        // verb.
+        let mut identity = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
+        if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
+            identity = identity.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
+        }
+        identity = identity.push(text);
+        let identity =
+            widget::button::custom(identity).on_press(Message::ImagesPanelOpen(row.path.clone()));
         // The precedents' five verbs (paste-panel spec, PP-3): one
-        // row-scoped message each, the row's path carried along.
+        // row-scoped message each, the row's path carried along — on
+        // the row's own full-width line (five labeled verbs beside
+        // the 64 px thumbnail do not fit the drawer at its real
+        // widths), weighted honestly: Open the one standard verb,
+        // the three transfer verbs quiet text buttons, and the
+        // delete cluster riding a filling gap to the far edge in
+        // the destructive style — the irreversible verb set apart
+        // from the recoverable group, distance and color saying the
+        // same thing twice, every row's cluster stacking into one
+        // scannable column. The idle Delete arms; the armed pair
+        // (Confirm the destructive commit, Keep the disarm) carries
+        // the two-step the profiles page ships — one armed row at a
+        // time, `images_panel_delete_armed`'s single-path seat.
+        let delete: Element<'_, Message> =
+            if app.images_panel_delete_armed.as_deref() == Some(row.path.as_path()) {
+                widget::row![
+                    widget::button::destructive("Confirm")
+                        .on_press(Message::ImagesPanelDelete(row.path.clone())),
+                    widget::button::text("Keep").on_press(Message::ImagesPanelKeepDelete),
+                ]
+                .spacing(6)
+                .into()
+            } else {
+                widget::button::destructive("Delete")
+                    .on_press(Message::ImagesPanelArmDelete(row.path.clone()))
+                    .into()
+            };
         let actions = widget::row(Vec::<Element<'_, Message>>::new())
             .spacing(6)
             .push(
@@ -1333,32 +1415,30 @@ fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
                     .on_press(Message::ImagesPanelOpen(row.path.clone())),
             )
             .push(
-                widget::button::standard("Copy path")
+                widget::button::text("Copy path")
                     .on_press(Message::ImagesPanelCopyPath(row.path.clone())),
             )
             .push(
-                widget::button::standard("Copy image")
+                widget::button::text("Copy image")
                     .on_press(Message::ImagesPanelCopyImage(row.path.clone())),
             )
             .push(
-                widget::button::standard("Re-paste")
+                widget::button::text("Re-paste")
                     .on_press(Message::ImagesPanelRepaste(row.path.clone())),
             )
-            .push(
-                widget::button::standard("Remove")
-                    .on_press(Message::ImagesPanelRemove(row.path.clone())),
-            );
-        let mut item = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
-        if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
-            item = item.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
-        }
-        item = item.push(text.push(actions));
-        list = list.push(item);
+            .push(widget::space::Space::new().width(Length::Fill))
+            .push(delete);
+        list = list.push(
+            widget::column(Vec::<Element<'_, Message>>::new())
+                .spacing(8)
+                .push(identity)
+                .push(actions),
+        );
     }
     widget::scrollable(list.padding(16)).into()
 }
 
-/// The panel's Remove verb's model half (paste-panel spec): drop
+/// The panel's Delete verb's model half (paste-panel spec): drop
 /// the row owning `path` and its cached thumbnail together, and say
 /// whether such a row existed — a path no row owns is a no-op.
 fn forget_pasted_image(
@@ -2089,6 +2169,7 @@ impl Application for DropTerm {
             settings_open: false,
             images_panel_open: false,
             images_panel_thumbs: std::collections::HashMap::new(),
+            images_panel_delete_armed: None,
             settings_page: home_settings_page(),
             settings_tab_model,
             profile_selection: None,
@@ -2579,14 +2660,24 @@ impl Application for DropTerm {
             // The images panel drawer (paste-panel spec): the same
             // surface, backdrop, and drawer composition the
             // settings drawer uses — the active tab's ledger,
-            // newest first, no header strip, its own escape route.
-            // The width rides the settings drawer-width policy at
-            // its never-dragged default: one drawer width story,
-            // no new knob.
+            // newest first, its own escape route. The width rides
+            // the settings drawer-width policy at its never-dragged
+            // default: one drawer width story, no new knob.
+            //
+            // The header's one action opens the paste cache
+            // directory in the file manager — the docs' "clear the
+            // directory" cleanup path given a door. Live only while
+            // a row stands: rows are existence-backed, so an empty
+            // panel has no directory worth showing.
+            let cache_has_rows = self
+                .active()
+                .is_some_and(|tab| !tab.pasted_images.is_empty());
+            let open_cache = widget::button::text("Open Folder")
+                .on_press_maybe(cache_has_rows.then_some(Message::ImagesPanelOpenCache));
             let content = drawer_backdrop(content);
             let drawer: Element<'_, Message> = widget::context_drawer(
                 Some("Pasted images".into()),
-                None,
+                Some(open_cache.into()),
                 None,
                 None,
                 Message::ImagesPanel(false),
@@ -3645,6 +3736,11 @@ impl DropTerm {
                 }
             }
             Message::ImagesPanel(open) => {
+                // Either toggle edge disarms the delete pair: an
+                // armed row never survives a close it can no longer
+                // be confirmed or kept from, and a reopen starts
+                // fresh.
+                self.images_panel_delete_armed = None;
                 if open {
                     // One drawer at a time: opening the panel closes
                     // settings by the same explicit path the toggle
@@ -3731,7 +3827,35 @@ impl DropTerm {
                     tab.terminal.lock().unwrap().paste(&text);
                 }
             }
-            Message::ImagesPanelRemove(path) => {
+            Message::ImagesPanelArmDelete(path) => {
+                // The pair swaps to the pressed row: the single-arm
+                // seat both disarms any other armed row and never
+                // leaves two pairs standing.
+                self.images_panel_delete_armed = Some(path);
+            }
+            Message::ImagesPanelKeepDelete => {
+                self.images_panel_delete_armed = None;
+            }
+            Message::ImagesPanelOpenCache => {
+                // The OpenHyperlink precedent: hand it to the file
+                // manager, one warn on refusal — including the no-XDG
+                // case, named the same warn the paste write path
+                // gives it.
+                match crate::clipboard::paste_cache_dir() {
+                    Some(dir) => {
+                        if let Err(err) = open::that_detached(&dir) {
+                            log::warn!("failed to open {}: {err}", dir.display());
+                        }
+                    }
+                    None => {
+                        log::warn!("paste cache unavailable: no XDG cache directory resolves");
+                    }
+                }
+            }
+            Message::ImagesPanelDelete(path) => {
+                // Confirm consumed the pair: disarm beside the row it
+                // erased.
+                self.images_panel_delete_armed = None;
                 // The row and its thumbnail go now, together; the
                 // file's delete is best-effort off-thread — a
                 // failure warns while the row is already gone (the

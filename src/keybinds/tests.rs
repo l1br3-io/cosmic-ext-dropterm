@@ -164,6 +164,53 @@ fn bare_and_ctrl_i_stay_free_for_the_terminal() {
 }
 
 #[test]
+fn ctrl_shift_p_opens_the_images_panel_alone() {
+    // The panel's keyboard door (the panel's door work): the one
+    // action on the chord, and the action's only default chord — the
+    // chip's verb freed from the chip (no focus story, first to drop
+    // under the band's width pressure).
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            &Key::Character("p".into()),
+            None,
+        ),
+        Some(Action::ImagesPanel)
+    );
+    assert_eq!(
+        binds
+            .values()
+            .filter(|action| **action == Action::ImagesPanel)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn bare_and_ctrl_p_stay_free_for_the_shell() {
+    // Ctrl+P is readline's previous-history byte — swallowing it
+    // would break shell history navigation — and a bare `p` is
+    // ordinary typing: only the full Ctrl+Shift+P combo is the
+    // panel's bind.
+    let binds = default_key_binds();
+    assert_eq!(
+        matched_action(
+            &binds,
+            Modifiers::empty(),
+            &Key::Character("p".into()),
+            None,
+        ),
+        None
+    );
+    assert_eq!(
+        matched_action(&binds, Modifiers::CTRL, &Key::Character("p".into()), None),
+        None
+    );
+}
+
+#[test]
 fn ctrl_shift_b_toggles_the_status_bar_alone() {
     // OQ-3's ruling: the one action on the chord is the band's
     // toggle, and the toggle's only default chord is this one —
@@ -751,6 +798,7 @@ fn ids_are_the_pinned_file_format_literals() {
     assert_eq!(action_id(Action::Copy), Some("copy"));
     assert_eq!(action_id(Action::ZoomIn), Some("zoom_in"));
     assert_eq!(action_id(Action::Settings), Some("settings"));
+    assert_eq!(action_id(Action::ImagesPanel), Some("images_panel"));
     assert_eq!(action_id(Action::ShowCompletions), Some("show_completions"));
     assert_eq!(
         action_from_id("show_completions"),
@@ -780,9 +828,9 @@ fn groups_cover_every_bindable_action_exactly_once() {
         "the section titles are part of the tab's shape"
     );
     let rows: Vec<Action> = groups.into_iter().flat_map(|group| group.actions).collect();
-    // 23 payload-free variants plus the eight numbered activate
+    // 24 payload-free variants plus the eight numbered activate
     // rows — NewProfileTab is the one deliberate exclusion.
-    assert_eq!(rows.len(), 31);
+    assert_eq!(rows.len(), 32);
     let unique: std::collections::HashSet<Action> = rows.iter().copied().collect();
     assert_eq!(unique.len(), rows.len(), "no action appears twice");
     assert!(rows.iter().all(|action| action_id(*action).is_some()));
@@ -794,6 +842,7 @@ fn labels_are_readable_english() {
     assert_eq!(action_label(Action::ActivateTab(0)), "Activate tab 1");
     assert_eq!(action_label(Action::ActivateLastTab), "Activate last tab");
     assert_eq!(action_label(Action::Settings), "Open settings");
+    assert_eq!(action_label(Action::ImagesPanel), "Open the images panel");
     assert_eq!(action_label(Action::ShowCompletions), "Show completions");
     assert_eq!(
         action_label(Action::SwitchProfileTab(0)),

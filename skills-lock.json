@@ -55,6 +55,12 @@
       "skillPath": "skills/deprecation-and-migration/SKILL.md",
       "computedHash": "0d7b2002e250c02a260f6bc502d7a798ab8e8ca0c020c54d7b0f16053935c72c"
     },
+    "desktop-ui-design": {
+      "source": "bateau84/skills",
+      "sourceType": "github",
+      "skillPath": "skills/desktop-ui-design/SKILL.md",
+      "computedHash": "9c137819709d68c6294ef521d4e79faa3e009c6be8cd5f179ea40d7cf879ed95"
+    },
     "documentation-and-adrs": {
       "source": "addyosmani/agent-skills",
       "sourceType": "github",

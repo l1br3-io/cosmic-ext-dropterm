@@ -159,10 +159,47 @@ impl PastedImage {
     }
 }
 
+/// The panel's display of one ledger stamp: the cache filename's own
+/// `paste-YYYYMMDD-HHMMSS-<n>` stem restated as `YYYY-MM-DD
+/// HH:MM:SS` — the same digits, spaced for reading. The trailing
+/// counter stays off the display: rows render newest-first with a
+/// thumbnail each, and same-second siblings are told apart by order
+/// and pixels, not by a sequence number. Anything that does not
+/// parse (a hand-renamed cache file) renders verbatim — the honest
+/// fallback, never a guessed date.
+pub fn stamp_display(stamp: &str) -> String {
+    let Some(rest) = stamp.strip_prefix("paste-") else {
+        return stamp.to_string();
+    };
+    let mut parts = rest.split('-');
+    let (Some(date), Some(time), Some(counter)) = (parts.next(), parts.next(), parts.next()) else {
+        return stamp.to_string();
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if parts.next().is_some()
+        || date.len() != 8
+        || time.len() != 6
+        || !digits(date)
+        || !digits(time)
+        || !digits(counter)
+    {
+        return stamp.to_string();
+    }
+    format!(
+        "{}-{}-{} {}:{}:{}",
+        &date[0..4],
+        &date[4..6],
+        &date[6..8],
+        &time[0..2],
+        &time[2..4],
+        &time[4..6],
+    )
+}
+
 /// Drops ledger rows whose file no longer exists and returns the
 /// retained count — the one read every ledger consumer goes through
 /// (paste-ledger spec): existence-backed, so the retention sweep
-/// and a panel Remove age out of the count and the list for free,
+/// and a panel Delete age out of the count and the list for free,
 /// never rendering a row for a file that is gone. The existence
 /// check is `Path::exists` and nothing more — no metadata reads a
 /// flaky filesystem could fail beyond the boolean.

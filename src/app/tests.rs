@@ -711,7 +711,7 @@ fn images_panel_rows_list_newest_first() {
 
 #[test]
 fn forgetting_a_row_drops_it_and_its_thumbnail() {
-    // The panel's Remove verb (paste-panel spec, PP-3): the row and
+    // The panel's Delete verb (paste-panel spec, PP-3): the row and
     // its cached thumbnail leave together; a path no row owns is a
     // no-op answered false.
     use crate::tabs::PastedImage;

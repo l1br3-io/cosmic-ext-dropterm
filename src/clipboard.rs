@@ -447,8 +447,10 @@ pub fn read_for_paste(primary: bool) -> Task<Option<PasteContents>> {
 }
 
 /// The paste cache's directory: `dropterm/paste` under the XDG cache
-/// dir (paste-image spec). `None` when no cache dir resolves.
-fn paste_cache_dir() -> Option<PathBuf> {
+/// dir (paste-image spec). `None` when no cache dir resolves. Shared
+/// with the images panel's Open Folder action — one resolution of
+/// the directory the panel's rows live in.
+pub(crate) fn paste_cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|dir| dir.join("dropterm").join("paste"))
 }
 
