@@ -10,6 +10,18 @@
 - Images ride the **grid like text**: a placement is diced across the cells it covers, so scrollback, reflow, resize, and alt-screen clearing treat it exactly as they treat characters. There is no floating overlay to fall out of sync.
 - The kill switch: `images_enabled` (default `true`, Behavior section in the [settings drawer](settings.md)) makes the whole pipeline inert — the sequence stays parsed but nothing decodes or places. A flip applies live.
 
+## Pasting images
+
+Pasting an image from the clipboard is a different road than the ones above, and it deliberately never renders. What a paste does:
+
+1. The PNG bytes are read from the clipboard and written to `~/.cache/dropterm/paste/paste-YYYYMMDD-HHMMSS-<n>.png`.
+2. That file's **path pastes as text** — the paste's one and only trace in the grid, ready for the shell, `claude`, `imgcat`, or anything that takes a file argument.
+3. The paste is recorded in its tab's **images panel**: open it from the pasted-count chip in the status band. The panel lists the tab's pastes newest-first with a thumbnail per image, and every row carries five verbs — **Open** (the system viewer), **Copy path**, **Copy image** (the bytes back to the clipboard as PNG — over SSH, where the local path is useless, this is the one that travels), **Re-paste** (the path again, through the same paste channel), and **Remove** (file, row, and thumbnail together).
+
+No terminal in the survey behind this design pastes clipboard images at all; the two apps that do (Warp, Claude Code) collapse the image to a compact marker backed by a file. DropTerm follows: the path is the marker, the panel keeps the pastes findable after the prompt scrolls away, and pixels stay where a program asked for them. The survey is [in the research log](research/paste-image-ux.md).
+
+Files older than seven days are swept from the paste cache at startup; a row whose file is gone leaves the panel with it. Note the SSH caveat in the other direction: the pasted path is local to where DropTerm runs — a remote shell receives a path it cannot read (copy image is the workaround).
+
 ## Driving it
 
 - **imgcat** (iTerm2's own utility — `curl -L https://iterm2.com/utilities/imgcat > ~/.local/bin/imgcat && chmod +x ~/.local/bin/imgcat`): `imgcat photo.png` uses the chunked session; `imgcat -l photo.png` uses the legacy single-shot. Both render.

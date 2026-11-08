@@ -87,6 +87,12 @@ fn classify_read_failure(err: &DataControlError) -> ReadFailure {
 /// `autosuggestions_commands_enabled` engine-true precedent.
 const PASTE_IMAGE_ENABLED: bool = true;
 
+/// The one image interchange format v1 reads and writes
+/// (paste-image OQ-3): PNG — every compositor converts clipboard
+/// images to it. One constant for both directions, so what a
+/// copy-image writes, a paste reads back.
+const IMAGE_PNG_MIME: &str = "image/png";
+
 /// What a paste found on the clipboard (paste-image spec): a text
 /// offer read verbatim, or image bytes read on the text read's empty
 /// fallthrough.
@@ -138,6 +144,28 @@ fn store(text: String, primary: bool) -> Result<(), wl_clipboard_rs::copy::Error
     )
 }
 
+/// The offered mime for an image copy (paste-panel spec, PP-3):
+/// `Specific` over [`IMAGE_PNG_MIME`] — the copy side's twin of
+/// `load_image`'s read pin.
+fn image_png_mime() -> MimeType {
+    MimeType::Specific(IMAGE_PNG_MIME.to_owned())
+}
+
+/// The blocking image-store core: one data-control copy pinned to
+/// `image/png` — the same shape [`store`] makes for text, minus the
+/// newline trim (these are binary bytes, not a shell line; a trim
+/// would be a corrupter). Serves the regular clipboard only: the
+/// primary selection has no image consumer worth a twin.
+fn store_image_png(bytes: Vec<u8>) -> Result<(), wl_clipboard_rs::copy::Error> {
+    let mut options = Options::new();
+    options.clipboard(ClipboardType::Regular);
+    wl_clipboard_rs::copy::copy(
+        options,
+        Source::Bytes(bytes.into_boxed_slice()),
+        image_png_mime(),
+    )
+}
+
 /// The data-control selection a paste reads: the primary selection or
 /// the regular clipboard, per the flag every read seam already
 /// carries.
@@ -172,7 +200,7 @@ fn load_image(primary: bool) -> Result<Vec<u8>, DataControlError> {
     let (mut pipe, _mime) = paste::get_contents(
         paste_clipboard_type(primary),
         Seat::Unspecified,
-        PasteMime::Specific("image/png"),
+        PasteMime::Specific(IMAGE_PNG_MIME),
     )?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut pipe, &mut bytes)?;
@@ -206,6 +234,30 @@ where
         Some(text) => iced_clipboard::write(text),
         None => Task::none(),
     })
+}
+
+/// Write PNG `bytes` to the system clipboard — the images panel's
+/// copy-image verb (paste-panel spec): the focus-free write path
+/// with `image/png` as the offered mime, the remote-friendly
+/// complement to the SSH caveat (bytes travel where a local path
+/// cannot). No iced fallback exists for bytes (iced writes text),
+/// so a data-control failure warns once (naming the operation) and
+/// copies nothing — the image has no text form (spec OQ-4).
+pub fn write_image_png<T>(bytes: Vec<u8>) -> Task<T>
+where
+    T: Send + 'static,
+{
+    let join = tokio::task::spawn_blocking(move || store_image_png(bytes));
+    Task::future(async move {
+        if let Err(err) = join
+            .await
+            .map_err(DataControlError::Join)
+            .and_then(|res| res.map_err(DataControlError::Copy))
+        {
+            log::warn!("data-control image clipboard write failed ({err}); nothing copied");
+        }
+    })
+    .then(|()| Task::none())
 }
 
 /// The primary-selection twin of [`write`].
@@ -408,9 +460,21 @@ pub fn write_paste_image(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataControlError, PasteFollowUp, ReadFailure, classify_read_failure, next_paste_name,
-        paste_follow_up, paste_stamp,
+        DataControlError, PasteFollowUp, ReadFailure, classify_read_failure, image_png_mime,
+        next_paste_name, paste_follow_up, paste_stamp,
     };
+
+    #[test]
+    fn the_image_write_offers_the_mime_the_read_accepts() {
+        // The panel's copy-image verb round-trips with the paste
+        // read (paste-panel spec, PP-3): the write offers the same
+        // interchange mime `load_image` pins — what copy-image
+        // writes, a paste reads back.
+        assert!(matches!(
+            image_png_mime(),
+            wl_clipboard_rs::copy::MimeType::Specific(mime) if mime == "image/png"
+        ));
+    }
 
     #[test]
     fn empty_clipboard_reads_resolve_to_silent_none() {

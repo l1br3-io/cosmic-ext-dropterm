@@ -645,3 +645,24 @@ fn images_panel_rows_list_newest_first() {
         vec!["paste-3", "paste-2", "paste-1"]
     );
 }
+
+#[test]
+fn forgetting_a_row_drops_it_and_its_thumbnail() {
+    // The panel's Remove verb (paste-panel spec, PP-3): the row and
+    // its cached thumbnail leave together; a path no row owns is a
+    // no-op answered false.
+    use crate::tabs::PastedImage;
+    use cosmic::iced::widget::image::Handle;
+    use std::collections::HashMap;
+    let path = std::path::PathBuf::from("/c/paste-1.png");
+    let mut rows = vec![PastedImage::new(path.clone(), b"png")];
+    let mut thumbs = HashMap::from([(path.clone(), Handle::from_rgba(1, 1, vec![255, 0, 0, 255]))]);
+    assert!(forget_pasted_image(&mut rows, &mut thumbs, &path));
+    assert!(rows.is_empty());
+    assert!(thumbs.is_empty());
+    assert!(!forget_pasted_image(
+        &mut rows,
+        &mut thumbs,
+        std::path::Path::new("/c/other.png")
+    ));
+}

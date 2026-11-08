@@ -264,6 +264,21 @@ pub enum Message {
         std::path::PathBuf,
         Option<cosmic::iced::widget::image::Handle>,
     ),
+    /// The images panel's Open verb (paste-panel spec): hand the
+    /// row's file to the system viewer.
+    ImagesPanelOpen(std::path::PathBuf),
+    /// The panel's Copy-path verb: the row's path as text, the
+    /// focus-free write.
+    ImagesPanelCopyPath(std::path::PathBuf),
+    /// The panel's Copy-image verb: the row's bytes back to the
+    /// clipboard as `image/png`.
+    ImagesPanelCopyImage(std::path::PathBuf),
+    /// The panel's Re-paste verb: the row's path through the same
+    /// paste channel the original paste used.
+    ImagesPanelRepaste(std::path::PathBuf),
+    /// The panel's Remove verb: the row, its thumbnail, and —
+    /// best-effort off-thread — its file.
+    ImagesPanelRemove(std::path::PathBuf),
     /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
@@ -1302,14 +1317,52 @@ fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
         if let Some((width, height)) = row.dims {
             text = text.push(widget::text(format!("{width}×{height}")));
         }
+        // The precedents' five verbs (paste-panel spec, PP-3): one
+        // row-scoped message each, the row's path carried along.
+        let actions = widget::row(Vec::<Element<'_, Message>>::new())
+            .spacing(6)
+            .push(
+                widget::button::standard("Open")
+                    .on_press(Message::ImagesPanelOpen(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Copy path")
+                    .on_press(Message::ImagesPanelCopyPath(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Copy image")
+                    .on_press(Message::ImagesPanelCopyImage(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Re-paste")
+                    .on_press(Message::ImagesPanelRepaste(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Remove")
+                    .on_press(Message::ImagesPanelRemove(row.path.clone())),
+            );
         let mut item = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
         if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
             item = item.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
         }
-        item = item.push(text);
+        item = item.push(text.push(actions));
         list = list.push(item);
     }
     widget::scrollable(list.padding(16)).into()
+}
+
+/// The panel's Remove verb's model half (paste-panel spec): drop
+/// the row owning `path` and its cached thumbnail together, and say
+/// whether such a row existed — a path no row owns is a no-op.
+fn forget_pasted_image(
+    rows: &mut Vec<crate::tabs::PastedImage>,
+    thumbs: &mut std::collections::HashMap<std::path::PathBuf, cosmic::iced::widget::image::Handle>,
+    path: &std::path::Path,
+) -> bool {
+    let before = rows.len();
+    rows.retain(|row| row.path != path);
+    thumbs.remove(path);
+    rows.len() != before
 }
 
 /// The images panel's row order (paste-panel spec): a view over the
@@ -3503,6 +3556,72 @@ impl DropTerm {
                 if let Some(handle) = handle {
                     self.images_panel_thumbs.insert(path, handle);
                 }
+            }
+            Message::ImagesPanelOpen(path) => {
+                // The OpenHyperlink precedent: hand it to the
+                // system viewer, one warn on refusal.
+                if let Err(err) = open::that_detached(&path) {
+                    log::warn!("failed to open {}: {err}", path.display());
+                }
+            }
+            Message::ImagesPanelCopyPath(path) => {
+                return crate::clipboard::write(path.to_string_lossy().into_owned());
+            }
+            Message::ImagesPanelCopyImage(path) => {
+                // The read runs off-thread (the cache file can be
+                // megabytes); only a real read reaches the write.
+                return cosmic::iced::Task::future(async move {
+                    let log_path = path.clone();
+                    match tokio::task::spawn_blocking(move || std::fs::read(&path)).await {
+                        Ok(Ok(bytes)) => Some(bytes),
+                        Ok(Err(err)) => {
+                            log::warn!("panel image read failed for {}: {err}", log_path.display());
+                            None
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "panel image read join failed for {}: {err}",
+                                log_path.display()
+                            );
+                            None
+                        }
+                    }
+                })
+                .then(|bytes| match bytes {
+                    Some(bytes) => crate::clipboard::write_image_png(bytes),
+                    None => cosmic::iced::Task::none(),
+                })
+                .map(cosmic::Action::App);
+            }
+            Message::ImagesPanelRepaste(path) => {
+                // The same channel a text paste uses — bracketed
+                // paste rides it unchanged.
+                if let Some(tab) = self.active() {
+                    let text = path.to_string_lossy();
+                    tab.terminal.lock().unwrap().paste(&text);
+                }
+            }
+            Message::ImagesPanelRemove(path) => {
+                // The row and its thumbnail go now, together; the
+                // file's delete is best-effort off-thread — a
+                // failure warns while the row is already gone (the
+                // prune would drop it on the next read anyway).
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    forget_pasted_image(
+                        &mut tab.pasted_images,
+                        &mut self.images_panel_thumbs,
+                        &path,
+                    );
+                }
+                return cosmic::iced::Task::future(async move {
+                    match tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => log::warn!("panel remove failed: {err}"),
+                        Err(err) => log::warn!("panel remove join failed: {err}"),
+                    }
+                })
+                .then(|()| cosmic::iced::Task::none())
+                .map(cosmic::Action::App);
             }
             Message::PickSettingsTab(entity) => {
                 // The strip's row → its tab (entity↔tab lockstep,
