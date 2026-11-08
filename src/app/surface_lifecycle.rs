@@ -7,7 +7,7 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 use cosmic::iced::window;
 use cosmic::widget;
 
-use super::{DropTerm, Message, TOGGLE_DEBOUNCE, ToggleAction};
+use super::{DropTerm, Message, TOGGLE_DEBOUNCE, ToggleAction, heal_anchor};
 use crate::geometry::{self, Geometry};
 use crate::settings;
 use crate::slide;
@@ -236,13 +236,21 @@ impl DropTerm {
             tab.command_notified = false;
         }
         self.ensure_tabs();
+        // A lost clipboard anchor reopens first: the runtime binds its
+        // clipboard to the first surface created while unbound, and
+        // the measuring probe below is a surface every show destroys.
+        let heal = heal_anchor(&mut self.anchor, self.config.show_in_dock);
         let id = window::Id::unique();
         self.surface = SurfaceState::Measuring(id);
         self.surface_focused = false;
         // The configured keyboard mode rides creation (see
         // `surface::measuring`): the map-time focus grant is the one
-        // path that focuses the surface on an empty desktop.
-        get_layer_surface(surface::measuring(id, self.config.keyboard_mode))
+        // path that focuses the surface on an empty desktop. `chain`
+        // keeps the anchor's creation strictly ahead of the probe's.
+        heal.chain(get_layer_surface(surface::measuring(
+            id,
+            self.config.keyboard_mode,
+        )))
     }
 
     pub(super) fn hide(&mut self) -> Task<Message> {

@@ -375,6 +375,69 @@ fn the_dock_anchor_body_matches_show_in_dock_true() {
 }
 
 #[test]
+fn a_lost_anchor_matches_neither_presence() {
+    // Lost is no body at all: a presence flip from it must open the
+    // configured body rather than no-op.
+    assert!(!anchor_matches(&Anchor::Lost, false));
+    assert!(!anchor_matches(&Anchor::Lost, true));
+}
+
+#[test]
+fn the_compositor_closing_the_hidden_anchor_marks_it_lost() {
+    // The reported bug: the compositor closed the layer anchor (its
+    // output gone) and nothing noticed, so the clipboard re-bound to
+    // the terminal surface and died on every hide from then on.
+    let id = window::Id::unique();
+    let mut anchor = Anchor::Hidden(id);
+    assert!(anchor_closed(&mut anchor, id));
+    assert_eq!(anchor, Anchor::Lost);
+}
+
+#[test]
+fn a_foreign_layer_close_leaves_the_anchor_alone() {
+    // Every terminal hide and measuring probe ends in the same Done
+    // event; only the anchor's own id counts. The old body's Done
+    // after a presence flip carries the old id and is ignored too.
+    let id = window::Id::unique();
+    let mut anchor = Anchor::Hidden(id);
+    assert!(!anchor_closed(&mut anchor, window::Id::unique()));
+    assert_eq!(anchor, Anchor::Hidden(id));
+
+    let dock = window::Id::unique();
+    let mut anchor = Anchor::Dock(dock);
+    assert!(!anchor_closed(&mut anchor, dock));
+    assert_eq!(anchor, Anchor::Dock(dock));
+}
+
+#[test]
+fn healing_a_lost_anchor_opens_the_configured_body() {
+    let mut anchor = Anchor::Lost;
+    let _ = heal_anchor(&mut anchor, false);
+    assert!(matches!(anchor, Anchor::Hidden(_)));
+
+    let mut anchor = Anchor::Lost;
+    let _ = heal_anchor(&mut anchor, true);
+    assert!(matches!(anchor, Anchor::Dock(_)));
+}
+
+#[test]
+fn healing_a_live_anchor_is_a_no_op() {
+    // The show path heals unconditionally; a live body keeps its id
+    // (a second body would never win a binding the first still holds).
+    let id = window::Id::unique();
+    let mut anchor = Anchor::Hidden(id);
+    let _ = heal_anchor(&mut anchor, false);
+    assert_eq!(anchor, Anchor::Hidden(id));
+}
+
+#[test]
+fn a_presence_flip_from_a_lost_anchor_opens_the_new_body() {
+    let mut anchor = Anchor::Lost;
+    let _ = swap_anchor(&mut anchor, true);
+    assert!(matches!(anchor, Anchor::Dock(_)));
+}
+
+#[test]
 fn the_default_config_hides_the_app_from_the_shell() {
     // OQ 1: the reported bug becomes the fixed default — hidden
     // mode, the layer-surface anchor; the dock body is opt-in.

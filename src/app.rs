@@ -110,6 +110,10 @@ pub enum Message {
     WindowResized(window::Id, f32),
     LayerFocused(window::Id),
     LayerUnfocused(window::Id),
+    /// A layer surface is gone (`LayerEvent::Done`): our own destroy
+    /// or the compositor's close. Only the anchor's matters — see
+    /// [`anchor_closed`].
+    LayerClosed(window::Id),
     KeyPressed(Modifiers, Key, cosmic::iced::keyboard::key::Physical),
     WindowFocused,
     WindowUnfocused,
@@ -406,8 +410,10 @@ pub struct DropTerm {
     /// The live clipboard-anchor body and its window id
     /// (shell-presence spec): the mapped xdg toplevel while
     /// `show_in_dock` is on, the invisible 1×1 layer surface while it
-    /// is off. Never destroyed outside a presence flip — its whole
-    /// job is to own the clipboard binding for the process lifetime.
+    /// is off. `DropTerm` destroys it only for a presence flip — its
+    /// whole job is to own the clipboard binding for the process
+    /// lifetime — and a compositor-side close leaves it `Lost` until
+    /// the next show reopens it.
     anchor: Anchor,
     surface: SurfaceState,
     /// The output size measured by the last `SurfaceOpened`, kept so
@@ -1592,22 +1598,58 @@ fn clipboard_anchor_settings() -> window::Settings {
 /// (`show_in_dock = true`), or the never-destroyed 1×1 layer surface
 /// that is invisible to both. Each variant carries its window id —
 /// the presence swap destroys the old body and needs it.
+///
+/// `Lost` is the hidden body after the compositor closed it — the
+/// one destroy `DropTerm` never asks for (its output went away, a
+/// monitor sleeping off its HDMI link among the likely causes). The
+/// runtime dropped the clipboard binding with it, and the next
+/// surface created would take the binding instead and die with it on
+/// the next hide, so a lost anchor reopens before the next surface
+/// does ([`heal_anchor`] at the head of every show).
 #[derive(Debug, Clone, PartialEq)]
 enum Anchor {
     Dock(window::Id),
     Hidden(window::Id),
+    Lost,
 }
 
 /// Whether the live anchor body matches the configured presence: the
 /// dock body belongs to `show_in_dock = true`, the layer body to
-/// `false`. Pure — the `ConfigChanged` swap's gate, keyed on the live
-/// anchor rather than the old config so a missed echo heals on the
-/// next one.
+/// `false`, and a lost anchor to neither. Pure — the `ConfigChanged`
+/// swap's gate, keyed on the live anchor rather than the old config
+/// so a missed echo heals on the next one.
 fn anchor_matches(anchor: &Anchor, show_in_dock: bool) -> bool {
     matches!(
         (anchor, show_in_dock),
         (Anchor::Dock(_), true) | (Anchor::Hidden(_), false)
     )
+}
+
+/// Records a layer surface's `Done` against the anchor: when `closed`
+/// is the live hidden body, the compositor destroyed it and the
+/// anchor becomes [`Anchor::Lost`]. Every other `Done` — terminal
+/// hides, measuring probes, the old body of a presence flip (its id
+/// already replaced) — leaves the anchor alone. Pure; returns whether
+/// the anchor was lost.
+fn anchor_closed(anchor: &mut Anchor, closed: window::Id) -> bool {
+    if *anchor == Anchor::Hidden(closed) {
+        *anchor = Anchor::Lost;
+        return true;
+    }
+    false
+}
+
+/// Reopens a lost anchor as the configured body; a no-op for a live
+/// one. Must run ahead of any other surface creation for the same
+/// reason [`open_anchor`] runs first at startup: the runtime binds
+/// its clipboard to the first window created while unbound.
+fn heal_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
+    if *anchor != Anchor::Lost {
+        return Task::none();
+    }
+    let (next, open) = open_anchor(show_in_dock);
+    *anchor = next;
+    open
 }
 
 /// Opens the configured clipboard-anchor body and returns it with its
@@ -1671,6 +1713,7 @@ fn swap_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
     let close_old: Task<Message> = match anchor {
         Anchor::Dock(id) => window::close(*id),
         Anchor::Hidden(id) => destroy_layer_surface(*id),
+        Anchor::Lost => Task::none(),
     };
     let (next, open_new) = open_anchor(show_in_dock);
     *anchor = next;
@@ -1907,6 +1950,13 @@ impl Application for DropTerm {
                     layer_id,
                 ),
             )) => Some(Message::LayerUnfocused(layer_id)),
+            Event::PlatformSpecific(PlatformSpecific::Wayland(
+                cosmic::iced::runtime::core::event::wayland::Event::Layer(
+                    LayerEvent::Done,
+                    _,
+                    layer_id,
+                ),
+            )) => Some(Message::LayerClosed(layer_id)),
             Event::Window(cosmic::iced::window::Event::Opened { size, .. }) => {
                 Some(Message::SurfaceOpened(id, size))
             }
@@ -2715,6 +2765,18 @@ impl DropTerm {
             Message::LayerUnfocused(id) => {
                 if layer_unfocused_acts_on(&self.surface, id) {
                     return self.focus_lost();
+                }
+            }
+            Message::LayerClosed(id) => {
+                // The compositor closed the anchor. Hidden, the heal
+                // waits for the next show (an output exists then, so
+                // no reopen loop while the monitor is gone); with the
+                // terminal up an output exists now, so heal at once.
+                if anchor_closed(&mut self.anchor, id) {
+                    log::warn!("the compositor closed the clipboard anchor");
+                    if self.surface != SurfaceState::Hidden {
+                        return heal_anchor(&mut self.anchor, self.config.show_in_dock);
+                    }
                 }
             }
             Message::KeyPressed(modifiers, key, physical_key) => {
