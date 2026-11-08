@@ -19,6 +19,8 @@
 //! back to the iced clipboard for that single operation.
 
 use std::collections::HashSet;
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 
 use cosmic::iced::Task;
@@ -37,6 +39,10 @@ enum DataControlError {
     Join(tokio::task::JoinError),
     /// Reading the offered content off the pipe failed.
     Io(std::io::Error),
+    /// The offer carried more than the paste cap allows — a policy
+    /// refusal, not a transport failure: the iced fallback would read
+    /// the same oversized offer unbounded, so it is never retried.
+    OfferTooLarge,
 }
 
 impl From<paste::Error> for DataControlError {
@@ -58,6 +64,7 @@ impl std::fmt::Display for DataControlError {
             Self::Paste(e) => write!(f, "paste: {e}"),
             Self::Join(e) => write!(f, "join: {e}"),
             Self::Io(e) => write!(f, "io: {e}"),
+            Self::OfferTooLarge => write!(f, "offer over the paste cap"),
         }
     }
 }
@@ -71,6 +78,11 @@ enum ReadFailure {
     /// A transport or support failure — warn, then retry the
     /// operation through the iced clipboard once.
     Fallback,
+    /// An offer over the paste cap — warn once and answer nothing:
+    /// the payload is refused whole, never truncated (a truncated
+    /// paste is a corrupt one) and never retried through the
+    /// unbounded fallback.
+    Refuse,
 }
 
 fn classify_read_failure(err: &DataControlError) -> ReadFailure {
@@ -78,6 +90,7 @@ fn classify_read_failure(err: &DataControlError) -> ReadFailure {
         DataControlError::Paste(paste::Error::ClipboardEmpty | paste::Error::NoMimeType) => {
             ReadFailure::Empty
         }
+        DataControlError::OfferTooLarge => ReadFailure::Refuse,
         _ => ReadFailure::Fallback,
     }
 }
@@ -92,6 +105,14 @@ const PASTE_IMAGE_ENABLED: bool = true;
 /// images to it. One constant for both directions, so what a
 /// copy-image writes, a paste reads back.
 const IMAGE_PNG_MIME: &str = "image/png";
+
+/// The ceiling one clipboard offer may carry (the ship audit's
+/// decompression-bomb guard for the paste path): reads stop one byte
+/// past it — an offer over it is refused whole, and the paste cache
+/// writes nothing over it. The engine's `IMAGE_PAYLOAD_CAP`
+/// precedent: the caps protect the pipeline, never mangle the
+/// payload.
+pub(crate) const PASTE_PAYLOAD_CAP: usize = 32 * 1024 * 1024;
 
 /// What a paste found on the clipboard (paste-image spec): a text
 /// offer read verbatim, or image bytes read on the text read's empty
@@ -112,12 +133,17 @@ enum PasteFollowUp {
     TryImage,
     NothingPasted,
     IcedFallback,
+    /// An offer over the paste cap: warn once and paste nothing — the
+    /// empty read's outcome with the warn the empty state owes no
+    /// one (a refusal happened, not a state was found).
+    Refused,
 }
 
 fn paste_follow_up(failure: &ReadFailure, image_enabled: bool) -> PasteFollowUp {
     match failure {
         ReadFailure::Empty if image_enabled => PasteFollowUp::TryImage,
         ReadFailure::Empty => PasteFollowUp::NothingPasted,
+        ReadFailure::Refuse => PasteFollowUp::Refused,
         ReadFailure::Fallback => PasteFollowUp::IcedFallback,
     }
 }
@@ -179,15 +205,21 @@ fn paste_clipboard_type(primary: bool) -> paste::ClipboardType {
 
 /// The blocking load core: one data-control read. An empty clipboard
 /// surfaces as `Err(ClipboardEmpty)` — the pure classifier decides
-/// how that resolves.
+/// how that resolves. The pipe is read one byte past the paste cap:
+/// landing over it refuses the offer whole, never truncates it (a
+/// truncated paste is a corrupt one).
 fn load(primary: bool) -> Result<String, DataControlError> {
-    let (mut pipe, _mime) = paste::get_contents(
+    let (pipe, _mime) = paste::get_contents(
         paste_clipboard_type(primary),
         Seat::Unspecified,
         PasteMime::Text,
     )?;
     let mut text = String::new();
-    std::io::Read::read_to_string(&mut pipe, &mut text)?;
+    let mut offer = pipe.take((PASTE_PAYLOAD_CAP + 1) as u64);
+    std::io::Read::read_to_string(&mut offer, &mut text)?;
+    if text.len() > PASTE_PAYLOAD_CAP {
+        return Err(DataControlError::OfferTooLarge);
+    }
     Ok(text)
 }
 
@@ -195,15 +227,20 @@ fn load(primary: bool) -> Result<String, DataControlError> {
 /// data-control read pinned to `image/png` — `wl-clipboard-rs` has no
 /// image mime variant, `Specific` is the request. A clipboard without
 /// an image offer surfaces as the same empty classification an empty
-/// text read gives.
+/// text read gives. The same paste cap and the same refuse-whole
+/// rule as [`load`] bound the pipe.
 fn load_image(primary: bool) -> Result<Vec<u8>, DataControlError> {
-    let (mut pipe, _mime) = paste::get_contents(
+    let (pipe, _mime) = paste::get_contents(
         paste_clipboard_type(primary),
         Seat::Unspecified,
         PasteMime::Specific(IMAGE_PNG_MIME),
     )?;
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut pipe, &mut bytes)?;
+    let mut offer = pipe.take((PASTE_PAYLOAD_CAP + 1) as u64);
+    std::io::Read::read_to_end(&mut offer, &mut bytes)?;
+    if bytes.len() > PASTE_PAYLOAD_CAP {
+        return Err(DataControlError::OfferTooLarge);
+    }
     Ok(bytes)
 }
 
@@ -288,7 +325,9 @@ where
 
 /// Read the system clipboard without requiring keyboard focus. An
 /// empty clipboard answers `None` silently; a transport failure warns
-/// and falls back to the iced clipboard for this single read.
+/// and falls back to the iced clipboard for this single read; an
+/// offer over the paste cap warns and answers `None` — refused
+/// whole, never truncated, never the unbounded fallback.
 pub fn read() -> Task<Option<String>> {
     let join = tokio::task::spawn_blocking(move || load(false));
     Task::future(async move {
@@ -299,6 +338,10 @@ pub fn read() -> Task<Option<String>> {
         };
         match classify_read_failure(&failed) {
             ReadFailure::Empty => Some(None),
+            ReadFailure::Refuse => {
+                log::warn!("clipboard read refused ({failed}); the offer is over the paste cap");
+                Some(None)
+            }
             ReadFailure::Fallback => {
                 log::warn!("data-control clipboard read failed ({failed}); falling back to the iced clipboard");
                 None
@@ -322,6 +365,10 @@ pub fn read_primary() -> Task<Option<String>> {
         };
         match classify_read_failure(&failed) {
             ReadFailure::Empty => Some(None),
+            ReadFailure::Refuse => {
+                log::warn!("primary read refused ({failed}); the offer is over the paste cap");
+                Some(None)
+            }
             ReadFailure::Fallback => {
                 log::warn!("data-control primary read failed ({failed}); falling back to the iced clipboard");
                 None
@@ -341,7 +388,8 @@ pub fn read_primary() -> Task<Option<String>> {
 /// neither resolves `None`, the same silent nothing-pasted state an
 /// empty clipboard is today. The image attempt has no iced fallback
 /// (iced reads text): a transport failure there warns once and
-/// pastes nothing.
+/// pastes nothing — as does an offer over the paste cap, refused
+/// whole on either read.
 pub fn read_for_paste(primary: bool) -> Task<Option<PasteContents>> {
     let op = if primary {
         "primary read"
@@ -361,6 +409,10 @@ pub fn read_for_paste(primary: bool) -> Task<Option<PasteContents>> {
                     "data-control {op} failed ({failed}); falling back to the iced clipboard"
                 );
                 None
+            }
+            PasteFollowUp::Refused => {
+                log::warn!("data-control {op} refused ({failed}); pasting nothing");
+                Some(None)
             }
             PasteFollowUp::NothingPasted => Some(None),
             PasteFollowUp::TryImage => {
@@ -424,19 +476,35 @@ fn next_paste_name(existing: &HashSet<String>, stamp: &str) -> String {
 /// that pastes as text (paste-image spec, PI-1). The name is
 /// generated — timestamp and collision counter — never derived from
 /// the bytes. Best effort: one warn naming the operation and no paste
-/// on any failure.
+/// on any failure — including a payload over the paste cap, refused
+/// before the cache is touched.
 pub fn write_paste_image(bytes: &[u8]) -> Option<String> {
     let Some(dir) = paste_cache_dir() else {
         log::warn!("paste cache unavailable: no XDG cache directory resolves");
         return None;
     };
-    if let Err(err) = std::fs::create_dir_all(&dir) {
+    write_paste_image_in(&dir, &paste_stamp(&jiff::Zoned::now()), bytes)
+}
+
+/// The cache write's testable core (the ship audit's exclusive-write
+/// fix): the name comes from the same counter walk, but `create_new`
+/// is the arbiter — the file is created exclusively, so a symlink
+/// planted at a candidate name is stepped past rather than followed,
+/// a same-instant writer in another instance collides on the open
+/// instead of clobbering, and the `0600` mode keeps clipboard
+/// screenshots the owner's alone under any umask. An unreadable
+/// directory is not a stop: the write itself names the real failure
+/// if it persists.
+fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.len() > PASTE_PAYLOAD_CAP {
+        log::warn!("paste image refused: payload over the {PASTE_PAYLOAD_CAP}-byte paste cap");
+        return None;
+    }
+    if let Err(err) = std::fs::create_dir_all(dir) {
         log::warn!("failed to create the paste cache {}: {err}", dir.display());
         return None;
     }
-    // An unreadable directory is not a stop: the write below names
-    // the real failure if it persists.
-    let existing: HashSet<String> = std::fs::read_dir(&dir)
+    let mut existing: HashSet<String> = std::fs::read_dir(dir)
         .map(|entries| {
             entries
                 .flatten()
@@ -444,15 +512,32 @@ pub fn write_paste_image(bytes: &[u8]) -> Option<String> {
                 .collect()
         })
         .unwrap_or_default();
-    let path = dir.join(next_paste_name(
-        &existing,
-        &paste_stamp(&jiff::Zoned::now()),
-    ));
-    match std::fs::write(&path, bytes) {
-        Ok(()) => Some(path.display().to_string()),
-        Err(err) => {
-            log::warn!("failed to write {}: {err}", path.display());
-            None
+    loop {
+        let name = next_paste_name(&existing, stamp);
+        let path = dir.join(&name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(err) = std::io::Write::write_all(&mut file, bytes) {
+                    log::warn!("failed to write {}: {err}", path.display());
+                    return None;
+                }
+                return Some(path.display().to_string());
+            }
+            // The name was taken between the snapshot and the open
+            // (or the snapshot never could read it): the set grows
+            // with every observed name, so the walk always advances.
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                existing.insert(name);
+            }
+            Err(err) => {
+                log::warn!("failed to write {}: {err}", path.display());
+                return None;
+            }
         }
     }
 }
@@ -460,8 +545,8 @@ pub fn write_paste_image(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataControlError, PasteFollowUp, ReadFailure, classify_read_failure, image_png_mime,
-        next_paste_name, paste_follow_up, paste_stamp,
+        DataControlError, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure, classify_read_failure,
+        image_png_mime, next_paste_name, paste_follow_up, paste_stamp, write_paste_image_in,
     };
 
     #[test]
@@ -597,5 +682,95 @@ mod tests {
             next_paste_name(&existing, "20261108-140309"),
             "paste-20261108-140309-3.png"
         );
+    }
+
+    #[test]
+    fn an_over_cap_offer_is_refused_never_fallen_back() {
+        // The cap is a policy refusal, not a transport failure: warn
+        // and answer nothing on either read — iced would read the
+        // same oversized offer unbounded, so it is never the
+        // fallback, and the image gate has no say in a refusal.
+        assert!(matches!(
+            classify_read_failure(&DataControlError::OfferTooLarge),
+            ReadFailure::Refuse
+        ));
+        assert!(matches!(
+            paste_follow_up(&ReadFailure::Refuse, true),
+            PasteFollowUp::Refused
+        ));
+        assert!(matches!(
+            paste_follow_up(&ReadFailure::Refuse, false),
+            PasteFollowUp::Refused
+        ));
+    }
+
+    // --- the cache write (the ship audit's exclusive-write fix) ---
+
+    /// A fresh temp dir per test, cleared first so re-runs start
+    /// clean (the tabs suite's own fixture convention).
+    fn cache_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dropterm-clipboard-tests-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_first_cache_write_takes_counter_one_at_owner_only_perms() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = cache_dir("first");
+        let path = write_paste_image_in(&dir, "20261108-140309", b"png").expect("the write lands");
+        assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-1.png"));
+        // Clipboard screenshots are the owner's alone: 0600 under any
+        // umask, not the 0644/0664 a plain write inherits.
+        let mode = std::fs::metadata(&path)
+            .expect("the file stands")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_taken_name_steps_and_the_taker_is_never_clobbered() {
+        // A file already holding the counter-one name is left
+        // byte-for-byte alone: the write takes counter two.
+        let dir = cache_dir("collision");
+        let taken = dir.join("paste-20261108-140309-1.png");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        std::fs::write(&taken, b"sentinel").expect("fixture file");
+        let path =
+            write_paste_image_in(&dir, "20261108-140309", b"fresh").expect("the write lands");
+        assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-2.png"));
+        assert_eq!(std::fs::read(&taken).expect("sentinel stands"), b"sentinel");
+        assert_eq!(std::fs::read(&path).expect("fresh stands"), b"fresh");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_planted_symlink_is_stepped_past_never_followed() {
+        // A symlink at a candidate name is a taken name to the
+        // exclusive open, not a door to the victim behind it.
+        let dir = cache_dir("symlink");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"victim").expect("fixture file");
+        std::os::unix::fs::symlink(&victim, dir.join("paste-20261108-140309-1.png"))
+            .expect("fixture link");
+        let path =
+            write_paste_image_in(&dir, "20261108-140309", b"fresh").expect("the write lands");
+        assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-2.png"));
+        assert_eq!(std::fs::read(&victim).expect("victim stands"), b"victim");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_over_cap_payload_touches_nothing() {
+        // The refusal happens before the cache is even created: no
+        // directory, no file, one warn.
+        let dir = cache_dir("cap");
+        let oversize = vec![0u8; PASTE_PAYLOAD_CAP + 1];
+        assert!(write_paste_image_in(&dir, "20261108-140309", &oversize).is_none());
+        assert!(!dir.exists());
     }
 }
