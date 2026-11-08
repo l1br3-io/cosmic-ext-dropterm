@@ -451,10 +451,11 @@ pub struct StatusInputs<'a> {
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
     /// The active tab's pasted-image count (paste-chip spec) — the
-    /// ledger's length, kept fresh by the prune at its mutating
-    /// moments (paste, panel open, remove); ungathered past zero by
-    /// construction. No toggle gates it: the chip's visibility is
-    /// its conditionality (paste-chip OQ-4).
+    /// ledger's length, pruned at the panel's own moments (open and
+    /// remove; a file deleted out from under a row counts until the
+    /// next one); ungathered past zero by construction. No toggle
+    /// gates it: the chip's visibility is its conditionality
+    /// (paste-chip OQ-4).
     pub pasted: Option<usize>,
     /// The running command's own progress report (OSC 9;4,
     /// osc94-progress spec) — the engine's standing fact, gathered

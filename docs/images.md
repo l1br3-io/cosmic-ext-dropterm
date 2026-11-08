@@ -20,7 +20,7 @@ Pasting an image from the clipboard is a different road than the ones above, and
 
 No terminal in the survey behind this design pastes clipboard images at all; the two apps that do (Warp, Claude Code) collapse the image to a compact marker backed by a file. DropTerm follows: the path is the marker, the panel keeps the pastes findable after the prompt scrolls away, and pixels stay where a program asked for them. The survey is [in the research log](research/paste-image-ux.md).
 
-Files older than seven days are swept from the paste cache at startup; a row whose file is gone leaves the panel with it. Note the SSH caveat in the other direction: the pasted path is local to where DropTerm runs — a remote shell receives a path it cannot read (copy image is the workaround).
+Nothing sweeps the paste cache automatically — files stay until you remove them through the panel's **Remove** verb or by clearing the directory, and a row whose file is gone leaves the panel with it. One ceiling applies: an image paste larger than 32 MiB is refused whole (nothing pastes; one warn names it in the log). Note the SSH caveat in the other direction: the pasted path is local to where DropTerm runs — a remote shell receives a path it cannot read (copy image is the workaround).
 
 ## Driving it
 
