@@ -350,12 +350,12 @@ impl DropTerm {
                 }
             }
             Action::Paste => {
-                return clipboard::read()
-                    .map(|text| cosmic::Action::App(Message::ClipboardPasted(text)));
+                return clipboard::read_for_paste(false)
+                    .map(|contents| cosmic::Action::App(paste_contents_message(contents, false)));
             }
             Action::PastePrimary => {
-                return clipboard::read_primary()
-                    .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
+                return clipboard::read_for_paste(true)
+                    .map(|contents| cosmic::Action::App(paste_contents_message(contents, true)));
             }
             Action::SelectAll => {
                 tab.terminal.lock().unwrap().select_all();
@@ -1394,6 +1394,28 @@ fn osc52_load_reply<F: Fn(&str) -> String>(data: Option<String>, format: F) -> V
     format(&data.unwrap_or_default()).into_bytes()
 }
 
+/// Turn a paste read's outcome into its message (paste-image spec,
+/// PI-1): text — and an empty clipboard's `None` — keep today's pair
+/// verbatim; image bytes take the arm that writes the cache file and
+/// pastes its path.
+fn paste_contents_message(contents: Option<clipboard::PasteContents>, primary: bool) -> Message {
+    match contents {
+        Some(clipboard::PasteContents::Image(bytes)) => Message::ClipboardImagePasted(bytes),
+        Some(clipboard::PasteContents::Text(text)) => text_paste_message(Some(text), primary),
+        None => text_paste_message(None, primary),
+    }
+}
+
+/// The text-paste message pair `Action::Paste`/`Action::PastePrimary`
+/// have always produced.
+fn text_paste_message(text: Option<String>, primary: bool) -> Message {
+    if primary {
+        Message::ClipboardPastedPrimary(text)
+    } else {
+        Message::ClipboardPasted(text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1402,6 +1424,47 @@ mod tests {
     #[test]
     fn trees_yield_one_tree_per_row_with_no_profiles() {
         assert_eq!(trees(&[]).len(), ROWS.len());
+    }
+
+    // --- the paste routing (paste-image spec, PI-1) ---
+
+    #[test]
+    fn text_contents_keep_the_text_paste_arms() {
+        // A text offer — and an empty clipboard's `None` — never
+        // leave today's message pair: byte-for-byte the old routing.
+        let text = || Some(clipboard::PasteContents::Text("hi".to_owned()));
+        assert!(matches!(
+            paste_contents_message(text(), false),
+            Message::ClipboardPasted(Some(t)) if t == "hi"
+        ));
+        assert!(matches!(
+            paste_contents_message(text(), true),
+            Message::ClipboardPastedPrimary(Some(t)) if t == "hi"
+        ));
+        assert!(matches!(
+            paste_contents_message(None, false),
+            Message::ClipboardPasted(None)
+        ));
+        assert!(matches!(
+            paste_contents_message(None, true),
+            Message::ClipboardPastedPrimary(None)
+        ));
+    }
+
+    #[test]
+    fn image_contents_take_the_image_paste_arm() {
+        // Image bytes ride their own message — the arm that writes
+        // the cache file and pastes the path — whichever selection
+        // they were read from.
+        let bytes = vec![0x89, b'P', b'N', b'G'];
+        assert!(matches!(
+            paste_contents_message(Some(clipboard::PasteContents::Image(bytes.clone())), false),
+            Message::ClipboardImagePasted(b) if b == bytes
+        ));
+        assert!(matches!(
+            paste_contents_message(Some(clipboard::PasteContents::Image(bytes.clone())), true),
+            Message::ClipboardImagePasted(b) if b == bytes
+        ));
     }
 
     #[test]

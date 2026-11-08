@@ -18,6 +18,9 @@
 //! A data-control failure is never silent — it warns once and falls
 //! back to the iced clipboard for that single operation.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use cosmic::iced::Task;
 use cosmic::iced::clipboard as iced_clipboard;
 use wl_clipboard_rs::copy::{ClipboardType, MimeType, Options, Source};
@@ -79,6 +82,40 @@ fn classify_read_failure(err: &DataControlError) -> ReadFailure {
     }
 }
 
+/// The paste-image gate's engine-true floor (paste-image spec, PI-1):
+/// on until `paste_image_enabled` becomes a config key (PI-3), on the
+/// `autosuggestions_commands_enabled` engine-true precedent.
+const PASTE_IMAGE_ENABLED: bool = true;
+
+/// What a paste found on the clipboard (paste-image spec): a text
+/// offer read verbatim, or image bytes read on the text read's empty
+/// fallthrough.
+pub enum PasteContents {
+    /// A text offer — today's paste payload, byte-for-byte.
+    Text(String),
+    /// `image/png` bytes, the only image interchange format v1 reads.
+    Image(Vec<u8>),
+}
+
+/// What follows a failed text read on the paste path: the image
+/// attempt (an empty clipboard under an open gate), nothing pasted
+/// (an empty clipboard under a closed gate — today's behavior
+/// exactly), or the iced text fallback (a transport failure; iced
+/// reads text, so it is never the image read's fallback).
+enum PasteFollowUp {
+    TryImage,
+    NothingPasted,
+    IcedFallback,
+}
+
+fn paste_follow_up(failure: &ReadFailure, image_enabled: bool) -> PasteFollowUp {
+    match failure {
+        ReadFailure::Empty if image_enabled => PasteFollowUp::TryImage,
+        ReadFailure::Empty => PasteFollowUp::NothingPasted,
+        ReadFailure::Fallback => PasteFollowUp::IcedFallback,
+    }
+}
+
 /// The blocking store core: one data-control copy. `copy()` returns
 /// once the selection is set; its own detached thread serves the
 /// offer until something else replaces it (no fork — the serving
@@ -101,22 +138,45 @@ fn store(text: String, primary: bool) -> Result<(), wl_clipboard_rs::copy::Error
     )
 }
 
+/// The data-control selection a paste reads: the primary selection or
+/// the regular clipboard, per the flag every read seam already
+/// carries.
+fn paste_clipboard_type(primary: bool) -> paste::ClipboardType {
+    if primary {
+        paste::ClipboardType::Primary
+    } else {
+        paste::ClipboardType::Regular
+    }
+}
+
 /// The blocking load core: one data-control read. An empty clipboard
 /// surfaces as `Err(ClipboardEmpty)` — the pure classifier decides
 /// how that resolves.
 fn load(primary: bool) -> Result<String, DataControlError> {
     let (mut pipe, _mime) = paste::get_contents(
-        if primary {
-            wl_clipboard_rs::paste::ClipboardType::Primary
-        } else {
-            wl_clipboard_rs::paste::ClipboardType::Regular
-        },
+        paste_clipboard_type(primary),
         Seat::Unspecified,
         PasteMime::Text,
     )?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut pipe, &mut text)?;
     Ok(text)
+}
+
+/// The blocking image-read core (paste-image spec, PI-1): one
+/// data-control read pinned to `image/png` — `wl-clipboard-rs` has no
+/// image mime variant, `Specific` is the request. A clipboard without
+/// an image offer surfaces as the same empty classification an empty
+/// text read gives.
+fn load_image(primary: bool) -> Result<Vec<u8>, DataControlError> {
+    let (mut pipe, _mime) = paste::get_contents(
+        paste_clipboard_type(primary),
+        Seat::Unspecified,
+        PasteMime::Specific("image/png"),
+    )?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut pipe, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Write `text` to the system clipboard without requiring keyboard
@@ -222,9 +282,135 @@ pub fn read_primary() -> Task<Option<String>> {
     })
 }
 
+/// Read the clipboard for a paste, text first (paste-image spec,
+/// PI-1). A text offer resolves as [`PasteContents::Text`] —
+/// byte-for-byte today's read. Only an empty-classified text read
+/// falls through to an `image/png` attempt; a clipboard offering
+/// neither resolves `None`, the same silent nothing-pasted state an
+/// empty clipboard is today. The image attempt has no iced fallback
+/// (iced reads text): a transport failure there warns once and
+/// pastes nothing.
+pub fn read_for_paste(primary: bool) -> Task<Option<PasteContents>> {
+    let op = if primary {
+        "primary read"
+    } else {
+        "clipboard read"
+    };
+    let join = tokio::task::spawn_blocking(move || load(primary));
+    Task::future(async move {
+        let failed = match join.await {
+            Ok(Ok(text)) => return Some(Some(PasteContents::Text(text))),
+            Ok(Err(e)) => e,
+            Err(e) => DataControlError::Join(e),
+        };
+        match paste_follow_up(&classify_read_failure(&failed), PASTE_IMAGE_ENABLED) {
+            PasteFollowUp::IcedFallback => {
+                log::warn!(
+                    "data-control {op} failed ({failed}); falling back to the iced clipboard"
+                );
+                None
+            }
+            PasteFollowUp::NothingPasted => Some(None),
+            PasteFollowUp::TryImage => {
+                match tokio::task::spawn_blocking(move || load_image(primary)).await {
+                    Ok(Ok(bytes)) => Some(Some(PasteContents::Image(bytes))),
+                    // No image offer either: the empty-clipboard state.
+                    Ok(Err(e)) if matches!(classify_read_failure(&e), ReadFailure::Empty) => {
+                        Some(None)
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!("data-control image read failed ({e})");
+                        Some(None)
+                    }
+                    Err(e) => {
+                        let err = DataControlError::Join(e);
+                        log::warn!("data-control image read failed ({err})");
+                        Some(None)
+                    }
+                }
+            }
+        }
+    })
+    .then(move |outcome| match outcome {
+        Some(value) => Task::done(value),
+        None => if primary {
+            iced_clipboard::read_primary()
+        } else {
+            iced_clipboard::read()
+        }
+        .map(|text| text.map(PasteContents::Text)),
+    })
+}
+
+/// The paste cache's directory: `dropterm/paste` under the XDG cache
+/// dir (paste-image spec). `None` when no cache dir resolves.
+fn paste_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|dir| dir.join("dropterm").join("paste"))
+}
+
+/// The paste filename's timestamp: `YYYYMMDD-HHMMSS`, local zone (the
+/// band clock's `strftime` precedent).
+fn paste_stamp(now: &jiff::Zoned) -> String {
+    now.strftime("%Y%m%d-%H%M%S").to_string()
+}
+
+/// The next paste filename for `stamp`, its counter stepping past
+/// every same-stamp name the directory already holds — same-second
+/// pastes never collide.
+fn next_paste_name(existing: &HashSet<String>, stamp: &str) -> String {
+    let mut counter = 1;
+    loop {
+        let name = format!("paste-{stamp}-{counter}.png");
+        if !existing.contains(&name) {
+            return name;
+        }
+        counter += 1;
+    }
+}
+
+/// Write pasted image bytes to the paste cache and answer the path
+/// that pastes as text (paste-image spec, PI-1). The name is
+/// generated — timestamp and collision counter — never derived from
+/// the bytes. Best effort: one warn naming the operation and no paste
+/// on any failure.
+pub fn write_paste_image(bytes: &[u8]) -> Option<String> {
+    let Some(dir) = paste_cache_dir() else {
+        log::warn!("paste cache unavailable: no XDG cache directory resolves");
+        return None;
+    };
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        log::warn!("failed to create the paste cache {}: {err}", dir.display());
+        return None;
+    }
+    // An unreadable directory is not a stop: the write below names
+    // the real failure if it persists.
+    let existing: HashSet<String> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = dir.join(next_paste_name(
+        &existing,
+        &paste_stamp(&jiff::Zoned::now()),
+    ));
+    match std::fs::write(&path, bytes) {
+        Ok(()) => Some(path.display().to_string()),
+        Err(err) => {
+            log::warn!("failed to write {}: {err}", path.display());
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DataControlError, ReadFailure, classify_read_failure};
+    use super::{
+        DataControlError, PasteFollowUp, ReadFailure, classify_read_failure, next_paste_name,
+        paste_follow_up, paste_stamp,
+    };
 
     #[test]
     fn empty_clipboard_reads_resolve_to_silent_none() {
@@ -282,5 +468,70 @@ mod tests {
             )),
             ReadFailure::Fallback
         ));
+    }
+
+    // --- the paste-image read seam (paste-image spec, PI-1) ---
+
+    #[test]
+    fn an_empty_text_read_attempts_the_image_read_only_while_gated() {
+        // The fallthrough: only the empty classification (an empty or
+        // typeless clipboard) reaches the image attempt, and only
+        // while the paste-image gate stands — gate off restores
+        // today's behavior exactly (nothing pasted, no image read).
+        assert!(matches!(
+            paste_follow_up(&ReadFailure::Empty, true),
+            PasteFollowUp::TryImage
+        ));
+        assert!(matches!(
+            paste_follow_up(&ReadFailure::Empty, false),
+            PasteFollowUp::NothingPasted
+        ));
+    }
+
+    #[test]
+    fn a_transport_failure_never_attempts_the_image_read() {
+        // A transport failure keeps its warn + iced fallback (iced
+        // reads text); the image read is not a fallback for it.
+        assert!(matches!(
+            paste_follow_up(&ReadFailure::Fallback, true),
+            PasteFollowUp::IcedFallback
+        ));
+    }
+
+    #[test]
+    fn paste_stamp_pins_the_filename_timestamp_format() {
+        assert_eq!(
+            paste_stamp(
+                &"2026-11-08T14:03:09+00:00[UTC]"
+                    .parse()
+                    .expect("fixed zoned fixture")
+            ),
+            "20261108-140309"
+        );
+    }
+
+    #[test]
+    fn the_first_paste_of_a_second_takes_counter_one() {
+        let existing = std::collections::HashSet::new();
+        assert_eq!(
+            next_paste_name(&existing, "20261108-140309"),
+            "paste-20261108-140309-1.png"
+        );
+    }
+
+    #[test]
+    fn same_second_pastes_step_the_counter_past_existing_names() {
+        // Two pastes inside one second must not collide: the counter
+        // steps past every same-stamp name the directory already
+        // holds.
+        let existing: std::collections::HashSet<String> =
+            ["paste-20261108-140309-1.png", "paste-20261108-140309-2.png"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        assert_eq!(
+            next_paste_name(&existing, "20261108-140309"),
+            "paste-20261108-140309-3.png"
+        );
     }
 }

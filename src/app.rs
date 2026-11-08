@@ -34,6 +34,7 @@ use cosmic::{Application, Element, Renderer};
 use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
+use crate::clipboard;
 use crate::config::{
     CONFIG_VERSION, DropTermConfig, Edge, TabPosition, TabTitleMode, ThemePreference,
 };
@@ -248,6 +249,10 @@ pub enum Message {
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
+    /// A paste read found image bytes (paste-image spec): the handler
+    /// writes them to the paste cache and pastes the file's path as
+    /// text through the same `Terminal::paste` a text paste uses.
+    ClipboardImagePasted(Vec<u8>),
     /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
@@ -3247,6 +3252,17 @@ impl DropTerm {
             Message::ClipboardPasted(text) | Message::ClipboardPastedPrimary(text) => {
                 if let (Some(text), Some(tab)) = (text, self.active()) {
                     tab.terminal.lock().unwrap().paste(&text);
+                }
+            }
+            Message::ClipboardImagePasted(bytes) => {
+                // The Claude Code contract (paste-image spec, PI-1):
+                // the bytes land in the paste cache, their file's path
+                // pastes as text — the same channel a text paste uses,
+                // so bracketed paste rides unchanged.
+                if let Some(tab) = self.active()
+                    && let Some(path) = clipboard::write_paste_image(&bytes)
+                {
+                    tab.terminal.lock().unwrap().paste(&path);
                 }
             }
             Message::PickSettingsTab(entity) => {
