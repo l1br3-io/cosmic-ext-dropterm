@@ -2427,10 +2427,13 @@ impl Application for DropTerm {
         // side of the band (the band hugs the free edge, so that
         // side is the strip's own tooltip side inverted).
         .on_menu_action(Message::Action)
-        // The scrolled chip's click — the one action chip
-        // (status-scrolled spec): the jump routes to the engine's
-        // scroll-to-bottom funnel, never the copy verb.
+        // The band's two action chips route their verbs ahead of the
+        // copy path: the scrolled chip's jump (status-scrolled spec)
+        // to the engine's scroll-to-bottom funnel, and the pasted
+        // chip's press (paste-chip spec, PC-2) to the images panel's
+        // door — neither is ever the copy verb.
         .on_scroll_bottom(|| Message::StatusScrollJump)
+        .on_images_panel(|| Message::ImagesPanel(true))
         .menu_side(band_menu_side(self.config.edge))
         // The border hairline rides the same side the menu pops to
         // — the band's side away from the grab bar — off the
