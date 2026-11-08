@@ -12,7 +12,7 @@ fn escape_with_the_drawer_open_closes_it_and_only_it() {
     // never reaches the terminal (disabled while the drawer is
     // open, criterion 4).
     assert_eq!(
-        drawer_escape_routing(true, false, &Key::Named(Named::Escape)),
+        drawer_escape_routing(true, false, false, &Key::Named(Named::Escape)),
         DrawerKeyRouting::CloseDrawer
     );
 }
@@ -24,11 +24,11 @@ fn escape_with_the_drawer_closed_keeps_today_s_routing() {
     // fires, draft or no draft (a draft cannot outlive the drawer
     // anyway; the pin is the precedence).
     assert_eq!(
-        drawer_escape_routing(false, false, &Key::Named(Named::Escape)),
+        drawer_escape_routing(false, false, false, &Key::Named(Named::Escape)),
         DrawerKeyRouting::FallThrough
     );
     assert_eq!(
-        drawer_escape_routing(false, true, &Key::Named(Named::Escape)),
+        drawer_escape_routing(false, false, true, &Key::Named(Named::Escape)),
         DrawerKeyRouting::FallThrough
     );
 }
@@ -44,11 +44,11 @@ fn every_other_key_falls_through_even_with_the_drawer_open() {
         Key::Named(Named::Enter),
     ] {
         assert_eq!(
-            drawer_escape_routing(true, false, &key),
+            drawer_escape_routing(true, false, false, &key),
             DrawerKeyRouting::FallThrough
         );
         assert_eq!(
-            drawer_escape_routing(true, true, &key),
+            drawer_escape_routing(true, false, true, &key),
             DrawerKeyRouting::FallThrough
         );
     }
@@ -63,7 +63,7 @@ fn escape_with_a_profile_draft_open_cancels_it_and_keeps_the_drawer() {
     // open beneath (a second Escape, draft now gone, closes it as
     // today). The cancel writes nothing and keeps the selection.
     assert_eq!(
-        drawer_escape_routing(true, true, &Key::Named(Named::Escape)),
+        drawer_escape_routing(true, false, true, &Key::Named(Named::Escape)),
         DrawerKeyRouting::CancelDraft
     );
 }
@@ -600,4 +600,48 @@ fn the_local_hostname_reads_trimmed_or_absent() {
         assert!(!name.is_empty());
         assert_eq!(name, name.trim(), "the /proc read must land trimmed");
     }
+}
+
+// --- the images panel drawer (paste-panel spec, PP-2) ---
+
+#[test]
+fn escape_closes_the_images_drawer() {
+    // The images panel owns Escape exactly as the settings drawer
+    // does — its own close path, never the surface's.
+    assert_eq!(
+        drawer_escape_routing(false, true, false, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::CloseDrawer
+    );
+}
+
+#[test]
+fn settings_wins_the_escape_when_both_drawers_could_be_open() {
+    // Both open is impossible by construction (opening one closes
+    // the other); the pin makes the defensive order explicit — the
+    // settings drawer's richer close (buffer clears, page reset)
+    // is the one that runs.
+    assert_eq!(
+        drawer_escape_routing(true, true, false, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::CloseDrawer
+    );
+}
+
+#[test]
+fn images_panel_rows_list_newest_first() {
+    // The panel is a view over the ledger, newest first: the most
+    // recent paste is the row the eye lands on.
+    use crate::tabs::PastedImage;
+    let rows = vec![
+        PastedImage::new(std::path::PathBuf::from("/c/paste-1.png"), b"png"),
+        PastedImage::new(std::path::PathBuf::from("/c/paste-2.png"), b"png"),
+        PastedImage::new(std::path::PathBuf::from("/c/paste-3.png"), b"png"),
+    ];
+    let listed = images_panel_rows(&rows);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|row| row.stamp.as_str())
+            .collect::<Vec<_>>(),
+        vec!["paste-3", "paste-2", "paste-1"]
+    );
 }

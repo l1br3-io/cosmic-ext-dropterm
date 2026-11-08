@@ -253,6 +253,17 @@ pub enum Message {
     /// writes them to the paste cache and pastes the file's path as
     /// text through the same `Terminal::paste` a text paste uses.
     ClipboardImagePasted(Vec<u8>),
+    /// Opens or closes the per-tab images panel (paste-panel
+    /// spec): the drawer's own escape route — and the band chip's
+    /// click verb, once paste-chip wires it.
+    ImagesPanel(bool),
+    /// A panel thumbnail decode finished (paste-panel spec): the
+    /// handle lands in the cache keyed by its row's path; `None`
+    /// leaves the row text-only.
+    ImagesPanelThumb(
+        std::path::PathBuf,
+        Option<cosmic::iced::widget::image::Handle>,
+    ),
     /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
@@ -495,6 +506,20 @@ pub struct DropTerm {
     /// focus-loss hides with its drafts intact (criterion 8), and an
     /// explicit close clears `settings_buffer`.
     settings_open: bool,
+    /// Whether the per-tab images panel is open (paste-panel
+    /// spec): a context drawer over the same surface the settings
+    /// drawer rides, listing the active tab's pasted images.
+    /// Opening it closes the settings drawer — one drawer at a
+    /// time by construction.
+    images_panel_open: bool,
+    /// The images panel's decoded thumbnails, keyed by cache-file
+    /// path (paste-panel spec): filled at panel open by background
+    /// decodes — never on the paste path — and read by the row
+    /// view. A failed decode simply never lands; its row renders
+    /// text-only. Stale entries (files removed since) drop at the
+    /// next open, beside the ledger's own prune.
+    images_panel_thumbs:
+        std::collections::HashMap<std::path::PathBuf, cosmic::iced::widget::image::Handle>,
     /// Which page the open drawer shows: a tab's page (General,
     /// Advanced) or the Profiles page the General tab's entry row
     /// flips to (the cosmic-term `ContextPage` pattern,
@@ -1229,16 +1254,129 @@ enum DrawerKeyRouting {
     FallThrough,
 }
 
-fn drawer_escape_routing(settings_open: bool, draft_open: bool, key: &Key) -> DrawerKeyRouting {
-    if settings_open && matches!(key, Key::Named(Named::Escape)) {
-        if draft_open {
-            DrawerKeyRouting::CancelDraft
-        } else {
+fn drawer_escape_routing(
+    settings_open: bool,
+    images_open: bool,
+    draft_open: bool,
+    key: &Key,
+) -> DrawerKeyRouting {
+    if matches!(key, Key::Named(Named::Escape)) {
+        if settings_open {
+            // The settings drawer owns the richer close (draft
+            // cancel, buffer clear, page reset) and wins over the
+            // images drawer when both flags could somehow be set —
+            // impossible by construction, pinned anyway.
+            if draft_open {
+                DrawerKeyRouting::CancelDraft
+            } else {
+                DrawerKeyRouting::CloseDrawer
+            }
+        } else if images_open {
             DrawerKeyRouting::CloseDrawer
+        } else {
+            DrawerKeyRouting::FallThrough
         }
     } else {
         DrawerKeyRouting::FallThrough
     }
+}
+
+/// The images panel's pane (paste-panel spec): the active tab's
+/// pasted images, newest first — the thumbnail when its decode has
+/// landed (bounded ≤256 px, `Handle::from_rgba`'s own path), the
+/// stamp and dimensions always, a hint line when the prune left
+/// nothing to show. Actions ride PP-3.
+fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
+    let rows = app
+        .active()
+        .map(|tab| images_panel_rows(&tab.pasted_images))
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return widget::text::body("No pasted images in this tab").into();
+    }
+    let mut list = widget::column(Vec::<Element<'_, Message>>::new()).spacing(12);
+    for row in rows {
+        let mut text = widget::column(Vec::<Element<'_, Message>>::new())
+            .spacing(2)
+            .push(widget::text::body(row.stamp.clone()));
+        if let Some((width, height)) = row.dims {
+            text = text.push(widget::text(format!("{width}×{height}")));
+        }
+        let mut item = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
+        if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
+            item = item.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
+        }
+        item = item.push(text);
+        list = list.push(item);
+    }
+    widget::scrollable(list.padding(16)).into()
+}
+
+/// The images panel's row order (paste-panel spec): a view over the
+/// pruned ledger, newest first — the most recent paste is the row
+/// the eye lands on.
+fn images_panel_rows(rows: &[crate::tabs::PastedImage]) -> Vec<&crate::tabs::PastedImage> {
+    rows.iter().rev().collect()
+}
+
+/// Starts one panel thumbnail decode (paste-panel spec): the
+/// blocking decode off the UI thread, its result delivered as
+/// [`Message::ImagesPanelThumb`]. Shared by the panel's open (a
+/// batch over the missing rows) and a paste landing while the
+/// panel is open (the one fresh row).
+fn panel_thumb_task(path: std::path::PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let join_path = path.clone();
+            match tokio::task::spawn_blocking(move || decode_panel_thumb(path)).await {
+                Ok(joined) => joined,
+                Err(err) => {
+                    log::warn!(
+                        "panel thumbnail join failed for {}: {err}",
+                        join_path.display()
+                    );
+                    (join_path, None)
+                }
+            }
+        },
+        |(path, handle)| cosmic::Action::App(Message::ImagesPanelThumb(path, handle)),
+    )
+}
+
+/// Decodes one paste-cache file into a panel thumbnail (paste-panel
+/// spec): read, decode, `thumbnail` to the ≤256 px long edge, RGBA
+/// through the grid store's own `Handle::from_rgba` path. Any
+/// failure answers `None` after one warn naming the file — the row
+/// renders text-only, never blocks, and never touches the paste
+/// path (decodes run only at panel open).
+fn decode_panel_thumb(
+    path: std::path::PathBuf,
+) -> (
+    std::path::PathBuf,
+    Option<cosmic::iced::widget::image::Handle>,
+) {
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log::warn!("panel thumbnail read failed for {}: {err}", path.display());
+            return (path, None);
+        }
+    };
+    let thumb = image::load_from_memory(&bytes)
+        .map(|img| img.thumbnail(256, 256).to_rgba8())
+        .ok();
+    let Some(rgba) = thumb else {
+        log::warn!("panel thumbnail decode failed for {}", path.display());
+        return (path, None);
+    };
+    (
+        path,
+        Some(cosmic::iced::widget::image::Handle::from_rgba(
+            rgba.width(),
+            rgba.height(),
+            rgba.into_raw(),
+        )),
+    )
 }
 
 /// The close-gate decision (close-confirm criterion 3): confirm only
@@ -1836,6 +1974,8 @@ impl Application for DropTerm {
             last_toggle: None,
             slide: None,
             settings_open: false,
+            images_panel_open: false,
+            images_panel_thumbs: std::collections::HashMap::new(),
             settings_page: home_settings_page(),
             settings_tab_model,
             profile_selection: None,
@@ -2310,7 +2450,29 @@ impl Application for DropTerm {
         // The pending-close modal composes over whichever of the two
         // trees is showing — outermost (close-confirm criterion 4).
         if !self.settings_open {
-            return self.close_confirm_modal(content);
+            if !self.images_panel_open {
+                return self.close_confirm_modal(content);
+            }
+            // The images panel drawer (paste-panel spec): the same
+            // surface, backdrop, and drawer composition the
+            // settings drawer uses — the active tab's ledger,
+            // newest first, no header strip, its own escape route.
+            // The width rides the settings drawer-width policy at
+            // its never-dragged default: one drawer width story,
+            // no new knob.
+            let content = drawer_backdrop(content);
+            let drawer: Element<'_, Message> = widget::context_drawer(
+                Some("Pasted images".into()),
+                None,
+                None,
+                None,
+                Message::ImagesPanel(false),
+                content,
+                images_panel_view(self),
+                settings::drawer_width(None, self.current_surface_width()),
+            )
+            .into();
+            return self.close_confirm_modal(drawer);
         }
         // The backdrop goes on here, outside the SlideBox and inside
         // the drawer: at surface coordinates like the pane itself
@@ -2815,12 +2977,26 @@ impl DropTerm {
                 // write, the selection kept — and the drawer stays
                 // open for the plain close on a later press.
                 let drawer_escapable = self.settings_open && self.open_picker.is_none();
-                match drawer_escape_routing(drawer_escapable, self.profile_draft.is_some(), &key) {
+                match drawer_escape_routing(
+                    drawer_escapable,
+                    self.images_panel_open,
+                    self.profile_draft.is_some(),
+                    &key,
+                ) {
                     DrawerKeyRouting::CancelDraft => {
                         self.profile_draft = None;
                         return Task::none();
                     }
-                    DrawerKeyRouting::CloseDrawer => return self.close_settings_drawer(),
+                    DrawerKeyRouting::CloseDrawer => {
+                        if self.settings_open {
+                            return self.close_settings_drawer();
+                        }
+                        // The images panel's close is the plain flag
+                        // flip — it holds no buffers or pages to
+                        // reset.
+                        self.images_panel_open = false;
+                        return Task::none();
+                    }
                     DrawerKeyRouting::FallThrough => {}
                 }
                 if let Some(action) =
@@ -3272,6 +3448,60 @@ impl DropTerm {
                     terminal.paste(&path);
                     tab.pasted_images
                         .push(PastedImage::new(path.into(), &bytes));
+                    // An open panel shows the new row immediately:
+                    // its thumbnail decode starts now, the row
+                    // itself renders text-only until it lands.
+                    if self.images_panel_open {
+                        let path = tab
+                            .pasted_images
+                            .last()
+                            .map(|row| row.path.clone())
+                            .expect("the row just pushed");
+                        return panel_thumb_task(path);
+                    }
+                }
+            }
+            Message::ImagesPanel(open) => {
+                if open {
+                    // One drawer at a time: opening the panel closes
+                    // settings by the same explicit path the toggle
+                    // uses (its buffer clears are settings' own).
+                    let mut task = if self.settings_open {
+                        self.close_settings_drawer()
+                    } else {
+                        Task::none()
+                    };
+                    self.images_panel_open = true;
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                        tab.prune_pasted_images();
+                        let paths: Vec<_> = tab
+                            .pasted_images
+                            .iter()
+                            .map(|row| row.path.clone())
+                            .collect();
+                        // Cache entries whose row is gone drop with
+                        // the prune's verdict, never outliving their
+                        // file.
+                        self.images_panel_thumbs
+                            .retain(|path, _| paths.contains(path));
+                        let missing: Vec<_> = paths
+                            .into_iter()
+                            .filter(|path| !self.images_panel_thumbs.contains_key(path))
+                            .collect();
+                        task = task.chain(Task::batch(
+                            missing
+                                .into_iter()
+                                .map(panel_thumb_task)
+                                .collect::<Vec<_>>(),
+                        ));
+                    }
+                    return task;
+                }
+                self.images_panel_open = false;
+            }
+            Message::ImagesPanelThumb(path, handle) => {
+                if let Some(handle) = handle {
+                    self.images_panel_thumbs.insert(path, handle);
                 }
             }
             Message::PickSettingsTab(entity) => {
