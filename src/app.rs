@@ -35,7 +35,7 @@ use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
 use crate::config::{
-    CONFIG_VERSION, DropTermConfig, Edge, TabPosition, TabTitleMode, ThemePreference,
+    CONFIG_VERSION, DropTermConfig, Edge, KeyboardMode, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::dbus_state;
 use crate::geometry::{self, Geometry};
@@ -2497,6 +2497,13 @@ impl DropTerm {
                 let old_preference = self.config.theme_preference;
                 let old_title_mode = self.config.tab_title_mode;
                 let old_profiles = self.config.profiles.clone();
+                let old_hide_on_focus_loss = self.config.hide_on_focus_loss;
+                // Whether the shown surface holds `Exclusive` under
+                // the OLD config — the resolved mode it mapped with
+                // (`surface::shown_keyboard_mode`), captured before
+                // the assignment below for the live release guard.
+                let old_shown_exclusive =
+                    old_hide_on_focus_loss && self.config.keyboard_mode == KeyboardMode::Exclusive;
                 self.config = config;
                 // The spec table rides the echo (suggest-specs-data
                 // spec, async-completions): the file beside the config
@@ -2533,7 +2540,35 @@ impl DropTerm {
                     .chain(self.sync_status_clock())
                     .chain(self.sync_status_duration())
                     .chain(self.sync_suggest_reveal())
-                    .chain(self.completions_reload_task());
+                    .chain(self.completions_reload_task())
+                    // A stay-open flip releases a held exclusive grab
+                    // live: the drawer's own echo is the primary way
+                    // `hide_on_focus_loss` turns off, and a shown
+                    // surface still holding `Exclusive` keeps the
+                    // keyboard hostage — cosmic-comp's focus fixup
+                    // returns focus to an exclusive layer on every
+                    // refresh — until the next hide/show, the exact
+                    // bug the flip asks to end. Only the release is
+                    // live: re-grabbing `Exclusive` mid-session (the
+                    // flag turning back on) while another window holds
+                    // focus would yank the keyboard into the terminal,
+                    // so that direction waits for the next show. A
+                    // `keyboard_mode` edit alone can never trip this
+                    // guard — the flag must flip true→false — keeping
+                    // its next-show contract (`apply_timing`).
+                    .chain(
+                        if old_shown_exclusive
+                            && !self.config.hide_on_focus_loss
+                            && let SurfaceState::Shown(id) = self.surface
+                        {
+                            set_keyboard_interactivity(
+                                id,
+                                surface::keyboard_interactivity(KeyboardMode::OnDemand),
+                            )
+                        } else {
+                            Task::none()
+                        },
+                    );
                 // A tab-title-mode flip retitles every live tab from
                 // stored state, renamed ones excepted; while in
                 // Profile mode a profiles-list change does too (a
@@ -2709,7 +2744,10 @@ impl DropTerm {
                         set_layer(id, surface::wlr_layer(self.config.layer)),
                         set_keyboard_interactivity(
                             id,
-                            surface::keyboard_interactivity(self.config.keyboard_mode),
+                            surface::keyboard_interactivity(surface::shown_keyboard_mode(
+                                self.config.keyboard_mode,
+                                self.config.hide_on_focus_loss,
+                            )),
                         ),
                         set_exclusive_zone(id, surface::exclusive_zone(self.config.respect_panel)),
                         widget::text_input::focus(self.terminal_id.clone()),

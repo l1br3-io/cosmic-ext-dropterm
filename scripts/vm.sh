@@ -202,6 +202,15 @@ cmd_put() {
             /home/*) owner_user="$VM_USER" owner_group="$VM_USER" ;;
             *)       owner_user=root owner_group=root ;;
         esac
+        # install -D creates missing parent directories owned by root
+        # (it runs as root here), which locks the desktop user out of
+        # their own staging dir — flatpak-builder's ccache init was the
+        # first casualty. Create the parents first, then hand any
+        # root-owned ones over; -user root keeps existing user files
+        # untouched.
+        guest_exec "mkdir -p '$(dirname "$dest")'"
+        [[ "$owner_user" == root ]] ||
+            guest_exec "find '$(dirname "$dest")' -user root -exec chown '$owner_user:$owner_group' {} +"
         guest_exec "install -D -o '$owner_user' -g '$owner_group' -m $mode '/root/$base' '$dest' && rm '/root/$base'"
     fi
     guest_exec "test -f '$dest'" || die "staging verification failed — '$dest' is not present in the guest"

@@ -243,13 +243,15 @@ impl DropTerm {
         let id = window::Id::unique();
         self.surface = SurfaceState::Measuring(id);
         self.surface_focused = false;
-        // The configured keyboard mode rides creation (see
+        // The resolved keyboard mode rides creation (see
         // `surface::measuring`): the map-time focus grant is the one
-        // path that focuses the surface on an empty desktop. `chain`
+        // path that focuses the surface on an empty desktop, and a
+        // stay-open surface maps as `OnDemand` (see
+        // `surface::shown_keyboard_mode`). `chain`
         // keeps the anchor's creation strictly ahead of the probe's.
         heal.chain(get_layer_surface(surface::measuring(
             id,
-            self.config.keyboard_mode,
+            surface::shown_keyboard_mode(self.config.keyboard_mode, self.config.hide_on_focus_loss),
         )))
     }
 
@@ -359,7 +361,8 @@ impl DropTerm {
     /// `geometry` module's guarantee) — the slide re-targets `In`
     /// from the current offset (`slide::reverse`: no teleport, a
     /// fresh fixed 130 ms), keyboard interactivity is re-grabbed per
-    /// config, and `surface_focused` resets to `false` pending the
+    /// the resolved mode ([`surface::shown_keyboard_mode`]), and
+    /// `surface_focused` resets to `false` pending the
     /// `LayerFocused` the re-grab synthesizes. No focus report
     /// returns here — none left at hide start (the toggle is not a
     /// focus event), so the PTY never noticed the hide and keeps
@@ -390,11 +393,19 @@ impl DropTerm {
         // The mirror of hide's focus bookkeeping: none — hide reports
         // nothing, so nothing returns here; the `LayerFocused` this
         // re-grab synthesizes repeats the terminal's standing focus
-        // harmlessly (`set_focused` reports only real changes).
+        // harmlessly (`set_focused` reports only real changes). The
+        // re-grab runs the resolved mode: a stay-open surface reversed
+        // mid-slide comes back as `OnDemand`, which commits no grab of
+        // its own — the window that regained focus at slide-out start
+        // keeps the keyboard, and a click on the terminal wins it back
+        // (the sharing rule of `shown_keyboard_mode`).
         Task::batch([
             set_keyboard_interactivity(
                 id,
-                surface::keyboard_interactivity(self.config.keyboard_mode),
+                surface::keyboard_interactivity(surface::shown_keyboard_mode(
+                    self.config.keyboard_mode,
+                    self.config.hide_on_focus_loss,
+                )),
             ),
             widget::text_input::focus(self.terminal_id.clone()),
         ])

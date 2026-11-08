@@ -41,6 +41,29 @@ pub fn keyboard_interactivity(mode: KeyboardMode) -> KeyboardInteractivity {
     }
 }
 
+/// The keyboard mode a shown surface actually runs: the configured
+/// mode, except that `Exclusive` is never held while the surface
+/// stays open on focus loss (`hide_on_focus_loss: false`).
+///
+/// cosmic-comp's focus fixup hands keyboard focus back to the
+/// top-most exclusive layer surface on every refresh cycle, so a
+/// click on another window's input moves focus there for an instant
+/// and the next fixup steals it back — with `Exclusive` held and no
+/// focus-loss hide to unmap the surface, no other input could ever
+/// keep the keyboard while the terminal stayed open. A stay-open
+/// surface must share focus like a normal window instead, which is
+/// `OnDemand`: cosmic-comp's map-time grant fires for any non-`None`
+/// mode on Top/Overlay (so [`measuring`]'s empty-desktop grab is
+/// unaffected), a click away leaves focus where it lands, and a click
+/// on the terminal wins it back.
+pub fn shown_keyboard_mode(mode: KeyboardMode, hide_on_focus_loss: bool) -> KeyboardMode {
+    if hide_on_focus_loss {
+        mode
+    } else {
+        KeyboardMode::OnDemand
+    }
+}
+
 /// Exclusive-zone request for the shown surface: `-1` ignores other
 /// surfaces' reserved space (covers the panel); `0` asks the compositor
 /// to place the surface inside the usable area, below panels and docks.
@@ -58,7 +81,8 @@ pub fn uncapped_size_limits() -> Limits {
 /// Settings for the one-shot measuring surface (see the module docs).
 ///
 /// Always targets [`IcedOutput::Active`]: pinning to a named output is
-/// not configurable. The configured [`KeyboardMode`] rides creation
+/// not configurable. The [`KeyboardMode`] rides creation — already
+/// resolved for a stay-open surface by [`shown_keyboard_mode`] —
 /// rather than the post-open re-assert in `SurfaceOpened`: the
 /// compositor hands a layer surface keyboard focus at map time only
 /// when it maps asking for it (cosmic-comp's `map_layer` →
@@ -202,6 +226,40 @@ mod tests {
         assert_eq!(
             measuring(window::Id::unique(), KeyboardMode::OnDemand).keyboard_interactivity,
             KeyboardInteractivity::OnDemand
+        );
+    }
+
+    #[test]
+    fn a_stay_open_surface_never_holds_exclusive_keyboard() {
+        // The keyboard-hostage bug: `Exclusive` held while
+        // `hide_on_focus_loss` is off means cosmic-comp's focus fixup
+        // returns the keyboard to the terminal on every refresh cycle,
+        // so no other input could keep focus while it stayed open.
+        // Proven failing against passing the configured mode through
+        // untouched.
+        assert_eq!(
+            shown_keyboard_mode(KeyboardMode::Exclusive, false),
+            KeyboardMode::OnDemand
+        );
+    }
+
+    #[test]
+    fn a_hiding_surface_runs_the_configured_mode() {
+        // With the focus-loss hide on, `Exclusive` is safe — the first
+        // unfocus unmaps the surface and releases the keyboard at
+        // slide-out start — so the configured mode passes through in
+        // every other combination.
+        assert_eq!(
+            shown_keyboard_mode(KeyboardMode::Exclusive, true),
+            KeyboardMode::Exclusive
+        );
+        assert_eq!(
+            shown_keyboard_mode(KeyboardMode::OnDemand, true),
+            KeyboardMode::OnDemand
+        );
+        assert_eq!(
+            shown_keyboard_mode(KeyboardMode::OnDemand, false),
+            KeyboardMode::OnDemand
         );
     }
 

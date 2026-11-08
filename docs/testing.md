@@ -199,7 +199,8 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] On a multi-monitor setup, the surface appears on the output under the cursor
 - [ ] `Ctrl+Shift+Q` hides the surface, and the session survives a re-toggle
 - [ ] Clicking another window hides the surface (fresh config, `hide_on_focus_loss` default `true`)
-- [ ] With `hide_on_focus_loss: false` written in config, clicking away does *not* hide
+- [ ] With `hide_on_focus_loss: false` written in config, clicking away does *not* hide - and the clicked input keeps keyboard focus (typing lands there, also with the default `keyboard_mode: Exclusive`, which a stay-open surface never holds), while clicking the terminal takes focus back
+- [ ] Stay-open flip releases the grab live: with the surface shown and `keyboard_mode: Exclusive`, toggle Hide on focus loss off in the settings drawer and click away without a hide/show cycle - focus still leaves and stays with the clicked input (no snap-back on the next compositor refresh)
 - [ ] Escape still reaches the shell (e.g. works in vim) and still cancels an active selection
 - [ ] With `respect_panel: true` and a top panel, the panel stays fully visible and clickable while the drop-down is open, and the terminal sits flush below it
 - [ ] With `respect_panel: true`, `edge: bottom`, and a bottom dock, the drop-down sits above the dock

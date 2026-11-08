@@ -182,7 +182,7 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/de
 
 | Key | Default | What it does |
 |---|---|---|
-| `hide_on_focus_loss` | `true` | Hide the terminal when it loses keyboard focus. The opposite of Yakuake, Guake, and Ghostty's quick terminal - for a hotkey-driven drop-down, focus is the whole interaction model. Write `false` to keep the overlay open. |
+| `hide_on_focus_loss` | `true` | Hide the terminal when it loses keyboard focus. The opposite of Yakuake, Guake, and Ghostty's quick terminal - for a hotkey-driven drop-down, focus is the whole interaction model. Write `false` to keep the overlay open; it then shares keyboard focus like a normal window - click away to type elsewhere, click the terminal to take focus back - instead of holding an exclusive grab. |
 | `session_persistence_enabled` | `true` | Save the session on change and restore it on launch ([sessions](sessions.md)). `false` stops saves and skips restore; the saved file is never deleted, so re-enabling resumes over it. |
 | `slide_animation_enabled` | `true` | Animate show/hide with the 130 ms slide ([animation](animation.md)). `false` restores instant transitions. |
 | `bell_notification_enabled` | `true` | Post a desktop notification when a bell rings while the terminal is hidden ([bell](bell.md)). |
@@ -216,7 +216,7 @@ The alias map is written by hand, one expansion per declared alias:
 | Key | Values | Default | What it does |
 |---|---|---|---|
 | `layer` | `Overlay`, `Top` | `Overlay` | `Overlay` sits above fullscreen windows; `Top` sits below them but behaves better with input methods. |
-| `keyboard_mode` | `Exclusive`, `OnDemand` | `Exclusive` | How the surface asks for keyboard focus. `Exclusive` always grabs the keyboard while shown; `OnDemand` is gentler but not auto-focused by every compositor. |
+| `keyboard_mode` | `Exclusive`, `OnDemand` | `Exclusive` | How the surface asks for keyboard focus. `Exclusive` always grabs the keyboard while shown; `OnDemand` is gentler but not auto-focused by every compositor. While `hide_on_focus_loss` is `false` the shown surface always runs `OnDemand`: an exclusive grab held by a stay-open surface would keep winning the keyboard back from every other input. |
 | `respect_panel` | `true`/`false` | `false` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies on the next show. |
 | `show_in_dock` | `true`/`false` | `false` | Whether the app keeps a presence in the dock and the window switcher. The invisible clipboard anchor that holds your copies across every hide is, on Wayland, always a mapped window — `false` makes it a layer surface no switcher or dock can list (summon by shortcut, the [panel applet](applet.md), or the CLI); `true` keeps it a normal window, so DropTerm shows in both. A flip applies immediately; whatever is on the clipboard at that moment is lost once. |
 

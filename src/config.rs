@@ -210,7 +210,13 @@ pub struct DropTermConfig {
     pub tab_title_mode: TabTitleMode,
     /// Layer-shell layer the surface is created on.
     pub layer: Layer,
-    /// Keyboard interactivity mode requested for the surface.
+    /// Keyboard interactivity mode requested for the surface. While
+    /// `hide_on_focus_loss` is `false` the shown surface always runs
+    /// `OnDemand` regardless (the `surface` module's
+    /// `shown_keyboard_mode` resolution): cosmic-comp's focus fixup
+    /// hands the keyboard back to an exclusive layer surface on every
+    /// refresh cycle, so `Exclusive` held by a stay-open surface
+    /// would stop any other input from ever keeping focus.
     pub keyboard_mode: KeyboardMode,
     /// Place the drop-down below panels and docks instead of covering them,
     /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
@@ -253,7 +259,10 @@ pub struct DropTermConfig {
     /// peers (Yakuake `KeepOpen=true`, Guake `window-losefocus=false`,
     /// Ghostty `quick-terminal-autohide=false` on Linux — see
     /// docs/research/terminal-de-integration.md); set `false` to keep
-    /// the overlay open when it loses focus.
+    /// the overlay open when it loses focus — it then shares keyboard
+    /// focus like a normal window (click away to type elsewhere,
+    /// click the terminal to take focus back) instead of holding an
+    /// exclusive grab.
     pub hide_on_focus_loss: bool,
     /// Save the session on change and restore it on launch.
     /// Defaults to `true` — always-on persistence. `false` is
