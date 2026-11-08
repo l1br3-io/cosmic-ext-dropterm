@@ -3500,19 +3500,29 @@ impl DropTerm {
                 {
                     let terminal = tab.terminal.lock().unwrap();
                     terminal.paste(&path);
+                    drop(terminal);
                     tab.pasted_images
                         .push(PastedImage::new(path.into(), &bytes));
+                    // The paste's band confirmation (paste-chip
+                    // spec, PC-2): the chip's `✓` rides the Copied
+                    // flash seat — the flash life only, no
+                    // clipboard write (the paste already happened).
+                    self.copied_segment = Some(status_bar::SegmentId::Pasted);
+                    let flash = Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                        cosmic::Action::App(Message::StatusCopyFlashLapse)
+                    });
                     // An open panel shows the new row immediately:
-                    // its thumbnail decode starts now, the row
-                    // itself renders text-only until it lands.
+                    // its thumbnail decode rides the same task, the
+                    // row rendering text-only until it lands.
                     if self.images_panel_open {
                         let path = tab
                             .pasted_images
                             .last()
                             .map(|row| row.path.clone())
                             .expect("the row just pushed");
-                        return panel_thumb_task(path);
+                        return flash.chain(panel_thumb_task(path));
                     }
+                    return flash;
                 }
             }
             Message::ImagesPanel(open) => {

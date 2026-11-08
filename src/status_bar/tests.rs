@@ -1581,13 +1581,15 @@ fn an_absurd_saturated_offset_still_resolves() {
 }
 
 #[test]
-fn only_the_scrolled_chip_is_an_action_chip() {
-    // The click routing (criterion 2): the chip's press takes the
-    // jump branch ahead of the copy path; every other segment
-    // keeps the copy verb.
+fn the_scrolled_and_pasted_chips_are_the_action_chips() {
+    // The click routing (criterion 2, generalized by paste-chip
+    // PC-2): the two chips' presses take their verb branches ahead
+    // of the copy path — the scrolled chip's jump, the pasted
+    // chip's panel-open; every other segment keeps the copy verb.
     assert!(click_jumps(SegmentId::Scrolled));
+    assert!(click_jumps(SegmentId::Pasted));
     for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
-        if *id != SegmentId::Scrolled {
+        if !matches!(id, SegmentId::Scrolled | SegmentId::Pasted) {
             assert!(!click_jumps(*id), "{id:?} must keep the copy verb");
         }
     }

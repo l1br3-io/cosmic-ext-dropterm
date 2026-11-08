@@ -1030,14 +1030,15 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
     }
 }
 
-/// Whether a segment's click is the band's jump verb rather than
-/// the copy verb — the one deliberate action chip (status-scrolled
-/// spec): the scrolled chip's click jumps the viewport to the
-/// bottom through the app callback, ahead of the copy path and
-/// never reaching [`copy_text`] (whose payload for it is empty
-/// besides, defensive).
+/// Whether a segment's click runs an action verb rather than the
+/// copy verb — the band's two deliberate action chips: the
+/// scrolled chip's click jumps the viewport to the bottom
+/// (status-scrolled spec) and the pasted chip's opens the images
+/// panel (paste-chip spec), both through their app callbacks,
+/// ahead of the copy path and never reaching [`copy_text`] (whose
+/// payload for them is empty besides, defensive).
 pub fn click_jumps(id: SegmentId) -> bool {
-    id == SegmentId::Scrolled
+    matches!(id, SegmentId::Scrolled | SegmentId::Pasted)
 }
 
 /// The segment whose rect contains `point`, if any — the pure half
@@ -1817,6 +1818,10 @@ pub struct StatusBar<Message> {
     /// the app routes it to the existing scroll-to-bottom funnel —
     /// the one deliberate action chip, ahead of the copy path.
     on_scroll_bottom: Option<Box<dyn Fn() -> Message>>,
+    /// Publishes the pasted chip's click (paste-chip spec): the app
+    /// opens the images panel — the band's second action chip,
+    /// routed beside the scrolled chip's jump.
+    on_images_panel: Option<Box<dyn Fn() -> Message>>,
     /// Maps a context-menu action pick to the app's message — the
     /// app routes it through the same `perform_action` funnel the
     /// keybind map uses (the menu introduces no behavior).
@@ -1848,6 +1853,7 @@ impl<Message> StatusBar<Message> {
             copied,
             on_copy: Box::new(on_copy),
             on_scroll_bottom: None,
+            on_images_panel: None,
             on_menu_action: None,
             menu_side: TooltipSide::default(),
             border: false,
@@ -1861,6 +1867,15 @@ impl<Message> StatusBar<Message> {
     /// click publishes nothing).
     pub fn on_scroll_bottom(mut self, on_scroll_bottom: impl Fn() -> Message + 'static) -> Self {
         self.on_scroll_bottom = Some(Box::new(on_scroll_bottom));
+        self
+    }
+
+    /// Sets the message published when the pasted-count chip is
+    /// clicked — the images panel's door (paste-chip spec; without
+    /// the callback the chip renders but its click publishes
+    /// nothing).
+    pub fn on_images_panel(mut self, on_images_panel: impl Fn() -> Message + 'static) -> Self {
+        self.on_images_panel = Some(Box::new(on_images_panel));
         self
     }
 
@@ -2492,8 +2507,21 @@ where
                         .and_then(|point| segment_at(&rects, point))
                     {
                         if click_jumps(id) {
-                            if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
-                                shell.publish(on_scroll_bottom());
+                            match id {
+                                // The panel's door (paste-chip
+                                // spec): the pasted chip opens the
+                                // images panel, the scrolled chip
+                                // keeps its jump.
+                                SegmentId::Pasted => {
+                                    if let Some(on_images_panel) = &self.on_images_panel {
+                                        shell.publish(on_images_panel());
+                                    }
+                                }
+                                _ => {
+                                    if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
+                                        shell.publish(on_scroll_bottom());
+                                    }
+                                }
                             }
                         } else {
                             let text = copy_text(id, &self.segments);
