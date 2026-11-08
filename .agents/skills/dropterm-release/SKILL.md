@@ -1,40 +1,36 @@
 ---
 name: dropterm-release
-description: The owner-run release ritual for DropTerm — walking a version through curation, the release recipe, the tag push, the flatpak pin, and the cosmic-flatpak catalog branch with a verification checkpoint at every step, where every outward act is typed by the maintainer, never the agent. Use whenever asked to release, publish, ship, or cut a version, when a tag or GitHub Release needs moving, when completing the flatpak pin or the catalog submission, or when verifying a release after the fact.
+description: The owner-run release ritual for DropTerm — walking a version through curation, the release recipe, and the tag push with a verification checkpoint at every step, where every outward act is typed by the maintainer, never the agent. Use whenever asked to release, publish, ship, or cut a version, when a tag or GitHub Release needs moving, or when verifying a release after the fact.
 ---
 
 <!-- Adapted from cosmic-ext-airlock's airlock-release skill (2026-11-07);
      the committed maintainer guide is docs/development.md#releasing —
-     this skill is the agent's execution discipline on top of it. -->
+     this skill is the agent's execution discipline on top of it.
+     The flatpak pin and catalog steps were removed 2026-11-09 with the
+     withdrawal of the cosmic-flatpak submission plan. -->
 
 # DropTerm Release
 
-A release is three public artifacts telling one story — the annotated
-`v<version>` tag, the GitHub Release that CI publishes from it (both
-per-arch tarballs, `sha256sums`, `vendor.tar`), and the applet's flatpak
-manifest pinning that release's archive bytes. Two recipes are safe for
+A release is two public artifacts telling one story — the annotated
+`v<version>` tag and the GitHub Release that CI publishes from it (both
+per-arch tarballs, `sha256sums`, `vendor.tar`). One recipe is safe for
 you to run; everything that reaches the public world is typed by the
 maintainer, every time. Your job is the part around their typing:
 curation before, presentation during, verification after.
 
 ## The contract
 
-- **You never run the pushes or `just release-catalog`.** Not "rarely",
-  not "when the user seems to want speed". The tag push *is* the
-  publish; the catalog recipe force-pushes a public branch. Three acts
-  are the maintainer's hands — `git push origin main`,
-  `git push origin vX.Y.Z`, and `just release-catalog X.Y.Z` — their
-  typing is the consent. The PR click after the catalog push is the
-  fourth. If asked to just do it, restate this rule and present the
-  command instead.
-- **You may run `just release X.Y.Z` and
-  `just release-flatpak-pin X.Y.Z`** — the cut and the local pin, both
-  of which commit locally and never push — but announce each before
-  running it.
+- **You never run the pushes.** Not "rarely", not "when the user seems
+  to want speed". The tag push *is* the publish. Two acts are the
+  maintainer's hands — `git push origin main` and
+  `git push origin vX.Y.Z` — their typing is the consent. If asked to
+  just do it, restate this rule and present the command instead.
+- **You may run `just release X.Y.Z`** — the cut, which commits locally
+  and never pushes — but announce it before running it.
 - **Every step ends in verified evidence, never trust.** A step whose
   outcome you cannot observe (tag SHA on origin, the release page's
-  asset set, the fork branch's SHA) is not done. A "done" from the
-  maintainer is the claim; the evidence is the verification.
+  asset set) is not done. A "done" from the maintainer is the claim;
+  the evidence is the verification.
 - **`docs/development.md#releasing` is the reference.** If the skill
   and it ever disagree, the committed doc wins and the skill gets fixed.
 - **This skill supersedes the pack's generic `release-orchestration`**
@@ -113,34 +109,9 @@ complete — both per-arch tarballs, `sha256sums`, `vendor.tar`. The
 page body is GitHub's auto-generated notes; the curated prose lives in
 releases.md and the metainfo, not there.
 
-**3 — Flatpak pin (agent-runnable; announce first).** Run
-`just release-flatpak-pin X.Y.Z`. It downloads the published archive,
-hashes it, re-pins the manifest, and commits locally — failing until
-the archive is actually downloadable, which makes the recipe itself the
-check that step 2 really finished. Then present
-`git push origin main`; verify `git ls-remote origin refs/heads/main`
-moved past the gated HEAD.
-
-**4 — Catalog (public force-push).** Before presenting, say what it
-does: `just release-catalog X.Y.Z` re-cuts the fork's `dropterm-applet`
-branch as one clean commit on current pop-os master and **force-pushes
-it** — it rewrites a public branch and needs the maintainer's SSH keys
-for the fork. Confirm they want it now, then present:
-
-```
-just release-catalog X.Y.Z
-```
-
-After their "done", verify the branch on the fork at the recipe's
-printed SHA (`git ls-remote <fork> refs/heads/dropterm-applet`), and
-hand over the printed compare URL.
-
-**5 — PR and close of books.** Opening the PR is the first of the
-catalog's two human steps (the review is the second); the PR body
-copies the module's success criteria, since reviewers cannot see the
-local spec files (AGENTS.md). Then close the books per the house
-convention: the local working trackers (`SPEC.md` status, `tasks/` —
-gitignored, never committed), dates on everything, and the tree clean.
+**3 — Close of books.** Close the books per the house convention: the
+local working trackers (`SPEC.md` status, `tasks/` — gitignored, never
+committed), dates on everything, and the tree clean.
 
 ## Verification (all of these before declaring the release done)
 
@@ -148,10 +119,6 @@ gitignored, never committed), dates on everything, and the tree clean.
       `X.Y.Z` (release.yml's own tag == Cargo.toml guard passed)
 - [ ] the GitHub release page exists with the full asset set — both
       per-arch tarballs, `sha256sums`, `vendor.tar`
-- [ ] the applet manifest pins the published archive URL + sha256, and
-      that commit is on origin
-- [ ] the catalog branch is on the fork at the recipe's printed SHA,
-      and the compare URL is in the maintainer's hands
 - [ ] the working tree is clean
 
 ## When it goes wrong
@@ -166,16 +133,13 @@ gitignored, never committed), dates on everything, and the tree clean.
   files to HEAD (`git checkout -- Cargo.toml applet/Cargo.toml
   Cargo.lock`) and re-run the recipe — the recipe does the whole bump;
   never hand-roll the remainder.
-- **Wrong commit tagged locally** (pre-push) → the maintainer deletes
-  the local tag (`git tag -d v<X.Y.Z>`), fix, re-cut. Once pushed, a
+- **Wrong commit tagged locally** (pre-push) → the maintainer deletes the
+  local tag (`git tag -d v<X.Y.Z>`), fix, re-cut. Once pushed, a
   published tag is never moved or deleted by the agent — the two honest
   recoveries after publish are: nothing out yet, maintainer deletes the
   tag and re-cuts the same version; artifacts already out, fix forward
   and release X.Y.(Z+1).
 - **release.yml failed after the tag is public** → stop, report the
-  failed job verbatim, lay out those two recoveries. A premature step 3
-  self-corrects: the pin recipe fails until the archive is downloadable.
-- **Catalog push failed** → report verbatim; SSH keys for the fork are
-  the maintainer's step, not yours.
+  failed job verbatim, lay out those two recoveries.
 - **The maintainer hesitates at any presentation** → stop. A paused
   release is free; a wrong one is not.

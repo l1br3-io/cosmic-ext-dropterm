@@ -133,18 +133,9 @@ applet-metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / applet-m
 applet-icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 applet-icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
 
-# The applet's flatpak id doubles as its desktop-file stem: the panel
-# matches applets by stem, and flatpak exports the desktop file under
-# the flatpak id, so the two must be the same string.
+# The applet's app id: the terminal's id plus the .Applet suffix,
+# doubling as its desktop-file stem (the panel matches applets by stem).
 applet-appid := appid + '.Applet'
-flatpak-dir := 'packaging' / 'flatpak'
-applet-manifest := flatpak-dir / (applet-appid + '.json')
-
-# The terminal experiment's flatpak: the main app id, no .Applet
-# suffix. EXPERIMENT-layer-shell.md in the same directory is the
-# walk record; this is not a submission candidate.
-terminal-manifest := flatpak-dir / (appid + '.json')
-terminal-build-dir := flatpak-dir / 'build-dir-terminal'
 
 # Where dev-applet installs the applet's desktop file and icon.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
@@ -561,50 +552,6 @@ uninstall:
     rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}} {{applet-metainfo-dst}}
     @{{just_executable()}} stop-stale-release
 
-# Regenerate packaging/flatpak/cargo-sources.json from Cargo.lock with
-# flatpak-builder-tools' cargo generator (the pop-os/cosmic-flatpak
-# convention; their tooling regenerates it at PR review, so it stays
-# gitignored here). On a bare Ubuntu python — no pip, no venv package —
-# pip bootstraps into the user site via get-pip, and tomlkit (the
-# generator's only dependency) installs beside it. Nothing is vendored
-# into the repo or installed system-wide.
-applet-flatpak-sources:
-    curl -fsSL https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
-        -o /tmp/flatpak-cargo-generator.py
-    python3 -m pip --version >/dev/null 2>&1 || { curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py; python3 /tmp/get-pip.py --user --break-system-packages -q; }
-    python3 -c 'import tomlkit' 2>/dev/null || python3 -m pip install --user --break-system-packages -q tomlkit
-    python3 /tmp/flatpak-cargo-generator.py \
-        Cargo.lock -o {{flatpak-dir / 'cargo-sources.json'}}
-
-# Build the applet flatpak, mirroring cosmic-flatpak's CI invocation
-# (deps pulled from flathub into the user installation). State lands
-# in .flatpak-builder/, the build tree under packaging/flatpak/build-dir.
-applet-flatpak-build:
-    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
-
-# Install the built applet into the user installation (from the
-# builder's cache, so a prior applet-flatpak-build makes this quick).
-applet-flatpak-install:
-    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean --install {{flatpak-dir / "build-dir"}} {{applet-manifest}}'
-
-# Uninstall the applet flatpak from the user installation.
-applet-flatpak-remove:
-    {{just_executable()}} quietly 'flatpak uninstall --user -y {{applet-appid}}'
-
-# Build the terminal experiment flatpak (EXPERIMENT-layer-shell.md):
-# same pinned archive and shared cargo-sources.json as the applet, its
-# own build tree so neither clobbers the other.
-terminal-flatpak-build:
-    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean {{terminal-build-dir}} {{terminal-manifest}}'
-
-# Install the built terminal experiment into the user installation.
-terminal-flatpak-install:
-    {{just_executable()}} quietly 'flatpak-builder --user --install-deps-from=flathub --force-clean --install {{terminal-build-dir}} {{terminal-manifest}}'
-
-# Uninstall the terminal experiment from the user installation.
-terminal-flatpak-remove:
-    {{just_executable()}} quietly 'flatpak uninstall --user -y {{appid}}'
-
 # ── COSMIC validation VM ──
 #
 # Host-side plumbing for walking the manual checklist's applet rows
@@ -683,10 +630,7 @@ vm-restore name:
 
 # ── Release ──
 #
-# The release is two commands and a push, because one part of it is
-# necessarily post-publish: the applet's flatpak manifest pins the
-# *published* source archive (URL + sha256), and neither exists until
-# release.yml has run. The whole runbook lives at
+# The release is one command and a push. The whole runbook lives at
 # docs/development.md#releasing.
 #
 # `just release X.Y.Z` cuts the release: it verifies the curated
@@ -753,9 +697,7 @@ release version:
         exit 1
     }
     # Every living download URL must already point at the new version.
-    # releases.md keeps its history sections, and packaging/flatpak
-    # deliberately pins the last PUBLISHED release until
-    # release-flatpak-pin runs — both are excluded.
+    # releases.md keeps its history sections — excluded.
     stale=$(grep -rn --exclude-dir=_site 'releases/download/v[0-9]' README.md docs res 2>/dev/null \
         | grep -v "releases/download/v$ver/" | grep -v '^docs/releases\.md:' || true)
     [ -z "$stale" ] || {
@@ -796,96 +738,3 @@ release version:
     echo "v$ver committed and tagged. To publish:"
     echo "  git push origin main && git push origin v$ver"
     echo "release.yml then builds both arches + vendor.tar, guards tag == Cargo.toml, and publishes the GitHub release."
-    echo "Once the release page exists: just release-flatpak-pin $ver"
-
-# Re-pins the applet flatpak manifest to an already-PUBLISHED release:
-# downloads the release's source archive, records its sha256, and
-# commits the manifest's URL + hash pair (the one release edit that
-# cannot ride the release commit — neither the URL nor the hash
-# exists before publish). Runs after `just release` and the push.
-release-flatpak-pin version:
-    #!/usr/bin/env sh
-    set -eu
-    ver='{{version}}'
-    ver="${ver#v}"
-    url="https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v$ver/v$ver.tar.gz"
-    tmp="$(mktemp)"
-    trap 'rm -f "$tmp"' EXIT
-    curl -fsSL -o "$tmp" "$url" || {
-        echo "release-flatpak-pin: $url is not downloadable yet — publish the release first" >&2
-        exit 1
-    }
-    sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
-    sed -i "s|releases/download/v[0-9.]*/v[0-9.]*\.tar\.gz|releases/download/v$ver/v$ver.tar.gz|" {{applet-manifest}}
-    sed -i "s|\"sha256\": \"[0-9a-f]\{64\}\"|\"sha256\": \"$sha\"|" {{applet-manifest}}
-    [ "$(grep -c "releases/download/v$ver/v$ver\.tar\.gz" {{applet-manifest}})" = "1" ] || {
-        echo "release-flatpak-pin: manifest's archive URL did not re-pin exactly once — pin by hand" >&2
-        exit 1
-    }
-    [ "$(grep -c "\"sha256\": \"$sha\"" {{applet-manifest}})" = "1" ] || {
-        echo "release-flatpak-pin: manifest's sha256 did not re-pin exactly once — pin by hand" >&2
-        exit 1
-    }
-    git add {{applet-manifest}}
-    git commit -m "chore: the applet manifest pins the v$ver archive"
-    echo "pinned and committed. To publish: git push origin main"
-
-# ── Release: the catalog leg ──
-#
-# The applet lists in pop-os/cosmic-flatpak (the COSMIC app store's
-# source); the listing ships as a branch on the maintainer's fork and
-# a PR from there. Everything up to the PR is mechanical and lives
-# here: `just release-catalog X.Y.Z` regenerates cargo-sources.json
-# from the current lockfile, re-cuts the fork's dropterm-applet branch
-# as one clean commit on current pop-os master (manifest + sources),
-# force-pushes it (safe by construction: the branch is always a
-# single commit over upstream master; a re-run while a PR is open
-# updates that PR in place and re-runs its CI), and prints the
-# compare URL. The PR click and the review stay human — a third-party
-# repo, and no gh token on this machine to assume either.
-#
-# The fork is an SSH remote (the recipe pushes to it); override per
-# invocation with DROPTERM_CATALOG_FORK. Run after
-# `just release-flatpak-pin`.
-catalog-upstream := 'https://github.com/pop-os/cosmic-flatpak'
-catalog-fork := env('DROPTERM_CATALOG_FORK', 'git@github.com:kulapoo/cosmic-flatpak.git')
-catalog-branch := 'dropterm-applet'
-catalog-dir := 'app' / applet-appid
-
-release-catalog version:
-    #!/usr/bin/env sh
-    set -eu
-    ver='{{version}}'
-    ver="${ver#v}"
-    # The repo's manifest must already pin vX — the release ran and
-    # its archive pin landed.
-    grep -q "releases/download/v$ver/v$ver.tar.gz" {{applet-manifest}} || {
-        echo "release-catalog: {{applet-manifest}} does not pin v$ver — run just release-flatpak-pin $ver first" >&2
-        exit 1
-    }
-    # Fresh cargo-sources.json from the current Cargo.lock (the flatpak
-    # catalog checks it in; ours is gitignored, theirs is generated
-    # per submission). The generator's per-package INFO log goes to
-    # /dev/null — this recipe stays silent on success like the rest.
-    {{just_executable()}} applet-flatpak-sources >/dev/null
-    work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
-    git clone --quiet {{catalog-fork}} "$work/catalog"
-    cd "$work/catalog"
-    git remote add upstream {{catalog-upstream}}
-    git fetch --quiet upstream master
-    git checkout --quiet -B {{catalog-branch}} upstream/master
-    mkdir -p {{catalog-dir}}
-    cp "{{justfile_directory()}}/{{applet-manifest}}" "{{catalog-dir}}/{{applet-appid}}.json"
-    cp "{{justfile_directory()}}/{{flatpak-dir}}/cargo-sources.json" "{{catalog-dir}}/"
-    git add "{{catalog-dir}}"
-    # The fresh clone has no identity of its own and this machine sets
-    # none globally — carry the dropterm repo's configured author.
-    git -c "user.name=$(git -C '{{justfile_directory()}}' config user.name)" \
-        -c "user.email=$(git -C '{{justfile_directory()}}' config user.email)" \
-        commit --quiet -s -m "Add DropTerm v$ver"
-    git push --quiet --force origin {{catalog-branch}}
-    owner="$(printf '%s\n' '{{catalog-fork}}' | sed 's|.*github.com[:/]||; s|/.*||')"
-    echo "{{catalog-branch}} pushed at $(git rev-parse --short HEAD), based on pop-os master $(git rev-parse --short upstream/master)."
-    echo "Open the PR (the one human step left):"
-    echo "  {{catalog-upstream}}/compare/master...${owner}:{{catalog-branch}}?expand=1"

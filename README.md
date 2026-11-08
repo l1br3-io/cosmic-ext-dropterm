@@ -112,7 +112,7 @@ A few known rough edges — the clipboard's invisible anchor window, the surface
 ## Non-goals
 
 - Non-COSMIC compositors as a priority, and X11 support
-- Flatpak packaging (until COSMIC exposes layer-shell/toplevel protocols to sandboxes)
+- Flatpak packaging (COSMIC does not expose layer-shell/toplevel protocols to sandboxed clients)
 - Built-in global hotkey registration (no GlobalShortcuts portal on COSMIC yet)
 - Wrapping an external terminal emulator (may be reconsidered later; see the ROADMAP)
 
