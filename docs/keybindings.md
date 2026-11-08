@@ -28,9 +28,11 @@ Every app-level shortcut and its default chords, in the same groups the settings
 | Clear scrollback | `Ctrl+Shift+K` | `clear_scrollback` |
 | Hide the overlay | `Ctrl+Shift+Q` | `hide` |
 | Open settings | `Ctrl+Shift+I` | `settings` |
+| Open the images panel | `Ctrl+Shift+P` | `images_panel` |
 | Toggle the status bar | `Ctrl+Shift+B` | `toggle_status_bar` |
+| Show completions | `Ctrl+Space` | `show_completions` |
 
-Every default binds `Ctrl+Shift+<key>` - the only exceptions are the three sanctioned families: the zoom cluster (`Ctrl+=`/`Ctrl++`/`Ctrl+-`/`Ctrl+0`), tab cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`Ctrl+PageDown`), and `Shift+Insert` for primary paste. New defaults follow this standard; a bare `Ctrl+<letter>` is always the shell's byte, never the app's.
+Every default binds `Ctrl+Shift+<key>` - the only exceptions are the four sanctioned families: the zoom cluster (`Ctrl+=`/`Ctrl++`/`Ctrl+-`/`Ctrl+0`), tab cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`Ctrl+PageDown`), `Shift+Insert` for primary paste, and `Ctrl+Space` for the completion menu. New defaults follow this standard; a bare `Ctrl+<letter>` is always the shell's byte, never the app's.
 
 The numbered activation binds are cosmic-term's exact rule: digits 1-8 activate that tab strictly, and 9 always takes the last tab. The cycling pair is browser-style - `Ctrl+Tab` / `Ctrl+Shift+Tab` walk the tab list alongside `Ctrl+PageUp`/`PageDown`. `copy_primary` ships unbound because middle-click already pastes the primary selection; it is still bindable like every other action.
 
@@ -38,7 +40,7 @@ The per-profile verbs - New profile tab and Switch profile tab - are deliberatel
 
 ## Why some bare keys stay free
 
-Several shortcuts sit behind `Ctrl+Shift+` because the bare `Ctrl+` chord is a byte the shell owns: `Ctrl+I` is the TAB byte (0x09, tab completion), `Ctrl+H` the backspace byte (0x08), `Ctrl+B` readline's cursor-back, `Ctrl+R` reverse history search, and `Ctrl+D` end-of-file. Swallowing any of them would break the shell it runs in, so the app never binds them. Likewise bare `Ctrl+digit` stays free - only the `Ctrl+=`/`-`/`0` zoom cluster and its Shift-held forms bind.
+Several shortcuts sit behind `Ctrl+Shift+` because the bare `Ctrl+` chord is a byte the shell owns: `Ctrl+I` is the TAB byte (0x09, tab completion), `Ctrl+H` the backspace byte (0x08), `Ctrl+B` readline's cursor-back, `Ctrl+P` readline's previous-history, `Ctrl+R` reverse history search, and `Ctrl+D` end-of-file. Swallowing any of them would break the shell it runs in, so the app never binds them. Likewise bare `Ctrl+digit` stays free - only the `Ctrl+=`/`-`/`0` zoom cluster and its Shift-held forms bind.
 
 The zoom chords come in Shift-optional pairs because matching is exact on modifiers and typing `+` holds Shift on US-style layouts: without the Shift-held forms the literal `Ctrl++` press would arrive dead. `Ctrl+Shift+_` is the one form deliberately left unbound - on those layouts it is how a Shift-held `Ctrl+-` arrives, and that byte belongs to the shell (0x1F, readline undo).
 

@@ -236,6 +236,15 @@ impl DropTerm {
         if action == Action::Settings {
             return self.toggle_settings();
         }
+        // The images panel toggles through the chip's own funnel —
+        // `Message::ImagesPanel` owns the open's prune, the thumbnail
+        // batch, and the one-drawer-at-a-time rule, so this arm adds
+        // routing only (the panel's door work: the keybind and the
+        // band-menu row ride the same path the chip's press takes).
+        if action == Action::ImagesPanel {
+            let open = !self.images_panel_open;
+            return cosmic::task::message(cosmic::Action::App(Message::ImagesPanel(open)));
+        }
         // The status band's toggle rides the settings write path
         // (status-bar Task 3): the keybind and the Behavior card's
         // toggle are one funnel, and the `ConfigChanged` echo flips
@@ -285,6 +294,7 @@ impl DropTerm {
         match action {
             Action::Hide
             | Action::Settings
+            | Action::ImagesPanel
             | Action::ToggleStatusBar
             | Action::ShowCompletions
             | Action::NewTab

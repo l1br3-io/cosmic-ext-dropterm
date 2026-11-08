@@ -24,7 +24,10 @@
 //! [`copy_text`]: the full value, never the elided display. The
 //! scrolled chip bends the copy rule exactly once (status-scrolled
 //! spec): its click jumps the viewport to the bottom — it has no
-//! copyable value, and the jump is the verb.
+//! copyable value, and the jump is the verb. The band's two action
+//! chips (scrolled, pasted) carry hover tips that name their verbs —
+//! the tab strip's own tooltip idiom — while every copy segment
+//! stays quiet.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -49,8 +52,9 @@ use cosmic::{Element, Renderer};
 
 use crate::config::{Edge, TabPosition};
 use crate::tab_bar::{
-    BORDER_ALPHA, DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TooltipSide, border_rect,
-    dropdown_row_at, fill_disc, pane_colors, relative_luminance,
+    BORDER_ALPHA, DROPDOWN_GAP, DROPDOWN_PADDING_X, DROPDOWN_ROW_HEIGHT, TOOLTIP_GAP,
+    TOOLTIP_HEIGHT, TOOLTIP_PADDING_X, TooltipSide, border_rect, dropdown_row_at, fill_disc,
+    paint_tip, pane_colors, relative_luminance,
 };
 use crate::terminal::Action;
 use crate::terminal::ProgressState;
@@ -164,8 +168,8 @@ pub enum SegmentId {
     /// (status-scrolled spec) — the off-bottom chip, `↑12`.
     Scrolled,
     /// The active tab's pasted-image count (paste-chip spec) —
-    /// `img N`, absent at zero (the exit chip's rule: no pastes is
-    /// the unmarked default). The click opens the images panel,
+    /// `N images`, absent at zero (the exit chip's rule: no pastes
+    /// is the unmarked default). The click opens the images panel,
     /// never a copy.
     Pasted,
     /// The pre-formatted wall clock.
@@ -648,13 +652,36 @@ pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
 }
 
-/// The pasted chip's display (paste-chip spec): `img N` — the
-/// band's text convention (`↑12`, `✗1`), no emoji: the band font is
-/// the terminal's own and owes no glyph coverage. The chip's click
-/// opens the images panel, not a copy; this display is the whole
-/// value.
+/// The pasted chip's display (paste-chip spec): `N images` — plain
+/// words over the old `img N` shorthand (paste-chip OQ-5: a count a
+/// first-time reader parses without decoding), pluralized honestly,
+/// no emoji: the band font is the terminal's own and owes no glyph
+/// coverage. The chip's click opens the images panel, not a copy;
+/// this display is the whole value.
 pub fn pasted_display(count: usize) -> String {
-    format!("img {count}")
+    format!("{count} image{}", if count == 1 { "" } else { "s" })
+}
+
+/// The pasted chip's hover tip (paste-chip OQ-5): names what the
+/// count counts and what the click does — the two facts the resting
+/// chip cannot carry. The scrolled chip's tip sibling; copy segments
+/// tip nothing (their verb is the band's own default, and a tip on
+/// every segment would narrate the whole band).
+pub fn pasted_tip(count: usize) -> String {
+    format!(
+        "{} pasted {}. Click to open the images panel.",
+        count,
+        if count == 1 { "image" } else { "images" }
+    )
+}
+
+/// The scrolled chip's hover tip: the jump verb the resting `↑N`
+/// cannot say — the pasted tip's sibling, same rules.
+pub fn scrolled_tip(lines: u16) -> String {
+    format!(
+        "Scrolled back {lines} {}. Click to jump to bottom.",
+        if lines == 1 { "line" } else { "lines" }
+    )
 }
 
 /// The exit chip's display (status-exit spec): `✗{code}` — the
@@ -1290,11 +1317,15 @@ fn pick_row(label: &str, pick: MenuPick, enabled: bool, separated: bool) -> Menu
 /// segment's value, every present segment's value, paste into the
 /// narrated terminal), the zoom cluster the Zoom segment narrates
 /// (Reset muted at base size — `zoom_percent`'s own condition),
-/// and the band's lifecycle rows. Labels are static; enablement is
-/// live, re-derived each frame, so a keybind passing through the
-/// open menu cannot leave a stale enabled row. Muted rows — a gap
-/// press's Copy, an empty payload — render disabled and never
-/// publish, the tab menu's edge-move rule.
+/// and the band's lifecycle rows with the images panel's door:
+/// Pasted Images… always live — the panel's empty state is the
+/// honest answer to a bare tab, and the chip that conditionally
+/// opens it is also the band's first segment to drop under width
+/// pressure, so this row is the door that never hides. Labels are
+/// static; enablement is live, re-derived each frame, so a keybind
+/// passing through the open menu cannot leave a stale enabled
+/// row. Muted rows — a gap press's Copy, an empty payload — render
+/// disabled and never publish, the tab menu's edge-move rule.
 fn menu_rows(segments: &StatusSegments, pressed: Option<SegmentId>) -> Vec<MenuRow> {
     // Copy resolves its payload against the same live segments at
     // pick time; the row mutes when the press scoped no segment or
@@ -1330,6 +1361,12 @@ fn menu_rows(segments: &StatusSegments, pressed: Option<SegmentId>) -> Vec<MenuR
         ),
         // The ellipsis (U+2026) marks an item that opens a window —
         // the terminal menu's Settings… rule.
+        pick_row(
+            "Pasted Images\u{2026}",
+            MenuPick::Action(Action::ImagesPanel),
+            true,
+            false,
+        ),
         pick_row(
             "Settings\u{2026}",
             MenuPick::Action(Action::Settings),
@@ -1697,6 +1734,12 @@ struct State {
     scrolled: BandParagraph,
     pasted: BandParagraph,
     clock: BandParagraph,
+    /// The scrolled chip's hover tip label, re-laid with its segment
+    /// every layout — the text is count-live, unlike the tab strip's
+    /// two constant tips.
+    scrolled_tip: BandParagraph,
+    /// The pasted chip's hover tip label, cached the same way.
+    pasted_tip: BandParagraph,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
     armed: bool,
@@ -2002,6 +2045,18 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Clock,
                 self.segments.clock.as_deref().unwrap_or(""),
             ),
+            font,
+        ));
+        // The action chips' hover tips: laid with their segments so
+        // the counts never go stale; an absent chip lays the empty
+        // string, and the tip overlay paints only over a rendered
+        // chip's rect (which an absent chip never has).
+        state.scrolled_tip.update(segment_text(
+            &self.segments.scrolled.map(scrolled_tip).unwrap_or_default(),
+            font,
+        ));
+        state.pasted_tip.update(segment_text(
+            &self.segments.pasted.map(pasted_tip).unwrap_or_default(),
             font,
         ));
 
@@ -2548,22 +2603,30 @@ where
         _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let bounds = layout.bounds();
+        let absolute = Rectangle::new(bounds.position() + translation, bounds.size());
         // The context menu, when open: the per-tab menu's pattern.
         // The bubble hangs over the terminal (and, popping to the
         // terminal's side, never over the grab bar), so it must be
         // an overlay at all — only the overlay pass sees presses
         // there, ahead of the tree, and a captured overlay press
         // reaches nothing else.
-        if !tree.state.downcast_ref::<State>().menu_open {
-            return None;
+        if tree.state.downcast_ref::<State>().menu_open {
+            return Some(overlay::Element::new(Box::new(StatusMenuOverlay {
+                state: tree.state.downcast_mut::<State>(),
+                segments: &self.segments,
+                on_copy: &self.on_copy,
+                on_menu_action: &self.on_menu_action,
+                side: self.menu_side,
+                band: absolute,
+            })));
         }
-        let bounds = layout.bounds();
-        let absolute = Rectangle::new(bounds.position() + translation, bounds.size());
-        Some(overlay::Element::new(Box::new(StatusMenuOverlay {
-            state: tree.state.downcast_mut::<State>(),
-            segments: &self.segments,
-            on_copy: &self.on_copy,
-            on_menu_action: &self.on_menu_action,
+        // Otherwise the action chips' hover tips ride the overlay
+        // pass — see [`StatusTipOverlay`]. The tab strip's own
+        // always-on tip overlay pattern: pure paint, no hit-testing,
+        // so the band's every interaction flows exactly as it did.
+        Some(overlay::Element::new(Box::new(StatusTipOverlay {
+            state: tree.state.downcast_ref::<State>(),
             side: self.menu_side,
             band: absolute,
         })))
@@ -3070,6 +3133,91 @@ where
                 text_color,
                 menu,
             );
+        }
+    }
+}
+
+/// The action-chip tip's rect, band-local: horizontally centered on
+/// the hovered chip's rect (clamped so the bubble never overflows
+/// either end of the band — the menu's both-edges rule), vertically
+/// clearing the band toward `side` — the terminal's side, the only
+/// side with surface under it, the same side the menu pops to.
+fn tip_bounds(
+    band_width: f32,
+    anchor: Rectangle,
+    label_width: f32,
+    side: TooltipSide,
+) -> Rectangle {
+    let width = label_width + TOOLTIP_PADDING_X * 2.0;
+    let x = (anchor.x + (anchor.width - width) / 2.0).clamp(0.0, (band_width - width).max(0.0));
+    let y = match side {
+        TooltipSide::Below => BAND_HEIGHT + TOOLTIP_GAP,
+        TooltipSide::Above => -TOOLTIP_HEIGHT - TOOLTIP_GAP,
+    };
+    Rectangle::new(Point::new(x, y), Size::new(width, TOOLTIP_HEIGHT))
+}
+
+/// The band's action-chip hover tips (paste-chip OQ-5): the tab
+/// strip's `TooltipOverlay` pattern carried onto the band — a
+/// pane-inverted bubble ([`tab_bar::paint_tip`], one painter, one
+/// look) naming the chip's verb where the resting chip cannot. The
+/// band's two action chips alone tip; every copy segment stays
+/// quiet (their verb is the band's default, and a tip on each would
+/// narrate the whole band at a glance). Visibility is decided per
+/// frame from the live cursor — no hover delay, the tab strip's own
+/// rule — and the overlay is dressing only: no hit-testing, no
+/// capture, so the band's every interaction flows exactly as it did
+/// beneath a tip that never mentions itself.
+struct StatusTipOverlay<'a> {
+    /// The band's state, carrying the two tips' cached paragraphs.
+    state: &'a State,
+    /// Which vertical side of the band the tips pop to.
+    side: TooltipSide,
+    /// The band's absolute bounds (translation applied).
+    band: Rectangle,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for StatusTipOverlay<'_> {
+    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
+        // The anchor resolves per frame from the live cursor (see
+        // [`Self::draw`]); the node is a degenerate seat at the
+        // band's origin, exactly the tab strip's stance — the tip
+        // is pure paint, and no input ever routes through the node.
+        layout::Node::new(Size::ZERO).move_to(self.band.position())
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        _layout: Layout<'_>,
+        cursor_position: mouse::Cursor,
+    ) {
+        let Some(point) = cursor_position.position() else {
+            return;
+        };
+        let rects = segment_rects(self.state, self.band);
+        for (id, rect) in rects.iter().filter(|(id, _)| click_jumps(*id)) {
+            if !rect.contains(point) {
+                continue;
+            }
+            let paragraph = match id {
+                SegmentId::Scrolled => &self.state.scrolled_tip,
+                SegmentId::Pasted => &self.state.pasted_tip,
+                // `click_jumps` names exactly the two ids above;
+                // the arm is unreachable by the filter's own shape.
+                _ => continue,
+            };
+            if paragraph.min_width() <= 0.0 {
+                continue;
+            }
+            let band_local = tip_bounds(self.band.width, *rect, paragraph.min_width(), self.side);
+            let tip = Rectangle::new(
+                self.band.position() + Vector::new(band_local.x, band_local.y),
+                band_local.size(),
+            );
+            paint_tip(renderer, theme, tip, paragraph);
         }
     }
 }

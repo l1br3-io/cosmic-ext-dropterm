@@ -878,8 +878,9 @@ fn prompt_line(command: &str) -> Element<'static, SettingsEvent> {
 
 /// The dimmed text style: the on-background color at reduced alpha —
 /// the row's secondary line and the default tag, on light and dark
-/// panes alike.
-fn dim_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
+/// panes alike. Shared with the images panel's secondary line — one
+/// secondary-text look across the drawers.
+pub(crate) fn dim_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
     let cosmic = theme.cosmic();
     cosmic::iced::widget::text::Style {
         color: Some(Color::from(cosmic.background(true).on).scale_alpha(0.65)),

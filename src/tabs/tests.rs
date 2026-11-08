@@ -1126,3 +1126,41 @@ fn two_ledgers_prune_independently() {
     prune_pasted_images(&mut yours);
     assert!(mine.is_empty() && yours.is_empty());
 }
+
+#[test]
+fn the_stamp_display_restates_the_filename_for_reading() {
+    // The panel's stamp line: the cache filename's own
+    // `paste-YYYYMMDD-HHMMSS-<n>` stem restated as
+    // `YYYY-MM-DD HH:MM:SS` — same digits, spaced for reading, the
+    // counter off the display (order and pixels tell same-second
+    // siblings apart).
+    assert_eq!(
+        stamp_display("paste-20261109-143025-1"),
+        "2026-11-09 14:30:25"
+    );
+    assert_eq!(
+        stamp_display("paste-20260101-000000-12"),
+        "2026-01-01 00:00:00"
+    );
+}
+
+#[test]
+fn the_stamp_display_falls_back_verbatim_on_foreign_shapes() {
+    // A hand-renamed cache file renders verbatim — the honest
+    // fallback, never a guessed date: no `paste-` prefix, wrong part
+    // counts, and non-digit shapes all pass through.
+    assert_eq!(stamp_display("photo.png"), "photo.png");
+    assert_eq!(stamp_display("paste-20261109"), "paste-20261109");
+    assert_eq!(
+        stamp_display("paste-20261109-143025"),
+        "paste-20261109-143025"
+    );
+    assert_eq!(
+        stamp_display("paste-2026110X-143025-1"),
+        "paste-2026110X-143025-1"
+    );
+    assert_eq!(
+        stamp_display("paste-20261109-143025-1-extra"),
+        "paste-20261109-143025-1-extra"
+    );
+}

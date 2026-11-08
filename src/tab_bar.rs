@@ -300,9 +300,11 @@ const NEW_TAB_LABEL: &str = "New Tab";
 
 /// Tooltip geometry, logical pixels: tip height, label padding on each
 /// side, and the gap left between the strip and the popped tip.
-const TOOLTIP_HEIGHT: f32 = 24.0;
-const TOOLTIP_PADDING_X: f32 = 8.0;
-const TOOLTIP_GAP: f32 = 4.0;
+/// Shared with the status band's own action-chip tips, so one idiom
+/// keeps every bubble on the surface pixel-identical.
+pub(crate) const TOOLTIP_HEIGHT: f32 = 24.0;
+pub(crate) const TOOLTIP_PADDING_X: f32 = 8.0;
+pub(crate) const TOOLTIP_GAP: f32 = 4.0;
 
 /// Dropdown geometry, logical pixels: row height, label padding on
 /// each side, and the gap left between the strip and the popped
@@ -2201,7 +2203,12 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TooltipOverlay<'_> 
     clippy::similar_names,
     reason = "the pane_bg/pane_fg pair matches the PaintContext field vocabulary"
 )]
-fn paint_tip(renderer: &mut Renderer, theme: &Theme, tip: Rectangle, paragraph: &TitleParagraph) {
+pub(crate) fn paint_tip(
+    renderer: &mut Renderer,
+    theme: &Theme,
+    tip: Rectangle,
+    paragraph: &TitleParagraph,
+) {
     let (pane_bg, pane_fg) = pane_colors();
     renderer.fill_quad(
         Quad {

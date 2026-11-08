@@ -97,6 +97,14 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "i"),
         Action::Settings,
     );
+    // The images panel's toggle (the panel's door work): the chip's
+    // own verb on a chord, so a keyboard-only session and a width-
+    // squeezed band (the pasted chip drops first) keep the door. Bare
+    // Ctrl+P must stay unbound: readline's previous-history byte.
+    map.insert(
+        bind(&[Modifier::Ctrl, Modifier::Shift], "p"),
+        Action::ImagesPanel,
+    );
     // The status band's toggle (status-bar OQ-3, ruled 2026-10-10).
     // Bare Ctrl+B must stay unbound: readline's cursor-back byte.
     map.insert(
@@ -299,6 +307,7 @@ pub fn action_id(action: Action) -> Option<&'static str> {
         Action::RenameTab => "rename_tab",
         Action::DuplicateTab => "duplicate_tab",
         Action::Settings => "settings",
+        Action::ImagesPanel => "images_panel",
         Action::ToggleStatusBar => "toggle_status_bar",
         Action::ShowCompletions => "show_completions",
     };
@@ -341,6 +350,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "rename_tab" => Action::RenameTab,
         "duplicate_tab" => Action::DuplicateTab,
         "settings" => Action::Settings,
+        "images_panel" => Action::ImagesPanel,
         "toggle_status_bar" => Action::ToggleStatusBar,
         "show_completions" => Action::ShowCompletions,
         _ => return None,
@@ -430,6 +440,7 @@ pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
                 Action::ClearScrollback,
                 Action::Hide,
                 Action::Settings,
+                Action::ImagesPanel,
                 Action::ToggleStatusBar,
                 Action::ShowCompletions,
             ],
@@ -482,6 +493,7 @@ pub fn action_label(action: Action) -> &'static str {
         Action::RenameTab => "Rename tab",
         Action::DuplicateTab => "Duplicate tab",
         Action::Settings => "Open settings",
+        Action::ImagesPanel => "Open the images panel",
         Action::ToggleStatusBar => "Toggle the status bar",
         Action::ShowCompletions => "Show completions",
     }

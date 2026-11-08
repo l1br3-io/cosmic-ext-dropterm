@@ -144,6 +144,14 @@ pub enum Action {
     /// single tab: duplicating one tab is meaningful without the bar.
     DuplicateTab,
     Settings,
+    /// Toggle the images panel (`Ctrl+Shift+P` and the band menu's
+    /// Pasted Images… row — one funnel, the chip's own
+    /// `Message::ImagesPanel`): the panel's second and third doors.
+    /// The chip is a custom-painted strip with no focus story, and it
+    /// yields first under the band's width pressure — without this
+    /// action a squeezed band strands the panel behind a chip that
+    /// vanished, and the keyboard never reaches it at all.
+    ImagesPanel,
     /// Toggle the status band's visibility (`Ctrl+Shift+B` and the
     /// Behavior card's toggle — one funnel, the settings write path).
     ToggleStatusBar,

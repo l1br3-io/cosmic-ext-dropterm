@@ -2807,10 +2807,11 @@ fn rich_segments() -> StatusSegments {
 #[test]
 fn menu_rows_compose_clipboard_zoom_and_band_clusters_in_order() {
     // Copy · Copy All · Paste │ Zoom In · Zoom Out · Reset Zoom │
-    // Hide Status Bar · Settings… — the clipboard cluster over the
-    // band's own values, the zoom cluster the Zoom segment
-    // narrates, the band's lifecycle rows last, Settings behind
-    // its divider (the GNOME end placement).
+    // Hide Status Bar · Pasted Images… · Settings… — the clipboard
+    // cluster over the band's own values, the zoom cluster the Zoom
+    // segment narrates, the band's lifecycle rows last with the
+    // images panel's door beside them, Settings behind its divider
+    // (the GNOME end placement).
     let rows = menu_rows(&rich_segments(), Some(SegmentId::Path));
     let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
     assert_eq!(
@@ -2823,13 +2824,14 @@ fn menu_rows_compose_clipboard_zoom_and_band_clusters_in_order() {
             "Zoom Out",
             "Reset Zoom",
             "Hide Status Bar",
+            "Pasted Images\u{2026}",
             "Settings\u{2026}",
         ]
     );
     let separated: Vec<bool> = rows.iter().map(|row| row.separated).collect();
     assert_eq!(
         separated,
-        vec![false, false, false, true, false, false, true, false]
+        vec![false, false, false, true, false, false, true, false, false]
     );
     let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
     assert!(
@@ -2927,6 +2929,7 @@ fn every_action_row_routes_to_its_keybinds_own_action() {
             Some(MenuPick::Action(Action::ZoomOut)),
             Some(MenuPick::Action(Action::ZoomReset)),
             Some(MenuPick::Action(Action::ToggleStatusBar)),
+            Some(MenuPick::Action(Action::ImagesPanel)),
             Some(MenuPick::Action(Action::Settings)),
         ]
     );
@@ -2996,7 +2999,9 @@ fn menu_bounds_anchors_at_the_press_and_clamps_into_the_band() {
 fn the_pasted_chip_is_absent_at_zero_and_carries_the_count_when_present() {
     // The exit chip's rule, borrowed whole: zero is the unmarked
     // default — the same indistinguishable `None` a hidden segment
-    // resolves to — and N pastes render `img N`.
+    // resolves to — and N pastes render `N images`, pluralized
+    // honestly (paste-chip OQ-5: a count a first-time reader parses
+    // without decoding).
     let inputs = StatusInputs {
         home: None,
         cwd: None,
@@ -3037,7 +3042,63 @@ fn the_pasted_chip_is_absent_at_zero_and_carries_the_count_when_present() {
         StatusToggles::all(),
     );
     assert_eq!(counted.pasted, Some(3));
-    assert_eq!(counted.pasted.map(pasted_display), Some("img 3".to_owned()));
+    assert_eq!(
+        counted.pasted.map(pasted_display),
+        Some("3 images".to_owned())
+    );
+    assert_eq!(pasted_display(1), "1 image");
+}
+
+#[test]
+fn the_action_chips_tips_name_their_verbs() {
+    // The hover tips (paste-chip OQ-5): each action chip's tip names
+    // what the count counts and what the click does — the two facts
+    // the resting chip cannot carry — pluralized like the display.
+    assert_eq!(
+        pasted_tip(3),
+        "3 pasted images. Click to open the images panel."
+    );
+    assert_eq!(
+        pasted_tip(1),
+        "1 pasted image. Click to open the images panel."
+    );
+    assert_eq!(
+        scrolled_tip(12),
+        "Scrolled back 12 lines. Click to jump to bottom."
+    );
+    assert_eq!(
+        scrolled_tip(1),
+        "Scrolled back 1 line. Click to jump to bottom."
+    );
+}
+
+#[test]
+fn action_chip_tips_center_on_their_chip_and_never_leave_the_band() {
+    // The tip's geometry: centered on the hovered chip, clamped at
+    // both ends of the band (the menu's both-edges rule), popping to
+    // the terminal's side — the strip's own tooltip metrics.
+    use crate::tab_bar::TooltipSide;
+    let chip = Rectangle::new(Point::new(400.0, 0.0), Size::new(46.0, BAND_HEIGHT));
+    let width = 200.0 + TOOLTIP_PADDING_X * 2.0;
+    let mid = tip_bounds(800.0, chip, 200.0, TooltipSide::Below);
+    // Centered: the chip's center minus half the bubble.
+    assert_eq!(mid.x, 400.0 + 46.0 / 2.0 - width / 2.0);
+    assert_eq!(mid.y, BAND_HEIGHT + TOOLTIP_GAP);
+    // A chip near the left edge clamps the bubble inside the band.
+    let left_chip = Rectangle::new(Point::new(10.0, 0.0), Size::new(46.0, BAND_HEIGHT));
+    assert_eq!(
+        tip_bounds(800.0, left_chip, 200.0, TooltipSide::Below).x,
+        0.0
+    );
+    // A chip near the right edge clamps the far side, not the near.
+    let right_edge = 800.0 - 12.0;
+    let right_chip = Rectangle::new(
+        Point::new(right_edge - 46.0, 0.0),
+        Size::new(46.0, BAND_HEIGHT),
+    );
+    let right = tip_bounds(800.0, right_chip, 200.0, TooltipSide::Above);
+    assert_eq!(right.x + right.width, 800.0);
+    assert_eq!(right.y, -TOOLTIP_HEIGHT - TOOLTIP_GAP);
 }
 
 #[test]
