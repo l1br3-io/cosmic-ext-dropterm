@@ -49,7 +49,7 @@ use crate::slide::{self, SlideBox};
 use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
-use crate::tabs::{self, Tab, TabId};
+use crate::tabs::{self, PastedImage, Tab, TabId};
 use crate::terminal::suggest;
 use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
@@ -3258,17 +3258,20 @@ impl DropTerm {
                 // The Claude Code contract (paste-image spec, PI-1):
                 // the bytes land in the paste cache, their file's path
                 // pastes as text — the same channel a text paste uses,
-                // so bracketed paste rides unchanged. The visible
-                // confirmation (PI-2): the same bytes render inline at
-                // the cursor through the engine's one non-OSC image
-                // entry; a cap or decode refusal warns inside and
-                // skips only the render — the path already stands.
-                if let Some(tab) = self.active()
-                    && let Some(path) = clipboard::write_paste_image(&bytes)
+                // so bracketed paste rides unchanged. The path is the
+                // paste's one grid trace (paste-ledger spec,
+                // superseding PI-2's render: no surveyed terminal
+                // renders pastes, and evicted pixels blank while the
+                // file survives); the ledger row records it for the
+                // images panel, and the band chip's pulse (paste-chip)
+                // is the confirmation.
+                if let Some(path) = clipboard::write_paste_image(&bytes)
+                    && let Some(tab) = self.tabs.get_mut(self.active_tab)
                 {
-                    let mut terminal = tab.terminal.lock().unwrap();
+                    let terminal = tab.terminal.lock().unwrap();
                     terminal.paste(&path);
-                    terminal.place_pasted_image(&bytes);
+                    tab.pasted_images
+                        .push(PastedImage::new(path.into(), &bytes));
                 }
             }
             Message::PickSettingsTab(entity) => {

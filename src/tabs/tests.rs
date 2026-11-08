@@ -1043,3 +1043,45 @@ fn tab_records_its_spawn_shell() {
     // restore replaying a saved pin — sets the flag.
     assert!(!tab.pinned);
 }
+
+/// A tiny solid-color PNG of the given dimensions, as bytes — the
+/// engine suite's own fixture shape (`engine/tests.rs`'s `png_bytes`).
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+// --- the pasted-image row (paste-ledger spec, PL-1) ---
+
+#[test]
+fn pasted_row_reads_dimensions_from_the_png_header() {
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-1.png"),
+        &png_bytes(64, 32),
+    );
+    assert_eq!(row.dims, Some((64, 32)));
+}
+
+#[test]
+fn pasted_row_stamp_is_the_filenames_own_segment() {
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-1.png"),
+        &png_bytes(1, 1),
+    );
+    assert_eq!(row.stamp, "paste-20261108-143012-1");
+}
+
+#[test]
+fn pasted_row_keeps_the_paste_when_the_payload_is_not_an_image() {
+    // The paste already happened by the time the row is built; a
+    // headerless payload costs its dimensions and nothing else.
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-2.png"),
+        b"not a png at all",
+    );
+    assert_eq!(row.dims, None);
+    assert_eq!(row.stamp, "paste-20261108-143012-2");
+}
