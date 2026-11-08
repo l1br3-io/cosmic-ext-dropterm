@@ -503,20 +503,22 @@ impl DropTerm {
             &TerminalOptions {
                 font_size,
                 autosuggestions_enabled: self.config.autosuggestions_enabled,
+                images_enabled: self.config.images_enabled,
                 autosuggestions_paths_enabled: self.config.autosuggestions_paths_enabled,
                 autosuggestions_commands_enabled: self.config.autosuggestions_commands_enabled,
                 autosuggestions_menu_enabled: self.config.autosuggestions_menu_enabled,
                 autosuggestions_menu_auto: self.config.autosuggestions_menu_auto,
-                autosuggestions_generators_enabled: self.config.autosuggestions_generators_enabled,
                 autosuggestions_aliases: self.config.autosuggestions_aliases.clone(),
-                // The spec table reads fresh at spawn
-                // (suggest-specs-data spec): the data file has no
-                // watcher, and a spawn is the user-action point a
-                // dropped or edited `completions.toml` applies at —
-                // live tabs pick it up at the next config echo.
-                autosuggestions_specs_table: suggest::load_completions(
-                    super::completions_config_dir().as_deref(),
-                ),
+                // The spec table is the app's shared load
+                // (async-completions): a spawn before the background
+                // load lands carries the empty placeholder and the
+                // loading flag — the menu answers "loading" until the
+                // load's `set_config` pass swaps the real table in.
+                autosuggestions_specs_table: self
+                    .specs_table
+                    .clone()
+                    .unwrap_or_else(suggest::empty_specs),
+                autosuggestions_specs_loading: self.specs_table.is_none(),
                 spawned_program: spawned_as_program(command, &self.config),
                 spawn_home,
                 spawn_path,

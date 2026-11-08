@@ -982,11 +982,18 @@ fn command_timer_freezes_a_bounded_duration_and_drains_the_latch_once() {
     // witnessed start lands after the fork and the finish after the
     // exit, so the measured window is the sleep's own 0.3 s plus
     // the finish's observation latency minus the start's — the 50 ms
-    // poll cadence can shave ~50 ms per edge. 200 ms floors the
-    // run's signal (never 0, never garbage); 5 s caps it; the wall
-    // time since Enter bounds it above.
+    // poll cadence can shave ~50 ms per edge, and the full suite's
+    // own parallelism can slip the witnessed start well past that
+    // (2026-11-08: two reds at default parallelism, green in
+    // isolation and at --test-threads=2 — the suite's own
+    // concurrency is the load). 100 ms floors the run's signal
+    // (never 0, never garbage) while tolerating that slip; 5 s caps
+    // it; the wall time since Enter bounds it above.
     let duration = terminal.command_frozen().expect("the frozen duration");
-    assert!(duration >= std::time::Duration::from_millis(200));
+    assert!(
+        duration >= std::time::Duration::from_millis(100),
+        "the frozen duration {duration:?} slipped under the 100 ms floor"
+    );
     assert!(duration < std::time::Duration::from_secs(5));
     assert!(duration <= started.elapsed() + std::time::Duration::from_secs(1));
 
@@ -1588,7 +1595,6 @@ fn test_runner() -> GeneratorRunner {
         "/bin/sh",
         std::env::var("PATH").ok().as_deref(),
         None,
-        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     )
@@ -1707,7 +1713,6 @@ fn an_ineligible_tab_never_spawns() {
         "ssh",
         std::env::var("PATH").ok().as_deref(),
         None,
-        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     );
@@ -1725,7 +1730,6 @@ fn a_tab_without_git_on_its_spawn_path_never_spawns() {
         "/bin/sh",
         Some("/nonexistent-generator-path"),
         None,
-        true,
         TabId(0),
         mpsc::unbounded_channel().0,
     );
@@ -1847,125 +1851,6 @@ fn menu_open_revalidates_the_generator_cache() {
         "the menu's open revalidates every argv for the tab's cwd"
     );
     terminal.input_no_scroll(&b"exit\r"[..]);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_disabled_tab_never_spawns() {
-    // The kill switch's spawn half: `false` blocks the eligibility
-    // onset's pre-warm and the menu's open trigger alike — no
-    // worker, no cache, ever.
-    let Some(_git) = test_git() else {
-        return;
-    };
-    let dir = git_fixture(
-        "disabled",
-        &[
-            "init -b main",
-            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
-            "branch feature/x",
-        ],
-    );
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut terminal = Terminal::new(
-        TabId(0),
-        tx,
-        Config::default(),
-        &Options {
-            shell: Some(alacritty_terminal::tty::Shell::new(
-                "/bin/sh".to_owned(),
-                Vec::new(),
-            )),
-            working_directory: Some(dir.clone()),
-            drain_on_exit: true,
-            ..Options::default()
-        },
-        &TerminalOptions {
-            spawned_program: "/bin/sh".to_owned(),
-            spawn_path: std::env::var("PATH").ok(),
-            autosuggestions_generators_enabled: false,
-            ..TerminalOptions::default()
-        },
-        &Colors::default(),
-    )
-    .expect("spawn a disabled-generator test terminal");
-    std::thread::sleep(Duration::from_millis(300));
-    {
-        let state = terminal.generator.lock_generator_state();
-        assert_eq!(state.spawns, 0, "a disabled tab never pre-warms");
-        assert!(state.cache.is_empty());
-    }
-    terminal.update();
-    let _ = terminal.menu_open();
-    let state = terminal.generator.lock_generator_state();
-    assert_eq!(state.spawns, 0, "the menu's trigger stays blocked too");
-    terminal.input_no_scroll(b"exit\r");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn an_off_flip_serves_nothing_from_cache() {
-    // The kill switch's serving half: a warm cache under a live `false`
-    // flip reads as nothing — the observation carries no sets, never
-    // the stale rows — and the flip silences the triggers with it.
-    let Some(_git) = test_git() else {
-        return;
-    };
-    let dir = git_fixture(
-        "flip-off",
-        &[
-            "init -b main",
-            "-c user.email=t@t -c user.name=t commit --allow-empty -m x",
-            "branch feature/x",
-        ],
-    );
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut terminal = Terminal::new(
-        TabId(0),
-        tx,
-        Config::default(),
-        &Options {
-            shell: Some(alacritty_terminal::tty::Shell::new(
-                "/bin/sh".to_owned(),
-                Vec::new(),
-            )),
-            working_directory: Some(dir.clone()),
-            drain_on_exit: true,
-            ..Options::default()
-        },
-        &TerminalOptions {
-            spawned_program: "/bin/sh".to_owned(),
-            spawn_path: std::env::var("PATH").ok(),
-            ..TerminalOptions::default()
-        },
-        &Colors::default(),
-    )
-    .expect("spawn a flip test terminal");
-    let prewarm_spawns = wait_for_generator_prewarm(&terminal);
-    assert!(
-        terminal.generator.sets_for(Some(&dir)).is_some(),
-        "the warm cache serves before the flip"
-    );
-    terminal.set_config(
-        &TerminalOptions {
-            spawned_program: "/bin/sh".to_owned(),
-            spawn_path: std::env::var("PATH").ok(),
-            autosuggestions_generators_enabled: false,
-            ..TerminalOptions::default()
-        },
-        &Colors::default(),
-    );
-    assert!(
-        terminal.generator.sets_for(Some(&dir)).is_none(),
-        "an off flip blanks the cache read on the echo"
-    );
-    let _ = terminal.menu_open();
-    let state = terminal.generator.lock_generator_state();
-    assert_eq!(
-        state.spawns, prewarm_spawns,
-        "the off flip silences the menu's trigger too"
-    );
-    terminal.input_no_scroll(b"exit\r");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2682,4 +2567,1411 @@ fn a_report_naming_another_host_is_remote() {
     // No local name to compare against: a named host is taken at
     // its word.
     assert!(report.names_remote_host(None));
+}
+
+// ===== Inline images (iterm-images spec) =====
+
+/// A test terminal whose pty never writes (the
+/// `progress_report_terminal` precedent, but `/bin/cat` instead of
+/// `/bin/sh`): the image pins assert exact cell coordinates, and an
+/// interactive shell's prompt would have moved the cursor before the
+/// placement — a silent pty keeps the grid pristine.
+fn image_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/cat".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/cat inline-image test terminal")
+}
+
+/// A small solid-color PNG of the given dimensions, as wire bytes.
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+/// Base64-encode wire bytes.
+fn b64(data: &[u8]) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .encode(data)
+        .into_bytes()
+}
+
+/// The image id standing behind the cell at the given grid point, if
+/// one was placed.
+fn cell_image(terminal: &Terminal, line: i32, col: usize) -> Option<u64> {
+    let term = terminal.term.lock();
+    term.grid()[alacritty_terminal::index::Line(line)][alacritty_terminal::index::Column(col)]
+        .image()
+        .map(|cell| cell.image)
+}
+
+/// A synthetic size for the pure resolver pins: 8×16 px cells in an
+/// 800×480 session — every expected value below is exact arithmetic
+/// on those numbers.
+fn resolver_size() -> Size {
+    Size {
+        width: 800,
+        height: 480,
+        cell_width: 8.0,
+        cell_height: 16.0,
+    }
+}
+
+#[test]
+fn size_unit_parses_every_documented_form() {
+    use super::SizeUnit;
+
+    assert_eq!(SizeUnit::parse(b"12"), Some(SizeUnit::Cells(12)));
+    assert_eq!(SizeUnit::parse(b"12px"), Some(SizeUnit::Pixels(12)));
+    assert_eq!(SizeUnit::parse(b"50%"), Some(SizeUnit::Percent(50)));
+    assert_eq!(SizeUnit::parse(b"auto"), Some(SizeUnit::Auto));
+    assert_eq!(SizeUnit::parse(b"AUTO"), Some(SizeUnit::Auto));
+    // Malformed values read as absent, never a panic.
+    assert_eq!(SizeUnit::parse(b"garbage"), None);
+    assert_eq!(SizeUnit::parse(b"-3"), None);
+    assert_eq!(SizeUnit::parse(b""), None);
+}
+
+#[test]
+fn args_parse_the_placement_grammar_and_ignore_the_rest() {
+    let (args, payload) = super::parse_image_args(&[
+        b"File=inline=1".to_vec(),
+        b"size=428".to_vec(),
+        b"name=aGk=".to_vec(),
+        b"width=2px".to_vec(),
+        b"unknown=zzz".to_vec(),
+    ]);
+
+    assert!(args.inline);
+    assert!(args.preserve_aspect);
+    assert_eq!(args.width, Some(super::SizeUnit::Pixels(2)));
+    assert_eq!(args.height, None);
+    assert_eq!(payload, None, "no colon on the wire, no payload");
+}
+
+#[test]
+fn legacy_payload_splits_at_the_first_colon() {
+    let (args, payload) = super::parse_image_args(&[
+        b"File=inline=1".to_vec(),
+        b"name=aGk=:cGF5bG9hZA==".to_vec(),
+    ]);
+
+    assert!(args.inline);
+    assert_eq!(payload, Some(b"cGF5bG9hZA==".to_vec()));
+}
+
+#[test]
+fn preserve_aspect_zero_parses_as_off() {
+    // The chunked header reaches the parser already split by vte —
+    // each arg its own slice.
+    let (args, _) = super::parse_image_args(&[
+        b"MultipartFile=inline=1".to_vec(),
+        b"preserveAspectRatio=0".to_vec(),
+    ]);
+    assert!(args.inline);
+    assert!(!args.preserve_aspect);
+}
+
+#[test]
+fn resolver_auto_auto_leaves_the_image_inherent() {
+    let args = super::ImageArgs::default();
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (8, 2)
+    );
+}
+
+#[test]
+fn resolver_cells_unit_scales_the_other_axis_along() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(4)),
+        ..Default::default()
+    };
+    // 4 cells = 32px; the 64px-wide image halves, carrying its 32px
+    // height to 16px = exactly one row.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (4, 1)
+    );
+}
+
+#[test]
+fn resolver_pixels_unit_resolves_through_the_cell_size() {
+    let args = super::ImageArgs {
+        height: Some(super::SizeUnit::Pixels(64)),
+        ..Default::default()
+    };
+    // 64px tall = 4 rows; the 32px-tall image doubles, its width to
+    // 128px = 16 cols.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (16, 4)
+    );
+}
+
+#[test]
+fn resolver_percent_unit_resolves_against_the_session() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Percent(25)),
+        ..Default::default()
+    };
+    // 25% of 800px = 200px wide; scale 200/64 = 3.125, height 100px =
+    // 6.25 rows -> 6.
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (25, 6)
+    );
+}
+
+#[test]
+fn resolver_both_given_fits_within_preserving_aspect() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(10)),
+        height: Some(super::SizeUnit::Cells(2)),
+        ..Default::default()
+    };
+    // Box 80x32px; height binds (scale 1.0 vs width's 1.25).
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (8, 2)
+    );
+}
+
+#[test]
+fn resolver_zero_aspect_honors_both_axes_exactly() {
+    let args = super::ImageArgs {
+        width: Some(super::SizeUnit::Cells(10)),
+        height: Some(super::SizeUnit::Cells(2)),
+        preserve_aspect: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        super::resolve_placement(&args, (64.0, 32.0), &resolver_size()),
+        (10, 2)
+    );
+}
+
+#[test]
+fn resolver_never_returns_zero_cells() {
+    let args = super::ImageArgs::default();
+    assert_eq!(
+        super::resolve_placement(&args, (1.0, 1.0), &resolver_size()),
+        (1, 1)
+    );
+}
+
+#[test]
+fn image_caps_are_the_documented_defaults() {
+    assert_eq!(super::IMAGE_PAYLOAD_CAP, 32 * 1024 * 1024);
+    assert_eq!(super::IMAGE_MAX_DIMENSION, 8192);
+    assert_eq!(super::IMAGE_MAX_ALLOC, 64 * 1024 * 1024);
+    assert_eq!(super::IMAGE_STORE_BUDGET, 320 * 1024 * 1024);
+}
+
+#[test]
+fn legacy_single_shot_places_diced_cells_and_stores_pixels() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    let params = vec![
+        b"File=inline=1".to_vec(),
+        b"width=4".to_vec(),
+        b"height=4".to_vec(),
+        // The live grid's cell shape is font-measured, so the pin
+        // forces exact cells; aspect pins live on the pure resolver.
+        b"preserveAspectRatio=0".to_vec(),
+        name,
+    ];
+
+    terminal.note_inline_image(&params);
+
+    // The placement is diced across exactly the requested cells.
+    for line in 0..4 {
+        for col in 0..4 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    assert_eq!(cell_image(&terminal, 4, 0), None, "the line below is fresh");
+    // The cursor landed below the placement.
+    assert_eq!(
+        terminal.term.lock().grid().cursor.point.line.0,
+        4,
+        "cursor below the placement"
+    );
+    // The store holds the decoded pixels.
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+}
+
+#[test]
+fn chunked_session_accumulates_parts_until_the_end() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    // Split at a 4-character base64 boundary so each part decodes
+    // standalone, exactly like imgcat's chunks.
+    let split = (wire.len() / 2) & !3;
+    let (head, tail) = wire.split_at(split);
+
+    let header = vec![
+        b"MultipartFile=inline=1".to_vec(),
+        b"width=2".to_vec(),
+        b"height=2".to_vec(),
+        b"preserveAspectRatio=0".to_vec(),
+    ];
+    terminal.note_inline_image(&header);
+    terminal.note_inline_image(&[
+        format!("FilePart={}", std::str::from_utf8(head).unwrap()).into_bytes()
+    ]);
+    terminal.note_inline_image(&[
+        format!("FilePart={}", std::str::from_utf8(tail).unwrap()).into_bytes()
+    ]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    assert_eq!(
+        terminal
+            .images
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(image::RgbaImage::dimensions),
+        Some((8, 8))
+    );
+}
+
+#[test]
+fn a_second_header_aborts_the_first_session() {
+    let mut terminal = image_terminal();
+    let first = b64(&png_bytes(16, 16));
+    let second = b64(&png_bytes(8, 8));
+    let mut second_name = b"FilePart=".to_vec();
+    second_name.extend_from_slice(&second);
+
+    let header = || {
+        vec![
+            b"MultipartFile=inline=1".to_vec(),
+            b"width=2".to_vec(),
+            b"height=2".to_vec(),
+            b"preserveAspectRatio=0".to_vec(),
+        ]
+    };
+    terminal.note_inline_image(&header());
+    let mut first_part = b"FilePart=".to_vec();
+    first_part.extend_from_slice(&first);
+    terminal.note_inline_image(&[first_part]);
+    // The second header replaces the first session: its part is the
+    // only payload left standing.
+    terminal.note_inline_image(&header());
+    terminal.note_inline_image(&[second_name]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(
+        terminal
+            .images
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(image::RgbaImage::dimensions),
+        Some((8, 8)),
+        "the first session's bytes died with its header"
+    );
+}
+
+#[test]
+fn file_end_without_a_session_is_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn file_part_without_a_session_is_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"FilePart=aGVsbG8=".to_vec()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+}
+
+#[test]
+fn a_malformed_part_aborts_the_session_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[
+        b"MultipartFile=inline=1".to_vec(),
+        b"width=2".to_vec(),
+        b"height=2".to_vec(),
+    ]);
+    terminal.note_inline_image(&[b"FilePart=@@@".to_vec()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None, "nothing half-places");
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn a_malformed_payload_never_places() {
+    let mut terminal = image_terminal();
+    let wire = b64(b"not an image at all");
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn inline_zero_renders_nothing() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=0".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn images_enabled_false_makes_the_arm_inert() {
+    let mut terminal = image_terminal();
+    terminal.images_enabled = false;
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_cap_payload_drops_the_session_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_inline_image(&[b"MultipartFile=inline=1".to_vec()]);
+    let huge = vec![b'A'; super::IMAGE_PAYLOAD_CAP + 1];
+    let part = format!("FilePart={}", {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(&huge)
+    });
+    terminal.note_inline_image(&[part.into_bytes()]);
+    terminal.note_inline_image(&[b"FileEnd".to_vec()]);
+
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "never half-buffered, never placed"
+    );
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_dimension_image_drops_whole() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(super::IMAGE_MAX_DIMENSION + 1, 1));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn an_over_allocation_image_drops_whole() {
+    let mut terminal = image_terminal();
+    // 5000x4000 RGBA decodes to ~80 MiB, past the 64 MiB allocation
+    // ceiling; flat color keeps the PNG itself tiny.
+    let wire = b64(&png_bytes(5000, 4000));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), name]);
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn store_evicts_oldest_under_its_budget() {
+    let mut store = super::ImageStore::default();
+    let image = || image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+    let budget = 2 * image().len();
+
+    store.insert_with_budget(1, image(), budget);
+    store.insert_with_budget(2, image(), budget);
+    assert_eq!(store.total_bytes(), budget);
+
+    store.insert_with_budget(3, image(), budget);
+    // The oldest id left; the other two stand.
+    assert!(store.get(1).is_none(), "evicted ids draw blank");
+    assert!(store.get(2).is_some());
+    assert!(store.get(3).is_some());
+    assert_eq!(store.total_bytes(), budget);
+}
+
+#[test]
+fn store_never_evicts_the_image_just_inserted() {
+    let mut store = super::ImageStore::default();
+    let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+    let len = image.len();
+
+    store.insert_with_budget(1, image, len / 2);
+    // Over budget alone, it still stands: the cap is a ceiling, not a
+    // denial — decode's own limits keep any single image far under
+    // the shipped budget.
+    assert!(store.get(1).is_some());
+    assert_eq!(store.total_bytes(), len);
+}
+
+#[test]
+fn handle_for_builds_once_and_dies_with_eviction() {
+    let mut store = super::ImageStore::default();
+    let image = || image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]));
+    let budget = 2 * image().len();
+    store.insert_with_budget(1, image(), budget);
+    store.insert_with_budget(2, image(), budget);
+
+    // One build, then clones: the ids match, so the renderer's cache
+    // sees one handle — one upload — for the id's whole life.
+    let first = store.handle_for(1).expect("the id stands behind pixels");
+    assert_eq!(store.handle_for(1), Some(first));
+
+    // Evicting id 1 drops its handle with its pixels.
+    store.insert_with_budget(3, image(), budget);
+    assert!(store.get(1).is_none());
+    assert_eq!(store.handle_for(1), None);
+}
+
+// ===== Kitty graphics (kitty-images spec) =====
+
+/// One APC `G` payload as the fork delivers it: the `G`, the control
+/// keys, and the base64 payload behind the first `;` (omitted when
+/// empty, the empty-final-chunk wire shape).
+fn apc(keys: &str, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = format!("G{keys}").into_bytes();
+    if !payload.is_empty() {
+        bytes.push(b';');
+        bytes.extend_from_slice(&b64(payload));
+    }
+    bytes
+}
+
+/// The wire form whose base64 slice is already encoded (for chunks
+/// split at a base64 boundary, exactly like real clients).
+fn apc_b64(keys: &str, encoded: &str) -> Vec<u8> {
+    format!("G{keys};{encoded}").into_bytes()
+}
+
+/// Flat RGBA bytes for the `f=32` raw path.
+fn raw_rgba(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for _ in 0..width * height {
+        bytes.extend_from_slice(&[10, 20, 30, 255]);
+    }
+    bytes
+}
+
+/// zlib-compress bytes the `o=z` wire form arrives in.
+fn zlib_bytes(data: &[u8]) -> Vec<u8> {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).expect("compress the test payload");
+    encoder.finish().expect("finish the zlib stream")
+}
+
+#[test]
+fn kitty_keys_parse_the_subset_and_ignore_unknown_keys() {
+    let keys = super::parse_kitty_keys(
+        b"a=T,f=100,t=d,s=8,v=8,c=4,r=4,x=1,y=2,o=z,m=1,q=1,i=7,p=3,z=-1,U=1,k=9",
+    )
+    .expect("every subset key parses");
+
+    assert_eq!(keys.action, Some(b'T'));
+    assert_eq!(keys.format, Some(100));
+    assert_eq!(keys.transmission, Some(b'd'));
+    assert_eq!(keys.width_px, Some(8));
+    assert_eq!(keys.height_px, Some(8));
+    assert_eq!(keys.cols, Some(4));
+    assert_eq!(keys.rows, Some(4));
+    assert_eq!(keys.offset_x, Some(1));
+    assert_eq!(keys.offset_y, Some(2));
+    assert!(keys.compressed);
+    assert!(keys.more);
+    assert_eq!(keys.quiet, 1);
+    assert_eq!(keys.image_id, Some(7));
+    assert_eq!(keys.placement_id, Some(3));
+    assert_eq!(keys.z, Some(-1));
+}
+
+#[test]
+fn kitty_keys_drop_malformed_control_whole() {
+    // No '=' anywhere, an empty value, an empty key, a multi-char key
+    // (kitty keys are single characters), and known keys with values
+    // outside their grammar — each drops the sequence whole.
+    for control in [
+        &b"abcd"[..],
+        b"a=",
+        b"=3",
+        b"ab=1",
+        b"f=png",
+        b"s=-4",
+        b"a=Z",
+        b"t=Q",
+        b"o=q",
+        b"m=2",
+        b"q=3",
+        b"z=abc",
+    ] {
+        assert_eq!(super::parse_kitty_keys(control), None, "{control:?}");
+    }
+}
+
+#[test]
+fn kitty_single_shot_png_transmits_and_displays() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=2,r=2", &png_bytes(8, 8)));
+
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    assert_eq!(cell_image(&terminal, 2, 0), None, "the line below is fresh");
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+}
+
+#[test]
+fn kitty_default_action_transmits_without_display() {
+    // `a` absent defaults to transmit-only: the pixels stand in the
+    // store, no cell carries them.
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("f=100", &png_bytes(8, 8)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(1).is_some(), "transmit-only still stores");
+}
+
+#[test]
+fn kitty_f32_raw_sizes_from_s_and_v() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=32,s=2,v=2,c=2,r=2", &raw_rgba(2, 2)));
+
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((2, 2)));
+}
+
+#[test]
+fn kitty_format_defaults_to_f32() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,s=1,v=1,c=1,r=1", &raw_rgba(1, 1)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    assert_eq!(cell_image(&terminal, 0, 1), None);
+}
+
+#[test]
+fn kitty_f32_wrong_byte_count_drops_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("f=32,s=2,v=2,c=1,r=1", &raw_rgba(2, 2)[..15]));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_f32_missing_dims_drop_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("f=32,c=1,r=1", &raw_rgba(1, 1)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_chunked_transmission_assembles_until_m0() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let split = (wire.len() / 2) & !3;
+    let (head, tail) = wire.split_at(split);
+
+    terminal.note_apc_payload(&apc_b64(
+        "a=T,f=100,c=2,r=2,m=1",
+        std::str::from_utf8(head).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64("m=1", std::str::from_utf8(tail).unwrap()));
+    terminal.note_apc_payload(&apc("m=0", b""));
+
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+}
+
+#[test]
+fn kitty_empty_final_chunk_commits() {
+    // The observed chafa shape: a final `m=0` whose payload slice is
+    // empty — the commit fires on the marker alone.
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+
+    terminal.note_apc_payload(&apc_b64(
+        "a=T,f=100,c=1,r=1,m=1",
+        std::str::from_utf8(&wire).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64("m=0", ""));
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+}
+
+#[test]
+fn kitty_interleaved_transmissions_keyed_by_i() {
+    let mut terminal = image_terminal();
+    let first = b64(&png_bytes(8, 8));
+    let second = b64(&png_bytes(16, 16));
+    let first_split = (first.len() / 2) & !3;
+    let second_split = (second.len() / 2) & !3;
+
+    terminal.note_apc_payload(&apc_b64(
+        "i=7,f=100,m=1",
+        std::str::from_utf8(&first[..first_split]).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64(
+        "i=9,f=100,m=1",
+        std::str::from_utf8(&second[..second_split]).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64(
+        "i=7,m=1",
+        std::str::from_utf8(&first[first_split..]).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64(
+        "i=9,m=1",
+        std::str::from_utf8(&second[second_split..]).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc("i=7,m=0", b""));
+    terminal.note_apc_payload(&apc("i=9,m=0", b""));
+
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((8, 8)));
+    assert_eq!(
+        store.get(2).map(image::RgbaImage::dimensions),
+        Some((16, 16))
+    );
+    drop(store);
+    assert_eq!(
+        terminal.kitty_ids.get(&7),
+        Some(&1),
+        "client i maps to its store id"
+    );
+    assert_eq!(terminal.kitty_ids.get(&9), Some(&2));
+}
+
+#[test]
+fn kitty_continuation_without_a_session_drops() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc_b64("m=1", "QUJD"));
+    terminal.note_apc_payload(&apc("m=0", b""));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_second_header_replaces_the_session() {
+    let mut terminal = image_terminal();
+    let second = b64(&png_bytes(8, 8));
+
+    terminal.note_apc_payload(&apc_b64(
+        "i=7,f=100,m=1",
+        std::str::from_utf8(&b64(&png_bytes(16, 16))).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc_b64(
+        "i=7,f=100,m=1",
+        std::str::from_utf8(&second).unwrap(),
+    ));
+    terminal.note_apc_payload(&apc("i=7,m=0", b""));
+
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(
+        store.get(1).map(image::RgbaImage::dimensions),
+        Some((8, 8)),
+        "the first session's bytes died with its replaced header"
+    );
+}
+
+#[test]
+fn kitty_transmission_refusals_answer_the_uniform_error() {
+    // Every forbidden medium answers the one identical error — no
+    // filesystem, no temp file, no shared memory, no probing surface.
+    assert_eq!(
+        super::kitty_error_reply(Some(9)),
+        b"\x1b_Gi=9;EBADF:Failed to read image file\x1b\\".to_vec()
+    );
+    assert_eq!(
+        super::kitty_error_reply(None),
+        b"\x1b_GEBADF:Failed to read image file\x1b\\".to_vec()
+    );
+
+    for refused in ["t=f", "t=t", "t=s"] {
+        let mut terminal = image_terminal();
+        terminal.note_apc_payload(&apc(&format!("{refused},i=9,f=100"), &png_bytes(8, 8)));
+
+        assert_eq!(cell_image(&terminal, 0, 0), None, "{refused}");
+        assert!(
+            terminal.images.lock().unwrap().get(1).is_none(),
+            "{refused} never crosses the seam"
+        );
+    }
+}
+
+#[test]
+fn kitty_o_z_payloads_inflate() {
+    let mut terminal = image_terminal();
+    let compressed = zlib_bytes(&raw_rgba(2, 2));
+    terminal.note_apc_payload(&apc("a=T,f=32,s=2,v=2,c=1,r=1,o=z", &compressed));
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((2, 2)));
+}
+
+#[test]
+fn kitty_over_dimension_and_pixel_budget_drop_whole() {
+    let mut terminal = image_terminal();
+    // 8193 px wide is past the dimension ceiling; 5000x4000 is past
+    // the 16 Mpx allocation budget at four bytes a pixel.
+    terminal.note_apc_payload(&apc("f=32,s=8193,v=1,c=1,r=1", &raw_rgba(1, 1)));
+    terminal.note_apc_payload(&apc("f=32,s=5000,v=4000,c=1,r=1", &raw_rgba(1, 1)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(1).is_none() && store.get(2).is_none());
+}
+
+#[test]
+fn kitty_over_cap_accumulation_drops_the_session_whole() {
+    let mut terminal = image_terminal();
+    // 3000x3000 RGBA is 36 MB — under the pixel budget, over the
+    // 32 MiB payload cap, so the accumulation check is what fires.
+    let huge = raw_rgba(3000, 3000);
+    terminal.note_apc_payload(&apc("f=32,s=3000,v=3000,m=1", &huge));
+    terminal.note_apc_payload(&apc("m=0", b""));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None, "never half-buffered");
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_payload_without_leading_g_is_silence() {
+    let mut terminal = image_terminal();
+    // SOS/PM strings share the APC state; anything not carrying the
+    // kitty introducer never reaches the machine.
+    terminal.note_apc_payload(b"ga=q");
+    terminal.note_apc_payload(b"");
+    terminal.note_apc_payload(b"Xm=1;QUJD");
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_x_y_offsets_crop_the_displayed_region() {
+    let mut terminal = image_terminal();
+    // The 4x4 raw image with x=2,y=2 displays its bottom-right
+    // quadrant: the stored pixels are the crop.
+    terminal.note_apc_payload(&apc("a=T,f=32,s=4,v=4,c=1,r=1,x=2,y=2", &raw_rgba(4, 4)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.get(1).map(image::RgbaImage::dimensions), Some((2, 2)));
+}
+
+#[test]
+fn kitty_retransmit_remaps_the_client_id() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(16, 16)));
+
+    assert_eq!(
+        terminal.kitty_ids.get(&7),
+        Some(&2),
+        "the map follows the latest"
+    );
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(1).is_some(), "the old pixels ride the budget");
+    assert!(store.get(2).is_some());
+}
+
+#[test]
+fn kitty_malformed_base64_drops_the_chunk_whole() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc_b64("f=100,m=1", "@@@"));
+    terminal.note_apc_payload(&apc_b64("m=1", "QUJD"));
+    terminal.note_apc_payload(&apc("m=0", b""));
+
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "the session died with its bad chunk"
+    );
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+#[test]
+fn kitty_images_enabled_false_is_inert() {
+    let mut terminal = image_terminal();
+    terminal.images_enabled = false;
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+// ===== Kitty queries, placements, deletion (kitty-images spec) =====
+
+#[test]
+fn kitty_reply_builder_is_byte_exact() {
+    assert_eq!(
+        super::kitty_reply(Some(7), "OK"),
+        b"\x1b_Gi=7;OK\x1b\\".to_vec()
+    );
+    assert_eq!(super::kitty_reply(None, "OK"), b"\x1b_GOK\x1b\\".to_vec());
+    assert_eq!(
+        super::kitty_error_reply(Some(9)),
+        b"\x1b_Gi=9;EBADF:Failed to read image file\x1b\\".to_vec()
+    );
+}
+
+#[test]
+fn kitty_feature_lists_are_true_of_the_implementation() {
+    // Exactly what each e= group's answer names — the keys this
+    // implementation parses and honors, nothing more.
+    assert_eq!(
+        super::kitty_feature_list(b'T'),
+        "t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q"
+    );
+    assert_eq!(super::kitty_feature_list(b't'), "a=T,a=t,c,r,x,y");
+    assert_eq!(super::kitty_feature_list(b'p'), "a=p,p,i,I,z");
+    assert_eq!(
+        super::kitty_feature_list(b'd'),
+        "d=a,d=A,d=i,d=I,d=n,d=N,d=c,d=C"
+    );
+}
+
+#[test]
+fn kitty_query_answers_ok_for_a_live_image() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    let keys = super::parse_kitty_keys(b"i=7").expect("the query's keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&keys, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=7;OK\x1b\\".to_vec())
+    );
+
+    // A number names the image too — the store id itself (OQ-1).
+    let by_number = super::parse_kitty_keys(b"I=1").expect("the number query");
+    assert_eq!(
+        super::kitty_query_reply(&by_number, &terminal.kitty_ids, &images),
+        Some(b"\x1b_GOK\x1b\\".to_vec()),
+        "I= names by number; no i= rides the reply"
+    );
+}
+
+#[test]
+fn kitty_query_answers_the_error_for_unknown_or_freed_images() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+    // Free the pixels: the id maps but nothing stands behind it.
+    terminal.images.lock().unwrap().remove(1);
+
+    let unknown = super::parse_kitty_keys(b"i=7").expect("the query's keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&unknown, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=7;EBADF:Failed to read image file\x1b\\".to_vec())
+    );
+}
+
+#[test]
+fn kitty_query_suppression_honors_q1_and_q2() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    // q=1 silences the OK answer; the error answer still goes.
+    let quiet_ok = super::parse_kitty_keys(b"i=7,q=1").expect("keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&quiet_ok, &terminal.kitty_ids, &images),
+        None
+    );
+    let quiet_error = super::parse_kitty_keys(b"i=9,q=1").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&quiet_error, &terminal.kitty_ids, &images),
+        Some(b"\x1b_Gi=9;EBADF:Failed to read image file\x1b\\".to_vec())
+    );
+
+    // q=2 silences everything.
+    let quiet_all = super::parse_kitty_keys(b"i=9,q=2").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&quiet_all, &terminal.kitty_ids, &images),
+        None
+    );
+    drop(images);
+
+    // A query naming no image at all is silence, never a reply.
+    let bare = super::parse_kitty_keys(b"").expect("keys");
+    let images = terminal.images.lock().unwrap();
+    assert_eq!(
+        super::kitty_query_reply(&bare, &terminal.kitty_ids, &images),
+        None
+    );
+}
+
+#[test]
+fn kitty_e_queries_answer_the_feature_lists() {
+    let keys = super::parse_kitty_keys(b"i=1,e=T").expect("keys");
+    let ids = std::collections::HashMap::new();
+    let images = super::ImageStore::default();
+    assert_eq!(
+        super::kitty_query_reply(&keys, &ids, &images),
+        Some(b"\x1b_Gi=1;OK t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q\x1b\\".to_vec())
+    );
+
+    let display = super::parse_kitty_keys(b"e=t").expect("keys");
+    assert_eq!(
+        super::kitty_query_reply(&display, &ids, &images),
+        Some(b"\x1b_GOK a=T,a=t,c,r,x,y\x1b\\".to_vec())
+    );
+}
+
+#[test]
+fn kitty_place_seats_a_transmitted_image_at_the_cursor() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,c=2,r=2", &png_bytes(8, 8)));
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "transmit-only placed nothing"
+    );
+
+    // Without a placement id the cells ride the image's own id.
+    terminal.note_apc_payload(&apc("a=p,i=7,c=2,r=2", b""));
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(1),
+                "cell ({line},{col})"
+            );
+        }
+    }
+}
+
+#[test]
+fn kitty_re_place_moves_the_placements_cells_and_reuses_data() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+
+    // The placement seats under its own id (a fresh store entry), so
+    // the move sweep takes exactly it.
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=2,r=2", b""));
+    for line in 0..2 {
+        for col in 0..2 {
+            assert_eq!(
+                cell_image(&terminal, line, col),
+                Some(2),
+                "cell ({line},{col})"
+            );
+        }
+    }
+
+    // The re-place at the cursor (now below the first placement)
+    // clears the old cells and seats the same id again — the data
+    // reused, no fresh store entry.
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    assert_eq!(
+        cell_image(&terminal, 0, 0),
+        None,
+        "the old cells moved away"
+    );
+    assert_eq!(
+        cell_image(&terminal, 2, 0),
+        Some(2),
+        "the same id re-seated"
+    );
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(2).is_some(), "the placement's pixels stand");
+    assert!(
+        store.get(3).is_none(),
+        "no fresh entry — the data is reused"
+    );
+    assert_eq!(terminal.kitty_placements.get(&3).map(|p| p.cells), Some(2));
+}
+
+#[test]
+fn kitty_delete_by_name_clears_placements_and_uppercase_frees() {
+    // Lowercase: the cells go, the pixels stand.
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=d,d=i7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_some(),
+        "lowercase keeps the data"
+    );
+
+    // Uppercase: the pixels free too, and the id map forgets.
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=d,d=I7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_none(),
+        "uppercase frees"
+    );
+    assert!(!terminal.kitty_ids.contains_key(&7));
+}
+
+#[test]
+fn kitty_delete_by_name_sweeps_the_placements_too() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), Some(2));
+
+    // Deleting the image takes its placements' cells and pixels.
+    terminal.note_apc_payload(&apc("a=d,d=I7", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(1).is_none() && store.get(2).is_none());
+    assert!(terminal.kitty_placements.is_empty());
+}
+
+#[test]
+fn kitty_delete_by_name_resolves_as_a_number_when_no_client_id_matches() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    // No client id 1 was ever declared; the name resolves as the
+    // number (the store id itself).
+    terminal.note_apc_payload(&apc("a=d,d=i1", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+}
+
+#[test]
+fn kitty_delete_newest_takes_the_last_transmitted_image() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    // The cursor moved below the first placement; both images stand.
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    assert_eq!(cell_image(&terminal, 1, 0), Some(2));
+
+    terminal.note_apc_payload(&apc("a=d,d=N", b""));
+    assert_eq!(
+        cell_image(&terminal, 1, 0),
+        None,
+        "the newest image's cells go"
+    );
+    let store = terminal.images.lock().unwrap();
+    assert!(store.get(2).is_none(), "N frees the newest");
+    assert!(store.get(1).is_some(), "the older image stands");
+}
+
+#[test]
+fn kitty_delete_all_sweeps_everything() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    terminal.note_apc_payload(&apc("a=d,d=a", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert_eq!(cell_image(&terminal, 1, 0), None);
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_some() && store.get(2).is_some(),
+            "a keeps the data"
+        );
+    }
+
+    // Re-place from the standing pixels, then A takes everything.
+    terminal.note_apc_payload(&apc("a=p,i=1,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=d,d=A", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_none() && store.get(2).is_none(),
+            "A frees all"
+        );
+    }
+    assert!(terminal.kitty_ids.is_empty());
+}
+
+#[test]
+fn kitty_delete_visible_sweeps_the_shown_rows_and_c_frees_them() {
+    let mut terminal = image_terminal();
+    // The fixture's grid is 80x24: a one-row full-width image, then a
+    // thirty-row placement whose scroll push rides the first image's
+    // row six lines into scrollback — its cells survive only there,
+    // at columns past the tall placement's three-column width.
+    terminal.note_apc_payload(&apc("i=1,a=T,f=100,c=80,r=1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=2,a=T,f=100,c=3,r=30", &png_bytes(8, 8)));
+    assert!(
+        cell_image(&terminal, -7, 3).is_some(),
+        "the first image rides in scrollback"
+    );
+    assert!(
+        cell_image(&terminal, 0, 0).is_some(),
+        "the tall placement covers the screen"
+    );
+
+    // c: the visible screen's placements go; the scrollback stands.
+    terminal.note_apc_payload(&apc("a=d,d=c", b""));
+    assert_eq!(cell_image(&terminal, 0, 0), None, "the visible cells swept");
+    assert!(cell_image(&terminal, -7, 3).is_some(), "scrollback stands");
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(1).is_some() && store.get(2).is_some(),
+            "c keeps the data"
+        );
+    }
+
+    // C on the re-placed tall image frees what was visible; the
+    // scrollback image's pixels and cells stand.
+    terminal.note_apc_payload(&apc("a=p,i=2,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=d,d=C", b""));
+    assert_eq!(
+        cell_image(&terminal, 23, 0),
+        None,
+        "the re-placed cells swept"
+    );
+    {
+        let store = terminal.images.lock().unwrap();
+        assert!(
+            store.get(2).is_none(),
+            "the freed visible image's pixels go"
+        );
+        assert!(
+            store.get(1).is_some(),
+            "the scrollback image's pixels stand"
+        );
+    }
+}
+
+#[test]
+fn kitty_region_and_unknown_deletes_are_ignored() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    for ignored in ["d=x0,0,1,1", "d=y", "d=z5", "d=q"] {
+        terminal.note_apc_payload(&apc(&format!("a=d,{ignored}"), b""));
+    }
+
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1), "nothing was deleted");
+    assert!(terminal.images.lock().unwrap().get(1).is_some());
+}
+
+#[test]
+fn kitty_command_sequences_never_open_a_session() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("a=q,i=1,m=1", b""));
+    terminal.note_apc_payload(&apc("m=0", b""));
+    assert!(terminal.kitty_chunks.is_empty());
+    assert!(terminal.images.lock().unwrap().get(1).is_none());
+}
+
+// ===== Kitty z-layers (kitty-images spec) =====
+
+#[test]
+fn store_layers_default_beneath_and_record_on_ask() {
+    let mut store = super::ImageStore::default();
+    store.insert(
+        1,
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])),
+    );
+    assert_eq!(store.layer_of(1), -1, "an unrecorded id draws beneath");
+
+    store.set_layer(1, 2);
+    assert_eq!(store.layer_of(1), 2, "above the glyphs at z>=0");
+    store.set_layer(1, -3);
+    assert_eq!(store.layer_of(1), -3, "beneath at z<0");
+
+    // A freed or evicted id's layer dies with its pixels.
+    store.remove(1);
+    assert_eq!(store.layer_of(1), -1);
+
+    store.insert(
+        2,
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])),
+    );
+    store.set_layer(2, 1);
+    store.clear();
+    assert_eq!(store.layer_of(2), -1, "the free-all takes the layers too");
+}
+
+#[test]
+fn kitty_transmissions_record_the_asked_layer() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=1,a=T,f=100,c=1,r=1,z=3", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=2,a=T,f=100,c=1,r=1,z=-1", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("i=3,a=T,f=100,c=1,r=1", &png_bytes(8, 8)));
+
+    let store = terminal.images.lock().unwrap();
+    assert_eq!(store.layer_of(1), 3, "an explicit z>=0 asks above");
+    assert_eq!(store.layer_of(2), -1, "an explicit z<0 asks beneath");
+    assert_eq!(store.layer_of(3), -1, "an absent z reads as beneath");
+}
+
+#[test]
+fn kitty_placements_carry_and_inherit_their_layer() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,z=4", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=4,c=1,r=1,z=-2", b""));
+
+    let store = terminal.images.lock().unwrap();
+    let cells_three = terminal.kitty_placements.get(&3).map(|p| p.cells);
+    let cells_four = terminal.kitty_placements.get(&4).map(|p| p.cells);
+    assert_eq!(
+        store.layer_of(cells_three.expect("placement 3 seated")),
+        4,
+        "an absent z inherits its image's layer"
+    );
+    assert_eq!(
+        store.layer_of(cells_four.expect("placement 4 seated")),
+        -2,
+        "the placement's own z overrides"
+    );
+}
+
+#[test]
+fn iterm_images_stay_beneath_by_default() {
+    let mut terminal = image_terminal();
+    let wire = b64(&png_bytes(8, 8));
+    let mut name = b"name=aGk=".to_vec();
+    name.push(b':');
+    name.extend_from_slice(&wire);
+    terminal.note_inline_image(&[b"File=inline=1".to_vec(), b"width=4".to_vec(), name]);
+
+    assert_eq!(
+        terminal.images.lock().unwrap().layer_of(1),
+        -1,
+        "iterm images never enter the layer map"
+    );
+}
+
+#[test]
+fn evicted_layers_die_with_their_pixels() {
+    let mut store = super::ImageStore::default();
+    let pixel = || image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+    // A zero budget evicts on the second insert — the oldest dies
+    // while the newest stands.
+    store.insert_with_budget(1, pixel(), 0);
+    store.set_layer(1, 2);
+    store.insert_with_budget(2, pixel(), 0);
+
+    assert!(store.get(1).is_none(), "the pixels went with the budget");
+    assert_eq!(
+        store.layer_of(1),
+        -1,
+        "eviction takes the layer with the pixels, like a free"
+    );
+    assert!(store.get(2).is_some(), "the newest stands under the cap");
+}
+
+#[test]
+fn kitty_replaces_move_their_layer_on_an_explicit_z() {
+    let mut terminal = image_terminal();
+    terminal.note_apc_payload(&apc("i=7,f=100,z=4", &png_bytes(8, 8)));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1,z=-2", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,p=3,c=1,r=1", b""));
+    terminal.note_apc_payload(&apc("a=p,i=7,c=1,r=1,z=1", b""));
+
+    let store = terminal.images.lock().unwrap();
+    let cells = terminal
+        .kitty_placements
+        .get(&3)
+        .map(|p| p.cells)
+        .expect("placement 3 seated");
+    assert_eq!(
+        store.layer_of(cells),
+        -2,
+        "an explicit z moves the seat; the later absent one keeps it"
+    );
+    let image_id = terminal
+        .kitty_ids
+        .get(&7)
+        .copied()
+        .expect("image 7 transmitted");
+    assert_eq!(
+        store.layer_of(image_id),
+        1,
+        "a z on the image's own re-place moves the transmission too"
+    );
 }

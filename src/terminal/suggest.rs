@@ -19,13 +19,15 @@ use alacritty_terminal::{
     vte::ansi::{NamedColor, Rgb},
 };
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{LazyLock, Mutex};
 
 use super::engine::WINDOW_BG_COLOR;
+
+mod walker;
 
 /// The ring's bound (OQ-1, ruled at approval): generous for a
 /// drop-down's working set, trivially cheap in memory.
@@ -618,149 +620,6 @@ fn catalog_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     escape_for_shell(&name[word.len()..])
 }
 
-/// One curated command's completion table (flag-specs spec): the
-/// hand-curated high-traffic subcommands and long flags — every
-/// entry ASCII, non-empty, and trimmed by construction, pinned by
-/// test, so a table entry is safe to write by construction. The
-/// lists are sorted, which is what makes the ruled tiebreak
-/// (shortest wins, ties alphabetical) fall out of `min_by_key` the
-/// same way the sorted catalog's does.
-struct CommandSpec {
-    /// The command word this entry completes.
-    command: &'static str,
-    /// Its high-traffic subcommands.
-    subcommands: &'static [&'static str],
-    /// Its long flags — uniform across subcommands in v1 (the flat
-    /// table; per-subcommand flag trees are the growth path's, not
-    /// v1's). No short flags, ruled: a single-choice ghost pays a
-    /// wrong accept for a wrong guess.
-    flags: &'static [&'static str],
-}
-
-/// The curated-specs table (flag-specs spec, OQ 5): the ruled v1
-/// five — git, cargo, docker, systemctl, npm. Curated means
-/// curated: no attempt at completeness. Static in-code data,
-/// demoted to the fallback's storage by the loadable data file
-/// (suggest-specs-data spec): no file, an unreadable file, or an
-/// invalid file answers this table, byte-equivalent to the
-/// pre-file behavior; the lookup sits behind `specs_candidate`
-/// alone, so neither merge nor guards know which table answers.
-const SPECS: &[CommandSpec] = &[
-    CommandSpec {
-        command: "cargo",
-        subcommands: &[
-            "build", "check", "clean", "doc", "fetch", "fix", "fmt", "init", "install", "publish",
-            "run", "test", "update",
-        ],
-        flags: &[
-            "--bin",
-            "--frozen",
-            "--lib",
-            "--locked",
-            "--manifest-path",
-            "--offline",
-            "--quiet",
-            "--release",
-            "--verbose",
-        ],
-    },
-    CommandSpec {
-        command: "docker",
-        subcommands: &[
-            "build", "commit", "cp", "create", "exec", "images", "inspect", "logs", "pull", "push",
-            "rm", "rmi", "run", "start", "stop", "version",
-        ],
-        flags: &[
-            "--detach",
-            "--env",
-            "--interactive",
-            "--name",
-            "--publish",
-            "--tty",
-            "--volume",
-        ],
-    },
-    CommandSpec {
-        command: "git",
-        subcommands: &[
-            "add",
-            "branch",
-            "checkout",
-            "cherry-pick",
-            "clone",
-            "commit",
-            "diff",
-            "fetch",
-            "init",
-            "log",
-            "merge",
-            "mv",
-            "pull",
-            "push",
-            "rebase",
-            "reset",
-            "restore",
-            "revert",
-            "rm",
-            "show",
-            "stash",
-            "status",
-            "switch",
-            "tag",
-        ],
-        flags: &[
-            "--all",
-            "--amend",
-            "--branch",
-            "--dry-run",
-            "--force",
-            "--global",
-            "--help",
-            "--interactive",
-            "--message",
-            "--quiet",
-            "--set-upstream",
-            "--verbose",
-            "--version",
-        ],
-    },
-    CommandSpec {
-        command: "npm",
-        subcommands: &[
-            "ci",
-            "config",
-            "install",
-            "publish",
-            "run",
-            "test",
-            "uninstall",
-            "update",
-        ],
-        flags: &[
-            "--global",
-            "--legacy-peer-deps",
-            "--prefix",
-            "--registry",
-            "--save-dev",
-            "--save-exact",
-            "--verbose",
-        ],
-    },
-    CommandSpec {
-        command: "systemctl",
-        subcommands: &[
-            "daemon-reload",
-            "disable",
-            "enable",
-            "restart",
-            "start",
-            "status",
-            "stop",
-        ],
-        flags: &["--force", "--host", "--no-pager", "--quiet", "--type"],
-    },
-];
-
 /// One literal suggestion entry as the data file carries it
 /// (suggest-specs-data spec; kept by suggest-schema for an
 /// argument's `suggestions` — the one place the two-field shape is
@@ -898,27 +757,6 @@ pub struct SpecCommand {
 }
 
 impl SpecCommand {
-    /// Today's flat seat view (suggest-schema spec): the root entry's
-    /// flag names or subcommand names beside their descriptions — the
-    /// one shape both unwalked seats read until suggest-walker
-    /// replaces them. The nested tiers are parsed and carried, not
-    /// yet consulted. A filter on each list and one chain shape a
-    /// single iterator type over the two lists; exactly one list
-    /// contributes per call.
-    fn seat_entries(&self, flag_seat: bool) -> impl Iterator<Item = (&str, Option<&str>)> {
-        let flags = self
-            .flags
-            .iter()
-            .filter(move |_| flag_seat)
-            .map(|flag| (flag.name.as_str(), flag.description.as_deref()));
-        let subcommands = self
-            .subcommands
-            .iter()
-            .filter(move |_| !flag_seat)
-            .map(|command| (command.name.as_str(), command.description.as_deref()));
-        flags.chain(subcommands)
-    }
-
     /// The ruled order, recursive (suggest-schema spec): every entry
     /// list — subcommands, flags, and the literal suggestions under a
     /// command's or a flag's arguments — sorts by name at every
@@ -949,40 +787,63 @@ struct SpecsFile {
     commands: Vec<SpecCommand>,
 }
 
-/// The built-in table, file-shaped: the curated const converted
-/// once, on first use — the fallback every load failure answers,
-/// and the floor a valid file's commands merge over.
+/// The embedded completions floor (suggest-embed spec, the
+/// 2026-11-07 compressed-floor amendment): the extractor-emitted
+/// `data/completions.toml.gz` — the same bytes as the raw,
+/// human-editable `data/completions.toml` beside it, gzip-compressed
+/// with a zeroed mtime so the artifact is deterministic — inflated
+/// and parsed once per process, here inside the same `LazyLock` the
+/// in-code five used to convert in. A single-shot inflate of ~4 MiB
+/// is milliseconds beside its parse, and nothing downstream knows
+/// the floor was ever compressed: [`builtin_specs`] keeps its
+/// contract, and the corpus suite pins the `.gz` against the raw
+/// file so the two cannot drift.
 static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
-    SPECS
-        .iter()
-        .map(|spec| SpecCommand {
-            name: spec.command.to_string(),
-            subcommands: spec
-                .subcommands
-                .iter()
-                .map(|entry| SpecCommand {
-                    name: (*entry).to_string(),
-                    ..Default::default()
-                })
-                .collect(),
-            flags: spec
-                .flags
-                .iter()
-                .map(|entry| SpecFlag {
-                    name: (*entry).to_string(),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        })
-        .collect()
+    use std::io::Read as _;
+
+    let compressed: &[u8] = include_bytes!("../../data/completions.toml.gz");
+    let mut text = String::new();
+    // The bytes are ours — committed beside this source, schema-gated
+    // by the corpus suite on every test run — so a failed inflate or
+    // parse is a corrupted tree the tests would have caught, not a
+    // runtime condition to answer silently: there is no deeper table
+    // to fall back to, this IS the floor.
+    flate2::read::GzDecoder::new(compressed)
+        .read_to_string(&mut text)
+        .expect("the embedded floor inflates as UTF-8");
+    parse_completions(&text).expect("the embedded floor parses under the schema")
 });
 
-/// The built-in fallback table (suggest-specs-data spec): exactly
-/// the curated const, file-shaped, descriptions `None` — what no
-/// file, an unreadable file, and an invalid file all answer.
+/// The embedded floor (suggest-embed spec): the generated core tier —
+/// the high-traffic corpus at a pinned withfig/autocomplete version —
+/// what no data file, an unreadable data file, and an invalid data
+/// file all answer, and the floor the extended tier's installed file
+/// and the user's `completions.toml` both overlay.
 pub(crate) fn builtin_specs() -> &'static [SpecCommand] {
     &BUILTIN_SPECS
+}
+
+/// The embedded floor as a shared slice (suggest-embed spec,
+/// async-completions): the `Arc` form of [`builtin_specs`], cloned
+/// once per process so the borrowed floor rides an `Arc` pointer
+/// without a per-call table copy — the loading placeholder and every
+/// no-overlay load share this one allocation.
+static BUILTIN_SPECS_ARC: LazyLock<Arc<[SpecCommand]>> =
+    LazyLock::new(|| Arc::from(builtin_specs()));
+
+/// The embedded floor as a cheap `Arc` clone — the no-overlay load
+/// and the `TerminalOptions` default both point at one process-wide
+/// allocation, never copying the table per call.
+pub(crate) fn builtin_specs_arc() -> Arc<[SpecCommand]> {
+    Arc::clone(&BUILTIN_SPECS_ARC)
+}
+
+/// The loading placeholder (async-completions): an empty shared table
+/// the app hands down while the completion files still load on a
+/// background thread — the specs tier answers nothing until the real
+/// table lands, and the menu's loading row is the only specs surface.
+pub(crate) fn empty_specs() -> Arc<[SpecCommand]> {
+    Arc::from(&[][..])
 }
 
 /// Parses the data file's text into the normalized table
@@ -1011,9 +872,21 @@ fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error
 /// the only way to describe a built-in entry). Deterministic
 /// throughout: equal names resolve by the stable sort's file
 /// order, and the merged table ends sorted by command name.
-fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
+/// The three-layer merge (suggest-embed spec): the embedded core
+/// floor; the extended tier **adding beside it** — disjoint by
+/// construction, and if a name collides anyway the floor wins, being
+/// authoritative; then the user's file **overriding whole** across
+/// both tiers, exactly as it always has. Deterministic throughout:
+/// equal names resolve by the stable sort's file order, and the
+/// merged table ends sorted by name.
+fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecCommand> {
     let mut table = BUILTIN_SPECS.clone();
-    for command in file {
+    for command in extended {
+        if !table.iter().any(|existing| existing.name == command.name) {
+            table.push(command.clone());
+        }
+    }
+    for command in user {
         match table
             .iter_mut()
             .find(|existing| existing.name == command.name)
@@ -1026,39 +899,193 @@ fn merge_completions(file: Vec<SpecCommand>) -> Vec<SpecCommand> {
     table
 }
 
-/// The loadable spec table's whole truth (suggest-specs-data spec):
-/// resolve `completions.toml` under the config directory, parse
-/// it, and merge it over the built-in floor. Failure is always
+/// The loadable spec table's whole truth (suggest-specs-data spec,
+/// three layers since suggest-embed): the user's `completions.toml`
+/// under the config directory, the installed extended tier behind
+/// its toggle, over the embedded core floor. Failure is always
 /// silence-shaped — no directory, no file, an unreadable file, or
-/// an invalid file (any unknown key, `script` included) answers
-/// the built-in table with a `debug!` log, never a half-loaded
-/// table; the caller is the app layer, engine-side and once per
-/// load point, so the model never touches the filesystem.
-pub(crate) fn load_completions(dir: Option<&Path>) -> Cow<'static, [SpecCommand]> {
-    let Some(dir) = dir else {
-        log::debug!("no config directory: the spec table stays built-in");
-        return Cow::Borrowed(builtin_specs());
-    };
+/// an invalid file (any unknown key, `script` included) drops its
+/// layer whole with a `debug!` log, never a half-loaded table; the
+/// caller is the app layer, engine-side and once per load point, so
+/// the model never touches the filesystem.
+pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Arc<[SpecCommand]> {
+    let extended_path = extended.then(extended_completions_path).flatten();
+    load_completions_from(dir, extended_path.as_deref())
+}
+
+/// The loader over explicit seats (suggest-embed spec): the user
+/// file under `dir`, the extended tier at `extended_path` — the
+/// XDG walk's answer in the app, a fixture's in the tests. No
+/// overlay at all keeps the floor shared: no table copy, no parse
+/// beyond the embed's own.
+fn load_completions_from(dir: Option<&Path>, extended_path: Option<&Path>) -> Arc<[SpecCommand]> {
+    let extended = extended_path.and_then(extended_table);
+    let user = dir.and_then(user_completions);
+    if user.is_none() && extended.is_none() {
+        return builtin_specs_arc();
+    }
+    let extended: &[SpecCommand] = extended.as_deref().map_or(&[], Vec::as_slice);
+    Arc::from(merge_tiers(extended, user.unwrap_or_default()))
+}
+
+/// The user's `completions.toml` under the config directory
+/// (suggest-specs-data spec): `None` is no directory, no file, an
+/// unreadable file, or an invalid one — each with its one `debug!`
+/// line, silence-shaped, never a half-loaded table.
+fn user_completions(dir: &Path) -> Option<Vec<SpecCommand>> {
     let path = dir.join("completions.toml");
     match std::fs::read_to_string(&path) {
         Ok(contents) => match parse_completions(&contents) {
-            Ok(file) => Cow::Owned(merge_completions(file)),
+            Ok(file) => Some(file),
             Err(err) => {
                 log::debug!(
-                    "completions.toml rejected, the built-in table answers: {}: {err}",
+                    "completions.toml rejected, the embedded floor answers: {}: {err}",
                     path.display()
                 );
-                Cow::Borrowed(builtin_specs())
+                None
             }
         },
         Err(err) => {
             log::debug!(
-                "completions.toml unreadable, the built-in table answers: {}: {err}",
+                "completions.toml unreadable, the embedded floor answers: {}: {err}",
                 path.display()
             );
-            Cow::Borrowed(builtin_specs())
+            None
         }
     }
+}
+
+/// The extended tier's file name, seated under the app id in the
+/// XDG data dirs (suggest-embed spec).
+const EXTENDED_FILE: &str = "completions-extended.toml";
+
+/// `$XDG_DATA_DIRS` (suggest-embed spec): the colon list, blanks
+/// dropped, with the spec's own default when unset or empty — a
+/// Flatpak sandbox lists `/app/share` here, which is how the
+/// packaged file seats inside the sandbox without `DropTerm` knowing
+/// a Flatpak exists.
+fn xdg_data_dirs() -> Vec<PathBuf> {
+    std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into())
+        .split(':')
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Where the extended tier lives (suggest-embed spec): the XDG data
+/// walk — `$XDG_DATA_HOME` (`~/.local/share`) first, then every
+/// `$XDG_DATA_DIRS` entry — each joined with the app id and the
+/// file name, first existing path wins. A dev build (the `.Dev`
+/// identity) also tries the un-suffixed release id per directory,
+/// so `just dev` finds a release install's data file. `None` is
+/// "not installed": the core floor answers, the settings caption
+/// says so.
+fn extended_completions_path() -> Option<PathBuf> {
+    resolve_extended_in(dirs::data_local_dir().as_deref(), &xdg_data_dirs())
+}
+
+/// The walk itself, over caller-supplied roots (the tests' seat).
+fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Option<PathBuf> {
+    // The lib's own const is the canonical seat (app.rs re-exports
+    // it for its tree); the `.Dev` suffix marks the dev identity,
+    // whose walk also tries the release install's un-suffixed seat.
+    let app_id = cosmic_ext_dropterm::APP_ID;
+    let release_id = app_id.strip_suffix(".Dev").unwrap_or(app_id);
+    let ids = if release_id == app_id {
+        vec![app_id]
+    } else {
+        vec![app_id, release_id]
+    };
+    let mut candidates = Vec::new();
+    for dir in data_local
+        .into_iter()
+        .map(PathBuf::from)
+        .chain(data_dirs.iter().cloned())
+    {
+        for id in &ids {
+            candidates.push(dir.join(id).join(EXTENDED_FILE));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// The installed tier's status for the settings caption
+/// (suggest-embed spec): the resolved path and its command count —
+/// one read of the file's bytes, counting the table marker every
+/// command of this schema seats exactly once — cached for the
+/// process like the parse (a system data file does not change under
+/// a running app). `None` is "not installed": the caption says so.
+pub(crate) fn extended_tier_status() -> Option<(usize, PathBuf)> {
+    static STATUS: LazyLock<Option<(usize, PathBuf)>> = LazyLock::new(|| {
+        let path = extended_completions_path()?;
+        let bytes = std::fs::read(&path).ok()?;
+        Some((count_commands(&bytes), path))
+    });
+    STATUS.clone()
+}
+
+/// One completions file's command count: the number of lines that
+/// open a top-level `[[commands]]` table — the marker every command
+/// of this schema seats exactly once, whatever wrote the file.
+fn count_commands(bytes: &[u8]) -> usize {
+    bytes
+        .split(|&byte| byte == b'\n')
+        .filter(|line| line.starts_with(b"[[commands]]"))
+        .count()
+}
+
+/// The extended tier's parse cache (suggest-embed spec): one parse
+/// per process per resolved path — a system data file does not
+/// change under a running app, so a toggle flip reuses the table it
+/// already loaded (failures cached too: a broken file is not re-read
+/// per toggle). Keyed by path — the spec's once-per-process, made
+/// per-path so the walk's real answer and any test fixture stay
+/// independent.
+/// One resolved path's cached answer (suggest-embed spec): the
+/// parsed table, or `None` for an absent, unreadable, or invalid
+/// file — failures cache too, so a broken file is not re-read per
+/// toggle.
+type ExtendedTable = Option<Arc<Vec<SpecCommand>>>;
+
+static EXTENDED_TABLES: LazyLock<Mutex<HashMap<PathBuf, ExtendedTable>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The installed tier's table (suggest-embed spec): read and parse
+/// once per path per process, cached; absent, unreadable, or
+/// invalid (the schema is the gate — any unknown key at any depth)
+/// is `None` with one `debug!` line, and the core floor and the
+/// user file answer alone. Never a partial table.
+fn extended_table(path: &Path) -> ExtendedTable {
+    let mut cache = EXTENDED_TABLES
+        .lock()
+        .expect("the extended cache is never poisoned");
+    if let Some(cached) = cache.get(path) {
+        return cached.clone();
+    }
+    let parsed = match std::fs::read_to_string(path) {
+        Ok(contents) => match parse_completions(&contents) {
+            Ok(table) => Some(Arc::new(table)),
+            Err(err) => {
+                log::debug!(
+                    "completions-extended.toml rejected, the core floor answers: {}: {err}",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(err) => {
+            log::debug!(
+                "completions-extended.toml unreadable, the core floor answers: {}: {err}",
+                path.display()
+            );
+            None
+        }
+    };
+    cache.insert(path.to_path_buf(), parsed.clone());
+    parsed
 }
 
 /// The alias chain's depth cap (suggest-aliases spec, OQ-2,
@@ -1092,42 +1119,26 @@ fn resolve_alias<'a>(word: &'a str, aliases: &'a HashMap<String, String>) -> &'a
     current
 }
 
-/// The specs provider's context carve (flag-specs spec): the line's
-/// command word and the trailing token, when the token holds a
-/// seat the table answers. A `--`-prefixed token is the **flag
-/// seat**, consulted from any argument seat (OQ 2: git accepts
-/// flags before and after subcommands alike — the flat table's
-/// approximation of fish's per-subcommand gating, which is where
-/// the growth path refines if the table ever grows flags worth
-/// separating). Any other token is the **subcommand seat**, the
-/// first argument seat only (ruled: once an argument holds it, a
-/// later word never consults the subcommand table). `None` is no
-/// specs context: the command word itself being entered (the
-/// catalog's seat) or a later non-flag argument seat. The command
-/// word resolves through the alias map (suggest-aliases spec) —
-/// re-target, never rewrite: a mapped alias's expansion command
-/// becomes the lookup context, the seats still judged on the typed
-/// line.
-fn specs_context<'a>(
-    typed: &'a str,
-    aliases: &'a HashMap<String, String>,
-) -> Option<(&'a str, &'a str)> {
+/// The specs provider's seat carve, walker era (suggest-walker
+/// spec): lex the typed segment, take the command word through the
+/// alias map — re-target, never rewrite (suggest-aliases spec): a
+/// mapped alias answers what its expansion's command answers, and an
+/// accept still writes only the suffix — and walk the remaining
+/// tokens into the entry. `None` is command position, no command
+/// word, an unknown command, or a command-restart onto an unknown
+/// entry: silence, never a guess.
+fn specs_stop<'o>(typed: &str, obs: &'o Observation<'_>) -> Option<walker::StopPoint<'o>> {
     if is_command_position(typed) {
         return None;
     }
-    let token = trailing_token(typed);
-    let completed = completed_words(&typed[..typed.len() - token.len()]);
-    // Re-target, never rewrite (suggest-aliases spec): the map's
-    // word becomes the lookup context — `gc --dr` answers what
-    // `git --dr` answers — but an accept still writes only the
-    // suffix; DropTerm never sends the expansion unless the user
-    // accepted ghost text that spelled it.
-    let command = resolve_alias(completed.first()?, aliases);
-    if token.starts_with("--") || completed.len() == 1 {
-        Some((command, token))
-    } else {
-        None
-    }
+    let tokens = walker::lex(typed);
+    let first = tokens.first()?;
+    let command = resolve_alias(first.text.as_ref(), obs.aliases);
+    let entry = obs
+        .specs_table
+        .iter()
+        .find(|spec| spec.name == command || spec.aliases.iter().any(|alias| alias == command))?;
+    walker::walk(&tokens[1..], entry, obs.specs_table)
 }
 
 /// The typed segment's completed shell words (flag-specs spec):
@@ -1154,46 +1165,30 @@ fn completed_words(typed: &str) -> Vec<&str> {
     words
 }
 
-/// The curated-specs provider's candidate function (flag-specs
-/// spec): complete the trailing token from the curated table —
-/// subcommands at the subcommand seat, `--`-prefixed long flags
-/// from any argument seat (no short flags, ruled: the collision
-/// space with bundled short flags is guesswork in a single-choice
-/// ghost). Strict prefix, must extend, shortest wins, ties
-/// alphabetical — the catalog's ruled match policy reused verbatim
-/// (the table's sorted lists make `min_by_key` keep the
-/// alphabetically-first of equal-length ties). A bare trailing
-/// space is no word at all (the catalog's empty-word rule, one
-/// policy across providers), and the suffix rides
-/// `escape_for_shell` like every provider even though the table is
-/// safe by construction. Gated on the config toggle and the shared
-/// spawn allowlist (OQ 1: one gate is simpler to explain); an
-/// unknown command is silence, never a guess — and so is a
-/// flag-seat token of exactly `--`, the no-information floor
-/// (suggest-accuracy spec: a bare `--` matches every flag equally;
-/// `--a` and longer discriminate).
+/// The curated-specs provider's candidate function, walker era
+/// (suggest-walker spec): the stop point's rows under the unchanged
+/// policy — strict prefix, must extend (the rows arrive already
+/// extended), shortest wins, ties in the rows' own order
+/// (alphabetical at equal rank). The ghost's own floors stay the
+/// ghost's: a bare trailing space is no word at all (the catalog's
+/// empty-word rule, one policy across providers), and a partial of
+/// exactly `--` is the no-information floor (suggest-accuracy spec:
+/// a bare `--` matches every flag equally; `--a` and longer
+/// discriminate) — the walker returns rows for both, the ghost
+/// declines them. Gated on the config toggle and the shared spawn
+/// allowlist (OQ 1); an unknown command is silence, never a guess.
 fn specs_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return None;
     }
-    let (command, token) = specs_context(typed, obs.aliases)?;
-    if token.is_empty() {
+    let stop = specs_stop(typed, obs)?;
+    if stop.partial().is_empty() || stop.partial() == "--" {
         return None;
     }
-    // The no-information floor (suggest-accuracy spec): a token of
-    // exactly `--` matches every long flag in the table equally — the
-    // tiebreak picks one with no evidence. One character past the
-    // dashes (`--a`) is a strict prefix that discriminates, and stays
-    // ruled behavior.
-    if token == "--" {
-        return None;
-    }
-    let spec = obs.specs_table.iter().find(|spec| spec.name == command)?;
-    let (name, _) = spec
-        .seat_entries(token.starts_with("--"))
-        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
-        .min_by_key(|(name, _)| name.len())?;
-    escape_for_shell(&name[token.len()..])
+    stop.rows()
+        .into_iter()
+        .min_by_key(|row| row.label.len())
+        .map(|row| row.suffix)
 }
 
 /// The generator seat's set choice (suggest-generators spec): which
@@ -1429,6 +1424,21 @@ pub struct MenuCandidate {
     pub(crate) source: SuggestionSource,
 }
 
+/// The completion menu's loading row (async-completions): the engine
+/// prepends this while the completion files still load on a
+/// background thread — an honest "wait" surface, never a wrong
+/// completion. The suffix is empty, so an accept writes nothing and
+/// simply closes; the Specs source keeps it in the specs tier's
+/// display seat.
+pub(crate) fn loading_candidate() -> MenuCandidate {
+    MenuCandidate {
+        label: "Loading completions…".to_string(),
+        suffix: String::new(),
+        description: None,
+        source: SuggestionSource::Specs,
+    }
+}
+
 /// The menu's candidate collection (suggest-menu spec): every
 /// provider's **whole** strict-prefix set — where the single-choice
 /// ghost must settle for one answer (the newest match, the shared
@@ -1574,41 +1584,34 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
         .collect()
 }
 
-/// The curated-specs provider's whole set (suggest-menu spec): every
-/// table entry with the trailing token as a strict prefix —
-/// subcommands at the subcommand seat, long flags from any argument
-/// seat. The single-choice ghost's no-information floors are the
-/// ghost's alone: a list is information, not a guess, so the bare
-/// `--` lists the flag table whole and an empty trailing token at
-/// the subcommand seat (`git ` with the space echoed) lists the
-/// command's whole subcommand table — the scoped next level the
-/// command word settles the menu into. Each remainder rides the
-/// escape rule like every provider's, and each row carries its table
-/// entry's description where one exists (suggest-specs-data spec) —
-/// the menu's dim second column; the ghost never sees it (locked:
-/// single-choice text).
+/// The curated-specs provider's whole set, walker era (suggest-menu +
+/// suggest-walker specs): the stop point's rows — the menu's
+/// strict-prefix list over the walked tree, every row carrying its
+/// entry's description where one exists (suggest-specs-data spec)
+/// into the dim second column; the ghost never sees it (locked:
+/// single-choice text). The single-choice ghost's no-information
+/// floors are the ghost's alone: a list is information, so the bare
+/// `--` lists the flag seat whole and an empty trailing token lists
+/// the scoped next level the command word settled into. A node that
+/// declares `filter_strategy = "fuzzy"` routes its rows through the
+/// pinned `filter_rank` (its first caller) with the partial as the
+/// query — and the honest-write discipline holds there too: a row
+/// that does not extend the partial has no append-only suffix, so it
+/// never carries one (an accept writes only what extends the typed
+/// word).
 fn specs_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     if !obs.specs_enabled || !obs.paths_eligible {
         return Vec::new();
     }
-    let Some((command, token)) = specs_context(typed, obs.aliases) else {
+    let Some(stop) = specs_stop(typed, obs) else {
         return Vec::new();
     };
-    let Some(spec) = obs.specs_table.iter().find(|spec| spec.name == command) else {
-        return Vec::new();
-    };
-    spec.seat_entries(token.starts_with("--"))
-        .filter(|(name, _)| name.starts_with(token) && name.len() > token.len())
-        .filter_map(|(name, description)| {
-            let suffix = escape_for_shell(&name[token.len()..])?;
-            Some(MenuCandidate {
-                label: name.to_string(),
-                suffix,
-                description: description.map(str::to_string),
-                source: SuggestionSource::Specs,
-            })
-        })
-        .collect()
+    let rows = stop.rows();
+    if stop.is_fuzzy() {
+        filter_rank(stop.partial(), rows)
+    } else {
+        rows
+    }
 }
 
 /// The command-name provider's whole set (suggest-menu spec): every

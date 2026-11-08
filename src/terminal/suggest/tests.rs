@@ -1334,17 +1334,22 @@ fn history_outranks_specs_when_both_match() {
 }
 
 #[test]
-fn subcommands_complete_only_at_the_first_argument_seat() {
-    // Once a subcommand (or any argument) holds the first seat, a
-    // later trailing word never consults the subcommand table.
+fn subcommand_seats_follow_the_walked_tree() {
+    // The corpus era (suggest-embed): the walked tree answers at
+    // every depth it seats — `git stash dr` finishes to stash's own
+    // nested `drop` — while a word seat a leaf does not seat stays
+    // silent (checkout takes a ref argument, not subcommands).
+    let mut suggest = specs_suggest();
+    let nested =
+        step_typed("git stash dr", &mut suggest).expect("stash's own subcommand answers its depth");
+    assert_eq!(nested.suffix, "op");
+    assert_eq!(nested.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
     assert_eq!(
         step_typed("git checkout che", &mut suggest),
         None,
-        "a later argument seat never consults subcommands"
+        "a leaf's argument seat consults nothing it does not seat"
     );
-    let mut suggest = specs_suggest();
-    assert_eq!(step_typed("git stash dr", &mut suggest), None);
 }
 
 #[test]
@@ -1356,37 +1361,39 @@ fn a_bare_trailing_space_is_no_subcommand_word_at_all() {
 }
 
 #[test]
-fn a_flag_prefixed_token_completes_from_any_argument_seat() {
-    // OQ 2: git genuinely accepts flags before and after
-    // subcommands alike, so a `--`-prefixed trailing token consults
-    // the command's flag list from any argument seat — and the
-    // hyphens ride verbatim through the escape rule's whitelist.
+fn flags_answer_at_the_node_that_seats_them() {
+    // The corpus era (suggest-embed): the walked tree seats each
+    // flag where upstream seats it — `git commit --am` finishes to
+    // commit's own `--amend`, and git's root flags are not in that
+    // list — while the root's own flags answer at the root
+    // (`git --ba` → `--bare`), the hyphens riding verbatim through
+    // the escape rule's whitelist.
     let mut suggest = specs_suggest();
-    let after = step_typed("git checkout --dr", &mut suggest)
-        .expect("the flag seat answers past a subcommand");
-    assert_eq!(after.suffix, "y-run");
-    assert_eq!(after.source, SuggestionSource::Specs);
+    let own =
+        step_typed("git commit --am", &mut suggest).expect("commit's own flag answers its node");
+    assert_eq!(own.suffix, "end");
+    assert_eq!(own.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
-    let before =
-        step_typed("git --dr", &mut suggest).expect("the flag seat answers at the first seat");
-    assert_eq!(before.suffix, "y-run");
+    let root =
+        step_typed("git --ba", &mut suggest).expect("the root's own flag answers the root seat");
+    assert_eq!(root.suffix, "re");
 }
 
 #[test]
-fn flag_matches_follow_the_ruled_policy() {
-    // The same policy the subcommand seat pins: `--v` lands on the
-    // alphabetically-first of git's equal-length --verbose and
-    // --version (shortest wins, ties alphabetical), and a fully
-    // typed --dry-run has nothing left to add (the match must
-    // extend).
+fn flag_and_subcommand_matches_follow_the_ruled_policy() {
+    // The same policy over the corpus's own names: `docker pu` lands
+    // on the alphabetically-first of the equal-length pull and push
+    // (shortest wins, ties alphabetical), and a fully typed
+    // subcommand has nothing left to add (the match must extend).
     let mut suggest = specs_suggest();
-    let tied = step_typed("git checkout --v", &mut suggest).expect("a tie still answers");
-    assert_eq!(tied.suffix, "erbose");
+    let tied = step_typed("docker pu", &mut suggest).expect("a tie still answers");
+    assert_eq!(tied.suffix, "ll");
+    assert_eq!(tied.source, SuggestionSource::Specs);
     let mut suggest = specs_suggest();
     assert_eq!(
-        step_typed("git checkout --dry-run", &mut suggest),
+        step_typed("git checkout", &mut suggest),
         None,
-        "the exactly-typed flag suggests nothing"
+        "the exactly-typed subcommand suggests nothing"
     );
 }
 
@@ -1404,8 +1411,8 @@ fn a_bare_double_dash_is_silence_at_the_flag_seat() {
         "a bare `--` carries no discrimination among flags"
     );
     let mut suggest = specs_suggest();
-    let shown = step_typed("git --a", &mut suggest).expect("one character past the dashes answers");
-    assert_eq!(shown.suffix, "ll");
+    let shown = step_typed("git --b", &mut suggest).expect("one character past the dashes answers");
+    assert_eq!(shown.suffix, "are");
     assert_eq!(shown.source, SuggestionSource::Specs);
 }
 
@@ -1422,14 +1429,15 @@ fn the_subcommand_seat_stays_strong_at_one_character() {
 }
 
 #[test]
-fn the_five_commands_subcommands_answer_their_seats() {
-    // One behavioral sample per command beyond git — the table pin
-    // below holds the membership; these prove the entries reach the
-    // seat (`docker p` also re-pins the tie rule on fresh data:
-    // pull and push tie, pull wins alphabetically).
+fn the_core_tiers_commands_subcommands_answer_their_seats() {
+    // One behavioral sample per old-five command over the embedded
+    // floor (suggest-embed): the corpus's own trees answer the seats
+    // — docker's `ps` is the shortest `p` word, npm's `it` the
+    // shortest `i`, systemctl's `stop` the shortest `st` — the same
+    // policy over the wider pool.
     let mut suggest = specs_suggest();
-    let tied = step_typed("docker p", &mut suggest).expect("docker's seat answers");
-    assert_eq!(tied.suffix, "ull");
+    let shortest = step_typed("docker p", &mut suggest).expect("docker's seat answers");
+    assert_eq!(shortest.suffix, "s");
     let mut suggest = specs_suggest();
     let stopped = step_typed("systemctl st", &mut suggest).expect("systemctl's seat answers");
     assert_eq!(
@@ -1438,59 +1446,191 @@ fn the_five_commands_subcommands_answer_their_seats() {
     );
     let mut suggest = specs_suggest();
     let installed = step_typed("npm i", &mut suggest).expect("npm's seat answers");
-    assert_eq!(installed.suffix, "nstall");
+    assert_eq!(installed.suffix, "t");
 }
 
 #[test]
 fn a_command_outside_the_table_stays_silent() {
-    // The provider is silent, never a guess: python3 is not one of
-    // the five, so its argument seats answer nothing.
+    // The provider is silent, never a guess: zzz is not in the
+    // embedded floor, so its argument seats answer nothing (python3
+    // IS seated now — the corpus era's generosity).
     let mut suggest = specs_suggest();
-    assert_eq!(step_typed("python3 wha", &mut suggest), None);
+    assert_eq!(step_typed("zzz wha", &mut suggest), None);
+}
+
+// --- the spec walker (suggest-walker; engine-rea §7 end to end) ---
+
+/// The walker fixture's table, parsed once per run (the shared-fixture
+/// rule): the §7 shapes as one table, seated beside the built-in five
+/// the way a user's file seats them.
+static WALKER_TABLE: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
+    parse_completions(include_str!("fixtures/walker.toml")).expect("the walker fixture parses")
+});
+
+/// The schema fixture's docker tree, parsed once — the nesting and
+/// persistence shapes its file seats at every depth.
+static NESTED_TABLE: LazyLock<Vec<SpecCommand>> =
+    LazyLock::new(|| parse_completions(NESTED_FILE).expect("the nested fixture parses"));
+
+/// One anchored step with `typed` after the "$ " anchor against a
+/// walker fixture table — the walker's end-to-end ghost shape.
+fn step_typed_table(typed: &str, table: &[SpecCommand], suggest: &mut Suggest) -> Option<Showing> {
+    let mut before = String::from("$ ");
+    before.push_str(typed);
+    let observation = Observation {
+        before_cursor: &before,
+        cursor_column: before.len(),
+        specs_table: table,
+        ..obs()
+    };
+    step(&observation, suggest)
+}
+
+/// The menu's whole collection against a walker fixture table — the
+/// walker's end-to-end list shape.
+fn menu_table(typed: &str, table: &[SpecCommand]) -> Vec<MenuCandidate> {
+    let suggest = specs_suggest();
+    let observation = Observation {
+        specs_table: table,
+        ..obs()
+    };
+    candidates(typed, &suggest, &observation)
+}
+
+/// One collection's labels, in display order.
+fn menu_labels(rows: &[MenuCandidate]) -> Vec<&str> {
+    rows.iter().map(|row| row.label.as_str()).collect()
 }
 
 #[test]
-fn the_table_pins_the_five_curated_commands_and_their_shape() {
-    // The ruled v1 set, pinned as data: exactly the five, no
-    // others. Every entry ASCII, non-empty, trimmed — safe to
-    // write by construction, so a careless future entry fails
-    // here, never a shell — every list strictly sorted (which is
-    // what makes ties-alphabetical hold), and every flag
-    // `--`-shaped while no subcommand is dash-led.
-    let mut commands: Vec<_> = SPECS.iter().map(|spec| spec.command).collect();
-    commands.sort_unstable();
-    assert_eq!(commands, ["cargo", "docker", "git", "npm", "systemctl"]);
-    for spec in SPECS {
-        pin_shape(spec.command, spec.subcommands, "subcommand");
-        pin_shape(spec.command, spec.flags, "flag");
-    }
+fn a_subcommands_own_flags_complete_at_its_seat() {
+    // §7.1: `git commit --am` finishes to commit's own `--amend` —
+    // not git's root table. A persistent root flag rides into the
+    // child; a plain one stays at the root.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git commit --am", table, &mut suggest)
+        .expect("commit's own flag answers");
+    assert_eq!(shown.suffix, "end");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    assert_eq!(
+        menu_labels(&menu_table("git commit --", table)),
+        ["--amend", "--no-edit", "--no-pager"],
+        "the persistent --no-pager rides; --version does not"
+    );
+    assert_eq!(
+        menu_labels(&menu_table("git --", table)),
+        ["--no-pager", "--version"]
+    );
 }
 
-/// One table list's shape pin: ASCII, non-empty, trimmed, strictly
-/// sorted, and `--`-shaped exactly when it is a flag list.
-fn pin_shape(command: &str, entries: &[&str], list: &str) {
-    for entry in entries {
-        assert!(!entry.is_empty(), "{command} {list}: an empty entry");
-        assert!(entry.is_ascii(), "{command} {list}: {entry} leaves ASCII");
-        assert_eq!(
-            entry.trim(),
-            *entry,
-            "{command} {list}: {entry} carries whitespace"
-        );
-        assert_eq!(
-            entry.starts_with("--"),
-            list == "flag",
-            "{command} {list}: {entry} sits in the wrong list"
-        );
-    }
-    for pair in entries.windows(2) {
-        assert!(
-            pair[0] < pair[1],
-            "{command} {list}: {} must sort ahead of {}",
-            pair[0],
-            pair[1]
-        );
-    }
+#[test]
+fn a_flags_argument_takes_the_value_seat() {
+    // §7.2: after `--emit` — `=` or space — the next seat is the
+    // option's argument: its literal suggestions, and an accept
+    // writes the bare value (never an `=`). A flag whose argument
+    // carries no suggestions is silence (`mkdir -m `), and the
+    // depleted mode seat hands `mkdir -m 755 ` to the Path provider.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("rustc --emit=a", table, &mut suggest)
+        .expect("the value seat answers from the suggestions");
+    assert_eq!(shown.suffix, "sm");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+    assert_eq!(
+        menu_labels(&menu_table("rustc --emit=", table)),
+        ["asm", "link", "metadata", "mir"],
+        "the whole vocabulary lists at the empty value partial"
+    );
+    let rows = menu_table("rustc --emit=a", table);
+    assert_eq!(rows[0].suffix, "sm", "the suffix is the bare remainder");
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed_table("mkdir -m ", table, &mut suggest),
+        None,
+        "the mode seat has nothing to say"
+    );
+    assert!(
+        menu_table("mkdir -m ", table).is_empty(),
+        "no flags list at a value seat"
+    );
+    assert!(
+        menu_table("mkdir -m 755 ", table).is_empty(),
+        "the folder seat is the Path provider's to answer"
+    );
+}
+
+#[test]
+fn nested_subcommands_complete_to_any_depth() {
+    // §7.3: `docker compose u` finishes to `up`, `gh pr cre` to
+    // `create` — the menu's rows carrying the nested entries'
+    // descriptions through.
+    let table = &*WALKER_TABLE;
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("docker compose u", &NESTED_TABLE, &mut suggest)
+        .expect("the nested subcommand answers");
+    assert_eq!(shown.suffix, "p");
+    let rows = menu_table("docker compose u", &NESTED_TABLE);
+    assert_eq!(
+        rows[0].description.as_deref(),
+        Some("Create and start containers")
+    );
+    let mut suggest = specs_suggest();
+    let shown =
+        step_typed_table("gh pr cre", table, &mut suggest).expect("the second level answers");
+    assert_eq!(shown.suffix, "ate");
+}
+
+#[test]
+fn persistent_flags_ride_into_children() {
+    // §7.4: `git --no-pager log --one` still finds `--oneline`
+    // because `--no-pager` rode through the descent.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git --no-pager log --one", &WALKER_TABLE, &mut suggest)
+        .expect("the persistent flag rode through");
+    assert_eq!(shown.suffix, "line");
+}
+
+#[test]
+fn variadic_args_keep_the_path_seat_until_a_flag_appears() {
+    // §7.5: `git add src/ --` answers add's own flags (the persistent
+    // root flag riding with them); the variadic path seat between
+    // them answers no spec rows — the Path provider's seat alone.
+    let table = &*WALKER_TABLE;
+    assert_eq!(
+        menu_labels(&menu_table("git add src/ --", table)),
+        ["--force", "--no-pager", "--patch"]
+    );
+    assert!(
+        menu_table("git add a b src/", table).is_empty(),
+        "the path seat is not the specs' to answer"
+    );
+}
+
+#[test]
+fn a_command_arg_restarts_the_walk_on_its_own_entry() {
+    // §7.6: the sudo shape — `sudo apt ins` walks apt's own entry.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("sudo apt ins", &WALKER_TABLE, &mut suggest)
+        .expect("the restarted walk answers");
+    assert_eq!(shown.suffix, "tall");
+    assert_eq!(shown.source, SuggestionSource::Specs);
+}
+
+#[test]
+fn an_unknown_flag_mid_line_is_skipped_as_a_bare_flag() {
+    // The locked tolerance: `git --whatever st` keeps answering the
+    // subcommand seat — the flat seats never inspected intermediate
+    // tokens, and the walker keeps that. Over the corpus floor the
+    // `st` words are stage, stash, and status: the shortest tie
+    // resolves alphabetically to `stage`.
+    let mut suggest = specs_suggest();
+    let shown = step_typed_table("git --whatever st", builtin_specs(), &mut suggest)
+        .expect("the tolerance holds");
+    assert_eq!(shown.suffix, "age");
+    let suggest = specs_suggest();
+    let rows = candidates("git --whatever st", &suggest, &obs());
+    assert_eq!(menu_labels(&rows), ["stage", "stash", "status"]);
 }
 
 // --- the alias map (suggest-aliases) ---
@@ -1531,14 +1671,14 @@ fn a_mapped_alias_ghosts_its_expansion_subcommand() {
 
 #[test]
 fn a_mapped_alias_ghosts_its_expansion_flags() {
-    // The record's other flagship: `gc --dr` ghosts git's
-    // `--dry-run` — the flag seat consults the expansion command's
-    // flag list from any argument seat, as for the typed command.
+    // The record's other flagship, corpus era: `gc --ba` ghosts
+    // git's root `--bare` — the flag seat consults the expansion
+    // command's own flag list, as for the typed command.
     let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
     let mut suggest = specs_suggest();
-    let shown = step_typed_aliased("gc --dr", &aliases, &mut suggest)
+    let shown = step_typed_aliased("gc --ba", &aliases, &mut suggest)
         .expect("the flag seat rides the expansion command");
-    assert_eq!(shown.suffix, "y-run");
+    assert_eq!(shown.suffix, "re");
     assert_eq!(shown.source, SuggestionSource::Specs);
 }
 
@@ -2305,6 +2445,7 @@ fn the_menu_ranks_the_seats_scope_above_history() {
         [
             SuggestionSource::Specs,
             SuggestionSource::Specs,
+            SuggestionSource::Specs,
             SuggestionSource::History
         ]
     );
@@ -2312,7 +2453,7 @@ fn the_menu_ranks_the_seats_scope_above_history() {
         .iter()
         .map(|c| c.label.as_str())
         .collect();
-    assert_eq!(labels, ["stash", "status", "git status"]);
+    assert_eq!(labels, ["stage", "stash", "status", "git status"]);
     assert!(
         specs_over_history
             .windows(2)
@@ -2427,21 +2568,28 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
     // The specs table's whole strict-prefix set at each seat — and
     // the bare `--` the single-choice ghost floors to silence lists
     // the flag table whole (a list is information, not a guess; the
-    // floor is the ghost's alone).
+    // floor is the ghost's alone). Over the embedded floor the
+    // expected lists are read from it, never hand-written.
     let suggest = specs_suggest();
     let subcommands = candidates("git st", &suggest, &obs());
     let labels: Vec<&str> = subcommands.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["stash", "status"]);
+    assert_eq!(labels, ["stage", "stash", "status"]);
     let suggest = specs_suggest();
     let flags = candidates("git --", &suggest, &obs());
-    let git = SPECS
+    let git = builtin_specs()
         .iter()
-        .find(|spec| spec.command == "git")
-        .expect("git is curated");
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    let long_flags: Vec<&str> = git
+        .flags
+        .iter()
+        .filter(|flag| flag.name.starts_with("--"))
+        .map(|flag| flag.name.as_str())
+        .collect();
     let labels: Vec<&str> = flags.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
-        labels, git.flags,
-        "the bare `--` lists the whole flag table"
+        labels, long_flags,
+        "the bare `--` lists the whole long-flag table"
     );
 }
 
@@ -2449,55 +2597,77 @@ fn the_menu_lists_every_spec_entry_for_the_seat() {
 fn the_menu_lists_the_whole_subcommand_table_at_a_bare_command_word() {
     // The ghost's empty-word floor is the ghost's alone (the bare
     // `--` rule's twin): `git ` with the space echoed and nothing
-    // after lists git's whole curated subcommand table above the
-    // history lines (the 2026-11-06 amendment: the keyword's scope
-    // leads) — the scoped next level the command word settles the
-    // menu into, where an unscoped provider or a later seat
-    // contributes nothing.
+    // after lists git's whole subcommand table above the history
+    // lines (the 2026-11-06 amendment: the keyword's scope leads) —
+    // the scoped next level the command word settles the menu into,
+    // where an unscoped provider or a later seat contributes
+    // nothing. Over the embedded floor the expected lists are read
+    // from it, never hand-written.
     let suggest = adopted();
     let menu = candidates("git ", &suggest, &obs());
-    let git = SPECS
+    let git = builtin_specs()
         .iter()
-        .find(|spec| spec.command == "git")
-        .expect("git is curated");
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    let subcommands: Vec<&str> = git
+        .subcommands
+        .iter()
+        .map(|command| command.name.as_str())
+        .collect();
     let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
-        &labels[..git.subcommands.len()],
-        git.subcommands,
+        &labels[..subcommands.len()],
+        &subcommands[..],
         "the whole subcommand table leads, the table's own order"
     );
     assert_eq!(
-        &labels[git.subcommands.len()..],
+        &labels[subcommands.len()..],
         ["git status", "git push"],
         "then the history lines, most recent first"
     );
     let suffixes: Vec<&str> = menu
         .iter()
-        .take(git.subcommands.len())
+        .take(subcommands.len())
         .map(|c| c.suffix.as_str())
         .collect();
     assert_eq!(
-        suffixes, git.subcommands,
+        suffixes, subcommands,
         "an empty token accepts the whole word"
     );
     assert!(
         menu.iter()
-            .take(git.subcommands.len())
+            .take(subcommands.len())
             .all(|c| c.source == SuggestionSource::Specs),
         "the table rows carry the specs provenance"
     );
     // The seat rules hold at the boundary: a later seat with an
-    // empty token never consults the subcommand table, and an
-    // uncurated command's bare word collects nothing (the ring holds
-    // no match either — specs_suggest's `vim notes`).
+    // empty token never consults the subcommand table — checkout's
+    // empty word seat answers its own argument's literal
+    // suggestions and nothing else — and an unseated command's bare
+    // word collects nothing (the ring holds no match either —
+    // specs_suggest's `vim notes`).
     let suggest = specs_suggest();
-    assert!(
-        candidates("git checkout ", &suggest, &obs()).is_empty(),
-        "a later argument seat stays out of the subcommand table"
+    let checkout = candidates("git checkout ", &suggest, &obs());
+    let suggestions: Vec<&str> = git
+        .subcommands
+        .iter()
+        .find(|command| command.name == "checkout")
+        .and_then(|checkout| checkout.args.first())
+        .map(|arg| {
+            arg.suggestions
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let labels: Vec<&str> = checkout.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels, suggestions,
+        "the leaf's empty word seat answers its argument's suggestions alone"
     );
     assert!(
         candidates("echo ", &suggest, &obs()).is_empty(),
-        "an uncurated command's bare word is silence"
+        "an unseated command's bare word is silence"
     );
 }
 
@@ -2807,31 +2977,42 @@ name = "--a"
 }
 
 #[test]
-fn the_builtin_fallback_is_todays_table() {
-    // Byte-equivalence pinned (suggest-specs-data spec, criterion
-    // 2): the fallback answers exactly the curated const — every
-    // command, every list, every description None.
-    assert_eq!(builtin_specs().len(), SPECS.len());
-    for (owned, spec) in builtin_specs().iter().zip(SPECS) {
-        assert_eq!(owned.name, spec.command);
-        let subcommands: Vec<&str> = owned.subcommands.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(subcommands, spec.subcommands);
-        let flags: Vec<&str> = owned.flags.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(flags, spec.flags);
+fn the_embedded_floor_is_the_core_tier() {
+    // The compressed floor IS the generated core tier (suggest-embed
+    // spec, the 2026-11-07 amendment): the `.gz` carries gzip's magic
+    // and stays under the 1 MiB pin on its compressed bytes, it
+    // inflates to exactly the raw file's bytes — the two cannot drift
+    // apart — the parsed table is byte-identical to the corpus
+    // fixture's own parse of the same text, and the old five all
+    // keep their seats in it.
+    use std::io::Read as _;
+
+    let raw = include_str!("../../../data/completions.toml");
+    let compressed: &[u8] = include_bytes!("../../../data/completions.toml.gz");
+    assert_eq!(
+        &compressed[..2],
+        &[0x1f, 0x8b],
+        "the embedded floor carries gzip's magic bytes"
+    );
+    assert!(
+        !compressed.is_empty() && compressed.len() <= 1024 * 1024,
+        "the compressed floor stays under the 1 MiB pin ({} bytes)",
+        compressed.len()
+    );
+    let mut inflated = String::new();
+    flate2::read::GzDecoder::new(compressed)
+        .read_to_string(&mut inflated)
+        .expect("the embedded bytes inflate");
+    assert_eq!(inflated, raw, "the .gz and the raw file cannot drift apart");
+    assert_eq!(
+        builtin_specs(),
+        &*CORE_TABLE,
+        "the floor is the core tier's own parse"
+    );
+    for name in ["cargo", "docker", "git", "npm", "systemctl"] {
         assert!(
-            owned.subcommands.iter().all(|e| e.description.is_none())
-                && owned.flags.iter().all(|e| e.description.is_none()),
-            "the built-in carries no descriptions"
-        );
-        assert_eq!(
-            *owned,
-            SpecCommand {
-                name: owned.name.clone(),
-                subcommands: owned.subcommands.clone(),
-                flags: owned.flags.clone(),
-                ..Default::default()
-            },
-            "the built-in carries every grown field at its default"
+            builtin_specs().iter().any(|command| command.name == name),
+            "{name} keeps its seat in the embedded floor"
         );
     }
 }
@@ -2855,12 +3036,12 @@ name = "worktree"
 "#,
     )
     .expect("a valid file parses");
-    let merged = merge_completions(file);
+    let merged = merge_tiers(&[], file);
     let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
+    let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
-        names,
-        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
-        "the file's command adds, the built-in keep their seats"
+        names, floor,
+        "the floor keeps every seat (gh already seated — re-declared whole)"
     );
     let git = merged
         .iter()
@@ -2900,7 +3081,7 @@ name = "add"
 "#,
     )
     .expect("a valid nested file parses");
-    let merged = merge_completions(file);
+    let merged = merge_tiers(&[], file);
     let git = merged
         .iter()
         .find(|c| c.name == "git")
@@ -2953,12 +3134,12 @@ fn no_file_and_no_config_dir_answer_the_builtin_table() {
     // byte-equivalent to the built-in (criterion 2).
     let dir = completions_fixture("absent");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "no file answers the built-in"
     );
     assert_eq!(
-        load_completions(None).as_ref(),
+        load_completions_from(None, None).as_ref(),
         builtin_specs(),
         "no config directory answers the built-in"
     );
@@ -2973,7 +3154,7 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
     std::fs::write(dir.join("completions.toml"), b"[[commands\nname = broken")
         .expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "broken TOML answers the built-in"
     );
@@ -2984,7 +3165,7 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
     )
     .expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "a scripted entry answers the built-in"
     );
@@ -2994,12 +3175,12 @@ fn an_invalid_or_scripted_file_answers_the_builtin_table() {
 fn a_valid_file_answers_the_merged_table() {
     let dir = completions_fixture("valid");
     std::fs::write(dir.join("completions.toml"), GH_FILE).expect("fixture file");
-    let table = load_completions(Some(&dir));
+    let table = load_completions_from(Some(&dir), None);
     let names: Vec<&str> = table.iter().map(|c| c.name.as_str()).collect();
+    let floor: Vec<&str> = builtin_specs().iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
-        names,
-        ["cargo", "docker", "gh", "git", "npm", "systemctl"],
-        "a valid file's table is the merge"
+        names, floor,
+        "a valid file's table is the merge over the floor"
     );
 }
 
@@ -3011,7 +3192,7 @@ fn the_ghosts_spec_tier_answers_from_a_wider_table() {
     // must-extend, shortest-wins policy — `gh pr` finishing to
     // `pr-check` past the exactly-typed `pr` — and the flag seat
     // answers from the file's flags alike.
-    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let table = merge_tiers(&[], parse_completions(GH_FILE).expect("valid"));
     let mut suggest = specs_suggest();
     let before = String::from("$ gh pr");
     let observation = Observation {
@@ -3043,7 +3224,7 @@ fn file_descriptions_reach_the_menu_rows() {
     // already shapes — while an entry without one stays clean
     // (`None`), and every other provider's rows stay as bare as
     // ever.
-    let table = merge_completions(parse_completions(GH_FILE).expect("valid"));
+    let table = merge_tiers(&[], parse_completions(GH_FILE).expect("valid"));
     let suggest = specs_suggest();
     let observation = Observation {
         specs_table: &table,
@@ -3066,38 +3247,143 @@ fn file_descriptions_reach_the_menu_rows() {
     );
 }
 
+// --- the generated corpus tiers (suggest-corpus) ---
+
+/// The extended tier, never embedded: installed as a data file behind
+/// `autosuggestions_completions_extended` (suggest-embed).
+const EXTENDED_TIER: &str = include_str!("../../../data/completions-extended.toml");
+
+/// The core tier's committed bytes, named beside its companion: the
+/// header pin reads this text, every parse-reading pin the fixtures
+/// below, so each raw path seats in exactly one place.
+const CORE_TIER: &str = include_str!("../../../data/completions.toml");
+
+/// The tiers parsed once per run and shared: a 4 MiB parse costs
+/// seconds and the corpus and seed pins all read the same two tables
+/// (the shared-fixture rule, testing.md §2), so each tier parses here
+/// exactly once. Each `expect` is the schema gate — the committed
+/// bytes failing it fails every consumer together, the tier named in
+/// the panic.
+static CORE_TABLE: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(CORE_TIER).expect("the generated core tier parses under the schema")
+});
+static EXTENDED_TABLE: std::sync::LazyLock<Vec<SpecCommand>> = std::sync::LazyLock::new(|| {
+    parse_completions(EXTENDED_TIER).expect("the generated extended tier parses under the schema")
+});
+
 #[test]
-fn the_shipped_seed_parses_and_never_shrinks_the_built_in_five() {
-    // The seed's own gates (suggest-specs-data spec, criterion 4):
-    // the audited file ships valid under the schema — the `script`
-    // boundary holds for what DropTerm itself distributes — and the
-    // five re-declared commands carry the complete built-in entry
-    // sets, because the merge replaces whole: a seed that dropped a
-    // built-in entry would shrink every table it touched.
-    let seed = include_str!("../../../data/completions.toml");
-    let file = parse_completions(seed).expect("the shipped seed parses under the schema");
-    let merged = merge_completions(file);
-    for spec in SPECS {
-        let command = merged
-            .iter()
-            .find(|command| command.name == spec.command)
-            .unwrap_or_else(|| panic!("{} keeps its seat in the seed", spec.command));
-        let subcommands: Vec<&str> = command
-            .subcommands
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(
-            subcommands, spec.subcommands,
-            "{} subcommands",
-            spec.command
+fn both_generated_tiers_parse_through_the_schema() {
+    // The extractor's contract (suggest-corpus spec): the Rust parser
+    // is the gate — if either generated file fails the schema, the
+    // script is wrong, not the schema. Both files are committed, so
+    // this pin holds the committed bytes to it. The parses live in
+    // the shared fixtures above, whose expects are that gate —
+    // touching either table here runs it — and the non-empty floors
+    // ride along.
+    assert!(!CORE_TABLE.is_empty(), "the core tier carries its commands");
+    assert!(
+        !EXTENDED_TABLE.is_empty(),
+        "the extended tier carries its commands"
+    );
+}
+
+#[test]
+fn the_core_tier_never_shrinks_a_command() {
+    // The no-shrink golden, generalized per regeneration (suggest-
+    // corpus spec): every command of the previous core file — the
+    // hand-converted seed's own list — still seats in the generated
+    // core tier. A regeneration that loses a command fails here; the
+    // list grows when a regeneration adds names worth keeping.
+    const PREVIOUS_CORE: &[&str] = &[
+        "apt",
+        "cargo",
+        "curl",
+        "docker",
+        "gh",
+        "git",
+        "kubectl",
+        "make",
+        "npm",
+        "pip",
+        "rsync",
+        "systemctl",
+        "tar",
+    ];
+    let core = &*CORE_TABLE;
+    for name in PREVIOUS_CORE {
+        assert!(
+            core.iter().any(|command| command.name == *name),
+            "'{name}' survives every regeneration"
         );
-        let flags: Vec<&str> = command
-            .flags
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(flags, spec.flags, "{} flags", spec.command);
+    }
+}
+
+#[test]
+fn the_two_generated_tiers_are_disjoint() {
+    // The extractor refuses a name in both tiers at run time; this
+    // pin holds the committed bytes to the same rule, so a hand edit
+    // or a bad regeneration cannot seat one command twice.
+    let core = &*CORE_TABLE;
+    let extended = &*EXTENDED_TABLE;
+    for command in extended {
+        assert!(
+            !core.iter().any(|seat| seat.name == command.name),
+            "'{}' sits in both tiers — the extractor's disjointness broke",
+            command.name
+        );
+    }
+}
+
+/// Collects every flag name in a spec tree at every depth — the
+/// command's own flags, then each subcommand's whole tree — into
+/// `sink` in walk order.
+fn flag_names(command: &SpecCommand, sink: &mut Vec<String>) {
+    for flag in &command.flags {
+        sink.push(flag.name.clone());
+    }
+    for sub in &command.subcommands {
+        flag_names(sub, sink);
+    }
+}
+
+#[test]
+fn every_generated_flag_name_keeps_its_dash() {
+    // The seed audit's conversion rule, enforced (suggest-corpus
+    // spec): every flag `name` in either tier starts with `-` — the
+    // extractor asserts it at run time over the reduced trees; this
+    // holds the committed bytes to the same truth.
+    for (tier, table) in [("core", &*CORE_TABLE), ("extended", &*EXTENDED_TABLE)] {
+        let mut flags = Vec::new();
+        for command in table {
+            flag_names(command, &mut flags);
+        }
+        for name in flags {
+            assert!(
+                name.starts_with('-'),
+                "the {tier} tier's flag '{name}' lost its dash"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_generated_headers_carry_the_notice_and_the_pin() {
+    // The provenance the spec demands in both headers: the MIT notice
+    // verbatim, the pinned version, the pinned sha256 — so a file
+    // separated from its recipe still tells where it came from.
+    for (tier, text) in [("core", CORE_TIER), ("extended", EXTENDED_TIER)] {
+        assert!(
+            text.contains("MIT License"),
+            "the {tier} header carries the notice"
+        );
+        assert!(
+            text.contains("2.692.3"),
+            "the {tier} header carries the pinned version"
+        );
+        assert!(
+            text.contains("b07159ef0811bc8cec28e3a3016e6ba9568d774b75b8333dc6a5f2acf7d2c3af"),
+            "the {tier} header carries the pinned sha256"
+        );
     }
 }
 
@@ -3109,7 +3395,8 @@ fn the_ghost_ignores_descriptions() {
     // carries no description field, so the lock is structural;
     // this pins the behavior it buys: a re-declared, described
     // checkout ghosts the same `ckout` the bare built-in does.
-    let table = merge_completions(
+    let table = merge_tiers(
+        &[],
         parse_completions(
             r#"
 [[commands]]
@@ -3145,68 +3432,28 @@ description = "Switch branches or restore working tree files"
 /// the two keys every tier kept, so the pin is the superset proof.
 fn seed_projection(table: &[SpecCommand]) -> Vec<String> {
     let mut lines = Vec::new();
+    // The golden is line-oriented; some upstream descriptions carry
+    // literal newlines (`less`'s help text), so a row escapes them or
+    // `golden.lines()` would split one row into many.
+    let flat = |description: &str| description.replace(['\n', '\r'], "\\n");
     for command in table {
         lines.push(format!("command\t{}", command.name));
         for entry in &command.subcommands {
             lines.push(format!(
                 "sub\t{}\t{}",
                 entry.name,
-                entry.description.as_deref().unwrap_or_default()
+                flat(entry.description.as_deref().unwrap_or_default())
             ));
         }
         for entry in &command.flags {
             lines.push(format!(
                 "flag\t{}\t{}",
                 entry.name,
-                entry.description.as_deref().unwrap_or_default()
+                flat(entry.description.as_deref().unwrap_or_default())
             ));
         }
     }
     lines
-}
-
-/// The golden rows read back as a table: every row's name and
-/// description seated, every other field at its default — the tree
-/// today's parse would have built had it known the new keys. Equal
-/// to the live parse means the seed exercises nothing the schema
-/// grew.
-fn table_from_projection(golden: &str) -> Vec<SpecCommand> {
-    let mut table: Vec<SpecCommand> = Vec::new();
-    for line in golden.lines() {
-        let mut fields = line.split('\t');
-        let kind = fields.next().expect("a row kind");
-        let name = fields.next().expect("a row name").to_string();
-        let description = fields
-            .next()
-            .filter(|description| !description.is_empty())
-            .map(str::to_string);
-        match kind {
-            "command" => table.push(SpecCommand {
-                name,
-                ..Default::default()
-            }),
-            "sub" => table
-                .last_mut()
-                .expect("a command row precedes its entries")
-                .subcommands
-                .push(SpecCommand {
-                    name,
-                    description,
-                    ..Default::default()
-                }),
-            "flag" => table
-                .last_mut()
-                .expect("a command row precedes its entries")
-                .flags
-                .push(SpecFlag {
-                    name,
-                    description,
-                    ..Default::default()
-                }),
-            other => panic!("unknown golden row kind {other}"),
-        }
-    }
-    table
 }
 
 /// The schema's whole shape at three levels, every new key seated
@@ -3220,26 +3467,21 @@ const DEEP_SCRIPT_FILE: &str = include_str!("fixtures/deep-script.toml");
 
 #[test]
 fn the_seed_parses_golden_equal_to_todays_table() {
-    // The superset proof (suggest-schema spec, criterion 1): the
-    // shipped seed parses through the grown types to exactly the
-    // table today's flat types answered — the golden rows were
-    // captured from that parse before the schema grew — and to a
-    // tree whose every new field sits at its default, because the
-    // seed declares none of them. The row diff reads first; the
-    // whole-tree equality pins the defaults.
-    let seed = include_str!("../../../data/completions.toml");
+    // The superset proof, corpus era (suggest-corpus spec): the seed
+    // is now GENERATED, and it exercises the grown schema by design —
+    // so the golden pins what must stay stable across a regeneration,
+    // the flat names-and-descriptions rows (the row diff reads
+    // first), while the every-grown-key-at-default proof moved to
+    // `a_nested_fixture_round_trips_every_new_key`, which seats each
+    // key explicitly. The rows were captured from the generated
+    // file's own parse.
     let golden = include_str!("fixtures/seed-golden.txt");
-    let table = parse_completions(seed).expect("the seed parses under the grown schema");
+    let table = &*CORE_TABLE;
     let rows: Vec<&str> = golden.lines().collect();
     assert_eq!(
-        seed_projection(&table),
+        seed_projection(table),
         rows,
         "the seed's names and descriptions are today's"
-    );
-    assert_eq!(
-        table,
-        table_from_projection(golden),
-        "every field the schema grew sits at its default across the seed"
     );
 }
 
@@ -3411,7 +3653,7 @@ name = \"42\"
     let dir = completions_fixture("deep-script");
     std::fs::write(dir.join("completions.toml"), DEEP_SCRIPT_FILE).expect("fixture file");
     assert_eq!(
-        load_completions(Some(&dir)).as_ref(),
+        load_completions_from(Some(&dir), None).as_ref(),
         builtin_specs(),
         "a deep script answers the built-in floor"
     );
@@ -3528,5 +3770,299 @@ name = "sub-a"
         flag_suggestions,
         ["af", "zf"],
         "a flag argument's suggestions sort alike"
+    );
+}
+
+#[test]
+fn an_accepted_flag_never_suggests_again() {
+    // The dressing, end to end: `git --no-pager log --no-p` — the
+    // persistent flag accepted before the descent never lists inside
+    // the child, so the ghost stays silent on its own name.
+    let mut suggest = specs_suggest();
+    assert_eq!(
+        step_typed_table("git --no-pager log --no-p", &WALKER_TABLE, &mut suggest),
+        None,
+        "the accepted flag does not complete itself"
+    );
+}
+
+#[test]
+fn a_fuzzy_node_routes_its_rows_through_filter_rank() {
+    // `filter_strategy = "fuzzy"` (locked at the map gate): the docker
+    // fixture's node routes through the pinned filter_rank — the
+    // ranker's first caller — with the partial as the query. The
+    // honest-write discipline holds under it too: a subsequence hit
+    // that does not extend the typed word has no append-only suffix,
+    // so it never lists (an accept writes only what extends).
+    assert!(
+        menu_table("docker cse", &NESTED_TABLE).is_empty(),
+        "a subsequence hit that does not extend the word never carries a suffix"
+    );
+    assert_eq!(
+        menu_labels(&menu_table("docker co", &NESTED_TABLE)),
+        ["compose"],
+        "an extending prefix at the fuzzy node still answers"
+    );
+}
+
+// --- the installed extended tier (suggest-embed Task 2) ---
+
+/// One extended-tier fixture (suggest-embed spec): a data dir whose
+/// `completions-extended.toml` seat holds `contents`. The loader
+/// takes the path directly, so the fixture doubles as the seat the
+/// resolver would have found.
+fn extended_fixture(name: &str, contents: &str) -> std::path::PathBuf {
+    let dir = completions_fixture(name);
+    let path = dir.join("completions-extended.toml");
+    std::fs::write(&path, contents).expect("fixture file");
+    path
+}
+
+#[test]
+fn the_xdg_walk_finds_the_first_seated_file() {
+    // The resolver over explicit roots (suggest-embed spec): the
+    // data-local root leads, each root tries the running identity's
+    // seat first, and a dev build's walk also finds the release
+    // install's un-suffixed seat.
+    let release_id = cosmic_ext_dropterm::APP_ID
+        .strip_suffix(".Dev")
+        .unwrap_or(cosmic_ext_dropterm::APP_ID);
+    let primary_root = completions_fixture("walk-primary");
+    let primary_seat = primary_root
+        .join(cosmic_ext_dropterm::APP_ID)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(primary_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&primary_seat, "").expect("seat file");
+    let fallback_root = completions_fixture("walk-fallback");
+    let fallback_seat = fallback_root
+        .join(release_id)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(fallback_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&fallback_seat, "").expect("seat file");
+    let later_root = completions_fixture("walk-later");
+    let later_seat = later_root
+        .join(cosmic_ext_dropterm::APP_ID)
+        .join("completions-extended.toml");
+    std::fs::create_dir_all(later_seat.parent().expect("seat parent")).expect("seat dir");
+    std::fs::write(&later_seat, "").expect("seat file");
+
+    // The data-local root's seat wins over every data-dirs entry.
+    assert_eq!(
+        resolve_extended_in(Some(&primary_root), std::slice::from_ref(&later_root)),
+        Some(primary_seat),
+        "the data-local root leads the walk"
+    );
+    // Its un-suffixed fallback seat is found ahead of a later root's
+    // primary seat — the dev build finds a release install.
+    assert_eq!(
+        resolve_extended_in(Some(&fallback_root), std::slice::from_ref(&later_root)),
+        Some(fallback_seat),
+        "the running root's fallback seat precedes later roots"
+    );
+    // With no data-local file, the first data-dirs entry answers.
+    assert_eq!(
+        resolve_extended_in(None, std::slice::from_ref(&later_root)),
+        Some(later_seat),
+        "the first data-dirs root with a file wins"
+    );
+    // Nothing seated anywhere: "not installed".
+    let empty_root = completions_fixture("walk-empty");
+    assert_eq!(
+        resolve_extended_in(Some(&empty_root), std::slice::from_ref(&empty_root)),
+        None,
+        "no seated file is not installed"
+    );
+}
+
+#[test]
+fn an_installed_extended_file_adds_beside_the_floor() {
+    // The three-layer merge's middle (suggest-embed spec): the
+    // installed tier's commands add beside the embedded floor,
+    // descriptions riding, the floor intact command for command.
+    let path = extended_fixture(
+        "adds",
+        r#"
+[[commands]]
+name = "zzz-ext"
+description = "An extended-tier command"
+
+[[commands.subcommands]]
+name = "frobnicate"
+
+[[commands]]
+name = "aaa-ext"
+"#,
+    );
+    let table = load_completions_from(None, Some(&path));
+    let floor_len = builtin_specs().len();
+    assert_eq!(table.len(), floor_len + 2, "the tier adds beside the floor");
+    let ext = table
+        .iter()
+        .find(|command| command.name == "zzz-ext")
+        .expect("the extended command is seated");
+    assert_eq!(
+        ext.description.as_deref(),
+        Some("An extended-tier command"),
+        "the tier's descriptions ride"
+    );
+    assert_eq!(ext.subcommands[0].name, "frobnicate");
+}
+
+#[test]
+fn an_absent_extended_file_answers_the_floor() {
+    // No overlay at all keeps the shared-floor rule (suggest-embed
+    // spec, async-completions): the floor answers through the
+    // process-wide `Arc`, byte for byte.
+    let table = load_completions_from(None, None);
+    assert_eq!(table.as_ref(), builtin_specs());
+    assert!(
+        Arc::ptr_eq(&table, &builtin_specs_arc()),
+        "nothing overlays: the shared floor Arc is reused, not copied"
+    );
+}
+
+#[test]
+fn an_invalid_extended_file_answers_the_floor() {
+    // The schema is the gate at this tier too (suggest-embed spec):
+    // a `script` key at depth two — the Fig format's executable
+    // half — fails the whole file, and the core floor answers alone.
+    let path = extended_fixture(
+        "invalid",
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "frobnicate"
+script = "zzz frobnicate"
+"#,
+    );
+    assert_eq!(
+        load_completions_from(None, Some(&path)).as_ref(),
+        builtin_specs(),
+        "an invalid tier file is silence, never a partial table"
+    );
+}
+
+#[test]
+fn a_colliding_name_keeps_the_floor() {
+    // The tiers are disjoint by construction; if a name collides
+    // anyway the floor wins — it is authoritative (suggest-embed
+    // spec).
+    let path = extended_fixture(
+        "collide",
+        r#"
+[[commands]]
+name = "git"
+
+[[commands.subcommands]]
+name = "definitely-not-upstream"
+"#,
+    );
+    let table = load_completions_from(None, Some(&path));
+    let git = table
+        .iter()
+        .find(|command| command.name == "git")
+        .expect("git keeps its seat");
+    let floor_git = builtin_specs()
+        .iter()
+        .find(|command| command.name == "git")
+        .expect("git is seated in the floor");
+    assert_eq!(*git, *floor_git, "the floor's git wins the collision");
+}
+
+#[test]
+fn the_user_file_overrides_both_tiers_whole() {
+    // The third layer (suggest-embed spec): a user re-declaration
+    // replaces its entry in EITHER tier whole — no per-entry
+    // merging, the one way to describe a floor or tier command —
+    // and a fresh user command adds beside both.
+    let path = extended_fixture(
+        "override",
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "from-tier"
+"#,
+    );
+    let user_dir = completions_fixture("override-user");
+    std::fs::write(
+        user_dir.join("completions.toml"),
+        r#"
+[[commands]]
+name = "zzz-ext"
+
+[[commands.subcommands]]
+name = "from-user"
+
+[[commands]]
+name = "zzz-user"
+"#,
+    )
+    .expect("user file");
+    let table = load_completions_from(Some(&user_dir), Some(&path));
+    let overridden = table
+        .iter()
+        .find(|command| command.name == "zzz-ext")
+        .expect("the re-declared command is seated");
+    let names: Vec<&str> = overridden
+        .subcommands
+        .iter()
+        .map(|command| command.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["from-user"],
+        "the user file replaces the tier's entry whole"
+    );
+    assert!(
+        table.iter().any(|command| command.name == "zzz-user"),
+        "a fresh user command adds beside both tiers"
+    );
+}
+
+#[test]
+fn the_extended_parse_happens_once_per_process() {
+    // Once per process per resolved path (suggest-embed spec): the
+    // first load caches the parse, and a later load reuses it even
+    // after the file is gone — a system data file does not change
+    // under a running app.
+    let path = extended_fixture(
+        "cached",
+        r#"
+[[commands]]
+name = "zzz-cached"
+"#,
+    );
+    let first = load_completions_from(None, Some(&path));
+    assert!(first.iter().any(|command| command.name == "zzz-cached"));
+    std::fs::remove_file(&path).expect("the fixture file removes");
+    let second = load_completions_from(None, Some(&path));
+    assert_eq!(
+        first, second,
+        "the second load answers the cached parse, not a re-read"
+    );
+}
+
+#[test]
+fn the_command_counter_counts_only_top_level_tables() {
+    // The caption's count (suggest-embed spec): one line opening a
+    // top-level `[[commands]]` table is one command — nested
+    // `[[commands.…]]` tables are a command's own shape, never
+    // another command — pinned against the generated tier itself
+    // (532 commands, the corpus's own census).
+    assert_eq!(count_commands(b"[[commands]]\nname = \"a\""), 1);
+    assert_eq!(
+        count_commands(b"# header\n[[commands]]\n[[commands.subcommands]]\n[[commands]]"),
+        2,
+        "nested tables are not commands"
+    );
+    assert_eq!(count_commands(b""), 0);
+    assert_eq!(
+        count_commands(EXTENDED_TIER.as_bytes()),
+        532,
+        "the generated extended tier carries its census'd 532 commands"
     );
 }

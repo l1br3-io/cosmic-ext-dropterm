@@ -12,17 +12,17 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 ### From a release
 
 Grab the tarball for your architecture from the
-[v0.3.0 release](https://github.com/l1br3-io/cosmic-ext-dropterm/releases/tag/v0.3.0) — it carries both binaries (terminal and [panel applet](docs/applet.md)) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
+[v0.3.1 release](https://github.com/l1br3-io/cosmic-ext-dropterm/releases/tag/v0.3.1) — it carries both binaries (terminal and [panel applet](docs/applet.md)) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
 
 ```sh
-curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.3.0/cosmic-ext-dropterm-0.3.0-x86_64.tar.gz
-curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.3.0/sha256sums
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.3.1/cosmic-ext-dropterm-0.3.1-x86_64.tar.gz
+curl -LO https://github.com/l1br3-io/cosmic-ext-dropterm/releases/download/v0.3.1/sha256sums
 sha256sum -c --ignore-missing sha256sums
-tar -xzf cosmic-ext-dropterm-0.3.0-x86_64.tar.gz
+tar -xzf cosmic-ext-dropterm-0.3.1-x86_64.tar.gz
 sudo cp -a usr/. /usr/
 ```
 
-ARM machines take the `cosmic-ext-dropterm-0.3.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
+ARM machines take the `cosmic-ext-dropterm-0.3.1-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
 
 ### From source
 
@@ -30,7 +30,7 @@ See [Building](#building) below.
 
 ## Status
 
-DropTerm v0.3.0 is released — see [Installing](#installing); [release notes](docs/releases.md) curate what each version changed. Development continues toward the next release on the [roadmap](ROADMAP.md)'s V4 and Later lines; the feature list below describes the current main build.
+DropTerm v0.3.1 is released — see [Installing](#installing); [release notes](docs/releases.md) curate what each version changed. Development continues toward the next release on the [roadmap](ROADMAP.md)'s V4 and Later lines; the feature list below describes the current main build.
 
 ## Building
 
@@ -78,7 +78,7 @@ The details live in the `docs/` directory:
 
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
-- [Configuration](docs/configuration.md) - all 51 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 52 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
@@ -88,6 +88,7 @@ The details live in the `docs/` directory:
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
+- [Inline images](docs/images.md) - `imgcat` and OSC 1337: images render in the terminal and scroll away with the output
 - [FAQ](docs/faq.md) - the recurring questions, answered directly
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
 - [Release notes](docs/releases.md) - what each tagged release changed, curated and linked

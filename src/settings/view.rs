@@ -196,7 +196,8 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
-            ConfigKey::AutosuggestionsGeneratorsEnabled => "Git completions",
+            ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
+            ConfigKey::ImagesEnabled => "Inline images",
             ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
             ConfigKey::AutosuggestionsMenuAuto => "Open the menu as you type",
             ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
@@ -967,6 +968,21 @@ pub(super) fn drawer_description(key: ConfigKey) -> String {
             "{} — a default profile still owns plain spawns",
             apply_timing(key).label()
         ),
+        // The extended tier's honest state line (suggest-embed spec,
+        // OQ-1's recommended wording): the count and the path — the
+        // one thing a user needs when it reads "not installed".
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            let timing = apply_timing(key).label();
+            match crate::terminal::suggest::extended_tier_status() {
+                Some((count, path)) => {
+                    format!(
+                        "{timing} — {count} more commands — found at {}",
+                        path.display()
+                    )
+                }
+                None => format!("{timing} — not installed"),
+            }
+        }
         _ => apply_timing(key).label().to_string(),
     }
 }
@@ -1152,7 +1168,10 @@ fn toggle_control(
         ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
         ConfigKey::AutosuggestionsPathsEnabled => config.autosuggestions_paths_enabled,
         ConfigKey::AutosuggestionsCommandsEnabled => config.autosuggestions_commands_enabled,
-        ConfigKey::AutosuggestionsGeneratorsEnabled => config.autosuggestions_generators_enabled,
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            config.autosuggestions_completions_extended
+        }
+        ConfigKey::ImagesEnabled => config.images_enabled,
         ConfigKey::AutosuggestionsMenuEnabled => config.autosuggestions_menu_enabled,
         ConfigKey::AutosuggestionsMenuAuto => config.autosuggestions_menu_auto,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,

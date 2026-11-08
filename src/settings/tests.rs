@@ -230,10 +230,11 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsEnabled(true),
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
-        PlannedWrite::AutosuggestionsGeneratorsEnabled(true),
+        PlannedWrite::AutosuggestionsCompletionsExtended(true),
         PlannedWrite::AutosuggestionsMenuEnabled(true),
         PlannedWrite::AutosuggestionsMenuAuto(false),
         PlannedWrite::AutosuggestionsDelayMs(0),
+        PlannedWrite::ImagesEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
@@ -324,8 +325,8 @@ fn key_names_match_the_config_file_fields() {
             "autosuggestions_commands_enabled",
         ),
         (
-            ConfigKey::AutosuggestionsGeneratorsEnabled,
-            "autosuggestions_generators_enabled",
+            ConfigKey::AutosuggestionsCompletionsExtended,
+            "autosuggestions_completions_extended",
         ),
         (
             ConfigKey::AutosuggestionsDelayMs,
@@ -923,6 +924,20 @@ fn the_default_profile_note_rides_the_three_plain_spawn_rows() {
     }
     // Every other row keeps the plain timing label.
     assert_eq!(drawer_description(ConfigKey::Args), "new tabs only");
+    // The extended tier's row carries the honest state line
+    // (suggest-embed spec): the timing plus one of the two states —
+    // the count and path when the data file is installed, "not
+    // installed" when it is not. The real XDG walk decides which;
+    // the pin holds on either machine.
+    let caption = drawer_description(ConfigKey::AutosuggestionsCompletionsExtended);
+    assert!(
+        caption.starts_with("applies live — "),
+        "the caption leads with the timing: {caption}"
+    );
+    assert!(
+        caption.contains("more commands — found at ") || caption.ends_with("not installed"),
+        "the caption is one of the two honest states: {caption}"
+    );
 }
 
 // --- registry-fed scheme dropdowns ---
@@ -973,10 +988,11 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::AutosuggestionsEnabled,
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
-            ConfigKey::AutosuggestionsGeneratorsEnabled,
+            ConfigKey::AutosuggestionsCompletionsExtended,
             ConfigKey::AutosuggestionsMenuEnabled,
             ConfigKey::AutosuggestionsMenuAuto,
             ConfigKey::AutosuggestionsDelayMs,
+            ConfigKey::ImagesEnabled,
         ]
     );
     assert_eq!(
@@ -997,10 +1013,6 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
     assert_eq!(
         toggle_write(ConfigKey::AutosuggestionsCommandsEnabled, false),
         Some(PlannedWrite::AutosuggestionsCommandsEnabled(false))
-    );
-    assert_eq!(
-        toggle_write(ConfigKey::AutosuggestionsGeneratorsEnabled, false),
-        Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(false))
     );
 }
 

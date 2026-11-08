@@ -139,10 +139,11 @@ impl Section {
                 ConfigKey::AutosuggestionsEnabled,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
-                ConfigKey::AutosuggestionsGeneratorsEnabled,
+                ConfigKey::AutosuggestionsCompletionsExtended,
                 ConfigKey::AutosuggestionsMenuEnabled,
                 ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
+                ConfigKey::ImagesEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::ShowInDock,
@@ -164,7 +165,7 @@ impl Section {
 /// open, so no base-tree wrapper can observe a press — see that
 /// spec's fallback clause): no `Section` lists either, so the
 /// exposed-key exactly-once pin above stays at the section-hosted
-/// count (49 — default-spawn's two rows included).
+/// count (48 — default-spawn's two rows included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -200,15 +201,15 @@ pub enum ConfigKey {
     /// at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsCommandsEnabled,
-    /// The git generators' own toggle (suggest-generators spec) —
-    /// the Terminal card's row beside its siblings: branch, tag,
-    /// and working-tree-change names completing git's argument
-    /// seats, read locally under the spawn contract (reviewed
-    /// read-only commands, scrubbed env, five-second kill, silence
-    /// on ssh and on every failure). An off flip stops every spawn
-    /// and serves nothing from the cache on the echo; on re-arms
-    /// the menu-open refresh.
-    AutosuggestionsGeneratorsEnabled,
+    /// The installed extended tier's kill switch (suggest-embed
+    /// spec, the generous default) — the Terminal card's row beside
+    /// its siblings: the packaged `completions-extended.toml` adds
+    /// beside the embedded floor while on. An off flip reloads the
+    /// table on the echo's `set_config` pass (the floor answers
+    /// alone); on adds the tier again, the already-parsed file
+    /// reused — a system data file does not change under a running
+    /// app.
+    AutosuggestionsCompletionsExtended,
     /// The completion menu's own toggle (suggest-menu spec) — the
     /// Terminal card's row beside its siblings: `Ctrl+Space`'s
     /// candidate list over the tab's current input. An off flip
@@ -231,6 +232,13 @@ pub enum ConfigKey {
     /// and it changes *when* a suggestion is seen, never *which* one
     /// wins.
     AutosuggestionsDelayMs,
+    /// The inline-image kill switch (iterm-images spec) — the
+    /// Terminal card's row: OSC 1337 sequences decode and ride the
+    /// grid like text while on. An off flip makes the arm inert at
+    /// the next arrival — nothing decodes, nothing places; placed
+    /// cells and stored pixels stand either way. Sixel stays
+    /// deferred; `inline=0` renders nothing whatever the key says.
+    ImagesEnabled,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -395,7 +403,8 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
-            ConfigKey::AutosuggestionsGeneratorsEnabled => "autosuggestions_generators_enabled",
+            ConfigKey::AutosuggestionsCompletionsExtended => "autosuggestions_completions_extended",
+            ConfigKey::ImagesEnabled => "images_enabled",
             ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
             ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
@@ -462,7 +471,8 @@ pub enum PlannedWrite {
     AutosuggestionsEnabled(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
-    AutosuggestionsGeneratorsEnabled(bool),
+    AutosuggestionsCompletionsExtended(bool),
+    ImagesEnabled(bool),
     AutosuggestionsMenuEnabled(bool),
     AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
@@ -569,9 +579,10 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
             }
-            PlannedWrite::AutosuggestionsGeneratorsEnabled(_) => {
-                ConfigKey::AutosuggestionsGeneratorsEnabled
+            PlannedWrite::AutosuggestionsCompletionsExtended(_) => {
+                ConfigKey::AutosuggestionsCompletionsExtended
             }
+            PlannedWrite::ImagesEnabled(_) => ConfigKey::ImagesEnabled,
             PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
             PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
@@ -682,8 +693,11 @@ impl PlannedWrite {
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
                 handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
             }
-            PlannedWrite::AutosuggestionsGeneratorsEnabled(value) => handler.set(
-                ConfigKey::AutosuggestionsGeneratorsEnabled.key_name(),
+            PlannedWrite::ImagesEnabled(value) => {
+                handler.set(ConfigKey::ImagesEnabled.key_name(), *value)
+            }
+            PlannedWrite::AutosuggestionsCompletionsExtended(value) => handler.set(
+                ConfigKey::AutosuggestionsCompletionsExtended.key_name(),
                 *value,
             ),
             PlannedWrite::AutosuggestionsMenuEnabled(value) => {
@@ -1001,9 +1015,13 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
-        | ConfigKey::AutosuggestionsGeneratorsEnabled
+        | ConfigKey::AutosuggestionsCompletionsExtended
         | ConfigKey::AutosuggestionsMenuEnabled
         | ConfigKey::AutosuggestionsMenuAuto
+        // The images kill switch rides the same live pass
+        // (iterm-images spec): the echo's set_config swaps the flag,
+        // the next 1337 arrival answers it.
+        | ConfigKey::ImagesEnabled
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2406,9 +2424,10 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::AutosuggestionsCommandsEnabled => {
             Some(PlannedWrite::AutosuggestionsCommandsEnabled(checked))
         }
-        ConfigKey::AutosuggestionsGeneratorsEnabled => {
-            Some(PlannedWrite::AutosuggestionsGeneratorsEnabled(checked))
+        ConfigKey::AutosuggestionsCompletionsExtended => {
+            Some(PlannedWrite::AutosuggestionsCompletionsExtended(checked))
         }
+        ConfigKey::ImagesEnabled => Some(PlannedWrite::ImagesEnabled(checked)),
         ConfigKey::AutosuggestionsMenuEnabled => {
             Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))
         }

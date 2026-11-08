@@ -534,24 +534,29 @@ pub struct DropTermConfig {
     /// toggle-sized); defaults to empty — no alias re-targets, today
     /// byte-for-bit. Applies live at the next typed prefix.
     pub autosuggestions_aliases: HashMap<String, String>,
-    /// Whether the git value generators join the autosuggest merge
-    /// (suggest-generators spec): cached branch, tag, and
-    /// working-tree-change names completing `git checkout`, `git
-    /// switch`, `git add`, and `git restore` arguments — read from
-    /// the repository the tab's shell sits in, under a
-    /// stricter-than-any-peer contract: fixed DropTerm-reviewed
-    /// read-only git commands (nothing spec- or file-authorable),
-    /// an environment scrubbed to HOME and a pinned C locale, the
-    /// spawn-time `$PATH`'s absolute git, a five-second kill
-    /// deadline, and silence on every failure — nothing leaves the
-    /// machine, and ssh or non-shell tabs never run a generator at
-    /// all. Results cache stale-while-revalidate, refreshed on the
-    /// completions menu's open; typing never spawns. Defaults to
-    /// `true` (local read-only git, the same class as path
-    /// completion's filesystem reads); `false` stops every spawn
-    /// and serves nothing from the cache. Flips apply live on the
-    /// config echo.
-    pub autosuggestions_generators_enabled: bool,
+    /// The installed extended completions tier (suggest-embed spec,
+    /// the 2026-11-07 generous-default amendment): the packaged
+    /// `completions-extended.toml` — every corpus command beyond the
+    /// embedded floor's core tranche, seated in the XDG data dirs —
+    /// adds beside the floor while the key is on. Defaults to `true`
+    /// (the file ships inside the package, so generosity costs no
+    /// download and no network; the toggle is the kill switch, not
+    /// the opt-in); `false` answers the embedded floor and the
+    /// user's `completions.toml` alone. An absent, unreadable, or
+    /// invalid file answers the floor whatever the key says.
+    /// Flips apply live on the config echo.
+    pub autosuggestions_completions_extended: bool,
+    /// Whether inline images render (iterm-images spec): OSC 1337
+    /// sequences — iTerm2's `imgcat` both forms, `wezterm imgcat`,
+    /// forced-mode `chafa`/`timg`/`viu` — decode in place and ride
+    /// the grid like text, scrolling and reflowing with it. Defaults
+    /// to `true` (kitty and Ghostty ship images on); `false` makes
+    /// the whole pipeline inert: the fork's arm stays parsed but
+    /// nothing ever decodes or places. Sixel stays deferred — DA1
+    /// answers honestly without `;4` — and `inline=0` sequences
+    /// render nothing either way. Flips apply live on the config
+    /// echo.
+    pub images_enabled: bool,
 }
 
 impl Default for DropTermConfig {
@@ -616,7 +621,8 @@ impl Default for DropTermConfig {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
-            autosuggestions_generators_enabled: true,
+            autosuggestions_completions_extended: true,
+            images_enabled: true,
         }
     }
 }

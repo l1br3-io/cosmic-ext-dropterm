@@ -30,12 +30,12 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - Rust code / review → `rust-best-practices`
 - Security-sensitive input, auth, secrets, dependencies → `security-and-hardening`
 - Performance requirements or suspected regressions → `performance-optimization`
-- Cutting a release / publishing a version → `release-orchestration` (or `/release`)
+- Cutting a release / publishing a version → `dropterm-release` (or `/release`) — the project's release ritual, adapted from cosmic-ext-airlock's `airlock-release`; it supersedes the pack's generic `release-orchestration` here
 - Making a change (always) → `git-workflow-and-versioning`
 
 ## Slash commands
 
-`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/release [x.y.z]`, `/webperf`. Run `/ship` before merge for a parallel fan-out review. `/release` drives the whole release — version proposal, notes curation, recipes, gated pushes — and never pushes for you (see `release-orchestration`). In ZCode the planning command is `/planning` — `/plan` is a reserved built-in there, so its mirror is renamed to `planning.md`; opencode keeps `/plan`.
+`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/release [x.y.z]`, `/webperf`. Run `/ship` before merge for a parallel fan-out review. `/release` drives the whole release — version proposal, notes curation, recipes, gated pushes — and never pushes for you (see `dropterm-release`). In ZCode the planning command is `/planning` — `/plan` is a reserved built-in there, so its mirror is renamed to `planning.md`; opencode keeps `/plan`.
 
 ## Personas
 

@@ -186,15 +186,17 @@ archive (URL + sha256), and neither exists until CI has published the
 release. The store listing rides a third repo altogether -
 pop-os/cosmic-flatpak, via the maintainer's fork.
 
-The whole sequence is driven by `/release` (the `release-orchestration`
-skill): it derives the version from the commits since the last tag, drafts
-the step-1 curation for your review, runs the recipes, and hands you each
-push as an exact command — the agent never pushes, and every outward act
-(tag push, pin commit, catalog branch) sits behind a confirmation gate.
-Before the tag push it can offer a full-pipeline dry-run rehearsal: push
-main alone, dispatch release.yml's dry-run on it, and only push the tag
-once the artifact set assembles green. The steps below are what the command
-does; they remain the manual path.
+The whole sequence is driven by `/release` (the `dropterm-release`
+skill, adapted from cosmic-ext-airlock's release ritual): it derives the
+version from the commits since the last tag, drafts the curation for
+your review, and runs the two recipes that commit locally and never
+push. Everything that reaches the public world is typed by you, every
+time — the two pushes and `just release-catalog`, whose execution
+force-pushes a public branch, plus the PR click. Before the tag push it
+can offer a full-pipeline dry-run rehearsal: push main alone, dispatch
+release.yml's dry-run on it, and only push the tag once the artifact
+set assembles green. The steps below are what the command does; they
+remain the manual path.
 
 1. **Curate the release content** (uncommitted or committed, the recipe
    takes either):
@@ -222,10 +224,11 @@ does; they remain the manual path.
 5. **`just release-catalog X.Y.Z`** - the store listing: regenerates
    `cargo-sources.json` from the current lockfile, re-cuts the fork's
    `dropterm-applet` branch as one clean commit on current pop-os
-   master, and force-pushes it (needs SSH keys for the fork). Then open
-   the PR from the printed compare URL - the click and the review are
-   the catalog's two human steps; there is no gh token on this machine
-   to assume either.
+   master, and force-pushes it (needs SSH keys for the fork) - it
+   rewrites a public branch, so it is typed by you, never agent-run.
+   Then open the PR from the printed compare URL - the click and the
+   review are the catalog's two human steps; there is no gh token on
+   this machine to assume either.
 
 The version is semver: additive features take the minor, fixes the patch.
 A failed gate mid-recipe leaves the version bumps uncommitted in the tree;

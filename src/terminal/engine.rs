@@ -42,7 +42,7 @@ use indexmap::IndexSet;
 use std::{
     borrow::Cow,
     cell::Cell,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     fs, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -91,6 +91,11 @@ pub struct TerminalOptions {
     /// showing suggestion disappears the moment the kill switch
     /// lands.
     pub autosuggestions_enabled: bool,
+    /// Whether inline images render (iterm-images spec): resolved
+    /// from the app config's `images_enabled` where options are
+    /// built — flips apply at the next `set_config` pass, making the
+    /// 1337 arm inert end to end while off.
+    pub images_enabled: bool,
     /// The program the tab is spawned as (path-suggest spec): the
     /// spawn-resolved program word — the configured or recorded
     /// shell, a command line's leading program, or a profile
@@ -161,23 +166,21 @@ pub struct TerminalOptions {
     /// nothing, today byte-for-byte.
     pub autosuggestions_aliases: HashMap<String, String>,
     /// The specs provider's table (suggest-specs-data spec): the
-    /// built-in five overlaid by `completions.toml` beside the
-    /// config, app-loaded and handed down engine-side — the
-    /// `Cow::Borrowed` default is the built-in fallback itself, so
-    /// no file is today's table without an allocation. A changed
-    /// table applies at the next `set_config` pass, the next typed
-    /// prefix borrowing the fresh rows.
-    pub autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
-    /// Whether the generator provider runs (suggest-generators
-    /// spec): resolved from the app config's
-    /// `autosuggestions_generators_enabled` — a flip applies at the
-    /// next `set_config` pass: `false` stops every spawn and blanks
-    /// the observation's cache read on the echo (the stale rows
-    /// never serve), `true` re-arms the ruled triggers. The shell
-    /// gate and the resolved binary are spawn truth, never re-read
-    /// by `set_config` — a respawn (a fresh terminal) is the only
-    /// path that changes them.
-    pub autosuggestions_generators_enabled: bool,
+    /// built-in floor overlaid by `completions.toml` beside the
+    /// config and the installed extended tier, app-loaded and handed
+    /// down engine-side as a shared slice — the no-file default is
+    /// the built-in fallback itself, so no file is today's table
+    /// without an allocation. A changed table applies at the next
+    /// `set_config` pass, the next typed prefix borrowing the fresh
+    /// rows.
+    pub autosuggestions_specs_table: Arc<[suggest::SpecCommand]>,
+    /// Whether the completion files still load on a background thread
+    /// (async-completions): while `true` the menu prepends a loading
+    /// row instead of specs rows, and the ghost's specs tier stays
+    /// silent. The app flips it `false` the moment the background
+    /// load lands, on the `set_config` pass that hands down the
+    /// fresh table.
+    pub autosuggestions_specs_loading: bool,
 }
 
 impl Default for TerminalOptions {
@@ -191,6 +194,7 @@ impl Default for TerminalOptions {
             font_size: 14,
             font_size_zoom_step_mul_100: 100,
             autosuggestions_enabled: true,
+            images_enabled: true,
             spawned_program: String::new(),
             spawn_home: None,
             spawn_path: None,
@@ -201,8 +205,8 @@ impl Default for TerminalOptions {
             autosuggestions_menu_auto: false,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
-            autosuggestions_specs_table: Cow::Borrowed(suggest::builtin_specs()),
-            autosuggestions_generators_enabled: true,
+            autosuggestions_specs_table: suggest::builtin_specs_arc(),
+            autosuggestions_specs_loading: false,
         }
     }
 }
@@ -575,12 +579,18 @@ pub struct Terminal {
     /// snapshot it follows the config, not the pty's birth.
     autosuggestions_aliases: HashMap<String, String>,
     /// The specs provider's table (suggest-specs-data spec): the
-    /// built-in five overlaid by `completions.toml`, re-read at
-    /// every `set_config` so an edited or dropped file applies live
-    /// at the next typed prefix — config truth beside the config,
-    /// never spawn truth. `Cow::Borrowed` holds the built-in
-    /// fallback without owning a copy of it.
-    autosuggestions_specs_table: Cow<'static, [suggest::SpecCommand]>,
+    /// built-in floor overlaid by `completions.toml` and the
+    /// installed extended tier, re-read at every `set_config` so an
+    /// edited or dropped file applies live at the next typed prefix —
+    /// config truth beside the config, never spawn truth. A shared
+    /// slice, so the whole-table swap is an `Arc` pointer swap.
+    autosuggestions_specs_table: Arc<[suggest::SpecCommand]>,
+    /// Whether the completion files still load on a background thread
+    /// (async-completions): `true` until the app's load lands, the
+    /// menu answering with a loading row while the specs tier stays
+    /// silent. Set on the same `set_config` pass that swaps in the
+    /// table.
+    autosuggestions_specs_loading: bool,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -692,6 +702,47 @@ pub struct Terminal {
     /// death. Dies with the terminal, so a respawn starts clean by
     /// construction.
     program_status: Option<ProgramStatus>,
+    /// The inline-image session machine's open half (iterm-images
+    /// spec): one `MultipartFile` per terminal (OQ-1 — imgcat never
+    /// interleaves), a new header aborting whatever stood. `None` is
+    /// idle. Dies with the terminal, so a respawn starts clean by
+    /// construction.
+    image_session: Option<PendingImage>,
+    /// The inline-image id issuer (iterm-images spec): monotonic per
+    /// terminal — ids outlive eviction, and a respawn's ids restart
+    /// with the fresh store beside them.
+    image_seq: u64,
+    /// The decoded-image store (iterm-images spec): id → pixels,
+    /// oldest-evicted under the budget. Shared to the widget through
+    /// the Arc — the grid carries ids, this is the pixel side. Dies
+    /// with the terminal, so a respawn starts it empty by
+    /// construction.
+    pub images: Arc<Mutex<ImageStore>>,
+    /// Whether the inline-image pipeline runs (iterm-images spec) —
+    /// the resolved `images_enabled` flag, re-read at every
+    /// `set_config`; false makes OSC 1337 inert end to end (the arm
+    /// never places).
+    images_enabled: bool,
+    /// The kitty graphics transmissions in flight (kitty-images
+    /// spec), keyed by the first chunk's client `i` — `None` is the
+    /// anonymous slot, one at a time; a new header replaces whatever
+    /// stood under its key. Dies with the terminal, so a respawn
+    /// starts clean by construction.
+    kitty_chunks: HashMap<Option<u32>, KittyChunk>,
+    /// The kitty client-id → store-id map (kitty-images spec): `i=`
+    /// remaps on every retransmit; deletion and queries by `i`
+    /// resolve through it. `I=` numbers are the store ids themselves —
+    /// sequential from 1 by construction (OQ-1's default).
+    kitty_ids: HashMap<u32, u64>,
+    /// The kitty placements by placement id (kitty-images spec):
+    /// each seats under its own cell id so the move sweep takes
+    /// exactly it, while its pixels — copied once at creation — are
+    /// reused across every move (the same id, the same renderer
+    /// handle, no flicker). Dies with the terminal.
+    kitty_placements: HashMap<u32, KittyPlacement>,
+    /// The most recently transmitted kitty image's store id
+    /// (kitty-images spec) — `d=n`/`d=N`'s target.
+    kitty_last: Option<u64>,
     /// The settle-close's fresh-prompt latch (autosuggest spec): set
     /// when the spawn settle closes, held until an anchor is adopted
     /// or a child runs — the shell's first prompt can land after the
@@ -1070,12 +1121,6 @@ struct GenShared {
 /// to the empty set (no TTL, no wall clock; a re-trigger refreshes,
 /// serve-forever-until-revalidation being the ruled horizon).
 struct GeneratorRunner {
-    /// The config gate (suggest-generators spec): the resolved
-    /// `autosuggestions_generators_enabled`, re-read at every
-    /// `set_config` — `false` stops every spawn and blanks the
-    /// cache read (a warm cache never serves), `true` re-arms the
-    /// ruled triggers. Config truth, never spawn truth.
-    enabled: bool,
     /// The standing ssh gate, spawn truth: the tab's program is an
     /// allowlisted shell. An ineligible tab never spawns.
     eligible: bool,
@@ -1096,18 +1141,16 @@ struct GeneratorRunner {
 impl GeneratorRunner {
     /// The runner for a fresh terminal: spawn truth only — the
     /// shell gate, the resolved binary, the spawn HOME, and the
-    /// wakeup channel — plus the resolved config gate. The cache
-    /// starts empty; nothing spawns until a trigger asks.
+    /// wakeup channel. The generators run always (no toggle; the
+    /// cache starts empty and nothing spawns until a trigger asks).
     fn new(
         spawned_program: &str,
         spawn_path: Option<&str>,
         spawn_home: Option<&str>,
-        enabled: bool,
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
     ) -> Self {
         Self {
-            enabled,
             eligible: suggest::is_allowlisted_shell(spawned_program),
             binary: resolve_generator_binary(spawn_path, "git"),
             home: spawn_home.map(str::to_owned),
@@ -1126,13 +1169,12 @@ impl GeneratorRunner {
 
     /// The cached sets for `cwd` — the observation's spawn-free
     /// read. `None` until the runner has cached anything for this
-    /// cwd (no generator context), on an ineligible tab, with no
-    /// resolvable git, or under a live `false` flip (a warm cache
-    /// never serves); once any set is cached the three arrive
+    /// cwd (no generator context), on an ineligible tab, or with no
+    /// resolvable git; once any set is cached the three arrive
     /// whole, a set the cache lacks reading empty — an honest
     /// silence, not a missing context.
     fn sets_for(&self, cwd: Option<&Path>) -> Option<GenCached> {
-        if !self.enabled || !self.eligible || self.binary.is_none() {
+        if !self.eligible || self.binary.is_none() {
             return None;
         }
         let cwd = cwd?;
@@ -1159,10 +1201,9 @@ impl GeneratorRunner {
     /// keeps serving while a worker per argv revalidates — skipped
     /// where one is already in flight (the SWR dedup). Menu-open
     /// and the eligibility onset call this; the damage-driven
-    /// update path never does. A live `false` flip blocks the
-    /// trigger with everything else.
+    /// update path never does.
     fn revalidate(&self, cwd: Option<&Path>) {
-        if !self.enabled || !self.eligible || self.binary.is_none() {
+        if !self.eligible || self.binary.is_none() {
             return;
         }
         let Some(cwd) = cwd else {
@@ -1359,14 +1400,12 @@ impl Terminal {
         };
         // The generator runner (suggest-generators spec): spawn
         // truth only — the shell gate, the spawn-PATH git binary,
-        // the spawn HOME — plus the resolved config gate and the
-        // wakeup channel the landed fetches nudge (the clone; the
-        // proxy owns the original).
+        // the spawn HOME — plus the wakeup channel the landed
+        // fetches nudge (the clone; the proxy owns the original).
         let generator = GeneratorRunner::new(
             &options.spawned_program,
             options.spawn_path.as_deref(),
             options.spawn_home.as_deref(),
-            options.autosuggestions_generators_enabled,
             tab_id,
             event_tx.clone(),
         );
@@ -1432,11 +1471,13 @@ impl Terminal {
             needs_update: true,
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
+            images_enabled: options.images_enabled,
             autosuggestions_paths_enabled: options.autosuggestions_paths_enabled,
             autosuggestions_commands_enabled: options.autosuggestions_commands_enabled,
             autosuggestions_specs_enabled: options.autosuggestions_specs_enabled,
             autosuggestions_aliases: options.autosuggestions_aliases.clone(),
             autosuggestions_specs_table: options.autosuggestions_specs_table.clone(),
+            autosuggestions_specs_loading: options.autosuggestions_specs_loading,
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -1453,6 +1494,13 @@ impl Terminal {
             last_foreground_child: false,
             reported_progress: None,
             program_status: None,
+            image_session: None,
+            image_seq: 0,
+            images: Arc::new(Mutex::new(ImageStore::default())),
+            kitty_chunks: HashMap::new(),
+            kitty_ids: HashMap::new(),
+            kitty_placements: HashMap::new(),
+            kitty_last: None,
             timer: CommandTimer::default(),
             command_finished: None,
             missed_activity: Cell::new(false),
@@ -1805,6 +1853,432 @@ impl Terminal {
         self.program_status = None;
     }
 
+    /// Records one OSC 1337 arrival (iterm-images spec): the fork's
+    /// raw parameter slices, forwarded from the event surface. The
+    /// session machine runs here — the legacy `File=` single-shot
+    /// decodes and places at once; the chunked session accumulates
+    /// `FilePart`s under one open `MultipartFile` header until
+    /// `FileEnd` (a new header aborts whatever stood; a part or end
+    /// without a session is ignored). A kill-switched pipeline, a
+    /// malformed payload, or a blown cap drops whole — nothing
+    /// half-places, nothing logs.
+    pub fn note_inline_image(&mut self, params: &[Vec<u8>]) {
+        if !self.images_enabled {
+            return;
+        }
+        let Some(first) = params.first() else { return };
+
+        if first.starts_with(b"File=") {
+            // Legacy single-shot: args and payload in one sequence —
+            // the payload still base64 on the wire, decoded here, a
+            // malformed one dropped whole.
+            let (args, encoded) = parse_image_args(params);
+            if let Some(encoded) = encoded
+                && let Some(payload) = decode_base64(&encoded)
+            {
+                self.place_inline_image(args, &payload);
+            }
+        } else if first.starts_with(b"MultipartFile=") {
+            // A second header aborts the first by replacement (the
+            // first session's bytes are simply dropped).
+            let (args, _) = parse_image_args(params);
+            self.image_session = Some(PendingImage {
+                args,
+                payload: Vec::new(),
+            });
+        } else if let Some(chunk) = first.strip_prefix(b"FilePart=") {
+            if let Some(session) = self.image_session.as_mut() {
+                match decode_base64(chunk) {
+                    Some(bytes) => {
+                        session.payload.extend_from_slice(&bytes);
+                        if session.payload.len() > IMAGE_PAYLOAD_CAP {
+                            // The cap drops the session whole, never a
+                            // half-buffered image.
+                            self.image_session = None;
+                        }
+                    }
+                    None => self.image_session = None,
+                }
+            }
+        } else if first == b"FileEnd"
+            && let Some(session) = self.image_session.take()
+        {
+            self.place_inline_image(session.args, &session.payload);
+        }
+        // Anything else — a bare or unknown opcode — is silence.
+    }
+
+    /// Decode one completed payload and place it (iterm-images
+    /// spec): `inline=0` renders nothing (no download UI — a map-gate
+    /// never), the caps drop whole before any decode, the decoded
+    /// pixels enter the store under a fresh id, and the grid's cells
+    /// are diced through the fork's `Term::place_image` — the
+    /// placement rides the grid like text from there.
+    fn place_inline_image(&mut self, args: ImageArgs, payload: &[u8]) {
+        if !args.inline || payload.is_empty() || payload.len() > IMAGE_PAYLOAD_CAP {
+            return;
+        }
+        let Some(rgba) = decode_image(payload) else {
+            return;
+        };
+        let (width, height) = rgba.dimensions();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "decode-capped dimensions (8192) are exact in f32"
+        )]
+        let inherent = (width as f32, height as f32);
+        self.image_seq += 1;
+        let id = self.image_seq;
+        self.images.lock().unwrap().insert(id, rgba);
+        let (cols, rows) = resolve_placement(&args, inherent, &self.size);
+        self.term.lock().place_image(id, cols, rows);
+        self.needs_update = true;
+    }
+
+    /// One APC payload from the fork (kitty-images spec): the leading
+    /// `G` gates the protocol — SOS/PM strings share the fork's APC
+    /// state and arrive here too — then the control data parses under
+    /// the subset's grammar and the transmission machine runs: chunks
+    /// assemble keyed by the first chunk's `i` until a final chunk
+    /// commits through decode and (for `a=T`) placement. A
+    /// kill-switched pipeline, a forbidden medium, or malformed
+    /// control data drops whole; the forbidden media answer the one
+    /// uniform error on the PTY write path (`q=2` silences it).
+    pub fn note_apc_payload(&mut self, payload: &[u8]) {
+        if !self.images_enabled {
+            return;
+        }
+        let Some(body) = payload.strip_prefix(b"G") else {
+            return;
+        };
+        let (control, encoded) = match body.iter().position(|&byte| byte == b';') {
+            Some(sep) => (&body[..sep], Some(&body[sep + 1..])),
+            None => (body, None),
+        };
+        let Some(keys) = parse_kitty_keys(control) else {
+            return;
+        };
+
+        // The medium is direct in-band or the sequence is refused —
+        // file, temp-file, and shared-memory transmission never cross
+        // the seam, and every refusal answers identically so nothing
+        // about the filesystem is probeable.
+        if keys.transmission.is_some_and(|medium| medium != b'd') {
+            if keys.quiet < 2 {
+                self.input_no_scroll(kitty_error_reply(keys.image_id));
+            }
+            return;
+        }
+
+        // The command arms (query, delete, place) are standalone —
+        // never chunk payloads.
+        match keys.action {
+            // The reply is computed pure over the ids and pixels,
+            // then written on the PTY path synchronously during event
+            // processing — so the answer always precedes the DA1
+            // that follows it, the detection fence by construction.
+            Some(b'q') => {
+                if let Some(reply) =
+                    kitty_query_reply(&keys, &self.kitty_ids, &self.images.lock().unwrap())
+                {
+                    self.input_no_scroll(reply);
+                }
+            }
+            Some(b'd') => {
+                if let Some(delete) = keys.delete {
+                    self.kitty_delete(delete);
+                }
+            }
+            Some(b'p') => self.kitty_place(&keys),
+            _ => {
+                self.kitty_transmit(keys, encoded);
+            }
+        }
+    }
+
+    /// The transmission arm of one APC `G` sequence (kitty-images
+    /// spec): an opening chunk starts or replaces its key's session,
+    /// a continuation extends it, and the final chunk commits. A
+    /// continuation without a session is silence.
+    fn kitty_transmit(&mut self, keys: KittyKeys, encoded: Option<&[u8]>) {
+        // A malformed base64 slice drops the sequence whole, never
+        // half-carried.
+        let bytes = if let Some(encoded) = encoded {
+            match decode_base64(encoded) {
+                Some(decoded) => decoded,
+                None => return,
+            }
+        } else {
+            Vec::new()
+        };
+
+        if keys.opens() {
+            // The first chunk carries the control keys; a new header
+            // replaces whatever stood under its key.
+            if keys.more {
+                if bytes.len() <= IMAGE_PAYLOAD_CAP {
+                    self.kitty_chunks.insert(
+                        keys.image_id,
+                        KittyChunk {
+                            keys,
+                            payload: bytes,
+                        },
+                    );
+                }
+            } else {
+                self.kitty_commit(keys, &bytes);
+            }
+        } else if let Some(session) = self.kitty_chunks.get_mut(&keys.image_id) {
+            // A continuation joins its key's session — the anonymous
+            // slot when no `i` rides the wire.
+            session.payload.extend_from_slice(&bytes);
+            if session.payload.len() > IMAGE_PAYLOAD_CAP {
+                // The cap drops the session whole, never a
+                // half-buffered image.
+                self.kitty_chunks.remove(&keys.image_id);
+            } else if !keys.more
+                && let Some(finished) = self.kitty_chunks.remove(&keys.image_id)
+            {
+                self.kitty_commit(finished.keys, &finished.payload);
+            }
+        }
+    }
+
+    /// Decode and seat one completed kitty transmission (kitty-images
+    /// spec): the iterm module's own ceilings drop whole before any
+    /// decode, the pixels enter the shared store under a fresh id
+    /// (the client `i`, when sent, maps to it), `x`/`y` crop the
+    /// displayed region to its far edges, and `a=T` alone places —
+    /// `a=t` and the default transmit-only store.
+    fn kitty_commit(&mut self, keys: KittyKeys, payload: &[u8]) {
+        if payload.is_empty() || payload.len() > IMAGE_PAYLOAD_CAP {
+            return;
+        }
+        let Some(mut rgba) = decode_kitty_payload(&keys, payload) else {
+            return;
+        };
+
+        // The displayed region's source offset: a crop extending to
+        // the image's far edges, so only what shows is seated.
+        if let (Some(x), Some(y)) = (keys.offset_x, keys.offset_y) {
+            let (width, height) = rgba.dimensions();
+            if x >= width || y >= height {
+                return;
+            }
+            rgba = image::DynamicImage::ImageRgba8(rgba)
+                .crop_imm(x, y, width - x, height - y)
+                .to_rgba8();
+        }
+
+        self.image_seq += 1;
+        let id = self.image_seq;
+        if let Some(client) = keys.image_id {
+            self.kitty_ids.insert(client, id);
+        }
+        self.kitty_last = Some(id);
+        let dims = rgba.dimensions();
+        {
+            let mut store = self.images.lock().unwrap();
+            store.insert(id, rgba);
+            // The layer rides the store beside the pixels (kitty
+            // z-layers): an absent `z` reads as beneath, the drawing
+            // every unrecorded id owns.
+            store.set_layer(id, keys.z.unwrap_or(-1));
+        }
+        if keys.action == Some(b'T') {
+            let (cols, rows) = kitty_cells(&keys, dims, &self.size);
+            self.term.lock().place_image(id, cols, rows);
+        }
+        self.needs_update = true;
+    }
+
+    /// The `a=p` arm (kitty-images spec): re-place a transmitted
+    /// image at the cursor. A placement id seats under its own cell id
+    /// — the pixels copied once at creation, then reused across every
+    /// move (the same id, the same renderer handle, no flicker) — so
+    /// the move sweep takes exactly it; without one, the cells ride
+    /// the image's own id, deletable by name, never re-placed alone.
+    fn kitty_place(&mut self, keys: &KittyKeys) {
+        let Some(source) = keys
+            .image_id
+            .and_then(|name| self.kitty_ids.get(&name).copied())
+            .or_else(|| keys.number.map(u64::from))
+        else {
+            return;
+        };
+
+        let cells = if let Some(existing) = keys
+            .placement_id
+            .and_then(|placement| self.kitty_placements.get(&placement))
+        {
+            // A re-place keeps its seat — an explicit `z` moves its
+            // layer, an absent one keeps what it already holds.
+            let cells = existing.cells;
+            if let Some(z) = keys.z {
+                self.images.lock().unwrap().set_layer(cells, z);
+            }
+            cells
+        } else if let Some(placement) = keys.placement_id {
+            let mut store = self.images.lock().unwrap();
+            let Some(pixels) = store.get(source).cloned() else {
+                return;
+            };
+            // The layer reads before the insert — the budget's
+            // eviction could take `source` itself with the bytes.
+            let source_layer = store.layer_of(source);
+            self.image_seq += 1;
+            let cells = self.image_seq;
+            store.insert(cells, pixels);
+            // The placement carries its own layer — a fresh copy
+            // of the pixels is a fresh seat of them (kitty
+            // z-layers), inheriting its image's when `z` rides
+            // the wire absent.
+            store.set_layer(cells, keys.z.unwrap_or(source_layer));
+            self.kitty_placements.insert(
+                placement,
+                KittyPlacement {
+                    cells,
+                    image: source,
+                },
+            );
+            cells
+        } else {
+            // The image's own cells: an explicit `z` moves the
+            // transmission's layer too, an absent one keeps it.
+            if let Some(z) = keys.z {
+                self.images.lock().unwrap().set_layer(source, z);
+            }
+            source
+        };
+
+        // The geometry resolves against the seat's own pixels — the
+        // placement's copy or the image itself — so a natural-sized
+        // re-place keeps its shape; evicted pixels drop the move (the
+        // cells would draw blank, and the geometry is unknowable).
+        let Some(dims) = self
+            .images
+            .lock()
+            .unwrap()
+            .get(cells)
+            .map(image::RgbaImage::dimensions)
+        else {
+            return;
+        };
+        let (cols, rows) = kitty_cells(keys, dims, &self.size);
+        self.term.lock().clear_images(Some(cells), false);
+        self.term.lock().place_image(cells, cols, rows);
+        self.needs_update = true;
+    }
+
+    /// The `a=d` arm (kitty-images spec): each subset selector sweeps
+    /// placements, the uppercase twins freeing pixels with them.
+    fn kitty_delete(&mut self, delete: KittyDelete) {
+        match delete.target {
+            DeleteTarget::All => {
+                self.term.lock().clear_images(None, false);
+                if delete.free {
+                    self.images.lock().unwrap().clear();
+                    self.kitty_ids.clear();
+                    self.kitty_placements.clear();
+                    self.kitty_last = None;
+                }
+            }
+            DeleteTarget::Image(name) => {
+                // The name resolves as a client id first, a number
+                // (the store id itself, OQ-1) second.
+                let source = self
+                    .kitty_ids
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(u64::from(name));
+                self.kitty_delete_image(source, delete.free);
+            }
+            DeleteTarget::Newest => {
+                if let Some(source) = self.kitty_last {
+                    self.kitty_delete_image(source, delete.free);
+                }
+            }
+            DeleteTarget::Visible => {
+                // The free list must be collected before the sweep
+                // clears the very cells it reads.
+                let visible = self.visible_image_ids();
+                self.term.lock().clear_images(None, true);
+                if delete.free {
+                    let mut store = self.images.lock().unwrap();
+                    for id in &visible {
+                        store.remove(*id);
+                    }
+                    self.kitty_ids
+                        .retain(|_, mapped| store.get(*mapped).is_some());
+                    self.kitty_placements
+                        .retain(|_, placement| store.get(placement.cells).is_some());
+                    if self
+                        .kitty_last
+                        .is_some_and(|last| store.get(last).is_none())
+                    {
+                        self.kitty_last = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete one image whole (kitty-images spec): its own cells plus
+    /// every placement's sweep; `free` takes the pixels from the store
+    /// and forgets both maps' entries.
+    fn kitty_delete_image(&mut self, source: u64, free: bool) {
+        let mut cells = vec![source];
+        for placement in self.kitty_placements.values() {
+            if placement.image == source && !cells.contains(&placement.cells) {
+                cells.push(placement.cells);
+            }
+        }
+        {
+            let mut term = self.term.lock();
+            for id in &cells {
+                term.clear_images(Some(*id), false);
+            }
+        }
+        if free {
+            let mut store = self.images.lock().unwrap();
+            for id in &cells {
+                store.remove(*id);
+            }
+            self.kitty_ids.retain(|_, mapped| !cells.contains(mapped));
+            self.kitty_placements
+                .retain(|_, placement| !cells.contains(&placement.cells));
+            if self.kitty_last.is_some_and(|last| cells.contains(&last)) {
+                self.kitty_last = None;
+            }
+        }
+    }
+
+    /// The image ids standing on the visible screen (kitty-images
+    /// spec's `d=C` free list) — the rows the display offset shows,
+    /// deduplicated, read before any sweep clears them.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "grid line counts and display offsets are window-sized, far below i32 range"
+    )]
+    fn visible_image_ids(&self) -> Vec<u64> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let top = Line(-(grid.display_offset() as i32));
+        let rows = term.screen_lines() as i32;
+        let mut ids: Vec<u64> = Vec::new();
+        for line in top.0..top.0 + rows {
+            for column in 0..term.columns() {
+                if let Some(image) = grid[Line(line)][Column(column)].image()
+                    && !ids.contains(&image.image)
+                {
+                    ids.push(image.image);
+                }
+            }
+        }
+        ids
+    }
+
     /// Drains the finish latch once (command-lifecycle spec): the
     /// frozen duration of the most recently finished command,
     /// returned exactly once per finish — `command-notify`'s seam.
@@ -2067,7 +2541,16 @@ impl Terminal {
             delay_ms: self.autosuggestions_delay_ms,
             typed_idle_ms: 0,
         };
-        suggest::candidates(typed, &self.suggest, &observation)
+        let mut rows = suggest::candidates(typed, &self.suggest, &observation);
+        // The loading row (async-completions): while the completion
+        // files still load on a background thread, the menu leads
+        // with an honest "wait" row instead of a specs tier that
+        // has not arrived. History, path, catalog, and generator
+        // rows still answer normally.
+        if self.autosuggestions_specs_loading {
+            rows.insert(0, suggest::loading_candidate());
+        }
+        rows
     }
 
     /// The active reveal deadline (suggest-delay spec): the instant
@@ -2400,6 +2883,17 @@ impl Terminal {
             update = true;
         }
 
+        if self.images_enabled != options.images_enabled {
+            // The images kill switch (iterm-images spec): an off flip
+            // makes the 1337 arm inert at the next arrival — nothing
+            // decodes, nothing places; an on flip renders from the
+            // next sequence. Placed cells and stored pixels stand
+            // either way (the grid is the bookkeeping, not the
+            // toggle).
+            self.images_enabled = options.images_enabled;
+            update = true;
+        }
+
         if self.autosuggestions_paths_enabled != options.autosuggestions_paths_enabled {
             self.autosuggestions_paths_enabled = options.autosuggestions_paths_enabled;
             update = true;
@@ -2444,25 +2938,19 @@ impl Terminal {
             update = true;
         }
 
-        if self.autosuggestions_specs_table != options.autosuggestions_specs_table {
+        if self.autosuggestions_specs_table != options.autosuggestions_specs_table
+            || self.autosuggestions_specs_loading != options.autosuggestions_specs_loading
+        {
             // The spec table's live flip (suggest-specs-data spec):
             // one whole-table swap — an edited, extended, or removed
             // `completions.toml` applies at the next typed prefix,
-            // the next observation borrowing the fresh rows.
-            // `Cow::clone_from` keeps the borrowed fallback a
-            // pointer swap, never a table copy.
+            // the next observation borrowing the fresh rows — and the
+            // loading fact rides the same pass (async-completions):
+            // the background load's landing is the `false` that clears
+            // the menu's loading row.
             self.autosuggestions_specs_table
                 .clone_from(&options.autosuggestions_specs_table);
-            update = true;
-        }
-
-        if self.generator.enabled != options.autosuggestions_generators_enabled {
-            // The generators' live flip (suggest-generators spec):
-            // `false` stops every spawn and blanks the cache read on
-            // this very pass (a warm cache never serves the stale
-            // rows); `true` re-arms the ruled triggers — the next
-            // menu-open revalidates.
-            self.generator.enabled = options.autosuggestions_generators_enabled;
+            self.autosuggestions_specs_loading = options.autosuggestions_specs_loading;
             update = true;
         }
 
@@ -3586,3 +4074,736 @@ fn is_invisible(c: char) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+// ===== Inline images (iterm-images spec) =====
+
+/// The per-image payload cap (iterm-images spec): the largest
+/// base64-decoded image bytes one sequence may carry, enforced while
+/// chunks accumulate — a bigger sequence drops whole, never
+/// half-buffered. A default; flip = one line (OQ-4).
+const IMAGE_PAYLOAD_CAP: usize = 32 * 1024 * 1024;
+
+/// The decode dimension ceiling (iterm-images spec): the `image`
+/// crate's width/height limit, applied before any decode — half the
+/// decompression-bomb guard. A default; flip = one line (OQ-4).
+const IMAGE_MAX_DIMENSION: u32 = 8192;
+
+/// The decode allocation ceiling (iterm-images spec): the `image`
+/// crate's allocation limit, applied before any decode — the other
+/// half of the guard. A default; flip = one line (OQ-4).
+const IMAGE_MAX_ALLOC: u64 = 64 * 1024 * 1024;
+
+/// The store's decoded-byte budget across all live images
+/// (iterm-images spec): kitty's and `WezTerm`'s own number. A ceiling,
+/// not an allocation — the oldest image is evicted to stay under it.
+/// A default; flip = one line (OQ-4).
+const IMAGE_STORE_BUDGET: usize = 320 * 1024 * 1024;
+
+/// One `width`/`height` argument in iTerm2's unit grammar
+/// (iterm-images spec): `N` cells, `Npx` pixels, `N%` of the session,
+/// or `auto` — the image's inherent size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SizeUnit {
+    Cells(u32),
+    Pixels(u32),
+    Percent(u32),
+    Auto,
+}
+
+impl SizeUnit {
+    /// Parse `N`, `Npx`, `N%`, or `auto`; anything else is `None` —
+    /// the argument reads as absent, the same silence unknown args
+    /// get. Never panics: the wire is untrusted.
+    fn parse(value: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(value).ok()?;
+        if text.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if let Some(number) = text.strip_suffix("px") {
+            number.parse().ok().map(Self::Pixels)
+        } else if let Some(number) = text.strip_suffix('%') {
+            number.parse().ok().map(Self::Percent)
+        } else {
+            text.parse().ok().map(Self::Cells)
+        }
+    }
+
+    /// Resolve to a pixel length against the cell size, the session
+    /// width, and the image's inherent axis — the units' one
+    /// conversion point.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "unit numbers are user-typed counts far below 2^24; exactness past it is meaningless"
+    )]
+    fn to_pixels(self, cell: f32, session: f32, inherent: f32) -> f32 {
+        match self {
+            Self::Cells(n) => n as f32 * cell,
+            Self::Pixels(n) => n as f32,
+            Self::Percent(n) => session * n as f32 / 100.0,
+            Self::Auto => inherent,
+        }
+    }
+}
+
+/// The placement-relevant args of a `File=`/`MultipartFile=` sequence
+/// (iterm-images spec): the size grammar, the aspect switch, and the
+/// inline gate. `size`/`name`/`type` are hints — carried nowhere day
+/// one — and unknown keys are ignored by the same silence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ImageArgs {
+    width: Option<SizeUnit>,
+    height: Option<SizeUnit>,
+    /// `preserveAspectRatio` — iTerm2's default 1; `0` alone disables.
+    preserve_aspect: bool,
+    /// `inline` — iTerm2's default 0 (a download there); `DropTerm`
+    /// renders nothing and logs nothing when off.
+    inline: bool,
+}
+
+impl Default for ImageArgs {
+    fn default() -> Self {
+        Self {
+            width: None,
+            height: None,
+            preserve_aspect: true,
+            inline: false,
+        }
+    }
+}
+
+impl ImageArgs {
+    /// Apply one `key=value` pair; a malformed known value reads as
+    /// absent (None), an unknown key is silence.
+    fn apply(&mut self, key: &[u8], value: &[u8]) {
+        match key {
+            b"width" => self.width = SizeUnit::parse(value),
+            b"height" => self.height = SizeUnit::parse(value),
+            b"preserveAspectRatio" => self.preserve_aspect = value != b"0",
+            b"inline" => self.inline = value == b"1",
+            _ => {}
+        }
+    }
+}
+
+/// Parse a `File=`/`MultipartFile=` sequence's parameter slices into
+/// args and (for the legacy single-shot form) its payload: the first
+/// slice carrying a `:` splits there — the pre-colon bytes are one
+/// more arg, the post-colon bytes the base64 payload. Chunked headers
+/// carry no colon and therefore no payload. Pure; never panics.
+fn parse_image_args(slices: &[Vec<u8>]) -> (ImageArgs, Option<Vec<u8>>) {
+    let mut args = ImageArgs::default();
+    let mut payload = None;
+    for (index, slice) in slices.iter().enumerate() {
+        // The first slice carries its opcode prefix; its remainder is
+        // an arg like every other slice.
+        let body = if index == 0 {
+            slice
+                .strip_prefix(b"File=")
+                .or_else(|| slice.strip_prefix(b"MultipartFile="))
+        } else {
+            Some(&slice[..])
+        };
+        let Some(mut body) = body else { continue };
+        // The legacy single-shot form carries its payload after the
+        // first `:` of the slice that has one; the pre-colon bytes
+        // remain an arg.
+        if payload.is_none()
+            && let Some(colon) = body.iter().position(|&byte| byte == b':')
+        {
+            payload = Some(body[colon + 1..].to_vec());
+            body = &body[..colon];
+        }
+        if let Some(equals) = body.iter().position(|&byte| byte == b'=') {
+            args.apply(&body[..equals], &body[equals + 1..]);
+        }
+    }
+    (args, payload)
+}
+
+/// The engine's decoded-image store (iterm-images spec): id → pixels
+/// plus the running decoded-byte total, oldest-evicted to stay under
+/// the budget. Evicted ids draw blank — cells outlive their pixels by
+/// design (OQ-3); the grid's own honesty. The renderer handles ride
+/// beside the pixels: `from_rgba` mints a fresh identity per call, so
+/// each id's pixels become a handle exactly once and the renderer's
+/// own cache holds the upload from there.
+#[derive(Default)]
+pub struct ImageStore {
+    /// Insertion order doubles as age: the front is the oldest.
+    images: VecDeque<(u64, image::RgbaImage)>,
+    /// The running decoded-byte total across live images.
+    bytes: usize,
+    /// Renderer handles by id — pixels-to-handle made exactly once.
+    handles: HashMap<u64, cosmic::iced::widget::image::Handle>,
+    /// z-indexes by id (kitty-images spec): z < 0 draws beneath the
+    /// glyphs, z >= 0 above them and below the cursor. An unrecorded
+    /// id — every iterm image — draws beneath, the drawing the first
+    /// module shipped; kitty records its z at seat, an absent `z`
+    /// reading as beneath too (the conservative default, one line to
+    /// flip).
+    layers: HashMap<u64, i32>,
+}
+
+impl ImageStore {
+    /// The pixels standing behind an id — `None` when the id never
+    /// existed or was evicted; the blank the widget draws.
+    pub fn get(&self, id: u64) -> Option<&image::RgbaImage> {
+        self.images
+            .iter()
+            .find(|(stored, _)| *stored == id)
+            .map(|(_, rgba)| rgba)
+    }
+
+    /// The renderer handle for an id, building it from the pixels on
+    /// first ask and serving the clone after — the renderer's cache
+    /// keys on the handle, so one build is one upload, forever.
+    /// `None` when the id stands behind no pixels.
+    pub fn handle_for(&mut self, id: u64) -> Option<cosmic::iced::widget::image::Handle> {
+        if let Some(handle) = self.handles.get(&id) {
+            return Some(handle.clone());
+        }
+        let rgba = self.get(id)?;
+        let handle = cosmic::iced::widget::image::Handle::from_rgba(
+            rgba.width(),
+            rgba.height(),
+            rgba.as_raw().clone(),
+        );
+        self.handles.insert(id, handle.clone());
+        Some(handle)
+    }
+
+    /// The running decoded-byte total (test surface for the budget).
+    #[cfg(test)]
+    fn total_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Insert an image under its id, evicting from the oldest until
+    /// the budget holds — but never evicting the image just inserted:
+    /// a single image larger than the whole budget still shows (the
+    /// cap is a ceiling, and decode's own allocation limit keeps any
+    /// single image far under it). An evicted id's handle and layer
+    /// die with its pixels.
+    fn insert_with_budget(&mut self, id: u64, rgba: image::RgbaImage, budget: usize) {
+        self.bytes += rgba.len();
+        self.images.push_back((id, rgba));
+        while self.bytes > budget && self.images.len() > 1 {
+            if let Some((oldest, evicted)) = self.images.pop_front() {
+                self.bytes -= evicted.len();
+                self.handles.remove(&oldest);
+                self.layers.remove(&oldest);
+            }
+        }
+    }
+
+    /// Insert under the shipped budget.
+    fn insert(&mut self, id: u64, rgba: image::RgbaImage) {
+        self.insert_with_budget(id, rgba, IMAGE_STORE_BUDGET);
+    }
+
+    /// Record one image's z-index (kitty-images spec).
+    pub fn set_layer(&mut self, id: u64, z: i32) {
+        self.layers.insert(id, z);
+    }
+
+    /// The layer an image's cells draw at (kitty-images spec): an
+    /// unrecorded id draws beneath the glyphs.
+    pub fn layer_of(&self, id: u64) -> i32 {
+        self.layers.get(&id).copied().unwrap_or(-1)
+    }
+
+    /// Remove one image's pixels, handle, and layer by id (kitty-images
+    /// spec's `a=d` free): a freed id draws the same blank an evicted
+    /// one does. A missing id is silence.
+    pub fn remove(&mut self, id: u64) {
+        if let Some(index) = self.images.iter().position(|(stored, _)| *stored == id)
+            && let Some((_, evicted)) = self.images.remove(index)
+        {
+            self.bytes -= evicted.len();
+        }
+        self.handles.remove(&id);
+        self.layers.remove(&id);
+    }
+
+    /// Empty the store whole (kitty-images spec's `d=A`): every
+    /// placement left standing draws blank, the grid's own honesty.
+    pub fn clear(&mut self) {
+        self.images.clear();
+        self.handles.clear();
+        self.layers.clear();
+        self.bytes = 0;
+    }
+}
+
+/// One accumulating `MultipartFile` session (iterm-images spec): the
+/// header's parsed args plus the growing decoded-payload bytes. One
+/// per terminal (OQ-1 — imgcat never interleaves); a new header
+/// aborts whatever stood by replacement.
+struct PendingImage {
+    args: ImageArgs,
+    payload: Vec<u8>,
+}
+
+/// Decode one image payload under the strict limits (iterm-images
+/// spec): dimension and allocation ceilings applied before any decode
+/// — the decompression-bomb guard — and only the four sanctioned
+/// formats (png/jpeg/gif/webp; anything else fails format detection
+/// and drops whole). Synchronous by design: no threads touch the
+/// damage path.
+fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
+    use image::ImageDecoder;
+
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_MAX_DIMENSION);
+    limits.max_image_height = Some(IMAGE_MAX_DIMENSION);
+    limits.max_alloc = Some(IMAGE_MAX_ALLOC);
+    let mut reader = image::ImageReader::new(io::Cursor::new(payload))
+        .with_guessed_format()
+        .ok()?;
+    // The reader's limits seat covers PNG; every other decoder needs
+    // them set on the decoder itself (the crate's own split), so both
+    // are applied before any decode runs.
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().ok()?;
+    decoder.set_limits(limits).ok()?;
+    // The allocation ceiling, enforced where the decoder exposes its
+    // header dimensions but not its allocations (PNG ignores
+    // max_alloc — the crate's own documented gap): the pixel budget
+    // the ceiling buys at four bytes a pixel, xterm.js's `pixelLimit`
+    // shape. Checked before any pixel is read.
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > IMAGE_MAX_ALLOC / 4 {
+        return None;
+    }
+    image::DynamicImage::from_decoder(decoder)
+        .ok()
+        .map(|dynamic| dynamic.to_rgba8())
+}
+
+/// Pixels to whole cells, never fewer than one (iterm-images spec).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the max(1.0) floors the value into usize range; rounding is the whole point"
+)]
+fn pixels_to_cells(pixels: f32, cell: f32) -> usize {
+    (pixels / cell).round().max(1.0) as usize
+}
+
+/// Resolve a placement's cell dimensions (iterm-images spec): the unit
+/// grammar against the cell pixel size and the session dims, aspect
+/// preserved unless `preserveAspectRatio=0` — one given axis scales
+/// the other along, both given fit within, neither leaves the image
+/// inherent. Every result is at least one cell. Pure; never panics.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "session pixel dims are window-sized, far below 2^24"
+)]
+fn resolve_placement(args: &ImageArgs, image: (f32, f32), size: &Size) -> (usize, usize) {
+    let (inherent_w, inherent_h) = image;
+    let box_w = args.width.unwrap_or(SizeUnit::Auto).to_pixels(
+        size.cell_width,
+        size.width as f32,
+        inherent_w,
+    );
+    let box_h = args.height.unwrap_or(SizeUnit::Auto).to_pixels(
+        size.cell_height,
+        size.height as f32,
+        inherent_h,
+    );
+
+    let (target_w, target_h) = if args.preserve_aspect {
+        let scale = match (args.width, args.height) {
+            (Some(_), Some(_)) => f32::min(box_w / inherent_w, box_h / inherent_h),
+            (Some(_), None) => box_w / inherent_w,
+            (None, Some(_)) => box_h / inherent_h,
+            (None, None) => 1.0,
+        };
+        (inherent_w * scale, inherent_h * scale)
+    } else {
+        (box_w, box_h)
+    };
+
+    (
+        pixels_to_cells(target_w, size.cell_width),
+        pixels_to_cells(target_h, size.cell_height),
+    )
+}
+
+/// Decode a base64 slice from the wire (iterm-images spec); a
+/// malformed slice is `None` — dropped whole, never half-carried.
+fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(data).ok()
+}
+
+// ===== Kitty graphics (kitty-images spec) =====
+
+/// The one error every forbidden transmission form answers with
+/// (kitty-images spec): file, temp-file, and shared-memory
+/// transmission never cross the seam, and the answer is byte-identical
+/// for all three so nothing about the filesystem is probeable —
+/// kitty's own uniform refusal wording.
+const KITTY_UNIFORM_ERROR: &str = "EBADF:Failed to read image file";
+
+/// The control keys of one APC `G` sequence (kitty-images spec) — the
+/// transmission subset's grammar. Unknown keys are ignored by the
+/// spec's own rule; a known key with a value outside its grammar
+/// drops the sequence whole.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct KittyKeys {
+    /// `a` — action: `t` transmit-only (the default), `T`
+    /// transmit-and-display; `p`/`q`/`d` are the command arms.
+    action: Option<u8>,
+    /// `f` — format: 24 and 100 ride the container decode path, 32 is
+    /// raw RGBA sized by `s`×`v`. Absent means 32 (kitty's default).
+    format: Option<u32>,
+    /// `t` — transmission medium: `d` direct in-band, the default and
+    /// the only accepted form.
+    transmission: Option<u8>,
+    /// `m=1` — more chunks follow; absent or `m=0` is the final chunk
+    /// (possibly empty, the observed chafa shape).
+    more: bool,
+    /// `o=z` — the payload arrives zlib-compressed.
+    compressed: bool,
+    /// `s`/`v` — the image's pixel width and height.
+    width_px: Option<u32>,
+    height_px: Option<u32>,
+    /// `c`/`r` — the display region in cells.
+    cols: Option<u32>,
+    rows: Option<u32>,
+    /// `x`/`y` — the displayed region's source offset; the region
+    /// extends to the image's far edges.
+    offset_x: Option<u32>,
+    offset_y: Option<u32>,
+    /// `i` — the client-chosen image id.
+    image_id: Option<u32>,
+    /// `I` — the terminal-assigned number; `DropTerm`'s numbers are
+    /// the store ids themselves (OQ-1), so this names one directly.
+    number: Option<u32>,
+    /// `p` — the placement id.
+    placement_id: Option<u32>,
+    /// `z` — the z-index layer (consumed at paint).
+    z: Option<i32>,
+    /// `q` — reply suppression: 1 silences OK replies, 2 errors too.
+    quiet: u8,
+    /// `e` — the feature-query group (`T`/`t`/`p`/`d`).
+    query_keys: Option<u8>,
+    /// `d` — the deletion target, with whether the pixels free too.
+    delete: Option<KittyDelete>,
+}
+
+/// One `a=d` deletion's target (kitty-images spec): the four subset
+/// selectors, the uppercase twins of the letter keys carrying the
+/// free flag in [`KittyDelete`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DeleteTarget {
+    /// `a`/`A` — every image.
+    All,
+    /// `i<x>`/`I<x>` — one image, named as a client id first, a
+    /// number (the store id itself) second.
+    Image(u32),
+    /// `n`/`N` — the most recently transmitted image.
+    Newest,
+    /// `c`/`C` — the visible screen's placements.
+    Visible,
+}
+
+/// One `a=d` deletion (kitty-images spec): the target plus whether
+/// the pixels free with the placements — the uppercase letter's doing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KittyDelete {
+    target: DeleteTarget,
+    free: bool,
+}
+
+impl KittyKeys {
+    /// Whether this chunk opens a transmission: it carries any control
+    /// key beyond the chunking keys `m`/`i`/`q` — kitty's own rule
+    /// that all control keys ride the first chunk, inverted.
+    fn opens(&self) -> bool {
+        self.action.is_some()
+            || self.format.is_some()
+            || self.transmission.is_some()
+            || self.compressed
+            || self.width_px.is_some()
+            || self.height_px.is_some()
+            || self.cols.is_some()
+            || self.rows.is_some()
+            || self.offset_x.is_some()
+            || self.offset_y.is_some()
+            || self.placement_id.is_some()
+            || self.z.is_some()
+    }
+}
+
+/// Parse one `G` sequence's control data (kitty-images spec):
+/// comma-separated single-character `key=value` pairs. Unknown keys
+/// are ignored; a known key with a malformed value drops the sequence
+/// whole. Pure; never panics.
+fn parse_kitty_keys(control: &[u8]) -> Option<KittyKeys> {
+    fn number(value: &[u8]) -> Option<u32> {
+        std::str::from_utf8(value).ok()?.parse().ok()
+    }
+
+    let mut keys = KittyKeys::default();
+    // A bare `G` string carries no control data at all — empty parses
+    // as no keys, the same silence a payload-only chunk owns.
+    if control.is_empty() {
+        return Some(keys);
+    }
+    for token in control.split(|&byte| byte == b',') {
+        let eq = token.iter().position(|&byte| byte == b'=')?;
+        let (key, value) = token.split_at(eq);
+        let value = &value[1..];
+        // Kitty's keys are single characters; anything longer is
+        // malformed control data.
+        if key.len() != 1 {
+            return None;
+        }
+        match key[0] {
+            b'a' => {
+                keys.action = match value {
+                    [byte] if b"tTpqd".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b't' => {
+                keys.transmission = match value {
+                    [byte] if b"dfts".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b'f' => keys.format = Some(number(value)?),
+            b'm' => {
+                keys.more = match value {
+                    b"1" => true,
+                    b"0" => false,
+                    _ => return None,
+                };
+            }
+            b'o' => {
+                if value != b"z" {
+                    return None;
+                }
+                keys.compressed = true;
+            }
+            b's' => keys.width_px = Some(number(value)?),
+            b'v' => keys.height_px = Some(number(value)?),
+            b'c' => keys.cols = Some(number(value)?),
+            b'r' => keys.rows = Some(number(value)?),
+            b'x' => keys.offset_x = Some(number(value)?),
+            b'y' => keys.offset_y = Some(number(value)?),
+            b'i' => keys.image_id = Some(number(value)?),
+            b'I' => keys.number = Some(number(value)?),
+            b'p' => keys.placement_id = Some(number(value)?),
+            b'z' => keys.z = Some(std::str::from_utf8(value).ok()?.parse().ok()?),
+            b'e' => {
+                keys.query_keys = match value {
+                    [byte] if b"Ttpd".contains(byte) => Some(*byte),
+                    _ => return None,
+                };
+            }
+            b'd' => {
+                keys.delete = match value.split_first() {
+                    // The four subset selectors, uppercase freeing too.
+                    Some((b'a', _)) => Some(KittyDelete {
+                        target: DeleteTarget::All,
+                        free: false,
+                    }),
+                    Some((b'A', _)) => Some(KittyDelete {
+                        target: DeleteTarget::All,
+                        free: true,
+                    }),
+                    Some((b'n', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Newest,
+                        free: false,
+                    }),
+                    Some((b'N', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Newest,
+                        free: true,
+                    }),
+                    Some((b'c', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Visible,
+                        free: false,
+                    }),
+                    Some((b'C', _)) => Some(KittyDelete {
+                        target: DeleteTarget::Visible,
+                        free: true,
+                    }),
+                    Some((selector @ (b'i' | b'I'), tail)) => {
+                        // A bare selector with no name is malformed;
+                        // every other value is ignored silently day
+                        // one (the region deletes, OQ-2).
+                        let name = number(tail)?;
+                        let free = *selector == b'I';
+                        Some(KittyDelete {
+                            target: DeleteTarget::Image(name),
+                            free,
+                        })
+                    }
+                    _ => None,
+                };
+            }
+            b'q' => {
+                keys.quiet = match value {
+                    b"0" => 0,
+                    b"1" => 1,
+                    b"2" => 2,
+                    _ => return None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Some(keys)
+}
+
+/// One kitty transmission in flight (kitty-images spec): the first
+/// chunk's parsed keys plus the accumulated decoded payload, keyed by
+/// the client `i` (`None` is the anonymous slot).
+struct KittyChunk {
+    keys: KittyKeys,
+    payload: Vec<u8>,
+}
+
+/// One kitty placement (kitty-images spec): the cells' own id — the
+/// move sweep's exact target — and the image whose pixels it shows.
+struct KittyPlacement {
+    cells: u64,
+    image: u64,
+}
+
+/// One graphics reply's bytes (kitty-images spec): `i=` rides the
+/// reply only when the client sent one. Byte-exact per the spec's own
+/// detection contract — a DA1 reply without a graphics reply means no
+/// support, so every query and refusal still answers.
+fn kitty_reply(id: Option<u32>, body: &str) -> Vec<u8> {
+    match id {
+        Some(id) => format!("\x1b_Gi={id};{body}\x1b\\"),
+        None => format!("\x1b_G{body}\x1b\\"),
+    }
+    .into_bytes()
+}
+
+/// The uniform-refusal reply bytes (kitty-images spec) — the one
+/// error every refusal and failed load answers with.
+fn kitty_error_reply(id: Option<u32>) -> Vec<u8> {
+    kitty_reply(id, KITTY_UNIFORM_ERROR)
+}
+
+/// The feature-true key list for one `e=` query group (kitty-images
+/// spec): exactly what this implementation parses and honors, by the
+/// group the protocol splits the keys into — the answer `kitten icat`
+/// reads when it probes.
+fn kitty_feature_list(group: u8) -> &'static str {
+    match group {
+        // Transmission: medium, formats, compression, source dims,
+        // chunking, ids, suppression.
+        b'T' => "t=d,f=24,f=32,f=100,o=z,s,v,m,i,I,q",
+        // Display: the actions and the cell geometry.
+        b't' => "a=T,a=t,c,r,x,y",
+        // Placement: re-placement and its ids.
+        b'p' => "a=p,p,i,I,z",
+        // Deletion: the target grammar.
+        _ => "d=a,d=A,d=i,d=I,d=n,d=N,d=c,d=C",
+    }
+}
+
+/// The `a=q` answer's bytes (kitty-images spec), suppression applied:
+/// an `e=` group answers its feature list regardless of any image; a
+/// test-load resolves `i` through the client-id map or `I` as the
+/// number itself and answers OK for live pixels, the uniform error
+/// otherwise; a query naming nothing is silence. `None` writes
+/// nothing. Pure; never panics.
+fn kitty_query_reply(
+    keys: &KittyKeys,
+    ids: &HashMap<u32, u64>,
+    store: &ImageStore,
+) -> Option<Vec<u8>> {
+    if let Some(group) = keys.query_keys {
+        let body = format!("OK {}", kitty_feature_list(group));
+        return (keys.quiet < 1).then(|| kitty_reply(keys.image_id, &body));
+    }
+
+    let image = match (keys.image_id, keys.number) {
+        (Some(client), _) => ids.get(&client).copied(),
+        (None, Some(number)) => Some(u64::from(number)),
+        (None, None) => return None,
+    };
+    if image.is_some_and(|id| store.get(id).is_some()) {
+        (keys.quiet < 1).then(|| kitty_reply(keys.image_id, "OK"))
+    } else {
+        (keys.quiet < 2).then(|| kitty_error_reply(keys.image_id))
+    }
+}
+
+/// Inflate one `o=z` payload (kitty-images spec) under the same cap
+/// the wire bytes obey — a decompression bomb dies at the cap, never
+/// inside a decoder. `None` on a corrupt stream or an over-cap
+/// inflate; pure; never panics.
+fn inflate_capped(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    // One byte past the cap, so an over-cap stream is detected rather
+    // than silently truncated.
+    let mut limited = ZlibDecoder::new(data).take(IMAGE_PAYLOAD_CAP as u64 + 1);
+    let mut out = Vec::new();
+    limited.read_to_end(&mut out).ok()?;
+    if out.len() > IMAGE_PAYLOAD_CAP {
+        return None;
+    }
+    Some(out)
+}
+
+/// Decode one completed kitty payload (kitty-images spec) under the
+/// iterm module's own ceilings — the dimension and allocation limits
+/// apply before any pixel exists. `f=24`/`f=100` ride the container
+/// decode path (the `image` crate's format detection under the strict
+/// `Limits`); `f=32` is raw RGBA whose byte count must be exactly
+/// `s`×`v`×4. Anything else drops whole. Pure; never panics.
+fn decode_kitty_payload(keys: &KittyKeys, payload: &[u8]) -> Option<image::RgbaImage> {
+    let payload = if keys.compressed {
+        &inflate_capped(payload)?
+    } else {
+        payload
+    };
+    match keys.format.unwrap_or(32) {
+        24 | 100 => decode_image(payload),
+        32 => {
+            let width = keys.width_px?;
+            let height = keys.height_px?;
+            if width > IMAGE_MAX_DIMENSION
+                || height > IMAGE_MAX_DIMENSION
+                || u64::from(width) * u64::from(height) > IMAGE_MAX_ALLOC / 4
+            {
+                return None;
+            }
+            if payload.len() != width as usize * height as usize * 4 {
+                return None;
+            }
+            image::RgbaImage::from_raw(width, height, payload.to_vec())
+        }
+        // An off-subset format never crosses the seam.
+        _ => None,
+    }
+}
+
+/// The display region in cells (kitty-images spec): `c`/`r` when
+/// given (zero reads as absent — kitty's natural-size marker), else
+/// the image's inherent pixels against the cell size.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "decode-capped dimensions (8192) are exact in f32"
+)]
+fn kitty_cells(keys: &KittyKeys, image: (u32, u32), size: &Size) -> (usize, usize) {
+    let cols = keys.cols.filter(|cols| *cols > 0).map_or_else(
+        || pixels_to_cells(image.0 as f32, size.cell_width),
+        |cols| cols as usize,
+    );
+    let rows = keys.rows.filter(|rows| *rows > 0).map_or_else(
+        || pixels_to_cells(image.1 as f32, size.cell_height),
+        |rows| rows as usize,
+    );
+    (cols, rows)
+}

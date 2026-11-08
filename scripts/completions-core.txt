@@ -1,0 +1,114 @@
+# The core completions tier's command list (suggest-corpus spec).
+# One name per line, `#` comments. Every name must exist as a spec at
+# the pinned corpus — the extractor fails the run on a missing one.
+# The embedded floor's size is the maintainer's to grow: add names
+# here, never in the extractor.
+#
+# The ruled five — the in-code table's own commands, each re-declared
+# complete so the whole-replace merge never shrinks them:
+cargo
+docker
+git
+npm
+systemctl
+#
+# The audited seed's fourteen (docs/research/completions-seed-audit.md)
+# minus the five already seated:
+apt
+curl
+gh
+kubectl
+make
+pip
+rsync
+tar
+#
+# The hand-picked breadth list (SPEC-suggest-corpus.md, OQ-2 taken as
+# proposed): containers/IaC, toolchains, languages, file utilities,
+# shells and editors, system and network.
+podman
+docker-compose
+helm
+terraform
+aws
+gcloud
+rustc
+rustup
+node
+npx
+yarn
+pnpm
+deno
+bun
+python
+python3
+pip3
+pipx
+poetry
+uv
+go
+java
+mvn
+gradle
+dotnet
+ruby
+gem
+bundle
+# php struck 2026-11-07: the spec at the pin is pure generateSpec —
+# it probes for artisan/bin/console at runtime, so its static subset
+# is empty and the run fails loudly. Nothing to embed.
+# composer struck the same day for the same reason: it builds its
+# whole tree from `composer list --format=json` inside generateSpec.
+# cd struck too: its one arg is nameless (the schema seats named args)
+# and the Path provider already owns the directory completion anyway.
+cmake
+gcc
+clang
+ssh
+scp
+wget
+zip
+unzip
+grep
+find
+sed
+ls
+mkdir
+rm
+cp
+mv
+chmod
+chown
+cat
+less
+head
+tail
+sort
+uniq
+wc
+xargs
+tmux
+screen
+vim
+nvim
+code
+man
+sudo
+ping
+dig
+nc
+gpg
+ffmpeg
+jq
+tree
+htop
+ps
+kill
+killall
+df
+du
+mount
+lsblk
+passwd
+brew
+just

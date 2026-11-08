@@ -83,7 +83,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Test
-        run: just test --locked
+        run: just test
 
   # Per-arch release tarballs: per-package release builds (never a
   # unified workspace build — feature unification would hand the

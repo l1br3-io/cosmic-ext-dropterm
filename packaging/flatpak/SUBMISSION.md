@@ -81,7 +81,12 @@ Evidence block — attach/reference in the PR:
   `<category>System</category>` into the installed metainfo, archive
   URL + sha untouched — which builds, exports, and installs clean.
   Fix before filing: ship a category-bearing metainfo in a patch
-  release and recut the branch from its own matching tree.
+  release and recut the branch from its own matching tree. **Fixed in
+  v0.3.1**: both metainfo files now carry `<categories>` in the shipped
+  bytes — the applet `System` (the exact category the patched walk
+  proved), the terminal `System` + `TerminalEmulator` — and the catalog
+  branch recuts from the v0.3.1 tree, so no build-command sed is needed
+  and the pinned bytes pass `appstreamcli compose` as-is.
 - **Hardware walk** (COSMIC validation VM, 2026-11-04, on the patched
   build; per-row detail in `docs/testing.md`):
   - Listing and add: applet installed `--user` and added to the panel

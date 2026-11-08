@@ -23,7 +23,10 @@ use alacritty_terminal::{
     grid::Dimensions,
     index::{Column as TermColumn, Point as TermPoint, Side as TermSide},
     selection::{Selection, SelectionType},
-    term::{TermMode, cell::Flags},
+    term::{
+        TermMode,
+        cell::{Flags, ImageCell},
+    },
     vte::ansi::{CursorShape, NamedColor},
 };
 use cosmic::{
@@ -43,6 +46,10 @@ use cosmic::{
             operation::{self, Operation},
             tree,
         },
+    },
+    iced::core::{
+        Radians,
+        image::{FilterMethod, Image, Renderer as _},
     },
     iced::{
         Color, Element, Length, Padding, Point, Rectangle, Size, Vector,
@@ -962,6 +969,69 @@ where
             }
         });
 
+        // Inline images (iterm-images + kitty z-layers specs): every
+        // covered cell carries its normalized sub-rect of the shared
+        // image; the pinned renderer's image pipeline has no
+        // source-rect seat, so each cell draws the whole image at the
+        // rect its sub-rect implies, clipped to the cell — the clip
+        // is the sub-rect. Two passes over the same cells: a
+        // beneath-layer image (an unrecorded id — every iterm image —
+        // or kitty `z<0`) draws here, under the text pass that
+        // follows; an above-layer one (kitty `z>=0`) is collected and
+        // drawn after the glyphs, still below the cursor and ghost
+        // overlays. An evicted id draws blank either way (OQ-3).
+        let mut above_layer_images: Vec<(i32, Image, Rectangle<f32>, Rectangle<f32>)> = Vec::new();
+        {
+            let size = terminal.size();
+            let mut images = terminal.images.lock().unwrap();
+            let term = terminal.term.lock();
+            let display_offset = term.grid().display_offset();
+            for indexed in term.grid().display_iter() {
+                let Some(sub) = indexed.cell.image() else {
+                    continue;
+                };
+                // Evicted: the cell stands, the pixels are gone — the
+                // blank is the honest draw (OQ-3).
+                let Some(handle) = images.handle_for(sub.image) else {
+                    continue;
+                };
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    clippy::cast_precision_loss,
+                    reason = "grid coordinates and scroll offsets are surface-bounded, far inside i32/f32 exactness"
+                )]
+                let cell_rect = Rectangle::new(
+                    view_position
+                        + Vector::new(
+                            indexed.point.column.0 as f32 * size.cell_width,
+                            (indexed.point.line.0 + display_offset as i32) as f32
+                                * size.cell_height,
+                        ),
+                    Size::new(size.cell_width, size.cell_height),
+                );
+                let image = Image {
+                    handle,
+                    filter_method: FilterMethod::Linear,
+                    rotation: Radians(0.0),
+                    border_radius: Radius::from(0.0),
+                    opacity: 1.0,
+                    snap: false,
+                };
+                let layer = images.layer_of(sub.image);
+                if layer < 0 {
+                    renderer.draw_image(image, image_draw_rect(cell_rect, sub), cell_rect);
+                } else {
+                    above_layer_images.push((
+                        layer,
+                        image,
+                        image_draw_rect(cell_rect, sub),
+                        cell_rect,
+                    ));
+                }
+            }
+        }
+
         #[expect(
             clippy::cast_precision_loss,
             reason = "view px are < 2^24, exact in f32"
@@ -972,6 +1042,18 @@ where
             color: Color::from_rgba(1.0, 1.0, 1.0, 1.0), // TODO:
             clip_bounds: Rectangle::new(view_position, Size::new(view_w as f32, view_h as f32)),
         });
+
+        // The above-glyph image pass (kitty z-layers): the collected
+        // z>=0 seats draw over the text and under everything later —
+        // the cursor, the ghost, the completion menu. Overlapping
+        // above-layer images composite by z, the higher on top
+        // (kitty's own overlap rule); the sort is stable and one
+        // image's cells never overlap, so the walk order inside a z
+        // stands.
+        above_layer_images.sort_by_key(|&(z, ..)| z);
+        for (_, image, rect, clip) in above_layer_images {
+            renderer.draw_image(image, rect, clip);
+        }
 
         // The ghost-text overlay (autosuggest + ghost-fit specs): the
         // showing's visible string as dim glyphs starting one cell
@@ -2910,6 +2992,22 @@ fn child_owns_pointer(mouse_reporting: bool, drag_in_flight: bool, shift: bool) 
     mouse_reporting && !drag_in_flight && !shift
 }
 
+/// The full-image rectangle a covered cell's sub-rect implies
+/// (iterm-images spec): the cell's own rect rescaled by its share of
+/// the image, positioned so the sub-rect lands exactly on the cell.
+/// The pinned renderer's image pipeline has no source-rect seat, so
+/// the draw clips to the cell — the clip is the sub-rect. Pure.
+fn image_draw_rect(cell: Rectangle<f32>, sub: ImageCell) -> Rectangle<f32> {
+    let width = cell.width / (sub.x1 - sub.x0);
+    let height = cell.height / (sub.y1 - sub.y0);
+    Rectangle {
+        x: cell.x - sub.x0 * width,
+        y: cell.y - sub.y0 * height,
+        width,
+        height,
+    }
+}
+
 fn calculate_modifier_number(state: &State) -> u8 {
     let mut mod_no = 0;
     if state.modifiers.shift() {
@@ -2977,9 +3075,10 @@ fn context_menu_press(menu_open: bool, button: Button) -> Option<bool> {
 mod tests {
     use super::{
         DisabledFlow, EdgeScrollDirection, MenuRouting, accumulate_wheel_lines, context_menu_press,
-        disabled_forwards, edge_scroll_adjustment, menu_key, menu_panel_bounds, menu_panel_style,
-        menu_visible_window,
+        disabled_forwards, edge_scroll_adjustment, image_draw_rect, menu_key, menu_panel_bounds,
+        menu_panel_style, menu_visible_window,
     };
+    use alacritty_terminal::term::cell::ImageCell;
     use cosmic::cosmic_theme::palette::WithAlpha;
     use cosmic::iced::keyboard::{Modifiers, key::Named};
     use cosmic::iced::mouse::Button;
@@ -2990,6 +3089,58 @@ mod tests {
     use super::no_ctrl_input;
     use crate::terminal::suggest::AcceptKind;
     use crate::terminal::suggest::MenuKey;
+
+    #[test]
+    fn image_draw_rect_is_identity_for_a_whole_image_cell() {
+        let cell = Rectangle::new(Point::new(100.0, 60.0), Size::new(8.0, 16.0));
+        let sub = ImageCell {
+            image: 1,
+            x0: 0.0,
+            y0: 0.0,
+            x1: 1.0,
+            y1: 1.0,
+        };
+        assert_eq!(image_draw_rect(cell, sub), cell);
+    }
+
+    #[test]
+    fn image_draw_rect_places_the_full_image_behind_a_diced_cell() {
+        // The bottom-right cell of a 2x2 dicing: the full image is
+        // twice the cell in each axis, offset so the cell's sub-rect
+        // lands exactly on it.
+        let cell = Rectangle::new(Point::new(100.0, 60.0), Size::new(8.0, 16.0));
+        let sub = ImageCell {
+            image: 1,
+            x0: 0.5,
+            y0: 0.5,
+            x1: 1.0,
+            y1: 1.0,
+        };
+        let full = image_draw_rect(cell, sub);
+        assert_eq!(
+            full,
+            Rectangle::new(Point::new(92.0, 44.0), Size::new(16.0, 32.0))
+        );
+    }
+
+    #[test]
+    fn image_draw_rect_handles_cut_off_columns() {
+        // A clamped placement's cells carry their true fraction of the
+        // whole; the derived full width is the cell over its share.
+        let cell = Rectangle::new(Point::new(0.0, 0.0), Size::new(8.0, 16.0));
+        let sub = ImageCell {
+            image: 1,
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.25,
+            y1: 1.0,
+        };
+        let full = image_draw_rect(cell, sub);
+        assert_eq!(
+            full,
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(32.0, 16.0))
+        );
+    }
 
     #[test]
     fn no_ctrl_input_delivers_the_character_text_carries() {

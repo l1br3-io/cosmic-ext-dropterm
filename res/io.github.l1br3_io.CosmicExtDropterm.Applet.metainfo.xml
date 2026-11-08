@@ -21,7 +21,15 @@
   <url type="bugtracker">https://github.com/l1br3-io/cosmic-ext-dropterm/issues</url>
   <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
   <content_rating type="oars-1.1"/>
+  <categories>
+    <category>System</category>
+  </categories>
   <releases>
+    <release version="0.3.1" date="2026-11-07">
+      <description>
+        <p>Tracking DropTerm 0.3.1, the store-listing release — its metainfo carries its categories, the catalog compose's blocker cleared; the applet itself is unchanged.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-10-24">
       <description>
         <p>Tracking DropTerm 0.3.0, the terminal's autosuggestions release; the applet itself carries only build-identity refinements.</p>
