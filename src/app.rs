@@ -981,6 +981,7 @@ impl DropTerm {
                 .as_ref()
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
+            pasted: Some(tab.pasted_images.len()),
             ssh_destination: self.active_ssh_destination.as_deref(),
             hostname: self.local_hostname.as_deref(),
             missed_activity,

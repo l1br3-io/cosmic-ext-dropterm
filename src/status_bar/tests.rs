@@ -32,6 +32,7 @@ fn resolve(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -278,6 +279,7 @@ fn the_drop_order_pins_the_precedence() {
     assert_eq!(
         DROP_ORDER,
         [
+            SegmentId::Pasted,
             SegmentId::Grid,
             SegmentId::Tab,
             SegmentId::Zoom,
@@ -431,8 +433,15 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
     // while the (k-1)-th sits below one character): the path's char
     // budget never shrinks as drops free width.
     let mut prev_chars = 0;
-    let fixture = fit_widths();
-    for k in 1..=10 {
+    // The full-drop walk measures every DROP_ORDER id, the pasted
+    // chip first among them — its own fixture, one width entry per
+    // droppable segment.
+    let fixture = {
+        let mut widths = fit_widths();
+        widths.push((SegmentId::Pasted, 30.0));
+        widths
+    };
+    for k in 1..=11 {
         let freed: f32 = DROP_ORDER
             .iter()
             .take(k)
@@ -446,11 +455,15 @@ fn the_path_re_expands_monotonically_as_drops_free_width() {
             .sum();
         #[expect(
             clippy::cast_precision_loss,
-            reason = "a loop index of ten, exact in f32"
+            reason = "a loop index of eleven, exact in f32"
         )]
         let room = 10.0 + 4.0 * (k as f32 - 1.0);
-        let width = 100.0 + 421.0 + room - freed;
-        let fit = band_fit(width, 100.0, &fit_widths(), fit_path());
+        // The 463 base is the fixture's full droppable inventory:
+        // every measured width plus its segment gap, the pasted
+        // chip included (eleven segments — one character of slack
+        // keeps the resting fit whole).
+        let width = 100.0 + 463.0 + room - freed;
+        let fit = band_fit(width, 100.0, &fixture, fit_path());
         assert_eq!(
             fit.dropped.len(),
             k,
@@ -666,6 +679,7 @@ fn resolve_full(toggles: StatusToggles) -> StatusSegments {
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
         scrolled_back: Some(12),
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -693,6 +707,7 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
         SegmentId::Branch => segments.branch.is_some(),
         SegmentId::Profile => segments.profile.is_some(),
         SegmentId::Grid => segments.grid.is_some(),
+        SegmentId::Pasted => segments.pasted.is_some(),
         SegmentId::Tab => segments.tab_position.is_some(),
         SegmentId::Zoom => segments.zoom_percent.is_some(),
         SegmentId::Clock => segments.clock.is_some(),
@@ -705,6 +720,9 @@ fn segment_present(segments: &StatusSegments, id: SegmentId) -> bool {
 
 fn hide(toggles: &mut StatusToggles, id: SegmentId) {
     let field = match id {
+        // The pasted chip hides by count, not by key (paste-chip
+        // OQ-4) — no toggle exists to flip.
+        SegmentId::Pasted => unreachable!("the pasted chip has no hide key"),
         SegmentId::Process => &mut toggles.process,
         SegmentId::Path => &mut toggles.path,
         SegmentId::Branch => &mut toggles.branch,
@@ -750,6 +768,7 @@ fn the_clusters_pin_the_twelve_segments_order() {
             SegmentId::Tab,
             SegmentId::Zoom,
             SegmentId::Scrolled,
+            SegmentId::Pasted,
             SegmentId::Clock
         ]
     );
@@ -761,6 +780,12 @@ fn each_toggle_hides_exactly_its_segment() {
         .iter()
         .chain(RIGHT_CLUSTER.iter())
         .copied()
+        .filter(|id| {
+            // The pasted chip owns no toggle (paste-chip OQ-4): its
+            // visibility is its conditionality, so it is not part
+            // of this test's hide-exactly-one universe.
+            *id != SegmentId::Pasted
+        })
         .collect();
     for hidden in &every {
         let mut toggles = StatusToggles::all();
@@ -832,6 +857,7 @@ fn resolve_duration(
         running_elapsed,
         frozen,
         scrolled_back: None,
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -971,6 +997,7 @@ fn resolve_exit(exit_status: Option<u32>, toggles: StatusToggles) -> StatusSegme
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -1227,6 +1254,7 @@ fn resolve_reported(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination,
         missed_activity: false,
         attention_red: None,
@@ -1421,6 +1449,7 @@ fn resolve_grid(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -1501,6 +1530,7 @@ fn resolve_scrolled(scrolled_back: Option<u16>, toggles: StatusToggles) -> Statu
         running_elapsed: None,
         frozen: None,
         scrolled_back,
+        pasted: None,
         ssh_destination: None,
         missed_activity: false,
         attention_red: None,
@@ -1714,6 +1744,7 @@ fn resolve_ssh(
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination,
         missed_activity: false,
         attention_red: None,
@@ -2055,6 +2086,7 @@ fn resolve_passes_the_missed_activity_fact_and_the_reds_through_untouched() {
         running_elapsed: None,
         frozen: None,
         scrolled_back: None,
+        pasted: None,
         ssh_destination: None,
         missed_activity: true,
         attention_red: Some((0.6, 0.1, 0.1)),
@@ -2370,6 +2402,7 @@ fn the_band_constructs_from_plain_resolved_data_only() {
         running_elapsed: None,
         frozen: None,
         scrolled: None,
+        pasted: None,
         missed_activity: false,
         attention_red: None,
         attention_bright_red: None,
@@ -2761,6 +2794,7 @@ fn rich_segments() -> StatusSegments {
         running_elapsed: Some(Duration::from_secs(161)),
         frozen: None,
         scrolled: Some(7),
+        pasted: None,
         missed_activity: false,
         attention_red: None,
         attention_bright_red: None,
@@ -2952,4 +2986,72 @@ fn menu_bounds_anchors_at_the_press_and_clamps_into_the_band() {
         8.0 * DROPDOWN_ROW_HEIGHT,
         "height is the row count on the shared menu row height"
     );
+}
+
+// --- the pasted-count chip (paste-chip spec, PC-1) ---
+
+#[test]
+fn the_pasted_chip_is_absent_at_zero_and_carries_the_count_when_present() {
+    // The exit chip's rule, borrowed whole: zero is the unmarked
+    // default — the same indistinguishable `None` a hidden segment
+    // resolves to — and N pastes render `img N`.
+    let inputs = StatusInputs {
+        home: None,
+        cwd: None,
+        shell: "/bin/sh",
+        profile_name: None,
+        zoom_adj: 0,
+        zoom_step_mul_100: 100,
+        foreground: None,
+        branch: None,
+        grid: None,
+        spawn_grid: None,
+        tab_position: None,
+        clock: None,
+        running_elapsed: None,
+        frozen: None,
+        scrolled_back: None,
+        ssh_destination: None,
+        missed_activity: false,
+        attention_red: None,
+        attention_bright_red: None,
+        exit_status: None,
+        reported_cwd: None,
+        hostname: None,
+        progress: None,
+        program_status: None,
+        pasted: Some(0),
+    };
+    assert_eq!(
+        resolve_segments(&inputs, StatusToggles::all()).pasted,
+        None,
+        "zero pastes render no chip"
+    );
+    let counted = resolve_segments(
+        &StatusInputs {
+            pasted: Some(3),
+            ..inputs
+        },
+        StatusToggles::all(),
+    );
+    assert_eq!(counted.pasted, Some(3));
+    assert_eq!(counted.pasted.map(pasted_display), Some("img 3".to_owned()));
+}
+
+#[test]
+fn the_pasted_chip_drops_first_under_width_pressure() {
+    // The band's most redundant fact: the path already sits in the
+    // grid, the files on disk — the chip yields before everything.
+    assert_eq!(DROP_ORDER.first(), Some(&SegmentId::Pasted));
+}
+
+#[test]
+fn the_pasted_chip_sits_between_scrolled_and_clock() {
+    // State of the session beside state of the view, beside time
+    // (paste-chip spec OQ-2).
+    let seats = RIGHT_CLUSTER;
+    let scrolled = seats.iter().position(|id| *id == SegmentId::Scrolled);
+    let pasted = seats.iter().position(|id| *id == SegmentId::Pasted);
+    let clock = seats.iter().position(|id| *id == SegmentId::Clock);
+    assert!(matches!((scrolled, pasted, clock), (Some(s), Some(p), Some(c)) if s < p && p < c));
 }

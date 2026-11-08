@@ -163,6 +163,11 @@ pub enum SegmentId {
     /// The viewport's lines scrolled back from the bottom
     /// (status-scrolled spec) — the off-bottom chip, `↑12`.
     Scrolled,
+    /// The active tab's pasted-image count (paste-chip spec) —
+    /// `img N`, absent at zero (the exit chip's rule: no pastes is
+    /// the unmarked default). The click opens the images panel,
+    /// never a copy.
+    Pasted,
     /// The pre-formatted wall clock.
     Clock,
 }
@@ -184,20 +189,26 @@ pub const LEFT_CLUSTER: [SegmentId; 6] = [
 /// The right cluster's segments in draw order — the dimmed alpha,
 /// the clock rightmost (the tmux seat). The scrolled chip sits
 /// between Zoom and Clock (status-scrolled OQ-2): state of the
-/// view, beside time.
-pub const RIGHT_CLUSTER: [SegmentId; 6] = [
+/// view, beside time. The pasted-count chip sits between Scrolled
+/// and Clock (paste-chip spec OQ-2): state of the session beside
+/// state of the view.
+pub const RIGHT_CLUSTER: [SegmentId; 7] = [
     SegmentId::Profile,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Scrolled,
+    SegmentId::Pasted,
     SegmentId::Clock,
 ];
 
 /// Drop precedence under width pressure — first-dropped first.
 /// Process and path are absent by construction: the disc never
 /// yields, and the path elides before anything else gives way.
-/// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
+/// The pasted-count chip yields before everything (paste-chip
+/// spec): the band's most redundant fact — the path already sits
+/// in the grid, the files on disk. Facts the shell itself knows
+/// (`$COLUMNS×$LINES`) follow,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
 /// the progress chip drops before the exit chip (the most
@@ -207,7 +218,8 @@ pub const RIGHT_CLUSTER: [SegmentId; 6] = [
 /// "what's happening now" — it must survive while the command's
 /// own narration stands), and the clock is last — tmux keeps time
 /// to the bitter end.
-pub const DROP_ORDER: [SegmentId; 10] = [
+pub const DROP_ORDER: [SegmentId; 11] = [
+    SegmentId::Pasted,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
@@ -338,6 +350,13 @@ pub struct StatusSegments {
     /// rest. The display is [`scrolled_display`]; the click is the
     /// jump, never a copy.
     pub scrolled: Option<u16>,
+    /// The active tab's pasted-image count (paste-chip spec) —
+    /// absent at zero (and when there is no active tab): the exit
+    /// chip's indistinguishable `None`, so the chip exists only
+    /// when there are pastes to point at. The display is
+    /// [`pasted_display`]; the click opens the images panel, never
+    /// a copy.
+    pub pasted: Option<usize>,
     /// The running command's own progress report (osc94-progress
     /// spec), verbatim from the engine — the display
     /// ([`progress_display`]) and the error-red decision derive at
@@ -431,6 +450,12 @@ pub struct StatusInputs<'a> {
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
+    /// The active tab's pasted-image count (paste-chip spec) — the
+    /// ledger's length, kept fresh by the prune at its mutating
+    /// moments (paste, panel open, remove); ungathered past zero by
+    /// construction. No toggle gates it: the chip's visibility is
+    /// its conditionality (paste-chip OQ-4).
+    pub pasted: Option<usize>,
     /// The running command's own progress report (OSC 9;4,
     /// osc94-progress spec) — the engine's standing fact, gathered
     /// under the progress toggle's gate. `None` (no integration, a
@@ -574,6 +599,10 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.scrolled_back)
             .flatten()
             .filter(|&lines| lines > 0),
+        // The pasted count, ungated by a toggle (paste-chip spec):
+        // the chip's visibility is its conditionality — zero is the
+        // same indistinguishable None a hidden segment resolves to.
+        pasted: inputs.pasted.filter(|&count| count > 0),
         // The engine's standing report, verbatim — hidden and
         // absent the same indistinguishable None (osc94-progress
         // spec); the display and the error-red decision derive at
@@ -616,6 +645,15 @@ pub fn duration_display(segments: &StatusSegments) -> String {
 /// click is the jump, not a copy; this display is the whole value.
 pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
+}
+
+/// The pasted chip's display (paste-chip spec): `img N` — the
+/// band's text convention (`↑12`, `✗1`), no emoji: the band font is
+/// the terminal's own and owes no glyph coverage. The chip's click
+/// opens the images panel, not a copy; this display is the whole
+/// value.
+pub fn pasted_display(count: usize) -> String {
+    format!("img {count}")
 }
 
 /// The exit chip's display (status-exit spec): `✗{code}` — the
@@ -984,7 +1022,11 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
         // The action chip has no copyable value — the jump is the
         // verb (status-scrolled spec). The widget's press routing
         // never reaches this arm; empty is defensive.
-        SegmentId::Scrolled => String::new(),
+        // The band's two action chips share the empty payload: the
+        // scrolled chip's jump and the pasted chip's panel-open both
+        // route ahead of the copy path (their click verbs), so this
+        // arm is defensive only — never a copy target.
+        SegmentId::Scrolled | SegmentId::Pasted => String::new(),
     }
 }
 
@@ -1651,6 +1693,7 @@ struct State {
     tab: BandParagraph,
     zoom: BandParagraph,
     scrolled: BandParagraph,
+    pasted: BandParagraph,
     clock: BandParagraph,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
@@ -1720,6 +1763,7 @@ impl State {
             SegmentId::Tab => &self.tab,
             SegmentId::Zoom => &self.zoom,
             SegmentId::Scrolled => &self.scrolled,
+            SegmentId::Pasted => &self.pasted,
             SegmentId::Clock => &self.clock,
         }
     }
@@ -1737,6 +1781,7 @@ impl State {
             SegmentId::Tab => &mut self.tab,
             SegmentId::Zoom => &mut self.zoom,
             SegmentId::Scrolled => &mut self.scrolled,
+            SegmentId::Pasted => &mut self.pasted,
             SegmentId::Clock => &mut self.clock,
         }
     }
@@ -1930,6 +1975,11 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
+        let pasted = self.segments.pasted.map(pasted_display);
+        state.pasted.update(segment_text(
+            display_text(copied, SegmentId::Pasted, pasted.as_deref().unwrap_or("")),
+            font,
+        ));
         state.clock.update(segment_text(
             display_text(
                 copied,
@@ -2038,6 +2088,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Tab => tab.clone().unwrap_or_default(),
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
                 SegmentId::Scrolled => scrolled.clone().unwrap_or_default(),
+                SegmentId::Pasted => pasted.clone().unwrap_or_default(),
                 SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
             };
             display_text(copied, id, &value).to_string()
