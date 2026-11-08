@@ -26,7 +26,7 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 };
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
-use cosmic::iced::{Event, Subscription, clipboard, window};
+use cosmic::iced::{Event, Subscription, window};
 use cosmic::surface::Action as SurfaceAction;
 use cosmic::theme::Theme;
 use cosmic::widget;
@@ -34,6 +34,7 @@ use cosmic::{Application, Element, Renderer};
 use enumflags2::BitFlags;
 use tokio::sync::mpsc;
 
+use crate::clipboard;
 use crate::config::{
     CONFIG_VERSION, DropTermConfig, Edge, KeyboardMode, TabPosition, TabTitleMode, ThemePreference,
 };
@@ -48,7 +49,7 @@ use crate::slide::{self, SlideBox};
 use crate::status_bar::{self, StatusBar, Strip};
 use crate::surface;
 use crate::tab_bar::{TabBar, TabMenuPick, TooltipSide};
-use crate::tabs::{self, Tab, TabId};
+use crate::tabs::{self, PastedImage, Tab, TabId};
 use crate::terminal::suggest;
 use crate::terminal::{Action, TerminalBox, TerminalOptions, TerminalScroll};
 
@@ -118,13 +119,21 @@ pub enum Message {
     WindowFocused,
     WindowUnfocused,
     MiddleClick,
+    /// An OSC 52 clipboard query's answer arrived: the bytes the
+    /// engine's format closure built, delivered to the asking tab's
+    /// PTY — a program that asks for the clipboard gets a reply,
+    /// never silence (clipboard-ownership spec).
+    Osc52LoadReply(TabId, Vec<u8>),
     /// A tab bar button was left-clicked.
     TabSelected(TabId),
     /// A tab bar button was closed via its `×` or a middle-click.
     TabClosed(TabId),
-    /// A status-band segment was click-copied — the widget already
-    /// wrote the clipboard; the app flashes the segment's `✓`.
-    StatusSegmentCopied(status_bar::SegmentId),
+    /// The status band reports a copy (clipboard-ownership spec):
+    /// the widget publishes what it copied — a segment's full value,
+    /// the drag-selected display text, or every segment's value —
+    /// and the app performs the write through the focus-free path
+    /// (flashing the segment's `✓` where one segment owns it).
+    StatusCopied(status_bar::Copied),
     /// The scrolled chip was clicked (status-scrolled spec): the
     /// active terminal's viewport jumps to the bottom through the
     /// engine's own scroll funnel — the band's one action chip.
@@ -244,6 +253,36 @@ pub enum Message {
     OpenHyperlink(String),
     ClipboardPasted(Option<String>),
     ClipboardPastedPrimary(Option<String>),
+    /// A paste read found image bytes (paste-image spec): the handler
+    /// writes them to the paste cache and pastes the file's path as
+    /// text through the same `Terminal::paste` a text paste uses.
+    ClipboardImagePasted(Vec<u8>),
+    /// Opens or closes the per-tab images panel (paste-panel
+    /// spec): the drawer's own escape route — and the band chip's
+    /// click verb, once paste-chip wires it.
+    ImagesPanel(bool),
+    /// A panel thumbnail decode finished (paste-panel spec): the
+    /// handle lands in the cache keyed by its row's path; `None`
+    /// leaves the row text-only.
+    ImagesPanelThumb(
+        std::path::PathBuf,
+        Option<cosmic::iced::widget::image::Handle>,
+    ),
+    /// The images panel's Open verb (paste-panel spec): hand the
+    /// row's file to the system viewer.
+    ImagesPanelOpen(std::path::PathBuf),
+    /// The panel's Copy-path verb: the row's path as text, the
+    /// focus-free write.
+    ImagesPanelCopyPath(std::path::PathBuf),
+    /// The panel's Copy-image verb: the row's bytes back to the
+    /// clipboard as `image/png`.
+    ImagesPanelCopyImage(std::path::PathBuf),
+    /// The panel's Re-paste verb: the row's path through the same
+    /// paste channel the original paste used.
+    ImagesPanelRepaste(std::path::PathBuf),
+    /// The panel's Remove verb: the row, its thumbnail, and —
+    /// best-effort off-thread — its file.
+    ImagesPanelRemove(std::path::PathBuf),
     /// An event from the settings drawer's controls. Inputs only —
     /// the update side resolves each through the pure planners and
     /// commits it as a `Bare` write through [`Self::write_config`],
@@ -488,6 +527,20 @@ pub struct DropTerm {
     /// focus-loss hides with its drafts intact (criterion 8), and an
     /// explicit close clears `settings_buffer`.
     settings_open: bool,
+    /// Whether the per-tab images panel is open (paste-panel
+    /// spec): a context drawer over the same surface the settings
+    /// drawer rides, listing the active tab's pasted images.
+    /// Opening it closes the settings drawer — one drawer at a
+    /// time by construction.
+    images_panel_open: bool,
+    /// The images panel's decoded thumbnails, keyed by cache-file
+    /// path (paste-panel spec): filled at panel open by background
+    /// decodes — never on the paste path — and read by the row
+    /// view. A failed decode simply never lands; its row renders
+    /// text-only. Stale entries (files removed since) drop at the
+    /// next open, beside the ledger's own prune.
+    images_panel_thumbs:
+        std::collections::HashMap<std::path::PathBuf, cosmic::iced::widget::image::Handle>,
     /// Which page the open drawer shows: a tab's page (General,
     /// Advanced) or the Profiles page the General tab's entry row
     /// flips to (the cosmic-term `ContextPage` pattern,
@@ -934,6 +987,7 @@ impl DropTerm {
                 .as_ref()
                 .map(|(name, duration)| (name.as_str(), *duration)),
             scrolled_back,
+            pasted: Some(tab.pasted_images.len()),
             ssh_destination: self.active_ssh_destination.as_deref(),
             hostname: self.local_hostname.as_deref(),
             missed_activity,
@@ -1222,16 +1276,183 @@ enum DrawerKeyRouting {
     FallThrough,
 }
 
-fn drawer_escape_routing(settings_open: bool, draft_open: bool, key: &Key) -> DrawerKeyRouting {
-    if settings_open && matches!(key, Key::Named(Named::Escape)) {
-        if draft_open {
-            DrawerKeyRouting::CancelDraft
-        } else {
+fn drawer_escape_routing(
+    settings_open: bool,
+    images_open: bool,
+    draft_open: bool,
+    key: &Key,
+) -> DrawerKeyRouting {
+    if matches!(key, Key::Named(Named::Escape)) {
+        if settings_open {
+            // The settings drawer owns the richer close (draft
+            // cancel, buffer clear, page reset) and wins over the
+            // images drawer when both flags could somehow be set —
+            // impossible by construction, pinned anyway.
+            if draft_open {
+                DrawerKeyRouting::CancelDraft
+            } else {
+                DrawerKeyRouting::CloseDrawer
+            }
+        } else if images_open {
             DrawerKeyRouting::CloseDrawer
+        } else {
+            DrawerKeyRouting::FallThrough
         }
     } else {
         DrawerKeyRouting::FallThrough
     }
+}
+
+/// The images panel's pane (paste-panel spec): the active tab's
+/// pasted images, newest first — the thumbnail when its decode has
+/// landed (bounded ≤256 px, `Handle::from_rgba`'s own path), the
+/// stamp and dimensions always, a hint line when the prune left
+/// nothing to show. Actions ride PP-3.
+fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
+    let rows = app
+        .active()
+        .map(|tab| images_panel_rows(&tab.pasted_images))
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return widget::text::body("No pasted images in this tab").into();
+    }
+    let mut list = widget::column(Vec::<Element<'_, Message>>::new()).spacing(12);
+    for row in rows {
+        let mut text = widget::column(Vec::<Element<'_, Message>>::new())
+            .spacing(2)
+            .push(widget::text::body(row.stamp.clone()));
+        if let Some((width, height)) = row.dims {
+            text = text.push(widget::text(format!("{width}×{height}")));
+        }
+        // The precedents' five verbs (paste-panel spec, PP-3): one
+        // row-scoped message each, the row's path carried along.
+        let actions = widget::row(Vec::<Element<'_, Message>>::new())
+            .spacing(6)
+            .push(
+                widget::button::standard("Open")
+                    .on_press(Message::ImagesPanelOpen(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Copy path")
+                    .on_press(Message::ImagesPanelCopyPath(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Copy image")
+                    .on_press(Message::ImagesPanelCopyImage(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Re-paste")
+                    .on_press(Message::ImagesPanelRepaste(row.path.clone())),
+            )
+            .push(
+                widget::button::standard("Remove")
+                    .on_press(Message::ImagesPanelRemove(row.path.clone())),
+            );
+        let mut item = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
+        if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
+            item = item.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
+        }
+        item = item.push(text.push(actions));
+        list = list.push(item);
+    }
+    widget::scrollable(list.padding(16)).into()
+}
+
+/// The panel's Remove verb's model half (paste-panel spec): drop
+/// the row owning `path` and its cached thumbnail together, and say
+/// whether such a row existed — a path no row owns is a no-op.
+fn forget_pasted_image(
+    rows: &mut Vec<crate::tabs::PastedImage>,
+    thumbs: &mut std::collections::HashMap<std::path::PathBuf, cosmic::iced::widget::image::Handle>,
+    path: &std::path::Path,
+) -> bool {
+    let before = rows.len();
+    rows.retain(|row| row.path != path);
+    thumbs.remove(path);
+    rows.len() != before
+}
+
+/// The images panel's row order (paste-panel spec): a view over the
+/// pruned ledger, newest first — the most recent paste is the row
+/// the eye lands on.
+fn images_panel_rows(rows: &[crate::tabs::PastedImage]) -> Vec<&crate::tabs::PastedImage> {
+    rows.iter().rev().collect()
+}
+
+/// Starts one panel thumbnail decode (paste-panel spec): the
+/// blocking decode off the UI thread, its result delivered as
+/// [`Message::ImagesPanelThumb`]. Shared by the panel's open (a
+/// batch over the missing rows) and a paste landing while the
+/// panel is open (the one fresh row).
+fn panel_thumb_task(path: std::path::PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let join_path = path.clone();
+            match tokio::task::spawn_blocking(move || decode_panel_thumb(path)).await {
+                Ok(joined) => joined,
+                Err(err) => {
+                    log::warn!(
+                        "panel thumbnail join failed for {}: {err}",
+                        join_path.display()
+                    );
+                    (join_path, None)
+                }
+            }
+        },
+        |(path, handle)| cosmic::Action::App(Message::ImagesPanelThumb(path, handle)),
+    )
+}
+
+/// Decodes one paste-cache file into a panel thumbnail (paste-panel
+/// spec): payload-gated before the read, decoded under the engine's
+/// own decompression-bomb guard (`decode_image` — the cache files
+/// are clipboard-originated bytes, and they meet the same ceilings
+/// every OSC decode already had), then thumbnailed to the ≤256 px
+/// long edge and handed to RGBA through the grid store's own
+/// `Handle::from_rgba` path. Any failure answers `None` after one
+/// warn naming the file — the row renders text-only, never blocks,
+/// and never touches the paste path (decodes run only at panel
+/// open).
+fn decode_panel_thumb(
+    path: std::path::PathBuf,
+) -> (
+    std::path::PathBuf,
+    Option<cosmic::iced::widget::image::Handle>,
+) {
+    // The payload gate rides the clipboard read's own cap: a cache
+    // file over it can only have been planted there, and it is
+    // refused before a byte is read.
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > crate::clipboard::PASTE_PAYLOAD_CAP as u64
+    {
+        log::warn!(
+            "panel thumbnail refused for {}: over the paste cap",
+            path.display()
+        );
+        return (path, None);
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log::warn!("panel thumbnail read failed for {}: {err}", path.display());
+            return (path, None);
+        }
+    };
+    let Some(rgba) = crate::terminal::decode_image(&bytes) else {
+        log::warn!("panel thumbnail decode failed for {}", path.display());
+        return (path, None);
+    };
+    let thumb = image::DynamicImage::ImageRgba8(rgba)
+        .thumbnail(256, 256)
+        .to_rgba8();
+    (
+        path,
+        Some(cosmic::iced::widget::image::Handle::from_rgba(
+            thumb.width(),
+            thumb.height(),
+            thumb.into_raw(),
+        )),
+    )
 }
 
 /// The close-gate decision (close-confirm criterion 3): confirm only
@@ -1866,6 +2087,8 @@ impl Application for DropTerm {
             last_toggle: None,
             slide: None,
             settings_open: false,
+            images_panel_open: false,
+            images_panel_thumbs: std::collections::HashMap::new(),
             settings_page: home_settings_page(),
             settings_tab_model,
             profile_selection: None,
@@ -2261,7 +2484,7 @@ impl Application for DropTerm {
                 ..cosmic::iced::Font::default()
             },
             self.copied_segment,
-            Message::StatusSegmentCopied,
+            Message::StatusCopied,
         )
         // The menu's action rows ride the `perform_action` funnel
         // every keybind uses — the same `Message::Action` route the
@@ -2270,10 +2493,13 @@ impl Application for DropTerm {
         // side of the band (the band hugs the free edge, so that
         // side is the strip's own tooltip side inverted).
         .on_menu_action(Message::Action)
-        // The scrolled chip's click — the one action chip
-        // (status-scrolled spec): the jump routes to the engine's
-        // scroll-to-bottom funnel, never the copy verb.
+        // The band's two action chips route their verbs ahead of the
+        // copy path: the scrolled chip's jump (status-scrolled spec)
+        // to the engine's scroll-to-bottom funnel, and the pasted
+        // chip's press (paste-chip spec, PC-2) to the images panel's
+        // door — neither is ever the copy verb.
         .on_scroll_bottom(|| Message::StatusScrollJump)
+        .on_images_panel(|| Message::ImagesPanel(true))
         .menu_side(band_menu_side(self.config.edge))
         // The border hairline rides the same side the menu pops to
         // — the band's side away from the grab bar — off the
@@ -2347,7 +2573,29 @@ impl Application for DropTerm {
         // The pending-close modal composes over whichever of the two
         // trees is showing — outermost (close-confirm criterion 4).
         if !self.settings_open {
-            return self.close_confirm_modal(content);
+            if !self.images_panel_open {
+                return self.close_confirm_modal(content);
+            }
+            // The images panel drawer (paste-panel spec): the same
+            // surface, backdrop, and drawer composition the
+            // settings drawer uses — the active tab's ledger,
+            // newest first, no header strip, its own escape route.
+            // The width rides the settings drawer-width policy at
+            // its never-dragged default: one drawer width story,
+            // no new knob.
+            let content = drawer_backdrop(content);
+            let drawer: Element<'_, Message> = widget::context_drawer(
+                Some("Pasted images".into()),
+                None,
+                None,
+                None,
+                Message::ImagesPanel(false),
+                content,
+                images_panel_view(self),
+                settings::drawer_width(None, self.current_surface_width()),
+            )
+            .into();
+            return self.close_confirm_modal(drawer);
         }
         // The backdrop goes on here, outside the SlideBox and inside
         // the drawer: at surface coordinates like the pane itself
@@ -2902,12 +3150,26 @@ impl DropTerm {
                 // write, the selection kept — and the drawer stays
                 // open for the plain close on a later press.
                 let drawer_escapable = self.settings_open && self.open_picker.is_none();
-                match drawer_escape_routing(drawer_escapable, self.profile_draft.is_some(), &key) {
+                match drawer_escape_routing(
+                    drawer_escapable,
+                    self.images_panel_open,
+                    self.profile_draft.is_some(),
+                    &key,
+                ) {
                     DrawerKeyRouting::CancelDraft => {
                         self.profile_draft = None;
                         return Task::none();
                     }
-                    DrawerKeyRouting::CloseDrawer => return self.close_settings_drawer(),
+                    DrawerKeyRouting::CloseDrawer => {
+                        if self.settings_open {
+                            return self.close_settings_drawer();
+                        }
+                        // The images panel's close is the plain flag
+                        // flip — it holds no buffers or pages to
+                        // reset.
+                        self.images_panel_open = false;
+                        return Task::none();
+                    }
                     DrawerKeyRouting::FallThrough => {}
                 }
                 if let Some(action) =
@@ -2941,8 +3203,17 @@ impl DropTerm {
             }
             Message::WindowUnfocused => return self.focus_lost(),
             Message::MiddleClick => {
-                return clipboard::read_primary()
+                return crate::clipboard::read_primary()
                     .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
+            }
+            Message::Osc52LoadReply(tab_id, bytes) => {
+                // The answer half of the OSC 52 round-trip: the tab
+                // that asked is the tab that hears — routed by id so
+                // a slow read can never land in a tab that replaced
+                // the asker.
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) {
+                    tab.terminal.lock().unwrap().input_no_scroll(bytes);
+                }
             }
             Message::TabSelected(id) => {
                 // The bar reports the stable tab id; resolve it against
@@ -2962,13 +3233,35 @@ impl DropTerm {
                     return self.request_close_tab(index);
                 }
             }
-            Message::StatusSegmentCopied(id) => {
-                // The widget already wrote the clipboard; the app owns
-                // the flash's life — show the check, clear on lapse.
-                self.copied_segment = Some(id);
-                return Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
-                    cosmic::Action::App(Message::StatusCopyFlashLapse)
-                });
+            Message::StatusCopied(copied) => {
+                // The write inverted app-side (clipboard-ownership
+                // spec): the band reports what it copied and this
+                // handler owns both the clipboard write — the
+                // focus-free path, so the copy lands however
+                // unfocused the terminal is — and the flash's life.
+                match copied {
+                    status_bar::Copied::Segment(id, text) => {
+                        self.copied_segment = Some(id);
+                        return Task::batch([
+                            crate::clipboard::write(text),
+                            Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                                cosmic::Action::App(Message::StatusCopyFlashLapse)
+                            }),
+                        ]);
+                    }
+                    status_bar::Copied::Selection(text) => {
+                        // The drag copy's twin destinations: the
+                        // standard clipboard and the primary
+                        // selection (middle-click paste serves it).
+                        return Task::batch([
+                            crate::clipboard::write(text.clone()),
+                            crate::clipboard::write_primary(text),
+                        ]);
+                    }
+                    status_bar::Copied::All(text) => {
+                        return crate::clipboard::write(text);
+                    }
+                }
             }
             Message::StatusScrollJump => {
                 // The chip's whole verb (status-scrolled spec): the
@@ -3309,6 +3602,156 @@ impl DropTerm {
                 if let (Some(text), Some(tab)) = (text, self.active()) {
                     tab.terminal.lock().unwrap().paste(&text);
                 }
+            }
+            Message::ClipboardImagePasted(bytes) => {
+                // The Claude Code contract (paste-image spec, PI-1):
+                // the bytes land in the paste cache, their file's path
+                // pastes as text — the same channel a text paste uses,
+                // so bracketed paste rides unchanged. The path is the
+                // paste's one grid trace (paste-ledger spec,
+                // superseding PI-2's render: no surveyed terminal
+                // renders pastes, and evicted pixels blank while the
+                // file survives); the ledger row records it for the
+                // images panel, and the band chip's pulse (paste-chip)
+                // is the confirmation.
+                if let Some(path) = clipboard::write_paste_image(&bytes)
+                    && let Some(tab) = self.tabs.get_mut(self.active_tab)
+                {
+                    let terminal = tab.terminal.lock().unwrap();
+                    terminal.paste(&path);
+                    drop(terminal);
+                    tab.pasted_images
+                        .push(PastedImage::new(path.into(), &bytes));
+                    // The paste's band confirmation (paste-chip
+                    // spec, PC-2): the chip's `✓` rides the Copied
+                    // flash seat — the flash life only, no
+                    // clipboard write (the paste already happened).
+                    self.copied_segment = Some(status_bar::SegmentId::Pasted);
+                    let flash = Task::perform(tokio::time::sleep(status_bar::COPY_FLASH), |()| {
+                        cosmic::Action::App(Message::StatusCopyFlashLapse)
+                    });
+                    // An open panel shows the new row immediately:
+                    // its thumbnail decode rides the same task, the
+                    // row rendering text-only until it lands.
+                    if self.images_panel_open {
+                        let path = tab
+                            .pasted_images
+                            .last()
+                            .map(|row| row.path.clone())
+                            .expect("the row just pushed");
+                        return flash.chain(panel_thumb_task(path));
+                    }
+                    return flash;
+                }
+            }
+            Message::ImagesPanel(open) => {
+                if open {
+                    // One drawer at a time: opening the panel closes
+                    // settings by the same explicit path the toggle
+                    // uses (its buffer clears are settings' own).
+                    let mut task = if self.settings_open {
+                        self.close_settings_drawer()
+                    } else {
+                        Task::none()
+                    };
+                    self.images_panel_open = true;
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                        tab.prune_pasted_images();
+                        let paths: Vec<_> = tab
+                            .pasted_images
+                            .iter()
+                            .map(|row| row.path.clone())
+                            .collect();
+                        // Cache entries whose row is gone drop with
+                        // the prune's verdict, never outliving their
+                        // file.
+                        self.images_panel_thumbs
+                            .retain(|path, _| paths.contains(path));
+                        let missing: Vec<_> = paths
+                            .into_iter()
+                            .filter(|path| !self.images_panel_thumbs.contains_key(path))
+                            .collect();
+                        task = task.chain(Task::batch(
+                            missing
+                                .into_iter()
+                                .map(panel_thumb_task)
+                                .collect::<Vec<_>>(),
+                        ));
+                    }
+                    return task;
+                }
+                self.images_panel_open = false;
+            }
+            Message::ImagesPanelThumb(path, handle) => {
+                if let Some(handle) = handle {
+                    self.images_panel_thumbs.insert(path, handle);
+                }
+            }
+            Message::ImagesPanelOpen(path) => {
+                // The OpenHyperlink precedent: hand it to the
+                // system viewer, one warn on refusal.
+                if let Err(err) = open::that_detached(&path) {
+                    log::warn!("failed to open {}: {err}", path.display());
+                }
+            }
+            Message::ImagesPanelCopyPath(path) => {
+                return crate::clipboard::write(path.to_string_lossy().into_owned());
+            }
+            Message::ImagesPanelCopyImage(path) => {
+                // The read runs off-thread (the cache file can be
+                // megabytes); only a real read reaches the write.
+                return cosmic::iced::Task::future(async move {
+                    let log_path = path.clone();
+                    match tokio::task::spawn_blocking(move || std::fs::read(&path)).await {
+                        Ok(Ok(bytes)) => Some(bytes),
+                        Ok(Err(err)) => {
+                            log::warn!("panel image read failed for {}: {err}", log_path.display());
+                            None
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "panel image read join failed for {}: {err}",
+                                log_path.display()
+                            );
+                            None
+                        }
+                    }
+                })
+                .then(|bytes| match bytes {
+                    Some(bytes) => crate::clipboard::write_image_png(bytes),
+                    None => cosmic::iced::Task::none(),
+                })
+                .map(cosmic::Action::App);
+            }
+            Message::ImagesPanelRepaste(path) => {
+                // The same channel a text paste uses — bracketed
+                // paste rides it unchanged.
+                if let Some(tab) = self.active() {
+                    let text = path.to_string_lossy();
+                    tab.terminal.lock().unwrap().paste(&text);
+                }
+            }
+            Message::ImagesPanelRemove(path) => {
+                // The row and its thumbnail go now, together; the
+                // file's delete is best-effort off-thread — a
+                // failure warns while the row is already gone (the
+                // prune would drop it on the next read anyway).
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    forget_pasted_image(
+                        &mut tab.pasted_images,
+                        &mut self.images_panel_thumbs,
+                        &path,
+                    );
+                }
+                return cosmic::iced::Task::future(async move {
+                    match tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => log::warn!("panel remove failed: {err}"),
+                        Err(err) => log::warn!("panel remove join failed: {err}"),
+                    }
+                })
+                .then(|()| cosmic::iced::Task::none())
+                .map(cosmic::Action::App);
             }
             Message::PickSettingsTab(entity) => {
                 // The strip's row → its tab (entity↔tab lockstep,

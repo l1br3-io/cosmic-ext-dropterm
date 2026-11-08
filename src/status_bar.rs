@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::alignment;
-use cosmic::iced::core::clipboard::{Clipboard, Kind};
+use cosmic::iced::core::clipboard::Clipboard;
 use cosmic::iced::core::overlay;
 use cosmic::iced::core::text::{LineHeight, Shaping, paragraph};
 use cosmic::iced::core::text::{Text, Wrapping};
@@ -109,6 +109,24 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
     }
 }
 
+/// What the band copied, payload and all — the report the widget
+/// publishes instead of writing a widget-layer clipboard
+/// (clipboard-ownership spec): the app performs the write through
+/// the focus-free path, so a band copy lands however unfocused the
+/// terminal is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Copied {
+    /// A segment's full value (never the elided display); the app
+    /// also flashes the segment's `✓`.
+    Segment(SegmentId, String),
+    /// The drag-selected display text; the app writes the standard
+    /// clipboard and the primary selection (middle-click serves it).
+    Selection(String),
+    /// Every present segment's full value (the menu's Copy All);
+    /// standard clipboard only — no single segment owns the copy.
+    All(String),
+}
+
 /// Which band region a segment owns — the shared id for cluster
 /// order, visibility, hit-testing, and copy payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +163,11 @@ pub enum SegmentId {
     /// The viewport's lines scrolled back from the bottom
     /// (status-scrolled spec) — the off-bottom chip, `↑12`.
     Scrolled,
+    /// The active tab's pasted-image count (paste-chip spec) —
+    /// `img N`, absent at zero (the exit chip's rule: no pastes is
+    /// the unmarked default). The click opens the images panel,
+    /// never a copy.
+    Pasted,
     /// The pre-formatted wall clock.
     Clock,
 }
@@ -166,20 +189,26 @@ pub const LEFT_CLUSTER: [SegmentId; 6] = [
 /// The right cluster's segments in draw order — the dimmed alpha,
 /// the clock rightmost (the tmux seat). The scrolled chip sits
 /// between Zoom and Clock (status-scrolled OQ-2): state of the
-/// view, beside time.
-pub const RIGHT_CLUSTER: [SegmentId; 6] = [
+/// view, beside time. The pasted-count chip sits between Scrolled
+/// and Clock (paste-chip spec OQ-2): state of the session beside
+/// state of the view.
+pub const RIGHT_CLUSTER: [SegmentId; 7] = [
     SegmentId::Profile,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
     SegmentId::Scrolled,
+    SegmentId::Pasted,
     SegmentId::Clock,
 ];
 
 /// Drop precedence under width pressure — first-dropped first.
 /// Process and path are absent by construction: the disc never
 /// yields, and the path elides before anything else gives way.
-/// Facts the shell itself knows (`$COLUMNS×$LINES`) go first,
+/// The pasted-count chip yields before everything (paste-chip
+/// spec): the band's most redundant fact — the path already sits
+/// in the grid, the files on disk. Facts the shell itself knows
+/// (`$COLUMNS×$LINES`) follow,
 /// then slow-moving identity (tab position, zoom, profile), the
 /// branch stays beside its path, the duration follows its command,
 /// the progress chip drops before the exit chip (the most
@@ -189,7 +218,8 @@ pub const RIGHT_CLUSTER: [SegmentId; 6] = [
 /// "what's happening now" — it must survive while the command's
 /// own narration stands), and the clock is last — tmux keeps time
 /// to the bitter end.
-pub const DROP_ORDER: [SegmentId; 10] = [
+pub const DROP_ORDER: [SegmentId; 11] = [
+    SegmentId::Pasted,
     SegmentId::Grid,
     SegmentId::Tab,
     SegmentId::Zoom,
@@ -320,6 +350,13 @@ pub struct StatusSegments {
     /// rest. The display is [`scrolled_display`]; the click is the
     /// jump, never a copy.
     pub scrolled: Option<u16>,
+    /// The active tab's pasted-image count (paste-chip spec) —
+    /// absent at zero (and when there is no active tab): the exit
+    /// chip's indistinguishable `None`, so the chip exists only
+    /// when there are pastes to point at. The display is
+    /// [`pasted_display`]; the click opens the images panel, never
+    /// a copy.
+    pub pasted: Option<usize>,
     /// The running command's own progress report (osc94-progress
     /// spec), verbatim from the engine — the display
     /// ([`progress_display`]) and the error-red decision derive at
@@ -413,6 +450,13 @@ pub struct StatusInputs<'a> {
     /// engine's `scrolled_back_lines()` read at the same lock the
     /// grid and zoom take.
     pub scrolled_back: Option<u16>,
+    /// The active tab's pasted-image count (paste-chip spec) — the
+    /// ledger's length, pruned at the panel's own moments (open and
+    /// remove; a file deleted out from under a row counts until the
+    /// next one); ungathered past zero by construction. No toggle
+    /// gates it: the chip's visibility is its conditionality
+    /// (paste-chip OQ-4).
+    pub pasted: Option<usize>,
     /// The running command's own progress report (OSC 9;4,
     /// osc94-progress spec) — the engine's standing fact, gathered
     /// under the progress toggle's gate. `None` (no integration, a
@@ -556,6 +600,10 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
             .then_some(inputs.scrolled_back)
             .flatten()
             .filter(|&lines| lines > 0),
+        // The pasted count, ungated by a toggle (paste-chip spec):
+        // the chip's visibility is its conditionality — zero is the
+        // same indistinguishable None a hidden segment resolves to.
+        pasted: inputs.pasted.filter(|&count| count > 0),
         // The engine's standing report, verbatim — hidden and
         // absent the same indistinguishable None (osc94-progress
         // spec); the display and the error-red decision derive at
@@ -598,6 +646,15 @@ pub fn duration_display(segments: &StatusSegments) -> String {
 /// click is the jump, not a copy; this display is the whole value.
 pub fn scrolled_display(lines: u16) -> String {
     format!("↑{lines}")
+}
+
+/// The pasted chip's display (paste-chip spec): `img N` — the
+/// band's text convention (`↑12`, `✗1`), no emoji: the band font is
+/// the terminal's own and owes no glyph coverage. The chip's click
+/// opens the images panel, not a copy; this display is the whole
+/// value.
+pub fn pasted_display(count: usize) -> String {
+    format!("img {count}")
 }
 
 /// The exit chip's display (status-exit spec): `✗{code}` — the
@@ -966,18 +1023,23 @@ pub fn copy_text(id: SegmentId, segments: &StatusSegments) -> String {
         // The action chip has no copyable value — the jump is the
         // verb (status-scrolled spec). The widget's press routing
         // never reaches this arm; empty is defensive.
-        SegmentId::Scrolled => String::new(),
+        // The band's two action chips share the empty payload: the
+        // scrolled chip's jump and the pasted chip's panel-open both
+        // route ahead of the copy path (their click verbs), so this
+        // arm is defensive only — never a copy target.
+        SegmentId::Scrolled | SegmentId::Pasted => String::new(),
     }
 }
 
-/// Whether a segment's click is the band's jump verb rather than
-/// the copy verb — the one deliberate action chip (status-scrolled
-/// spec): the scrolled chip's click jumps the viewport to the
-/// bottom through the app callback, ahead of the copy path and
-/// never reaching [`copy_text`] (whose payload for it is empty
-/// besides, defensive).
+/// Whether a segment's click runs an action verb rather than the
+/// copy verb — the band's two deliberate action chips: the
+/// scrolled chip's click jumps the viewport to the bottom
+/// (status-scrolled spec) and the pasted chip's opens the images
+/// panel (paste-chip spec), both through their app callbacks,
+/// ahead of the copy path and never reaching [`copy_text`] (whose
+/// payload for them is empty besides, defensive).
 pub fn click_jumps(id: SegmentId) -> bool {
-    id == SegmentId::Scrolled
+    matches!(id, SegmentId::Scrolled | SegmentId::Pasted)
 }
 
 /// The segment whose rect contains `point`, if any — the pure half
@@ -1633,6 +1695,7 @@ struct State {
     tab: BandParagraph,
     zoom: BandParagraph,
     scrolled: BandParagraph,
+    pasted: BandParagraph,
     clock: BandParagraph,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
@@ -1702,6 +1765,7 @@ impl State {
             SegmentId::Tab => &self.tab,
             SegmentId::Zoom => &self.zoom,
             SegmentId::Scrolled => &self.scrolled,
+            SegmentId::Pasted => &self.pasted,
             SegmentId::Clock => &self.clock,
         }
     }
@@ -1719,6 +1783,7 @@ impl State {
             SegmentId::Tab => &mut self.tab,
             SegmentId::Zoom => &mut self.zoom,
             SegmentId::Scrolled => &mut self.scrolled,
+            SegmentId::Pasted => &mut self.pasted,
             SegmentId::Clock => &mut self.clock,
         }
     }
@@ -1747,12 +1812,17 @@ pub struct StatusBar<Message> {
     /// The segment currently flashing its `✓`; the app owns the
     /// timing (see [`COPY_FLASH`]).
     copied: Option<SegmentId>,
-    /// Maps a clicked segment to the app's message.
-    on_copy: Box<dyn Fn(SegmentId) -> Message>,
+    /// Reports what the band copied to the app's message — the app
+    /// owns the clipboard write (focus-free) and the `✓` flash.
+    on_copy: Box<dyn Fn(Copied) -> Message>,
     /// Publishes the scrolled chip's click (status-scrolled spec):
     /// the app routes it to the existing scroll-to-bottom funnel —
     /// the one deliberate action chip, ahead of the copy path.
     on_scroll_bottom: Option<Box<dyn Fn() -> Message>>,
+    /// Publishes the pasted chip's click (paste-chip spec): the app
+    /// opens the images panel — the band's second action chip,
+    /// routed beside the scrolled chip's jump.
+    on_images_panel: Option<Box<dyn Fn() -> Message>>,
     /// Maps a context-menu action pick to the app's message — the
     /// app routes it through the same `perform_action` funnel the
     /// keybind map uses (the menu introduces no behavior).
@@ -1771,12 +1841,12 @@ pub struct StatusBar<Message> {
 
 impl<Message> StatusBar<Message> {
     /// Creates a band rendering `segments`, flashing `copied` as a
-    /// `✓` and reporting presses through `on_copy`.
+    /// `✓` and reporting copies through `on_copy`.
     pub fn new(
         segments: StatusSegments,
         font: cosmic::iced::Font,
         copied: Option<SegmentId>,
-        on_copy: impl Fn(SegmentId) -> Message + 'static,
+        on_copy: impl Fn(Copied) -> Message + 'static,
     ) -> Self {
         Self {
             segments,
@@ -1784,6 +1854,7 @@ impl<Message> StatusBar<Message> {
             copied,
             on_copy: Box::new(on_copy),
             on_scroll_bottom: None,
+            on_images_panel: None,
             on_menu_action: None,
             menu_side: TooltipSide::default(),
             border: false,
@@ -1797,6 +1868,15 @@ impl<Message> StatusBar<Message> {
     /// click publishes nothing).
     pub fn on_scroll_bottom(mut self, on_scroll_bottom: impl Fn() -> Message + 'static) -> Self {
         self.on_scroll_bottom = Some(Box::new(on_scroll_bottom));
+        self
+    }
+
+    /// Sets the message published when the pasted-count chip is
+    /// clicked — the images panel's door (paste-chip spec; without
+    /// the callback the chip renders but its click publishes
+    /// nothing).
+    pub fn on_images_panel(mut self, on_images_panel: impl Fn() -> Message + 'static) -> Self {
+        self.on_images_panel = Some(Box::new(on_images_panel));
         self
     }
 
@@ -1911,6 +1991,11 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
+        let pasted = self.segments.pasted.map(pasted_display);
+        state.pasted.update(segment_text(
+            display_text(copied, SegmentId::Pasted, pasted.as_deref().unwrap_or("")),
+            font,
+        ));
         state.clock.update(segment_text(
             display_text(
                 copied,
@@ -2019,6 +2104,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Tab => tab.clone().unwrap_or_default(),
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
                 SegmentId::Scrolled => scrolled.clone().unwrap_or_default(),
+                SegmentId::Pasted => pasted.clone().unwrap_or_default(),
                 SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
             };
             display_text(copied, id, &value).to_string()
@@ -2237,7 +2323,7 @@ where
         layout: Layout<'_>,
         cursor: Cursor,
         _renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
+        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
@@ -2422,19 +2508,31 @@ where
                         .and_then(|point| segment_at(&rects, point))
                     {
                         if click_jumps(id) {
-                            if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
-                                shell.publish(on_scroll_bottom());
+                            match id {
+                                // The panel's door (paste-chip
+                                // spec): the pasted chip opens the
+                                // images panel, the scrolled chip
+                                // keeps its jump.
+                                SegmentId::Pasted => {
+                                    if let Some(on_images_panel) = &self.on_images_panel {
+                                        shell.publish(on_images_panel());
+                                    }
+                                }
+                                _ => {
+                                    if let Some(on_scroll_bottom) = &self.on_scroll_bottom {
+                                        shell.publish(on_scroll_bottom());
+                                    }
+                                }
                             }
                         } else {
-                            clipboard.write(Kind::Standard, copy_text(id, &self.segments));
-                            shell.publish((self.on_copy)(id));
+                            let text = copy_text(id, &self.segments);
+                            shell.publish((self.on_copy)(Copied::Segment(id, text)));
                         }
                     }
                 } else if let Some((from, to)) = state.selection {
                     let text = selection_text(from, to, &row_segments(state, layout.bounds()));
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text.clone());
-                        clipboard.write(Kind::Primary, text);
+                        shell.publish((self.on_copy)(Copied::Selection(text)));
                     }
                 }
             }
@@ -2742,7 +2840,7 @@ struct StatusMenuOverlay<'a, Message> {
     /// payloads resolve against them at pick time.
     segments: &'a StatusSegments,
     /// The copy report — the click verb's ✓ flash path.
-    on_copy: &'a dyn Fn(SegmentId) -> Message,
+    on_copy: &'a dyn Fn(Copied) -> Message,
     /// The action rows' publisher — the app's `Action` funnel.
     on_menu_action: &'a Option<Box<dyn Fn(Action) -> Message>>,
     /// Which vertical side of the band the bubble pops to.
@@ -2787,7 +2885,7 @@ where
         layout: Layout<'_>,
         cursor: Cursor,
         _renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
+        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
         // The dropdown's dismissal contract, unchanged: every press
@@ -2819,11 +2917,10 @@ where
                     // The click verb's twin: the full value through
                     // `copy_text` (never the display), the same ✓
                     // flash through the band's copy report. An
-                    // emptied live value writes nothing.
+                    // emptied live value reports nothing.
                     let text = copy_text(id, self.segments);
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text);
-                        shell.publish((self.on_copy)(id));
+                        shell.publish((self.on_copy)(Copied::Segment(id, text)));
                     }
                 }
                 MenuPick::CopyAll => {
@@ -2832,7 +2929,7 @@ where
                     // menu's own dismissal is the acknowledgment).
                     let text = copy_all_text(self.segments);
                     if !text.is_empty() {
-                        clipboard.write(Kind::Standard, text);
+                        shell.publish((self.on_copy)(Copied::All(text)));
                     }
                 }
                 MenuPick::Action(action) => {

@@ -87,6 +87,11 @@ open = "5.3.2"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "time"] }
+# The terminal's own clipboard I/O (clipboard-ownership spec): the
+# data-control protocol needs no keyboard focus and no input serial,
+# so a drop-down that is visible-but-unfocused — or hidden — still
+# lands copies. Per-copy serving thread, no fork.
+wl-clipboard-rs = "0.9"
 
 # Queryable state on the app's owned bus name (dbus-state spec): direct
 # zbus dep, version-matched to the lock's 5.19 line that libcosmic and

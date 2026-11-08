@@ -124,6 +124,53 @@ pub fn sweep_targets<T>(
     targets
 }
 
+/// One recorded image paste — a row of the tab's pasted-image
+/// ledger (paste-ledger spec), the record the images panel and the
+/// band chip read. `stamp` is the cache filename's own
+/// `paste-YYYYMMDD-HHMMSS-<n>` segment (unique and human-readable
+/// by construction); `dims` is the PNG header's own reading, `None`
+/// when the header does not parse — the paste already happened, so
+/// a bad header costs the dimensions, never the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastedImage {
+    /// The cache file whose path was pasted.
+    pub path: PathBuf,
+    /// The filename's own `paste-YYYYMMDD-HHMMSS-<n>` segment.
+    pub stamp: String,
+    /// The PNG header's `(width, height)`, if it parsed.
+    pub dims: Option<(u32, u32)>,
+}
+
+impl PastedImage {
+    /// Records one paste: the stamp from the pasted filename, the
+    /// dimensions from a header-only read of the pasted bytes —
+    /// never a pixel decode, so the row builds cheaply on the paste
+    /// path.
+    pub fn new(path: PathBuf, bytes: &[u8]) -> Self {
+        let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok());
+        let stamp = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self { path, stamp, dims }
+    }
+}
+
+/// Drops ledger rows whose file no longer exists and returns the
+/// retained count — the one read every ledger consumer goes through
+/// (paste-ledger spec): existence-backed, so the retention sweep
+/// and a panel Remove age out of the count and the list for free,
+/// never rendering a row for a file that is gone. The existence
+/// check is `Path::exists` and nothing more — no metadata reads a
+/// flaky filesystem could fail beyond the boolean.
+pub fn prune_pasted_images(rows: &mut Vec<PastedImage>) -> usize {
+    rows.retain(|row| row.path.exists());
+    rows.len()
+}
+
 /// One terminal inside the overlay surface.
 ///
 /// `shell_title` is the last raw OSC 0/2 report and `title` the
@@ -197,6 +244,14 @@ pub struct Tab {
     /// cleared on every show — so a run of hidden long commands
     /// yields one notification per tab per hide period.
     pub command_notified: bool,
+    /// The tab's pasted-image ledger (paste-ledger spec): one
+    /// [`PastedImage`] row per image paste, appended by the paste
+    /// handler beside the path it pastes. Existence-backed —
+    /// readers prune rows whose file is gone — and deliberately not
+    /// serialized: the rows die with the tab (the
+    /// `last_running_comm` precedent) while the files outlive them
+    /// in the paste cache until the retention sweep.
+    pub pasted_images: Vec<PastedImage>,
     pub terminal: Mutex<Terminal>,
 }
 
@@ -218,8 +273,18 @@ impl Tab {
             pinned: false,
             bell_notified: false,
             command_notified: false,
+            pasted_images: Vec::new(),
             terminal: Mutex::new(terminal),
         }
+    }
+
+    /// Prunes this tab's pasted-image ledger — rows whose file is
+    /// gone — and returns the retained count: the one read the
+    /// images panel and the band chip go through
+    /// ([`prune_pasted_images`]), so no consumer ever sees a stale
+    /// count or a row for a deleted file.
+    pub fn prune_pasted_images(&mut self) -> usize {
+        prune_pasted_images(&mut self.pasted_images)
     }
 }
 

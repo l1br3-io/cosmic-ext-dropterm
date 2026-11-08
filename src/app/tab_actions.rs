@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::{self as aterm};
 use cosmic::app::Task;
-use cosmic::iced::clipboard;
 use cosmic::widget;
 use cosmic::widget::menu::{self, action::MenuAction};
 
@@ -19,6 +18,7 @@ use super::spawn::{
     SpawnCommand, SpawnedTerminal, default_spawn_command, live_preset_cwd, plain_spawn_cwd,
     profile_pick,
 };
+use crate::clipboard;
 use crate::context_menu::items;
 use crate::keybinds;
 use crate::notify;
@@ -350,12 +350,12 @@ impl DropTerm {
                 }
             }
             Action::Paste => {
-                return clipboard::read()
-                    .map(|text| cosmic::Action::App(Message::ClipboardPasted(text)));
+                return clipboard::read_for_paste(false)
+                    .map(|contents| cosmic::Action::App(paste_contents_message(contents, false)));
             }
             Action::PastePrimary => {
-                return clipboard::read_primary()
-                    .map(|text| cosmic::Action::App(Message::ClipboardPastedPrimary(text)));
+                return clipboard::read_for_paste(true)
+                    .map(|contents| cosmic::Action::App(paste_contents_message(contents, true)));
             }
             Action::SelectAll => {
                 tab.terminal.lock().unwrap().select_all();
@@ -1137,14 +1137,18 @@ impl DropTerm {
             TermEvent::ClipboardLoad(kind, format) => match kind {
                 aterm::ClipboardType::Clipboard => {
                     return clipboard::read().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
+                        cosmic::Action::App(Message::Osc52LoadReply(
+                            tab_id,
+                            osc52_load_reply(data, &*format),
+                        ))
                     });
                 }
                 aterm::ClipboardType::Selection => {
                     return clipboard::read_primary().map(move |data| {
-                        format(&data.unwrap_or_default());
-                        cosmic::action::none()
+                        cosmic::Action::App(Message::Osc52LoadReply(
+                            tab_id,
+                            osc52_load_reply(data, &*format),
+                        ))
                     });
                 }
             },
@@ -1380,6 +1384,38 @@ impl DropTerm {
     }
 }
 
+/// The bytes an OSC 52 query answers with (clipboard-ownership
+/// spec): the engine's `format` closure applied to the loaded
+/// clipboard text — an empty clipboard still answers, with the
+/// format applied to the empty payload, never silence. The caller
+/// delivers these to the asking tab's PTY
+/// (`Message::Osc52LoadReply`).
+fn osc52_load_reply<F: Fn(&str) -> String>(data: Option<String>, format: F) -> Vec<u8> {
+    format(&data.unwrap_or_default()).into_bytes()
+}
+
+/// Turn a paste read's outcome into its message (paste-image spec,
+/// PI-1): text — and an empty clipboard's `None` — keep today's pair
+/// verbatim; image bytes take the arm that writes the cache file and
+/// pastes its path.
+fn paste_contents_message(contents: Option<clipboard::PasteContents>, primary: bool) -> Message {
+    match contents {
+        Some(clipboard::PasteContents::Image(bytes)) => Message::ClipboardImagePasted(bytes),
+        Some(clipboard::PasteContents::Text(text)) => text_paste_message(Some(text), primary),
+        None => text_paste_message(None, primary),
+    }
+}
+
+/// The text-paste message pair `Action::Paste`/`Action::PastePrimary`
+/// have always produced.
+fn text_paste_message(text: Option<String>, primary: bool) -> Message {
+    if primary {
+        Message::ClipboardPastedPrimary(text)
+    } else {
+        Message::ClipboardPasted(text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,6 +1424,47 @@ mod tests {
     #[test]
     fn trees_yield_one_tree_per_row_with_no_profiles() {
         assert_eq!(trees(&[]).len(), ROWS.len());
+    }
+
+    // --- the paste routing (paste-image spec, PI-1) ---
+
+    #[test]
+    fn text_contents_keep_the_text_paste_arms() {
+        // A text offer — and an empty clipboard's `None` — never
+        // leave today's message pair: byte-for-byte the old routing.
+        let text = || Some(clipboard::PasteContents::Text("hi".to_owned()));
+        assert!(matches!(
+            paste_contents_message(text(), false),
+            Message::ClipboardPasted(Some(t)) if t == "hi"
+        ));
+        assert!(matches!(
+            paste_contents_message(text(), true),
+            Message::ClipboardPastedPrimary(Some(t)) if t == "hi"
+        ));
+        assert!(matches!(
+            paste_contents_message(None, false),
+            Message::ClipboardPasted(None)
+        ));
+        assert!(matches!(
+            paste_contents_message(None, true),
+            Message::ClipboardPastedPrimary(None)
+        ));
+    }
+
+    #[test]
+    fn image_contents_take_the_image_paste_arm() {
+        // Image bytes ride their own message — the arm that writes
+        // the cache file and pastes the path — whichever selection
+        // they were read from.
+        let bytes = vec![0x89, b'P', b'N', b'G'];
+        assert!(matches!(
+            paste_contents_message(Some(clipboard::PasteContents::Image(bytes.clone())), false),
+            Message::ClipboardImagePasted(b) if b == bytes
+        ));
+        assert!(matches!(
+            paste_contents_message(Some(clipboard::PasteContents::Image(bytes.clone())), true),
+            Message::ClipboardImagePasted(b) if b == bytes
+        ));
     }
 
     #[test]
@@ -1437,5 +1514,30 @@ mod tests {
         assert!(!rename_overlay_hosted(1));
         assert!(rename_overlay_hosted(2));
         assert!(rename_overlay_hosted(5));
+    }
+
+    // --- the OSC 52 query's answer (clipboard-ownership CO-3) ---
+
+    #[test]
+    fn an_osc52_load_reply_carries_the_formatted_payload() {
+        // A program that queried the clipboard gets the reply the
+        // engine's format closure built — the bytes the app then
+        // delivers to the asking tab's PTY. Some(data) formats the
+        // data; the closure is the engine's (base64 + OSC framing),
+        // modeled here as a plain wrapper.
+        let bytes = osc52_load_reply(Some("hello".to_owned()), |data: &str| {
+            format!("\x1b]52;c;{data};\x07")
+        });
+        assert_eq!(bytes, b"\x1b]52;c;hello;\x07".to_vec());
+    }
+
+    #[test]
+    fn an_osc52_load_reply_over_an_empty_clipboard_is_the_empty_reply() {
+        // None (an empty clipboard read) still answers — with the
+        // format applied to the empty payload, never silence: the
+        // discarded-reply bug this fixes read as "the query is
+        // simply never answered".
+        let bytes = osc52_load_reply(None, |data: &str| format!("\x1b]52;c;{data};\x07"));
+        assert_eq!(bytes, b"\x1b]52;c;;\x07".to_vec());
     }
 }

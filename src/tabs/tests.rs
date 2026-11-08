@@ -1043,3 +1043,86 @@ fn tab_records_its_spawn_shell() {
     // restore replaying a saved pin — sets the flag.
     assert!(!tab.pinned);
 }
+
+/// A tiny solid-color PNG of the given dimensions, as bytes — the
+/// engine suite's own fixture shape (`engine/tests.rs`'s `png_bytes`).
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+// --- the pasted-image row (paste-ledger spec, PL-1) ---
+
+#[test]
+fn pasted_row_reads_dimensions_from_the_png_header() {
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-1.png"),
+        &png_bytes(64, 32),
+    );
+    assert_eq!(row.dims, Some((64, 32)));
+}
+
+#[test]
+fn pasted_row_stamp_is_the_filenames_own_segment() {
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-1.png"),
+        &png_bytes(1, 1),
+    );
+    assert_eq!(row.stamp, "paste-20261108-143012-1");
+}
+
+#[test]
+fn pasted_row_keeps_the_paste_when_the_payload_is_not_an_image() {
+    // The paste already happened by the time the row is built; a
+    // headerless payload costs its dimensions and nothing else.
+    let row = PastedImage::new(
+        PathBuf::from("/home/x/.cache/dropterm/paste/paste-20261108-143012-2.png"),
+        b"not a png at all",
+    );
+    assert_eq!(row.dims, None);
+    assert_eq!(row.stamp, "paste-20261108-143012-2");
+}
+
+// --- the ledger's existence prune (paste-ledger spec, PL-2) ---
+
+#[test]
+fn the_prune_drops_rows_whose_file_is_gone_and_keeps_the_rest() {
+    let kept = std::env::temp_dir().join("dropterm-pl2-kept.png");
+    std::fs::write(&kept, b"png").expect("write the kept fixture");
+    let mut rows = vec![
+        PastedImage::new(kept.clone(), b"png"),
+        PastedImage::new(
+            PathBuf::from("/nonexistent/dropterm-pl2-gone/paste-20261108-1.png"),
+            b"png",
+        ),
+    ];
+    let retained = prune_pasted_images(&mut rows);
+    std::fs::remove_file(&kept).expect("clean the kept fixture");
+    assert_eq!(retained, 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, kept);
+}
+
+#[test]
+fn the_prune_reports_zero_for_an_all_gone_ledger() {
+    let mut rows = vec![
+        PastedImage::new(PathBuf::from("/gone/1.png"), b"png"),
+        PastedImage::new(PathBuf::from("/gone/2.png"), b"png"),
+    ];
+    assert_eq!(prune_pasted_images(&mut rows), 0);
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn two_ledgers_prune_independently() {
+    // Per-tab isolation at the data level: one tab's prune never
+    // touches another's rows.
+    let mut mine = vec![PastedImage::new(PathBuf::from("/gone/mine.png"), b"png")];
+    let mut yours = vec![PastedImage::new(PathBuf::from("/gone/yours.png"), b"png")];
+    prune_pasted_images(&mut mine);
+    prune_pasted_images(&mut yours);
+    assert!(mine.is_empty() && yours.is_empty());
+}

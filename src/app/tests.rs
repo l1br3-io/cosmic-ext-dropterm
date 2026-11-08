@@ -12,7 +12,7 @@ fn escape_with_the_drawer_open_closes_it_and_only_it() {
     // never reaches the terminal (disabled while the drawer is
     // open, criterion 4).
     assert_eq!(
-        drawer_escape_routing(true, false, &Key::Named(Named::Escape)),
+        drawer_escape_routing(true, false, false, &Key::Named(Named::Escape)),
         DrawerKeyRouting::CloseDrawer
     );
 }
@@ -24,11 +24,11 @@ fn escape_with_the_drawer_closed_keeps_today_s_routing() {
     // fires, draft or no draft (a draft cannot outlive the drawer
     // anyway; the pin is the precedence).
     assert_eq!(
-        drawer_escape_routing(false, false, &Key::Named(Named::Escape)),
+        drawer_escape_routing(false, false, false, &Key::Named(Named::Escape)),
         DrawerKeyRouting::FallThrough
     );
     assert_eq!(
-        drawer_escape_routing(false, true, &Key::Named(Named::Escape)),
+        drawer_escape_routing(false, false, true, &Key::Named(Named::Escape)),
         DrawerKeyRouting::FallThrough
     );
 }
@@ -44,11 +44,11 @@ fn every_other_key_falls_through_even_with_the_drawer_open() {
         Key::Named(Named::Enter),
     ] {
         assert_eq!(
-            drawer_escape_routing(true, false, &key),
+            drawer_escape_routing(true, false, false, &key),
             DrawerKeyRouting::FallThrough
         );
         assert_eq!(
-            drawer_escape_routing(true, true, &key),
+            drawer_escape_routing(true, false, true, &key),
             DrawerKeyRouting::FallThrough
         );
     }
@@ -63,7 +63,7 @@ fn escape_with_a_profile_draft_open_cancels_it_and_keeps_the_drawer() {
     // open beneath (a second Escape, draft now gone, closes it as
     // today). The cancel writes nothing and keeps the selection.
     assert_eq!(
-        drawer_escape_routing(true, true, &Key::Named(Named::Escape)),
+        drawer_escape_routing(true, false, true, &Key::Named(Named::Escape)),
         DrawerKeyRouting::CancelDraft
     );
 }
@@ -663,4 +663,132 @@ fn the_local_hostname_reads_trimmed_or_absent() {
         assert!(!name.is_empty());
         assert_eq!(name, name.trim(), "the /proc read must land trimmed");
     }
+}
+
+// --- the images panel drawer (paste-panel spec, PP-2) ---
+
+#[test]
+fn escape_closes_the_images_drawer() {
+    // The images panel owns Escape exactly as the settings drawer
+    // does — its own close path, never the surface's.
+    assert_eq!(
+        drawer_escape_routing(false, true, false, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::CloseDrawer
+    );
+}
+
+#[test]
+fn settings_wins_the_escape_when_both_drawers_could_be_open() {
+    // Both open is impossible by construction (opening one closes
+    // the other); the pin makes the defensive order explicit — the
+    // settings drawer's richer close (buffer clears, page reset)
+    // is the one that runs.
+    assert_eq!(
+        drawer_escape_routing(true, true, false, &Key::Named(Named::Escape)),
+        DrawerKeyRouting::CloseDrawer
+    );
+}
+
+#[test]
+fn images_panel_rows_list_newest_first() {
+    // The panel is a view over the ledger, newest first: the most
+    // recent paste is the row the eye lands on.
+    use crate::tabs::PastedImage;
+    let rows = vec![
+        PastedImage::new(std::path::PathBuf::from("/c/paste-1.png"), b"png"),
+        PastedImage::new(std::path::PathBuf::from("/c/paste-2.png"), b"png"),
+        PastedImage::new(std::path::PathBuf::from("/c/paste-3.png"), b"png"),
+    ];
+    let listed = images_panel_rows(&rows);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|row| row.stamp.as_str())
+            .collect::<Vec<_>>(),
+        vec!["paste-3", "paste-2", "paste-1"]
+    );
+}
+
+#[test]
+fn forgetting_a_row_drops_it_and_its_thumbnail() {
+    // The panel's Remove verb (paste-panel spec, PP-3): the row and
+    // its cached thumbnail leave together; a path no row owns is a
+    // no-op answered false.
+    use crate::tabs::PastedImage;
+    use cosmic::iced::widget::image::Handle;
+    use std::collections::HashMap;
+    let path = std::path::PathBuf::from("/c/paste-1.png");
+    let mut rows = vec![PastedImage::new(path.clone(), b"png")];
+    let mut thumbs = HashMap::from([(path.clone(), Handle::from_rgba(1, 1, vec![255, 0, 0, 255]))]);
+    assert!(forget_pasted_image(&mut rows, &mut thumbs, &path));
+    assert!(rows.is_empty());
+    assert!(thumbs.is_empty());
+    assert!(!forget_pasted_image(
+        &mut rows,
+        &mut thumbs,
+        std::path::Path::new("/c/other.png")
+    ));
+}
+
+// --- the panel's thumbnail decode (the ship audit's guard ride) ---
+
+/// A tiny solid-color PNG of the given dimensions, as bytes — the
+/// tabs suite's own fixture shape.
+fn panel_png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+/// A fresh temp dir per test, cleared first so re-runs start clean
+/// (the clipboard suite's own fixture convention).
+fn thumb_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("dropterm-thumb-tests-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn a_valid_png_decodes_into_a_thumbnail_handle() {
+    let dir = thumb_dir("valid");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    std::fs::write(&path, panel_png_bytes(64, 32)).expect("fixture png");
+    let (back, handle) = decode_panel_thumb(path.clone());
+    assert_eq!(back, path);
+    assert!(handle.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_non_image_payload_answers_none() {
+    // A cache file that is not a decodable image (planted, or a
+    // refused-decode leftover) renders its row text-only: the decode
+    // answers None after its one warn.
+    let dir = thumb_dir("garbage");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    std::fs::write(&path, b"not a png at all").expect("fixture file");
+    let (_, handle) = decode_panel_thumb(path);
+    assert!(handle.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_over_cap_file_is_refused_before_its_bytes_are_read() {
+    // The payload gate rides the clipboard read's own cap and fires
+    // before the read: a sparse file over the cap (cheap to plant,
+    // expensive to read) answers None without a decode attempt.
+    let dir = thumb_dir("cap");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    let file = std::fs::File::create(&path).expect("fixture file");
+    file.set_len((crate::clipboard::PASTE_PAYLOAD_CAP + 1) as u64)
+        .expect("extend the fixture sparsely");
+    drop(file);
+    let (_, handle) = decode_panel_thumb(path);
+    assert!(handle.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }

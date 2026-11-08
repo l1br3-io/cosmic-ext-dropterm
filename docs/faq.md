@@ -25,7 +25,7 @@ That is `hide_on_focus_loss`, on by default because a hotkey-driven drop-down li
 Each in its own way. Hiding preserves the *live* session - only the surface is destroyed, the PTY keeps running, so a `sleep` or an editor outlives every toggle. A reboot cannot preserve live processes; what restores is the layout: tabs with their directories, profiles, and renames save on change and come back on launch (`session_persistence_enabled` is the switch, on by default) ([sessions](sessions.md)).
 
 **Does copied text survive hiding the terminal?**
-Yes - DropTerm keeps an invisible anchor window alive for exactly this reason, so the clipboard binding (and your last copy) outlives every hide/show cycle. The mechanics are in [Known issues](known-issues.md).
+Yes - DropTerm keeps an invisible anchor window alive for exactly this reason, so the clipboard binding (and your last copy) outlives every hide/show cycle. And the copy itself no longer cares about focus: copying while the terminal is visible but unfocused (or even hidden) lands all the same, where it used to vanish silently until a restart. The mechanics are in [Known issues](known-issues.md).
 
 **Why can't I select text while vim (or tmux, htop) is running?**
 Those programs turn on mouse reporting, and the terminal hands every press to the program - that is the mode working as asked. Hold **Shift** to take the pointer back: Shift+drag selects, Shift+right-click opens the context menu, and Copy (`Ctrl+Shift+C`) copies that selection like any other. The same escape hatch alacritty, kitty, and gnome-terminal offer; the scroll wheel stays the program's even with Shift held.
