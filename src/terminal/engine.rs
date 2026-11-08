@@ -1921,6 +1921,44 @@ impl Terminal {
         let Some(rgba) = decode_image(payload) else {
             return;
         };
+        self.place_decoded_image(&args, rgba);
+    }
+
+    /// The paste entry into the image pipeline (paste-image spec,
+    /// PI-2): one OSC-independent placement — decode under the same
+    /// ceilings, default sizing (`auto`/`auto`, aspect on), inline by
+    /// definition. The engine's `images_enabled` flag gates it for
+    /// free: the flag's documented scope — OSC 1337 inert end to end —
+    /// extends to this, the one non-OSC entry. A cap or decode refusal
+    /// skips the render only, with one warn naming it — the caps
+    /// protect the render pipeline, not the user's own clipboard
+    /// bytes, whose cache file and pasted path already stand.
+    pub fn place_pasted_image(&mut self, payload: &[u8]) {
+        if !self.images_enabled {
+            return;
+        }
+        if payload.is_empty() || payload.len() > IMAGE_PAYLOAD_CAP {
+            log::warn!(
+                "pasted image not rendered: payload outside the {IMAGE_PAYLOAD_CAP}-byte render cap"
+            );
+            return;
+        }
+        let Some(rgba) = decode_image(payload) else {
+            log::warn!("pasted image not rendered: decode failed under the limits");
+            return;
+        };
+        let args = ImageArgs {
+            inline: true,
+            ..ImageArgs::default()
+        };
+        self.place_decoded_image(&args, rgba);
+    }
+
+    /// The shared placement tail: the decoded pixels enter the store
+    /// under a fresh id, the grid's cells are diced through the fork's
+    /// `Term::place_image`, and the placement rides the grid like text
+    /// from there.
+    fn place_decoded_image(&mut self, args: &ImageArgs, rgba: image::RgbaImage) {
         let (width, height) = rgba.dimensions();
         #[expect(
             clippy::cast_precision_loss,
@@ -1930,7 +1968,7 @@ impl Terminal {
         self.image_seq += 1;
         let id = self.image_seq;
         self.images.lock().unwrap().insert(id, rgba);
-        let (cols, rows) = resolve_placement(&args, inherent, &self.size);
+        let (cols, rows) = resolve_placement(args, inherent, &self.size);
         self.term.lock().place_image(id, cols, rows);
         self.needs_update = true;
     }

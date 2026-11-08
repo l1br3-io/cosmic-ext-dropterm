@@ -2869,6 +2869,62 @@ fn chunked_session_accumulates_parts_until_the_end() {
     );
 }
 
+// --- the paste entry (paste-image spec, PI-2) ---
+
+#[test]
+fn a_pasted_image_places_at_the_origin_like_an_osc_placement() {
+    let mut terminal = image_terminal();
+    // 64×32 keeps the default (auto/auto) sizing above one cell for
+    // any live cell shape; the origin cell carries the fresh id and
+    // the store holds the decoded pixels — the OSC placement pins,
+    // reached without an OSC.
+    terminal.place_pasted_image(&png_bytes(64, 32));
+    assert_eq!(cell_image(&terminal, 0, 0), Some(1));
+    assert_eq!(
+        terminal
+            .images
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(image::RgbaImage::dimensions),
+        Some((64, 32))
+    );
+}
+
+#[test]
+fn an_over_cap_pasted_payload_leaves_the_store_and_grid_untouched() {
+    let mut terminal = image_terminal();
+    let oversized = vec![0u8; super::IMAGE_PAYLOAD_CAP + 1];
+    terminal.place_pasted_image(&oversized);
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_none(),
+        "nothing entered the store"
+    );
+}
+
+#[test]
+fn an_undecodable_pasted_payload_places_nothing() {
+    let mut terminal = image_terminal();
+    terminal.place_pasted_image(b"not a png at all");
+    assert_eq!(cell_image(&terminal, 0, 0), None);
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_none(),
+        "nothing entered the store"
+    );
+}
+
+#[test]
+fn a_killswitched_engine_renders_no_pasted_image() {
+    let mut terminal = image_terminal();
+    terminal.images_enabled = false;
+    terminal.place_pasted_image(&png_bytes(64, 32));
+    assert!(
+        terminal.images.lock().unwrap().get(1).is_none(),
+        "nothing entered the store"
+    );
+}
+
 #[test]
 fn a_second_header_aborts_the_first_session() {
     let mut terminal = image_terminal();

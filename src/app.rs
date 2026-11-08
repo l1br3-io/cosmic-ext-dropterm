@@ -3258,11 +3258,17 @@ impl DropTerm {
                 // The Claude Code contract (paste-image spec, PI-1):
                 // the bytes land in the paste cache, their file's path
                 // pastes as text — the same channel a text paste uses,
-                // so bracketed paste rides unchanged.
+                // so bracketed paste rides unchanged. The visible
+                // confirmation (PI-2): the same bytes render inline at
+                // the cursor through the engine's one non-OSC image
+                // entry; a cap or decode refusal warns inside and
+                // skips only the render — the path already stands.
                 if let Some(tab) = self.active()
                     && let Some(path) = clipboard::write_paste_image(&bytes)
                 {
-                    tab.terminal.lock().unwrap().paste(&path);
+                    let mut terminal = tab.terminal.lock().unwrap();
+                    terminal.paste(&path);
+                    terminal.place_pasted_image(&bytes);
                 }
             }
             Message::PickSettingsTab(entity) => {
