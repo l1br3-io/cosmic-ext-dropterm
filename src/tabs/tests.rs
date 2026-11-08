@@ -1085,3 +1085,44 @@ fn pasted_row_keeps_the_paste_when_the_payload_is_not_an_image() {
     assert_eq!(row.dims, None);
     assert_eq!(row.stamp, "paste-20261108-143012-2");
 }
+
+// --- the ledger's existence prune (paste-ledger spec, PL-2) ---
+
+#[test]
+fn the_prune_drops_rows_whose_file_is_gone_and_keeps_the_rest() {
+    let kept = std::env::temp_dir().join("dropterm-pl2-kept.png");
+    std::fs::write(&kept, b"png").expect("write the kept fixture");
+    let mut rows = vec![
+        PastedImage::new(kept.clone(), b"png"),
+        PastedImage::new(
+            PathBuf::from("/nonexistent/dropterm-pl2-gone/paste-20261108-1.png"),
+            b"png",
+        ),
+    ];
+    let retained = prune_pasted_images(&mut rows);
+    std::fs::remove_file(&kept).expect("clean the kept fixture");
+    assert_eq!(retained, 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, kept);
+}
+
+#[test]
+fn the_prune_reports_zero_for_an_all_gone_ledger() {
+    let mut rows = vec![
+        PastedImage::new(PathBuf::from("/gone/1.png"), b"png"),
+        PastedImage::new(PathBuf::from("/gone/2.png"), b"png"),
+    ];
+    assert_eq!(prune_pasted_images(&mut rows), 0);
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn two_ledgers_prune_independently() {
+    // Per-tab isolation at the data level: one tab's prune never
+    // touches another's rows.
+    let mut mine = vec![PastedImage::new(PathBuf::from("/gone/mine.png"), b"png")];
+    let mut yours = vec![PastedImage::new(PathBuf::from("/gone/yours.png"), b"png")];
+    prune_pasted_images(&mut mine);
+    prune_pasted_images(&mut yours);
+    assert!(mine.is_empty() && yours.is_empty());
+}

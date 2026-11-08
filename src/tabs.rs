@@ -159,6 +159,18 @@ impl PastedImage {
     }
 }
 
+/// Drops ledger rows whose file no longer exists and returns the
+/// retained count — the one read every ledger consumer goes through
+/// (paste-ledger spec): existence-backed, so the retention sweep
+/// and a panel Remove age out of the count and the list for free,
+/// never rendering a row for a file that is gone. The existence
+/// check is `Path::exists` and nothing more — no metadata reads a
+/// flaky filesystem could fail beyond the boolean.
+pub fn prune_pasted_images(rows: &mut Vec<PastedImage>) -> usize {
+    rows.retain(|row| row.path.exists());
+    rows.len()
+}
+
 /// One terminal inside the overlay surface.
 ///
 /// `shell_title` is the last raw OSC 0/2 report and `title` the
@@ -264,6 +276,15 @@ impl Tab {
             pasted_images: Vec::new(),
             terminal: Mutex::new(terminal),
         }
+    }
+
+    /// Prunes this tab's pasted-image ledger — rows whose file is
+    /// gone — and returns the retained count: the one read the
+    /// images panel and the band chip go through
+    /// ([`prune_pasted_images`]), so no consumer ever sees a stale
+    /// count or a row for a deleted file.
+    pub fn prune_pasted_images(&mut self) -> usize {
+        prune_pasted_images(&mut self.pasted_images)
     }
 }
 
