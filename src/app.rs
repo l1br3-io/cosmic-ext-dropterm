@@ -1398,17 +1398,33 @@ fn panel_thumb_task(path: std::path::PathBuf) -> Task<Message> {
 }
 
 /// Decodes one paste-cache file into a panel thumbnail (paste-panel
-/// spec): read, decode, `thumbnail` to the ≤256 px long edge, RGBA
-/// through the grid store's own `Handle::from_rgba` path. Any
-/// failure answers `None` after one warn naming the file — the row
-/// renders text-only, never blocks, and never touches the paste
-/// path (decodes run only at panel open).
+/// spec): payload-gated before the read, decoded under the engine's
+/// own decompression-bomb guard (`decode_image` — the cache files
+/// are clipboard-originated bytes, and they meet the same ceilings
+/// every OSC decode already had), then thumbnailed to the ≤256 px
+/// long edge and handed to RGBA through the grid store's own
+/// `Handle::from_rgba` path. Any failure answers `None` after one
+/// warn naming the file — the row renders text-only, never blocks,
+/// and never touches the paste path (decodes run only at panel
+/// open).
 fn decode_panel_thumb(
     path: std::path::PathBuf,
 ) -> (
     std::path::PathBuf,
     Option<cosmic::iced::widget::image::Handle>,
 ) {
+    // The payload gate rides the clipboard read's own cap: a cache
+    // file over it can only have been planted there, and it is
+    // refused before a byte is read.
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > crate::clipboard::PASTE_PAYLOAD_CAP as u64
+    {
+        log::warn!(
+            "panel thumbnail refused for {}: over the paste cap",
+            path.display()
+        );
+        return (path, None);
+    }
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -1416,19 +1432,19 @@ fn decode_panel_thumb(
             return (path, None);
         }
     };
-    let thumb = image::load_from_memory(&bytes)
-        .map(|img| img.thumbnail(256, 256).to_rgba8())
-        .ok();
-    let Some(rgba) = thumb else {
+    let Some(rgba) = crate::terminal::decode_image(&bytes) else {
         log::warn!("panel thumbnail decode failed for {}", path.display());
         return (path, None);
     };
+    let thumb = image::DynamicImage::ImageRgba8(rgba)
+        .thumbnail(256, 256)
+        .to_rgba8();
     (
         path,
         Some(cosmic::iced::widget::image::Handle::from_rgba(
-            rgba.width(),
-            rgba.height(),
-            rgba.into_raw(),
+            thumb.width(),
+            thumb.height(),
+            thumb.into_raw(),
         )),
     )
 }

@@ -4386,8 +4386,10 @@ struct PendingImage {
 /// — the decompression-bomb guard — and only the four sanctioned
 /// formats (png/jpeg/gif/webp; anything else fails format detection
 /// and drops whole). Synchronous by design: no threads touch the
-/// damage path.
-fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
+/// damage path. `pub(crate)` for one consumer beside the damage path:
+/// the images panel's thumbnails decode clipboard-originated cache
+/// files through this same guard.
+pub(crate) fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
     use image::ImageDecoder;
 
     let mut limits = image::Limits::default();

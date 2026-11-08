@@ -20,4 +20,9 @@ pub use engine::{
     ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress, Terminal,
     TerminalOptions, TerminalScroll, WINDOW_BG_COLOR,
 };
+// pub(crate) for one consumer outside the engine: the images panel's
+// thumbnail decode (paste-panel spec) rides the engine's own
+// decompression-bomb guard — clipboard-originated cache files meet
+// the same ceilings every OSC decode already had.
+pub(crate) use engine::decode_image;
 pub use widget::{Action, TerminalBox};

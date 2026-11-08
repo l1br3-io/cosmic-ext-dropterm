@@ -666,3 +666,66 @@ fn forgetting_a_row_drops_it_and_its_thumbnail() {
         std::path::Path::new("/c/other.png")
     ));
 }
+
+// --- the panel's thumbnail decode (the ship audit's guard ride) ---
+
+/// A tiny solid-color PNG of the given dimensions, as bytes — the
+/// tabs suite's own fixture shape.
+fn panel_png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode the test png");
+    bytes.into_inner()
+}
+
+/// A fresh temp dir per test, cleared first so re-runs start clean
+/// (the clipboard suite's own fixture convention).
+fn thumb_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("dropterm-thumb-tests-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn a_valid_png_decodes_into_a_thumbnail_handle() {
+    let dir = thumb_dir("valid");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    std::fs::write(&path, panel_png_bytes(64, 32)).expect("fixture png");
+    let (back, handle) = decode_panel_thumb(path.clone());
+    assert_eq!(back, path);
+    assert!(handle.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_non_image_payload_answers_none() {
+    // A cache file that is not a decodable image (planted, or a
+    // refused-decode leftover) renders its row text-only: the decode
+    // answers None after its one warn.
+    let dir = thumb_dir("garbage");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    std::fs::write(&path, b"not a png at all").expect("fixture file");
+    let (_, handle) = decode_panel_thumb(path);
+    assert!(handle.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_over_cap_file_is_refused_before_its_bytes_are_read() {
+    // The payload gate rides the clipboard read's own cap and fires
+    // before the read: a sparse file over the cap (cheap to plant,
+    // expensive to read) answers None without a decode attempt.
+    let dir = thumb_dir("cap");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("paste-20261108-140309-1.png");
+    let file = std::fs::File::create(&path).expect("fixture file");
+    file.set_len((crate::clipboard::PASTE_PAYLOAD_CAP + 1) as u64)
+        .expect("extend the fixture sparsely");
+    drop(file);
+    let (_, handle) = decode_panel_thumb(path);
+    assert!(handle.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
