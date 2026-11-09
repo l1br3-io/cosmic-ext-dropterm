@@ -1,6 +1,6 @@
 # Panel applet
 
-A COSMIC panel applet - one icon in the panel that toggles the drop-down and shows at a glance whether DropTerm runs. It is a separate binary (`cosmic-ext-dropterm-applet`) shipped beside the terminal, not a mode of it: panel applets and layer-shell terminals live in different processes by design (building both into one binary would unify wgpu features and break panel rendering - the full reasoning is in the [research record](research/v3-panel-applet.md)).
+A COSMIC panel applet - one icon in the panel that toggles the drop-down and shows at a glance whether DropTerm runs. It is a separate binary (`cosmic-ext-dropterm-applet`) shipped beside the terminal, not a mode of it: panel applets and layer-shell terminals live in different processes by design (building both into one binary would unify wgpu features and break panel rendering - the full reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
 ## What the button does
 

@@ -55,11 +55,11 @@ Grounded in the working tree at `fe1cd72`:
   tier every suggestion passes. A generator provider slots in as the fifth
   source behind the same shell gate the path/catalog/specs providers
   already ride (the ssh honesty rules in
-  [autosuggestions](../autosuggestions.md)).
+  [autosuggestions](../../autosuggestions.md)).
 - **The command catalog's PATH snapshot.** The command-name provider
   completes from "the executables on the tab's `$PATH`, snapshotted when
   the tab spawns and never rescanned"
-  ([autosuggestions](../autosuggestions.md)) — the reproducible binary
+  ([autosuggestions](../../autosuggestions.md)) — the reproducible binary
   source a generator's program resolves against.
 - **Config pattern.** Four `autosuggestions_*` keys
   (`src/config.rs:408-451`, defaults at `:505-508`), each serialized,

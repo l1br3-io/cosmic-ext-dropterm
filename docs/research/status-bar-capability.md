@@ -19,8 +19,8 @@ OSC 133 D, progress from OSC 9;4, authoritative/remote cwd from OSC 7, program
 status from OSC 7501 — is **blocked by one seam**: `alacritty_terminal` 0.25.1's
 `Event` enum carries no OSC passthrough, the event loop owns the PTY read path
 (a second reader would race bytes), and patching vte is twice-rejected
-([terminal-de-integration](terminal-de-integration.md),
-[terminal-autocomplete](terminal-autocomplete.md)). Those stay rejected until
+([terminal-de-integration](archive/terminal-de-integration.md),
+[terminal-autocomplete](archive/terminal-autocomplete.md)). Those stay rejected until
 upstream grows an OSC event — the named revisit trigger. Three smaller honest
 wins ship alongside the duration tier: a scroll-position chip (state only the
 terminal knows), an ssh-destination stand-in for the path while `ssh` owns the
@@ -193,8 +193,8 @@ inside the term; DropTerm's `TaggedEventProxy` (`src/terminal/engine.rs:187`)
 sees only the enum above. The PTY read path is owned by the event loop thread
 — teeing the master fd would race bytes. Observing OSC 7/9;4/133/777/7501
 therefore requires a `[patch]` of vte or alacritty_terminal, which
-[terminal-de-integration](terminal-de-integration.md) rejected and
-[terminal-autocomplete](terminal-autocomplete.md) re-rejected (2026-10-17).
+[terminal-de-integration](archive/terminal-de-integration.md) rejected and
+[terminal-autocomplete](archive/terminal-autocomplete.md) re-rejected (2026-10-17).
 Shell-integration injection is likewise rejected. **Revisit trigger:** an
 upstream `alacritty_terminal` release (or accepted PR) adding an OSC event
 variant — that single seam unblocks exit codes, progress, remote cwd, and
@@ -332,5 +332,5 @@ Ship, in order:
   `src/terminal/suggest.rs`, `src/notify.rs` @ branch `ced2` (2026-10-17);
   `alacritty_terminal` 0.25.1 vendored `src/event.rs` (checked 2026-10-17)
 - Prior records: [status-bar-ux](status-bar-ux.md) (2026-10-11),
-  [terminal-de-integration](terminal-de-integration.md) (2026-10-02),
-  [terminal-autocomplete](terminal-autocomplete.md) (2026-10-17)
+  [terminal-de-integration](archive/terminal-de-integration.md) (2026-10-02),
+  [terminal-autocomplete](archive/terminal-autocomplete.md) (2026-10-17)

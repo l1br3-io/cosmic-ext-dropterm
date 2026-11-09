@@ -5,7 +5,7 @@ How the DropTerm codebase is laid out: two crates, one module inventory, a handf
 ## Two crates, one workspace
 
 - **`cosmic-ext-dropterm`** (`src/`) - the terminal itself, built as a lib plus bin. The lib target exists so the applet can share the D-Bus state contract (`src/lib.rs` re-exports `dbus_state`) instead of duplicating it.
-- **`cosmic-ext-dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/v3-panel-applet.md)).
+- **`cosmic-ext-dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
 ## Module inventory
 
@@ -42,7 +42,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 
 ## The load-bearing seams
 
-- **Single-instance D-Bus.** A second launch of the binary never starts a second app: it rides libcosmic's `org.freedesktop.DbusActivation` to the running instance. The CLI verbs (`src/app/remote.rs`) and the applet's toggle use the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/remote-control-commands.md)).
+- **Single-instance D-Bus.** A second launch of the binary never starts a second app: it rides libcosmic's `org.freedesktop.DbusActivation` to the running instance. The CLI verbs (`src/app/remote.rs`) and the applet's toggle use the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)).
 - **Config as the source of truth.** Every setting is one RON file under cosmic-config, watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
 - **One geometry path.** Every transition that shapes the surface (show, config reshape, drag) goes through `geometry::apply_geometry`, so no path can leave a stale anchor, margin, or size.
 - **One spawn funnel.** `app/spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface.

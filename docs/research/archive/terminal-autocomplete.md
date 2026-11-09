@@ -366,7 +366,7 @@ selection, alias expansion, command inspector, syntax and error highlighting,
 Vim keybindings) exists because typing does not go through a PTY grid at
 all; commands run on Execute and render as blocks (*"Blocks group your
 command and command output"*, per the docs' Block basics cited in
-[status-bar-ux](status-bar-ux.md)). On that editor sit two completion
+[status-bar-ux](../status-bar-ux.md)). On that editor sit two completion
 systems:
 
 - **Autosuggestions** (always-on, toggle from the Command Palette): *"Warp

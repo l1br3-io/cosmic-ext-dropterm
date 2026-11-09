@@ -369,20 +369,20 @@ Adopt **D**, in one module:
 
 ## Relation to prior records
 
-- **Extends** [autosuggest-stage2-crosscheck](autosuggest-stage2-crosscheck.md)
+- **Extends** [autosuggest-stage2-crosscheck](archive/autosuggest-stage2-crosscheck.md)
   (2026-10-21): its fish pipeline pin (history-first, completions fallback,
   `completions[0]`) stands; this record pins what that fallback *contains*
   for bare words (files, by default policy) and fish's empty-token ghost
   carve.
-- **Extends** [autosuggest-warp-parity](autosuggest-warp-parity.md)
+- **Extends** [autosuggest-warp-parity](archive/autosuggest-warp-parity.md)
   (2026-11-02): the menu's design is untouched; this adds the source-pinned
   `CompletionsFallbackStrategy::FilePaths` default and VS Code's
   files-and-folders fallback, neither of which that record covered.
-- **Consumes** [completions-seed-audit](completions-seed-audit.md)
+- **Consumes** [completions-seed-audit](archive/completions-seed-audit.md)
   (2026-11-03): today's `completions.toml` schema (subcommands/flags,
   `deny_unknown_fields`) is exactly why per-argument path declarations are
   a named growth path here, not v1.
-- **Extends** [autosuggest-alias-resolution](autosuggest-alias-resolution.md)
+- **Extends** [autosuggest-alias-resolution](archive/autosuggest-alias-resolution.md)
   (2026-11-02): CDPATH stays rejected on its shell-state grounds.
 - Supersedes nothing: the bare-word ruling at `docs/autosuggestions.md:25`
   was a ruling, not a record; this is its first review against primary
@@ -434,7 +434,7 @@ All fetched 2026-11-06.
 - Fig: `@withfig/autocomplete-types` 1.31.0 (npm), `index.d.ts:5-29`
   (filepaths/folders templates; "`cd` uses the "folders" template") via
   <https://unpkg.com/@withfig/autocomplete-types>; withfig/autocomplete @
-  `aef52acff84c` per [completions-seed-audit](completions-seed-audit.md);
+  `aef52acff84c` per [completions-seed-audit](archive/completions-seed-audit.md);
   the Fig desktop engine's own fallback: **unverified** (no live primary
   source)
 - VS Code @ main `03d396a6e01bf958211fde9f2b279619881d68b2` (2026-11-06):
@@ -472,7 +472,7 @@ All fetched 2026-11-06.
 - DropTerm local tree @ HEAD `c48c5267a35d` (2026-11-06):
   `src/terminal/suggest.rs`, `src/terminal/engine.rs`,
   `docs/autosuggestions.md`; prior records
-  [autosuggest-stage2-crosscheck](autosuggest-stage2-crosscheck.md),
-  [autosuggest-warp-parity](autosuggest-warp-parity.md),
-  [completions-seed-audit](completions-seed-audit.md),
-  [autosuggest-alias-resolution](autosuggest-alias-resolution.md)
+  [autosuggest-stage2-crosscheck](archive/autosuggest-stage2-crosscheck.md),
+  [autosuggest-warp-parity](archive/autosuggest-warp-parity.md),
+  [completions-seed-audit](archive/completions-seed-audit.md),
+  [autosuggest-alias-resolution](archive/autosuggest-alias-resolution.md)

@@ -20,7 +20,7 @@ alongside `text/uri-list` on a file copy (historically *first*, per
 [cosmic-files#1659], reordered in #1705), so DropTerm's text read succeeds today
 and a URI road bolted onto the empty-clipboard fallthrough would never fire. The
 file road rides the existing paste-image pipeline unchanged — cache copy, path
-paste, panel row — extending the [paste-image-ux](paste-image-ux.md) verdict
+paste, panel row — extending the [paste-image-ux](../paste-image-ux.md) verdict
 (the path is the marker) to the copy that arrives as a name instead of bytes.
 
 ## Findings
@@ -59,14 +59,14 @@ paste, panel row — extending the [paste-image-ux](paste-image-ux.md) verdict
    pasted bytes), a 32 MiB ceiling refused whole (never a truncation, never a
    text fallback that would paste the URI where the image was expected), and
    the four-format magic-byte sniff as the only admission rule. This is the
-   [terminal-images](terminal-images.md) record's own ethic — DropTerm refused
+   [terminal-images](../terminal-images.md) record's own ethic — DropTerm refused
    kitty's `t=f`/`t=s` file reads rather than open files a *program* named;
    here the gesture is the user's own paste, and the read stays bounded,
    sniff-gated, and confined to what the pipeline can decode.
 
 5. **The precedent field stays text-only; this is an extension of DropTerm's
    own model, not a divergence.** No terminal in the
-   [paste-image-ux](paste-image-ux.md) survey pastes clipboard images at all;
+   [paste-image-ux](../paste-image-ux.md) survey pastes clipboard images at all;
    the two products that handle clipboard images (Warp, Claude Code) collapse
    them to a marker backed by a file. The file-copy road lands the same marker
    (the cache path) for the copy that arrives as a URI — no new presentation,
@@ -118,8 +118,8 @@ Rejected:
 - Live cosmic-comp session, 2026-11-09 — served-mime and conversion
   observations (findings 3), reproducible via `cargo test --bin
   cosmic-ext-dropterm live_uri_paste_smoke -- --ignored`.
-- DropTerm's own [paste-image-ux](paste-image-ux.md) and
-  [terminal-images](terminal-images.md) records — the marker model and the
+- DropTerm's own [paste-image-ux](../paste-image-ux.md) and
+  [terminal-images](../terminal-images.md) records — the marker model and the
   no-program-named-file-reads ethic this road extends.
 
 [cosmic-files#1659]: https://github.com/pop-os/cosmic-files/issues/1659
