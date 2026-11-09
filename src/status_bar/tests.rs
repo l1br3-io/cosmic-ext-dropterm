@@ -3118,3 +3118,186 @@ fn the_pasted_chip_sits_between_scrolled_and_clock() {
     let clock = seats.iter().position(|id| *id == SegmentId::Clock);
     assert!(matches!((scrolled, pasted, clock), (Some(s), Some(p), Some(c)) if s < p && p < c));
 }
+
+// --- separators, leading glyphs, and every-segment tips ---
+//
+// The 2026-11-09 user ruling: the row parses at a glance — thin
+// hairlines divide a cluster's segments, the four ambiguous values
+// carry a leading glyph, and every segment names itself and its verb
+// on hover.
+
+#[test]
+fn the_four_ambiguous_segments_carry_leading_glyphs_and_others_none() {
+    // Only the values that could read as anything get an icon: a
+    // branch name, a cell count, a position, a profile name. The
+    // rest self-identify — a path, a verdict, a distance, a signed
+    // percent, a wall clock, plain words.
+    assert_eq!(segment_icon(SegmentId::Branch), Some("⎇"));
+    assert_eq!(segment_icon(SegmentId::Grid), Some("⊞"));
+    assert_eq!(segment_icon(SegmentId::Tab), Some("▤"));
+    assert_eq!(segment_icon(SegmentId::Profile), Some("◉"));
+    for id in [
+        SegmentId::Process,
+        SegmentId::Duration,
+        SegmentId::Exit,
+        SegmentId::Progress,
+        SegmentId::Path,
+        SegmentId::Zoom,
+        SegmentId::Scrolled,
+        SegmentId::Pasted,
+        SegmentId::Clock,
+    ] {
+        assert_eq!(segment_icon(id), None, "{id:?} carries no glyph");
+    }
+}
+
+#[test]
+fn the_glyph_rides_the_display_and_never_stands_alone() {
+    // `⎇ main` — glyph, space, value; a segment with nothing to say
+    // renders nothing at all, never a glyph over an empty seat.
+    assert_eq!(prefixed_display(SegmentId::Branch, "main"), "⎇ main");
+    assert_eq!(prefixed_display(SegmentId::Grid, "80×24"), "⊞ 80×24");
+    assert_eq!(prefixed_display(SegmentId::Tab, "2/5"), "▤ 2/5");
+    assert_eq!(prefixed_display(SegmentId::Profile, "dev"), "◉ dev");
+    assert_eq!(prefixed_display(SegmentId::Clock, "14:32"), "14:32");
+    assert_eq!(prefixed_display(SegmentId::Branch, ""), "");
+}
+
+#[test]
+fn the_copy_payload_stays_the_bare_value_beside_the_glyph() {
+    // The display and the payload split deliberately: the glyph rides
+    // the display alone, so a click pastes the value the shell knows.
+    let segments = rich_segments();
+    assert_eq!(copy_text(SegmentId::Branch, &segments), "ced2");
+    assert_eq!(copy_text(SegmentId::Profile, &segments), "dev");
+    assert_eq!(copy_text(SegmentId::Tab, &segments), "1/3");
+}
+
+fn sep_rect(id: SegmentId, x: f32, width: f32) -> (SegmentId, Rectangle) {
+    (
+        id,
+        Rectangle::new(Point::new(x, 0.0), Size::new(width, BAND_HEIGHT)),
+    )
+}
+
+#[test]
+fn hairlines_divide_adjacent_segments_within_a_cluster() {
+    // One hairline per intra-cluster gap, centered: between the
+    // process strip (ends 52) and the duration (starts 64) → 58,
+    // and the duration (ends 88) and the branch (starts 100) → 94.
+    let rects = vec![
+        sep_rect(SegmentId::Process, 12.0, 40.0),
+        sep_rect(SegmentId::Duration, 64.0, 24.0),
+        sep_rect(SegmentId::Branch, 100.0, 30.0),
+    ];
+    assert_eq!(separator_positions(&rects), vec![58.0, 94.0]);
+}
+
+#[test]
+fn no_hairline_between_the_clusters_or_beside_absent_segments() {
+    // The clusters' divide is the band's leftover width, not a gap —
+    // nothing paints there; and an absent segment (duration, exit,
+    // progress, path all missing here) leaves its neighbors closing
+    // up with one ordinary gap, divided like any other pair.
+    let rects = vec![
+        sep_rect(SegmentId::Process, 12.0, 40.0),
+        sep_rect(SegmentId::Branch, 64.0, 30.0),
+        sep_rect(SegmentId::Clock, 900.0, 34.0),
+    ];
+    assert_eq!(separator_positions(&rects), vec![58.0]);
+}
+
+#[test]
+fn a_lone_segment_divides_nothing() {
+    // No pair, no hairline — including the fully absent band.
+    assert!(separator_positions(&[sep_rect(SegmentId::Process, 12.0, 40.0)]).is_empty());
+    assert!(separator_positions(&[]).is_empty());
+}
+
+#[test]
+fn every_copy_segment_tips_its_fact_and_the_copy_verb() {
+    // The tip names what the segment is, carries its live value
+    // where one stands, and states the copy verb — the band's
+    // default — in the action chips' own two-sentence shape.
+    let segments = rich_segments();
+    assert_eq!(
+        segment_tip(SegmentId::Process, &segments),
+        "Foreground process: cargo. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Duration, &segments),
+        "Command time: 2:41. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Progress, &segments),
+        "Command progress: 42%. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Path, &segments),
+        "Working directory. Click to copy the full path."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Branch, &segments),
+        "Git branch: ced2. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Profile, &segments),
+        "Profile: dev. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Grid, &segments),
+        "Terminal size: 120×30 cells. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Tab, &segments),
+        "Tab 1 of 3. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Zoom, &segments),
+        "Font zoom: +120%. Click to copy."
+    );
+    assert_eq!(
+        segment_tip(SegmentId::Clock, &segments),
+        "Local time. Click to copy."
+    );
+    // The verdict chip states the failure it narrates.
+    assert_eq!(
+        segment_tip(
+            SegmentId::Exit,
+            &StatusSegments {
+                exit_code: Some(42),
+                ..segments.clone()
+            }
+        ),
+        "Last command failed with code 42. Click to copy the code."
+    );
+}
+
+#[test]
+fn the_action_chips_tips_route_through_segment_tip_verbatim() {
+    // One tip source for the whole band: the two action chips' arms
+    // hand back their own verb-naming fns unchanged.
+    let segments = rich_segments();
+    assert_eq!(segment_tip(SegmentId::Scrolled, &segments), scrolled_tip(7));
+    let pasted = StatusSegments {
+        pasted: Some(2),
+        ..segments
+    };
+    assert_eq!(segment_tip(SegmentId::Pasted, &pasted), pasted_tip(2));
+}
+
+#[test]
+fn absent_segments_tip_nothing() {
+    // An absent segment has no rect for the overlay to paint over,
+    // and its tip lays the empty string besides — hidden, absent,
+    // and squeezed-out all indistinguishable, the resolver's own
+    // contract.
+    let empty = StatusSegments::default();
+    for id in LEFT_CLUSTER.iter().chain(RIGHT_CLUSTER.iter()) {
+        assert_eq!(
+            segment_tip(*id, &empty),
+            String::new(),
+            "{id:?} tips nothing"
+        );
+    }
+}

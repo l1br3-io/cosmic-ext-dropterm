@@ -12,22 +12,27 @@
 //! piggyback points, never per-frame (status-bar criterion 5). The
 //! widget half (Task 2) renders this module's pure model.
 //!
-//! Segments are values without labels — a path reads as a path —
-//! separated by gaps, never punctuation. The one live element is the
-//! process-state disc: filled while a foreground child runs, a hollow
-//! ring over the idle shell.
+//! Segments are values first — a path reads as a path — with the
+//! four whose bare value could read as anything (branch, grid, tab
+//! position, profile) carrying a leading glyph (user-ruled
+//! 2026-11-09), adjacent segments of one cluster divided by a thin
+//! painted hairline, and every segment explaining itself on hover.
+//! The one live element is the process-state disc: filled while a
+//! foreground child runs, a hollow ring over the idle shell.
 //!
-//! The set is ten — process, duration, path, branch in the left
-//! cluster; profile, grid, tab position, zoom, scrolled-back chip,
-//! clock in the right — each individually toggleable (a hidden
-//! segment is never computed) and click-copyable through
-//! [`copy_text`]: the full value, never the elided display. The
-//! scrolled chip bends the copy rule exactly once (status-scrolled
-//! spec): its click jumps the viewport to the bottom — it has no
-//! copyable value, and the jump is the verb. The band's two action
-//! chips (scrolled, pasted) carry hover tips that name their verbs —
-//! the tab strip's own tooltip idiom — while every copy segment
-//! stays quiet.
+//! The set is thirteen — process, duration, exit, progress, path,
+//! branch in the left cluster; profile, grid, tab position, zoom,
+//! scrolled-back chip, pasted chip, clock in the right — each
+//! individually toggleable (a hidden segment is never computed) and
+//! click-copyable through [`copy_text`]: the full value, never the
+//! elided display — and never the leading glyph, which rides the
+//! display alone. The two action chips bend the copy rule exactly
+//! once each (their specs): the scrolled chip's click jumps the
+//! viewport to the bottom, the pasted chip's opens the images panel.
+//! Every segment carries a hover tip naming what it is and its verb
+//! (user-ruled 2026-11-09) — the tab strip's own tooltip idiom; the
+//! copy segments say "click to copy", the action chips say their own
+//! verbs.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -664,9 +669,8 @@ pub fn pasted_display(count: usize) -> String {
 
 /// The pasted chip's hover tip (paste-chip OQ-5): names what the
 /// count counts and what the click does — the two facts the resting
-/// chip cannot carry. The scrolled chip's tip sibling; copy segments
-/// tip nothing (their verb is the band's own default, and a tip on
-/// every segment would narrate the whole band).
+/// chip cannot carry. The scrolled chip's tip sibling; the copy
+/// segments' own tips come from [`segment_tip`].
 pub fn pasted_tip(count: usize) -> String {
     format!(
         "{} pasted {}. Click to open the images panel.",
@@ -682,6 +686,104 @@ pub fn scrolled_tip(lines: u16) -> String {
         "Scrolled back {lines} {}. Click to jump to bottom.",
         if lines == 1 { "line" } else { "lines" }
     )
+}
+
+/// The leading glyph a segment's display carries (user-ruled
+/// 2026-11-09): only the four whose bare value could read as
+/// anything — a branch name, a cell count, a position, a profile
+/// name; every other segment's value already self-identifies (a path
+/// reads as a path, `✗1` as a verdict, `↑12` as a distance). The
+/// glyphs are monochrome text shapes, not emoji — the paste chip's
+/// own no-emoji ruling stands — and they ride the display alone:
+/// [`copy_text`] payloads and [`resolve_segments`] fields stay bare
+/// values. Retunable constants; the hardware pass is the only judge
+/// of how a given terminal font renders them (the text system's
+/// fallback answers a family that lacks the shape).
+fn segment_icon(id: SegmentId) -> Option<&'static str> {
+    match id {
+        // ⎇ — the branch sigil terminals and editors converged on.
+        SegmentId::Branch => Some("\u{2387}"),
+        // ⊞ — a grid of cells.
+        SegmentId::Grid => Some("\u{229E}"),
+        // ▤ — stacked pages, a position among them.
+        SegmentId::Tab => Some("\u{25A4}"),
+        // ◉ — the active persona.
+        SegmentId::Profile => Some("\u{25C9}"),
+        _ => None,
+    }
+}
+
+/// A segment's display with its leading glyph, when it carries one:
+/// `⎇ main`. An empty value stays empty — a glyph alone would
+/// narrate a segment that has nothing to say.
+fn prefixed_display(id: SegmentId, value: &str) -> String {
+    match segment_icon(id) {
+        Some(icon) if !value.is_empty() => format!("{icon} {value}"),
+        _ => value.to_string(),
+    }
+}
+
+/// The tip a segment pops on hover (user-ruled 2026-11-09), naming
+/// what the segment is and its verb: the copy segments state their
+/// fact and "click to copy"; the two action chips state their own
+/// verbs ([`scrolled_tip`], [`pasted_tip`]). An absent segment tips
+/// nothing — the empty string lays no paragraph, and the tip overlay
+/// paints only over a rendered segment's rect, which an absent
+/// segment never has.
+fn segment_tip(id: SegmentId, segments: &StatusSegments) -> String {
+    match id {
+        SegmentId::Process => {
+            if segments.process.is_empty() {
+                String::new()
+            } else {
+                format!("Foreground process: {}. Click to copy.", segments.process)
+            }
+        }
+        SegmentId::Duration => {
+            let display = duration_display(segments);
+            if display.is_empty() {
+                String::new()
+            } else {
+                format!("Command time: {display}. Click to copy.")
+            }
+        }
+        SegmentId::Exit => segments.exit_code.map_or_else(String::new, |code| {
+            format!("Last command failed with code {code}. Click to copy the code.")
+        }),
+        SegmentId::Progress => segments.progress.map_or_else(String::new, |progress| {
+            format!(
+                "Command progress: {}. Click to copy.",
+                progress_display(progress)
+            )
+        }),
+        SegmentId::Path => segments.path.as_ref().map_or_else(String::new, |_| {
+            "Working directory. Click to copy the full path.".to_owned()
+        }),
+        SegmentId::Branch => segments.branch.as_ref().map_or_else(String::new, |name| {
+            format!("Git branch: {name}. Click to copy.")
+        }),
+        SegmentId::Profile => segments.profile.as_ref().map_or_else(String::new, |name| {
+            format!("Profile: {name}. Click to copy.")
+        }),
+        SegmentId::Grid => segments.grid.map_or_else(String::new, |(cols, rows)| {
+            format!("Terminal size: {cols}×{rows} cells. Click to copy.")
+        }),
+        SegmentId::Tab => segments
+            .tab_position
+            .map_or_else(String::new, |(index, total)| {
+                format!("Tab {index} of {total}. Click to copy.")
+            }),
+        SegmentId::Zoom => segments.zoom_percent.map_or_else(String::new, |percent| {
+            format!("Font zoom: {percent:+}%. Click to copy.")
+        }),
+        // The action chips' own verbs, verbatim.
+        SegmentId::Scrolled => segments.scrolled.map_or_else(String::new, scrolled_tip),
+        SegmentId::Pasted => segments.pasted.map_or_else(String::new, pasted_tip),
+        SegmentId::Clock => segments
+            .clock
+            .as_ref()
+            .map_or_else(String::new, |_| "Local time. Click to copy.".to_owned()),
+    }
 }
 
 /// The exit chip's display (status-exit spec): `✗{code}` — the
@@ -1694,6 +1796,13 @@ const HALO_GAP: f32 = 1.5;
 const PAD_X: f32 = 12.0;
 const SEGMENT_GAP: f32 = 12.0;
 
+/// The inter-segment hairline's painted size (user-ruled 2026-11-09):
+/// one pixel wide, half the band tall, centered — a mark that reads
+/// as structure without competing with the text. Retunable at the
+/// hardware pass.
+const SEPARATOR_WIDTH: f32 = 1.0;
+const SEPARATOR_HEIGHT: f32 = 12.0;
+
 /// The gap between the disc and the process name.
 const DISC_GAP: f32 = 6.0;
 
@@ -1734,12 +1843,12 @@ struct State {
     scrolled: BandParagraph,
     pasted: BandParagraph,
     clock: BandParagraph,
-    /// The scrolled chip's hover tip label, re-laid with its segment
-    /// every layout — the text is count-live, unlike the tab strip's
-    /// two constant tips.
-    scrolled_tip: BandParagraph,
-    /// The pasted chip's hover tip label, cached the same way.
-    pasted_tip: BandParagraph,
+    /// Every segment's hover-tip label (user-ruled 2026-11-09),
+    /// re-laid with its segment every layout — each tip's value is as
+    /// live as its segment's (the counts, the clock, the elapsed), so
+    /// they ride the same re-lay the segment paragraphs take. Filled
+    /// on the first layout, one seat per segment in cluster order.
+    tips: Vec<(SegmentId, BandParagraph)>,
     /// Whether the inline reveal is armed — the cursor rests on the
     /// (elided) path's display rect.
     armed: bool,
@@ -1985,26 +2094,30 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
+        // The four glyph-led displays (user-ruled 2026-11-09): the
+        // icon rides the paragraph — its width, elision, and drop
+        // behavior flow through the same measured machinery — while
+        // the copy payload stays the bare value from `copy_text`.
+        let branch_display = prefixed_display(
+            SegmentId::Branch,
+            self.segments.branch.as_deref().unwrap_or(""),
+        );
         state.branch.update(segment_text(
-            display_text(
-                copied,
-                SegmentId::Branch,
-                self.segments.branch.as_deref().unwrap_or(""),
-            ),
+            display_text(copied, SegmentId::Branch, &branch_display),
             font,
         ));
+        let profile_display = prefixed_display(
+            SegmentId::Profile,
+            self.segments.profile.as_deref().unwrap_or(""),
+        );
         state.profile.update(segment_text(
-            display_text(
-                copied,
-                SegmentId::Profile,
-                self.segments.profile.as_deref().unwrap_or(""),
-            ),
+            display_text(copied, SegmentId::Profile, &profile_display),
             font,
         ));
         let grid = self
             .segments
             .grid
-            .map(|(cols, rows)| format!("{cols}×{rows}"));
+            .map(|(cols, rows)| prefixed_display(SegmentId::Grid, &format!("{cols}×{rows}")));
         state.grid.update(segment_text(
             display_text(copied, SegmentId::Grid, grid.as_deref().unwrap_or("")),
             font,
@@ -2012,7 +2125,7 @@ impl<Message> StatusBar<Message> {
         let tab = self
             .segments
             .tab_position
-            .map(|(index, total)| format!("{index}/{total}"));
+            .map(|(index, total)| prefixed_display(SegmentId::Tab, &format!("{index}/{total}")));
         state.tab.update(segment_text(
             display_text(copied, SegmentId::Tab, tab.as_deref().unwrap_or("")),
             font,
@@ -2047,18 +2160,21 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
-        // The action chips' hover tips: laid with their segments so
-        // the counts never go stale; an absent chip lays the empty
-        // string, and the tip overlay paints only over a rendered
-        // chip's rect (which an absent chip never has).
-        state.scrolled_tip.update(segment_text(
-            &self.segments.scrolled.map(scrolled_tip).unwrap_or_default(),
-            font,
-        ));
-        state.pasted_tip.update(segment_text(
-            &self.segments.pasted.map(pasted_tip).unwrap_or_default(),
-            font,
-        ));
+        // Every segment's hover tip (user-ruled 2026-11-09): laid
+        // with the segments so no tip ever goes stale; an absent
+        // segment lays the empty string, and the tip overlay paints
+        // only over a rendered segment's rect (which an absent
+        // segment never has).
+        if state.tips.is_empty() {
+            state.tips = LEFT_CLUSTER
+                .iter()
+                .chain(RIGHT_CLUSTER.iter())
+                .map(|id| (*id, BandParagraph::default()))
+                .collect();
+        }
+        for (id, paragraph) in &mut state.tips {
+            paragraph.update(segment_text(&segment_tip(*id, &self.segments), font));
+        }
 
         // The band-wide fit (status-glance criterion 2): one pure
         // pass over every measured width — the path elides first,
@@ -2125,7 +2241,7 @@ impl<Message> StatusBar<Message> {
                 full_width: measure.min_width(),
             },
         );
-        state.branch_text = self.segments.branch.clone().unwrap_or_default();
+        state.branch_text = branch_display;
         self.apply_reveal(state);
 
         // The selection's WYSIWYG row: every segment's display text
@@ -2154,7 +2270,7 @@ impl<Message> StatusBar<Message> {
                         state.branch_text.clone()
                     }
                 }
-                SegmentId::Profile => self.segments.profile.clone().unwrap_or_default(),
+                SegmentId::Profile => profile_display.clone(),
                 SegmentId::Grid => grid.clone().unwrap_or_default(),
                 SegmentId::Tab => tab.clone().unwrap_or_default(),
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
@@ -2257,9 +2373,45 @@ fn segment_rects(state: &State, bounds: Rectangle) -> Vec<(SegmentId, Rectangle)
         if width > 0.0 {
             right -= width;
             rects.push((*id, row(right, width)));
+            // The left cluster's own gap: the fit's accounting
+            // (`SEGMENT_GAP + w` per segment in `band_fit`) always
+            // reserved one, but the rects spent none, rendering the
+            // right cluster flush — the hairlines painted on the
+            // glyph seams exposed it.
+            right -= SEGMENT_GAP;
         }
     }
     rects
+}
+
+/// The gap-center x positions where the band's inter-segment
+/// hairlines paint (user-ruled 2026-11-09): one between each pair of
+/// adjacent rendered segments of the same cluster — never between
+/// the clusters (their divide is the band's whole width, not a gap),
+/// never beside an absent segment (its rect is gone, so its neighbors
+/// close up and divide as though it never stood). Pure over the laid
+/// rects; the draw pass paints a thin pane-foreground hairline at
+/// each position in the border hairline's own alpha — hierarchy by
+/// alpha, never a new hue.
+fn separator_positions(rects: &[(SegmentId, Rectangle)]) -> Vec<f32> {
+    let mut positions = Vec::new();
+    for cluster in [LEFT_CLUSTER.as_slice(), RIGHT_CLUSTER.as_slice()] {
+        let mut prev_end: Option<f32> = None;
+        for id in cluster {
+            let Some(rect) = rects
+                .iter()
+                .find(|(rid, _)| rid == id)
+                .map(|(_, rect)| *rect)
+            else {
+                continue;
+            };
+            if let Some(start) = prev_end {
+                positions.push(f32::midpoint(start, rect.x));
+            }
+            prev_end = Some(rect.x + rect.width);
+        }
+    }
+    positions
 }
 
 /// The selection's row: every rendered segment's rect paired with
@@ -2621,7 +2773,7 @@ where
                 band: absolute,
             })));
         }
-        // Otherwise the action chips' hover tips ride the overlay
+        // Otherwise the segments' hover tips ride the overlay
         // pass — see [`StatusTipOverlay`]. The tab strip's own
         // always-on tip overlay pattern: pure paint, no hit-testing,
         // so the band's every interaction flows exactly as it did.
@@ -2743,6 +2895,34 @@ where
                 },
                 Color {
                     a: HOVER_ALPHA,
+                    ..pane_fg
+                },
+            );
+        }
+
+        // The inter-segment hairlines (user-ruled 2026-11-09): a thin
+        // pane-foreground mark centered in each intra-cluster gap, in
+        // the border hairline's own alpha — the row parses at a
+        // glance without costing a segment a character. Painted from
+        // the same rects hit-testing walks; the gaps themselves stay
+        // idle — no rect covers a hairline.
+        for x in separator_positions(&rects) {
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(
+                        Point::new(x, bounds.y + (BAND_HEIGHT - SEPARATOR_HEIGHT) / 2.0),
+                        Size::new(SEPARATOR_WIDTH, SEPARATOR_HEIGHT),
+                    ),
+                    border: Border {
+                        radius: 0.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                Color {
+                    a: BORDER_ALPHA,
                     ..pane_fg
                 },
             );
@@ -3157,13 +3337,12 @@ fn tip_bounds(
     Rectangle::new(Point::new(x, y), Size::new(width, TOOLTIP_HEIGHT))
 }
 
-/// The band's action-chip hover tips (paste-chip OQ-5): the tab
-/// strip's `TooltipOverlay` pattern carried onto the band — a
-/// pane-inverted bubble ([`tab_bar::paint_tip`], one painter, one
-/// look) naming the chip's verb where the resting chip cannot. The
-/// band's two action chips alone tip; every copy segment stays
-/// quiet (their verb is the band's default, and a tip on each would
-/// narrate the whole band at a glance). Visibility is decided per
+/// The band's hover tips (user-ruled 2026-11-09): the tab strip's
+/// `TooltipOverlay` pattern carried onto the band — a pane-inverted
+/// bubble ([`tab_bar::paint_tip`], one painter, one look) naming
+/// what each segment is and its verb, where the resting value
+/// cannot: the copy segments state their fact and "click to copy",
+/// the two action chips their own verbs. Visibility is decided per
 /// frame from the live cursor — no hover delay, the tab strip's own
 /// rule — and the overlay is dressing only: no hit-testing, no
 /// capture, so the band's every interaction flows exactly as it did
@@ -3198,16 +3377,12 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for StatusTipOverlay<'_
             return;
         };
         let rects = segment_rects(self.state, self.band);
-        for (id, rect) in rects.iter().filter(|(id, _)| click_jumps(*id)) {
+        for (id, rect) in &rects {
             if !rect.contains(point) {
                 continue;
             }
-            let paragraph = match id {
-                SegmentId::Scrolled => &self.state.scrolled_tip,
-                SegmentId::Pasted => &self.state.pasted_tip,
-                // `click_jumps` names exactly the two ids above;
-                // the arm is unreachable by the filter's own shape.
-                _ => continue,
+            let Some((_, paragraph)) = self.state.tips.iter().find(|(tid, _)| tid == id) else {
+                continue;
             };
             if paragraph.min_width() <= 0.0 {
                 continue;
