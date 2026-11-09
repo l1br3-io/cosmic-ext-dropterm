@@ -689,16 +689,21 @@ pub fn scrolled_tip(lines: u16) -> String {
 }
 
 /// The leading glyph a segment's display carries (user-ruled
-/// 2026-11-09): only the four whose bare value could read as
-/// anything — a branch name, a cell count, a position, a profile
-/// name; every other segment's value already self-identifies (a path
-/// reads as a path, `✗1` as a verdict, `↑12` as a distance). The
-/// glyphs are monochrome text shapes, not emoji — the paste chip's
-/// own no-emoji ruling stands — and they ride the display alone:
-/// [`copy_text`] payloads and [`resolve_segments`] fields stay bare
-/// values. Retunable constants; the hardware pass is the only judge
-/// of how a given terminal font renders them (the text system's
-/// fallback answers a family that lacks the shape).
+/// 2026-11-09, then re-ruled the same day): every segment carries a
+/// mark. Ten ride the display as monochrome text shapes — the branch,
+/// grid, tab, and profile glyphs the first ruling gave the ambiguous
+/// values, plus the duration, progress, path, zoom, pasted, and clock
+/// glyphs the follow-up gave the rest (a row where every item wears
+/// its mark parses faster than one where only some do). The other
+/// three segments own their marks already — the process segment's
+/// disc, the exit chip's `✗`, the scrolled chip's `↑` — and a text
+/// glyph would double them. The glyphs are monochrome text shapes,
+/// not emoji — the paste chip's own no-emoji ruling stands — and they
+/// ride the display alone: [`copy_text`] payloads and
+/// [`resolve_segments`] fields stay bare values. Retunable constants;
+/// the hardware pass is the only judge of how a given terminal font
+/// renders them (the text system's fallback answers a family that
+/// lacks the shape).
 fn segment_icon(id: SegmentId) -> Option<&'static str> {
     match id {
         // ⎇ — the branch sigil terminals and editors converged on.
@@ -709,7 +714,21 @@ fn segment_icon(id: SegmentId) -> Option<&'static str> {
         SegmentId::Tab => Some("\u{25A4}"),
         // ◉ — the active persona.
         SegmentId::Profile => Some("\u{25C9}"),
-        _ => None,
+        // ⧗ — the command's cost, run out.
+        SegmentId::Duration => Some("\u{29D7}"),
+        // ◐ — a dial half-spent, the spinner's own quarter.
+        SegmentId::Progress => Some("\u{25D0}"),
+        // ⌂ — where you stand, the house of the cwd.
+        SegmentId::Path => Some("\u{2302}"),
+        // ⇕ — the size verbs, up and down.
+        SegmentId::Zoom => Some("\u{21D5}"),
+        // ▦ — an image's crosshatch texture.
+        SegmentId::Pasted => Some("\u{25A6}"),
+        // ◷ — a clock's face, its quarter gone.
+        SegmentId::Clock => Some("\u{25F7}"),
+        // The disc, the ✗, the ↑ — the marks these three already
+        // own. A text glyph would double them.
+        SegmentId::Process | SegmentId::Exit | SegmentId::Scrolled => None,
     }
 }
 
@@ -2075,7 +2094,8 @@ impl<Message> StatusBar<Message> {
             display_text(copied, SegmentId::Process, &process_text),
             font,
         ));
-        let duration_text = duration_display(&self.segments);
+        let duration_text =
+            prefixed_display(SegmentId::Duration, &duration_display(&self.segments));
         state.duration.update(segment_text(
             display_text(copied, SegmentId::Duration, &duration_text),
             font,
@@ -2085,7 +2105,10 @@ impl<Message> StatusBar<Message> {
             display_text(copied, SegmentId::Exit, exit_text.as_deref().unwrap_or("")),
             font,
         ));
-        let progress_text = self.segments.progress.map(progress_display);
+        let progress_text = self
+            .segments
+            .progress
+            .map(|progress| prefixed_display(SegmentId::Progress, &progress_display(progress)));
         state.progress.update(segment_text(
             display_text(
                 copied,
@@ -2094,10 +2117,14 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
-        // The four glyph-led displays (user-ruled 2026-11-09): the
-        // icon rides the paragraph — its width, elision, and drop
-        // behavior flow through the same measured machinery — while
-        // the copy payload stays the bare value from `copy_text`.
+        // The glyph-led displays (user-ruled 2026-11-09, re-ruled the
+        // same day to every value segment): the icon rides the
+        // paragraph — its width, elision, and drop behavior flow
+        // through the same measured machinery — while the copy
+        // payload stays the bare value from `copy_text`. The exit
+        // chip's `✗` and the scrolled chip's `↑` are baked into
+        // their own displays, and the process segment's disc is
+        // painted — those three need no riding glyph.
         let branch_display = prefixed_display(
             SegmentId::Branch,
             self.segments.branch.as_deref().unwrap_or(""),
@@ -2133,7 +2160,7 @@ impl<Message> StatusBar<Message> {
         let zoom = self
             .segments
             .zoom_percent
-            .map(|percent| format!("{percent:+}%"));
+            .map(|percent| prefixed_display(SegmentId::Zoom, &format!("{percent:+}%")));
         state.zoom.update(segment_text(
             display_text(copied, SegmentId::Zoom, zoom.as_deref().unwrap_or("")),
             font,
@@ -2147,17 +2174,20 @@ impl<Message> StatusBar<Message> {
             ),
             font,
         ));
-        let pasted = self.segments.pasted.map(pasted_display);
+        let pasted = self
+            .segments
+            .pasted
+            .map(|count| prefixed_display(SegmentId::Pasted, &pasted_display(count)));
         state.pasted.update(segment_text(
             display_text(copied, SegmentId::Pasted, pasted.as_deref().unwrap_or("")),
             font,
         ));
+        let clock_display = prefixed_display(
+            SegmentId::Clock,
+            self.segments.clock.as_deref().unwrap_or(""),
+        );
         state.clock.update(segment_text(
-            display_text(
-                copied,
-                SegmentId::Clock,
-                self.segments.clock.as_deref().unwrap_or(""),
-            ),
+            display_text(copied, SegmentId::Clock, &clock_display),
             font,
         ));
         // Every segment's hover tip (user-ruled 2026-11-09): laid
@@ -2196,17 +2226,22 @@ impl<Message> StatusBar<Message> {
             PAD_X + SEGMENT_GAP + PAD_X
         };
         let path = self.segments.path.as_deref().unwrap_or("");
+        // The path's glyph rides the elided display too: measured
+        // with it, elided with it — and eaten first under squeeze,
+        // the `…` taking the leftmost cells (dressing yields before
+        // the tail's data).
+        let path_display_text = prefixed_display(SegmentId::Path, path);
         let mut measure = BandParagraph::default();
         // The steady-state measurement: the flash's `✓` swap is
         // textual and never re-fits the band (the reveal keeps the
         // full value while the display flashes).
-        measure.update(segment_text(path, font));
+        measure.update(segment_text(&path_display_text, font));
         let fit = band_fit(
             width,
             fixed,
             &widths,
             PathMeasure {
-                chars: path.chars().count(),
+                chars: path_display_text.chars().count(),
                 full_width: measure.min_width(),
             },
         );
@@ -2222,8 +2257,8 @@ impl<Message> StatusBar<Message> {
         // rebuild while hovered re-lays the same armed selection.
         state.path_elided = matches!(fit.path, PathFit::Elided(_));
         state.path_resting_text = match fit.path {
-            PathFit::Full => path.to_string(),
-            PathFit::Elided(max_chars) => elide_path_left(path, max_chars),
+            PathFit::Full => path_display_text.clone(),
+            PathFit::Elided(max_chars) => elide_path_left(&path_display_text, max_chars),
             PathFit::Gone => String::new(),
         };
         let survivors: Vec<(SegmentId, f32)> = widths
@@ -2232,12 +2267,12 @@ impl<Message> StatusBar<Message> {
             .filter(|(id, _)| !fit.dropped.contains(id))
             .collect();
         state.path_armed_text = reveal_display(
-            path,
+            &path_display_text,
             width,
             fixed,
             &survivors,
             PathMeasure {
-                chars: path.chars().count(),
+                chars: path_display_text.chars().count(),
                 full_width: measure.min_width(),
             },
         );
@@ -2276,7 +2311,7 @@ impl<Message> StatusBar<Message> {
                 SegmentId::Zoom => zoom.clone().unwrap_or_default(),
                 SegmentId::Scrolled => scrolled.clone().unwrap_or_default(),
                 SegmentId::Pasted => pasted.clone().unwrap_or_default(),
-                SegmentId::Clock => self.segments.clock.clone().unwrap_or_default(),
+                SegmentId::Clock => clock_display.clone(),
             };
             display_text(copied, id, &value).to_string()
         };

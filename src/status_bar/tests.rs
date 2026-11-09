@@ -3121,33 +3121,35 @@ fn the_pasted_chip_sits_between_scrolled_and_clock() {
 
 // --- separators, leading glyphs, and every-segment tips ---
 //
-// The 2026-11-09 user ruling: the row parses at a glance — thin
-// hairlines divide a cluster's segments, the four ambiguous values
-// carry a leading glyph, and every segment names itself and its verb
-// on hover.
+// The 2026-11-09 user ruling, re-ruled the same day: the row parses
+// at a glance — thin hairlines divide a cluster's segments, every
+// segment carries a leading mark, and every segment names itself and
+// its verb on hover.
 
 #[test]
-fn the_four_ambiguous_segments_carry_leading_glyphs_and_others_none() {
-    // Only the values that could read as anything get an icon: a
-    // branch name, a cell count, a position, a profile name. The
-    // rest self-identify — a path, a verdict, a distance, a signed
-    // percent, a wall clock, plain words.
+fn every_segment_carries_a_leading_mark_and_none_of_the_marked_doubles() {
+    // Ten text glyphs ride the displays — the four the first ruling
+    // gave the ambiguous values, the six the follow-up gave the rest
+    // (a row where every item wears its mark parses faster than one
+    // where only some do). The other three segments own their marks
+    // already — the process disc, the exit `✗`, the scrolled `↑` —
+    // and a text glyph would double them.
     assert_eq!(segment_icon(SegmentId::Branch), Some("⎇"));
     assert_eq!(segment_icon(SegmentId::Grid), Some("⊞"));
     assert_eq!(segment_icon(SegmentId::Tab), Some("▤"));
     assert_eq!(segment_icon(SegmentId::Profile), Some("◉"));
-    for id in [
-        SegmentId::Process,
-        SegmentId::Duration,
-        SegmentId::Exit,
-        SegmentId::Progress,
-        SegmentId::Path,
-        SegmentId::Zoom,
-        SegmentId::Scrolled,
-        SegmentId::Pasted,
-        SegmentId::Clock,
-    ] {
-        assert_eq!(segment_icon(id), None, "{id:?} carries no glyph");
+    assert_eq!(segment_icon(SegmentId::Duration), Some("⧗"));
+    assert_eq!(segment_icon(SegmentId::Progress), Some("◐"));
+    assert_eq!(segment_icon(SegmentId::Path), Some("⌂"));
+    assert_eq!(segment_icon(SegmentId::Zoom), Some("⇕"));
+    assert_eq!(segment_icon(SegmentId::Pasted), Some("▦"));
+    assert_eq!(segment_icon(SegmentId::Clock), Some("◷"));
+    for id in [SegmentId::Process, SegmentId::Exit, SegmentId::Scrolled] {
+        assert_eq!(
+            segment_icon(id),
+            None,
+            "{id:?} keeps the mark it already owns — disc, ✗, ↑"
+        );
     }
 }
 
@@ -3159,8 +3161,21 @@ fn the_glyph_rides_the_display_and_never_stands_alone() {
     assert_eq!(prefixed_display(SegmentId::Grid, "80×24"), "⊞ 80×24");
     assert_eq!(prefixed_display(SegmentId::Tab, "2/5"), "▤ 2/5");
     assert_eq!(prefixed_display(SegmentId::Profile, "dev"), "◉ dev");
-    assert_eq!(prefixed_display(SegmentId::Clock, "14:32"), "14:32");
+    assert_eq!(
+        prefixed_display(SegmentId::Duration, "cargo 2:41"),
+        "⧗ cargo 2:41"
+    );
+    assert_eq!(prefixed_display(SegmentId::Progress, "42%"), "◐ 42%");
+    assert_eq!(prefixed_display(SegmentId::Path, "~/src"), "⌂ ~/src");
+    assert_eq!(prefixed_display(SegmentId::Zoom, "+120%"), "⇕ +120%");
+    assert_eq!(
+        prefixed_display(SegmentId::Pasted, "3 images"),
+        "▦ 3 images"
+    );
+    assert_eq!(prefixed_display(SegmentId::Clock, "14:32"), "◷ 14:32");
     assert_eq!(prefixed_display(SegmentId::Branch, ""), "");
+    assert_eq!(prefixed_display(SegmentId::Clock, ""), "");
+    assert_eq!(prefixed_display(SegmentId::Path, ""), "");
 }
 
 #[test]
@@ -3171,6 +3186,9 @@ fn the_copy_payload_stays_the_bare_value_beside_the_glyph() {
     assert_eq!(copy_text(SegmentId::Branch, &segments), "ced2");
     assert_eq!(copy_text(SegmentId::Profile, &segments), "dev");
     assert_eq!(copy_text(SegmentId::Tab, &segments), "1/3");
+    assert_eq!(copy_text(SegmentId::Duration, &segments), "2:41");
+    assert_eq!(copy_text(SegmentId::Zoom, &segments), "+120%");
+    assert_eq!(copy_text(SegmentId::Clock, &segments), "14:32");
 }
 
 fn sep_rect(id: SegmentId, x: f32, width: f32) -> (SegmentId, Rectangle) {
