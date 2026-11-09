@@ -106,6 +106,13 @@ const PASTE_IMAGE_ENABLED: bool = true;
 /// copy-image writes, a paste reads back.
 const IMAGE_PNG_MIME: &str = "image/png";
 
+/// The mime the first paste read prioritizes (paste-uri spec, PU-1):
+/// a file-manager copy or a portal screenshot lands a `text/uri-list`
+/// offer, and the read must ask for it before text — the plain text
+/// read would serve the offer set's text/plain and paste a URI
+/// verbatim.
+const URI_LIST_MIME: &str = "text/uri-list";
+
 /// The ceiling one clipboard offer may carry (the ship audit's
 /// decompression-bomb guard for the paste path): reads stop one byte
 /// past it — an offer over it is refused whole, and the paste cache
@@ -175,13 +182,6 @@ fn sniff_image_format(bytes: &[u8]) -> Option<SniffedFormat> {
 /// percent-decodes. `Some` fires the file read; `None` is the text
 /// fallback the offer set owes the user (today's paste, verbatim).
 /// Pure: no I/O, fully pinnable headless.
-// The cascade (PU-1) wires this core in paste-uri T4; until then only
-// the tests call it. Self-cleaning: every expectation below errors the
-// day the wiring lands, so the markers cannot outlive the task.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
-)]
 fn qualify_uri_list(list: &str) -> Option<PathBuf> {
     let mut uris = list
         .lines()
@@ -200,10 +200,6 @@ fn qualify_uri_list(list: &str) -> Option<PathBuf> {
 /// path that percent-decodes to valid UTF-8. Scheme and host compare
 /// case-insensitively per the URI grammar; anything else — `trash://`,
 /// `smb://`, a foreign host, a missing path — never fires.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
-)]
 fn qualify_file_uri(uri: &str) -> Option<PathBuf> {
     let (scheme, rest) = uri.split_once("://")?;
     if !scheme.eq_ignore_ascii_case("file") {
@@ -223,10 +219,6 @@ fn qualify_file_uri(uri: &str) -> Option<PathBuf> {
 /// Percent-decode a URI path per RFC 3986: `%XX` hex pairs become
 /// their bytes, every other byte passes through. A dangling or
 /// malformed escape answers `None` — the list does not qualify.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
-)]
 fn percent_decode(path: &str) -> Option<Vec<u8>> {
     let bytes = path.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -246,10 +238,6 @@ fn percent_decode(path: &str) -> Option<Vec<u8>> {
 }
 
 /// One hex digit's value, or `None` outside `[0-9a-fA-F]`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
-)]
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -287,13 +275,6 @@ enum FileGateOutcome {
 /// second open, no TOCTOU re-read. The content decides: the
 /// magic-byte sniff is the gate, never the name, the extension, or
 /// the URI's say-so.
-// The cascade (PU-1) wires this gate in paste-uri T4; until then only
-// the tests call it. Self-cleaning: the expectation errors the day
-// the wiring lands.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
-)]
 fn read_uri_image_file(path: &std::path::Path) -> FileGateOutcome {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {}
@@ -325,13 +306,173 @@ fn read_uri_image_file(path: &std::path::Path) -> FileGateOutcome {
     FileGateOutcome::Image(bytes)
 }
 
+/// Does the served mime name the URI list (PU-1)? Observed on
+/// cosmic-comp (OQ-1, research record 2026-11-09): the priority read
+/// answers `text/uri-list` verbatim in every offer shape. The
+/// decorated arm is tolerance, not observation — the text fallback's
+/// `text/plain;charset=utf-8` is the precedent for a compositor
+/// decorating this one too — and it never over-matches: a longer
+/// mime sharing the prefix is not the list mime.
+fn is_uri_list_mime(served: &str) -> bool {
+    served
+        .strip_prefix(URI_LIST_MIME)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(';'))
+}
+
+/// Which road a successful first paste read takes (PU-1): the served
+/// mime picks — the URI list drives the file road, any text type is
+/// today's text paste — but only while the gate stands (PU-6): gate
+/// off means the text road for every served mime, today restored.
+enum PasteRoad {
+    /// Parse, qualify, and read the file the list names (PU-2, PU-3).
+    UriList,
+    /// A text offer read verbatim — today's paste.
+    Text,
+}
+
+fn paste_first_road(served_mime: &str, image_enabled: bool) -> PasteRoad {
+    if image_enabled && is_uri_list_mime(served_mime) {
+        PasteRoad::UriList
+    } else {
+        PasteRoad::Text
+    }
+}
+
+/// What the URI road resolves a served list to (PU-1): image bytes
+/// into today's pipeline, the text fallback (one plain-text read of
+/// the same offer set), or the gate's refusal — which never falls
+/// back.
+#[derive(Debug, PartialEq, Eq)]
+enum UriRoadOutcome {
+    /// The one file's sniffed, within-cap bytes.
+    Image(Vec<u8>),
+    /// No qualification, or a fallback-shaped gate: today's text
+    /// paste answers.
+    TextFallback,
+    /// The gate refused (an over-cap image): paste nothing.
+    Refused,
+}
+
+/// The URI road's resolution: qualify the served list (PU-2), then
+/// read the one file the gate allows (PU-3).
+fn resolve_uri_road(list: &str) -> UriRoadOutcome {
+    match qualify_uri_list(list) {
+        Some(path) => match read_uri_image_file(&path) {
+            FileGateOutcome::Image(bytes) => UriRoadOutcome::Image(bytes),
+            FileGateOutcome::TextFallback => UriRoadOutcome::TextFallback,
+            FileGateOutcome::Refused => UriRoadOutcome::Refused,
+        },
+        // Zero, two or more, or non-local URIs: today's text paste.
+        None => UriRoadOutcome::TextFallback,
+    }
+}
+
+/// What one finished paste read hands the async wrapper (PU-1).
+#[derive(Debug, PartialEq, Eq)]
+enum PasteReadOutcome {
+    /// A paste payload — text read verbatim, or image bytes.
+    Contents(PasteContents),
+    /// Nothing pasted: empty-clipboard states and refusals (warns
+    /// already emitted where owed).
+    Nothing,
+    /// Retry through the iced clipboard — a transport failure; iced
+    /// reads text, so it is never the image read's fallback.
+    IcedFallback,
+}
+
+/// The fallback text read's resolution: a text offer pastes verbatim,
+/// an empty result pastes nothing silently, an over-cap offer refuses
+/// whole, a transport failure retries through iced once.
+fn resolve_fallback_read(op: &str, result: Result<String, DataControlError>) -> PasteReadOutcome {
+    match result {
+        Ok(text) => PasteReadOutcome::Contents(PasteContents::Text(text)),
+        Err(e) => match classify_read_failure(&e) {
+            ReadFailure::Empty => PasteReadOutcome::Nothing,
+            ReadFailure::Refuse => {
+                log::warn!("data-control {op} refused ({e}); pasting nothing");
+                PasteReadOutcome::Nothing
+            }
+            ReadFailure::Fallback => {
+                log::warn!("data-control {op} failed ({e}); falling back to the iced clipboard");
+                PasteReadOutcome::IcedFallback
+            }
+        },
+    }
+}
+
+/// The first read's failure follow-up (PU-1): the image attempt on an
+/// empty-classified read under an open gate, today's nothing-pasted
+/// under a closed one, the warn-and-refuse of an over-cap offer, the
+/// iced retry of a transport failure.
+fn paste_read_follow_up(
+    primary: bool,
+    image_enabled: bool,
+    op: &str,
+    failed: &DataControlError,
+) -> PasteReadOutcome {
+    match paste_follow_up(&classify_read_failure(failed), image_enabled) {
+        PasteFollowUp::IcedFallback => {
+            log::warn!("data-control {op} failed ({failed}); falling back to the iced clipboard");
+            PasteReadOutcome::IcedFallback
+        }
+        PasteFollowUp::Refused => {
+            log::warn!("data-control {op} refused ({failed}); pasting nothing");
+            PasteReadOutcome::Nothing
+        }
+        PasteFollowUp::NothingPasted => PasteReadOutcome::Nothing,
+        PasteFollowUp::TryImage => match load_image(primary) {
+            Ok(bytes) => PasteReadOutcome::Contents(PasteContents::Image(bytes)),
+            // No image offer either: the empty-clipboard state.
+            Err(e) if matches!(classify_read_failure(&e), ReadFailure::Empty) => {
+                PasteReadOutcome::Nothing
+            }
+            Err(e) => {
+                log::warn!("data-control image read failed ({e})");
+                PasteReadOutcome::Nothing
+            }
+        },
+    }
+}
+
+/// The paste cascade's blocking core (PU-1): one thread hop for the
+/// whole cascade — the priority read, the URI road it may open, the
+/// fallback text read, the image attempt. The iced text retry is the
+/// async wrapper's business (it needs no blocking).
+fn load_paste_contents(primary: bool, image_enabled: bool) -> PasteReadOutcome {
+    let op = if primary {
+        "primary read"
+    } else {
+        "clipboard read"
+    };
+    let (text, served) = match load_for_paste(primary, image_enabled) {
+        Ok(pair) => pair,
+        Err(e) => return paste_read_follow_up(primary, image_enabled, op, &e),
+    };
+    match paste_first_road(&served, image_enabled) {
+        // The URI road sits inside the text read: a clipboard
+        // offering a URI list never reaches the image-bytes read.
+        PasteRoad::UriList => match resolve_uri_road(&text) {
+            UriRoadOutcome::Image(bytes) => PasteReadOutcome::Contents(PasteContents::Image(bytes)),
+            // The gate already warned; paste nothing, never the text
+            // fallback (it would paste a URI exactly where the user
+            // expected their image).
+            UriRoadOutcome::Refused => PasteReadOutcome::Nothing,
+            UriRoadOutcome::TextFallback => resolve_fallback_read(op, load(primary)),
+        },
+        PasteRoad::Text => PasteReadOutcome::Contents(PasteContents::Text(text)),
+    }
+}
+
 /// What a paste found on the clipboard (paste-image spec): a text
-/// offer read verbatim, or image bytes read on the text read's empty
-/// fallthrough.
+/// offer read verbatim, image bytes read on the text read's empty
+/// fallthrough, or image bytes read from the one local file a
+/// qualified URI list named (paste-uri spec, PU-1).
+#[derive(Debug, PartialEq, Eq)]
 pub enum PasteContents {
     /// A text offer — today's paste payload, byte-for-byte.
     Text(String),
-    /// `image/png` bytes, the only image interchange format v1 reads.
+    /// Image bytes — `image/png` from the clipboard road, any of the
+    /// four sniffed formats from the file road.
     Image(Vec<u8>),
 }
 
@@ -417,17 +558,11 @@ fn paste_clipboard_type(primary: bool) -> paste::ClipboardType {
     }
 }
 
-/// The blocking load core: one data-control read. An empty clipboard
-/// surfaces as `Err(ClipboardEmpty)` — the pure classifier decides
-/// how that resolves. The pipe is read one byte past the paste cap:
-/// landing over it refuses the offer whole, never truncates it (a
-/// truncated paste is a corrupt one).
-fn load(primary: bool) -> Result<String, DataControlError> {
-    let (pipe, _mime) = paste::get_contents(
-        paste_clipboard_type(primary),
-        Seat::Unspecified,
-        PasteMime::Text,
-    )?;
+/// The pipe half of every text read: one byte past the paste cap, so
+/// an offer landing over it refuses whole and never truncates (a
+/// truncated paste is a corrupt one). Generic over the reader — the
+/// crate returns `os_pipe`'s pipe without re-exporting its type.
+fn read_offer_capped(pipe: impl std::io::Read) -> Result<String, DataControlError> {
     let mut text = String::new();
     let mut offer = pipe.take((PASTE_PAYLOAD_CAP + 1) as u64);
     std::io::Read::read_to_string(&mut offer, &mut text)?;
@@ -435,6 +570,39 @@ fn load(primary: bool) -> Result<String, DataControlError> {
         return Err(DataControlError::OfferTooLarge);
     }
     Ok(text)
+}
+
+/// The blocking load core: one data-control read of any text type. An
+/// empty clipboard surfaces as `Err(ClipboardEmpty)` — the pure
+/// classifier decides how that resolves.
+fn load(primary: bool) -> Result<String, DataControlError> {
+    let (pipe, _mime) = paste::get_contents(
+        paste_clipboard_type(primary),
+        Seat::Unspecified,
+        PasteMime::Text,
+    )?;
+    read_offer_capped(pipe)
+}
+
+/// The first paste read's blocking core (paste-uri spec, PU-1): while
+/// the gate stands it prioritizes [`URI_LIST_MIME`] — ask for the
+/// list, else any text, order over the offer list irrelevant — and
+/// answers the served mime that picks the road. Gate off requests
+/// exactly today's plain text read, restoring today byte-for-byte
+/// (PU-6). An empty clipboard surfaces as `Err(ClipboardEmpty)` like
+/// [`load`].
+fn load_for_paste(
+    primary: bool,
+    image_enabled: bool,
+) -> Result<(String, String), DataControlError> {
+    let request = if image_enabled {
+        PasteMime::TextWithPriority(URI_LIST_MIME)
+    } else {
+        PasteMime::Text
+    };
+    let (pipe, served) =
+        paste::get_contents(paste_clipboard_type(primary), Seat::Unspecified, request)?;
+    Ok((read_offer_capped(pipe)?, served))
 }
 
 /// The blocking image-read core (paste-image spec, PI-1): one
@@ -597,57 +765,36 @@ pub fn read_primary() -> Task<Option<String>> {
     })
 }
 
-/// Read the clipboard for a paste, text first (paste-image spec,
-/// PI-1). A text offer resolves as [`PasteContents::Text`] —
-/// byte-for-byte today's read. Only an empty-classified text read
-/// falls through to an `image/png` attempt; a clipboard offering
-/// neither resolves `None`, the same silent nothing-pasted state an
-/// empty clipboard is today. The image attempt has no iced fallback
-/// (iced reads text): a transport failure there warns once and
-/// pastes nothing — as does an offer over the paste cap, refused
-/// whole on either read.
+/// Read the clipboard for a paste, URI-list first (paste-uri spec,
+/// PU-1; paste-image PI-1). The first read prioritizes
+/// [`URI_LIST_MIME`]: a served URI list drives the file road —
+/// qualify the list (PU-2), read the one file the gate allows
+/// (PU-3), its sniffed bytes into today's pipeline — and a
+/// non-qualifying list or a fallback-shaped gate falls back to one
+/// plain-text read of the same offer set, pasted verbatim. A text
+/// type served resolves [`PasteContents::Text`], byte-for-byte
+/// today's read. Only an empty-classified first read falls through
+/// to the `image/png` attempt; a clipboard offering neither resolves
+/// `None`, the same silent nothing-pasted state an empty clipboard
+/// is today. The whole cascade rides [`PASTE_IMAGE_ENABLED`] (PU-6):
+/// gate off requests today's plain text read and restores today
+/// exactly. The image attempt has no iced fallback (iced reads
+/// text): a transport failure there warns once and pastes nothing —
+/// as does an offer over the paste cap, refused whole on any read.
 pub fn read_for_paste(primary: bool) -> Task<Option<PasteContents>> {
-    let op = if primary {
-        "primary read"
-    } else {
-        "clipboard read"
-    };
-    let join = tokio::task::spawn_blocking(move || load(primary));
+    let join =
+        tokio::task::spawn_blocking(move || load_paste_contents(primary, PASTE_IMAGE_ENABLED));
     Task::future(async move {
-        let failed = match join.await {
-            Ok(Ok(text)) => return Some(Some(PasteContents::Text(text))),
-            Ok(Err(e)) => e,
-            Err(e) => DataControlError::Join(e),
-        };
-        match paste_follow_up(&classify_read_failure(&failed), PASTE_IMAGE_ENABLED) {
-            PasteFollowUp::IcedFallback => {
+        match join.await {
+            Ok(PasteReadOutcome::Contents(contents)) => Some(Some(contents)),
+            Ok(PasteReadOutcome::Nothing) => Some(None),
+            Ok(PasteReadOutcome::IcedFallback) => None,
+            Err(e) => {
+                let err = DataControlError::Join(e);
                 log::warn!(
-                    "data-control {op} failed ({failed}); falling back to the iced clipboard"
+                    "data-control paste read failed ({err}); falling back to the iced clipboard"
                 );
                 None
-            }
-            PasteFollowUp::Refused => {
-                log::warn!("data-control {op} refused ({failed}); pasting nothing");
-                Some(None)
-            }
-            PasteFollowUp::NothingPasted => Some(None),
-            PasteFollowUp::TryImage => {
-                match tokio::task::spawn_blocking(move || load_image(primary)).await {
-                    Ok(Ok(bytes)) => Some(Some(PasteContents::Image(bytes))),
-                    // No image offer either: the empty-clipboard state.
-                    Ok(Err(e)) if matches!(classify_read_failure(&e), ReadFailure::Empty) => {
-                        Some(None)
-                    }
-                    Ok(Err(e)) => {
-                        log::warn!("data-control image read failed ({e})");
-                        Some(None)
-                    }
-                    Err(e) => {
-                        let err = DataControlError::Join(e);
-                        log::warn!("data-control image read failed ({err})");
-                        Some(None)
-                    }
-                }
             }
         }
     })
@@ -769,10 +916,11 @@ fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        DataControlError, FileGateOutcome, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure,
-        SniffedFormat, classify_read_failure, image_mime, next_paste_name, paste_follow_up,
-        paste_stamp, qualify_uri_list, read_uri_image_file, sniff_image_format,
-        write_paste_image_in,
+        DataControlError, FileGateOutcome, PASTE_PAYLOAD_CAP, PasteContents, PasteFollowUp,
+        PasteReadOutcome, PasteRoad, ReadFailure, SniffedFormat, UriRoadOutcome,
+        classify_read_failure, image_mime, is_uri_list_mime, load_paste_contents, next_paste_name,
+        paste_first_road, paste_follow_up, paste_stamp, qualify_uri_list, read_uri_image_file,
+        resolve_fallback_read, resolve_uri_road, sniff_image_format, write_paste_image_in,
     };
 
     #[test]
@@ -1009,6 +1157,205 @@ mod tests {
         image.resize(PASTE_PAYLOAD_CAP + 1, 0);
         std::fs::write(&file, &image).expect("fixture image");
         assert_eq!(read_uri_image_file(&file), FileGateOutcome::Refused);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- the cascade (paste-uri spec, PU-1/PU-6) ---
+
+    #[test]
+    fn the_served_mime_picks_the_road_only_while_gated() {
+        // Observed on cosmic-comp (OQ-1, research record 2026-11-09):
+        // the priority read answers "text/uri-list" verbatim in every
+        // offer shape; the text fallback decorates
+        // ("text/plain;charset=utf-8"). The decorated uri-list arm is
+        // tolerance, not observation — the text fallback's
+        // decoration is the precedent for a compositor decorating
+        // this one too.
+        assert!(matches!(
+            paste_first_road("text/uri-list", true),
+            PasteRoad::UriList
+        ));
+        assert!(matches!(
+            paste_first_road("text/uri-list;charset=utf-8", true),
+            PasteRoad::UriList
+        ));
+        assert!(matches!(
+            paste_first_road("text/plain;charset=utf-8", true),
+            PasteRoad::Text
+        ));
+        assert!(matches!(
+            paste_first_road("text/plain", true),
+            PasteRoad::Text
+        ));
+        // Gate off (PU-6): today's text road for every served mime.
+        assert!(matches!(
+            paste_first_road("text/uri-list", false),
+            PasteRoad::Text
+        ));
+    }
+
+    #[test]
+    fn uri_list_mime_matching_never_over_matches() {
+        assert!(is_uri_list_mime("text/uri-list"));
+        assert!(is_uri_list_mime("text/uri-list;charset=utf-8"));
+        // A longer mime sharing the prefix is not the list mime.
+        assert!(!is_uri_list_mime("text/uri-listish"));
+        assert!(!is_uri_list_mime("text/plain;charset=utf-8"));
+        assert!(!is_uri_list_mime(""));
+    }
+
+    #[test]
+    fn the_uri_road_resolves_its_three_outcomes() {
+        let dir = gate_dir("uri-road");
+        let image = dir.join("pic.png");
+        std::fs::write(&image, PNG_MAGIC).expect("fixture image");
+        // A qualifying list over the fixture: the image bytes.
+        assert_eq!(
+            resolve_uri_road(&format!("file://{}\n", image.display())),
+            UriRoadOutcome::Image(PNG_MAGIC.to_vec())
+        );
+        // A non-image local file: today's text paste answers.
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"words").expect("fixture text");
+        assert_eq!(
+            resolve_uri_road(&format!("file://{}\n", text.display())),
+            UriRoadOutcome::TextFallback
+        );
+        // A multi-select never qualifies: the text fallback.
+        assert_eq!(
+            resolve_uri_road("file:///a.png\r\nfile:///b.png\r\n"),
+            UriRoadOutcome::TextFallback
+        );
+        // An over-cap image: refused whole, never the fallback.
+        let huge = dir.join("huge.png");
+        let mut body = PNG_MAGIC.to_vec();
+        body.resize(PASTE_PAYLOAD_CAP + 1, 0);
+        std::fs::write(&huge, &body).expect("fixture image");
+        assert_eq!(
+            resolve_uri_road(&format!("file://{}\n", huge.display())),
+            UriRoadOutcome::Refused
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fallback_text_read_pastes_verbatim_and_empty_pastes_nothing() {
+        // The second read's resolution: a text offer pastes verbatim;
+        // an empty one pastes nothing, silently.
+        assert_eq!(
+            resolve_fallback_read("clipboard read", Ok("the plain offer, verbatim".to_owned())),
+            PasteReadOutcome::Contents(PasteContents::Text("the plain offer, verbatim".to_owned()))
+        );
+        assert_eq!(
+            resolve_fallback_read(
+                "clipboard read",
+                Err(DataControlError::Paste(
+                    wl_clipboard_rs::paste::Error::ClipboardEmpty
+                ))
+            ),
+            PasteReadOutcome::Nothing
+        );
+    }
+
+    // The COSMIC-hardware manual check (paste-uri spec's testing
+    // strategy; the docs/testing.md row points here). Serves real
+    // data-control offers on the running compositor and runs the
+    // shipped cascade against them — it takes over the system
+    // clipboard while it runs, so it stays #[ignore]d out of the
+    // headless suite: `cargo test --bin cosmic-ext-dropterm
+    // live_uri_paste_smoke -- --ignored`. The expectations encode
+    // observed cosmic-comp behavior (research record, 2026-11-09):
+    // the priority read serves "text/uri-list" verbatim, and the
+    // plain Text read prefers the compositor's
+    // "text/plain;charset=utf-8" conversion of the list — so the
+    // multi-select fallback pastes the list text, byte-for-byte
+    // today's read.
+    #[test]
+    #[ignore = "takes over the system clipboard; run on a COSMIC session with -- --ignored"]
+    fn live_uri_paste_smoke() {
+        use wl_clipboard_rs::copy::{ClipboardType, MimeSource, Options, Source};
+
+        let dir = std::env::temp_dir().join("dropterm-live-paste-smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let jpeg = dir.join("smoke.jpg");
+        std::fs::write(&jpeg, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).expect("fixture jpeg");
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"just words").expect("fixture text");
+
+        let serve = |sources: Vec<MimeSource>| {
+            let mut options = Options::new();
+            options.clipboard(ClipboardType::Regular);
+            wl_clipboard_rs::copy::copy_multi(options, sources).expect("serve");
+        };
+        let uri_offer = |paths: &[&std::path::Path]| MimeSource {
+            source: Source::Bytes(
+                paths
+                    .iter()
+                    .fold(String::new(), |list, path| {
+                        list + &format!("file://{}\r\n", path.display())
+                    })
+                    .into_bytes()
+                    .into_boxed_slice(),
+            ),
+            mime_type: wl_clipboard_rs::copy::MimeType::Specific("text/uri-list".to_owned()),
+        };
+        let text_offer = |content: &str| MimeSource {
+            source: Source::Bytes(content.as_bytes().to_vec().into_boxed_slice()),
+            mime_type: wl_clipboard_rs::copy::MimeType::Specific("text/plain".to_owned()),
+        };
+
+        // cosmic-files shape: uri-list + text/plain naming one JPEG.
+        serve(vec![uri_offer(&[&jpeg]), text_offer("/the/plain/offer")]);
+        assert_eq!(
+            load_paste_contents(false, true),
+            PasteReadOutcome::Contents(PasteContents::Image(vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]))
+        );
+
+        // Multi-select: one list naming two files — today's text
+        // paste. Observed on cosmic-comp: the plain Text read prefers
+        // the compositor's "text/plain;charset=utf-8" conversion of
+        // the uri-list, so today's paste IS the list text — which is
+        // exactly what the fallback must reproduce.
+        let list_two = format!("file://{}\r\nfile://{}\r\n", jpeg.display(), text.display());
+        serve(vec![
+            uri_offer(&[&jpeg, &text]),
+            text_offer("/the/plain/offer"),
+        ]);
+        assert_eq!(
+            load_paste_contents(false, true),
+            PasteReadOutcome::Contents(PasteContents::Text(list_two))
+        );
+
+        // A URI naming a non-image local file: no file bytes, the
+        // plain read's answer pastes.
+        serve(vec![uri_offer(&[&text]), text_offer("/the/plain/offer")]);
+        assert_eq!(
+            load_paste_contents(false, true),
+            PasteReadOutcome::Contents(PasteContents::Text(format!(
+                "file://{}\r\n",
+                text.display()
+            )))
+        );
+
+        // Gate off (PU-6): today restored — the same plain read the
+        // old code made, list text and all.
+        serve(vec![uri_offer(&[&jpeg]), text_offer("/the/plain/offer")]);
+        assert_eq!(
+            load_paste_contents(false, false),
+            PasteReadOutcome::Contents(PasteContents::Text(format!(
+                "file://{}\r\n",
+                jpeg.display()
+            )))
+        );
+
+        // Plain text only: today's paste.
+        serve(vec![text_offer("plain words")]);
+        assert_eq!(
+            load_paste_contents(false, true),
+            PasteReadOutcome::Contents(PasteContents::Text("plain words".to_owned()))
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
