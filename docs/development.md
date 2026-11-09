@@ -179,13 +179,16 @@ locally, the push publishes (release.yml fires on the tag).
 The whole sequence is driven by `/release` (the `dropterm-release`
 skill, adapted from cosmic-ext-airlock's release ritual): it derives the
 version from the commits since the last tag, drafts the curation for
-your review, and runs the recipe that commits locally and never pushes.
-Everything that reaches the public world is typed by you, every
-time — the two pushes. Before the tag push it
-can offer a full-pipeline dry-run rehearsal: push main alone, dispatch
-release.yml's dry-run on it, and only push the tag once the artifact
-set assembles green. The steps below are what the command does; they
-remain the manual path.
+your approval before anything is written, and runs the recipe that
+commits locally and never pushes. Before the tag push it offers a
+full-pipeline dry-run rehearsal — you push main alone, it dispatches
+release.yml's dry-run (which assembles the artifact set and publishes
+nothing), and the tag goes up once the set assembles green. After the
+push it watches release.yml through its jobs and verifies the published
+asset set, re-printing the flight checklist at every gate so "what
+now" is answered before it is asked. Everything that reaches the
+public world is typed by you, every time — the two pushes. The steps
+below are what the command does; they remain the manual path.
 
 1. **Curate the release content** (uncommitted or committed, the recipe
    takes either):
