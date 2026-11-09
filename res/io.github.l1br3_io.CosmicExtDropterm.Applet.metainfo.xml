@@ -25,6 +25,11 @@
     <category>System</category>
   </categories>
   <releases>
+    <release version="0.4.0" date="2026-11-09">
+      <description>
+        <p>Tracking DropTerm 0.4.0; the applet itself is unchanged.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-07">
       <description>
         <p>Tracking DropTerm 0.3.1; the applet itself is unchanged.</p>

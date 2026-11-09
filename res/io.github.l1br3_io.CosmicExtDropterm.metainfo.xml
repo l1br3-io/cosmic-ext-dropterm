@@ -22,6 +22,12 @@
     <category>TerminalEmulator</category>
   </categories>
   <releases>
+    <release version="0.4.0" date="2026-11-09">
+      <description>
+        <p>Pasted images, end to end: an image on the clipboard - a screenshot tool's copy, or a file copied in COSMIC Files - is read, cached under ~/.cache/dropterm/paste/ in its own format, and its path pastes as text, while a per-tab images panel lists every paste with a thumbnail, its stamp, and its five verbs: Open, Copy path, Copy image, Re-paste, and a two-step Delete. The panel opens from the status band's new pasted-images chip, the band's context menu, or Ctrl+Shift+P. The status band also gains a leading glyph on every segment and hairlines dividing adjacent segments, with a hover tip on all of them. The autosuggestion generators are always on, their toggle removed, and the completion table loads in the background.</p>
+        <p>Fixes: copies land while the terminal is unfocused or hidden, the clipboard anchor reopens when the compositor closes it, a stay-open surface shares the keyboard instead of holding it hostage, and the images panel's armed delete fits its drawer.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-07">
       <description>
         <p>Review hardening of the kitty graphics z-layers: eviction keeps the layer with the pixels, an explicit z on the wire moves an existing placement's seat, an absent z keeps what the seat already holds, and the above-glyph pass composites by z — kitty's own overlap rule.</p>
