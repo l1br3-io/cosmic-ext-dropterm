@@ -167,6 +167,98 @@ fn sniff_image_format(bytes: &[u8]) -> Option<SniffedFormat> {
     }
 }
 
+/// The string half of the file gate (paste-uri spec, PU-2): turn a
+/// served `text/uri-list` into the one local file the paste may read.
+/// RFC 2483 shape — lines, CRLF tolerated, `#` comment lines skipped
+/// — and it qualifies only when the remaining URIs are exactly one,
+/// a `file` scheme on an empty-or-`localhost` host, whose path
+/// percent-decodes. `Some` fires the file read; `None` is the text
+/// fallback the offer set owes the user (today's paste, verbatim).
+/// Pure: no I/O, fully pinnable headless.
+// The cascade (PU-1) wires this core in paste-uri T4; until then only
+// the tests call it. Self-cleaning: every expectation below errors the
+// day the wiring lands, so the markers cannot outlive the task.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
+)]
+fn qualify_uri_list(list: &str) -> Option<PathBuf> {
+    let mut uris = list
+        .lines()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    let only = uris.next()?;
+    if uris.next().is_some() {
+        // Two or more URIs: a multi-select is a file list, not a
+        // paste payload.
+        return None;
+    }
+    qualify_file_uri(only)
+}
+
+/// One URI line's gate (PU-2): `file` scheme, local-or-empty host, a
+/// path that percent-decodes to valid UTF-8. Scheme and host compare
+/// case-insensitively per the URI grammar; anything else — `trash://`,
+/// `smb://`, a foreign host, a missing path — never fires.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
+)]
+fn qualify_file_uri(uri: &str) -> Option<PathBuf> {
+    let (scheme, rest) = uri.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("file") {
+        return None;
+    }
+    // The authority runs to the first `/` of the path; that `/` stays
+    // the path's own leading byte (`file:///x` has an empty host).
+    let path_start = rest.find('/')?;
+    let (authority, raw_path) = rest.split_at(path_start);
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
+    let decoded = percent_decode(raw_path)?;
+    String::from_utf8(decoded).ok().map(PathBuf::from)
+}
+
+/// Percent-decode a URI path per RFC 3986: `%XX` hex pairs become
+/// their bytes, every other byte passes through. A dangling or
+/// malformed escape answers `None` — the list does not qualify.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
+)]
+fn percent_decode(path: &str) -> Option<Vec<u8>> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let high = hex_value(*bytes.get(i + 1)?)?;
+            let low = hex_value(*bytes.get(i + 2)?)?;
+            decoded.push(high << 4 | low);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(decoded)
+}
+
+/// One hex digit's value, or `None` outside `[0-9a-fA-F]`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
+)]
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// What a paste found on the clipboard (paste-image spec): a text
 /// offer read verbatim, or image bytes read on the text read's empty
 /// fallthrough.
@@ -613,7 +705,7 @@ mod tests {
     use super::{
         DataControlError, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure, SniffedFormat,
         classify_read_failure, image_mime, next_paste_name, paste_follow_up, paste_stamp,
-        sniff_image_format, write_paste_image_in,
+        qualify_uri_list, sniff_image_format, write_paste_image_in,
     };
 
     #[test]
@@ -680,6 +772,78 @@ mod tests {
         assert_eq!(SniffedFormat::Gif.mime(), "image/gif");
         assert_eq!(SniffedFormat::Webp.extension(), "webp");
         assert_eq!(SniffedFormat::Webp.mime(), "image/webp");
+    }
+
+    // --- the URI-list qualification (paste-uri spec, PU-2) ---
+
+    #[test]
+    fn a_single_local_file_uri_qualifies_with_its_decoded_path() {
+        assert_eq!(
+            qualify_uri_list("file:///home/you/pic%20nic.jpg\r\n"),
+            Some(std::path::PathBuf::from("/home/you/pic nic.jpg"))
+        );
+        assert_eq!(
+            qualify_uri_list("file:///home/you/pic.jpg\n"),
+            Some(std::path::PathBuf::from("/home/you/pic.jpg"))
+        );
+        // Schemes and hosts compare case-insensitively (RFC 3986);
+        // file managers emit lowercase, the URI grammar says do not
+        // care.
+        assert_eq!(
+            qualify_uri_list("FILE://LocalHost/home/you/pic.jpg"),
+            Some(std::path::PathBuf::from("/home/you/pic.jpg"))
+        );
+    }
+
+    #[test]
+    fn a_localhost_host_qualifies_a_foreign_host_does_not() {
+        assert_eq!(
+            qualify_uri_list("file://localhost/home/you/pic.jpg"),
+            Some(std::path::PathBuf::from("/home/you/pic.jpg"))
+        );
+        assert_eq!(qualify_uri_list("file://nas/photos/pic.jpg"), None);
+        // An authority with no path names no file.
+        assert_eq!(qualify_uri_list("file://localhost"), None);
+    }
+
+    #[test]
+    fn non_qualifying_lists_never_fire() {
+        // Zero URIs (comments only, or nothing), two or more, other
+        // schemes, and schemeless lines all mean the text fallback.
+        assert_eq!(qualify_uri_list("# a comment\r\n# another\r\n"), None);
+        assert_eq!(qualify_uri_list(""), None);
+        assert_eq!(qualify_uri_list("file:///a.jpg\r\nfile:///b.jpg\r\n"), None);
+        assert_eq!(
+            qualify_uri_list("file:///a.jpg\r\nfile:///b.jpg\r\nfile:///c.jpg\r\n"),
+            None
+        );
+        assert_eq!(qualify_uri_list("trash:///home/you/pic.jpg"), None);
+        assert_eq!(qualify_uri_list("smb://server/pic.jpg"), None);
+        assert_eq!(qualify_uri_list("/home/you/pic.jpg"), None);
+    }
+
+    #[test]
+    fn comments_and_crlf_shapes_parse_per_rfc_2483() {
+        // cosmic-files emits LF, Nautilus CRLF; comments and blank
+        // lines around the URI never disqualify it.
+        assert_eq!(
+            qualify_uri_list("# comment\n\nfile:///home/you/pic.jpg\n"),
+            Some(std::path::PathBuf::from("/home/you/pic.jpg"))
+        );
+        assert_eq!(
+            qualify_uri_list("# Nautilus shape\r\n\r\nfile:///home/you/pic.jpg\r\n"),
+            Some(std::path::PathBuf::from("/home/you/pic.jpg"))
+        );
+    }
+
+    #[test]
+    fn malformed_escapes_and_non_utf8_paths_do_not_qualify() {
+        // A dangling or malformed % escape, and a path decoding
+        // outside UTF-8, answer nothing: the list does not qualify.
+        assert_eq!(qualify_uri_list("file:///home/pic%2.jpg"), None);
+        assert_eq!(qualify_uri_list("file:///home/pic%zz.jpg"), None);
+        assert_eq!(qualify_uri_list("file:///home/pic%.jpg"), None);
+        assert_eq!(qualify_uri_list("file:///home/pic%ff.jpg"), None);
     }
 
     #[test]
