@@ -259,6 +259,72 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+/// What the file gate resolves a qualified URI's file to (paste-uri
+/// spec, PU-3): the sniffed within-cap bytes the paste feeds the
+/// pipeline, the silent text fallback, or the over-cap refusal.
+#[derive(Debug, PartialEq, Eq)]
+enum FileGateOutcome {
+    /// Image bytes — decided by the file's own first bytes, read in
+    /// the one bounded open.
+    Image(Vec<u8>),
+    /// Non-regular, missing, unreadable, or a failed sniff: today's
+    /// text paste answers the offer set. Silent — a non-image copy
+    /// is a normal state, no warn owed.
+    TextFallback,
+    /// An image over the paste cap: refused whole — one warn, no
+    /// bytes, never the text fallback (it would paste a URI exactly
+    /// where the user expected their image).
+    Refused,
+}
+
+/// The file gate (paste-uri spec, PU-3): the one place the terminal
+/// opens a file the clipboard named. `metadata()` (which follows
+/// symlinks) must report a regular file before any open — a FIFO,
+/// socket, device, or directory is never opened (a FIFO open would
+/// block the paste). One open, one read: `PASTE_PAYLOAD_CAP + 1`
+/// bytes through the same `take` pattern the clipboard reads use, so
+/// the sniff sees exactly the bytes the pipeline would paste — no
+/// second open, no TOCTOU re-read. The content decides: the
+/// magic-byte sniff is the gate, never the name, the extension, or
+/// the URI's say-so.
+// The cascade (PU-1) wires this gate in paste-uri T4; until then only
+// the tests call it. Self-cleaning: the expectation errors the day
+// the wiring lands.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "paste-uri T4 wires the cascade call")
+)]
+fn read_uri_image_file(path: &std::path::Path) -> FileGateOutcome {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        // Missing or non-regular: the silent text fallback.
+        _ => return FileGateOutcome::TextFallback,
+    }
+    // Unopenable: the silent text fallback.
+    let Ok(file) = std::fs::File::open(path) else {
+        return FileGateOutcome::TextFallback;
+    };
+    let mut bytes = Vec::new();
+    let mut bounded = file.take((PASTE_PAYLOAD_CAP + 1) as u64);
+    if std::io::Read::read_to_end(&mut bounded, &mut bytes).is_err() {
+        // Unreadable mid-read: the silent text fallback.
+        return FileGateOutcome::TextFallback;
+    }
+    // The sniff runs before the cap: an over-cap NON-image is a
+    // sniff fail (fallback), only an over-cap image refuses whole.
+    if sniff_image_format(&bytes).is_none() {
+        return FileGateOutcome::TextFallback;
+    }
+    if bytes.len() > PASTE_PAYLOAD_CAP {
+        log::warn!(
+            "paste image refused: {} is over the {PASTE_PAYLOAD_CAP}-byte paste cap",
+            path.display()
+        );
+        return FileGateOutcome::Refused;
+    }
+    FileGateOutcome::Image(bytes)
+}
+
 /// What a paste found on the clipboard (paste-image spec): a text
 /// offer read verbatim, or image bytes read on the text read's empty
 /// fallthrough.
@@ -703,9 +769,10 @@ fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        DataControlError, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure, SniffedFormat,
-        classify_read_failure, image_mime, next_paste_name, paste_follow_up, paste_stamp,
-        qualify_uri_list, sniff_image_format, write_paste_image_in,
+        DataControlError, FileGateOutcome, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure,
+        SniffedFormat, classify_read_failure, image_mime, next_paste_name, paste_follow_up,
+        paste_stamp, qualify_uri_list, read_uri_image_file, sniff_image_format,
+        write_paste_image_in,
     };
 
     #[test]
@@ -844,6 +911,105 @@ mod tests {
         assert_eq!(qualify_uri_list("file:///home/pic%zz.jpg"), None);
         assert_eq!(qualify_uri_list("file:///home/pic%.jpg"), None);
         assert_eq!(qualify_uri_list("file:///home/pic%ff.jpg"), None);
+    }
+
+    // --- the file gate (paste-uri spec, PU-3) ---
+
+    /// A fresh temp dir per test, cleared first so re-runs start
+    /// clean (the cache suite's own fixture convention).
+    fn gate_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dropterm-uri-gate-tests-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        dir
+    }
+
+    /// A minimal PNG: the 8-byte signature plus a body — the gate
+    /// never looks past magic, so this is a stand-in image.
+    const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    #[test]
+    fn a_fixture_image_file_yields_its_bytes() {
+        let dir = gate_dir("image");
+        let file = dir.join("pic.png");
+        let mut image = PNG_MAGIC.to_vec();
+        image.extend_from_slice(b"body bytes");
+        std::fs::write(&file, &image).expect("fixture image");
+        assert_eq!(
+            read_uri_image_file(&file),
+            FileGateOutcome::Image(image.clone())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_to_an_image_qualifies_identically() {
+        // metadata() follows the link: a symlink resolving to a
+        // regular image file is that file.
+        let dir = gate_dir("symlink-image");
+        let file = dir.join("pic.png");
+        std::fs::write(&file, PNG_MAGIC).expect("fixture image");
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink(&file, &link).expect("fixture link");
+        assert_eq!(
+            read_uri_image_file(&link),
+            FileGateOutcome::Image(PNG_MAGIC.to_vec())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_and_a_device_are_never_opened() {
+        // Non-regular targets resolve to the text fallback without an
+        // open: a FIFO open would block the paste, a directory or
+        // device read is meaningless.
+        let dir = gate_dir("non-regular");
+        assert_eq!(read_uri_image_file(&dir), FileGateOutcome::TextFallback);
+        assert_eq!(
+            read_uri_image_file(std::path::Path::new("/dev/null")),
+            FileGateOutcome::TextFallback
+        );
+        let fifo = dir.join("fifo");
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo runs")
+            .success()
+            .then_some(())
+            .expect("fifo stands");
+        // Would hang on an open; resolving without one is the pin.
+        assert_eq!(read_uri_image_file(&fifo), FileGateOutcome::TextFallback);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_or_non_image_file_resolves_to_the_silent_fallback() {
+        // A non-image copy is a normal state: no warn, the offer set's
+        // text answers the paste.
+        let dir = gate_dir("fallbacks");
+        assert_eq!(
+            read_uri_image_file(&dir.join("missing.png")),
+            FileGateOutcome::TextFallback
+        );
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"just words, an extension that lies").expect("fixture text");
+        assert_eq!(read_uri_image_file(&text), FileGateOutcome::TextFallback);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_over_cap_image_is_refused_whole_never_fallen_back() {
+        // One byte past the cap: the refusal classification — no
+        // bytes, no partial read, and never the text fallback (it
+        // would paste a URI exactly where the user expected their
+        // image).
+        let dir = gate_dir("over-cap");
+        let file = dir.join("huge.png");
+        let mut image = PNG_MAGIC.to_vec();
+        image.resize(PASTE_PAYLOAD_CAP + 1, 0);
+        std::fs::write(&file, &image).expect("fixture image");
+        assert_eq!(read_uri_image_file(&file), FileGateOutcome::Refused);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
