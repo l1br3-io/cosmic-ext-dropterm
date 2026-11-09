@@ -1390,16 +1390,24 @@ fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
         // the destructive style — the irreversible verb set apart
         // from the recoverable group, distance and color saying the
         // same thing twice, every row's cluster stacking into one
-        // scannable column. The idle Delete arms; the armed pair
-        // (Confirm the destructive commit, Keep the disarm) carries
-        // the two-step the profiles page ships — one armed row at a
-        // time, `images_panel_delete_armed`'s single-path seat.
+        // scannable column. The idle Delete arms; the armed pair (✓
+        // the destructive commit, ✕ the disarm) carries the two-step
+        // the profiles page ships as icons — the action row's five
+        // labeled verbs already fill the drawer's narrow widths, and a
+        // labeled pair rode past the row's edge (the cut-off Confirm),
+        // so the pair spends pixels on glyphs alone and the tooltips
+        // carry the names (the profiles cluster's icon idiom). One
+        // armed row at a time, `images_panel_delete_armed`'s
+        // single-path seat.
         let delete: Element<'_, Message> =
             if app.images_panel_delete_armed.as_deref() == Some(row.path.as_path()) {
                 widget::row![
-                    widget::button::destructive("Confirm")
+                    widget::button::icon(widget::icon::from_name("object-select-symbolic"))
+                        .tooltip("Confirm delete")
                         .on_press(Message::ImagesPanelDelete(row.path.clone())),
-                    widget::button::text("Keep").on_press(Message::ImagesPanelKeepDelete),
+                    widget::button::icon(widget::icon::from_name("window-close-symbolic"))
+                        .tooltip("Keep")
+                        .on_press(Message::ImagesPanelKeepDelete),
                 ]
                 .spacing(6)
                 .into()
