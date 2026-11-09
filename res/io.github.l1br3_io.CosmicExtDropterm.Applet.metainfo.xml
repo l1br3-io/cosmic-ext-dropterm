@@ -8,7 +8,7 @@
   <summary>A drop-down terminal panel applet for the COSMIC™ desktop</summary>
   <description>
     <p>Panel applet companion to DropTerm: one click on the panel button toggles the drop-down terminal overlay, and the button shows at a glance whether the terminal is running.</p>
-    <p>The applet drives the DropTerm terminal over the session bus. The terminal itself is native-only — a sandboxed client gets no layer shell on cosmic-comp — so install it from the project's GitHub release; this applet is the store-listed entry point.</p>
+    <p>The applet drives the DropTerm terminal over the session bus. The terminal itself is native-only — a sandboxed client gets no layer shell on cosmic-comp — so install both from the project's GitHub release.</p>
   </description>
   <provides>
     <id>com.system76.CosmicApplet</id>
@@ -27,7 +27,7 @@
   <releases>
     <release version="0.3.1" date="2026-11-07">
       <description>
-        <p>Tracking DropTerm 0.3.1, the store-listing release — its metainfo carries its categories, the catalog compose's blocker cleared; the applet itself is unchanged.</p>
+        <p>Tracking DropTerm 0.3.1; the applet itself is unchanged.</p>
       </description>
     </release>
     <release version="0.3.0" date="2026-10-24">
@@ -37,7 +37,7 @@
     </release>
     <release version="0.2.0" date="2026-10-17">
       <description>
-        <p>First listing in the COSMIC Flatpak source, tracking DropTerm 0.2.0.</p>
+        <p>Tracking DropTerm 0.2.0.</p>
       </description>
     </release>
   </releases>

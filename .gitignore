@@ -2,10 +2,6 @@
 /vendor/
 /vendor.tar
 /.cargo/config.toml
-/packaging/flatpak/cargo-sources.json
-/packaging/flatpak/build-dir/
-/packaging/flatpak/build-dir-terminal/
-/.flatpak-builder/
 SPEC*.md
 /tasks
 .zcode/plans

@@ -24,7 +24,7 @@
   <releases>
     <release version="0.3.1" date="2026-11-07">
       <description>
-        <p>Review hardening of the kitty graphics z-layers: eviction keeps the layer with the pixels, an explicit z on the wire moves an existing placement's seat, an absent z keeps what the seat already holds, and the above-glyph pass composites by z — kitty's own overlap rule. The metainfo itself ships its AppStream categories, the catalog compose's recorded blocker.</p>
+        <p>Review hardening of the kitty graphics z-layers: eviction keeps the layer with the pixels, an explicit z on the wire moves an existing placement's seat, an absent z keeps what the seat already holds, and the above-glyph pass composites by z — kitty's own overlap rule.</p>
       </description>
     </release>
     <release version="0.3.0" date="2026-10-24">

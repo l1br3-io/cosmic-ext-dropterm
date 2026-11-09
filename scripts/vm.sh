@@ -112,8 +112,8 @@ resolve_guest() {
 
 # Runs a command in the guest as the desktop user, inside that user's
 # session environment (runtime dir + session bus + Wayland socket) so
-# session-aware CLIs — `cosmic-ext-dropterm toggle`, flatpak --user —
-# behave exactly as they would from a guest terminal. The Wayland
+# session-aware CLIs — `cosmic-ext-dropterm toggle` — behave exactly
+# as they would from a guest terminal. The Wayland
 # socket name is resolved in the guest at run time (wayland-0 unless
 # the session picked another).
 guest_exec_as_user() {
@@ -204,8 +204,7 @@ cmd_put() {
         esac
         # install -D creates missing parent directories owned by root
         # (it runs as root here), which locks the desktop user out of
-        # their own staging dir — flatpak-builder's ccache init was the
-        # first casualty. Create the parents first, then hand any
+        # their own staging dir. Create the parents first, then hand any
         # root-owned ones over; -user root keeps existing user files
         # untouched.
         guest_exec "mkdir -p '$(dirname "$dest")'"
@@ -257,7 +256,7 @@ cmd_snapshots() {
 
 # Doctor: runs every precondition and reports ok/missing instead of failing.
 # Beyond airlock's host checks this also probes the walk's own guest
-# preconditions (session, flatpak toolchain, flathub, disk headroom).
+# preconditions (session, disk headroom).
 cmd_status() {
     local state ip
     echo "config:"
@@ -289,26 +288,11 @@ cmd_status() {
                         else
                             echo "  MISSING   cosmic-comp not running — is the guest logged in to a COSMIC session?"
                         fi
-                        if guest_exec "command -v flatpak >/dev/null 2>&1"; then
-                            echo "  ok        flatpak in guest"
-                        else
-                            echo "  MISSING   flatpak in guest — sudo apt install flatpak"
-                        fi
-                        if guest_exec "command -v flatpak-builder >/dev/null 2>&1"; then
-                            echo "  ok        flatpak-builder in guest"
-                        else
-                            echo "  MISSING   flatpak-builder in guest — sudo apt install flatpak-builder"
-                        fi
-                        if guest_exec "flatpak remotes 2>/dev/null | grep -q '^flathub'"; then
-                            echo "  ok        flathub remote configured"
-                        else
-                            echo "  MISSING   flathub remote — flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo"
-                        fi
                         local free; free="$(guest_exec "df -BG --output=avail / | tail -1 | tr -dc '0-9'" 2>/dev/null || true)"
                         if [[ -n "$free" && "$free" -ge 4 ]]; then
                             echo "  ok        guest disk headroom ${free}G"
                         else
-                            echo "  MISSING   guest disk headroom ${free:-?}G (want ≥ 4G for the runtime download)"
+                            echo "  MISSING   guest disk headroom ${free:-?}G (want ≥ 4G)"
                         fi
                         if guest_exec "test -x /usr/bin/cosmic-ext-dropterm"; then
                             echo "  ok        native dropterm installed in guest (/usr/bin)"
@@ -380,7 +364,6 @@ The store walk, in order — docs/development.md has the full recipe:
   just vm-status                  preflight
   scripts/vm.sh restore pre-airlock            clean point (stock guest)
   ... native tarball install (vm exec), relogin/reboot ...
-  ... listing bytes across with vm put, flatpak-builder in guest (vm exec-user) ...
   ... panel walk + vm screenshot for evidence, vm snapshot at clean points ...
 EOF
 }

@@ -19,14 +19,7 @@ The applet watches the terminal's bus name and its read-only state interface (`V
 
 **Then add it to a panel**: COSMIC Settings → Desktop → Panel → Applets → add DropTerm. Like any COSMIC applet it can sit on any panel, in any slot you drag it to.
 
-**Flatpak** - a submission to [pop-os/cosmic-flatpak](https://github.com/pop-os/cosmic-flatpak) is in progress; the manifest lives at `packaging/flatpak/` in this repo. Until it lands, a local build works from a checkout:
-
-```sh
-just applet-flatpak-build
-just applet-flatpak-install
-```
-
-The Flatpak applet controls a natively installed terminal fine - its manifest grants exactly the `--talk-name` for DropTerm's bus name.
+There is no Flatpak of the applet: cosmic-comp does not expose the layer-shell and toplevel-management protocols a drop-down needs to sandboxed clients, and the applet alone, without its terminal, is not worth a store listing ([Known issues](known-issues.md)).
 
 ## Building from source
 

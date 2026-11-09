@@ -100,7 +100,6 @@ Which recipe targets what, in one table:
 | `just dev-uninstall` | Development — removes the `-dev` launcher, the dev desktop files, and the dev applet's footprint |
 | `just deps` | Prerequisites — checks the C toolchain, `pkg-config`, the system libraries, and cargo, installing what is missing via the distro's package manager (apt/dnf/pacman/zypper) or rustup; the build and install recipes run it first, and it is a silent no-op when everything is present |
 | `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
-| `just applet-flatpak-build` / `-install` / `-remove` | The flatpaked applet, built from the release manifest into the user flatpak installation |
 | `just check` | The gate — fmt + clippy + test across the workspace, each package also once under `dev-identity` |
 | `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
 
@@ -135,12 +134,12 @@ the stock state and name it; every walk rewinds to it first.
 
 The harness is `scripts/vm.sh` behind `just vm-*` recipes:
 
-- `just vm-status` — the preflight doctor (agent, session, flatpak
-  toolchain, disk headroom, snapshots). Run it first, always.
+- `just vm-status` — the preflight doctor (agent, session, disk
+  headroom, snapshots). Run it first, always.
 - `just vm-exec` / `just vm-exec-user` — run a command in the guest as
   root, or as the desktop user inside the session env (runtime dir +
-  session bus + Wayland socket), which is how the CLI toggles and
-  `flatpak --user` behave exactly as from a guest terminal.
+  session bus + Wayland socket), which is how the CLI toggles behave
+  exactly as from a guest terminal.
 - `just vm-put` — transfer a file in, sha256 verified on both sides.
 - `just vm-screenshot` — capture the display for evidence.
 - `just vm-snapshot` / `just vm-restore` — clean points around each leg.
@@ -149,22 +148,16 @@ The harness is `scripts/vm.sh` behind `just vm-*` recipes:
 
 The walk, in order:
 
-1. Rewind to the stock snapshot; install the native terminal from the
-   published release tarball — `sha256sum -c sha256sums`, copy `usr/`
-   over `/usr`, reboot (auto-login returns it).
-2. Fetch the listing's two files from the fork branch **by their
-   recorded sha256s**. Never regenerate `cargo-sources.json` from a
-   working tree: main's lock carries the `[patch.crates-io]` forks and
-   pairs with the pinned manifest as a mismatch the build rejects.
-3. One-time in-guest toolchain: `apt install flatpak-builder`, add the
-   flathub remote. Then `flatpak-builder --user --force-clean` over the
-   two files; export and install land under `~/.local/share/flatpak`.
-4. Add the applet to the panel: COSMIC Settings → Panel (the honest
+1. Rewind to the stock snapshot; install the native terminal (and its
+   applet) from the published release tarball — `sha256sum -c
+   sha256sums`, copy `usr/` over `/usr`, reboot (auto-login returns
+   it).
+2. Add the applet to the panel: COSMIC Settings → Panel (the honest
    human route), or the config route — append the applet id to
    `~/.config/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_center`
    and `pkill -x cosmic-panel`; the session respawns the panel, which
    re-reads its config and spawns the applet.
-5. Drive the rows. The applet's toggle and running/not indicator ride
+3. Drive the rows. The applet's toggle and running/not indicator ride
    the session bus — watch them with `dbus-monitor --session` in-guest.
    Scripted input goes through QEMU's monitor: `virsh send-key` for
    keys, `input-send-event` for the pointer. Pointer quirks that
@@ -180,19 +173,15 @@ human at the SPICE console.
 
 ## Releasing
 
-A release is three recipes and a push, split because one edit is necessarily
-post-publish: the applet's flatpak manifest pins the *published* source
-archive (URL + sha256), and neither exists until CI has published the
-release. The store listing rides a third repo altogether -
-pop-os/cosmic-flatpak, via the maintainer's fork.
+A release is one recipe and a push: `just release X.Y.Z` cuts and tags
+locally, the push publishes (release.yml fires on the tag).
 
 The whole sequence is driven by `/release` (the `dropterm-release`
 skill, adapted from cosmic-ext-airlock's release ritual): it derives the
 version from the commits since the last tag, drafts the curation for
-your review, and runs the two recipes that commit locally and never
-push. Everything that reaches the public world is typed by you, every
-time — the two pushes and `just release-catalog`, whose execution
-force-pushes a public branch, plus the PR click. Before the tag push it
+your review, and runs the recipe that commits locally and never pushes.
+Everything that reaches the public world is typed by you, every
+time — the two pushes. Before the tag push it
 can offer a full-pipeline dry-run rehearsal: push main alone, dispatch
 release.yml's dry-run on it, and only push the tag once the artifact
 set assembles green. The steps below are what the command does; they
@@ -218,17 +207,6 @@ remain the manual path.
    the release bits, builds the per-arch tarballs and `vendor.tar`, proves
    the vendored offline build, guards tag against `Cargo.toml`, and
    publishes the GitHub release with `sha256sums`.
-4. **`just release-flatpak-pin X.Y.Z`** - once the release page exists:
-   downloads the source archive, records its hash, and commits the applet
-   manifest's re-pin. Push that commit.
-5. **`just release-catalog X.Y.Z`** - the store listing: regenerates
-   `cargo-sources.json` from the current lockfile, re-cuts the fork's
-   `dropterm-applet` branch as one clean commit on current pop-os
-   master, and force-pushes it (needs SSH keys for the fork) - it
-   rewrites a public branch, so it is typed by you, never agent-run.
-   Then open the PR from the printed compare URL - the click and the
-   review are the catalog's two human steps; there is no gh token on
-   this machine to assume either.
 
 The version is semver: additive features take the minor, fixes the patch.
 A failed gate mid-recipe leaves the version bumps uncommitted in the tree;
