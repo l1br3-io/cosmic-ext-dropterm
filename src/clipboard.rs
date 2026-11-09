@@ -114,6 +114,59 @@ const IMAGE_PNG_MIME: &str = "image/png";
 /// payload.
 pub(crate) const PASTE_PAYLOAD_CAP: usize = 32 * 1024 * 1024;
 
+/// The four decodable image formats the paste pipeline accepts
+/// (paste-uri spec, PU-3): the sniff's answer, carrying the cache
+/// extension (PU-4) and the clipboard mime (PU-5) so every consumer
+/// reads one classification instead of re-deriving it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniffedFormat {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+impl SniffedFormat {
+    /// The cache filename extension (PU-4): `jpg`, not `jpeg` — the
+    /// conventional three-letter spelling.
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+
+    /// The clipboard mime the format offers and accepts (PU-5).
+    fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+
+/// The paste pipeline's one content gate (paste-uri spec, PU-3): the
+/// first bytes decide — PNG, JPEG, GIF, WebP magic — never a name, an
+/// extension, or an offer's say-so. Hand-rolled prefix compares: the
+/// format set is small and fixed, no dependency is owed it.
+fn sniff_image_format(bytes: &[u8]) -> Option<SniffedFormat> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(SniffedFormat::Png)
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some(SniffedFormat::Jpeg)
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(SniffedFormat::Gif)
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some(SniffedFormat::Webp)
+    } else {
+        None
+    }
+}
+
 /// What a paste found on the clipboard (paste-image spec): a text
 /// offer read verbatim, or image bytes read on the text read's empty
 /// fallthrough.
@@ -170,26 +223,29 @@ fn store(text: String, primary: bool) -> Result<(), wl_clipboard_rs::copy::Error
     )
 }
 
-/// The offered mime for an image copy (paste-panel spec, PP-3):
-/// `Specific` over [`IMAGE_PNG_MIME`] — the copy side's twin of
-/// `load_image`'s read pin.
-fn image_png_mime() -> MimeType {
-    MimeType::Specific(IMAGE_PNG_MIME.to_owned())
+/// The offered mime for an image copy (paste-panel spec, PP-3;
+/// paste-uri PU-5): `Specific` over the bytes' own sniffed format —
+/// what the cache holds is what the copy claims — with `image/png`
+/// as the unknown-sniff floor, keeping the write/read round-trip
+/// honest for the clipboard road's by-construction PNG bytes.
+fn image_mime(bytes: &[u8]) -> MimeType {
+    MimeType::Specific(
+        sniff_image_format(bytes)
+            .map_or(IMAGE_PNG_MIME, SniffedFormat::mime)
+            .to_owned(),
+    )
 }
 
-/// The blocking image-store core: one data-control copy pinned to
-/// `image/png` — the same shape [`store`] makes for text, minus the
-/// newline trim (these are binary bytes, not a shell line; a trim
-/// would be a corrupter). Serves the regular clipboard only: the
-/// primary selection has no image consumer worth a twin.
-fn store_image_png(bytes: Vec<u8>) -> Result<(), wl_clipboard_rs::copy::Error> {
+/// The blocking image-store core: one data-control copy offering the
+/// bytes' sniffed mime (PU-5) — the same shape [`store`] makes for
+/// text, minus the newline trim (these are binary bytes, not a shell
+/// line; a trim would be a corrupter). Serves the regular clipboard
+/// only: the primary selection has no image consumer worth a twin.
+fn store_image(bytes: Vec<u8>) -> Result<(), wl_clipboard_rs::copy::Error> {
+    let mime = image_mime(&bytes);
     let mut options = Options::new();
     options.clipboard(ClipboardType::Regular);
-    wl_clipboard_rs::copy::copy(
-        options,
-        Source::Bytes(bytes.into_boxed_slice()),
-        image_png_mime(),
-    )
+    wl_clipboard_rs::copy::copy(options, Source::Bytes(bytes.into_boxed_slice()), mime)
 }
 
 /// The data-control selection a paste reads: the primary selection or
@@ -273,18 +329,20 @@ where
     })
 }
 
-/// Write PNG `bytes` to the system clipboard — the images panel's
+/// Write image `bytes` to the system clipboard — the images panel's
 /// copy-image verb (paste-panel spec): the focus-free write path
-/// with `image/png` as the offered mime, the remote-friendly
-/// complement to the SSH caveat (bytes travel where a local path
-/// cannot). No iced fallback exists for bytes (iced writes text),
-/// so a data-control failure warns once (naming the operation) and
-/// copies nothing — the image has no text form (spec OQ-4).
+/// offering the bytes' sniffed format as the mime (paste-uri PU-5;
+/// the name keeps its PNG birth, the cache it serves no longer holds
+/// only PNG), the remote-friendly complement to the SSH caveat
+/// (bytes travel where a local path cannot). No iced fallback exists
+/// for bytes (iced writes text), so a data-control failure warns
+/// once (naming the operation) and copies nothing — the image has no
+/// text form (spec OQ-4).
 pub fn write_image_png<T>(bytes: Vec<u8>) -> Task<T>
 where
     T: Send + 'static,
 {
-    let join = tokio::task::spawn_blocking(move || store_image_png(bytes));
+    let join = tokio::task::spawn_blocking(move || store_image(bytes));
     Task::future(async move {
         if let Err(err) = join
             .await
@@ -462,11 +520,13 @@ fn paste_stamp(now: &jiff::Zoned) -> String {
 
 /// The next paste filename for `stamp`, its counter stepping past
 /// every same-stamp name the directory already holds — same-second
-/// pastes never collide.
-fn next_paste_name(existing: &HashSet<String>, stamp: &str) -> String {
+/// pastes never collide. The candidate carries `extension` whole
+/// (PU-4): names under different extensions are separate slots, with
+/// `create_new` still the arbiter on the open.
+fn next_paste_name(existing: &HashSet<String>, stamp: &str, extension: &str) -> String {
     let mut counter = 1;
     loop {
-        let name = format!("paste-{stamp}-{counter}.png");
+        let name = format!("paste-{stamp}-{counter}.{extension}");
         if !existing.contains(&name) {
             return name;
         }
@@ -506,6 +566,10 @@ fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Opt
         log::warn!("failed to create the paste cache {}: {err}", dir.display());
         return None;
     }
+    // PU-4: the cache name's extension follows the bytes' own sniffed
+    // format; an unknown sniff keeps the clipboard road's
+    // by-construction `.png`.
+    let extension = sniff_image_format(bytes).map_or("png", SniffedFormat::extension);
     let mut existing: HashSet<String> = std::fs::read_dir(dir)
         .map(|entries| {
             entries
@@ -515,7 +579,7 @@ fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Opt
         })
         .unwrap_or_default();
     loop {
-        let name = next_paste_name(&existing, stamp);
+        let name = next_paste_name(&existing, stamp, extension);
         let path = dir.join(&name);
         match std::fs::OpenOptions::new()
             .write(true)
@@ -547,20 +611,75 @@ fn write_paste_image_in(dir: &std::path::Path, stamp: &str, bytes: &[u8]) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        DataControlError, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure, classify_read_failure,
-        image_png_mime, next_paste_name, paste_follow_up, paste_stamp, write_paste_image_in,
+        DataControlError, PASTE_PAYLOAD_CAP, PasteFollowUp, ReadFailure, SniffedFormat,
+        classify_read_failure, image_mime, next_paste_name, paste_follow_up, paste_stamp,
+        sniff_image_format, write_paste_image_in,
     };
 
     #[test]
-    fn the_image_write_offers_the_mime_the_read_accepts() {
-        // The panel's copy-image verb round-trips with the paste
-        // read (paste-panel spec, PP-3): the write offers the same
-        // interchange mime `load_image` pins — what copy-image
-        // writes, a paste reads back.
+    fn the_image_write_offers_the_sniffed_mime() {
+        // The panel's copy-image verb round-trips with the paste read
+        // (paste-panel spec, PP-3; paste-uri PU-5): with mixed formats
+        // in the cache, the write offers the file's own sniffed mime —
+        // an unknown sniff keeps the image/png floor `load_image` pins.
         assert!(matches!(
-            image_png_mime(),
+            image_mime(b"\x89PNG\r\n\x1a\n"),
             wl_clipboard_rs::copy::MimeType::Specific(mime) if mime == "image/png"
         ));
+        assert!(matches!(
+            image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            wl_clipboard_rs::copy::MimeType::Specific(mime) if mime == "image/jpeg"
+        ));
+        assert!(matches!(
+            image_mime(b"not an image at all"),
+            wl_clipboard_rs::copy::MimeType::Specific(mime) if mime == "image/png"
+        ));
+    }
+
+    // --- the sniff core (paste-uri spec, PU-3/PU-4) ---
+
+    #[test]
+    fn the_sniff_passes_each_formats_magic() {
+        assert_eq!(
+            sniff_image_format(b"\x89PNG\r\n\x1a\n\x00\x00"),
+            Some(SniffedFormat::Png)
+        );
+        assert_eq!(
+            sniff_image_format(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some(SniffedFormat::Jpeg)
+        );
+        assert_eq!(sniff_image_format(b"GIF89a"), Some(SniffedFormat::Gif));
+        assert_eq!(sniff_image_format(b"GIF87a"), Some(SniffedFormat::Gif));
+        // WebP is a RIFF container: `RIFF` then the chunk `WEBP` at
+        // offset 8 — a bare RIFF header (a WAV file) is not WebP.
+        let webp = b"RIFF\x24\x00\x00\x00WEBPVP8 ";
+        assert_eq!(sniff_image_format(webp), Some(SniffedFormat::Webp));
+    }
+
+    #[test]
+    fn the_sniff_refuses_foreign_truncated_and_empty_bytes() {
+        // TIFF (either byte order), text, a truncated PNG header, a
+        // bare RIFF container, and an empty buffer never pass: the
+        // content is the gate — a sniffed-format suffix on a
+        // non-image body has no say.
+        assert_eq!(sniff_image_format(b"II*\x00\x08\x00\x00\x00"), None);
+        assert_eq!(sniff_image_format(b"MM\x00*\x00\x08"), None);
+        assert_eq!(sniff_image_format(b"hello, I am a text file"), None);
+        assert_eq!(sniff_image_format(&[0x89, b'P', b'N', b'G']), None);
+        assert_eq!(sniff_image_format(b"RIFF\x24\x00\x00\x00WAVEfmt "), None);
+        assert_eq!(sniff_image_format(b""), None);
+    }
+
+    #[test]
+    fn the_sniffed_formats_carry_their_extensions_and_mimes() {
+        assert_eq!(SniffedFormat::Png.extension(), "png");
+        assert_eq!(SniffedFormat::Png.mime(), "image/png");
+        assert_eq!(SniffedFormat::Jpeg.extension(), "jpg");
+        assert_eq!(SniffedFormat::Jpeg.mime(), "image/jpeg");
+        assert_eq!(SniffedFormat::Gif.extension(), "gif");
+        assert_eq!(SniffedFormat::Gif.mime(), "image/gif");
+        assert_eq!(SniffedFormat::Webp.extension(), "webp");
+        assert_eq!(SniffedFormat::Webp.mime(), "image/webp");
     }
 
     #[test]
@@ -665,7 +784,7 @@ mod tests {
     fn the_first_paste_of_a_second_takes_counter_one() {
         let existing = std::collections::HashSet::new();
         assert_eq!(
-            next_paste_name(&existing, "20261108-140309"),
+            next_paste_name(&existing, "20261108-140309", "png"),
             "paste-20261108-140309-1.png"
         );
     }
@@ -681,8 +800,31 @@ mod tests {
                 .map(str::to_owned)
                 .collect();
         assert_eq!(
-            next_paste_name(&existing, "20261108-140309"),
+            next_paste_name(&existing, "20261108-140309", "png"),
             "paste-20261108-140309-3.png"
+        );
+    }
+
+    #[test]
+    fn the_counter_walk_is_unchanged_across_extensions() {
+        // The walk checks the candidate name whole — extension
+        // included — so a same-stamp name with a different extension
+        // never blocks a counter this format's own name doesn't hold.
+        let png_taken: std::collections::HashSet<String> =
+            ["paste-20261108-140309-1.png".to_owned()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            next_paste_name(&png_taken, "20261108-140309", "jpg"),
+            "paste-20261108-140309-1.jpg"
+        );
+        let jpg_taken: std::collections::HashSet<String> =
+            ["paste-20261108-140309-1.jpg".to_owned()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            next_paste_name(&jpg_taken, "20261108-140309", "jpg"),
+            "paste-20261108-140309-2.jpg"
         );
     }
 
@@ -724,12 +866,44 @@ mod tests {
         let path = write_paste_image_in(&dir, "20261108-140309", b"png").expect("the write lands");
         assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-1.png"));
         // Clipboard screenshots are the owner's alone: 0600 under any
-        // umask, not the 0644/0664 a plain write inherits.
+        // umask, not the 0644/0666 a plain write inherits.
         let mode = std::fs::metadata(&path)
             .expect("the file stands")
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_jpeg_payload_caches_as_jpg_at_owner_only_perms() {
+        // PU-4: the cache name follows the bytes' own sniffed format —
+        // a JPEG's magic names a .jpg, at the same 0600 the PNG road
+        // writes.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = cache_dir("jpeg-name");
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let path = write_paste_image_in(&dir, "20261108-140309", &jpeg).expect("the write lands");
+        assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-1.jpg"));
+        let mode = std::fs::metadata(&path)
+            .expect("the file stands")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_same_stamp_jpeg_takes_the_free_jpg_counter_one() {
+        // A PNG already holding counter one does not block the JPEG's
+        // own counter-one name: the extensions are separate namespaces.
+        let dir = cache_dir("mixed-ext");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        std::fs::write(dir.join("paste-20261108-140309-1.png"), b"png").expect("fixture file");
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let path = write_paste_image_in(&dir, "20261108-140309", &jpeg).expect("the write lands");
+        assert!(std::path::Path::new(&path).ends_with("paste-20261108-140309-1.jpg"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
