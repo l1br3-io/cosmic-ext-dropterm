@@ -66,7 +66,7 @@ The rules specific to the table:
 Declare aliases in `autosuggestions_aliases` (default empty - no alias re-targets anything), one expansion per alias, hand-edited in the config file (the map is author-sized, not toggle-sized):
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/autosuggestions_aliases
+// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/autosuggestions_aliases
 {
     "gc": "git checkout",
 }

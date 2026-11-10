@@ -4,8 +4,8 @@ How the DropTerm codebase is laid out: two crates, one module inventory, a handf
 
 ## Two crates, one workspace
 
-- **`cosmic-ext-dropterm`** (`src/`) - the terminal itself, built as a lib plus bin. The lib target exists so the applet can share the D-Bus state contract (`src/lib.rs` re-exports `dbus_state`) instead of duplicating it.
-- **`cosmic-ext-dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
+- **`dropterm`** (`src/`) - the terminal itself, built as a lib plus bin. The lib target exists so the applet can share the D-Bus state contract (`src/lib.rs` re-exports `dbus_state`) instead of duplicating it.
+- **`dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
 ## Module inventory
 
@@ -21,7 +21,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 | `app/remote.rs` | The CLI verbs handled inside the running instance |
 | `config.rs` | The 43-key on-disk config (`DropTermConfig`): enums, clamping, shell resolution |
 | `context_menu.rs` | The terminal context-menu model - rows, labels, item→`terminal::Action` mapping (pure; picks land in the same path keybinds use) |
-| `dbus_state.rs` | The read-only served state: `Visible` and `TabCount` on the `…CosmicExtDropterm.V1` interface |
+| `dbus_state.rs` | The read-only served state: `Visible` and `TabCount` on the `…dropterm.V1` interface |
 | `drawer_handle.rs` | The settings drawer's drag-resize handle |
 | `geometry.rs` | Pure geometry math plus the single `apply_geometry` surface path every reshape goes through |
 | `grab_bar.rs` | The surface-height drag bar |

@@ -5,7 +5,7 @@ The questions that recur, answered directly - each with the page that owns the f
 ## Setup and the shortcut
 
 **Why doesn't the terminal appear when I press my shortcut?**
-First, the toggle must be a *COSMIC custom shortcut* running `cosmic-ext-dropterm` - DropTerm cannot register hotkeys itself (next question). Second, some Shift-modified custom shortcuts fail to fire on COSMIC; prefer an unshifted key like `F12`. The walk lives in [README: Setting up the shortcut](https://github.com/l1br3-io/cosmic-ext-dropterm#setting-up-the-shortcut); the Shift bug is tracked in [Known issues](known-issues.md).
+First, the toggle must be a *COSMIC custom shortcut* running `dropterm` - DropTerm cannot register hotkeys itself (next question). Second, some Shift-modified custom shortcuts fail to fire on COSMIC; prefer an unshifted key like `F12`. The walk lives in [README: Setting up the shortcut](https://github.com/l1br3-io/dropterm#setting-up-the-shortcut); the Shift bug is tracked in [Known issues](known-issues.md).
 
 **Why can't DropTerm register its own global hotkey?**
 COSMIC does not yet implement the XDG `GlobalShortcuts` portal, so no app can register one; binding a COSMIC custom shortcut is the only path today ([Known issues](known-issues.md)).
@@ -14,7 +14,7 @@ COSMIC does not yet implement the XDG `GlobalShortcuts` portal, so no app can re
 No, and not for want of trying: cosmic-comp does not expose the layer-shell and toplevel-management protocols a true drop-down needs to sandboxed clients. A sandboxed DropTerm could not drop down at all ([Known issues](known-issues.md)).
 
 **How do I uninstall it?**
-Remove the two `cosmic-ext-dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/` - or, from a source checkout, `sudo just uninstall` ([README: Installing](https://github.com/l1br3-io/cosmic-ext-dropterm#installing)).
+Remove the two `dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.dropterm*` files under `/usr/share/{applications,icons,metainfo}/` - or, from a source checkout, `sudo just uninstall` ([README: Installing](https://github.com/l1br3-io/dropterm#installing)).
 
 ## Behavior
 

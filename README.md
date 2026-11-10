@@ -4,7 +4,7 @@ A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https:
 
 The terminal slides down from the top (or bottom) edge of the screen and is toggled with a global keyboard shortcut. It is a true layer-shell overlay - not a minimize/restore window trick - so it stays above other windows, is hidden from Alt-Tab and the dock, and keeps your shell session alive while hidden.
 
-- App ID: `io.github.l1br3_io.CosmicExtDropterm`
+- App ID: `io.github.l1br3_io.dropterm`
 - License: GPL-3.0-only (see [Credits](#credits))
 
 ## Installing
@@ -60,11 +60,11 @@ COSMIC has no XDG `GlobalShortcuts` portal, so DropTerm cannot register its own 
 **COSMIC Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts → Add shortcut**
 
 ```
-Command: cosmic-ext-dropterm
+Command: dropterm
 Key: F12
 ```
 
-Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `cosmic-ext-dropterm show` / `cosmic-ext-dropterm hide` if you want dedicated show/hide keys instead of a toggle.
+Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `dropterm show` / `dropterm hide` if you want dedicated show/hide keys instead of a toggle.
 
 For everything else the command line can do - scripting new tabs, the tab verbs, and `--is-visible` - see the [CLI reference](docs/cli.md).
 

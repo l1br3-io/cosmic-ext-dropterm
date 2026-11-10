@@ -3,14 +3,14 @@
 DropTerm keeps every setting in RON files under one directory and reloads them live - changes apply without a restart, whether made in the [settings drawer](settings.md) or by editing the file directly.
 
 ```
-~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/
+~/.config/cosmic/io.github.l1br3_io.dropterm/v1/
 ```
 
 Each of the 51 keys is its own file in that directory. Edit one directly:
 
 ```sh
-echo '60' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/height_percent
-echo 'Left' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/h_align
+echo '60' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/height_percent
+echo 'Left' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/h_align
 ```
 
 Most keys are editable in the [settings drawer](settings.md); the exceptions write themselves (`settings_drawer_width`) or wait for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
@@ -174,8 +174,8 @@ A shell exiting on its own never confirms. The key is read at request time, so a
 `shell` and `args` apply to the next spawn only - a running tab is never re-launched. `new_tab_cwd` covers the plain spawns (`Ctrl+Shift+T`, the tab bar `+`, the context menus' plain New Tab, a bare remote `new-tab`, the fresh-startup tab); it never applies to `Ctrl+Shift+H` (home is that bind's contract), duplicates, profile launches, or session restore. An explicit `--cwd` wins in both modes.
 
 ```sh
-echo 'Default' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/new_tab_cwd
-echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/default_cwd
+echo 'Default' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/new_tab_cwd
+echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/default_cwd
 ```
 
 ## Behavior toggles
@@ -205,7 +205,7 @@ The toggles apply at their next natural trigger - the session toggle at the next
 The alias map is written by hand, one expansion per declared alias:
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/autosuggestions_aliases
+// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/autosuggestions_aliases
 {
     "gc": "git checkout",
 }
@@ -225,7 +225,7 @@ The anchor itself never takes input or focus in either mode — it exists to kee
 With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
 
 ```sh
-echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_panel
+echo true > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/respect_panel
 ```
 
 ## Settings drawer width
@@ -237,7 +237,7 @@ echo true > ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/respect_pan
 Profiles are named presets of what a tab runs, managed on the [settings drawer](settings.md)'s Profiles tab - or hand-edited in the `profiles` file, in this shape:
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/profiles
+// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/profiles
 (
     {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web"), "color_scheme": Some("Dracula"), "font_size": Some(11), "scrollback_lines": Some(50000), "env": Some({"DROPTERM_PROFILE": "prod", "HTTP_PROXY": "http://bastion:3128"})},
     {"name": "top", "command": "htop"},
@@ -265,7 +265,7 @@ The appearance fields resolve per field, never per profile: a set field wins, an
 Keybindings are customized in the drawer's Keybindings tab or by hand. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/custom_key_binds
+// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/custom_key_binds
 {
     "copy": (modifiers: [Ctrl, Alt], key: "C"),
     "activate_tab_3": (modifiers: [], key: "F2"),
@@ -284,14 +284,14 @@ A binding spells modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key nam
 Two keys load and persist today but change no behavior:
 
 - `settings_drawer_click_close` (default `true`) is **parked**: the planned click-to-dismiss behavior cannot ship until a capture mechanism exists. A hand-edited value is inert.
-- `output` (default unset) is **reserved** for monitor selection - naming the Wayland output the drop-down shows on. Nothing reads it yet; see the [roadmap](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md).
+- `output` (default unset) is **reserved** for monitor selection - naming the Wayland output the drop-down shows on. Nothing reads it yet; see the [roadmap](https://github.com/l1br3-io/dropterm/blob/main/ROADMAP.md).
 
 ## The completions data file
 
-One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships a generated core tier to start from: [`data/completions.toml`](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/data/completions.toml) in the repository - ninety-two commands with menu descriptions, converted from withfig/autocomplete at a pinned version (MIT; the licensing audit in the [seed audit](research/archive/completions-seed-audit.md), the conversion and provenance in the [breadth record](research/archive/completions-breadth.md)) - copy it to the config directory and edit from there.
+One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships a generated core tier to start from: [`data/completions.toml`](https://github.com/l1br3-io/dropterm/blob/main/data/completions.toml) in the repository - ninety-two commands with menu descriptions, converted from withfig/autocomplete at a pinned version (MIT; the licensing audit in the [seed audit](research/archive/completions-seed-audit.md), the conversion and provenance in the [breadth record](research/archive/completions-breadth.md)) - copy it to the config directory and edit from there.
 
 ```toml
-# ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml
+# ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/completions.toml
 
 # One table per command. `name` is the command word the table
 # answers for - through the alias map too, so a mapped alias
