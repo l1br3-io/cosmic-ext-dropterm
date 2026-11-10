@@ -137,6 +137,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # pulls it), so no new code enters the build.
 base64 = "0.22"
 
+# The layer-shell startup probe (layer-shell-guard spec): one registry
+# roundtrip before any surface exists, asking the session whether it
+# offers `zwlr_layer_shell_v1`. The spec's ask-first item, made direct
+# because no existing dependency exposes a usable connection;
+# version-matched to the 0.31.15 line libcosmic's wayland feature and
+# wl-clipboard-rs already pull into the lock, so no new code enters
+# the build.
+wayland-client = "0.31"
+
 [dependencies.cosmic-text]
 version = "0.19"
 features = ["monospace_fallback", "shape-run-cache"]
