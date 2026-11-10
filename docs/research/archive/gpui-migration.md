@@ -291,7 +291,7 @@ runtime operations in finding 3?** The spike is a standalone scratch crate
 zed `main` at a fresh rev — with a committed lock, same discipline as the
 libcosmic pin — `wayland` feature only. Every check is manual on COSMIC hardware
 (layer-shell has no headless path); sway is the cross-compositor witness. Same
-constraint as [`../testing.md`](../testing.md).
+constraint as [`../testing.md`](../../testing.md).
 
 | # | Check | Pass criterion | Fallback if it fails |
 |---|---|---|---|

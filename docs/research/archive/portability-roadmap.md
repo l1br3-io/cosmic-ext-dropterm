@@ -75,10 +75,10 @@ a cross-platform build would have to seam:
   (`:284-290`), after the slide-out otherwise — and `Hidden` carries no surface
   at all; the clipboard anchor is the only never-destroyed surface
   (`src/app.rs:1976,2024`). The churn is a known issue of its own
-  ([known issues](../known-issues.md), the modifier-state desync).
+  ([known issues](../../known-issues.md), the modifier-state desync).
 - **Packaging**: already native-first — deb/AUR/nix, with Flathub ruled out for
   the main binary while cosmic-comp binds layer-shell only for unsandboxed
-  clients ([packaging-and-release](archive/packaging-and-release.md)).
+  clients ([packaging-and-release](packaging-and-release.md)).
 
 ## Findings
 
@@ -225,7 +225,7 @@ pattern) stops being Linux-bound by construction.
   drop-down with the engine depth DropTerm carries.
 
 Plus the standing cost: every platform tier adds a manual hardware pass
-([testing](../testing.md) is already manual-only), and the owner's test matrix
+([testing](../../testing.md) is already manual-only), and the owner's test matrix
 is COSMIC + Linux VMs + one Mac (ruling, 2026-11-09). Hence the tiers in the
 recommendation, not uniform support.
 

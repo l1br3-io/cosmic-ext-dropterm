@@ -10,6 +10,13 @@ the project's ADRs — this index is their map.
 - **Records are immutable.** A record captures what was known and decided on
   its date; it is never edited to match later reality. When a decision is
   reversed, a new record supersedes the old one and both stay.
+- **A plan record is the maintained exception.** A record that consolidates
+  decisions *and* carries their execution roadmap is updated in place while
+  its phases run (checklists tick, status lines move, results append, gates
+  record verdicts), with its evidence sections as fixed as any record's. The
+  records it consolidates move to the archive as superseded, untouched. Its
+  header says so; [portability-plan](portability-plan.md) is the current
+  example.
 - **Status lives here, not in the records.** The tables below are the only
   place that tracks whether a verdict shipped, stalled, or was overtaken —
   the records' "What DropTerm has today" sections are period snapshots and
@@ -42,13 +49,13 @@ verdict today.
 | [terminal-images](terminal-images.md) | 2026-11-05 | iTerm2 OSC 1337 first through the existing OSC fork arm, images stored as cells in the scrollback grid; then the kitty graphics subset through the fork's APC parser; Sixel deferred, overlay placements and file/shm reads rejected | Shipped — detection is the last module | the record |
 | [bare-word-path-completion](bare-word-path-completion.md) | 2026-11-06 | Bare argument words complete as paths as a fallback (every surveyed peer ships one), directories-only for cd/pushd; menu-only rows, a path-command allowlist, and unconditioned fish-parity ghosting rejected | Proposed | the record; the carve would land in `src/terminal/suggest.rs` + `src/terminal/engine.rs` |
 | [paste-image-ux](paste-image-ux.md) | 2026-11-08 | The pasted path stays the grid's only trace; a per-tab images panel carries the five actions; a conditional band chip opens it; the full-size auto-render leaves the paste handler; placeholder-only rejected | Shipped — the config gate and retention (PI-3/PI-4) remain | `src/tabs.rs`, `src/app.rs`, `src/clipboard.rs`, `src/status_bar.rs` |
-| [gpui-migration](gpui-migration.md) | 2026-11-09 | The UI layer can move to GPUI, but it is a full UI-layer rewrite (engine, config model, zbus contract survive); the decision is gated on a hardware spike proving the remaining layer-shell lifecycle parity | Proposed — spike not yet run | the record and its spike plan (`spikes/gpui-layer-shell/`, no code yet) |
-| [portability-roadmap](portability-roadmap.md) | 2026-11-09 | All platforms in scope, tiered: layer-shell Wayland the per-release primary, X11/GNOME/macOS milestone-secondary, Windows builds-only; six compile-time seams carry the port; a runtime plugin system rejected | Proposed — Phase 0 not yet run | the record and the Phase 0 checklist it carries |
+| [portability-plan](portability-plan.md) | 2026-11-10 | Supersedes gpui-migration and portability-roadmap and carries the never-committed gpui-kit survey: GPUI can replace libcosmic as a full UI-layer rewrite gated on a hardware spike, whose crux is shaping the surface at creation on every show plus the mid-slide keyboard re-grab; platforms tiered (layer-shell Wayland per-release primary, X11/GNOME/macOS milestone, Windows builds-only) over six compile-time seams, runtime plugins rejected; the chrome adopts gpui-kit only with its gpui-pre snapshot as the sole GPUI source | Plan, reviewed 2026-11-10: the Phase 0 reality check, the base spike, the identity flag day, and the config-store move open first; the Kit ruling and its timing are open | the record (its capability map, work packages, Phase 0 checklist, and spike table) |
 
 ## Archive
 
-Completed and withdrawn records with nothing pending. The records live in
-`archive/` untouched; their rows stay below for the full decision history.
+Completed, withdrawn, and superseded records with nothing pending. The
+records live in `archive/` untouched; their rows stay below for the full
+decision history.
 
 | Record | Date | Verdict | Status | Shipped as |
 |---|---|---|---|---|
@@ -78,3 +85,5 @@ Completed and withdrawn records with nothing pending. The records live in
 | [completions-breadth](archive/completions-breadth.md) | 2026-11-07 | Scale the specs table from withfig/autocomplete's static corpus in maintainer-run tranches, embedded in the binary; the parser to reimplement is inshellisense's; fish/zsh sources closed on license and shape | Shipped — all four modules (2026-11-07) | the schema and walker in `src/terminal/suggest/`, the embedded `BUILTIN_SPECS`, the `autosuggestions_completions_extended` key |
 | [completions-engine-rea](archive/completions-engine-rea.md) | 2026-11-07 | The engine is a 154-line four-state lexer plus three recursive walkers; a Rust port honoring six spec fields is the live engine's own model; every `script`/`generator` key sits on an `Arg`, so dropping them keeps the whole tree | Shipped — pinned by test | `src/terminal/suggest/walker.rs`, the schema in `src/terminal/suggest.rs` |
 | [paste-uri](archive/paste-uri.md) | 2026-11-09 | The paste reads `text/uri-list` first; exactly one qualifying `file:` URI opens the one file, admitted by its own first bytes alone (regular-file gate, one bounded open, 32 MiB refused); multi-image copies, gnome-copied-files, and quoted paths rejected | Shipped (2026-11-09) | `src/clipboard.rs`, the paste section in [Inline images](../images.md) |
+| [gpui-migration](archive/gpui-migration.md) | 2026-11-09 | The UI layer can move to GPUI, but it is a full UI-layer rewrite (engine, config model, zbus contract survive); the decision is gated on a hardware spike proving the remaining layer-shell lifecycle parity | Superseded by [portability-plan](portability-plan.md) (2026-11-10) | its spike, carried forward and corrected in the plan |
+| [portability-roadmap](archive/portability-roadmap.md) | 2026-11-09 | All platforms in scope, tiered: layer-shell Wayland the per-release primary, X11/GNOME/macOS milestone-secondary, Windows builds-only; six compile-time seams carry the port; a runtime plugin system rejected | Superseded by [portability-plan](portability-plan.md) (2026-11-10) | its roadmap and Phase 0 checklist, carried forward and corrected in the plan |

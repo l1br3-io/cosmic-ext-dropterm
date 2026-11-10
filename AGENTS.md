@@ -70,6 +70,15 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - `/build` consumes the chunk files; see `.opencode/commands/build.md` (mirrored at `.zcode/commands/build.md`).
 - PRs must copy the module's success criteria into the PR body, since
   reviewers cannot see the local spec files.
+- Worktrees: these artifacts are per working directory, so a `git worktree`
+  never sees another checkout's. Each worktree holds the specs and chunks of
+  the modules it builds, seeded from the committed plan that defines them
+  (for portability, the work-package blocks in
+  `docs/research/portability-plan.md`); its `SPEC.md` copies that plan's
+  capability map and marks modules other worktrees own by their committed
+  status. Never symlink spec sets across worktrees: concurrent `/build` runs
+  would race on the shared status files. Cross-worktree status lives in the
+  committed plan, updated on main.
 
 
 ## File creation
