@@ -128,12 +128,12 @@ jobs:
           just rootdir=stage install
           ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
           arch="$(uname -m)"
-          tar -C stage -czf "cosmic-ext-dropterm-${ver}-${arch}.tar.gz" usr
+          tar -C stage -czf "dropterm-${ver}-${arch}.tar.gz" usr
 
       - uses: actions/upload-artifact@v4
         with:
           name: tarball-${{ matrix.runs-on }}
-          path: cosmic-ext-dropterm-*.tar.gz
+          path: dropterm-*.tar.gz
           if-no-files-found: error
 
   # Assemble the artifact set and checksums always (dry-run proves the

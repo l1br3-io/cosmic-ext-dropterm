@@ -112,7 +112,7 @@ resolve_guest() {
 
 # Runs a command in the guest as the desktop user, inside that user's
 # session environment (runtime dir + session bus + Wayland socket) so
-# session-aware CLIs — `cosmic-ext-dropterm toggle` — behave exactly
+# session-aware CLIs — `dropterm toggle` — behave exactly
 # as they would from a guest terminal. The Wayland
 # socket name is resolved in the guest at run time (wayland-0 unless
 # the session picked another).
@@ -294,7 +294,7 @@ cmd_status() {
                         else
                             echo "  MISSING   guest disk headroom ${free:-?}G (want ≥ 4G)"
                         fi
-                        if guest_exec "test -x /usr/bin/cosmic-ext-dropterm"; then
+                        if guest_exec "test -x /usr/bin/dropterm"; then
                             echo "  ok        native dropterm installed in guest (/usr/bin)"
                         else
                             echo "  ok        native dropterm not installed (install it from the release tarball for the walk)"

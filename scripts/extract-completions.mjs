@@ -561,7 +561,7 @@ const coreHeader = () => [
   "# This table is the floor suggest-embed embeds into the binary,",
   "# gzip-compressed (the raw file beside it is the human-editable",
   "# form); copy this file to",
-  "#   ~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/completions.toml",
+  "#   ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/completions.toml",
   "# only to override the embedded floor — a command you re-declare",
   "# replaces its embedded entry whole, and a command you add sits",
   "# beside it. Entries upstream seats below the root (git's --amend",
