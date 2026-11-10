@@ -647,11 +647,14 @@ impl PlannedWrite {
     }
 
     /// Persist through the config store — the I/O edge of the write
-    /// path: re-read the settings section from `dir` (a missing file
-    /// is the default section), set this write's key into it, save
-    /// the whole section atomically. The re-read is the whole merge
-    /// story — one section file per writer, last-writer-wins within
-    /// it — and it keeps every other key the file carried. The
+    /// path: re-read the settings section from `dir`, set this
+    /// write's key into it, save the whole section atomically. The
+    /// re-read is the whole merge story — one section file per
+    /// writer, last-writer-wins within it — and it keeps every other
+    /// key the file carried. A file that is missing or does not
+    /// parse (the latter moved aside to `.bak` by the load) falls
+    /// back to `live`, the settings the app is running with — never
+    /// the defaults, so one write can never reset the rest. The
     /// failure is the caller's to log.
     ///
     /// # Errors
@@ -659,9 +662,9 @@ impl PlannedWrite {
     /// Returns the store's [`io::Error`] when the section save
     /// fails; the file on disk is left intact (the atomic-write
     /// contract).
-    pub fn persist(&self, dir: &Path) -> Result<(), io::Error> {
+    pub fn persist(&self, dir: &Path, live: &DropTermConfig) -> Result<(), io::Error> {
         let path = dir.join(SETTINGS_FILE);
-        let mut section: DropTermConfig = store::load(&path).unwrap_or_default();
+        let mut section: DropTermConfig = store::load(&path).unwrap_or_else(|| live.clone());
         match self {
             PlannedWrite::HeightPercent(value) => section.height_percent = *value,
             PlannedWrite::WidthPercent(value) => section.width_percent = *value,
@@ -2063,16 +2066,18 @@ pub enum ProfileWrite {
 impl ProfileWrite {
     /// Persist through the config store — [`PlannedWrite::persist`]'s
     /// discipline verbatim: re-read the profiles section, set this
-    /// write's key, save the section atomically. The failure is the
-    /// caller's to log.
+    /// write's key, save the section atomically; a missing or
+    /// unreadable file falls back to `live`'s profiles section, never
+    /// the defaults. The failure is the caller's to log.
     ///
     /// # Errors
     ///
     /// Returns the store's [`io::Error`] when the section save
     /// fails; the file on disk is left intact.
-    pub fn persist(&self, dir: &Path) -> Result<(), io::Error> {
+    pub fn persist(&self, dir: &Path, live: &DropTermConfig) -> Result<(), io::Error> {
         let path = dir.join(store::PROFILES_FILE);
-        let mut section: ProfilesSection = store::load(&path).unwrap_or_default();
+        let mut section: ProfilesSection =
+            store::load(&path).unwrap_or_else(|| live.profiles_section());
         match self {
             ProfileWrite::Profiles(profiles) => section.profiles.clone_from(profiles),
             ProfileWrite::DefaultProfile(default) => section.default_profile.clone_from(default),
@@ -2094,9 +2099,12 @@ pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds:
 
 impl KeybindsWrite {
     /// Persist through the config store — [`ProfileWrite::persist`]'s
-    /// discipline verbatim: re-read the keybinds section, replace
-    /// the whole map, save the section atomically. The failure is
-    /// the caller's to log.
+    /// discipline for the one-key section: re-read the keybinds
+    /// section (a file that does not parse is moved aside to `.bak`
+    /// by the load, its text kept before the overwrite), replace the
+    /// whole map, save the section atomically. No live fallback is
+    /// needed — the write replaces the section's only key. The
+    /// failure is the caller's to log.
     ///
     /// # Errors
     ///

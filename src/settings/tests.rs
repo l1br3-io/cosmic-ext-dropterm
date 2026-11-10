@@ -3134,9 +3134,15 @@ fn a_planned_write_merges_into_the_settings_section() {
     // rule beyond last-writer-wins.
     let dir = TempDir::new("planned-write-merge");
     std::fs::write(dir.join("config.ron"), "(height_percent: 70)").expect("seed section");
+    // The file is the truth when it parses: it may carry a hand edit
+    // whose echo has not landed yet, so it wins over the live config.
+    let live = DropTermConfig {
+        height_percent: 55,
+        ..DropTermConfig::default()
+    };
 
     PlannedWrite::FontSize(19)
-        .persist(&dir.0)
+        .persist(&dir.0, &live)
         .expect("persist font size");
 
     let loaded = DropTermConfig::load_from(&dir.0);
@@ -3145,19 +3151,52 @@ fn a_planned_write_merges_into_the_settings_section() {
 }
 
 #[test]
-fn a_planned_write_into_a_missing_store_starts_from_defaults() {
-    // A store with nothing on disk yet is the first run: the write
-    // creates the section from defaults with its key set, parent
-    // directories included.
+fn a_planned_write_into_a_missing_store_starts_from_the_live_config() {
+    // No section file on disk - the first run, or a file deleted
+    // while the app runs: the write creates the section from the
+    // settings the app is running with, its key set. Never from the
+    // defaults: a deleted file must not turn one toggle into a
+    // reset of every other setting.
     let dir = TempDir::new("planned-write-fresh");
+    let live = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
 
     PlannedWrite::Opacity(80)
-        .persist(&dir.0)
+        .persist(&dir.0, &live)
         .expect("persist opacity");
 
     let loaded = DropTermConfig::load_from(&dir.0);
     assert_eq!(loaded.opacity, 80);
-    assert_eq!(loaded.height_percent, crate::config::DEFAULT_HEIGHT_PERCENT);
+    assert_eq!(loaded.height_percent, 70);
+}
+
+#[test]
+fn a_planned_write_over_an_unreadable_section_keeps_the_live_settings() {
+    // The section on disk does not parse - a typo the live reload is
+    // ignoring while the app keeps its last good values. A drawer
+    // write must not answer that with the defaults: the unreadable
+    // text is moved aside (kept, in `.bak`) and the section is saved
+    // from the settings the app is running with.
+    let dir = TempDir::new("planned-write-unreadable");
+    std::fs::write(dir.join("config.ron"), "(height_perc").expect("a broken section");
+    let live = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+
+    PlannedWrite::FontSize(19)
+        .persist(&dir.0, &live)
+        .expect("persist font size");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.font_size, 19);
+    assert_eq!(loaded.height_percent, 70, "the live settings were reset");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.ron.bak")).expect("the broken text is kept"),
+        "(height_perc"
+    );
 }
 
 #[test]
@@ -3173,7 +3212,7 @@ fn a_profile_write_touches_only_the_profiles_section() {
     .expect("seed profiles");
 
     ProfileWrite::DefaultProfile(Some("ssh".to_string()))
-        .persist(&dir.0)
+        .persist(&dir.0, &DropTermConfig::default())
         .expect("persist default profile");
 
     let loaded = DropTermConfig::load_from(&dir.0);
@@ -3184,6 +3223,34 @@ fn a_profile_write_touches_only_the_profiles_section() {
         std::fs::read_to_string(dir.join("config.ron")).expect("settings still on disk"),
         "(height_percent: 70)"
     );
+}
+
+#[test]
+fn a_profile_write_into_a_missing_section_keeps_the_live_profiles() {
+    // The default picker writes one key of the two-key section: with
+    // no file on disk the other key comes from the live config, so
+    // picking a default never empties the profile list.
+    let dir = TempDir::new("profile-write-fresh");
+    let live = DropTermConfig {
+        profiles: vec![Profile {
+            name: "ssh".to_string(),
+            command: "ssh web".to_string(),
+            cwd: None,
+            color_scheme: None,
+            env: None,
+            font_size: None,
+            scrollback_lines: None,
+        }],
+        ..DropTermConfig::default()
+    };
+
+    ProfileWrite::DefaultProfile(Some("ssh".to_string()))
+        .persist(&dir.0, &live)
+        .expect("persist default profile");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.default_profile, Some("ssh".to_string()));
+    assert_eq!(loaded.profiles, live.profiles);
 }
 
 #[test]
@@ -3223,7 +3290,7 @@ fn a_shell_write_round_trips_through_the_section() {
     let dir = TempDir::new("shell-write");
 
     PlannedWrite::Shell("/bin/zsh".to_string())
-        .persist(&dir.0)
+        .persist(&dir.0, &DropTermConfig::default())
         .expect("persist shell");
 
     let loaded = DropTermConfig::load_from(&dir.0);

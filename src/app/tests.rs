@@ -899,7 +899,7 @@ fn the_app_s_own_write_echoes_exactly_once() {
     let mut last = DropTermConfig::default();
 
     settings::PlannedWrite::FontSize(19)
-        .persist(&dir)
+        .persist(&dir, &last)
         .expect("the app's own write");
 
     let first = echoes(

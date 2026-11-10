@@ -1033,7 +1033,7 @@ impl DropTerm {
         }
         let write = write.clamped();
         let key = write.key();
-        match write.persist(&self.config_dir) {
+        match write.persist(&self.config_dir, &self.config) {
             Ok(()) => {
                 // Only a pre-applied write absorbs its echo — geometry
                 // was already applied at release, so the echo must not
@@ -1063,7 +1063,7 @@ impl DropTerm {
     /// the apply, so the in-memory config the next view build reads
     /// is the echo-updated one.
     fn write_profile_config(&mut self, write: &settings::ProfileWrite) {
-        if let Err(err) = write.persist(&self.config_dir) {
+        if let Err(err) = write.persist(&self.config_dir, &self.config) {
             log::warn!("failed to persist profile write: {err}");
         }
     }
