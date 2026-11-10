@@ -17,7 +17,7 @@
 //! Library target for the workspace.
 //!
 //! The terminal binary keeps its implementation bin-internal; this lib
-//! exists so the `cosmic-ext-dropterm-applet` member consumes the V1
+//! exists so the `dropterm-applet` member consumes the V1
 //! D-Bus contract from the same code that serves it — one contract,
 //! one implementation.
 
@@ -34,7 +34,7 @@ pub mod font_list;
 /// fingerprint arbitrary env vars, so an `option_env!` identity would
 /// silently reuse stale binaries between identity flips.
 #[cfg(not(feature = "dev-identity"))]
-pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
+pub const APP_ID: &str = "io.github.l1br3_io.dropterm";
 
 /// The dev build's identity (see the release const above): every
 /// runtime name carries the `.Dev` suffix, so a dev build owns its own
@@ -43,4 +43,4 @@ pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm";
 /// Enabled by the justfile's dev recipes and the applet's same-named
 /// feature; never by a release build.
 #[cfg(feature = "dev-identity")]
-pub const APP_ID: &str = "io.github.l1br3_io.CosmicExtDropterm.Dev";
+pub const APP_ID: &str = "io.github.l1br3_io.dropterm.Dev";

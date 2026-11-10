@@ -992,7 +992,7 @@ fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Opti
     // The lib's own const is the canonical seat (app.rs re-exports
     // it for its tree); the `.Dev` suffix marks the dev identity,
     // whose walk also tries the release install's un-suffixed seat.
-    let app_id = cosmic_ext_dropterm::APP_ID;
+    let app_id = dropterm::APP_ID;
     let release_id = app_id.strip_suffix(".Dev").unwrap_or(app_id);
     let ids = if release_id == app_id {
         vec![app_id]

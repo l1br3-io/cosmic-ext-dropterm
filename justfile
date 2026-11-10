@@ -22,8 +22,8 @@ quietly command:
     fi
     rm -f "$out"
 
-name := 'cosmic-ext-dropterm'
-appid := 'io.github.l1br3_io.CosmicExtDropterm'
+name := 'dropterm'
+appid := 'io.github.l1br3_io.dropterm'
 
 rootdir := ''
 prefix := '/usr'

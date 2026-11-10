@@ -3824,12 +3824,12 @@ fn the_xdg_walk_finds_the_first_seated_file() {
     // data-local root leads, each root tries the running identity's
     // seat first, and a dev build's walk also finds the release
     // install's un-suffixed seat.
-    let release_id = cosmic_ext_dropterm::APP_ID
+    let release_id = dropterm::APP_ID
         .strip_suffix(".Dev")
-        .unwrap_or(cosmic_ext_dropterm::APP_ID);
+        .unwrap_or(dropterm::APP_ID);
     let primary_root = completions_fixture("walk-primary");
     let primary_seat = primary_root
-        .join(cosmic_ext_dropterm::APP_ID)
+        .join(dropterm::APP_ID)
         .join("completions-extended.toml");
     std::fs::create_dir_all(primary_seat.parent().expect("seat parent")).expect("seat dir");
     std::fs::write(&primary_seat, "").expect("seat file");
@@ -3841,7 +3841,7 @@ fn the_xdg_walk_finds_the_first_seated_file() {
     std::fs::write(&fallback_seat, "").expect("seat file");
     let later_root = completions_fixture("walk-later");
     let later_seat = later_root
-        .join(cosmic_ext_dropterm::APP_ID)
+        .join(dropterm::APP_ID)
         .join("completions-extended.toml");
     std::fs::create_dir_all(later_seat.parent().expect("seat parent")).expect("seat dir");
     std::fs::write(&later_seat, "").expect("seat file");

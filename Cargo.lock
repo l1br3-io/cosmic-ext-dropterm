@@ -1050,48 +1050,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cosmic-ext-dropterm"
-version = "0.4.0"
-dependencies = [
- "alacritty_terminal",
- "base64",
- "clap",
- "cosmic-text",
- "dirs",
- "enumflags2",
- "env_logger",
- "flate2",
- "fontdb",
- "image",
- "indexmap",
- "jiff",
- "libc",
- "libcosmic",
- "log",
- "notify-rust",
- "open",
- "ron",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "wl-clipboard-rs",
- "zbus",
-]
-
-[[package]]
-name = "cosmic-ext-dropterm-applet"
-version = "0.4.0"
-dependencies = [
- "cosmic-ext-dropterm",
- "env_logger",
- "libcosmic",
- "log",
- "tokio",
- "zbus",
-]
-
-[[package]]
 name = "cosmic-freedesktop-icons"
 version = "0.4.0"
 source = "git+https://github.com/pop-os/freedesktop-icons#ab4c57b8e416c6af9297cb04d101889896fd9a92"
@@ -1501,6 +1459,48 @@ checksum = "2d09ff881f92f118b11105ba5e34ff8f4adf27b30dae8f12e28c193af1c83176"
 dependencies = [
  "libc",
  "linux-raw-sys 0.6.5",
+]
+
+[[package]]
+name = "dropterm"
+version = "0.4.0"
+dependencies = [
+ "alacritty_terminal",
+ "base64",
+ "clap",
+ "cosmic-text",
+ "dirs",
+ "enumflags2",
+ "env_logger",
+ "flate2",
+ "fontdb",
+ "image",
+ "indexmap",
+ "jiff",
+ "libc",
+ "libcosmic",
+ "log",
+ "notify-rust",
+ "open",
+ "ron",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "wl-clipboard-rs",
+ "zbus",
+]
+
+[[package]]
+name = "dropterm-applet"
+version = "0.4.0"
+dependencies = [
+ "dropterm",
+ "env_logger",
+ "libcosmic",
+ "log",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]

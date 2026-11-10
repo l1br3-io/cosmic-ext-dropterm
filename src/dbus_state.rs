@@ -3,7 +3,7 @@
 //! Queryable `DropTerm` state over D-Bus.
 //!
 //! Serves the read-only `Visible` and `TabCount` properties on the
-//! `io.github.l1br3_io.CosmicExtDropterm.V1` interface, at the bus name
+//! `io.github.l1br3_io.dropterm.V1` interface, at the bus name
 //! and object path the app already owns through libcosmic's
 //! single-instance activation. The module deliberately keeps the app's
 //! types out: it lives in the workspace's lib target so the panel
@@ -29,13 +29,13 @@ pub const BUS_NAME: &str = crate::APP_ID;
 /// the V1 interface rides the same path. The app id's dot-to-slash
 /// form, exactly as libcosmic derives it (pinned by test).
 #[cfg(not(feature = "dev-identity"))]
-pub const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm";
+pub const OBJECT_PATH: &str = "/io/github/l1br3_io/dropterm";
 /// The dev build's twin (see [`BUS_NAME`]).
 #[cfg(feature = "dev-identity")]
-pub const OBJECT_PATH: &str = "/io/github/l1br3_io/CosmicExtDropterm/Dev";
+pub const OBJECT_PATH: &str = "/io/github/l1br3_io/dropterm/Dev";
 
 /// The V1 state interface name.
-pub const INTERFACE: &str = "io.github.l1br3_io.CosmicExtDropterm.V1";
+pub const INTERFACE: &str = "io.github.l1br3_io.dropterm.V1";
 
 /// State snapshot served on the V1 interface. Derived, never
 /// authoritative: `DropTerm`'s own fields remain the single source of
@@ -126,7 +126,7 @@ impl V1 {
     }
 }
 
-#[interface(name = "io.github.l1br3_io.CosmicExtDropterm.V1")]
+#[interface(name = "io.github.l1br3_io.dropterm.V1")]
 impl V1 {
     /// Read-only: `true` while the drop-down surface is shown or
     /// animating in.
@@ -148,7 +148,7 @@ impl V1 {
 /// take literals, which would pin the release identity into dev
 /// builds — the generated constructor instead demands the names, and
 /// every caller passes [`BUS_NAME`]/[`OBJECT_PATH`].
-#[proxy(interface = "io.github.l1br3_io.CosmicExtDropterm.V1")]
+#[proxy(interface = "io.github.l1br3_io.dropterm.V1")]
 pub trait V1Interface {
     #[zbus(property)]
     fn visible(&self) -> zbus::Result<bool>;
@@ -275,13 +275,13 @@ mod tests {
     #[cfg(not(feature = "dev-identity"))]
     #[test]
     fn release_state_carries_the_plain_identity() {
-        assert_eq!(crate::APP_ID, "io.github.l1br3_io.CosmicExtDropterm");
+        assert_eq!(crate::APP_ID, "io.github.l1br3_io.dropterm");
     }
 
     #[cfg(feature = "dev-identity")]
     #[test]
     fn dev_state_carries_the_dev_identity() {
-        assert_eq!(crate::APP_ID, "io.github.l1br3_io.CosmicExtDropterm.Dev");
+        assert_eq!(crate::APP_ID, "io.github.l1br3_io.dropterm.Dev");
     }
 
     /// Headless test harness: serves [`V1`] over a peer-to-peer unix

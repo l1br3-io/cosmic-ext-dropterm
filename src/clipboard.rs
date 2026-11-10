@@ -1262,7 +1262,7 @@ mod tests {
     // data-control offers on the running compositor and runs the
     // shipped cascade against them — it takes over the system
     // clipboard while it runs, so it stays #[ignore]d out of the
-    // headless suite: `cargo test --bin cosmic-ext-dropterm
+    // headless suite: `cargo test --bin dropterm
     // live_uri_paste_smoke -- --ignored`. The expectations encode
     // observed cosmic-comp behavior (research record, 2026-11-09):
     // the priority read serves "text/uri-list" verbatim, and the
