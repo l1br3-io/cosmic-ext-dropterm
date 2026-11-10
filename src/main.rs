@@ -24,6 +24,7 @@ mod drawer_handle;
 mod geometry;
 mod grab_bar;
 mod keybinds;
+mod layer_shell;
 mod notify;
 mod profile;
 mod session;
