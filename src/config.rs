@@ -708,17 +708,38 @@ impl DropTermConfig {
     /// and the other two sections are unaffected. Clamping is the
     /// caller's step.
     pub fn load_from(dir: &Path) -> Self {
-        let mut config: Self = store::load(&dir.join(store::SETTINGS_FILE)).unwrap_or_default();
-        let ProfilesSection {
-            profiles,
-            default_profile,
-        } = store::load(&dir.join(store::PROFILES_FILE)).unwrap_or_default();
-        let KeybindsSection { custom_key_binds } =
-            store::load(&dir.join(store::KEYBINDS_FILE)).unwrap_or_default();
-        config.profiles = profiles;
-        config.default_profile = default_profile;
-        config.custom_key_binds = custom_key_binds;
-        config
+        Self::composed(
+            store::load(&dir.join(store::SETTINGS_FILE)).unwrap_or_default(),
+            store::load(&dir.join(store::PROFILES_FILE)).unwrap_or_default(),
+            store::load(&dir.join(store::KEYBINDS_FILE)).unwrap_or_default(),
+        )
+    }
+
+    /// The live-reload twin of [`Self::load_from`], for a store
+    /// being edited while the app runs: each section that parses
+    /// right now replaces `last`'s, and a section that is missing or
+    /// unreadable at this instant — an editor mid-write, a
+    /// delete-then-recreate save — keeps `last`'s values and is left
+    /// untouched on disk ([`store::peek`]). Nothing is quarantined
+    /// and nothing flashes to defaults; a deleted section resets at
+    /// the next start. Clamping is the caller's step.
+    pub fn reload_from(dir: &Path, last: &Self) -> Self {
+        Self::composed(
+            store::peek(&dir.join(store::SETTINGS_FILE)).unwrap_or_else(|| last.clone()),
+            store::peek(&dir.join(store::PROFILES_FILE)).unwrap_or_else(|| last.profiles_section()),
+            store::peek(&dir.join(store::KEYBINDS_FILE)).unwrap_or_else(|| last.keybinds_section()),
+        )
+    }
+
+    /// One config out of its three sections: the settings section's
+    /// own keys with the other two sections' overlaid.
+    fn composed(settings: Self, profiles: ProfilesSection, keybinds: KeybindsSection) -> Self {
+        Self {
+            profiles: profiles.profiles,
+            default_profile: profiles.default_profile,
+            custom_key_binds: keybinds.custom_key_binds,
+            ..settings
+        }
     }
 
     /// This config's profiles section — what a profile write

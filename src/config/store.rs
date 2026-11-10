@@ -44,6 +44,29 @@ pub fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     }
 }
 
+/// Reads one section file without ever touching it — the live
+/// path's load, for a store being edited while the app runs: `None`
+/// when the file is missing, unreadable, or does not parse *right
+/// now*, which is all one answer to a watcher (an editor mid-write
+/// passes through each of those states). Unlike [`load`] nothing is
+/// quarantined: a half-written file is not a corrupt one, and moving
+/// it aside would take it from the editor writing it.
+pub fn peek<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let text = fs::read_to_string(path).ok()?;
+    match ron::from_str::<T>(&text) {
+        Ok(section) => Some(section),
+        Err(err) => {
+            // `debug`, not `warn`: transient by design, and a
+            // non-atomic save would otherwise log on every write.
+            log::debug!(
+                "config section {} does not parse yet: {err}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 /// Atomically writes one section (`QSaveFile` semantics, the
 /// session-file pattern): serialize to a `.tmp` sibling in the same
 /// directory, fsync it, rename over the target, then best-effort
@@ -259,5 +282,36 @@ mod tests {
             fs::read_to_string(&path).expect("bad file stays"),
             "garbage(("
         );
+    }
+
+    #[test]
+    fn peek_reads_a_parseable_file() {
+        let dir = TempDir::new("peek-ok");
+        let path = section_file(&dir);
+        let section = Section {
+            font_size: 15,
+            note: None,
+        };
+        save_atomic(&path, &section).expect("save");
+        assert_eq!(peek(&path), Some(section));
+    }
+
+    #[test]
+    fn peek_answers_none_for_a_missing_file() {
+        let dir = TempDir::new("peek-missing");
+        assert_eq!(peek::<Section>(&section_file(&dir)), None);
+    }
+
+    #[test]
+    fn peek_leaves_an_unreadable_file_in_place() {
+        // The live path's whole difference from `load`: a file that
+        // does not parse right now may be an editor mid-write, so it
+        // is neither moved nor touched — no quarantine, no backup.
+        let dir = TempDir::new("peek-unreadable");
+        let path = section_file(&dir);
+        fs::write(&path, "garbage((").expect("write half a section");
+        assert_eq!(peek::<Section>(&path), None);
+        assert_eq!(fs::read_to_string(&path).expect("file stays"), "garbage((");
+        assert!(!backup_of(&path).exists(), "nothing was quarantined");
     }
 }

@@ -68,6 +68,66 @@ fn a_partial_settings_section_loads_missing_keys_as_defaults() {
 }
 
 #[test]
+fn a_live_reload_applies_a_section_that_parses() {
+    // The watcher's reload: a section that parses right now
+    // replaces the last-known values, the other sections riding
+    // along from their own files.
+    let dir = TempDir::new("live-reload-applies");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 55)");
+    let last = DropTermConfig {
+        height_percent: 70,
+        default_profile: Some("ssh".to_string()),
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next.height_percent, 55);
+    // No profiles section on disk: the last-known one stands.
+    assert_eq!(next.default_profile, Some("ssh".to_string()));
+}
+
+#[test]
+fn a_live_reload_keeps_the_last_good_section_while_its_file_is_unreadable() {
+    // An editor mid-write leaves a section that does not parse for
+    // an instant. The live reload keeps the last-known values and
+    // leaves the file exactly where it is — quarantine is the
+    // startup load's act; moving a half-written file aside would
+    // steal it from the editor writing it.
+    let dir = TempDir::new("live-reload-unreadable");
+    write_section(&dir, store::SETTINGS_FILE, "(height_perc");
+    let last = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next, last);
+    assert_eq!(
+        std::fs::read_to_string(dir.join(store::SETTINGS_FILE)).expect("file stays"),
+        "(height_perc"
+    );
+    assert!(
+        !dir.join("config.ron.bak").exists(),
+        "nothing was quarantined"
+    );
+}
+
+#[test]
+fn a_live_reload_keeps_the_last_good_section_while_its_file_is_missing() {
+    // A delete-then-recreate save passes through an instant with no
+    // file at all: the live reload keeps the last-known values
+    // rather than flashing the surface to defaults. (A deleted
+    // section resets to defaults at the next start.)
+    let dir = TempDir::new("live-reload-missing");
+    let last = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+
+    assert_eq!(DropTermConfig::reload_from(&dir.0, &last), last);
+}
+
+#[test]
 fn defaults_are_sane() {
     let config = DropTermConfig::default();
     assert_eq!(config.height_percent, DEFAULT_HEIGHT_PERCENT);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
@@ -1848,25 +1848,54 @@ fn completions_config_dir() -> PathBuf {
     config::store::store_dir()
 }
 
-/// Whether a watcher event names one of the store's live files —
-/// the three section files, or `completions.toml` (the name
-/// `suggest::user_completions` reads). Everything else in the
-/// directory is noise: an atomic save's `.tmp` sibling never
-/// qualifies, only its rename onto the section file does, so one
-/// write delivers exactly one echo; a quarantine's `.bak` qualifies
-/// through the section file it moved away.
-fn event_touches_store_file(event: &notify::Event) -> bool {
+/// Whether a watcher event names any of `files` (by file name, any
+/// directory) — the store's own files are the only names that echo.
+fn event_names(event: &notify::Event, files: &[&str]) -> bool {
     event.paths.iter().any(|path| {
-        matches!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(
-                config::store::SETTINGS_FILE
-                    | config::store::PROFILES_FILE
-                    | config::store::KEYBINDS_FILE
-                    | "completions.toml"
-            )
-        )
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| files.contains(&name))
     })
+}
+
+/// The store's three section-file names — the watcher's echo set
+/// beside `completions.toml`.
+const STORE_SECTION_FILES: [&str; 3] = [
+    config::store::SETTINGS_FILE,
+    config::store::PROFILES_FILE,
+    config::store::KEYBINDS_FILE,
+];
+
+/// The watcher loop's one step. An event that mutates no data is
+/// skipped — an access, a metadata touch, a rename's both-paths
+/// summary (its to-half already arrived). A qualifying event — one
+/// naming a section file or `completions.toml` — reloads the store
+/// non-destructively and yields the config to apply, except when
+/// nothing changed (a half-written section kept the last-known
+/// values, or the write changed nothing): the step stays silent, so
+/// one atomic save — whose rename the watcher reports more than
+/// once — delivers exactly one echo. A `completions.toml` edit
+/// delivers the unchanged config: the file rides the echo. The step
+/// never writes, so no delivery can loop.
+fn config_after(
+    event: &notify::Event,
+    dir: &Path,
+    last: &DropTermConfig,
+) -> Option<DropTermConfig> {
+    use notify::event::{EventKind, ModifyKind, RenameMode};
+    if matches!(
+        event.kind,
+        EventKind::Access(_)
+            | EventKind::Modify(ModifyKind::Metadata(_) | ModifyKind::Name(RenameMode::Both))
+    ) {
+        return None;
+    }
+    let completions = event_names(event, &["completions.toml"]);
+    if !completions && !event_names(event, &STORE_SECTION_FILES) {
+        return None;
+    }
+    let next = DropTermConfig::reload_from(dir, last);
+    (completions || next != *last).then_some(next)
 }
 
 impl Application for DropTerm {
@@ -2188,14 +2217,25 @@ impl Application for DropTerm {
                             log::warn!("failed to watch the config dir {}: {err}", dir.display());
                             return;
                         }
+                        // The stream's own last-known config, seeded
+                        // the way every event reads it and never
+                        // delivered (init loaded the same files) —
+                        // unreadable sections keep their last-known
+                        // values instead of flashing to defaults.
+                        let mut last =
+                            DropTermConfig::reload_from(&dir, &DropTermConfig::default());
                         // `watcher` stays alive for the loop: dropping
                         // it stops the events.
                         while let Some(event) = rx.recv().await {
-                            if !event_touches_store_file(&event) {
+                            let Some(next) = config_after(&event, &dir, &last) else {
                                 continue;
-                            }
-                            let config = DropTermConfig::load_from(&dir).clamped();
-                            if output.send(Message::ConfigChanged(config)).await.is_err() {
+                            };
+                            last = next;
+                            if output
+                                .send(Message::ConfigChanged(last.clone().clamped()))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
