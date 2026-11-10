@@ -79,8 +79,13 @@ pub fn peek<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
 /// creation, writing, fsync, or the rename fails; a failure at any
 /// point leaves any previous file intact.
 pub fn save_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let text =
-        ron::to_string(value).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    // Pretty RON, one key per line: these files are hand-edited, and
+    // a save must keep them readable rather than rewrite a section
+    // as one unbroken line. The trailing newline closes the file the
+    // way a text editor expects.
+    let mut text = ron::ser::to_string_pretty(value, ron::ser::PrettyConfig::default())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    text.push('\n');
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -300,6 +305,29 @@ mod tests {
     fn peek_answers_none_for_a_missing_file() {
         let dir = TempDir::new("peek-missing");
         assert_eq!(peek::<Section>(&section_file(&dir)), None);
+    }
+
+    #[test]
+    fn a_saved_section_is_one_key_per_line() {
+        // The files are hand-edited: a save keeps them that way —
+        // one key per line, a newline at the end — instead of one
+        // unbroken line.
+        let dir = TempDir::new("pretty");
+        let path = section_file(&dir);
+        save_atomic(
+            &path,
+            &Section {
+                font_size: 15,
+                note: None,
+            },
+        )
+        .expect("save");
+        let text = fs::read_to_string(&path).expect("read back");
+        assert!(
+            text.lines().any(|line| line.trim() == "font_size: 15,"),
+            "no per-key line in: {text}"
+        );
+        assert!(text.ends_with('\n'), "no trailing newline: {text:?}");
     }
 
     #[test]
