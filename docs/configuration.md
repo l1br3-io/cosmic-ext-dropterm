@@ -1,25 +1,40 @@
 # Configuration
 
-DropTerm keeps every setting in RON files under one directory and reloads them live - changes apply without a restart, whether made in the [settings drawer](settings.md) or by editing the file directly.
+DropTerm keeps every setting in plain RON files under one directory and reloads them live - changes apply without a restart, whether made in the [settings drawer](settings.md) or by editing a file directly.
 
 ```
-~/.config/cosmic/io.github.l1br3_io.dropterm/v1/
+~/.config/io.github.l1br3_io.dropterm/
+├── config.ron        the settings keys
+├── profiles.ron      profiles and default_profile
+├── keybinds.ron      custom_key_binds
+└── completions.toml  optional: your own completions
 ```
 
-Each of the 51 keys is its own file in that directory. Edit one directly:
+The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.ron` file is one map of keys, and none of them has to exist: a missing file, or a key a file leaves out, uses its default. So a `config.ron` can be as short as the keys you care about:
 
-```sh
-echo '60' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/height_percent
-echo 'Left' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/h_align
+```ron
+// ~/.config/io.github.l1br3_io.dropterm/config.ron
+(
+    height_percent: 60,
+    h_align: Left,
+)
 ```
 
 Most keys are editable in the [settings drawer](settings.md); the exceptions write themselves (`settings_drawer_width`) or wait for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
+## How edits apply
+
+- **Live.** Saving a file applies it at once, exactly like a drawer change - the two are one path.
+- **A file that does not parse is ignored while DropTerm runs.** The last good values stay in effect until the file parses again, so a half-saved edit or a typo never resets anything mid-session. A deleted file likewise changes nothing until the next start.
+- **At startup, a file that does not parse is moved aside** to `<name>.bak` (`config.ron.bak`) and its keys start from their defaults; the other files are unaffected. Correct the `.bak` and move it back.
+- **The drawer rewrites the whole file it saves.** It re-reads the file first, so keys you edited by hand are kept - but every key is written out, and comments are not preserved. If the file does not parse at that moment, it is moved aside to `.bak` and the save starts from the settings DropTerm is running with, so a typo never turns one toggle into a reset.
+- **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, `output`, and `settings_drawer_width` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.
+
 ## The default config directory
 
-What a fresh configuration carries - every key that has a default, with the file's whole content as its value (a genuine string quoted; an enum, a number, or a bool bare). Pinned to the code by a test, so it cannot drift:
+A fresh install has no files here at all - each appears the first time something in it is saved. These are the defaults: every key that has one, with its value as it is written in `config.ron` (a genuine string quoted; an enum, a number, or a bool bare). Pinned to the code by a test, so it cannot drift:
 
-| Key file | Content |
+| Key | Default |
 |---|---|
 | `height_percent` | `40` |
 | `width_percent` | `100` |
@@ -74,7 +89,7 @@ What a fresh configuration carries - every key that has a default, with the file
 | `autosuggestions_delay_ms` | `0` |
 | `images_enabled` | `true` |
 
-The remaining keys have no default to write, so their files do not exist until you set them: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_profile`, `default_cwd`, `profiles` and `custom_key_binds` (empty lists write nothing), `autosuggestions_aliases` (empty by default - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it).
+The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
 
 ## Geometry
 
@@ -173,9 +188,12 @@ A shell exiting on its own never confirms. The key is read at request time, so a
 
 `shell` and `args` apply to the next spawn only - a running tab is never re-launched. `new_tab_cwd` covers the plain spawns (`Ctrl+Shift+T`, the tab bar `+`, the context menus' plain New Tab, a bare remote `new-tab`, the fresh-startup tab); it never applies to `Ctrl+Shift+H` (home is that bind's contract), duplicates, profile launches, or session restore. An explicit `--cwd` wins in both modes.
 
-```sh
-echo 'Default' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/new_tab_cwd
-echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/default_cwd
+```ron
+// config.ron
+(
+    new_tab_cwd: Default,
+    default_cwd: Some("/srv/work"),
+)
 ```
 
 ## Behavior toggles
@@ -202,13 +220,15 @@ echo '"/srv/work"' > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/default_cwd
 
 The toggles apply at their next natural trigger - the session toggle at the next save/restore cycle, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab.
 
-The alias map is written by hand, one expansion per declared alias:
+The alias map is written by hand in `config.ron`, one expansion per declared alias:
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/autosuggestions_aliases
-{
-    "gc": "git checkout",
-}
+// config.ron
+(
+    autosuggestions_aliases: {
+        "gc": "git checkout",
+    },
+)
 ```
 
 ## Layer, focus, and panels
@@ -224,8 +244,11 @@ The anchor itself never takes input or focus in either mode — it exists to kee
 
 With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
 
-```sh
-echo true > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/respect_panel
+```ron
+// config.ron
+(
+    respect_panel: true,
+)
 ```
 
 ## Settings drawer width
@@ -234,13 +257,27 @@ echo true > ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/respect_panel
 
 ## Profiles
 
-Profiles are named presets of what a tab runs, managed on the [settings drawer](settings.md)'s Profiles tab - or hand-edited in the `profiles` file, in this shape:
+Profiles are named presets of what a tab runs, managed on the [settings drawer](settings.md)'s Profiles tab - or hand-edited in `profiles.ron`, in this shape:
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/profiles
+// ~/.config/io.github.l1br3_io.dropterm/profiles.ron
 (
-    {"name": "web-prod", "command": "ssh web-prod", "cwd": Some("/srv/web"), "color_scheme": Some("Dracula"), "font_size": Some(11), "scrollback_lines": Some(50000), "env": Some({"DROPTERM_PROFILE": "prod", "HTTP_PROXY": "http://bastion:3128"})},
-    {"name": "top", "command": "htop"},
+    profiles: [
+        (
+            name: "web-prod",
+            command: "ssh web-prod",
+            cwd: Some("/srv/web"),
+            color_scheme: Some("Dracula"),
+            font_size: Some(11),
+            scrollback_lines: Some(50000),
+            env: Some({
+                "DROPTERM_PROFILE": "prod",
+                "HTTP_PROXY": "http://bastion:3128",
+            }),
+        ),
+        (name: "top", command: "htop"),
+    ],
+    default_profile: Some("web-prod"),
 )
 ```
 
@@ -258,18 +295,20 @@ The appearance fields resolve per field, never per profile: a set field wins, an
 
 `env` values are verbatim strings - no expansion or interpolation, ever; keys must be non-empty and free of `=`. A profile whose `command` is blank (a hand-edited file) degrades to a plain shell and carries none of the profile's identity.
 
-`default_profile` (default unset) names the profile plain new tabs launch: `Ctrl+Shift+T`, the tab bar `+`, the context menu's plain New Tab, a bare remote `new-tab`, and the fresh-startup tab all run it. A name the list no longer carries quietly falls back to the plain shell. Profiles are also launched six other ways - `new-tab --profile NAME`, the context menus' profile submenus and Switch Profile folders, and the tab bar `+`'s right-click dropdown. A Switch Profile pick respawns *that* tab in place under the chosen profile: the running command and scrollback are lost, while the slot, the activation, and a pinned rename stay.
+`default_profile` (default unset) sits beside the list in `profiles.ron` and names the profile plain new tabs launch: `Ctrl+Shift+T`, the tab bar `+`, the context menu's plain New Tab, a bare remote `new-tab`, and the fresh-startup tab all run it. A name the list no longer carries quietly falls back to the plain shell. Profiles are also launched six other ways - `new-tab --profile NAME`, the context menus' profile submenus and Switch Profile folders, and the tab bar `+`'s right-click dropdown. A Switch Profile pick respawns *that* tab in place under the chosen profile: the running command and scrollback are lost, while the slot, the activation, and a pinned rename stay.
 
 ## Keybindings
 
-Keybindings are customized in the drawer's Keybindings tab or by hand. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
+Keybindings are customized in the drawer's Keybindings tab or by hand in `keybinds.ron`. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
 
 ```ron
-// ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/custom_key_binds
-{
-    "copy": (modifiers: [Ctrl, Alt], key: "C"),
-    "activate_tab_3": (modifiers: [], key: "F2"),
-}
+// ~/.config/io.github.l1br3_io.dropterm/keybinds.ron
+(
+    custom_key_binds: {
+        "copy": (modifiers: [Ctrl, Alt], key: "C"),
+        "activate_tab_3": (modifiers: [], key: "F2"),
+    },
+)
 ```
 
 A binding spells modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key name - single letters case-insensitive, named keys spelled out (`Tab`, `PageUp`, `F1`, `Space`). Rules:
@@ -288,10 +327,10 @@ Two keys load and persist today but change no behavior:
 
 ## The completions data file
 
-One more file can live in the config directory beside the keys: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships a generated core tier to start from: [`data/completions.toml`](https://github.com/l1br3-io/dropterm/blob/main/data/completions.toml) in the repository - ninety-two commands with menu descriptions, converted from withfig/autocomplete at a pinned version (MIT; the licensing audit in the [seed audit](research/archive/completions-seed-audit.md), the conversion and provenance in the [breadth record](research/archive/completions-breadth.md)) - copy it to the config directory and edit from there.
+One more file can live in the config directory beside the three `.ron` files: `completions.toml`, the autosuggestions' subcommand and flag table. The curated five commands (`git`, `cargo`, `docker`, `systemctl`, `npm`) are built in; this file extends the table with your own commands - a command you declare adds beside the built-ins, and a command you re-declare replaces its built-in entry whole (the one way to give a built-in's entries descriptions). DropTerm ships a generated core tier to start from: [`data/completions.toml`](https://github.com/l1br3-io/dropterm/blob/main/data/completions.toml) in the repository - ninety-two commands with menu descriptions, converted from withfig/autocomplete at a pinned version (MIT; the licensing audit in the [seed audit](research/archive/completions-seed-audit.md), the conversion and provenance in the [breadth record](research/archive/completions-breadth.md)) - copy it to the config directory and edit from there.
 
 ```toml
-# ~/.config/cosmic/io.github.l1br3_io.dropterm/v1/completions.toml
+# ~/.config/io.github.l1br3_io.dropterm/completions.toml
 
 # One table per command. `name` is the command word the table
 # answers for - through the alias map too, so a mapped alias
@@ -326,5 +365,5 @@ Rules the loader holds:
 - **No executable content - ever.** The schema rejects unknown keys, so a file carrying a `script` field (or any key the format does not define) fails whole: DropTerm logs at debug level and answers with the built-in table, never a half-loaded one. Data imports; scripts never arrive.
 - The file is optional. No file, an unreadable file, or an invalid file is exactly the built-in behavior - the curated five, unchanged.
 - Entries sort by name at load (the match policy - strict prefix, must extend, shortest wins, ties alphabetical - rides sorted lists); an unsorted file is fine.
-- An edit applies at the next tab you open (the file reads fresh at spawn) or the next settings change (the file re-reads on every config pass); tabs already open pick it up at that pass's next typed prefix.
+- An edit applies live: the file is watched alongside the `.ron` files, so saving it reloads the table, and tabs already open pick it up at their next typed prefix. A tab you open reads it fresh.
 
