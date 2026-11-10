@@ -103,18 +103,25 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// `$XDG_CONFIG_HOME/<APP_ID>` — the store directory, the config
-/// twin of [`crate::session::state_file_path`]: only an absolute
-/// `XDG_CONFIG_HOME` is honored (defaulting to `~/.config`), and the
-/// directory is this build's app id ([`crate::app::APP_ID`]), so the
-/// dev identity gets its own config files.
+/// twin of [`crate::session::state_file_path`], with cosmic-config's
+/// Flatpak semantics preserved: inside a sandbox the HOST's config
+/// is the truth (`HOST_XDG_CONFIG_HOME` when the runtime grants it,
+/// the flatpak `HOME` otherwise), outside it the XDG base-directory
+/// rules — only an absolute `XDG_CONFIG_HOME` counts, `~/.config`
+/// otherwise. The directory is this build's app id
+/// ([`crate::app::APP_ID`]), so the dev identity gets its own config
+/// files.
 pub fn store_dir() -> PathBuf {
-    // XDG base-directory specification: only an absolute
-    // XDG_CONFIG_HOME counts; anything else (unset, empty, relative)
-    // falls back to ~/.config.
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|base| base.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    let base = if std::env::var_os("FLATPAK_ID").is_some() {
+        std::env::var_os("HOST_XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|base| base.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    };
     match base {
         Some(base) => base.join(crate::app::APP_ID),
         None => PathBuf::from(".config").join(crate::app::APP_ID),

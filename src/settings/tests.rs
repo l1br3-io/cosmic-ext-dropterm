@@ -3093,3 +3093,139 @@ fn the_inherit_row_preview_resolves_the_global_scheme_for_the_mode() {
     config.color_scheme_dark = "No such scheme".to_string();
     assert_eq!(inherit_scheme_preview(&config, true), None);
 }
+
+// --- the write path's on-disk contract (config-store T3) ---
+
+/// A per-test scratch store directory under the system temp dir,
+/// removed (best-effort) on drop even when an assertion fails. Std
+/// only — no dev-dependency. (The session and config test modules'
+/// twin.)
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let unique = format!(
+            "dropterm-settings-test-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).expect("create scratch store dir");
+        Self(path)
+    }
+
+    fn join(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+#[test]
+fn a_planned_write_merges_into_the_settings_section() {
+    // One key's write lands with every other key kept exactly as
+    // the file had it — the read-modify-write that makes one
+    // section file per writer hold sixty keys without a merge
+    // rule beyond last-writer-wins.
+    let dir = TempDir::new("planned-write-merge");
+    std::fs::write(dir.join("config.ron"), "(height_percent: 70)").expect("seed section");
+
+    PlannedWrite::FontSize(19)
+        .persist(&dir.0)
+        .expect("persist font size");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.font_size, 19);
+    assert_eq!(loaded.height_percent, 70);
+}
+
+#[test]
+fn a_planned_write_into_a_missing_store_starts_from_defaults() {
+    // A store with nothing on disk yet is the first run: the write
+    // creates the section from defaults with its key set, parent
+    // directories included.
+    let dir = TempDir::new("planned-write-fresh");
+
+    PlannedWrite::Opacity(80)
+        .persist(&dir.0)
+        .expect("persist opacity");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.opacity, 80);
+    assert_eq!(loaded.height_percent, crate::config::DEFAULT_HEIGHT_PERCENT);
+}
+
+#[test]
+fn a_profile_write_touches_only_the_profiles_section() {
+    // The profile writer owns `profiles.ron` alone: its write
+    // leaves the settings section byte-identical beside it.
+    let dir = TempDir::new("profile-write-section");
+    std::fs::write(dir.join("config.ron"), "(height_percent: 70)").expect("seed settings");
+    std::fs::write(
+        dir.join("profiles.ron"),
+        r#"(profiles: [(name: "ssh", command: "ssh web", cwd: None)])"#,
+    )
+    .expect("seed profiles");
+
+    ProfileWrite::DefaultProfile(Some("ssh".to_string()))
+        .persist(&dir.0)
+        .expect("persist default profile");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.default_profile, Some("ssh".to_string()));
+    assert_eq!(loaded.profiles.len(), 1);
+    // The settings section is untouched, byte for byte.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.ron")).expect("settings still on disk"),
+        "(height_percent: 70)"
+    );
+}
+
+#[test]
+fn a_keybinds_write_replaces_the_whole_map() {
+    // The whole-map write: the section file ends holding exactly
+    // the written map — a rebind and a revert (entry removal) are
+    // the same write.
+    let dir = TempDir::new("keybinds-write-section");
+    std::fs::write(
+        dir.join("keybinds.ron"),
+        r#"(custom_key_binds: {"copy": (key: "C", modifiers: ["ctrl"])})"#,
+    )
+    .expect("seed keybinds");
+
+    let map = BTreeMap::from([(
+        "paste".to_string(),
+        crate::keybinds::Binding {
+            modifiers: vec![crate::keybinds::ModifierName::Ctrl],
+            key: "V".to_string(),
+        },
+    )]);
+    KeybindsWrite(map.clone())
+        .persist(&dir.0)
+        .expect("persist the whole map");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.custom_key_binds, map);
+}
+
+#[test]
+fn a_shell_write_round_trips_through_the_section() {
+    // The shell key's write carries `Some`: the field is
+    // Option-typed, and the section's parse is what the field's
+    // shape says. (The pre-store backend serialized this write as a
+    // bare String, which an Option-typed read rejected — the
+    // drawer's shell commit never survived a restart.)
+    let dir = TempDir::new("shell-write");
+
+    PlannedWrite::Shell("/bin/zsh".to_string())
+        .persist(&dir.0)
+        .expect("persist shell");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.shell, Some("/bin/zsh".to_string()));
+}

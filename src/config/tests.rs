@@ -579,21 +579,10 @@ fn missing_autosuggestions_aliases_key_loads_as_the_empty_map() {
 
 #[test]
 fn keybinds_write_persists_the_whole_map_through_the_store() {
-    // The settings module's whole-map write lands as one `set` of
-    // the `custom_key_binds` key — the ProfileWrite precedent —
-    // and the next load reads exactly the written map back.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-keybinds-write-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    // The settings module's whole-map write lands as one section
+    // save of `keybinds.ron` — the ProfileWrite precedent — and the
+    // next load reads exactly the written map back.
+    let dir = TempDir::new("keybinds-write");
     let write = crate::settings::KeybindsWrite(BTreeMap::from([(
         "copy".to_string(),
         crate::keybinds::Binding {
@@ -601,20 +590,10 @@ fn keybinds_write_persists_the_whole_map_through_the_store() {
             key: "C".to_string(),
         },
     )]));
-    write.persist(&config).expect("persist the whole map");
+    write.persist(&dir.0).expect("persist the whole map");
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.custom_key_binds, write.0);
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn config_version_stays_at_one() {
-    // New boolean keys merge into pre-existing files through the
-    // CosmicConfigEntry default-entry fallback — no version bump,
-    // no per-field serde attributes.
-    assert_eq!(CONFIG_VERSION, 1);
 }
 
 #[test]

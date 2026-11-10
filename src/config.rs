@@ -9,14 +9,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
 use crate::keybinds::Binding;
 use crate::profile::Profile;
-
-/// Version of the on-disk config format.
-pub const CONFIG_VERSION: u64 = 1;
 
 /// Default surface height, in percent of the output height.
 pub const DEFAULT_HEIGHT_PERCENT: u8 = 40;
@@ -185,12 +181,11 @@ impl std::fmt::Display for NewTabCwd {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
-#[version = 1]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 // Whole-struct serde is the store's settings section (`config.ron`):
-// a key the file lacks loads as its default — the per-key leniency
-// cosmic-config gave one file per key, carried into the section
-// file. The three keys owned by the other two sections are skipped
+// a key the file lacks loads as its default, so the key list stays
+// additive across versions — an older file simply lacks the newer
+// keys. The three keys owned by the other two sections are skipped
 // below and overlaid by `load_from`.
 #[serde(default)]
 #[expect(
@@ -710,8 +705,8 @@ impl DropTermConfig {
     /// missing section file is that section's silent first run and
     /// an unreadable one is quarantined to a `.bak` sibling
     /// ([`store::load`]) — either way the section's defaults apply
-    /// and the other two sections are unaffected. Clamping stays the
-    /// caller's step, as it was for the cosmic-config load.
+    /// and the other two sections are unaffected. Clamping is the
+    /// caller's step.
     pub fn load_from(dir: &Path) -> Self {
         let mut config: Self = store::load(&dir.join(store::SETTINGS_FILE)).unwrap_or_default();
         let ProfilesSection {
@@ -792,11 +787,6 @@ pub(crate) fn program_is_runnable(program: &str) -> bool {
     }
 }
 
-// Transient until the config-store chunk's Task 3 wires the app onto
-// the store: until then the module is reachable only from its tests,
-// so the bin target sees every item dead. The expect self-cleans the
-// moment the last item goes live (an unfulfilled expect errors out).
-#[expect(dead_code, reason = "transient: config-store tasks 2-3 wire these in")]
 pub mod store;
 
 #[cfg(test)]

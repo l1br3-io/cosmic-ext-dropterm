@@ -108,12 +108,18 @@ zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"]
 # carries, so no new code enters the build.
 toml = "0.5"
 
-# The completions data file's directory (suggest-specs-data spec):
-# `dirs::config_dir()` is the same resolution cosmic-config performs
-# for the config keys the file rides beside. Version-matched to the
-# 6.0.0 line cosmic-config already pulls into the lock, so no new
-# code enters the build.
+# XDG directory resolution for the paste cache (`dirs::cache_dir`)
+# and the installed extended completions tier
+# (`dirs::data_local_dir`). Version-matched to the 6.0.0 line the
+# lock already carries, so no new code enters the build.
 dirs = "6"
+
+# The config store's watcher (config-store spec, sanctioned
+# 2026-11-10): live reload of the section files under
+# `$XDG_CONFIG_HOME/<APP_ID>/` — the app's own writes and external
+# edits alike land as one config echo. Version-matched to the 8.2.0
+# line the lock already carries, so no new code enters the build.
+notify = "8.2"
 
 # The embedded completions floor's one-shot inflate (suggest-embed
 # spec, sanctioned 2026-11-07): `completions.toml.gz` — the

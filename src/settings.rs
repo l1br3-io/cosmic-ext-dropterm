@@ -12,13 +12,14 @@
 //! headless-testable.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use cosmic::cosmic_config::{self, ConfigSet as _};
-
+use crate::config::store::{self, SETTINGS_FILE};
 use crate::config::{
-    DropTermConfig, Edge, HAlign, KeyboardMode, Layer, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT,
-    MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd, TabPosition, TabTitleMode, ThemePreference,
+    DropTermConfig, Edge, HAlign, KeybindsSection, KeyboardMode, Layer, MAX_HEIGHT_PERCENT,
+    MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd, ProfilesSection,
+    TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::profile::Profile;
 use crate::tabs::command_line_parts;
@@ -645,169 +646,138 @@ impl PlannedWrite {
         }
     }
 
-    /// Persist through the config backend — the I/O edge of the write
-    /// path. The failure is the caller's to log; the typed values
-    /// serialize exactly as `DropTermConfig`'s fields do.
-    pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
+    /// Persist through the config store — the I/O edge of the write
+    /// path: re-read the settings section from `dir` (a missing file
+    /// is the default section), set this write's key into it, save
+    /// the whole section atomically. The re-read is the whole merge
+    /// story — one section file per writer, last-writer-wins within
+    /// it — and it keeps every other key the file carried. The
+    /// failure is the caller's to log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the store's [`io::Error`] when the section save
+    /// fails; the file on disk is left intact (the atomic-write
+    /// contract).
+    pub fn persist(&self, dir: &Path) -> Result<(), io::Error> {
+        let path = dir.join(SETTINGS_FILE);
+        let mut section: DropTermConfig = store::load(&path).unwrap_or_default();
         match self {
-            PlannedWrite::HeightPercent(value) => {
-                handler.set(ConfigKey::HeightPercent.key_name(), *value)
-            }
-            PlannedWrite::WidthPercent(value) => {
-                handler.set(ConfigKey::WidthPercent.key_name(), *value)
-            }
-            PlannedWrite::HAlign(value) => handler.set(ConfigKey::HAlign.key_name(), value),
-            PlannedWrite::Edge(value) => handler.set(ConfigKey::Edge.key_name(), value),
-            PlannedWrite::TabPosition(value) => {
-                handler.set(ConfigKey::TabPosition.key_name(), value)
-            }
-            PlannedWrite::FontName(value) => handler.set(ConfigKey::FontName.key_name(), value),
-            PlannedWrite::FontSize(value) => handler.set(ConfigKey::FontSize.key_name(), *value),
-            PlannedWrite::Opacity(value) => handler.set(ConfigKey::Opacity.key_name(), *value),
-            PlannedWrite::HideOnFocusLoss(value) => {
-                handler.set(ConfigKey::HideOnFocusLoss.key_name(), *value)
-            }
+            PlannedWrite::HeightPercent(value) => section.height_percent = *value,
+            PlannedWrite::WidthPercent(value) => section.width_percent = *value,
+            PlannedWrite::HAlign(value) => section.h_align = *value,
+            PlannedWrite::Edge(value) => section.edge = *value,
+            PlannedWrite::TabPosition(value) => section.tab_position = *value,
+            PlannedWrite::FontName(value) => section.font_name.clone_from(value),
+            PlannedWrite::FontSize(value) => section.font_size = *value,
+            PlannedWrite::Opacity(value) => section.opacity = *value,
+            PlannedWrite::HideOnFocusLoss(value) => section.hide_on_focus_loss = *value,
             PlannedWrite::SessionPersistenceEnabled(value) => {
-                handler.set(ConfigKey::SessionPersistenceEnabled.key_name(), *value)
+                section.session_persistence_enabled = *value;
             }
             PlannedWrite::SlideAnimationEnabled(value) => {
-                handler.set(ConfigKey::SlideAnimationEnabled.key_name(), *value)
+                section.slide_animation_enabled = *value;
             }
             PlannedWrite::BellNotificationEnabled(value) => {
-                handler.set(ConfigKey::BellNotificationEnabled.key_name(), *value)
+                section.bell_notification_enabled = *value;
             }
-            PlannedWrite::CommandFinishNotificationEnabled(value) => handler.set(
-                ConfigKey::CommandFinishNotificationEnabled.key_name(),
-                *value,
-            ),
-            PlannedWrite::CommandFinishNotificationAfterSecs(value) => handler.set(
-                ConfigKey::CommandFinishNotificationAfterSecs.key_name(),
-                *value,
-            ),
+            PlannedWrite::CommandFinishNotificationEnabled(value) => {
+                section.command_finish_notification_enabled = *value;
+            }
+            PlannedWrite::CommandFinishNotificationAfterSecs(value) => {
+                section.command_finish_notification_after_secs = *value;
+            }
             PlannedWrite::AutosuggestionsEnabled(value) => {
-                handler.set(ConfigKey::AutosuggestionsEnabled.key_name(), *value)
+                section.autosuggestions_enabled = *value;
             }
             PlannedWrite::AutosuggestionsPathsEnabled(value) => {
-                handler.set(ConfigKey::AutosuggestionsPathsEnabled.key_name(), *value)
+                section.autosuggestions_paths_enabled = *value;
             }
             PlannedWrite::AutosuggestionsCommandsEnabled(value) => {
-                handler.set(ConfigKey::AutosuggestionsCommandsEnabled.key_name(), *value)
+                section.autosuggestions_commands_enabled = *value;
             }
-            PlannedWrite::ImagesEnabled(value) => {
-                handler.set(ConfigKey::ImagesEnabled.key_name(), *value)
+            PlannedWrite::ImagesEnabled(value) => section.images_enabled = *value,
+            PlannedWrite::AutosuggestionsCompletionsExtended(value) => {
+                section.autosuggestions_completions_extended = *value;
             }
-            PlannedWrite::AutosuggestionsCompletionsExtended(value) => handler.set(
-                ConfigKey::AutosuggestionsCompletionsExtended.key_name(),
-                *value,
-            ),
             PlannedWrite::AutosuggestionsMenuEnabled(value) => {
-                handler.set(ConfigKey::AutosuggestionsMenuEnabled.key_name(), *value)
+                section.autosuggestions_menu_enabled = *value;
             }
             PlannedWrite::AutosuggestionsMenuAuto(value) => {
-                handler.set(ConfigKey::AutosuggestionsMenuAuto.key_name(), *value)
+                section.autosuggestions_menu_auto = *value;
             }
             PlannedWrite::AutosuggestionsDelayMs(value) => {
-                handler.set(ConfigKey::AutosuggestionsDelayMs.key_name(), *value)
+                section.autosuggestions_delay_ms = *value;
             }
-            PlannedWrite::TabTitleMode(value) => {
-                handler.set(ConfigKey::TabTitleMode.key_name(), value)
-            }
-            PlannedWrite::NewTabAfterCurrent(value) => {
-                handler.set(ConfigKey::NewTabAfterCurrent.key_name(), *value)
-            }
-            PlannedWrite::NewTabCwd(value) => handler.set(ConfigKey::NewTabCwd.key_name(), value),
+            PlannedWrite::TabTitleMode(value) => section.tab_title_mode = *value,
+            PlannedWrite::NewTabAfterCurrent(value) => section.new_tab_after_current = *value,
+            PlannedWrite::NewTabCwd(value) => section.new_tab_cwd = *value,
             PlannedWrite::CloseConfirmationEnabled(value) => {
-                handler.set(ConfigKey::CloseConfirmationEnabled.key_name(), *value)
+                section.close_confirmation_enabled = *value;
             }
             PlannedWrite::SettingsDrawerClickClose(value) => {
-                handler.set(ConfigKey::SettingsDrawerClickClose.key_name(), *value)
+                section.settings_drawer_click_close = *value;
             }
-            PlannedWrite::Shell(value) => handler.set(ConfigKey::Shell.key_name(), value),
-            PlannedWrite::Args(value) => handler.set(ConfigKey::Args.key_name(), value),
+            // `Some` matches the field's type — the section's shape.
+            // (The pre-store backend serialized this write as a bare
+            // String into an Option-typed field, which its own
+            // reader rejected: the drawer's shell commit never
+            // applied. `Some` is what always round-tripped.)
+            PlannedWrite::Shell(value) => section.shell = Some(value.clone()),
+            PlannedWrite::Args(value) => section.args.clone_from(value),
             // `Option<PathBuf>` serializes like `default_profile`'s
             // `Option<String>` — absent/None merges cleanly with a
             // hand-edited file.
-            PlannedWrite::DefaultCwd(value) => handler.set(ConfigKey::DefaultCwd.key_name(), value),
-            PlannedWrite::ScrollbackLines(value) => {
-                handler.set(ConfigKey::ScrollbackLines.key_name(), *value)
-            }
-            PlannedWrite::Layer(value) => handler.set(ConfigKey::Layer.key_name(), value),
-            PlannedWrite::KeyboardMode(value) => {
-                handler.set(ConfigKey::KeyboardMode.key_name(), value)
-            }
-            PlannedWrite::RespectPanel(value) => {
-                handler.set(ConfigKey::RespectPanel.key_name(), *value)
-            }
-            PlannedWrite::ShowInDock(value) => {
-                handler.set(ConfigKey::ShowInDock.key_name(), *value)
-            }
-            PlannedWrite::ColorSchemeDark(value) => {
-                handler.set(ConfigKey::ColorSchemeDark.key_name(), value)
-            }
-            PlannedWrite::ColorSchemeLight(value) => {
-                handler.set(ConfigKey::ColorSchemeLight.key_name(), value)
-            }
-            PlannedWrite::ThemePreference(value) => {
-                handler.set(ConfigKey::ThemePreference.key_name(), value)
-            }
+            PlannedWrite::DefaultCwd(value) => section.default_cwd.clone_from(value),
+            PlannedWrite::ScrollbackLines(value) => section.scrollback_lines = *value,
+            PlannedWrite::Layer(value) => section.layer = *value,
+            PlannedWrite::KeyboardMode(value) => section.keyboard_mode = *value,
+            PlannedWrite::RespectPanel(value) => section.respect_panel = *value,
+            PlannedWrite::ShowInDock(value) => section.show_in_dock = *value,
+            PlannedWrite::ColorSchemeDark(value) => section.color_scheme_dark.clone_from(value),
+            PlannedWrite::ColorSchemeLight(value) => section.color_scheme_light.clone_from(value),
+            PlannedWrite::ThemePreference(value) => section.theme_preference = *value,
             // `Option<u16>` serializes like `default_profile`'s
             // `Option<String>` — absent/None merges cleanly with a
             // hand-edited file.
-            PlannedWrite::SettingsDrawerWidth(value) => {
-                handler.set(ConfigKey::SettingsDrawerWidth.key_name(), value)
-            }
-            PlannedWrite::StatusBarEnabled(value) => {
-                handler.set(ConfigKey::StatusBarEnabled.key_name(), *value)
-            }
+            PlannedWrite::SettingsDrawerWidth(value) => section.settings_drawer_width = *value,
+            PlannedWrite::StatusBarEnabled(value) => section.status_bar_enabled = *value,
             PlannedWrite::StatusBarShowProcess(value) => {
-                handler.set(ConfigKey::StatusBarShowProcess.key_name(), *value)
+                section.status_bar_show_process = *value;
             }
-            PlannedWrite::StatusBarShowPath(value) => {
-                handler.set(ConfigKey::StatusBarShowPath.key_name(), *value)
-            }
+            PlannedWrite::StatusBarShowPath(value) => section.status_bar_show_path = *value,
             PlannedWrite::StatusBarShowBranch(value) => {
-                handler.set(ConfigKey::StatusBarShowBranch.key_name(), *value)
+                section.status_bar_show_branch = *value;
             }
             PlannedWrite::StatusBarShowProfile(value) => {
-                handler.set(ConfigKey::StatusBarShowProfile.key_name(), *value)
+                section.status_bar_show_profile = *value;
             }
-            PlannedWrite::StatusBarShowGrid(value) => {
-                handler.set(ConfigKey::StatusBarShowGrid.key_name(), *value)
-            }
-            PlannedWrite::StatusBarShowTab(value) => {
-                handler.set(ConfigKey::StatusBarShowTab.key_name(), *value)
-            }
-            PlannedWrite::StatusBarShowZoom(value) => {
-                handler.set(ConfigKey::StatusBarShowZoom.key_name(), *value)
-            }
-            PlannedWrite::StatusBarShowClock(value) => {
-                handler.set(ConfigKey::StatusBarShowClock.key_name(), *value)
-            }
+            PlannedWrite::StatusBarShowGrid(value) => section.status_bar_show_grid = *value,
+            PlannedWrite::StatusBarShowTab(value) => section.status_bar_show_tab = *value,
+            PlannedWrite::StatusBarShowZoom(value) => section.status_bar_show_zoom = *value,
+            PlannedWrite::StatusBarShowClock(value) => section.status_bar_show_clock = *value,
             PlannedWrite::StatusBarShowDuration(value) => {
-                handler.set(ConfigKey::StatusBarShowDuration.key_name(), *value)
+                section.status_bar_show_duration = *value;
             }
             PlannedWrite::StatusBarShowExitStatus(value) => {
-                handler.set(ConfigKey::StatusBarShowExitStatus.key_name(), *value)
+                section.status_bar_show_exit_status = *value;
             }
             PlannedWrite::StatusBarShowProgress(value) => {
-                handler.set(ConfigKey::StatusBarShowProgress.key_name(), *value)
+                section.status_bar_show_progress = *value;
             }
             PlannedWrite::StatusBarShowProgramStatus(value) => {
-                handler.set(ConfigKey::StatusBarShowProgramStatus.key_name(), *value)
+                section.status_bar_show_program_status = *value;
             }
             PlannedWrite::StatusBarShowScrollback(value) => {
-                handler.set(ConfigKey::StatusBarShowScrollback.key_name(), *value)
+                section.status_bar_show_scrollback = *value;
             }
-            PlannedWrite::TabBarBorder(value) => {
-                handler.set(ConfigKey::TabBarBorder.key_name(), *value)
-            }
-            PlannedWrite::StatusBarBorder(value) => {
-                handler.set(ConfigKey::StatusBarBorder.key_name(), *value)
-            }
+            PlannedWrite::TabBarBorder(value) => section.tab_bar_border = *value,
+            PlannedWrite::StatusBarBorder(value) => section.status_bar_border = *value,
             PlannedWrite::StatusBarActivityMark(value) => {
-                handler.set(ConfigKey::StatusBarActivityMark.key_name(), *value)
+                section.status_bar_activity_mark = *value;
             }
         }
+        store::save_atomic(&path, &section)
     }
 }
 
@@ -2075,12 +2045,13 @@ pub const fn selection_after_move(
 // --- the profile persist path: the module's write contract ---
 
 /// A planned profile-key write — the list-shaped analog of
-/// [`PlannedWrite`]. The store persists one key per file, so the
-/// `profiles` Vec is the unit of write (every mutation — add, edit,
-/// delete, reorder, clone — lands as one whole-list write) and the
-/// default picker writes `default_profile` alone; the rename cascade
-/// and the delete auto-clear are the only two-key interactions, each
-/// a pair of writes through this one path.
+/// [`PlannedWrite`], the profiles section's writer. The section
+/// holds two keys in one file, so the `profiles` Vec is the unit of
+/// a list write (every mutation — add, edit, delete, reorder, clone
+/// — lands as one whole-list write) and the default picker writes
+/// `default_profile` alone; the rename cascade and the delete
+/// auto-clear are the only two-key interactions, each a pair of
+/// writes through this one path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProfileWrite {
     /// The whole `profiles` key.
@@ -2090,21 +2061,28 @@ pub enum ProfileWrite {
 }
 
 impl ProfileWrite {
-    /// Persist through the config backend — the I/O edge of the
-    /// profile write path, `PlannedWrite::persist`'s discipline
-    /// verbatim. The failure is the caller's to log.
-    pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
+    /// Persist through the config store — [`PlannedWrite::persist`]'s
+    /// discipline verbatim: re-read the profiles section, set this
+    /// write's key, save the section atomically. The failure is the
+    /// caller's to log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the store's [`io::Error`] when the section save
+    /// fails; the file on disk is left intact.
+    pub fn persist(&self, dir: &Path) -> Result<(), io::Error> {
+        let path = dir.join(store::PROFILES_FILE);
+        let mut section: ProfilesSection = store::load(&path).unwrap_or_default();
         match self {
-            ProfileWrite::Profiles(profiles) => handler.set("profiles", profiles.clone()),
-            ProfileWrite::DefaultProfile(default) => {
-                handler.set("default_profile", default.clone())
-            }
+            ProfileWrite::Profiles(profiles) => section.profiles.clone_from(profiles),
+            ProfileWrite::DefaultProfile(default) => section.default_profile.clone_from(default),
         }
+        store::save_atomic(&path, &section)
     }
 }
 
 /// The Keybindings tab's whole-map write: the complete
-/// `custom_key_binds` map, persisted in one `set` — the
+/// `custom_key_binds` map, persisted in one section save — the
 /// [`ProfileWrite`] precedent for a map-shaped key. A rebind and a
 /// revert (entry removal) are the same whole-map write, and the
 /// scalar [`PlannedWrite`]/[`ConfigKey`] surface stays untouched —
@@ -2115,10 +2093,20 @@ impl ProfileWrite {
 pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::keybinds::Binding>);
 
 impl KeybindsWrite {
-    /// Persist through the config backend — [`ProfileWrite::persist`]'s
-    /// discipline verbatim. The failure is the caller's to log.
-    pub fn persist(&self, handler: &cosmic_config::Config) -> Result<(), cosmic_config::Error> {
-        handler.set("custom_key_binds", self.0.clone())
+    /// Persist through the config store — [`ProfileWrite::persist`]'s
+    /// discipline verbatim: re-read the keybinds section, replace
+    /// the whole map, save the section atomically. The failure is
+    /// the caller's to log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the store's [`io::Error`] when the section save
+    /// fails; the file on disk is left intact.
+    pub fn persist(&self, dir: &Path) -> Result<(), io::Error> {
+        let path = dir.join(store::KEYBINDS_FILE);
+        let mut section: KeybindsSection = store::load(&path).unwrap_or_default();
+        section.custom_key_binds = self.0.clone();
+        store::save_atomic(&path, &section)
     }
 }
 
