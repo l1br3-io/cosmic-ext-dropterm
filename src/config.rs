@@ -712,5 +712,12 @@ pub(crate) fn program_is_runnable(program: &str) -> bool {
     }
 }
 
+// Transient until the config-store chunk's Task 3 wires the app onto
+// the store: until then the module is reachable only from its tests,
+// so the bin target sees every item dead. The expect self-cleans the
+// moment the last item goes live (an unfulfilled expect errors out).
+#[expect(dead_code, reason = "transient: config-store tasks 2-3 wire these in")]
+pub mod store;
+
 #[cfg(test)]
 mod tests;
