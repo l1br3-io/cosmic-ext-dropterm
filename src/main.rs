@@ -37,7 +37,7 @@ mod terminal;
 
 // The served-state contract lives in the lib target (src/lib.rs) so
 // the panel applet crate consumes the same implementation.
-use cosmic_ext_dropterm::dbus_state;
+use dropterm::dbus_state;
 
 use clap::Parser;
 
@@ -54,7 +54,7 @@ use app::remote::{Flags, ToggleAction};
 // a contradiction, rejected at parse. (`conflicts_with` on the field
 // can't express this: a subcommand is not an arg id.)
 #[command(
-    name = "cosmic-ext-dropterm",
+    name = "dropterm",
     version,
     about,
     args_conflicts_with_subcommands = true
@@ -109,7 +109,7 @@ fn query_visibility() -> Option<bool> {
             Some(visible)
         } else {
             eprintln!(
-                "cosmic-ext-dropterm: bus name owned but the V1 state \
+                "dropterm: bus name owned but the V1 state \
                  interface is missing (stale binary?); treating as not \
                  visible"
             );

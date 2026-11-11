@@ -207,7 +207,7 @@ equals the gated HEAD — then take over the watching entirely:
   Actions page; that is your page now.
 - On green: `gh release view v<X.Y.Z> --json assets` and verify the
   set by name — both per-arch tarballs
-  (`cosmic-ext-dropterm-<ver>-x86_64.tar.gz`,
+  (`dropterm-<ver>-x86_64.tar.gz`,
   `…-aarch64.tar.gz`), `v<X.Y.Z>.tar.gz` (the source archive),
   `vendor.tar`, `sha256sums`. The page body is GitHub's
   auto-generated notes; the curated prose lives in releases.md and

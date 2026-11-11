@@ -21,7 +21,7 @@ Saving happens on every layout change (open, close, reorder, rename, tab switch,
 The state lives in its own file, fully separate from the config (the directory is created on first save):
 
 ```
-~/.local/state/io.github.l1br3_io.CosmicExtDropterm/session.ron
+~/.local/state/io.github.l1br3_io.dropterm/session.ron
 ```
 
 (`$XDG_STATE_HOME` is honored when set to an absolute path.)

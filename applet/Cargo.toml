@@ -1,12 +1,12 @@
 [package]
-name = "cosmic-ext-dropterm-applet"
+name = "dropterm-applet"
 version = "0.4.0"
 authors = ["l1br3-io"]
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.93"
 description = "COSMIC panel applet that toggles DropTerm and shows its status"
-repository = "https://github.com/l1br3-io/cosmic-ext-dropterm"
+repository = "https://github.com/l1br3-io/dropterm"
 
 [dependencies]
 env_logger = "0.11"
@@ -28,7 +28,7 @@ log = "0.4"
 # set (wgpu above all) out of this crate's build: cargo unifies a path
 # dependency's static features into this graph, and only package
 # features can be switched off from the consuming side.
-cosmic-ext-dropterm = { path = "..", default-features = false }
+dropterm = { path = "..", default-features = false }
 
 # `wgpu` must never be added here: on panel (layer-shell) surfaces the
 # wgpu renderer fails to bind the GPU and silently falls back to
@@ -42,9 +42,9 @@ workspace = true
 features = ["applet", "applet-token", "tokio", "wayland"]
 
 [features]
-# Re-identifies the applet as `io.github.l1br3_io.CosmicExtDropterm.Applet.Dev`
+# Re-identifies the applet as `io.github.l1br3_io.dropterm.Applet.Dev`
 # and switches its terminal summon to the dev launcher — a second
 # panel entry that coexists with an installed applet. Enables the root
 # crate's same-named feature so both ends of the D-Bus contract move
 # together. Never default: release artifacts carry the plain identity.
-dev-identity = ["cosmic-ext-dropterm/dev-identity"]
+dev-identity = ["dropterm/dev-identity"]

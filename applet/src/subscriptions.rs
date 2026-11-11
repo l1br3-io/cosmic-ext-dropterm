@@ -9,7 +9,7 @@ use cosmic::iced::Subscription;
 use cosmic::iced::futures::channel::mpsc;
 use cosmic::iced::futures::future;
 use cosmic::iced::futures::{SinkExt, StreamExt, stream};
-use cosmic_ext_dropterm::dbus_state;
+use dropterm::dbus_state;
 use std::any::TypeId;
 use std::future::Future;
 

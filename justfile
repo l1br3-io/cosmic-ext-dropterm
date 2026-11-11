@@ -22,8 +22,8 @@ quietly command:
     fi
     rm -f "$out"
 
-name := 'cosmic-ext-dropterm'
-appid := 'io.github.l1br3_io.CosmicExtDropterm'
+name := 'dropterm'
+appid := 'io.github.l1br3_io.dropterm'
 
 rootdir := ''
 prefix := '/usr'
@@ -51,8 +51,8 @@ debug-bin := cargo-target-dir / 'debug' / name
 export PATH := env('CARGO_HOME', home_directory() / '.cargo') / 'bin' + ':' + env('PATH', '')
 
 # Where the dev launcher lives. The launcher carries a `-dev` suffix
-# so it never shadows an installed release: `cosmic-ext-dropterm` on
-# PATH is always the installed copy, `cosmic-ext-dropterm-dev` always
+# so it never shadows an installed release: `dropterm` on
+# PATH is always the installed copy, `dropterm-dev` always
 # the dev build.
 dev-bin-dir := env('XDG_BIN_HOME', home_directory() / '.local' / 'bin')
 dev-bin := dev-bin-dir / (name + '-dev')
@@ -60,7 +60,7 @@ dev-bin := dev-bin-dir / (name + '-dev')
 # The dev identity's own binary image. The feature-flagged build is
 # COPIED here (never symlinked to the shared debug bin): a plain
 # `cargo build`/`cargo test` — including inside `just check` —
-# rebuilds `target/debug/cosmic-ext-dropterm` WITHOUT the
+# rebuilds `target/debug/dropterm` WITHOUT the
 # `dev-identity` feature, and a launcher pointing at that shared
 # path would silently flip to release identity: its next launch
 # would activate (and toggle) the installed release instead of the
@@ -92,12 +92,12 @@ dev-image-install:
 # `-dev` name, the dev image's target path, or the debug binary's
 # target path with a `( |$)` guard so it stops at the binary name
 # instead of also matching the applet's debug path (whose name
-# extends cosmic-ext-dropterm with `-applet`). Each alternative's
+# extends dropterm with `-applet`). Each alternative's
 # first character is bracketed so the pattern cannot match this
 # recipe's own `sh -c` command line. The installed release and its
 # applet never match — leaving them running through a dev cycle is
 # the point of the dev-identity split.
-dev-kill-pattern := '[c]osmic-ext-dropterm-dev|[t]arget/debug/cosmic-ext-dropterm-dev-image( |$)|[t]arget/debug/cosmic-ext-dropterm( |$)'
+dev-kill-pattern := '[d]ropterm-dev|[t]arget/debug/dropterm-dev-image( |$)|[t]arget/debug/dropterm( |$)'
 
 desktop := appid + '.desktop'
 desktop-src := 'res' / desktop
@@ -240,7 +240,7 @@ docs-serve port='4000':
     while busy "$port"; do
         port=$((port + 1))
     done
-    echo "serving at http://127.0.0.1:$port/cosmic-ext-dropterm/"
+    echo "serving at http://127.0.0.1:$port/dropterm/"
     exec docker run --rm -i --name dropterm-docs -p 127.0.0.1:"$port":4000 \
         -v "{{justfile_directory()}}/docs:/srv/jekyll" \
         jekyll/jekyll:4 \
@@ -441,7 +441,7 @@ build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args)
 run *args:
     cargo run {{args}}
 
-# Symlinks the dev launcher at `~/.local/bin/cosmic-ext-dropterm-dev`
+# Symlinks the dev launcher at `~/.local/bin/dropterm-dev`
 # to the dev image (see `dev-image-install`) so a COSMIC shortcut
 # (and the act recipes) can run it; the `-dev` name leaves an
 # installed release's plain name untouched. Also installs the dev
@@ -494,8 +494,8 @@ dev-applet: dev-install
 # Removes the dev footprint — the launcher, the dev terminal's
 # desktop file, the dev applet's binary, desktop file, and icon. The
 # dev identity's config and session files
-# (~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron,
-# ~/.local/state/io.github.l1br3_io.CosmicExtDropterm.Dev/) stay
+# (~/.config/io.github.l1br3_io.dropterm.Dev.ron,
+# ~/.local/state/io.github.l1br3_io.dropterm.Dev/) stay
 # behind for the user to keep or delete.
 dev-uninstall:
     rm -f {{dev-bin}} {{dev-desktop}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
@@ -582,7 +582,7 @@ vm-exec cmd:
     VM_NAME={{vm-name}} scripts/vm.sh exec "{{cmd}}"
 
 # Run it as the desktop user inside the session env (runtime dir, session
-# bus, Wayland socket): just vm-exec-user 'cosmic-ext-dropterm toggle'
+# bus, Wayland socket): just vm-exec-user 'dropterm toggle'
 vm-exec-user cmd:
     VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh exec-user "{{cmd}}"
 
@@ -599,12 +599,11 @@ vm-put file dest:
 # database, and stops anything still running a replaced binary — the
 # guest-side half of stop-stale-release, since a warm process keeps
 # its old inode and the applet waits for its panel supervisor to
-# respawn it. The stops match an anchored full-command pattern, never
-# `pkill -x`: this package's 19-char name overflows comm's 15-char
-# limit, so `-x` cannot match it at all; the `(^|/)…([ ]|$)` anchors
-# keep the exec wrapper shells (name mid-command-line) and the
-# pattern's own text out of the match. The next summon (keybind,
-# panel, CLI) runs this build;
+# respawn it. The stops match an anchored full-command pattern: the
+# `(^|/)…([ ]|$)` anchors keep the exec wrapper shells (name
+# mid-command-line) and the pattern's own text out of the match, and
+# stop the terminal's pattern short of the applet, whose name extends
+# it. The next summon (keybind, panel, CLI) runs this build;
 # no relogin. Install and update are the same command: the tarball
 # always overwrites the nine files `install` stages.
 vm-push:

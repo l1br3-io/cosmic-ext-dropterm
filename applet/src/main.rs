@@ -42,15 +42,15 @@ mod tests {
     fn desktop_file_matches_the_pinned_contract() {
         let path = repo_root()
             .join("res")
-            .join("io.github.l1br3_io.CosmicExtDropterm.Applet.desktop");
+            .join("io.github.l1br3_io.dropterm.Applet.desktop");
         let content = std::fs::read_to_string(path).expect("desktop file");
         assert_eq!(
             content,
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=DropTerm\n\
-             Exec=cosmic-ext-dropterm-applet\n\
-             Icon=io.github.l1br3_io.CosmicExtDropterm-symbolic\n\
+             Exec=dropterm-applet\n\
+             Icon=io.github.l1br3_io.dropterm-symbolic\n\
              NoDisplay=true\n\
              X-CosmicApplet=true\n\
              X-CosmicShrinkable=true\n"
@@ -67,7 +67,7 @@ mod tests {
             .join("hicolor")
             .join("scalable")
             .join("apps")
-            .join("io.github.l1br3_io.CosmicExtDropterm-symbolic.svg");
+            .join("io.github.l1br3_io.dropterm-symbolic.svg");
         let svg = std::fs::read_to_string(path).expect("symbolic icon");
         assert!(svg.contains("currentColor"));
         assert!(!svg.contains('#'));

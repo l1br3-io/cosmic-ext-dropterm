@@ -38,4 +38,4 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 
 - [Research & decision log](research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives: peer surveys across terminals, panel-visibility protocol findings, packaging rulings.
 
-Installing from a release or from source, the shortcut setup walk, credits, and the roadmap live in the [README](https://github.com/l1br3-io/cosmic-ext-dropterm#installing) and [ROADMAP](https://github.com/l1br3-io/cosmic-ext-dropterm/blob/main/ROADMAP.md) on GitHub.
+Installing from a release or from source, the shortcut setup walk, credits, and the roadmap live in the [README](https://github.com/l1br3-io/dropterm#installing) and [ROADMAP](https://github.com/l1br3-io/dropterm/blob/main/ROADMAP.md) on GitHub.

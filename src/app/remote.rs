@@ -466,7 +466,7 @@ impl DropTerm {
 /// clap definitions above as the single source of truth for the CLI
 /// surface. `None` when the words do not form a valid action.
 pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<ToggleAction> {
-    let argv: Vec<String> = std::iter::once("cosmic-ext-dropterm".to_string())
+    let argv: Vec<String> = std::iter::once("dropterm".to_string())
         .chain(words.iter().cloned())
         .collect();
     Args::try_parse_from(argv).ok()?.action

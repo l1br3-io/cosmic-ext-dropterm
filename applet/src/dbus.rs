@@ -4,11 +4,11 @@
 //! `org.freedesktop.DbusActivation.activate_action`, the same
 //! interface and argument shape libcosmic's single-instance
 //! forwarding already rides. V1 state comes through the root lib's
-//! proxy instead (`cosmic_ext_dropterm::dbus_state`).
+//! proxy instead (`dropterm::dbus_state`).
 
 use std::collections::HashMap;
 
-use cosmic_ext_dropterm::dbus_state;
+use dropterm::dbus_state;
 use zbus::proxy;
 
 /// Client of the activation interface the terminal serves on its
@@ -48,8 +48,8 @@ mod tests {
     use super::*;
     use crate::applet::{Event, TargetState, tooltip, transition};
     use cosmic::iced::futures::{StreamExt, join};
-    use cosmic_ext_dropterm::dbus_state;
-    use cosmic_ext_dropterm::dbus_state::V1;
+    use dropterm::dbus_state;
+    use dropterm::dbus_state::V1;
     use std::sync::{Arc, Mutex};
     use zbus::connection;
     use zbus::interface;

@@ -1,6 +1,6 @@
 # Panel applet
 
-A COSMIC panel applet - one icon in the panel that toggles the drop-down and shows at a glance whether DropTerm runs. It is a separate binary (`cosmic-ext-dropterm-applet`) shipped beside the terminal, not a mode of it: panel applets and layer-shell terminals live in different processes by design (building both into one binary would unify wgpu features and break panel rendering - the full reasoning is in the [research record](research/archive/v3-panel-applet.md)).
+A COSMIC panel applet - one icon in the panel that toggles the drop-down and shows at a glance whether DropTerm runs. It is a separate binary (`dropterm-applet`) shipped beside the terminal, not a mode of it: panel applets and layer-shell terminals live in different processes by design (building both into one binary would unify wgpu features and break panel rendering - the full reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
 ## What the button does
 
@@ -11,11 +11,11 @@ A left click is state-driven:
 - **Terminal running** - the click sends the same toggle a second CLI launch would, over the session bus. Fire-and-forget by design; debouncing is the terminal's job.
 - **Terminal not running** - the click launches it with an xdg activation token, so the newly shown layer surface takes keyboard focus properly rather than appearing unfocused.
 
-The applet watches the terminal's bus name and its read-only state interface (`Visible` and `TabCount` on the `…CosmicExtDropterm.V1` object), so the icon follows the terminal through its whole lifecycle - including a restart of either process - and stale property flips racing the terminal's exit can never resurrect a dead state.
+The applet watches the terminal's bus name and its read-only state interface (`Visible` and `TabCount` on the `…dropterm.V1` object), so the icon follows the terminal through its whole lifecycle - including a restart of either process - and stale property flips racing the terminal's exit can never resurrect a dead state.
 
 ## Installing
 
-**From a release or `sudo just install`** - the applet binary and its desktop file (`io.github.l1br3_io.CosmicExtDropterm.Applet.desktop`) install alongside the terminal; nothing extra to do.
+**From a release or `sudo just install`** - the applet binary and its desktop file (`io.github.l1br3_io.dropterm.Applet.desktop`) install alongside the terminal; nothing extra to do.
 
 **Then add it to a panel**: COSMIC Settings → Desktop → Panel → Applets → add DropTerm. Like any COSMIC applet it can sit on any panel, in any slot you drag it to.
 

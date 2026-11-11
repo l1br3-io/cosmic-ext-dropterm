@@ -15,16 +15,16 @@ launcher that always runs the current debug build instead:
 just dev-install
 ```
 
-That builds the debug profile and symlinks `~/.local/bin/cosmic-ext-dropterm-dev`
-to the dev image `target/debug/cosmic-ext-dropterm-dev-image` — a copy of the
+That builds the debug profile and symlinks `~/.local/bin/dropterm-dev`
+to the dev image `target/debug/dropterm-dev-image` — a copy of the
 dev-identity build that only the `just dev*` recipes ever rewrite. Set the
-development shortcut's Command to `cosmic-ext-dropterm-dev` once and leave it.
+development shortcut's Command to `dropterm-dev` once and leave it.
 The `-dev` suffix keeps an installed release (from `sudo just install` or a
-release tarball) separate: plain `cosmic-ext-dropterm` on PATH is always the
+release tarball) separate: plain `dropterm` on PATH is always the
 installed copy, and the two never shadow each other.
 
 The dev build also carries its own runtime identity —
-`io.github.l1br3_io.CosmicExtDropterm.Dev`, selected by the `dev-identity`
+`io.github.l1br3_io.dropterm.Dev`, selected by the `dev-identity`
 cargo feature the dev recipes build with: its own single-instance slot, bus
 name, config file, state directory, and wayland namespace. A dev instance and
 an installed release run at the same time without seeing each other —
@@ -35,7 +35,7 @@ running untouched, and `just act` / `just toggle` always drive the dev
 instance.
 
 The identity reaches the desktop integration too: `just dev-install` also
-writes `~/.local/share/applications/io.github.l1br3_io.CosmicExtDropterm.Dev.desktop`
+writes `~/.local/share/applications/io.github.l1br3_io.dropterm.Dev.desktop`
 (hidden from the app grid, like the release's own entry), so the window
 switcher labels the dev build's anchor window "DropTerm (Dev)" instead of
 "unknown" — and a hidden-tab bell notification from the dev build says
@@ -43,14 +43,14 @@ switcher labels the dev build's anchor window "DropTerm (Dev)" instead of
 always tell which one rang.
 
 The separation reaches the files: the dev build reads and writes
-`~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron` and
-`~/.local/state/io.github.l1br3_io.CosmicExtDropterm.Dev/`, so config-schema
+`~/.config/io.github.l1br3_io.dropterm.Dev.ron` and
+`~/.local/state/io.github.l1br3_io.dropterm.Dev/`, so config-schema
 churn on main cannot migrate the daily driver's settings. To develop against
 your real settings, copy them over once:
 
 ```sh
-cp ~/.config/io.github.l1br3_io.CosmicExtDropterm.ron \
-   ~/.config/io.github.l1br3_io.CosmicExtDropterm.Dev.ron
+cp ~/.config/io.github.l1br3_io.dropterm.ron \
+   ~/.config/io.github.l1br3_io.dropterm.Dev.ron
 ```
 
 Deliberately a copy, not a share — dev experiments never write back to the
@@ -58,7 +58,7 @@ real config.
 
 One caveat: the launcher runs the dev image, whose identity only the
 `just dev*` recipes can change. A plain `cargo build` (or `cargo test`, or
-`just check`) refreshes the *shared* debug bin `target/debug/cosmic-ext-dropterm`
+`just check`) refreshes the *shared* debug bin `target/debug/dropterm`
 without the `dev-identity` feature — the launcher ignores it. Running that
 shared bin directly (`cargo run`, `just run`) is still a release-identity
 launch that forwards to (and tugs at) the installed copy; the dev loop always
@@ -94,7 +94,7 @@ Which recipe targets what, in one table:
 
 | Recipe | Target |
 | --- | --- |
-| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `cosmic-ext-dropterm-dev`, plus its (app-grid-hidden) desktop file |
+| `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `dropterm-dev`, plus its (app-grid-hidden) desktop file |
 | `just act …`, `toggle`, `show`, `hide`, `new-tab …` | The dev instance — the verbs ride the `-dev` launcher and the dev instance executes them |
 | `just dev-applet` | Development — a second panel entry ("DropTerm (Dev)") under `~/.local`, tracking the dev terminal only |
 | `just dev-uninstall` | Development — removes the `-dev` launcher, the dev desktop files, and the dev applet's footprint |

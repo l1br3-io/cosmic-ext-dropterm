@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.l1br3_io.CosmicExtDropterm.Applet</id>
+  <id>io.github.l1br3_io.dropterm.Applet</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
   <project_group>COSMIC</project_group>
@@ -13,13 +13,13 @@
   <provides>
     <id>com.system76.CosmicApplet</id>
   </provides>
-  <launchable type="desktop-id">io.github.l1br3_io.CosmicExtDropterm.Applet.desktop</launchable>
+  <launchable type="desktop-id">io.github.l1br3_io.dropterm.Applet.desktop</launchable>
   <developer id="io.github.l1br3_io">
     <name>l1br3-io</name>
   </developer>
-  <url type="homepage">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
-  <url type="bugtracker">https://github.com/l1br3-io/cosmic-ext-dropterm/issues</url>
-  <url type="vcs-browser">https://github.com/l1br3-io/cosmic-ext-dropterm</url>
+  <url type="homepage">https://github.com/l1br3-io/dropterm</url>
+  <url type="bugtracker">https://github.com/l1br3-io/dropterm/issues</url>
+  <url type="vcs-browser">https://github.com/l1br3-io/dropterm</url>
   <content_rating type="oars-1.1"/>
   <categories>
     <category>System</category>

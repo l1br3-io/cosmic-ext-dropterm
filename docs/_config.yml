@@ -8,7 +8,7 @@ description: >-
   desktop, written in Rust with libcosmic.
 
 # Project pages serve under the repository subpath.
-baseurl: /cosmic-ext-dropterm
+baseurl: /dropterm
 url: https://l1br3-io.github.io
 
 # Extensionless page URLs (/configuration/, /research/).
@@ -30,7 +30,7 @@ plugins:
 optional_front_matter:
   remove_originals: true
 
-github_repo_url: https://github.com/l1br3-io/cosmic-ext-dropterm
+github_repo_url: https://github.com/l1br3-io/dropterm
 
 defaults:
   - scope:

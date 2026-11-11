@@ -1,10 +1,10 @@
 # Common tasks
 
-The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: what you most often want to do, the exact key or verb that does it, and a link to the page that owns the detail. "Writing" a key below means either of the two edit paths - a toggle or field in the [settings drawer](settings.md), or one file per key under `~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/` ([configuration](configuration.md)). Nothing here repeats the reference - every entry is one hop from the full story.
+The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: what you most often want to do, the exact key or verb that does it, and a link to the page that owns the detail. "Writing" a key below means either of the two edit paths - a toggle or field in the [settings drawer](settings.md), or one file per key under `~/.config/cosmic/io.github.l1br3_io.dropterm/v1/` ([configuration](configuration.md)). Nothing here repeats the reference - every entry is one hop from the full story.
 
 ## First run
 
-- **Install it and bring it down once** - take the release tarball or build from source ([README: Installing](https://github.com/l1br3-io/cosmic-ext-dropterm#installing)), then bind `cosmic-ext-dropterm` to a COSMIC custom shortcut (`F12` is a safe pick) and press it - the walk, including why it must be a COSMIC shortcut, is [README: Setting up the shortcut](https://github.com/l1br3-io/cosmic-ext-dropterm#setting-up-the-shortcut). No shortcut configured yet? Just launch the binary from a terminal - one instance runs, and every further launch toggles the overlay ([development](development.md#running-locally-without-a-shortcut)).
+- **Install it and bring it down once** - take the release tarball or build from source ([README: Installing](https://github.com/l1br3-io/dropterm#installing)), then bind `dropterm` to a COSMIC custom shortcut (`F12` is a safe pick) and press it - the walk, including why it must be a COSMIC shortcut, is [README: Setting up the shortcut](https://github.com/l1br3-io/dropterm#setting-up-the-shortcut). No shortcut configured yet? Just launch the binary from a terminal - one instance runs, and every further launch toggles the overlay ([development](development.md#running-locally-without-a-shortcut)).
 
 ## Shape and placement
 
@@ -42,7 +42,7 @@ The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: wha
 
 ## Scripting and control
 
-- **Open or manage tabs from a script or keybind** - `cosmic-ext-dropterm new-tab` with `--cwd`/`--cmd`/`--profile`, the tab verbs (`close-tab`, `rename-tab`, `duplicate-tab`, `switch-profile-tab`, `select-tab`), and `--is-visible` for scripts that ask - all delivered to the one running instance (a second launch never starts a second app) ([CLI reference](cli.md)).
-- **Give show and hide their own keys** - bind `cosmic-ext-dropterm show` and `hide` to dedicated shortcuts instead of one toggle ([CLI reference](cli.md)).
+- **Open or manage tabs from a script or keybind** - `dropterm new-tab` with `--cwd`/`--cmd`/`--profile`, the tab verbs (`close-tab`, `rename-tab`, `duplicate-tab`, `switch-profile-tab`, `select-tab`), and `--is-visible` for scripts that ask - all delivered to the one running instance (a second launch never starts a second app) ([CLI reference](cli.md)).
+- **Give show and hide their own keys** - bind `dropterm show` and `hide` to dedicated shortcuts instead of one toggle ([CLI reference](cli.md)).
 - **Run a development copy beside the installed one** - the `just dev*` recipes run a separate `-dev` identity: own config, own bus name, own launcher - the installed release never sees it ([development: launcher](development.md#development-launcher)).
 - **Toggle it from the COSMIC panel** - install the panel applet for a click target that also shows whether DropTerm is running ([applet](applet.md)).
