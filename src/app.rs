@@ -2823,12 +2823,9 @@ impl DropTerm {
                 // queue). `config_edit_reshapes` keys on the slide's
                 // existence, not its direction, so this holds
                 // mid-slide-out and mid-reversal alike.
-                let reshape = self.surface.decide_reshape(
-                    old_geom,
-                    new_geom,
-                    self.surface.drag.is_some(),
-                    SurfaceInputs::from_config(&self.config),
-                );
+                let reshape =
+                    self.surface
+                        .decide_reshape(old_geom, new_geom, self.surface.drag.is_some());
                 if !reshape.is_empty()
                     && let Some(output) = self.surface.output_size
                 {
@@ -3366,12 +3363,17 @@ impl DropTerm {
                         return self.apply_drag(&drag.intents, Some(target));
                     }
                     // Throttled: land the latest target even if the
-                    // pointer pauses inside the interval. A stale fire
-                    // is a no-op — the apply path re-checks the gate.
-                    return Task::perform(
-                        tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
-                        |()| cosmic::Action::App(Message::DragApplyDue),
-                    );
+                    // pointer pauses inside the interval — the
+                    // decision's own `trailing_timer` says when (a
+                    // move that decided nothing arms no timer). A
+                    // stale fire is a no-op — the apply path
+                    // re-checks the gate.
+                    if drag.trailing_timer {
+                        return Task::perform(
+                            tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
+                            |()| cosmic::Action::App(Message::DragApplyDue),
+                        );
+                    }
                 }
             }
             Message::DragApplyDue => {

@@ -305,9 +305,11 @@ impl LibcosmicExecutor {
 
     /// Translates one intent into its ordered requests, mutating the
     /// executor's own state (handle map, anchor) exactly as today's
-    /// decision paths do. Pure of runtime effects: the tasks are
-    /// built by [`Request::into_task`] so this layer stays
-    /// headless-pinnable.
+    /// decision paths do. Pure of runtime effects but one: the heal
+    /// already carries its task — [`Request::HealAnchor`] is a
+    /// pre-built passthrough, since the window creation it wraps
+    /// cannot be expressed as request data — the rest are built by
+    /// [`Request::into_task`], so this layer stays headless-pinnable.
     fn requests(&mut self, intent: SurfaceIntent) -> Vec<Request> {
         match intent {
             SurfaceIntent::Measure { handle, keyboard } => {
@@ -420,6 +422,19 @@ fn zone_request(zone: ExclusiveZone) -> i32 {
     }
 }
 
+/// Whether an intent's requests compose chained — each strictly
+/// ahead of the next — or batched: the measure pass chains (the
+/// anchor heal must run strictly ahead of the probe's creation)
+/// and every other intent's requests batch. Pinned apart from
+/// [`LibcosmicExecutor::execute`] so the rule itself is testable:
+/// composed `Task`s cannot be inspected headlessly, and a measure
+/// pass that drifted to `Task::batch` would silently un-chain the
+/// heal from the probe — the exact failure the heal exists to
+/// prevent.
+fn composes_chained(intent: &SurfaceIntent) -> bool {
+    matches!(intent, SurfaceIntent::Measure { .. })
+}
+
 impl SurfaceExecutor for LibcosmicExecutor {
     type Effect = Task<Message>;
 
@@ -427,7 +442,7 @@ impl SurfaceExecutor for LibcosmicExecutor {
         // Compose exactly as today's paths do: the measure pass
         // chains (the anchor heal must run strictly ahead of the
         // probe's creation), every other intent's requests batch.
-        let chains = matches!(intent, SurfaceIntent::Measure { .. });
+        let chains = composes_chained(&intent);
         let tasks: Vec<Task<Message>> = self
             .requests(intent)
             .into_iter()
@@ -448,6 +463,7 @@ impl SurfaceExecutor for LibcosmicExecutor {
 mod tests {
     use super::*;
     use crate::config::{Edge, HAlign, KeyboardMode, Layer};
+    use cosmic::iced::platform_specific::runtime::wayland::layer_surface::IcedOutput;
     use cosmic::iced::platform_specific::shell::commands::layer_surface::Anchor as ShellAnchor;
 
     // --- the clipboard anchor ---
@@ -623,6 +639,13 @@ mod tests {
         );
         assert_eq!(settings.exclusive_zone, -1);
         assert_eq!(settings.namespace, surface::NAMESPACE);
+        // The probe rides the Overlay layer, asks for no size (the
+        // compositor grants the full anchored output), and follows
+        // the active output — the measuring shape's other three
+        // settings.
+        assert_eq!(settings.layer, WlrLayer::Overlay);
+        assert_eq!(settings.size, Some((None, None)));
+        assert!(matches!(settings.output, IcedOutput::Active));
     }
 
     #[test]
@@ -662,6 +685,64 @@ mod tests {
             requests.as_slice(),
             [Request::Destroy { id }] if *id == probe_id
         ));
+    }
+
+    #[test]
+    #[should_panic(expected = "an intent names a live surface")]
+    fn an_intent_naming_a_retired_handle_panics_loudly() {
+        // The executor's loud-failure contract: handles retire at
+        // `Destroy` and never recycle, so an intent naming a retired
+        // handle is a decision-layer bug — loud here rather than a
+        // silently wrong-window command.
+        let mut exec = executor_with(Anchor::Hidden(window::Id::unique()));
+        let handle = SurfaceHandle::next();
+        let _ = exec.requests(SurfaceIntent::Measure {
+            handle,
+            keyboard: KeyboardMode::Exclusive,
+        });
+        let _ = exec.requests(SurfaceIntent::Destroy { handle });
+        let _ = exec.requests(SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::Released,
+        });
+    }
+
+    #[test]
+    fn the_measure_pass_composes_chained() {
+        // The composition rule, pinned where it lives: composed
+        // `Task`s cannot be inspected headlessly, so chain-vs-batch
+        // is a named function the pins can hold — a measure pass
+        // that drifted to `Task::batch` would silently un-chain the
+        // anchor heal from the probe.
+        assert!(composes_chained(&SurfaceIntent::Measure {
+            handle: SurfaceHandle::next(),
+            keyboard: KeyboardMode::Exclusive,
+        }));
+    }
+
+    #[test]
+    fn every_intent_but_measure_batches() {
+        let handle = SurfaceHandle::next();
+        assert!(!composes_chained(&SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1920, 1080),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        }));
+        assert!(!composes_chained(&SurfaceIntent::Shape {
+            handle,
+            geometry: plain_geometry(),
+            output: (1920, 1080),
+            height: ShapeHeight::Percent,
+        }));
+        assert!(!composes_chained(&SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::Released,
+        }));
+        assert!(!composes_chained(&SurfaceIntent::Focus { handle }));
+        assert!(!composes_chained(&SurfaceIntent::Destroy { handle }));
     }
 
     #[test]

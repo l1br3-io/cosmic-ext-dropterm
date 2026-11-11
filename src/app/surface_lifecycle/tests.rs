@@ -264,6 +264,41 @@ fn hiding_reversal_ignores_the_slide_toggle() {
 }
 
 #[test]
+fn a_reversal_on_a_non_hiding_machine_decides_nothing() {
+    // `decide_reverse_show` is a hide-in-progress decision: any
+    // other state leaves with nothing, exactly as `decide_configure`
+    // leaves a foreign open event. A misrouted call that instead
+    // re-held a live surface's keyboard or parked an out-slide on a
+    // `Shown` machine would turn a latent routing bug into the
+    // executor's wrong-window command class — the guard makes the
+    // panic path structurally unreachable instead of merely
+    // uncalled.
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    let handle = SurfaceHandle::next();
+    machine.state = SurfaceState::Shown(handle);
+    machine.focused = true;
+    assert!(
+        machine
+            .decide_reverse_show(handle, plain_inputs(true))
+            .is_empty()
+    );
+    assert_eq!(machine.state, SurfaceState::Shown(handle));
+    assert!(
+        machine.focused,
+        "a decided-nothing reversal leaves the latch armed"
+    );
+
+    let mut machine = hidden_machine(None);
+    machine.state = SurfaceState::Hidden;
+    assert!(
+        machine
+            .decide_reverse_show(handle, plain_inputs(true))
+            .is_empty()
+    );
+    assert_eq!(machine.state, SurfaceState::Hidden);
+}
+
+#[test]
 fn measuring_and_hidden_cells_ignore_the_slide_toggle() {
     // Only the Shown-hide decision keys on the flag: a measuring
     // surface always dies immediately (no content to animate),
@@ -614,6 +649,78 @@ fn toggles_inside_the_debounce_window_are_dropped() {
     assert!(!machine.toggle_accepted(std::time::Instant::now()));
 }
 
+#[test]
+fn the_trailing_apply_lands_the_throttled_target_without_re_arming() {
+    // A move inside the apply interval applies nothing now but
+    // reports the trailing timer; the timer's fire recomputes from
+    // the latest reported pointer position — past the interval by
+    // then — and lands the target, and never re-arms itself (the
+    // app arms the timer from `drag_move` outcomes only).
+    let handle = SurfaceHandle::next();
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    machine.state = SurfaceState::Shown(handle);
+    let inputs = plain_inputs(true);
+    let pressed = std::time::Instant::now();
+
+    // The first move arms at the standing 540 and applies
+    // immediately; a second move 100 px down, half an interval
+    // later, throttles.
+    let armed = machine.drag_move(30.0, pressed, inputs);
+    assert_eq!(armed.applied, Some(540));
+    let throttled = machine.drag_move(130.0, pressed + geometry::DRAG_APPLY_INTERVAL / 2, inputs);
+    assert_eq!(throttled.applied, None);
+    assert!(throttled.trailing_timer);
+
+    // The trailing fire lands the latest pointer's 640 target.
+    let trailing = machine.drag_trailing(pressed + geometry::DRAG_APPLY_INTERVAL * 2, inputs);
+    assert_eq!(trailing.applied, Some(640));
+    assert_eq!(
+        trailing.intents,
+        vec![SurfaceIntent::Shape {
+            handle,
+            geometry: inputs.geometry,
+            output: (1920, 1080),
+            height: ShapeHeight::Pixels(640),
+        }]
+    );
+    assert!(
+        !trailing.trailing_timer,
+        "the trailing apply never re-arms itself"
+    );
+}
+
+#[test]
+fn a_trailing_fire_after_the_release_does_nothing() {
+    // The release settles and clears the drag; a late trailing
+    // fire finds nothing armed and does nothing.
+    let handle = SurfaceHandle::next();
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    machine.state = SurfaceState::Shown(handle);
+    let inputs = plain_inputs(true);
+    let pressed = std::time::Instant::now();
+    let _ = machine.drag_move(30.0, pressed, inputs);
+    let _ = machine.drag_release(inputs);
+
+    let late = machine.drag_trailing(pressed + geometry::DRAG_APPLY_INTERVAL * 2, inputs);
+    assert_eq!(late.applied, None);
+    assert!(late.intents.is_empty());
+    assert!(!late.trailing_timer);
+}
+
+#[test]
+fn a_trailing_fire_without_a_live_drag_does_nothing() {
+    // No drag was ever armed (a spurious `DragApplyDue` from a
+    // misrouted move): the fire decides nothing and arms nothing.
+    let handle = SurfaceHandle::next();
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    machine.state = SurfaceState::Shown(handle);
+
+    let stray = machine.drag_trailing(std::time::Instant::now(), plain_inputs(true));
+    assert_eq!(stray.applied, None);
+    assert!(stray.intents.is_empty());
+    assert!(!stray.trailing_timer);
+}
+
 // --- the full lifecycle, headless through the intent layer ---
 //
 // The spec's success criterion: one test drives show, first
@@ -711,7 +818,7 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
     // place, percent-quantized.
     let mut edited = inputs;
     edited.geometry.height_percent = 70;
-    for intent in machine.decide_reshape(inputs.geometry, edited.geometry, false, inputs) {
+    for intent in machine.decide_reshape(inputs.geometry, edited.geometry, false) {
         exec.execute(intent);
     }
     assert!(matches!(

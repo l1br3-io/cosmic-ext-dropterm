@@ -136,7 +136,11 @@ pub enum SurfaceIntent {
     },
     /// Desired: keyboard routed into the terminal input — the input
     /// focus a shown surface runs with (first configure, a mid-slide
-    /// reversal, a layer-focus event).
+    /// reversal, a layer-focus event). The `handle` is naming-only:
+    /// every commanding variant resolves its handle through the
+    /// executor's live map (a miss is loud), while focus always
+    /// routes to the executor's own terminal input, so a stale
+    /// handle cannot misfire here.
     Focus { handle: SurfaceHandle },
     /// Desired: the surface's keyboard hold is `keyboard` and nothing
     /// else changes — released at slide-out start, re-held at the

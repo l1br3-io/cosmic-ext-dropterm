@@ -209,12 +209,19 @@ impl SurfaceMachine {
     /// fresh fixed 130 ms), keyboard interactivity is re-held per the
     /// resolved mode ([`surface::shown_keyboard_mode`]) with the
     /// terminal input focused, and the focus latch resets pending the
-    /// `LayerFocused` the re-hold synthesizes.
+    /// `LayerFocused` the re-hold synthesizes. Only a `Hiding`
+    /// machine reverses — any other state leaves with nothing, the
+    /// same state-matched discipline as `decide_configure` — so a
+    /// misrouted call can never re-hold a live surface's keyboard or
+    /// park an out-slide on a `Shown` machine.
     pub(super) fn decide_reverse_show(
         &mut self,
         handle: SurfaceHandle,
         inputs: SurfaceInputs,
     ) -> Vec<SurfaceIntent> {
+        let SurfaceState::Hiding(_) = self.state else {
+            return Vec::new();
+        };
         self.state = SurfaceState::Shown(handle);
         self.focused = false;
         // `Hiding` always carries a live `Out` slide — the parking
@@ -337,7 +344,6 @@ impl SurfaceMachine {
         old: Geometry,
         new: Geometry,
         drag_armed: bool,
-        inputs: SurfaceInputs,
     ) -> Vec<SurfaceIntent> {
         if config_edit_reshapes(
             geometry::geometry_changed(old, new),
@@ -346,7 +352,6 @@ impl SurfaceMachine {
         ) && let (SurfaceState::Shown(handle), Some(output)) = (&self.state, self.output_size)
         {
             let handle = *handle;
-            let _ = inputs;
             return vec![SurfaceIntent::Shape {
                 handle,
                 geometry: new,
