@@ -581,7 +581,7 @@ libraries and fonts), and new bug packages. Shares the sway session with
 
 ### `app-identity`: one name everywhere
 
-**Status**: not started.
+**Status**: merged (f698083).
 
 **Objective.** DropTerm's runtime and packaging identity becomes plain
 `dropterm`, so no name ties it to COSMIC. It merges first, because every
