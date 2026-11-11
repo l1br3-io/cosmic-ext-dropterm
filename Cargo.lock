@@ -1480,6 +1480,7 @@ dependencies = [
  "libc",
  "libcosmic",
  "log",
+ "notify",
  "notify-rust",
  "open",
  "ron",

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::vte::ansi::NamedColor;
 use cosmic::app::{Core, Task};
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::Length;
 use cosmic::iced::core::Shell;
 use cosmic::iced::core::clipboard::Clipboard;
@@ -32,7 +31,7 @@ use tokio::sync::mpsc;
 
 use crate::clipboard;
 use crate::config::{
-    CONFIG_VERSION, DropTermConfig, Edge, KeyboardMode, TabPosition, TabTitleMode, ThemePreference,
+    self, DropTermConfig, Edge, KeyboardMode, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::dbus_state;
 // The clipboard anchor's lifecycle moved to the executor module with
@@ -333,11 +332,12 @@ pub enum Message {
 #[expect(clippy::struct_excessive_bools)]
 pub struct DropTerm {
     core: Core,
-    /// Config backend, consumed by the drag-resize write-back:
-    /// `set("height_percent", …)` persists a settled drag. `None`
-    /// when the config failed to open at init — writes are skipped,
-    /// everything else works.
-    config_handler: Option<cosmic_config::Config>,
+    /// The config store's directory — the three section files and
+    /// `completions.toml` under `$XDG_CONFIG_HOME/<APP_ID>/`
+    /// ([`config::store`]), the target of every config write. Always
+    /// present: resolving it is a path computation, and an I/O
+    /// failure is the individual write's to log.
+    config_dir: PathBuf,
     config: DropTermConfig,
     /// The specs provider's table (suggest-specs-data spec,
     /// async-completions): the built-in floor overlaid by
@@ -647,11 +647,9 @@ impl DropTerm {
         let extended = self.config.autosuggestions_completions_extended;
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    suggest::load_completions(dir.as_deref(), extended)
-                })
-                .await
-                .expect("the completions loader thread never panics")
+                tokio::task::spawn_blocking(move || suggest::load_completions(Some(&dir), extended))
+                    .await
+                    .expect("the completions loader thread never panics")
             },
             |table| cosmic::Action::App(Message::CompletionsLoaded(table)),
         )
@@ -1025,9 +1023,8 @@ impl DropTerm {
     /// cancels any pending debounced write-back, so the stale
     /// `WriteDue` finds nothing and the bare write's value is what
     /// lands — while a drag release after it simply schedules fresh
-    /// and lands last. Values clamp before persisting; a missing
-    /// config backend (it failed to open at init) logs and skips —
-    /// the drag itself still resized live.
+    /// and lands last. Values clamp before persisting; a failed write
+    /// logs and skips — the drag itself still resized live.
     fn write_config(&mut self, kind: settings::WriteKind, write: &settings::PlannedWrite) {
         if kind == settings::WriteKind::Bare
             && settings::bare_write_cancels_pending_drag(write.key(), self.write_back.has_pending())
@@ -1036,11 +1033,7 @@ impl DropTerm {
         }
         let write = write.clamped();
         let key = write.key();
-        let Some(handler) = self.config_handler.as_ref() else {
-            log::warn!("no config handler; skipping {} write", key.key_name());
-            return;
-        };
-        match write.persist(handler) {
+        match write.persist(&self.config_dir, &self.config) {
             Ok(()) => {
                 // Only a pre-applied write absorbs its echo — geometry
                 // was already applied at release, so the echo must not
@@ -1063,18 +1056,14 @@ impl DropTerm {
 
     /// The one path every profile write takes — `write_config`'s
     /// discipline verbatim (pure planner in, log-and-skip on a
-    /// missing handler, the `ConfigChanged` echo drives every apply)
+    /// failed write, the `ConfigChanged` echo drives every apply)
     /// but bypassing the scalar-keyed [`settings::PlannedWrite`]:
     /// profile keys carry list- and Option-shaped values. Nothing is
     /// recorded and nothing applies here — a bare write's echo *is*
     /// the apply, so the in-memory config the next view build reads
     /// is the echo-updated one.
     fn write_profile_config(&mut self, write: &settings::ProfileWrite) {
-        let Some(handler) = self.config_handler.as_ref() else {
-            log::warn!("no config handler; skipping profile write");
-            return;
-        };
-        if let Err(err) = write.persist(handler) {
+        if let Err(err) = write.persist(&self.config_dir, &self.config) {
             log::warn!("failed to persist profile write: {err}");
         }
     }
@@ -1085,11 +1074,7 @@ impl DropTerm {
     /// apply — config update plus the live-map rebuild in the echo
     /// handler — so the very next press matches the new map.
     fn write_keybinds_config(&mut self, write: &settings::KeybindsWrite) {
-        let Some(handler) = self.config_handler.as_ref() else {
-            log::warn!("no config handler; skipping keybinds write");
-            return;
-        };
-        if let Err(err) = write.persist(handler) {
+        if let Err(err) = write.persist(&self.config_dir) {
             log::warn!("failed to persist keybinds write: {err}");
         }
     }
@@ -1855,25 +1840,62 @@ fn read_local_hostname() -> Option<String> {
         .map(|host| host.trim().to_owned())
 }
 
-/// `DropTerm`'s cosmic config directory (suggest-specs-data spec):
-/// the same resolution cosmic-config performs for the config keys
-/// (its `Config` keeps the path private) — under a flatpak the
-/// host's config is the truth `DropTerm` edits, otherwise the XDG
-/// standard — then `cosmic/<APP_ID>/v<CONFIG_VERSION>`. The
-/// `completions.toml` the specs table loads rides beside the keys.
-fn completions_config_dir() -> Option<PathBuf> {
-    let base = if std::env::var_os("FLATPAK_ID").is_some() {
-        std::env::var_os("HOST_XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?
-    } else {
-        dirs::config_dir()?
-    };
-    Some(
-        base.join("cosmic")
-            .join(DropTerm::APP_ID)
-            .join(format!("v{CONFIG_VERSION}")),
-    )
+/// The directory `completions.toml` rides in (suggest-specs-data
+/// spec): the config store's own — the file sits beside the section
+/// files, under the same resolution, the Flatpak host probe
+/// included ([`config::store::store_dir`]).
+fn completions_config_dir() -> PathBuf {
+    config::store::store_dir()
+}
+
+/// Whether a watcher event names any of `files` (by file name, any
+/// directory) — the store's own files are the only names that echo.
+fn event_names(event: &notify::Event, files: &[&str]) -> bool {
+    event.paths.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| files.contains(&name))
+    })
+}
+
+/// The store's three section-file names — the watcher's echo set
+/// beside `completions.toml`.
+const STORE_SECTION_FILES: [&str; 3] = [
+    config::store::SETTINGS_FILE,
+    config::store::PROFILES_FILE,
+    config::store::KEYBINDS_FILE,
+];
+
+/// The watcher loop's one step. An event that mutates no data is
+/// skipped — an access, a metadata touch, a rename's both-paths
+/// summary (its to-half already arrived). A qualifying event — one
+/// naming a section file or `completions.toml` — reloads the store
+/// non-destructively and yields the config to apply, except when
+/// nothing changed (a half-written section kept the last-known
+/// values, or the write changed nothing): the step stays silent, so
+/// one atomic save — whose rename the watcher reports more than
+/// once — delivers exactly one echo. A `completions.toml` edit
+/// delivers the unchanged config: the file rides the echo. The step
+/// never writes, so no delivery can loop.
+fn config_after(
+    event: &notify::Event,
+    dir: &Path,
+    last: &DropTermConfig,
+) -> Option<DropTermConfig> {
+    use notify::event::{EventKind, ModifyKind, RenameMode};
+    if matches!(
+        event.kind,
+        EventKind::Access(_)
+            | EventKind::Modify(ModifyKind::Metadata(_) | ModifyKind::Name(RenameMode::Both))
+    ) {
+        return None;
+    }
+    let completions = event_names(event, &["completions.toml"]);
+    if !completions && !event_names(event, &STORE_SECTION_FILES) {
+        return None;
+    }
+    let next = DropTermConfig::reload_from(dir, last);
+    (completions || next != *last).then_some(next)
 }
 
 impl Application for DropTerm {
@@ -1906,24 +1928,21 @@ impl Application for DropTerm {
         // runtime, making the appearance independent of the user's
         // frosted-glass preference in both paths.
         core.set_auto_blur(BitFlags::default());
-        let (config_handler, config) =
-            match cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION) {
-                Ok(handler) => {
-                    let config = match DropTermConfig::get_entry(&handler) {
-                        Ok(config) => config,
-                        Err((errs, config)) => {
-                            log::warn!("errors loading config: {errs:?}");
-                            config
-                        }
-                    }
-                    .clamped();
-                    (Some(handler), config)
-                }
-                Err(err) => {
-                    log::warn!("failed to open config: {err}");
-                    (None, DropTermConfig::default().clamped())
-                }
-            };
+        // The config store: three plain-RON section files under one
+        // directory. The load never fails — a missing section is the
+        // first run, an unreadable one is quarantined, and either
+        // way that section's defaults apply. The directory is
+        // created up front so the watcher has something to watch
+        // from the first frame; a failure here falls to the
+        // individual write that needs it.
+        let config_dir = config::store::store_dir();
+        if let Err(err) = std::fs::create_dir_all(&config_dir) {
+            log::warn!(
+                "failed to create the config dir {}: {err}",
+                config_dir.display()
+            );
+        }
+        let config = DropTermConfig::load_from(&config_dir).clamped();
 
         // The session file is one small synchronous read: stashed
         // here — before any message can spawn a tab — so restore
@@ -1977,7 +1996,7 @@ impl Application for DropTerm {
 
         let mut app = Self {
             core,
-            config_handler,
+            config_dir,
             config,
             // The completion files load on a background thread
             // (async-completions): `None` is the loading placeholder
@@ -2162,19 +2181,79 @@ impl Application for DropTerm {
             },
         ));
 
-        subs.push(
-            cosmic_config::config_subscription::<_, DropTermConfig>(
-                std::any::TypeId::of::<ConfigSubscription>(),
-                Self::APP_ID.into(),
-                CONFIG_VERSION,
-            )
-            .map(|update| {
-                if !update.errors.is_empty() {
-                    log::warn!("config errors: {:?}", update.errors);
-                }
-                Message::ConfigChanged(update.config.clamped())
-            }),
-        );
+        // The config store's watcher: every change to a store file —
+        // the app's own section write or an external edit alike —
+        // re-reads the whole config and lands as `ConfigChanged`, the
+        // echo every apply rides. One long-lived stream; a watcher
+        // that cannot start logs once and parks (writes still
+        // persist, they just stop applying live). One silent blind
+        // spot: the watch is bound to the directory's inode, so a
+        // tool that deletes and recreates the store dir mid-run
+        // kills the events for good — writes keep persisting (and
+        // their files keep landing), but nothing applies live again
+        // until a restart re-arms the watcher.
+        subs.push(Subscription::run_with(
+            std::any::TypeId::of::<ConfigSubscription>(),
+            |_| {
+                cosmic::iced::stream::channel(
+                    100,
+                    |mut output: cosmic::iced::futures::channel::mpsc::Sender<Message>| async move {
+                        use cosmic::iced::futures::SinkExt;
+                        use notify::Watcher as _;
+
+                        let dir = config::store::store_dir();
+                        let (tx, mut rx) = mpsc::unbounded_channel();
+                        let mut watcher = match notify::recommended_watcher(
+                            move |event: notify::Result<notify::Event>| {
+                                if let Ok(event) = event {
+                                    // A closed receiver means the
+                                    // stream is gone; nothing to do.
+                                    let _ = tx.send(event);
+                                }
+                            },
+                        ) {
+                            Ok(watcher) => watcher,
+                            Err(err) => {
+                                log::warn!("failed to start the config watcher: {err}");
+                                return;
+                            }
+                        };
+                        if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
+                            log::warn!("failed to watch the config dir {}: {err}", dir.display());
+                            return;
+                        }
+                        // The stream's own last-known config, seeded
+                        // the way every event reads it and never
+                        // delivered (init loaded the same files) —
+                        // unreadable sections keep their last-known
+                        // values instead of flashing to defaults.
+                        // Tracked unclamped on purpose: the diff
+                        // lives in file space, while the delivered
+                        // message is `.clamped()` — clamping `last`
+                        // too would make a clamp-changing edit echo
+                        // forever.
+                        let mut last =
+                            DropTermConfig::reload_from(&dir, &DropTermConfig::default());
+                        // `watcher` stays alive for the loop: dropping
+                        // it stops the events.
+                        while let Some(event) = rx.recv().await {
+                            let Some(next) = config_after(&event, &dir, &last) else {
+                                continue;
+                            };
+                            last = next;
+                            if output
+                                .send(Message::ConfigChanged(last.clone().clamped()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        drop(watcher);
+                    },
+                )
+            },
+        ));
 
         // Slide clock: redraw-only ticks while a slide is live —
         // 1 ms saturation so every compositor frame window contains

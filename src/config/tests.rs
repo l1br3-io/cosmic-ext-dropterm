@@ -1,4 +1,156 @@
 use super::*;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// A per-test scratch store directory under the system temp dir
+/// with a process- and test-unique name, removed (best-effort) on
+/// drop even when an assertion fails. Std only — no dev-dependency.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let unique = format!(
+            "dropterm-config-test-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).expect("create scratch store dir");
+        Self(path)
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+/// Seeds one section file with `text` — the fixture idiom for a
+/// version that wrote only some of the section's keys: a partial
+/// RON map, every key the file lacks landing on its default.
+fn write_section(dir: &TempDir, file: &str, text: &str) {
+    std::fs::write(dir.join(file), text).expect("write section file");
+}
+
+/// Saves `config`'s three sections into the store directory — the
+/// write side of the round-trip fixtures.
+fn save_sections(dir: &TempDir, config: &DropTermConfig) {
+    store::save_atomic(&dir.join(store::SETTINGS_FILE), config).expect("save settings section");
+    store::save_atomic(&dir.join(store::PROFILES_FILE), &config.profiles_section())
+        .expect("save profiles section");
+    store::save_atomic(&dir.join(store::KEYBINDS_FILE), &config.keybinds_section())
+        .expect("save keybinds section");
+}
+
+/// Loads the whole config back out of the store directory — the
+/// read side of every store fixture.
+fn load_config(dir: &TempDir) -> DropTermConfig {
+    DropTermConfig::load_from(&dir.0)
+}
+
+#[test]
+fn a_partial_settings_section_loads_missing_keys_as_defaults() {
+    // The section file's whole contract: keys the file lists are
+    // honored, keys it lacks land on their defaults — the per-key
+    // leniency cosmic-config gave one file per key, carried into
+    // the one section file per writer.
+    let dir = TempDir::new("partial-settings");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
+    let loaded = load_config(&dir);
+    assert_eq!(loaded.height_percent, 70);
+    assert_eq!(loaded.width_percent, DEFAULT_WIDTH_PERCENT);
+}
+
+#[test]
+fn a_live_reload_applies_a_section_that_parses() {
+    // The watcher's reload: a section that parses right now
+    // replaces the last-known values, the other sections riding
+    // along from their own files.
+    let dir = TempDir::new("live-reload-applies");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 55)");
+    let last = DropTermConfig {
+        height_percent: 70,
+        default_profile: Some("ssh".to_string()),
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next.height_percent, 55);
+    // No profiles section on disk: the last-known one stands.
+    assert_eq!(next.default_profile, Some("ssh".to_string()));
+}
+
+#[test]
+fn a_live_reload_replaces_the_section_whole_not_per_key() {
+    // A parseable section that omits keys resets every unlisted key
+    // to its default in the running app — the same wholesale
+    // replacement a restart performs, not a per-key merge with the
+    // last-known values. Pinned because it is the semantic to know
+    // before trimming a file down: what the file says is the
+    // section, whole.
+    let dir = TempDir::new("live-reload-whole");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 55)");
+    let last = DropTermConfig {
+        height_percent: 70,
+        opacity: 50,
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next.height_percent, 55);
+    assert_eq!(
+        next.opacity,
+        DropTermConfig::default().opacity,
+        "a key the file omits resets to its default, live"
+    );
+}
+
+#[test]
+fn a_live_reload_keeps_the_last_good_section_while_its_file_is_unreadable() {
+    // An editor mid-write leaves a section that does not parse for
+    // an instant. The live reload keeps the last-known values and
+    // leaves the file exactly where it is — quarantine is the
+    // startup load's act; moving a half-written file aside would
+    // steal it from the editor writing it.
+    let dir = TempDir::new("live-reload-unreadable");
+    write_section(&dir, store::SETTINGS_FILE, "(height_perc");
+    let last = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next, last);
+    assert_eq!(
+        std::fs::read_to_string(dir.join(store::SETTINGS_FILE)).expect("file stays"),
+        "(height_perc"
+    );
+    assert!(
+        !dir.join("config.ron.bak").exists(),
+        "nothing was quarantined"
+    );
+}
+
+#[test]
+fn a_live_reload_keeps_the_last_good_section_while_its_file_is_missing() {
+    // A delete-then-recreate save passes through an instant with no
+    // file at all: the live reload keeps the last-known values
+    // rather than flashing the surface to defaults. (A deleted
+    // section resets to defaults at the next start.)
+    let dir = TempDir::new("live-reload-missing");
+    let last = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+
+    assert_eq!(DropTermConfig::reload_from(&dir.0, &last), last);
+}
 
 #[test]
 fn defaults_are_sane() {
@@ -49,46 +201,17 @@ fn command_finish_notifications_default_on_at_five_seconds() {
 
 #[test]
 fn missing_command_notify_keys_load_as_defaults() {
-    // A config directory from a version that did not yet write the
+    // A settings section from a version that did not yet write the
     // command-notify keys loads them as the defaults — the key list
-    // is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-command-notify-keys-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // is additive: an older file simply lacks the newer keys.
+    let dir = TempDir::new("missing-command-notify-keys");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-command-notify version by deleting the two
-    // keys it never wrote.
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    std::fs::remove_file(version_dir.join("command_finish_notification_enabled"))
-        .expect("remove command_finish_notification_enabled key file");
-    std::fs::remove_file(version_dir.join("command_finish_notification_after_secs"))
-        .expect("remove command_finish_notification_after_secs key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.command_finish_notification_enabled);
     assert_eq!(loaded.command_finish_notification_after_secs, 5);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -102,45 +225,17 @@ fn new_tabs_after_current_default_on() {
 
 #[test]
 fn missing_new_tab_after_current_key_loads_as_true() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `new_tab_after_current` loads as `true` through the same
-    // default-entry leniency pinned for `respect_panel` — the
-    // key list is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-newtabafter-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // missing-key leniency pinned for `respect_panel` — the
+    // key list is additive.
+    let dir = TempDir::new("missing-newtabafter-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`new_tab_after_current` version by deleting
-    // the one key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("new_tab_after_current"),
-    )
-    .expect("remove new_tab_after_current key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.new_tab_after_current);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -148,29 +243,17 @@ fn new_tab_after_current_key_on_disk_is_honored() {
     // Control for `missing_new_tab_after_current_key_loads_as_true`:
     // the same read path honors a key that does exist, so the
     // leniency result above cannot be a vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-newtabafter-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-newtabafter-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            new_tab_after_current: false,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        new_tab_after_current: false,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert!(!loaded.new_tab_after_current);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -183,47 +266,18 @@ fn close_confirmation_defaults_to_on() {
 
 #[test]
 fn missing_close_confirmation_key_loads_as_true() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `close_confirmation_enabled` loads as `true` through the
-    // same default-entry leniency pinned for
+    // same missing-key leniency pinned for
     // `new_tab_after_current` — existing users get the guardrail
-    // on (criterion 1); the key list is additive,
-    // `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-closeconfirm-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // on (criterion 1); the key list is additive.
+    let dir = TempDir::new("missing-closeconfirm-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`close_confirmation_enabled` version by
-    // deleting the one key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("close_confirmation_enabled"),
-    )
-    .expect("remove close_confirmation_enabled key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.close_confirmation_enabled);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -232,29 +286,17 @@ fn close_confirmation_key_on_disk_is_honored() {
     // the same read path honors a key that does exist (the toggle
     // off persists), so the leniency result above cannot be a
     // vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-closeconfirm-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-closeconfirm-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            close_confirmation_enabled: false,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        close_confirmation_enabled: false,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert!(!loaded.close_confirmation_enabled);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -267,47 +309,18 @@ fn drawer_click_close_defaults_to_on() {
 
 #[test]
 fn missing_settings_drawer_click_close_key_loads_as_true() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `settings_drawer_click_close` loads as `true` through the
-    // same default-entry leniency pinned for
+    // same missing-key leniency pinned for
     // `close_confirmation_enabled` — existing users get the
-    // gesture on (criterion 5); the key list is additive,
-    // `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-drawerclick-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // gesture on (criterion 5); the key list is additive.
+    let dir = TempDir::new("missing-drawerclick-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`settings_drawer_click_close` version by
-    // deleting the one key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("settings_drawer_click_close"),
-    )
-    .expect("remove settings_drawer_click_close key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.settings_drawer_click_close);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -317,96 +330,46 @@ fn settings_drawer_click_close_key_on_disk_is_honored() {
     // same read path honors a key that does exist (the toggle off
     // persists), so the leniency result above cannot be a vacuous
     // pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-drawerclick-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-drawerclick-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            settings_drawer_click_close: false,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        settings_drawer_click_close: false,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert!(!loaded.settings_drawer_click_close);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_profile_keys_load_as_empty_and_unset() {
-    // A config directory from a version that did not yet write
-    // `profiles` or `default_profile` loads as "no profiles, no
-    // default" — byte-identical to today's behavior — through the
-    // same default-entry leniency pinned for the other additive
-    // keys; the key list grows, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-profile-keys-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A store from a version that did not yet write `profiles` or
+    // `default_profile` — a settings section on disk, no profiles
+    // section beside it — loads as "no profiles, no default": a
+    // missing section file is that section's first run, the
+    // missing-key leniency pinned for the other additive keys, one
+    // level up.
+    let dir = TempDir::new("missing-profile-keys");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-profile version by deleting the two keys
-    // it never wrote.
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    std::fs::remove_file(version_dir.join("profiles")).expect("remove profiles key file");
-    std::fs::remove_file(version_dir.join("default_profile"))
-        .expect("remove default_profile key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("profile-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(
         loaded.profiles.is_empty(),
         "not empty: {:?}",
         loaded.profiles
     );
     assert_eq!(loaded.default_profile, None);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn profile_keys_round_trip_through_the_config_store() {
     // Two distinct profiles — one with a cwd, one without — plus
     // a set default survive a write→load cycle with equality.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-profile-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("profile-roundtrip");
     let stored = DropTermConfig {
         profiles: vec![
             Profile {
@@ -431,12 +394,10 @@ fn profile_keys_round_trip_through_the_config_store() {
         default_profile: Some("web-prod".to_string()),
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -444,18 +405,7 @@ fn profile_color_scheme_round_trips_through_the_config_store() {
     // A set scheme and an unset one — the two shapes a mixed
     // profile list writes — survive a write→load cycle with
     // equality, riding the existing `profiles` key unchanged.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-profile-scheme-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("profile-scheme-roundtrip");
     let stored = DropTermConfig {
         profiles: vec![
             Profile {
@@ -479,12 +429,10 @@ fn profile_color_scheme_round_trips_through_the_config_store() {
         ],
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -492,18 +440,7 @@ fn profile_env_round_trips_through_the_config_store() {
     // A set env map and an unset one — the two shapes a mixed
     // profile list writes — survive a write→load cycle with
     // equality, riding the existing `profiles` key unchanged.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-profile-env-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("profile-env-roundtrip");
     let stored = DropTermConfig {
         profiles: vec![
             Profile {
@@ -530,26 +467,20 @@ fn profile_env_round_trips_through_the_config_store() {
         ],
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
 
     // The map serializes in BTree order — the deterministic-
     // round-trip property that made the field a BTreeMap (the
     // `custom_key_binds` precedent): the same profile always
     // writes the same bytes, so the store never churns.
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    let text =
-        std::fs::read_to_string(version_dir.join("profiles")).expect("profiles key still on disk");
+    let text = std::fs::read_to_string(dir.join(store::PROFILES_FILE))
+        .expect("profiles section still on disk");
     let first = text.find("DROPTERM_PROFILE").expect("first key present");
     let second = text.find("TERM_PROGRAM").expect("second key present");
     assert!(first < second, "env keys serialize in BTree order: {text}");
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -574,75 +505,35 @@ fn new_tab_cwd_serde_round_trips_all_variants() {
 
 #[test]
 fn missing_default_spawn_keys_load_as_inherit_and_unset() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `new_tab_cwd` or `default_cwd` loads as "inherit, unset" —
     // byte-identical to today's plain-spawn chain — through the
-    // same default-entry leniency pinned for the profile keys;
-    // the key list is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-default-spawn-keys-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // same missing-key leniency pinned for the profile keys;
+    // the key list is additive.
+    let dir = TempDir::new("missing-default-spawn-keys");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`default-spawn` version by deleting the
-    // two keys it never wrote.
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    std::fs::remove_file(version_dir.join("new_tab_cwd")).expect("remove new_tab_cwd key file");
-    std::fs::remove_file(version_dir.join("default_cwd")).expect("remove default_cwd key file");
-
-    let loaded = DropTermConfig::get_entry(&config)
-        .expect("default-spawn-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.new_tab_cwd, NewTabCwd::Inherit);
     assert_eq!(loaded.default_cwd, None);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn default_spawn_keys_round_trip_through_the_config_store() {
     // Default mode plus a set directory survive a write→load cycle
     // with equality — the `default_profile` precedent.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-default-spawn-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("default-spawn-roundtrip");
     let stored = DropTermConfig {
         new_tab_cwd: NewTabCwd::Default,
         default_cwd: Some(std::path::PathBuf::from("/srv/work")),
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -652,69 +543,42 @@ fn a_pre_initiative_profiles_file_loads_with_the_scheme_unset() {
     // that shape and loading must succeed with the scheme unset
     // — and must leave the file byte-identical: the store is
     // never rewritten to "fix" an older format.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-pre-initiative-profiles-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("pre-initiative-profiles");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
+    let profiles_section = dir.join(store::PROFILES_FILE);
+    // The pre-initiative shape: a profiles section listing one
+    // profile with no `color_scheme` field anywhere (cwd spelled
+    // out so nothing rides serde defaults but the new field
+    // itself), and no `default_profile` beside it.
+    let pre_initiative = "(profiles: [\n    (\n        name: \"ssh\",\n        command: \"ssh web\",\n        cwd: None,\n    ),\n])";
+    std::fs::write(&profiles_section, pre_initiative)
+        .expect("seed pre-initiative profiles section");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig::default()
-        .write_entry(&config)
-        .expect("write config keys");
-
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    let profiles_key = version_dir.join("profiles");
-    // The pre-initiative shape: a plain Vec<Profile> with no
-    // `color_scheme` field anywhere (cwd spelled out so nothing
-    // rides serde defaults but the new field itself).
-    let pre_initiative = "[\n    (\n        name: \"ssh\",\n        command: \"ssh web\",\n        cwd: None,\n    ),\n]";
-    std::fs::write(&profiles_key, pre_initiative).expect("seed pre-initiative profiles key file");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("pre-initiative profiles file loads");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.profiles.len(), 1);
     assert_eq!(loaded.profiles[0].name, "ssh");
     assert_eq!(loaded.profiles[0].color_scheme, None);
     // The same leniency covers every later additive field: `env`
-    // loads unset when the key never existed.
+    // loads unset when the key never existed, and the section's
+    // missing `default_profile` key loads unset.
     assert_eq!(loaded.profiles[0].env, None);
+    assert_eq!(loaded.default_profile, None);
 
     // Byte-stable: the load rewrote nothing.
     assert_eq!(
-        std::fs::read_to_string(&profiles_key).expect("profiles key still on disk"),
+        std::fs::read_to_string(&profiles_section).expect("profiles section still on disk"),
         pre_initiative
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn custom_key_binds_round_trip_through_the_config_store() {
     // Two entries — an ordinary rebind with modifiers and a
     // numbered activate row without — survive a write→load cycle
-    // with equality. The key file's name is the field's
-    // file-format spelling; the Binding shape is the rest of the
+    // with equality. The section file's name is the field's
+    // on-disk home; the Binding shape is the rest of the
     // contract.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-keybinds-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("keybinds-roundtrip");
     let stored = DropTermConfig {
         custom_key_binds: BTreeMap::from([
             (
@@ -737,58 +601,29 @@ fn custom_key_binds_round_trip_through_the_config_store() {
         ]),
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
+    save_sections(&dir, &stored);
     assert!(
-        version_dir.join("custom_key_binds").is_file(),
-        "the key file's name is the field's on-disk spelling"
+        dir.join(store::KEYBINDS_FILE).is_file(),
+        "the section file's name is the field's on-disk home"
     );
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_custom_key_binds_loads_as_the_empty_map() {
-    // A config directory from a version that did not yet write
-    // `custom_key_binds` loads as "all defaults" — the same
-    // default-entry leniency as every additive key before it.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-keybinds-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A store from a version that did not yet write
+    // `custom_key_binds` — a settings section on disk, no keybinds
+    // section beside it — loads as "all defaults": the same
+    // missing-section leniency as every additive key before it.
+    let dir = TempDir::new("missing-keybinds");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    std::fs::remove_file(version_dir.join("custom_key_binds"))
-        .expect("remove custom_key_binds key file");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("keybinds-less v1 config loads clean");
+    let loaded = load_config(&dir);
     assert!(loaded.custom_key_binds.is_empty());
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -797,20 +632,8 @@ fn an_alias_map_round_trips_through_the_config_store() {
     // equality: `gc = "git checkout"` declared once, re-targeting
     // the specs table on every load. One serialized map field (OQ-1,
     // decided against the config machinery's grain — the
-    // `custom_key_binds` precedent), its file name the field's
-    // on-disk spelling.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-aliases-roundtrip-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    // `custom_key_binds` precedent), riding the settings section.
+    let dir = TempDir::new("aliases-roundtrip");
     let stored = DropTermConfig {
         autosuggestions_aliases: HashMap::from([
             ("gc".to_string(), "git checkout".to_string()),
@@ -818,78 +641,33 @@ fn an_alias_map_round_trips_through_the_config_store() {
         ]),
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    assert!(
-        version_dir.join("autosuggestions_aliases").is_file(),
-        "the key file's name is the field's on-disk spelling"
-    );
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_autosuggestions_aliases_key_loads_as_the_empty_map() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `autosuggestions_aliases` loads as the empty map — the same
-    // default-entry leniency as every additive key before it, and
+    // missing-key leniency as every additive key before it, and
     // the empty map is today byte-for-bit (no alias re-targets).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-aliases-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("missing-aliases");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    let version_dir = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    std::fs::remove_file(version_dir.join("autosuggestions_aliases"))
-        .expect("remove autosuggestions_aliases key file");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("aliases-less v1 config loads clean");
+    let loaded = load_config(&dir);
     assert!(loaded.autosuggestions_aliases.is_empty());
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn keybinds_write_persists_the_whole_map_through_the_store() {
-    // The settings module's whole-map write lands as one `set` of
-    // the `custom_key_binds` key — the ProfileWrite precedent —
-    // and the next load reads exactly the written map back.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-keybinds-write-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    // The settings module's whole-map write lands as one section
+    // save of `keybinds.ron` — the ProfileWrite precedent — and the
+    // next load reads exactly the written map back.
+    let dir = TempDir::new("keybinds-write");
     let write = crate::settings::KeybindsWrite(BTreeMap::from([(
         "copy".to_string(),
         crate::keybinds::Binding {
@@ -897,20 +675,10 @@ fn keybinds_write_persists_the_whole_map_through_the_store() {
             key: "C".to_string(),
         },
     )]));
-    write.persist(&config).expect("persist the whole map");
+    write.persist(&dir.0).expect("persist the whole map");
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.custom_key_binds, write.0);
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn config_version_stays_at_one() {
-    // New boolean keys merge into pre-existing files through the
-    // CosmicConfigEntry default-entry fallback — no version bump,
-    // no per-field serde attributes.
-    assert_eq!(CONFIG_VERSION, 1);
 }
 
 #[test]
@@ -1047,47 +815,17 @@ fn program_is_runnable_scans_path_for_bare_names() {
 
 #[test]
 fn missing_respect_panel_key_loads_as_false() {
-    // A config directory from a version that did not yet write
-    // `respect_panel`: every legacy key on disk, no `respect_panel`
-    // file. cosmic-config reads
-    // each key independently and leaves missing keys at their default
-    // (`Error::is_err` treats NotFound/NoConfigDirectory as lenient).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A settings section from a version that did not yet write
+    // `respect_panel`: keys the file lists load, keys it lacks
+    // stay at their default (`#[serde(default)]` backfills) — the
+    // first missing-key pin, every later one its twin.
+    let dir = TempDir::new("missing-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`respect_panel` version by deleting the one key
-    // it never wrote. On-disk layout is <root>/cosmic/<name>/v<version>
-    // (cosmic-config rev 08a09e3, `Config::with_custom_path`).
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("respect_panel"),
-    )
-    .expect("remove respect_panel key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(!loaded.respect_panel);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1095,71 +833,33 @@ fn respect_panel_key_on_disk_is_honored() {
     // Control for `missing_respect_panel_key_loads_as_false`: the same
     // read path honors a key that does exist, so the leniency result
     // above cannot be a vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            respect_panel: true,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        respect_panel: true,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.respect_panel);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_status_bar_key_loads_as_true() {
-    // A config directory from a version before the status band: no
-    // `status_bar_enabled` key file. The entry derive backfills
-    // from the struct Default — which is `true`, the
+    // A settings section from a version before the status band: no
+    // `status_bar_enabled` key. The section's `#[serde(default)]`
+    // backfills from the struct Default — which is `true`, the
     // visible-by-default ruling (OQ-1) — so pre-band configs see
     // the band, not a silently-off key.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-status-bar-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("missing-status-bar");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("status_bar_enabled"),
-    )
-    .expect("remove status_bar_enabled key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.status_bar_enabled);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1167,70 +867,32 @@ fn a_disabled_status_bar_round_trips_through_the_config_store() {
     // The off state persists — a hidden band stays hidden across
     // a write→load cycle (the control for the missing-key pin: a
     // present `false` key is honored, not defaulted over).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-status-bar-off-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("status-bar-off");
     let stored = DropTermConfig {
         status_bar_enabled: false,
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     assert!(!loaded.status_bar_enabled);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_autosuggestions_key_loads_as_true() {
-    // A config directory from a version before autosuggestions: no
-    // `autosuggestions_enabled` key file. The entry derive backfills
-    // from the struct Default — `true`, the default-on ruling — so
-    // pre-existing configs see ghost text, not a silently-off key.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-autosuggest-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A settings section from a version before autosuggestions: no
+    // `autosuggestions_enabled` key. The section's
+    // `#[serde(default)]` backfills from the struct Default —
+    // `true`, the default-on ruling — so pre-existing configs see
+    // ghost text, not a silently-off key.
+    let dir = TempDir::new("missing-autosuggest");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("autosuggestions_enabled"),
-    )
-    .expect("remove autosuggestions_enabled key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.autosuggestions_enabled);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1238,79 +900,33 @@ fn a_disabled_autosuggestions_round_trips_through_the_config_store() {
     // The off state persists — the kill switch stays off across a
     // write→load cycle (the control for the missing-key pin: a
     // present `false` key is honored, not defaulted over).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-autosuggest-off-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("autosuggest-off");
     let stored = DropTermConfig {
         autosuggestions_enabled: false,
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     assert!(!loaded.autosuggestions_enabled);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_show_keys_load_as_shown() {
-    // A config directory from before the per-segment toggles
-    // (status-segments spec): no `status_bar_show_*` key files.
-    // The entry derive backfills from the struct Default — all
-    // eight `true` — so an old config sees the full band, not a
-    // silently hollowed one.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-show-keys-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A settings section from before the per-segment toggles
+    // (status-segments spec): no `status_bar_show_*` keys. The
+    // section's `#[serde(default)]` backfills from the struct
+    // Default — all `true` — so an old config sees the full band,
+    // not a silently hollowed one.
+    let dir = TempDir::new("missing-show-keys");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig::default()
-        .write_entry(&config)
-        .expect("write config keys");
-    let keys = root
-        .join("cosmic")
-        .join("dropterm-config-test")
-        .join(format!("v{CONFIG_VERSION}"));
-    for key in [
-        "status_bar_show_process",
-        "status_bar_show_path",
-        "status_bar_show_branch",
-        "status_bar_show_profile",
-        "status_bar_show_grid",
-        "status_bar_show_tab",
-        "status_bar_show_zoom",
-        "status_bar_show_clock",
-        "status_bar_show_scrollback",
-    ] {
-        std::fs::remove_file(keys.join(key))
-            .unwrap_or_else(|error| panic!("remove {key} key file: {error}"));
-    }
-
-    let loaded = DropTermConfig::get_entry(&config).expect("key-less config loads");
+    let loaded = load_config(&dir);
     assert!(loaded.status_bar_show_process);
     assert!(loaded.status_bar_show_branch);
     assert!(loaded.status_bar_show_clock);
     assert!(loaded.status_bar_show_scrollback);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1338,83 +954,32 @@ fn status_bar_border_defaults_on() {
 
 #[test]
 fn missing_tab_bar_border_key_loads_as_true() {
-    // A config directory from a version before the border keys: no
-    // `tab_bar_border` key file. The entry derive backfills from the
-    // struct Default — `true` — so pre-border configs gain the
-    // hairline, never a silently-off key (the additive-load
-    // contract, `missing_status_bar_key_loads_as_true`'s twin).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-tab-border-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // A settings section from a version before the border keys: no
+    // `tab_bar_border` key. The section's `#[serde(default)]`
+    // backfills from the struct Default — `true` — so pre-border
+    // configs gain the hairline, never a silently-off key (the
+    // additive-load contract, `missing_status_bar_key_loads_as_true`'s
+    // twin).
+    let dir = TempDir::new("missing-tab-border");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("tab_bar_border"),
-    )
-    .expect("remove tab_bar_border key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.tab_bar_border);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_status_bar_border_key_loads_as_true() {
     // The band's twin of the strip's missing-key pin: a pre-border
-    // config directory gains the band's hairline through the same
+    // settings section gains the band's hairline through the same
     // additive backfill.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-band-border-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("missing-band-border");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("status_bar_border"),
-    )
-    .expect("remove status_bar_border key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.status_bar_border);
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1423,18 +988,7 @@ fn hidden_segments_round_trip_through_the_config_store() {
     // control for the missing-key pin: present `false` keys are
     // honored, not defaulted over) — and the fold reads them
     // back as the resolver's all-off toggle set.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-show-keys-off-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("show-keys-off");
     let stored = DropTermConfig {
         status_bar_show_process: false,
         status_bar_show_path: false,
@@ -1446,9 +1000,9 @@ fn hidden_segments_round_trip_through_the_config_store() {
         status_bar_show_clock: false,
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     let toggles = loaded.status_toggles();
     assert!(
@@ -1461,8 +1015,6 @@ fn hidden_segments_round_trip_through_the_config_store() {
             && !toggles.zoom
             && !toggles.clock
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1493,45 +1045,17 @@ fn theme_preference_serde_round_trips_all_variants() {
 
 #[test]
 fn missing_theme_preference_key_loads_as_system() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `theme_preference` loads as `System` through the same
-    // default-entry leniency pinned for `respect_panel` — the
-    // key list is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-theme-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // missing-key leniency pinned for `respect_panel` — the
+    // key list is additive.
+    let dir = TempDir::new("missing-theme-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`theme_preference` version by deleting the
-    // one key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("theme_preference"),
-    )
-    .expect("remove theme_preference key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.theme_preference, ThemePreference::System);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1539,29 +1063,17 @@ fn theme_preference_key_on_disk_is_honored() {
     // Control for `missing_theme_preference_key_loads_as_system`:
     // the same read path honors a key that does exist, so the
     // leniency result above cannot be a vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-theme-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-theme-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            theme_preference: ThemePreference::Dark,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        theme_preference: ThemePreference::Dark,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.theme_preference, ThemePreference::Dark);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1585,45 +1097,17 @@ fn tab_position_serde_round_trips_all_variants() {
 
 #[test]
 fn missing_tab_position_key_loads_as_auto() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `tab_position` loads as `Auto` through the same
-    // default-entry leniency pinned for `respect_panel` — the
-    // key list is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-tabpos-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // missing-key leniency pinned for `respect_panel` — the
+    // key list is additive.
+    let dir = TempDir::new("missing-tabpos-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`tab_position` version by deleting the one
-    // key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("tab_position"),
-    )
-    .expect("remove tab_position key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.tab_position, TabPosition::Auto);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1656,45 +1140,17 @@ fn tab_title_mode_serde_round_trips_all_variants() {
 
 #[test]
 fn missing_tab_title_mode_key_loads_as_shell() {
-    // A config directory from a version that did not yet write
+    // A settings section from a version that did not yet write
     // `tab_title_mode` loads as `Shell` through the same
-    // default-entry leniency pinned for `respect_panel` — the
-    // key list is additive, `CONFIG_VERSION` stays 1.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-titlemode-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // missing-key leniency pinned for `respect_panel` — the
+    // key list is additive.
+    let dir = TempDir::new("missing-titlemode-key");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    // Simulate the pre-`tab_title_mode` version by deleting the
-    // one key it never wrote.
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("tab_title_mode"),
-    )
-    .expect("remove tab_title_mode key file");
-
-    let loaded =
-        DropTermConfig::get_entry(&config).expect("key-less v1 config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.tab_title_mode, TabTitleMode::Shell);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1702,29 +1158,17 @@ fn tab_title_mode_key_on_disk_is_honored() {
     // Control for `missing_tab_title_mode_key_loads_as_shell`: the
     // same read path honors a key that does exist, so the leniency
     // result above cannot be a vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-titlemode-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-titlemode-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            tab_title_mode: TabTitleMode::LastSegment,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        tab_title_mode: TabTitleMode::LastSegment,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.tab_title_mode, TabTitleMode::LastSegment);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1732,45 +1176,54 @@ fn tab_position_key_on_disk_is_honored() {
     // Control for `missing_tab_position_key_loads_as_auto`: the
     // same read path honors a key that does exist, so the leniency
     // result above cannot be a vacuous pass.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-present-tabpos-key-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let dir = TempDir::new("present-tabpos-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            tab_position: TabPosition::Top,
+            ..DropTermConfig::default()
+        },
+    );
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        tab_position: TabPosition::Top,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded.tab_position, TabPosition::Top);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Every serialized config key must appear in `docs/configuration.md`
-/// — the docs-as-code drift gate: an undocumented key fails `just
-/// check`. The key set is enumerated through serde itself (no
-/// hand-kept list to drift), and the backticked form is required so a
-/// bare word elsewhere in the prose cannot satisfy the check.
+/// Every serialized config key across the store's three section
+/// files — settings, profiles, keybinds — must appear in
+/// `docs/configuration.md`: the docs-as-code drift gate, an
+/// undocumented key failing `just check`. The key set is
+/// enumerated through serde itself (no hand-kept list to drift),
+/// and the backticked form is required so a bare word elsewhere in
+/// the prose cannot satisfy the check.
+fn serialized_section_keys() -> Vec<String> {
+    let mut keys = Vec::new();
+    for value in [
+        serde_json::to_value(DropTermConfig::default()).expect("settings section serializes"),
+        serde_json::to_value(ProfilesSection::default()).expect("profiles section serializes"),
+        serde_json::to_value(KeybindsSection::default()).expect("keybinds section serializes"),
+    ] {
+        keys.extend(value.as_object().expect("a section map").keys().cloned());
+    }
+    keys
+}
+
+/// The three sections' serialized defaults, the second gate's
+/// enumeration.
+fn serialized_default_sections() -> Vec<serde_json::Map<String, serde_json::Value>> {
+    [
+        serde_json::to_value(DropTermConfig::default()).expect("settings section serializes"),
+        serde_json::to_value(ProfilesSection::default()).expect("profiles section serializes"),
+        serde_json::to_value(KeybindsSection::default()).expect("keybinds section serializes"),
+    ]
+    .into_iter()
+    .map(|value| value.as_object().expect("a section map").clone())
+    .collect()
+}
+
 #[test]
 fn every_config_key_is_documented() {
-    let keys = serde_json::to_value(DropTermConfig::default())
-        .expect("config serializes")
-        .as_object()
-        .expect("config serializes to a map")
-        .keys()
-        .cloned()
-        .collect::<Vec<String>>();
+    let keys = serialized_section_keys();
     assert!(!keys.is_empty(), "key enumeration came back empty");
 
     let docs = include_str!("../../docs/configuration.md");
@@ -1783,22 +1236,19 @@ fn every_config_key_is_documented() {
 }
 
 /// The pristine-config sample in docs/configuration.md is drift-gated
-/// the same way: every serialized key must appear in the "The default
-/// config directory" section, and every scalar default must ride its
-/// key's row as the exact file content the docs claim (enums bare,
-/// genuine strings quoted, numbers and bools literal). Keys whose
-/// default is unset (`None`) or an empty container belong to the
-/// section's no-file list instead — presence there satisfies the
-/// row lookup. A default changed in code fails here until the sample
-/// follows; the sample can never drift from the struct.
+/// the same way: every serialized key across the three sections must
+/// appear in the "The default config directory" section, and every
+/// scalar default must ride its key's row as the exact file content
+/// the docs claim (enums bare, genuine strings quoted, numbers and
+/// bools literal). Keys whose default is unset (`None`) or an empty
+/// container belong to the section's no-file list instead — presence
+/// there satisfies the row lookup. A default changed in code fails
+/// here until the sample follows; the sample can never drift from
+/// the structs.
 #[test]
 fn every_config_keys_default_is_sampled() {
-    let defaults = serde_json::to_value(DropTermConfig::default())
-        .expect("config serializes")
-        .as_object()
-        .expect("config serializes to a map")
-        .clone();
-    assert!(!defaults.is_empty(), "default enumeration came back empty");
+    let sections = serialized_default_sections();
+    assert!(!sections.is_empty(), "default enumeration came back empty");
 
     let docs = include_str!("../../docs/configuration.md");
     let (_, rest) = docs
@@ -1808,8 +1258,9 @@ fn every_config_keys_default_is_sampled() {
         .split_once("\n## ")
         .map_or(rest, |(section, _)| section);
 
-    for (key, default) in &defaults {
-        let row = section
+    for defaults in &sections {
+        for (key, default) in defaults {
+            let row = section
             .lines()
             .find(|line| line.contains(&format!("`{key}`")))
             .unwrap_or_else(|| {
@@ -1817,59 +1268,36 @@ fn every_config_keys_default_is_sampled() {
                     "config key `{key}` is missing from the default-config sample in docs/configuration.md"
                 )
             });
-        let literal = match default {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => default.to_string(),
-            serde_json::Value::Null => continue,
-            serde_json::Value::Array(items) if items.is_empty() => continue,
-            serde_json::Value::Object(map) if map.is_empty() => continue,
-            other => panic!("config key `{key}` has an unsupported sample default: {other}"),
-        };
-        assert!(
-            row.contains(&literal),
-            "the sample row for `{key}` must carry its default `{literal}`"
-        );
+            let literal = match default {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Bool(_) | serde_json::Value::Number(_) => default.to_string(),
+                serde_json::Value::Null => continue,
+                serde_json::Value::Array(items) if items.is_empty() => continue,
+                serde_json::Value::Object(map) if map.is_empty() => continue,
+                other => panic!("config key `{key}` has an unsupported sample default: {other}"),
+            };
+            assert!(
+                row.contains(&literal),
+                "the sample row for `{key}` must carry its default `{literal}`"
+            );
+        }
     }
 }
 
 #[test]
 fn missing_autosuggestions_paths_key_loads_as_true() {
     // A config from a version before path completion: no
-    // `autosuggestions_paths_enabled` key file. The entry derive
-    // backfills from the struct Default — `true` — so pre-existing
-    // configs see path completion, not a silently-off key.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-paths-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // `autosuggestions_paths_enabled` key. The section's
+    // `#[serde(default)]` backfills from the struct Default —
+    // `true` — so pre-existing configs see path completion, not a
+    // silently-off key.
+    let dir = TempDir::new("missing-paths");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("autosuggestions_paths_enabled"),
-    )
-    .expect("remove autosuggestions_paths_enabled key file");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("key-less config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.autosuggestions_paths_enabled);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1877,69 +1305,32 @@ fn a_disabled_paths_toggle_round_trips_through_the_config_store() {
     // The off state persists — history-only behavior stays across a
     // write→load cycle (a present `false` key is honored, not
     // defaulted over).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-paths-off-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("paths-off");
     let stored = DropTermConfig {
         autosuggestions_paths_enabled: false,
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     assert!(!loaded.autosuggestions_paths_enabled);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn missing_autosuggestions_commands_key_loads_as_true() {
     // A config from a version before command-name completion: no
-    // `autosuggestions_commands_enabled` key file. The entry derive
-    // backfills from the struct Default — `true` — so pre-existing
-    // configs see command completion, not a silently-off key.
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-missing-commands-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    // `autosuggestions_commands_enabled` key. The section's
+    // `#[serde(default)]` backfills from the struct Default —
+    // `true` — so pre-existing configs see command completion, not
+    // a silently-off key.
+    let dir = TempDir::new("missing-commands");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
-    DropTermConfig {
-        height_percent: 70,
-        ..DropTermConfig::default()
-    }
-    .write_entry(&config)
-    .expect("write config keys");
-    std::fs::remove_file(
-        root.join("cosmic")
-            .join("dropterm-config-test")
-            .join(format!("v{CONFIG_VERSION}"))
-            .join("autosuggestions_commands_enabled"),
-    )
-    .expect("remove autosuggestions_commands_enabled key file");
-
-    let loaded = DropTermConfig::get_entry(&config).expect("key-less config loads without error");
+    let loaded = load_config(&dir);
     assert!(loaded.autosuggestions_commands_enabled);
-    // The directory is live, not ignored: the written key comes back.
+    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1947,27 +1338,14 @@ fn a_disabled_commands_toggle_round_trips_through_the_config_store() {
     // The off state persists — history-only behavior stays across a
     // write→load cycle (a present `false` key is honored, not
     // defaulted over).
-    let root = std::env::temp_dir().join(format!(
-        "dropterm-config-test-commands-off-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-
-    let config = cosmic_config::Config::with_custom_path(
-        "dropterm-config-test",
-        CONFIG_VERSION,
-        root.clone(),
-    )
-    .expect("temp config context");
+    let dir = TempDir::new("commands-off");
     let stored = DropTermConfig {
         autosuggestions_commands_enabled: false,
         ..DropTermConfig::default()
     };
-    stored.write_entry(&config).expect("write config keys");
+    save_sections(&dir, &stored);
 
-    let loaded = DropTermConfig::get_entry(&config).expect("config loads without error");
+    let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     assert!(!loaded.autosuggestions_commands_enabled);
-
-    let _ = std::fs::remove_dir_all(&root);
 }

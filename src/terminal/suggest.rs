@@ -865,6 +865,37 @@ fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error
     Ok(commands)
 }
 
+/// The deepest bracket nesting a completions file may carry. The
+/// toml 0.5 parser recurses per nesting level, so a hostile or
+/// corrupted file a few thousand levels deep overflows the stack —
+/// an abort that no error path can catch, killing the whole app.
+/// The depth is checked before the parse: past the cap the layer is
+/// rejected like any other invalid file. A real completions file
+/// nests a handful of levels; 64 is far past legitimate and far
+/// short of the abort.
+const COMPLETIONS_MAX_NESTING: usize = 64;
+
+/// Whether a file's bracket nesting stays within `cap` — a linear
+/// byte scan, `false` on the first level past it. Bracket
+/// characters inside strings count too, which can only over-reject
+/// a file that is invalid for the schema anyway.
+fn nesting_within_cap(contents: &str, cap: usize) -> bool {
+    let mut depth: usize = 0;
+    for byte in contents.bytes() {
+        match byte {
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > cap {
+                    return false;
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    true
+}
+
 /// The merge ruling (suggest-specs-data spec): the built-in five
 /// are the floor — the file's commands add beside them, and a
 /// re-declared command replaces its built-in whole (no per-entry
@@ -935,16 +966,26 @@ fn load_completions_from(dir: Option<&Path>, extended_path: Option<&Path>) -> Ar
 fn user_completions(dir: &Path) -> Option<Vec<SpecCommand>> {
     let path = dir.join("completions.toml");
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match parse_completions(&contents) {
-            Ok(file) => Some(file),
-            Err(err) => {
+        Ok(contents) => {
+            if !nesting_within_cap(&contents, COMPLETIONS_MAX_NESTING) {
                 log::debug!(
-                    "completions.toml rejected, the embedded floor answers: {}: {err}",
+                    "completions.toml nested past {}, rejected without parsing, the embedded floor answers: {}",
+                    COMPLETIONS_MAX_NESTING,
                     path.display()
                 );
-                None
+                return None;
             }
-        },
+            match parse_completions(&contents) {
+                Ok(file) => Some(file),
+                Err(err) => {
+                    log::debug!(
+                        "completions.toml rejected, the embedded floor answers: {}: {err}",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        }
         Err(err) => {
             log::debug!(
                 "completions.toml unreadable, the embedded floor answers: {}: {err}",

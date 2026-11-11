@@ -2898,6 +2898,44 @@ fn a_minimal_file_parses_descriptions_opt_in() {
 }
 
 #[test]
+fn the_nesting_scan_counts_pairs_and_finds_the_cap() {
+    // The pre-parse depth guard: every open bracket deepens, every
+    // close shallows, and the first level past the cap answers
+    // false. Brackets in strings count too — the over-rejection is
+    // a file invalid for the schema anyway.
+    assert!(nesting_within_cap("name = \"a\"", 64));
+    assert!(nesting_within_cap("[[commands]]\nname = \"a\"", 64));
+    assert!(nesting_within_cap(&"{".repeat(64), 64));
+    assert!(!nesting_within_cap(&"{".repeat(65), 64));
+    assert!(
+        nesting_within_cap(&format!("{}{}", "{".repeat(10), "}".repeat(10)), 10),
+        "closed pairs free their depth"
+    );
+    assert!(
+        !nesting_within_cap(&format!("{}{}", "[".repeat(5), "{".repeat(61)), 64),
+        "bracket kinds share one depth"
+    );
+}
+
+#[test]
+fn a_hostile_nesting_depth_rejects_the_layer_without_parsing() {
+    // The toml 0.5 parser recurses per nesting level; a file a few
+    // thousand levels deep overflows the stack — an abort no error
+    // path catches, killing the app (verified against the locked
+    // toml 0.5.11 with an out-of-tree probe). The depth cap hands
+    // such a file the ordinary rejection: the embedded floor
+    // answers, the process lives.
+    let dir = completions_fixture("hostile-nesting");
+    let hostile = format!("x = {}1{}", "{a = ".repeat(5000), "}".repeat(5000));
+    std::fs::write(dir.join("completions.toml"), hostile).expect("seed hostile file");
+    assert!(
+        user_completions(&dir).is_none(),
+        "a file nested past the cap is rejected, not parsed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_script_key_rejects_the_file_whole() {
     // The no-scripts boundary, made structural (the generators
     // record's permanent rejection): a `script` key is unknown to

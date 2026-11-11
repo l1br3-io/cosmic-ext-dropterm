@@ -671,3 +671,267 @@ fn an_over_cap_file_is_refused_before_its_bytes_are_read() {
     assert!(handle.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the config store's watcher (config-store T4) ---
+
+/// A fresh store directory per test, cleared first so re-runs start
+/// clean (this file's fixture convention), the process id keeping
+/// parallel suites apart.
+fn store_fixture(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "dropterm-watcher-tests-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    dir
+}
+
+/// A synthetic watcher event naming `file` in `dir`.
+fn event_naming(dir: &std::path::Path, file: &str) -> notify::Event {
+    notify::Event::new(notify::EventKind::Any).add_path(dir.join(file))
+}
+
+#[test]
+fn the_watcher_step_ignores_files_that_are_not_the_store_s() {
+    // An atomic save's `.tmp` sibling, a quarantine's `.bak`, and a
+    // stranger's file are noise: only the store's own names echo.
+    let dir = store_fixture("noise");
+    std::fs::write(dir.join("config.ron"), "(height_percent: 55)").expect("seed");
+    let last = DropTermConfig::default();
+    for noise in ["config.ron.tmp", "config.ron.bak", "notes.txt"] {
+        assert_eq!(
+            config_after(&event_naming(&dir, noise), &dir, &last),
+            None,
+            "{noise}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_watcher_step_delivers_a_changed_section() {
+    let dir = store_fixture("changed");
+    std::fs::write(dir.join("config.ron"), "(height_percent: 55)").expect("seed");
+    let next = config_after(
+        &event_naming(&dir, "config.ron"),
+        &dir,
+        &DropTermConfig::default(),
+    );
+    assert_eq!(next.map(|config| config.height_percent), Some(55));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_watcher_step_stays_silent_when_nothing_changed() {
+    // A same-value reload is no echo — here a half-written section
+    // that keeps the last-known values: nothing to apply, and the
+    // rename's second event after a real change lands the same way.
+    // The file-state assertions pin the silent path's non-destructive
+    // half too: silence means the half-written file is left exactly
+    // where the editor's in-flight save left it — never quarantined
+    // — so a reload implementation that renamed on the peek would
+    // fail here even when its Option answer stays silent.
+    let dir = store_fixture("unchanged");
+    std::fs::write(dir.join("config.ron"), "(height_perc").expect("half a section");
+    let last = DropTermConfig {
+        height_percent: 70,
+        ..DropTermConfig::default()
+    };
+    assert_eq!(
+        config_after(&event_naming(&dir, "config.ron"), &dir, &last),
+        None
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.ron")).expect("the half file survives"),
+        "(height_perc",
+        "the editor's in-flight file is never moved aside"
+    );
+    assert!(
+        !dir.join("config.ron.bak").exists(),
+        "a silent reload quarantines nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_watcher_step_skips_events_that_mutate_no_data() {
+    // Access and metadata events, and a rename's both-paths summary
+    // (its to-half already delivered), change no bytes: they never
+    // echo, even naming a store file whose content would.
+    let dir = store_fixture("no-data");
+    std::fs::write(dir.join("config.ron"), "(height_percent: 55)").expect("seed");
+    let last = DropTermConfig::default();
+    for kind in [
+        // The open is the load-bearing one: the reload itself opens
+        // the file, so an echoing open would re-trigger its own
+        // reload without end.
+        notify::EventKind::Access(notify::event::AccessKind::Open(
+            notify::event::AccessMode::Any,
+        )),
+        notify::EventKind::Access(notify::event::AccessKind::Close(
+            notify::event::AccessMode::Write,
+        )),
+        notify::EventKind::Modify(notify::event::ModifyKind::Metadata(
+            notify::event::MetadataKind::Any,
+        )),
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+    ] {
+        let event = notify::Event::new(kind).add_path(dir.join("config.ron"));
+        assert_eq!(config_after(&event, &dir, &last), None, "{kind:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_watcher_step_echoes_a_completions_edit_with_the_config_unchanged() {
+    // `completions.toml` rides the config echo: its edit delivers
+    // the (unchanged) config so the echo's reload pass picks the
+    // new table up.
+    let dir = store_fixture("completions");
+    let last = DropTermConfig::default();
+    assert_eq!(
+        config_after(&event_naming(&dir, "completions.toml"), &dir, &last),
+        Some(last)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A real `notify` watcher over `dir`, its events on a std channel:
+/// the subscription's machinery without the iced stream around it.
+fn watch_store(
+    dir: &std::path::Path,
+) -> (
+    notify::RecommendedWatcher,
+    std::sync::mpsc::Receiver<notify::Event>,
+) {
+    use notify::Watcher as _;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if let Ok(event) = event {
+            let _ = tx.send(event);
+        }
+    })
+    .expect("start a watcher");
+    watcher
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .expect("watch the store dir");
+    (watcher, rx)
+}
+
+/// Feeds real watcher events through the step for up to `window`,
+/// tracking `last` as the subscription does, and returns every
+/// config it delivered — stopping early once `done` accepts one.
+fn echoes(
+    events: &std::sync::mpsc::Receiver<notify::Event>,
+    dir: &std::path::Path,
+    last: &mut DropTermConfig,
+    window: std::time::Duration,
+    done: impl Fn(&DropTermConfig) -> bool,
+) -> Vec<DropTermConfig> {
+    let deadline = std::time::Instant::now() + window;
+    let mut delivered = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        let Ok(event) = events.recv_timeout(left) else {
+            break;
+        };
+        if let Some(next) = config_after(&event, dir, last) {
+            *last = next.clone();
+            let finished = done(&next);
+            delivered.push(next);
+            if finished {
+                break;
+            }
+        }
+    }
+    delivered
+}
+
+#[test]
+fn an_external_edit_applies_live_through_the_watcher() {
+    // A hand edit while the app runs lands as a config echo. The
+    // edit is staged the way a non-atomic save really unfolds — the
+    // watcher reports the truncate before the data — with the
+    // half-written state held on disk so the test never depends on
+    // winning that race.
+    let dir = store_fixture("external-edit");
+    let section = dir.join("config.ron");
+    let (_watcher, events) = watch_store(&dir);
+    let mut last = DropTermConfig::default();
+
+    // Mid-write: a section that does not parse yet. Nothing may
+    // echo, and the file must stay the editor's — never moved aside.
+    std::fs::write(&section, "(height_perc").expect("the edit's first half");
+    let mid_write = echoes(
+        &events,
+        &dir,
+        &mut last,
+        std::time::Duration::from_millis(300),
+        |_| false,
+    );
+    assert!(
+        mid_write.is_empty(),
+        "a half-written section echoed: {mid_write:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&section).expect("the editor's file stays"),
+        "(height_perc"
+    );
+    assert!(
+        !dir.join("config.ron.bak").exists(),
+        "the edit was quarantined mid-write"
+    );
+
+    // The write completes: now it echoes.
+    std::fs::write(&section, "(height_percent: 55)").expect("the edit's second half");
+    let delivered = echoes(
+        &events,
+        &dir,
+        &mut last,
+        std::time::Duration::from_secs(5),
+        |config| config.height_percent == 55,
+    );
+    assert_eq!(
+        delivered.last().map(|config| config.height_percent),
+        Some(55),
+        "the edit never echoed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_app_s_own_write_echoes_exactly_once() {
+    // A drawer write is an atomic save — a `.tmp` sibling renamed
+    // onto the section file — and the watcher reports that rename
+    // more than once. Exactly one echo may come of it: the echo is
+    // the apply.
+    let dir = store_fixture("own-write");
+    let (_watcher, events) = watch_store(&dir);
+    let mut last = DropTermConfig::default();
+
+    settings::PlannedWrite::FontSize(19)
+        .persist(&dir, &last)
+        .expect("the app's own write");
+
+    let first = echoes(
+        &events,
+        &dir,
+        &mut last,
+        std::time::Duration::from_secs(5),
+        |config| config.font_size == 19,
+    );
+    assert_eq!(first.len(), 1, "the write's echo: {first:?}");
+    // The settle window: every remaining event of the same save.
+    let again = echoes(
+        &events,
+        &dir,
+        &mut last,
+        std::time::Duration::from_millis(300),
+        |_| false,
+    );
+    assert!(again.is_empty(), "the write echoed again: {again:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

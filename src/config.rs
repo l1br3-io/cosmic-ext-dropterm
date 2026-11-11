@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The on-disk config: the [`DropTermConfig`] entry cosmic-config
-//! persists one key per file, its setting enums, and the clamping
-//! that guards stale or hand-edited values.
+//! The on-disk config: the [`DropTermConfig`] model — itself the
+//! store's settings section — with the profiles and keybinds
+//! sections beside it (one plain-RON file per writer, see
+//! [`store`]), its setting enums, and the clamping that guards stale
+//! or hand-edited values.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
 use crate::keybinds::Binding;
 use crate::profile::Profile;
-
-/// Version of the on-disk config format.
-pub const CONFIG_VERSION: u64 = 1;
 
 /// Default surface height, in percent of the output height.
 pub const DEFAULT_HEIGHT_PERCENT: u8 = 40;
@@ -183,8 +181,13 @@ impl std::fmt::Display for NewTabCwd {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
-#[version = 1]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// Whole-struct serde is the store's settings section (`config.ron`):
+// a key the file lacks loads as its default, so the key list stays
+// additive across versions — an older file simply lacks the newer
+// keys. The three keys owned by the other two sections are skipped
+// below and overlaid by `load_from`.
+#[serde(default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "config-file schema contract: each bool is its own serialized RON field; regrouping changes the on-disk format"
@@ -323,11 +326,16 @@ pub struct DropTermConfig {
     pub theme_preference: ThemePreference,
     /// Named spawn presets (the `profile` module). Defaults to
     /// empty — managed on the settings drawer's Profiles page.
+    /// Persisted in the profiles section ([`ProfilesSection`]), not
+    /// the settings section.
+    #[serde(skip)]
     pub profiles: Vec<Profile>,
     /// Name of the profile plain new tabs launch. `None` (the
     /// default) keeps the configured shell; a name the `profiles`
     /// list no longer carries also resolves to the plain shell —
-    /// loading never rewrites the config to drop it.
+    /// loading never rewrites the config to drop it. Persisted in
+    /// the profiles section ([`ProfilesSection`]).
+    #[serde(skip)]
     pub default_profile: Option<String>,
     /// Where a plain new tab's working directory comes from (see
     /// [`NewTabCwd`]). Defaults to `Inherit` — today's chain
@@ -348,7 +356,10 @@ pub struct DropTermConfig {
     /// action's default chords; removing the entry reverts to the
     /// defaults. Absent (the default) means all defaults. Entries
     /// with stale ids or unparsable keys skip at load with a warn —
-    /// never fatal (`keybinds::effective_key_binds`).
+    /// never fatal (`keybinds::effective_key_binds`). Persisted in
+    /// the keybinds section ([`KeybindsSection`]), not the settings
+    /// section.
+    #[serde(skip)]
     pub custom_key_binds: BTreeMap<String, Binding>,
     /// The settings drawer pane's width in px, as the user last
     /// dragged it. `None` (the default) renders the built-in
@@ -687,6 +698,91 @@ impl DropTermConfig {
             })
             .unwrap_or_else(|| "/bin/sh".to_string())
     }
+
+    /// Loads the whole config from the three section files under
+    /// `dir`: the settings keys from `config.ron`, the profile keys
+    /// from `profiles.ron`, the binding map from `keybinds.ron`. A
+    /// missing section file is that section's silent first run and
+    /// an unreadable one is quarantined to a `.bak` sibling
+    /// ([`store::load`]) — either way the section's defaults apply
+    /// and the other two sections are unaffected. Clamping is the
+    /// caller's step.
+    pub fn load_from(dir: &Path) -> Self {
+        Self::composed(
+            store::load(&dir.join(store::SETTINGS_FILE)).unwrap_or_default(),
+            store::load(&dir.join(store::PROFILES_FILE)).unwrap_or_default(),
+            store::load(&dir.join(store::KEYBINDS_FILE)).unwrap_or_default(),
+        )
+    }
+
+    /// The live-reload twin of [`Self::load_from`], for a store
+    /// being edited while the app runs: each section that parses
+    /// right now replaces `last`'s, and a section that is missing or
+    /// unreadable at this instant — an editor mid-write, a
+    /// delete-then-recreate save — keeps `last`'s values and is left
+    /// untouched on disk ([`store::peek`]). Nothing is quarantined
+    /// and nothing flashes to defaults; a deleted section resets at
+    /// the next start. Clamping is the caller's step.
+    pub fn reload_from(dir: &Path, last: &Self) -> Self {
+        Self::composed(
+            store::peek(&dir.join(store::SETTINGS_FILE)).unwrap_or_else(|| last.clone()),
+            store::peek(&dir.join(store::PROFILES_FILE)).unwrap_or_else(|| last.profiles_section()),
+            store::peek(&dir.join(store::KEYBINDS_FILE)).unwrap_or_else(|| last.keybinds_section()),
+        )
+    }
+
+    /// One config out of its three sections: the settings section's
+    /// own keys with the other two sections' overlaid.
+    fn composed(settings: Self, profiles: ProfilesSection, keybinds: KeybindsSection) -> Self {
+        Self {
+            profiles: profiles.profiles,
+            default_profile: profiles.default_profile,
+            custom_key_binds: keybinds.custom_key_binds,
+            ..settings
+        }
+    }
+
+    /// This config's profiles section — what a profile write
+    /// serializes into `profiles.ron`.
+    pub fn profiles_section(&self) -> ProfilesSection {
+        ProfilesSection {
+            profiles: self.profiles.clone(),
+            default_profile: self.default_profile.clone(),
+        }
+    }
+
+    /// This config's keybinds section — what a binding write
+    /// serializes into `keybinds.ron`.
+    pub fn keybinds_section(&self) -> KeybindsSection {
+        KeybindsSection {
+            custom_key_binds: self.custom_key_binds.clone(),
+        }
+    }
+}
+
+/// The store's profiles section (`profiles.ron`, the profile
+/// writer's file): the two profile keys under their unchanged names,
+/// documented on [`DropTermConfig`]'s same-named fields. A key the
+/// file lacks loads as its default; the derived `Default` is the
+/// config's own (no profiles, no default profile).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfilesSection {
+    /// See [`DropTermConfig::profiles`].
+    pub profiles: Vec<Profile>,
+    /// See [`DropTermConfig::default_profile`].
+    pub default_profile: Option<String>,
+}
+
+/// The store's keybinds section (`keybinds.ron`, the keybinds
+/// writer's file): the one binding-map key under its unchanged name.
+/// A missing key loads as the empty map — all defaults, the config's
+/// own default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeybindsSection {
+    /// See [`DropTermConfig::custom_key_binds`].
+    pub custom_key_binds: BTreeMap<String, Binding>,
 }
 
 /// Whether a command program could exec right now: a slash-bearing
@@ -711,6 +807,8 @@ pub(crate) fn program_is_runnable(program: &str) -> bool {
         })
     }
 }
+
+pub mod store;
 
 #[cfg(test)]
 mod tests;
