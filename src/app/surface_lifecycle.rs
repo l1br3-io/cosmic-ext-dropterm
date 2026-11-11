@@ -7,7 +7,8 @@ use cosmic::iced::platform_specific::shell::commands::layer_surface::{
 use cosmic::iced::window;
 use cosmic::widget;
 
-use super::{DropTerm, Message, TOGGLE_DEBOUNCE, ToggleAction, heal_anchor};
+use super::{DropTerm, Message, TOGGLE_DEBOUNCE, ToggleAction};
+use crate::executor::heal_anchor;
 use crate::geometry::{self, Geometry};
 use crate::settings;
 use crate::slide;

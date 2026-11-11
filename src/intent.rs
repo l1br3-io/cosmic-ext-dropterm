@@ -85,6 +85,18 @@ impl ExclusiveZone {
     }
 }
 
+/// The height a [`SurfaceIntent::Shape`] desires: the geometry's
+/// percent of the output (quantized — the settled language of config
+/// and release), or live drag pixels (unquantized by design mid-drag;
+/// percent quantization happens exactly once, at release).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeHeight {
+    /// `geometry.height_percent` of the output height.
+    Percent,
+    /// This many pixels, whatever the percent would round to.
+    Pixels(u32),
+}
+
 /// One declarative desired-state for the drop-down surface: the
 /// vocabulary the decision layer emits and every executor translates
 /// into its own window-system commands, request order included.
@@ -111,6 +123,16 @@ pub enum SurfaceIntent {
         layer: Layer,
         keyboard: KeyboardMode,
         zone: ExclusiveZone,
+    },
+    /// Desired: the shown surface reshaped in place at `geometry` on
+    /// `output` — the config-edit reshape and every live drag apply.
+    /// The libcosmic translation is the same triple
+    /// [`SurfaceIntent::Show`] shapes with, height from [`ShapeHeight`].
+    Shape {
+        handle: SurfaceHandle,
+        geometry: Geometry,
+        output: (u32, u32),
+        height: ShapeHeight,
     },
     /// Desired: keyboard routed into the terminal input — the input
     /// focus a shown surface runs with (first configure, a mid-slide

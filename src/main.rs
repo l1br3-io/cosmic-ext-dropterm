@@ -23,16 +23,24 @@ mod context_menu;
 mod drawer_handle;
 mod geometry;
 mod grab_bar;
-// Transient (surface-intents): the intent vocabulary's consumers are
-// the libcosmic executor and the decision layer, landing in this
-// module's Tasks 2–4 — until then only the module's own tests use it,
-// so the expectation is gated to non-test builds and errors out for
-// deletion when the last consumer lands.
+// Transient (surface-intents): the intent vocabulary's and executor's
+// consumers are the decision layer and the app handlers, landing in
+// this module's Tasks 3–4 — until then only the modules' own tests
+// use them, so the expectation is gated to non-test builds and errors
+// out for deletion when the last consumer lands.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "surface-intents Tasks 2–4 route the executor and decision layer through the vocabulary"
+        reason = "surface-intents Tasks 3–4 route the decision layer and handlers through the vocabulary and executor"
+    )
+)]
+mod executor;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "surface-intents Tasks 3–4 route the decision layer and handlers through the vocabulary and executor"
     )
 )]
 mod intent;
