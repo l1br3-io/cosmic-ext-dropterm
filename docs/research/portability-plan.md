@@ -639,7 +639,7 @@ one merge.
 
 ### `config-store`: plain XDG configuration
 
-**Status**: not started.
+**Status**: merged (f5199ec).
 
 **Objective.** Settings persist as plain ron owned by DropTerm under
 `$XDG_CONFIG_HOME`, following the `src/session.rs` pattern, and
