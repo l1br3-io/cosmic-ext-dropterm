@@ -22,6 +22,12 @@
     <category>TerminalEmulator</category>
   </categories>
   <releases>
+    <release version="0.5.0" date="2026-11-12">
+      <description>
+        <p>DropTerm becomes plain dropterm: the binary, the app id, the repository, and the release assets all drop the cosmic-ext- prefix, and the configuration moves with them - settings, profiles, and keybindings now live as RON sections under ~/.config/io.github.l1br3_io.dropterm/ (config.ron, profiles.ron, keybinds.ron, and the optional completions.toml), replacing the one-file-per-key layout under the old cosmic-config directory. The move is greenfield: nothing imports the old layout, so the first start begins from the defaults; the panel applet renames with it, so an existing panel must re-add it once. Editing the files applies live, and sessions follow the new id - copying the old session file across restores the open tabs.</p>
+        <p>Also carries the never-published 0.4.0 payload: pasted images with a per-tab images panel, the status band's leading glyphs, hairlines, and hover tips, and always-on autosuggestion generators with a background-loaded completions table. Where the compositor offers no layer-shell protocol, the binary now names it and exits non-zero instead of silently never appearing.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-09">
       <description>
         <p>Pasted images, end to end: an image on the clipboard - a screenshot tool's copy, or a file copied in COSMIC Files - is read, cached under ~/.cache/dropterm/paste/ in its own format, and its path pastes as text, while a per-tab images panel lists every paste with a thumbnail, its stamp, and its five verbs: Open, Copy path, Copy image, Re-paste, and a two-step Delete. The panel opens from the status band's new pasted-images chip, the band's context menu, or Ctrl+Shift+P. The status band also gains a leading glyph on every segment and hairlines dividing adjacent segments, with a hover tip on all of them. The autosuggestion generators are always on, their toggle removed, and the completion table loads in the background.</p>

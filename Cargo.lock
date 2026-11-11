@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "dropterm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
  "base64",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "dropterm-applet"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dropterm",
  "env_logger",

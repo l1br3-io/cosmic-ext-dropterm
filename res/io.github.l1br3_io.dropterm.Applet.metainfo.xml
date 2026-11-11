@@ -25,6 +25,11 @@
     <category>System</category>
   </categories>
   <releases>
+    <release version="0.5.0" date="2026-11-12">
+      <description>
+        <p>Tracking DropTerm 0.5.0; the applet's identity renames with the terminal's - app id io.github.l1br3_io.dropterm.Applet, with the desktop file, icon, and metainfo carrying the plain-dropterm name. A panel layout referencing the old id will not load it; re-add it once from the panel's applet picker.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-09">
       <description>
         <p>Tracking DropTerm 0.4.0; the applet itself is unchanged.</p>

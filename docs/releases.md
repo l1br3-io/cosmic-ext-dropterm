@@ -2,6 +2,18 @@
 
 What each tagged release changed, newest first - a curated, linkable summary; the GitHub release pages carry the exhaustive auto-generated lists, and the [roadmap](https://github.com/l1br3-io/dropterm/blob/main/ROADMAP.md) carries what comes next. A section is added here at release time, by the release commit; nothing in between.
 
+## v0.5.0 (2026-11-12)
+
+The identity release: DropTerm drops the `cosmic-ext-` prefix and takes ownership of plain `dropterm` - the binary, the app id (`io.github.l1br3_io.dropterm`), the repository (`l1br3-io/dropterm`), and the release assets all rename, and the configuration moves with them. Settings, profiles, and keybinds now live as RON sections under `$XDG_CONFIG_HOME/io.github.l1br3_io.dropterm/` - `config.ron`, `profiles.ron`, `keybinds.ron`, and the optional `completions.toml` - replacing the one-file-per-key layout under `~/.config/cosmic/io.github.l1br3_io.CosmicExtDropterm/v1/`. The move is greenfield: nothing reads or imports the old layout, the first start begins from the defaults, and the old files are left untouched on disk. Edits to the new files apply live - a hand edit reaches the running terminal, and a file that does not parse is ignored while the app runs and moved aside to `.bak` at the next start ([how edits apply](configuration.md#how-edits-apply)). Sessions follow the new id (`~/.local/state/io.github.l1br3_io.dropterm/session.ron`); the format is unchanged, so copying the old file across brings the open tabs back. Upgraders from a `cosmic-ext-dropterm` install remove its two binaries and the `io.github.l1br3_io.CosmicExtDropterm*` files under `/usr/share/{applications,icons,metainfo}/`. The panel applet's id renames with everything else, and a panel layout referencing the old id will not load it - re-add DropTerm once from the panel's applet picker.
+
+This release also carries everything from the never-published v0.4.0 tag (its workflow run failed; the section below documents it): pasted images end to end, the status band's full dress, and the always-on autosuggestion generators.
+
+- The identity break - binary `dropterm`, app id `io.github.l1br3_io.dropterm`, repository `l1br3-io/dropterm`, assets `dropterm-<ver>-<arch>.tar.gz` ([installing](https://github.com/l1br3-io/dropterm#installing))
+- The config store - RON sections in the plain XDG directory, live reload, startup quarantine of unparseable files, the watched `completions.toml` ([the default config directory](configuration.md#the-default-config-directory))
+- The layer-shell guard - where the compositor offers no `zwlr_layer_shell_v1` the binary names the missing protocol and exits non-zero, instead of silently never surfacing ([known issues](known-issues.md))
+- Carried from the v0.4.0 tag - pasted images and the per-tab images panel, the band's leading glyphs, hairlines, and hover tips, the background-loaded completions table ([images](images.md#pasting-images), [status bar](status-bar.md#the-segments))
+- Internal - the surface-intent vocabulary (handlers emit declarative intents through a toolkit-neutral executor) and the D-Bus config watch leaves the build; the COSMIC theme follow rides the file watcher
+
 ## v0.4.0 (2026-11-09)
 
 *Tag-only: the tag's release workflow run failed and, ruled 2026-11-11, is not retried — no published v0.4.0 release exists. This section documents what the tag carries; the next release supersedes it.*
