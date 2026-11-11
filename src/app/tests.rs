@@ -727,6 +727,11 @@ fn the_watcher_step_stays_silent_when_nothing_changed() {
     // A same-value reload is no echo — here a half-written section
     // that keeps the last-known values: nothing to apply, and the
     // rename's second event after a real change lands the same way.
+    // The file-state assertions pin the silent path's non-destructive
+    // half too: silence means the half-written file is left exactly
+    // where the editor's in-flight save left it — never quarantined
+    // — so a reload implementation that renamed on the peek would
+    // fail here even when its Option answer stays silent.
     let dir = store_fixture("unchanged");
     std::fs::write(dir.join("config.ron"), "(height_perc").expect("half a section");
     let last = DropTermConfig {
@@ -736,6 +741,15 @@ fn the_watcher_step_stays_silent_when_nothing_changed() {
     assert_eq!(
         config_after(&event_naming(&dir, "config.ron"), &dir, &last),
         None
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.ron")).expect("the half file survives"),
+        "(height_perc",
+        "the editor's in-flight file is never moved aside"
+    );
+    assert!(
+        !dir.join("config.ron.bak").exists(),
+        "a silent reload quarantines nothing"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

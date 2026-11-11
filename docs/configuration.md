@@ -22,10 +22,13 @@ The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.
 
 Most keys are editable in the [settings drawer](settings.md); the exceptions write themselves (`settings_drawer_width`) or wait for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
+This layout starts fresh: versions before it kept settings under `~/.config/cosmic/<app id>/v1/` (one file per key, through cosmic-config), and nothing here reads or imports those files - the first start of this version begins from the defaults. Copy over any setting you want to keep by writing it into the section file that owns it.
+
 ## How edits apply
 
-- **Live.** Saving a file applies it at once, exactly like a drawer change - the two are one path.
+- **Live.** Saving a file applies it at once, exactly like a drawer change - the two are one path. Live apply rides the store's file watcher: if the watcher cannot start (a system at its inotify watch limit, say), writes still persist and apply at the next start - they just stop applying mid-session until a restart.
 - **A file that does not parse is ignored while DropTerm runs.** The last good values stay in effect until the file parses again, so a half-saved edit or a typo never resets anything mid-session. A deleted file likewise changes nothing until the next start.
+- **A file that parses replaces its section whole.** Keys the file omits reset to their defaults on the live surface - the file is the section, not an overlay on the running values, and trimming a file down is a reset of everything removed. (Keys a file leaves out when no file parsed before are simply defaults; see the next rule for the ones that do not parse at all.)
 - **At startup, a file that does not parse is moved aside** to `<name>.bak` (`config.ron.bak`) and its keys start from their defaults; the other files are unaffected. Correct the `.bak` and move it back.
 - **The drawer rewrites the whole file it saves.** It re-reads the file first, so keys you edited by hand are kept - but every key is written out, and comments are not preserved. If the file does not parse at that moment, it is moved aside to `.bak` and the save starts from the settings DropTerm is running with, so a typo never turns one toggle into a reset.
 - **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, `output`, and `settings_drawer_width` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.

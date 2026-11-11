@@ -2186,7 +2186,12 @@ impl Application for DropTerm {
         // re-reads the whole config and lands as `ConfigChanged`, the
         // echo every apply rides. One long-lived stream; a watcher
         // that cannot start logs once and parks (writes still
-        // persist, they just stop applying live).
+        // persist, they just stop applying live). One silent blind
+        // spot: the watch is bound to the directory's inode, so a
+        // tool that deletes and recreates the store dir mid-run
+        // kills the events for good — writes keep persisting (and
+        // their files keep landing), but nothing applies live again
+        // until a restart re-arms the watcher.
         subs.push(Subscription::run_with(
             std::any::TypeId::of::<ConfigSubscription>(),
             |_| {
@@ -2222,6 +2227,11 @@ impl Application for DropTerm {
                         // delivered (init loaded the same files) —
                         // unreadable sections keep their last-known
                         // values instead of flashing to defaults.
+                        // Tracked unclamped on purpose: the diff
+                        // lives in file space, while the delivered
+                        // message is `.clamped()` — clamping `last`
+                        // too would make a clamp-changing edit echo
+                        // forever.
                         let mut last =
                             DropTermConfig::reload_from(&dir, &DropTermConfig::default());
                         // `watcher` stays alive for the loop: dropping

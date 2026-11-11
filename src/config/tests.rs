@@ -87,6 +87,31 @@ fn a_live_reload_applies_a_section_that_parses() {
 }
 
 #[test]
+fn a_live_reload_replaces_the_section_whole_not_per_key() {
+    // A parseable section that omits keys resets every unlisted key
+    // to its default in the running app — the same wholesale
+    // replacement a restart performs, not a per-key merge with the
+    // last-known values. Pinned because it is the semantic to know
+    // before trimming a file down: what the file says is the
+    // section, whole.
+    let dir = TempDir::new("live-reload-whole");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 55)");
+    let last = DropTermConfig {
+        height_percent: 70,
+        opacity: 50,
+        ..DropTermConfig::default()
+    };
+
+    let next = DropTermConfig::reload_from(&dir.0, &last);
+    assert_eq!(next.height_percent, 55);
+    assert_eq!(
+        next.opacity,
+        DropTermConfig::default().opacity,
+        "a key the file omits resets to its default, live"
+    );
+}
+
+#[test]
 fn a_live_reload_keeps_the_last_good_section_while_its_file_is_unreadable() {
     // An editor mid-write leaves a section that does not parse for
     // an instant. The live reload keeps the last-known values and

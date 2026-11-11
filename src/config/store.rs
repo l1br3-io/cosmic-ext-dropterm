@@ -140,15 +140,41 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 /// ([`crate::app::APP_ID`]), so the dev identity gets its own config
 /// files.
 pub fn store_dir() -> PathBuf {
-    let base = if std::env::var_os("FLATPAK_ID").is_some() {
-        std::env::var_os("HOST_XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
+    store_dir_with(
+        std::env::var_os("FLATPAK_ID").is_some(),
+        std::env::var_os("HOST_XDG_CONFIG_HOME"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// The resolution core of [`store_dir`], every input explicit so
+/// the rules are table-testable: a Flatpak reads the host's config
+/// (absolute `HOST_XDG_CONFIG_HOME` only — a relative value never
+/// steers the store cwd-relative — falling to the flatpak HOME's
+/// `.config`); otherwise absolute `XDG_CONFIG_HOME` only, falling
+/// to HOME's `.config`. With neither variable set the relative
+/// `.config/<APP_ID>` twin of `session::state_file_path` answers —
+/// a session with no HOME has no absolute anything, and every
+/// consumer treats a relative store the way the state file always
+/// has.
+fn store_dir_with(
+    flatpak: bool,
+    host_xdg: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let home_config =
+        |home: Option<std::ffi::OsString>| home.map(|home| PathBuf::from(home).join(".config"));
+    let base = if flatpak {
+        host_xdg
             .map(PathBuf::from)
             .filter(|base| base.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .or_else(|| home_config(home))
+    } else {
+        xdg.map(PathBuf::from)
+            .filter(|base| base.is_absolute())
+            .or_else(|| home_config(home))
     };
     match base {
         Some(base) => base.join(crate::app::APP_ID),
@@ -209,6 +235,87 @@ mod tests {
 
     fn backup_of(path: &std::path::Path) -> PathBuf {
         sibling(path, ".bak")
+    }
+
+    #[test]
+    fn the_store_dir_resolves_by_the_xdg_rules() {
+        // The resolution table: absolute XDG wins, a relative XDG
+        // never steers the store cwd-relative, HOME's `.config` is
+        // the fallback, and a Flatpak reads the host's config under
+        // the same absolute-only rule — a relative
+        // `HOST_XDG_CONFIG_HOME` falls to the flatpak HOME like an
+        // unset one.
+        let app = PathBuf::from(crate::app::APP_ID);
+        let os = |value: &str| Some(std::ffi::OsString::from(value));
+        assert_eq!(
+            store_dir_with(false, None, os("/custom/config"), os("/home/u")),
+            PathBuf::from("/custom/config").join(&app)
+        );
+        assert_eq!(
+            store_dir_with(false, None, os("relative/x"), os("/home/u")),
+            PathBuf::from("/home/u/.config").join(&app),
+            "a relative XDG_CONFIG_HOME is ignored"
+        );
+        assert_eq!(
+            store_dir_with(false, None, None, os("/home/u")),
+            PathBuf::from("/home/u/.config").join(&app)
+        );
+        assert_eq!(
+            store_dir_with(false, None, None, None),
+            PathBuf::from(".config").join(&app),
+            "no HOME: the state file's relative twin"
+        );
+        assert_eq!(
+            store_dir_with(
+                true,
+                os("/host/config"),
+                os("/sandbox/config"),
+                os("/sandbox/home")
+            ),
+            PathBuf::from("/host/config").join(&app),
+            "inside a Flatpak the host's config wins over the sandbox's XDG"
+        );
+        assert_eq!(
+            store_dir_with(true, os("relative/h"), None, os("/sandbox/home")),
+            PathBuf::from("/sandbox/home/.config").join(&app),
+            "a relative HOST_XDG_CONFIG_HOME is ignored"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_previous_file_intact() {
+        // The store's anti-data-loss half: when a save cannot
+        // complete (here the tmp sibling blocked by a directory), it
+        // errors and the previous file survives byte-identical — the
+        // rename onto the target is the only step that ever replaces
+        // it.
+        let dir = TempDir::new("failed-save");
+        let path = section_file(&dir);
+        save_atomic(
+            &path,
+            &Section {
+                font_size: 15,
+                note: None,
+            },
+        )
+        .expect("first save");
+        let before = fs::read_to_string(&path).expect("read the standing file");
+        fs::create_dir(sibling(&path, ".tmp")).expect("block the tmp sibling");
+        assert!(
+            save_atomic(
+                &path,
+                &Section {
+                    font_size: 16,
+                    note: None
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read after the failed save"),
+            before,
+            "the standing file is untouched"
+        );
     }
 
     #[test]
