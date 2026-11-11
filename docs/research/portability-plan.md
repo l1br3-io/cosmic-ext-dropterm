@@ -1168,7 +1168,57 @@ not count against the gate.
 
 #### Session 5: X11
 
-*Pending.*
+2026-11-11 · Debian trixie (docker container rig; recorded as such — the
+plan's VM-acceptable clause read at container fidelity) · Xvfb 21.1.16,
+i3 4.24-1, X11, no Wayland socket · scripted session, screen 1280x800,
+scale 1 · build: v0.4.0 tag bb6fd74, `just build-release` (no published
+v0.4.0 artifact exists — the release run failed upstream; flagged) ·
+agent-run: logs, xprop/xdotool queries, and pixel analysis of scrot
+captures (not eyes-on).
+
+- 1 Launch — fail (expected): with the session's X11 client libs present,
+  winit's X11 fallback initializes and the first launch maps a degenerate
+  1280x32 `_NET_WM_WINDOW_TYPE_DOCK` window in i3's top dockarea (iced
+  fallback-red render, briefly live, frozen within ~90 s) and the process
+  runs on as a zombie; with libXi absent it instead panics at
+  event-loop creation, exit 101 (`LibraryOpenError … libXi.so.6`) — a
+  real desktop carries libXi, so the zombie mode is the desktop mode.
+- 2 Keyboard on show — n-a: no real surface to take keyboard.
+- 3 Summon bind — fail (expected): the i3 `bindsym F12 exec … toggle`
+  fires (the bind log carries the spawned launch's output); the summons
+  forwards, no terminal surfaces.
+- 4 Rapid double-toggles — pass at the bus level: both forwards exit 0,
+  the instance survives; no duplicate windows (none map).
+- 5 `hide_on_focus_loss` — n-a: no surface.
+- 6 Grab-bar drag — n-a: no surface.
+- 7 Above fullscreen — n-a: no surface.
+- 8 Theme fallback — fail (expected): no `com.system76.Cosmic*` services
+  on the bus; `cosmic_config::dbus` logs "Failed to create watcher"
+  ERRORs in an unbounded retry loop (~every 2–4 s, forever), and the
+  render falls back to iced's default styling (the red band).
+- 9 Config write — n-a: the drawer is unreachable.
+- 10 Clipboard — n-a: no surface.
+- 11 Bell — n-a: no notification daemon in the rig.
+- 12 CLI — fail (expected), with a truthful twist: `toggle` and
+  `new-tab` forward and exit 0 over the session bus, and `--is-visible`
+  answers `false`/exit 1 — truthful (no terminal surface exists), unlike
+  the GNOME-mode lying-true on record; with no bus address in the
+  environment the instance logs "Failed to connect to dbus" and still
+  zombies.
+- 13 Second-launch handoff — pass: the single instance holds; a second
+  launch forwards instantly and exits 0.
+- 14 Multi-monitor — n-a: single Xvfb screen.
+- 15 Session restore — n-a: never surfaced; later launches (after
+  config/session state exists, or after the dock band is killed) map no
+  window at all — a pure zombie.
+- 16 Live geometry edit — n-a: no surface.
+
+Filed: the class is the no-layer-shell failure — merged `layer-shell-guard`
+(f73cf27) now refuses it at startup. Two X11-specific data recorded for
+Phase 4's X11 backend design: an X11 DOCK-type window *can* carry an
+edge-anchored band (encouraging), and the degenerate 32 px height plus the
+theme-watcher retry loop are its first design inputs. No new bug package:
+expected-finding class, per the plan.
 
 #### Session 6: non-Pop distro
 
