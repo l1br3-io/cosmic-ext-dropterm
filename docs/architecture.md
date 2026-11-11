@@ -23,7 +23,9 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 | `context_menu.rs` | The terminal context-menu model - rows, labels, item→`terminal::Action` mapping (pure; picks land in the same path keybinds use) |
 | `dbus_state.rs` | The read-only served state: `Visible` and `TabCount` on the `…dropterm.V1` interface |
 | `drawer_handle.rs` | The settings drawer's drag-resize handle |
-| `geometry.rs` | Pure geometry math plus the single `apply_geometry` surface path every reshape goes through |
+| `executor.rs` | The libcosmic surface executor: translates each intent into today's layer-shell command sequence and owns the clipboard anchor |
+| `geometry.rs` | Pure geometry math plus the single anchor/size/margin triple every reshape goes through |
+| `intent.rs` | The toolkit-neutral surface intent vocabulary (`SurfaceIntent`, `SurfaceHandle`) and the executor trait |
 | `grab_bar.rs` | The surface-height drag bar |
 | `keybinds.rs` | The default chord map plus the per-action `custom_key_binds` overlay (pure) |
 | `notify.rs` | Bell → freedesktop desktop notification (direct D-Bus; COSMIC has no Notification portal) |
@@ -44,7 +46,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 
 - **Single-instance D-Bus.** A second launch of the binary never starts a second app: it rides libcosmic's `org.freedesktop.DbusActivation` to the running instance. The CLI verbs (`src/app/remote.rs`) and the applet's toggle use the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)).
 - **Config as the source of truth.** Every setting is one RON file under cosmic-config, watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
-- **One geometry path.** Every transition that shapes the surface (show, config reshape, drag) goes through `geometry::apply_geometry`, so no path can leave a stale anchor, margin, or size.
+- **One surface-intent path.** The surface lifecycle decides in the headless `SurfaceMachine` (`app/surface_lifecycle.rs`) and emits declarative intents (`intent.rs`); the libcosmic executor (`executor.rs`) translates each into today's layer-shell commands, request order included. Every reshape still lands through one geometry triple, so no path can leave a stale anchor, margin, or size.
 - **One spawn funnel.** `app/spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface.
 - **Theme by name.** Schemes are registry names resolved in `terminal/theme_source.rs`; the profile appearance rule is `profile ?? global` per field, re-resolved on every config pass so live tabs follow edits.
 
