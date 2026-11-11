@@ -556,7 +556,10 @@ from day one beside everything; Phase 3 follows the spike report.
 
 ### `reality-check`: does today's binary work off COSMIC?
 
-**Status**: not started.
+**Status**: in progress — four of seven sessions filled (2026-11-11:
+COSMIC, sway, X11, non-Pop distro, all agent-run; GNOME, KDE, and
+Hyprland remain owner-hardware sessions, and the input-bound rows of
+the filled sessions want one eyes-on pass each).
 
 **Objective.** Learn what the shipped binary does outside COSMIC before
 writing code. Green results on sway, Hyprland, and KDE collapse "other
