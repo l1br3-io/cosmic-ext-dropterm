@@ -183,7 +183,12 @@ your approval before anything is written, and runs the recipe that
 commits locally and never pushes. Before the tag push it offers a
 full-pipeline dry-run rehearsal — you push main alone, it dispatches
 release.yml's dry-run (which assembles the artifact set and publishes
-nothing), and the tag goes up once the set assembles green. After the
+nothing) — and the tag goes up only once two gates are green: the
+assembled set, and the walk — [testing](testing.md)'s checklist run
+end-to-end on the cut tree (validation VM or hardware). The walk is a
+gate, not a record: no green walk, no publish, and a red row is fixed
+on main before the tag moves (owner ruling, 2026-11-11: end-to-end
+green before any release). After the
 push it watches release.yml through its jobs and verifies the published
 asset set, re-printing the flight checklist at every gate so "what
 now" is answered before it is asked. Everything that reaches the
@@ -205,7 +210,11 @@ below are what the command does; they remain the manual path.
    `just check` plus the appstream validation CI enforces, commits
    everything as one release-hygiene commit, and tags `vX.Y.Z`. It never
    pushes - the push is the publish.
-3. **Publish**: `git push origin main && git push origin vX.Y.Z`.
+3. **Walk the cut tree** - the [testing](testing.md) checklist runs
+   end-to-end on the release bits (`just build-release` output in the
+   validation VM, or hardware) before any push. End-to-end green
+   before any release; a red row is fixed on main and the cut re-made.
+4. **Publish**: `git push origin main && git push origin vX.Y.Z`.
    [release.yml](../.github/workflows/release.yml) runs the test suite on
    the release bits, builds the per-arch tarballs and `vendor.tar`, proves
    the vendored offline build, guards tag against `Cargo.toml`, and

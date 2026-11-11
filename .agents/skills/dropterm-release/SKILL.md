@@ -97,8 +97,10 @@ every completed gate:
            testing.md, ROADMAP
     [ ] 3. Cut — just release X.Y.Z green, tagged at <short-HEAD>
     [ ] 4. Rehearsal (if chosen) — dry-run green on origin/main
-    [ ] 5. Publish — tag on origin, release.yml green, assets verified
-    [ ] 6. Close of books — trackers dated, tree clean
+    [ ] 5. Walk gate — docs/testing.md rows green on the cut tree
+           (VM or hardware) before any push
+    [ ] 6. Publish — tag on origin, release.yml green, assets verified
+    [ ] 7. Close of books — trackers dated, tree clean
 
 ## Phase 1 — Flight plan (preflight as one structured question)
 
@@ -129,8 +131,11 @@ commits, the flight checklist, and the opening structured question —
 
 1. the version: proposed, or your override;
 2. has the release-walk on hardware/VM run on this tree
-   (`docs/testing.md` rows)? Cutting without it is allowed, but the
-   answer goes on the record;
+   (`docs/testing.md` rows)? The walk is a gate, not a record
+   (owner ruling, 2026-11-11: end-to-end green before any release):
+   no publish without a green walk on the tree being released —
+   "not run" means the flight holds after the cut until the walk
+   runs green, and a red row is fixed on main before the tag moves;
 3. the dry-run rehearsal: choose now or defer to phase 4 — one CI
    pass now versus the risk of a broken public release later.
 
@@ -180,6 +185,12 @@ as they land. Green → the last cheap answer is in; proceed to phase
 main, is pushed, and the dry-run repeats.
 
 ## Phase 5 — Publish (the point of no return)
+
+Gate first: the walk must be green on the cut tree — the
+`docs/testing.md` rows walked in the validation VM or on hardware,
+with every red row fixed on main and the cut re-made if fixes
+landed. A walk that has not run parks the flight here; "not run" is
+not an answer the publish accepts.
 
 Before presenting anything, say exactly what this moment is: the
 last undoable one. Once the tag is on origin, release.yml builds and
