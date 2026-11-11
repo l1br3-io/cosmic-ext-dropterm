@@ -1222,7 +1222,28 @@ expected-finding class, per the plan.
 
 #### Session 6: non-Pop distro
 
-*Pending.*
+2026-11-11 · Arch Linux (`archlinux:latest` docker container; no desktop
+session — this is the distro axis: binary and build compatibility) ·
+glibc 2.44 · artifacts: the v0.4.0 tag `just build-release` (the tarball
+binary's stand-in; no published artifact exists) plus a from-source build
+inside the container · agent-run.
+
+- Tarball binary: `ldd` resolves cleanly; its GLIBC symbol floor is
+  **2.39** (objdump symbol versions, max `GLIBC_2.39`) — the plan's
+  floor confirmed by the artifact itself; it runs (`--version`, exit 0).
+- Source build: toolchain via pacman (`base-devel`, `rust`, `just`,
+  `wayland`, `libxkbcommon`, `fontconfig`, `freetype2`, `expat`);
+  `just deps` a no-op over them; `just build-release` green; the built
+  binary runs (its own floor is 2.44 — built against the container's
+  glibc; the shipped tarball is the floor that matters).
+- Runtime-dlopen deps: the binary's direct NEEDED list is minimal
+  (libxkbcommon, libgcc_s, libm, libc) — the Wayland/X11 client libs
+  load via dlopen (winit), so an ldd-only check under-reports; a floor
+  distro must still carry `libwayland-client0` and `libxi6` (session 5's
+  libXi panic is the failure mode without them). Feeds `distro-reach`.
+- `Noto Sans Mono`: absent — the base container ships no fonts at all
+  (fc-list empty); fonts are the desktop install's concern, a
+  `distro-reach` packaging fact rather than a binary failure.
 
 ## Phase 2: the spike checks
 
