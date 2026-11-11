@@ -1487,6 +1487,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "wayland-client",
  "wl-clipboard-rs",
  "zbus",
 ]

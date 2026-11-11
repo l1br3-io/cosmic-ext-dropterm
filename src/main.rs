@@ -24,6 +24,7 @@ mod drawer_handle;
 mod geometry;
 mod grab_bar;
 mod keybinds;
+mod layer_shell;
 mod notify;
 mod profile;
 mod session;
@@ -141,6 +142,24 @@ fn main() -> cosmic::iced::Result {
         std::process::exit(i32::from(code));
     }
     let flags = Flags::new(args.action.unwrap_or_default());
+
+    // The layer-shell guard (spec: fail loudly without layer-shell):
+    // before any surface is created, ask the session's registry for
+    // the protocol a drop-down surface needs. Where it is missing
+    // (GNOME, a sandbox, no Wayland session), say so and exit — the
+    // old failure mode was starting, never surfacing, and
+    // `--is-visible` answering true. The query path above stays ahead
+    // of the probe: it creates no surfaces, and its not-running
+    // answer is truthful because the guard keeps an unsupported
+    // session from ever hosting an instance.
+    let session = layer_shell::startup_verdict();
+    if !matches!(session, Ok(layer_shell::Verdict::Supported)) {
+        eprintln!(
+            "{}",
+            layer_shell::unsupported_startup_error(session.err().as_deref())
+        );
+        std::process::exit(1);
+    }
 
     let settings = cosmic::app::Settings::default()
         .no_main_window(true)
