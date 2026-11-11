@@ -1152,7 +1152,58 @@ not count against the gate.
 
 #### Session 2a: sway
 
-*Pending.*
+2026-11-11 · Debian trixie (docker container rig) · sway 1.10.1 over
+wlroots headless (pixman, no input devices), Wayland, output 1280x720
+scale 1 (plus a created second headless output for check 14) · 47
+registry globals, `zwlr_layer_shell_v1` v4 confirmed · build: v0.4.0 tag
+bb6fd74, `just build-release` · agent-run: swaymsg IPC, dbus-monitor,
+grim captures with pixel analysis (not eyes-on).
+
+**The headline: the v0.4.0 binary works on sway** — layer surface maps
+and renders a coherent dark neutral theme at the top edge on the primary
+output, the destroy-on-hide lifecycle is compositor-parity (proven by a
+damage test: with another window mapped, hiding repaints the band away —
+an undamaged headless framebuffer otherwise shows stale pixels), and the
+whole CLI surface behaves.
+
+- 1 Launch — pass: surface maps at the configured top edge, full width,
+  ~252 px of the 720 px output; dark theme renders (not a fallback-red
+  artifact).
+- 2 Keyboard on show — n-a: the rig's input control fails (wtype
+  delivers to no client — a normal foot window receives nothing either);
+  the map-time grab needs a real keyboard session.
+- 3 Summon bind — n-a: bindsym needs key events; not exercisable
+  headless.
+- 4 Rapid double-toggles — pass: both forwards exit 0, one instance
+  survives, no duplicate surfaces.
+- 5 `hide_on_focus_loss` — n-a: no pointer.
+- 6 Grab-bar drag — n-a: no pointer.
+- 7 Above fullscreen — n-a: no other fullscreen client exercised.
+- 8 Theme fallback — pass with a finding: no `com.system76.Cosmic*`
+  services on the bus, the same watcher ERROR retry loop as session 5
+  logs forever, but the render resolves to the built-in dark default —
+  coherent on Wayland, unlike X11's red dock band.
+- 9 Config write — n-a: the drawer is unreachable without input.
+- 10 Clipboard — n-a: needs an interactive selection.
+- 11 Bell — fail (in-rig): with mako on the session bus and the terminal
+  hidden, a `printf '\a'` tab produced zero `Notify` calls on
+  dbus-monitor — the bell→notification path did not fire here, whether
+  from the headless tab spawn or the path itself; flagged for the
+  hardware rewalk.
+- 12 CLI — pass: the full truth table over the session bus (`true`/0
+  shown, `false`/1 after hide, `true`/0 after show).
+- 13 Second-launch handoff — pass: forward-and-exit in 8 ms.
+- 14 Multi-monitor — partial: a second headless output created, the band
+  renders on the first output; follow-focus semantics need a real
+  multi-monitor rig.
+- 15 Session restore — pass at surface level: kill + relaunch remaps the
+  drop-down at the same anchor (band back, `true`/0); tab-count parity
+  is unverifiable headless.
+- 16 Live geometry edit — n-a: drawer unreachable.
+
+Core-check reading: green everywhere exercisable (1, 4, 12, 13); the
+input-bound core rows (2, 3, 5) want one hardware sway session to close.
+No failures to file beyond the bell row, which rides with the rewalk.
 
 #### Session 2b: Hyprland
 
