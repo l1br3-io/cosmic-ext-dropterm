@@ -1109,7 +1109,7 @@ impl DropTerm {
                 // visible the marker above alone carries the signal.
                 let tab = &mut self.tabs[tab_index];
                 if notify::should_notify(
-                    matches!(self.surface, SurfaceState::Hidden),
+                    matches!(self.surface.state, SurfaceState::Hidden),
                     self.config.bell_notification_enabled,
                     tab.bell_notified,
                 ) {
@@ -1246,7 +1246,8 @@ impl DropTerm {
                 let finished = {
                     let mut terminal = self.tabs[tab_index].terminal.lock().unwrap();
                     terminal.needs_update = true;
-                    if tab_index == self.active_tab && matches!(self.surface, SurfaceState::Hidden)
+                    if tab_index == self.active_tab
+                        && matches!(self.surface.state, SurfaceState::Hidden)
                     {
                         terminal.note_missed_activity();
                     }
@@ -1261,7 +1262,7 @@ impl DropTerm {
                 if let Some(duration) = finished {
                     let tab = &mut self.tabs[tab_index];
                     if notify::should_notify_command(
-                        matches!(self.surface, SurfaceState::Hidden),
+                        matches!(self.surface.state, SurfaceState::Hidden),
                         self.config.command_finish_notification_enabled,
                         duration,
                         std::time::Duration::from_secs(u64::from(

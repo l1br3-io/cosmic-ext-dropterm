@@ -282,11 +282,29 @@ impl LibcosmicExecutor {
     /// surface — the decision layer allocates the handle at `Measure`
     /// and retires it at `Destroy` — so a miss is a decision-layer
     /// bug, loud here rather than a silently wrong-window command.
-    fn window_id(&self, handle: SurfaceHandle) -> window::Id {
+    pub(crate) fn window_id(&self, handle: SurfaceHandle) -> window::Id {
         *self
             .ids
             .get(&handle)
             .expect("an intent names a live surface")
+    }
+
+    /// The handle a window id belongs to, if any: the reverse mapping
+    /// the event handlers need — runtime events arrive carrying
+    /// window ids, decisions speak handles. A foreign window (the
+    /// clipboard anchor, the settings window) maps to none.
+    pub(crate) fn handle_of(&self, id: window::Id) -> Option<SurfaceHandle> {
+        self.ids
+            .iter()
+            .find(|(_, window_id)| **window_id == id)
+            .map(|(handle, _)| *handle)
+    }
+
+    /// Tracks the dock-presence config the anchor heals and swaps by
+    /// (a `show_in_dock` flip changes every future heal, not just the
+    /// live body).
+    pub(crate) fn set_dock_presence(&mut self, show_in_dock: bool) {
+        self.show_in_dock = show_in_dock;
     }
 
     /// Translates one intent into its ordered requests, mutating the
