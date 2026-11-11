@@ -411,7 +411,7 @@ impl DropTerm {
         // hidden one), the settle waits for the opening's granted-
         // size adoption to arm it instead.
         if matches!(
-            self.surface,
+            self.surface.state,
             SurfaceState::Shown(_) | SurfaceState::Hiding(_)
         ) {
             tab.terminal.lock().unwrap().arm_spawn_grid_next_resize();

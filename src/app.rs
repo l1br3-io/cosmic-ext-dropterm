@@ -20,10 +20,6 @@ use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::mouse;
-use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, get_layer_surface, set_exclusive_zone, set_keyboard_interactivity,
-    set_layer,
-};
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, window};
@@ -39,6 +35,10 @@ use crate::config::{
     CONFIG_VERSION, DropTermConfig, Edge, KeyboardMode, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::dbus_state;
+// The clipboard anchor's lifecycle moved to the executor module with
+// the surface-intents port (the spec keeps the anchor private to the
+// libcosmic executor); these are its seams.
+use crate::executor::{anchor_closed, heal_anchor, open_anchor, swap_anchor};
 use crate::geometry::{self, Geometry};
 use crate::grab_bar::GrabBar;
 use crate::keybinds;
@@ -61,11 +61,12 @@ mod theme_glue;
 
 use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
 use self::surface_lifecycle::{
-    Drag, SurfaceState, config_edit_reshapes, grab_bar_acts_on, layer_unfocused_acts_on,
+    SurfaceInputs, SurfaceMachine, SurfaceState, grab_bar_acts_on, layer_unfocused_acts_on,
     resize_acts_on,
 };
 use self::tab_actions::{RenameEdit, open_trees};
 use self::theme_glue::{effective_is_dark, theme_override, theme_override_task};
+use crate::intent::{KeyboardHold, SurfaceIntent};
 
 /// The app's identity — the single string behind the single-instance
 /// key, the bus name, the config namespace, and the wayland app id.
@@ -446,10 +447,6 @@ pub struct DropTerm {
     /// request replaces the slot, any removal of the tab clears it,
     /// and it survives hide/show like the drawer does.
     pending_close: Option<TabId>,
-    /// An in-progress grab-bar height drag, if any: the absolute
-    /// anchor every target recomputes from, plus the runtime state of
-    /// the apply cadence (see `Drag`).
-    drag: Option<Drag>,
     /// Debounced drag-release config-write state: which release's
     /// persist is still pending.
     write_back: geometry::WriteBack,
@@ -458,19 +455,16 @@ pub struct DropTerm {
     last_written: Option<Geometry>,
     /// Widget id of the rename input, so focus tasks can target it.
     rename_input_id: widget::Id,
-    /// The live clipboard-anchor body and its window id
-    /// (shell-presence spec): the mapped xdg toplevel while
-    /// `show_in_dock` is on, the invisible 1×1 layer surface while it
-    /// is off. `DropTerm` destroys it only for a presence flip — its
-    /// whole job is to own the clipboard binding for the process
-    /// lifetime — and a compositor-side close leaves it `Lost` until
-    /// the next show reopens it.
-    anchor: Anchor,
-    surface: SurfaceState,
-    /// The output size measured by the last `SurfaceOpened`, kept so
-    /// later reshapes (config edits, drag) can recompute pixels without
-    /// a new measuring pass (see `geometry.rs`).
-    output_size: Option<(u32, u32)>,
+    /// The surface lifecycle's decision core (see
+    /// `surface_lifecycle`): state, slide, focus latch, measured
+    /// output, toggle debounce — handle-carrying and headless, its
+    /// executors returning intents.
+    surface: SurfaceMachine,
+    /// The libcosmic executor those intents run through: maps
+    /// handles to iced window ids and owns the clipboard anchor
+    /// (shell-presence spec; the spec keeps the anchor private to
+    /// the executor).
+    surface_exec: crate::executor::LibcosmicExecutor,
     /// Granted height of the shown surface, from `WindowResized` events.
     /// The basis for pinning the terminal widget's height so the tab bar
     /// gets its strip inside the fixed-size surface.
@@ -490,11 +484,6 @@ pub struct DropTerm {
     /// debounce clock says — adopting it by timing luck grows the
     /// grid once per toggle (toggle-grid-stability, round 2).
     requested_height: Option<f32>,
-    /// Whether the surface has received keyboard focus at least once since it
-    /// was shown. Guards `hide_on_focus_loss` so a stray `Unfocused` delivered
-    /// before any `Focused` (possible with `keyboard_mode: OnDemand`) can't
-    /// make the surface open-then-instantly-close.
-    surface_focused: bool,
     key_binds: HashMap<cosmic::widget::menu::key_bind::KeyBind, Action>,
     /// The armed keybinding capture (keybinds-editor): the action whose
     /// editor row was clicked. While `Some` the `KeyPressed` arm routes
@@ -526,13 +515,6 @@ pub struct DropTerm {
     /// lifetime; the picker's rows and `font_pick_write`'s picks
     /// resolve against it.
     font_families: Vec<String>,
-    last_toggle: Option<std::time::Instant>,
-    /// The live slide: the eased content offset while the surface
-    /// animates — in from the anchored edge after a show, out toward
-    /// it before a hide's destroy. `None` at rest — renders
-    /// byte-identically to the unwrapped column — and cleared when
-    /// the parking tick completes the slide (`SlideTick`).
-    slide: Option<slide::Playing>,
     /// Whether the settings drawer is open over the surface (spec:
     /// settings-drawer). Overlay state only — the terminal keeps its
     /// size and the pty its grid (criterion 1); the drawer survives
@@ -758,7 +740,7 @@ impl DropTerm {
     /// ([`Self::active_status_segments`]), one source of truth.
     fn sync_status_duration(&mut self) -> Task<Message> {
         let running = self.active_process_name.is_some();
-        let surface_visible = matches!(self.surface, SurfaceState::Shown(_));
+        let surface_visible = matches!(self.surface.state, SurfaceState::Shown(_));
         if !status_bar::duration_due(
             self.config.status_bar_enabled,
             self.config.status_bar_show_duration,
@@ -861,7 +843,7 @@ impl DropTerm {
             || !self.config.autosuggestions_enabled
             || self.config.autosuggestions_delay_ms == 0
             || self.active_process_name.is_some()
-            || !matches!(self.surface, SurfaceState::Shown(_))
+            || !matches!(self.surface.state, SurfaceState::Shown(_))
         {
             return Task::none();
         }
@@ -1863,120 +1845,6 @@ pub(crate) fn interned_font_family(name: &str) -> &'static str {
     leaked
 }
 
-/// Settings for the clipboard-anchor window — the **dock body**
-/// (shell-presence spec, `show_in_dock = true`).
-///
-/// libcosmic binds its single runtime [`Clipboard`] to the first
-/// window created, and when that surface is destroyed the binding is
-/// dropped — taking the smithay-clipboard connection, and with it
-/// any selection this app copied, down with it. `DropTerm`'s own
-/// surface is the layer shell, which every hide destroys, so
-/// copying out could never survive the focus switch to the paste
-/// target. The anchor — never closed, created before any layer
-/// surface — owns the binding for the whole process lifetime instead,
-/// exempt from close requests, so nothing the user or the runtime
-/// does can drop the connection mid-session.
-///
-/// Wayland cannot honor `visible: false` (winit's `set_visible` is a
-/// no-op there), so this body is a mapped toplevel and the shell's
-/// window switcher and dock list it — the presence `show_in_dock`
-/// buys; the hidden body (`surface::anchor`) is a layer surface no
-/// toplevel listing can see. Its `application_id` is the only name
-/// that toplevel carries — the runtime does not derive it from
-/// `Application::APP_ID` — and with the empty default the switcher
-/// matches no desktop file and labels the window "unknown". Pinned
-/// to the app id, it resolves to `DropTerm`'s name and icon.
-fn clipboard_anchor_settings() -> window::Settings {
-    let mut settings = window::Settings {
-        visible: false,
-        exit_on_close_request: false,
-        resizable: false,
-        decorations: false,
-        size: cosmic::iced::Size::new(1.0, 1.0),
-        ..window::Settings::default()
-    };
-    #[cfg(target_os = "linux")]
-    {
-        settings.platform_specific.application_id = APP_ID.to_string();
-    }
-    settings
-}
-
-/// Which clipboard-anchor body is live (shell-presence spec): the
-/// mapped xdg toplevel that keeps a dock and switcher presence
-/// (`show_in_dock = true`), or the never-destroyed 1×1 layer surface
-/// that is invisible to both. Each variant carries its window id —
-/// the presence swap destroys the old body and needs it.
-///
-/// `Lost` is the hidden body after the compositor closed it — the
-/// one destroy `DropTerm` never asks for (its output went away, a
-/// monitor sleeping off its HDMI link among the likely causes). The
-/// runtime dropped the clipboard binding with it, and the next
-/// surface created would take the binding instead and die with it on
-/// the next hide, so a lost anchor reopens before the next surface
-/// does ([`heal_anchor`] at the head of every show).
-#[derive(Debug, Clone, PartialEq)]
-enum Anchor {
-    Dock(window::Id),
-    Hidden(window::Id),
-    Lost,
-}
-
-/// Whether the live anchor body matches the configured presence: the
-/// dock body belongs to `show_in_dock = true`, the layer body to
-/// `false`, and a lost anchor to neither. Pure — the `ConfigChanged`
-/// swap's gate, keyed on the live anchor rather than the old config
-/// so a missed echo heals on the next one.
-fn anchor_matches(anchor: &Anchor, show_in_dock: bool) -> bool {
-    matches!(
-        (anchor, show_in_dock),
-        (Anchor::Dock(_), true) | (Anchor::Hidden(_), false)
-    )
-}
-
-/// Records a layer surface's `Done` against the anchor: when `closed`
-/// is the live hidden body, the compositor destroyed it and the
-/// anchor becomes [`Anchor::Lost`]. Every other `Done` — terminal
-/// hides, measuring probes, the old body of a presence flip (its id
-/// already replaced) — leaves the anchor alone. Pure; returns whether
-/// the anchor was lost.
-fn anchor_closed(anchor: &mut Anchor, closed: window::Id) -> bool {
-    if *anchor == Anchor::Hidden(closed) {
-        *anchor = Anchor::Lost;
-        return true;
-    }
-    false
-}
-
-/// Reopens a lost anchor as the configured body; a no-op for a live
-/// one. Must run ahead of any other surface creation for the same
-/// reason [`open_anchor`] runs first at startup: the runtime binds
-/// its clipboard to the first window created while unbound.
-fn heal_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
-    if *anchor != Anchor::Lost {
-        return Task::none();
-    }
-    let (next, open) = open_anchor(show_in_dock);
-    *anchor = next;
-    open
-}
-
-/// Opens the configured clipboard-anchor body and returns it with its
-/// open task (shell-presence spec). The task must run before any
-/// terminal layer surface is created: the runtime binds its
-/// clipboard to the first window created — either body qualifies —
-/// and the anchor exists to win that race and hold the binding for
-/// the process lifetime.
-fn open_anchor(show_in_dock: bool) -> (Anchor, Task<Message>) {
-    if show_in_dock {
-        let (id, open) = window::open(clipboard_anchor_settings());
-        (Anchor::Dock(id), open.discard())
-    } else {
-        let id = window::Id::unique();
-        (Anchor::Hidden(id), get_layer_surface(surface::anchor(id)))
-    }
-}
-
 /// Our own hostname, read once at init (osc7-cwd spec): the band's
 /// host-qualification base — a reported OSC 7 host renders only when
 /// it differs from this. One `/proc` read at construction, never per
@@ -2006,32 +1874,6 @@ fn completions_config_dir() -> Option<PathBuf> {
             .join(DropTerm::APP_ID)
             .join(format!("v{CONFIG_VERSION}")),
     )
-}
-
-/// Swaps the clipboard anchor to the configured body (shell-presence
-/// spec): destroys the live body first — the runtime drops the
-/// clipboard binding with it, so whatever is on the clipboard dies
-/// once, the documented cost of a live flip — then opens the other,
-/// whose creation event rebinds the clipboard immediately (the
-/// destroy-before-create order is what heals it without waiting for
-/// the next surface). A no-op when the live body already matches.
-fn swap_anchor(anchor: &mut Anchor, show_in_dock: bool) -> Task<Message> {
-    if anchor_matches(anchor, show_in_dock) {
-        return Task::none();
-    }
-    let close_old: Task<Message> = match anchor {
-        Anchor::Dock(id) => window::close(*id),
-        Anchor::Hidden(id) => destroy_layer_surface(*id),
-        Anchor::Lost => Task::none(),
-    };
-    let (next, open_new) = open_anchor(show_in_dock);
-    *anchor = next;
-    // `chain`, never `then`: these commands are effects that carry no
-    // output, and `then` runs its continuation only on an output — a
-    // `then`-chained open never fires (the flip-needs-restart bug).
-    // `chain` streams the close's action strictly before the open's,
-    // preserving the destroy-before-create order.
-    close_old.chain(open_new)
 }
 
 impl Application for DropTerm {
@@ -2112,6 +1954,15 @@ impl Application for DropTerm {
         // presence flip closes it by id; view events for either body
         // fall through the foreign-window guards.
         let (anchor, open_anchor_task) = open_anchor(config.show_in_dock);
+        // The libcosmic surface executor owns the anchor from here
+        // (the spec keeps it executor-private) and takes the
+        // terminal's input id for `Focus` intents.
+        let terminal_id = widget::Id::unique();
+        let surface_exec = crate::executor::LibcosmicExecutor::new(
+            anchor,
+            config.show_in_dock,
+            terminal_id.clone(),
+        );
 
         // The tab strip's model, built once (criterion 7); its
         // selection starts in lockstep with the initial page.
@@ -2135,7 +1986,7 @@ impl Application for DropTerm {
             specs_table: None,
             tabs: Vec::new(),
             active_tab: 0,
-            terminal_id: widget::Id::unique(),
+            terminal_id,
             term_event_tx: None,
             next_tab_id: 0,
             restore,
@@ -2154,26 +2005,21 @@ impl Application for DropTerm {
             progress_decay_armed: false,
             rename: None,
             pending_close: None,
-            drag: None,
             write_back: geometry::WriteBack::default(),
             last_written: None,
             rename_input_id: widget::Id::unique(),
-            anchor,
-            surface: SurfaceState::Hidden,
-            output_size: None,
+            surface: SurfaceMachine::default(),
+            surface_exec,
             window_height: None,
             pin_applied: None,
             pending_height: None,
             requested_height: None,
-            surface_focused: false,
             key_binds,
             keybind_capture: None,
             keybind_search: String::new(),
             open_picker: None,
             font_families: dropterm::font_list::load_monospace_families(),
             keybind_conflict: None,
-            last_toggle: None,
-            slide: None,
             settings_open: false,
             images_panel_open: false,
             images_panel_thumbs: std::collections::HashMap::new(),
@@ -2335,7 +2181,7 @@ impl Application for DropTerm {
         // a pending redraw request (see `SLIDE_TICK`). The stream is
         // dropped the moment the slide parks — idle time costs no
         // ticks.
-        if self.slide.is_some() {
+        if self.surface.slide.is_some() {
             subs.push(cosmic::iced::time::every(slide::SLIDE_TICK).map(|_| Message::SlideTick));
         }
 
@@ -2378,13 +2224,11 @@ impl Application for DropTerm {
         let Some(tab) = self.active() else {
             return widget::text("").into();
         };
-        if !matches!(
-            &self.surface,
-            SurfaceState::Measuring(shown)
-                | SurfaceState::Shown(shown)
-                | SurfaceState::Hiding(shown)
-                if *shown == id
-        ) {
+        // The state speaks handles; runtime events carry window ids.
+        // The executor's map holds exactly the state's live surface,
+        // so a window it does not know is foreign (settings window,
+        // clipboard anchor) and renders nothing.
+        if self.surface_exec.handle_of(id).is_none() {
             return widget::text("").into();
         }
 
@@ -2398,7 +2242,8 @@ impl Application for DropTerm {
         // placeholder holds the measuring round-trip, so the
         // terminal's first realized size is the configured
         // geometry — one opening resize, never the probe.
-        if matches!(self.surface, SurfaceState::Measuring(_)) && self.window_height.is_none() {
+        if matches!(self.surface.state, SurfaceState::Measuring(_)) && self.window_height.is_none()
+        {
             return widget::text("").into();
         }
 
@@ -2419,7 +2264,7 @@ impl Application for DropTerm {
         // columns through the full-output probe width. At rest the
         // pin equals the grant, so Shown rendering is
         // byte-identical to Fill.
-        let terminal_width = if self.output_size.is_some() {
+        let terminal_width = if self.surface.output_size.is_some() {
             Length::Fixed(self.current_surface_width())
         } else {
             Length::Fill
@@ -2642,7 +2487,7 @@ impl Application for DropTerm {
         // animation in flight → offset 0 → the column renders
         // byte-identically to the unwrapped one.
         let mut slide_box = SlideBox::new(column, 0.0);
-        if let Some(playing) = self.slide {
+        if let Some(playing) = self.surface.slide {
             slide_box = slide_box.playing(self.config.edge, playing);
         }
         let content: Element<'_, Message> = slide_box.into();
@@ -2877,7 +2722,10 @@ impl DropTerm {
                 // own-write absorption, the geometry reshape —
                 // carries it. Same-value echoes never touch the
                 // anchor (`swap_anchor`'s no-op gate).
-                let anchor_task = swap_anchor(&mut self.anchor, self.config.show_in_dock);
+                self.surface_exec
+                    .set_dock_presence(self.config.show_in_dock);
+                let anchor_task =
+                    swap_anchor(&mut self.surface_exec.anchor, self.config.show_in_dock);
                 // The clock's gate can flip on any echo; sync (arm or
                 // stand down) before the echo's own exits, chaining
                 // the task onto whichever return it takes. The
@@ -2906,12 +2754,15 @@ impl DropTerm {
                     .chain(
                         if old_shown_exclusive
                             && !self.config.hide_on_focus_loss
-                            && let SurfaceState::Shown(id) = self.surface
+                            && let SurfaceState::Shown(handle) = self.surface.state
                         {
-                            set_keyboard_interactivity(
-                                id,
-                                surface::keyboard_interactivity(KeyboardMode::OnDemand),
-                            )
+                            // A live release of the held grab, as a
+                            // desired hold: `OnDemand` and nothing
+                            // else changes.
+                            self.apply_surface_intents(&[SurfaceIntent::Hold {
+                                handle,
+                                keyboard: KeyboardHold::OnDemand,
+                            }])
                         } else {
                             Task::none()
                         },
@@ -2972,18 +2823,16 @@ impl DropTerm {
                 // queue). `config_edit_reshapes` keys on the slide's
                 // existence, not its direction, so this holds
                 // mid-slide-out and mid-reversal alike.
-                if config_edit_reshapes(
-                    geometry::geometry_changed(old_geom, new_geom),
-                    self.drag.is_some(),
-                    self.slide.is_some(),
-                ) && let (SurfaceState::Shown(id), Some(output)) =
-                    (&self.surface, self.output_size)
+                let reshape =
+                    self.surface
+                        .decide_reshape(old_geom, new_geom, self.surface.drag.is_some());
+                if !reshape.is_empty()
+                    && let Some(output) = self.surface.output_size
                 {
-                    let id = *id;
                     // Declare the reshape's request for the
                     // stale-echo gate before issuing it.
                     self.request_geometry_height(output, new_geom);
-                    return geometry::apply_geometry(id, new_geom, output).chain(ticks_task);
+                    return self.apply_surface_intents(&reshape).chain(ticks_task);
                 }
                 return ticks_task;
             }
@@ -3011,20 +2860,21 @@ impl DropTerm {
             }
             Message::TermEvent(tab_id, event) => return self.handle_term_event(tab_id, event),
             Message::SurfaceOpened(id, size) => {
-                if self.surface == SurfaceState::Measuring(id) {
+                if let Some(handle) = self.surface_exec.handle_of(id)
+                    && self.surface.state == SurfaceState::Measuring(handle)
+                {
                     // The measuring pass stretched across the output, so
-                    // its first `Opened` size *is* the output size. Keep
-                    // it: every later reshape recomputes pixels from it
-                    // without a new measuring pass.
+                    // its first `Opened` size *is* the output size.
+                    // `decide_configure` adopts it, moves to `Shown`,
+                    // arms the slide-in, and emits the show intents.
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         reason = "rounded surface px are non-negative and far below u32::MAX"
                     )]
                     let output = (size.width.round() as u32, size.height.round() as u32);
-                    self.output_size = Some(output);
-                    let geom = Geometry::from_config(&self.config);
-                    self.surface = SurfaceState::Shown(id);
+                    let inputs = SurfaceInputs::from_config(&self.config);
+                    let intents = self.surface.decide_configure(output, inputs);
                     // Arm the pin at the height the reshape below
                     // requests — before the tasks run, so their
                     // granted-size echoes meet an armed pin. The
@@ -3032,7 +2882,7 @@ impl DropTerm {
                     // full-output height; onto an empty pin it
                     // adopts immediately and grows the grid once
                     // per toggle (toggle-grid-stability).
-                    self.prearm_show_pin(output, geom);
+                    self.prearm_show_pin(output, inputs.geometry);
                     // The show arm's refresh (status-glance criterion
                     // 4): a landing surface narrates the present, not
                     // whatever the last piggyback point saw — the
@@ -3050,28 +2900,6 @@ impl DropTerm {
                     // the tick (the show-arm refresh picks the state
                     // up for free, criterion 6).
                     let clock_task = self.sync_status_clock().chain(self.sync_status_duration());
-                    // The slide-in starts here, with the shown
-                    // surface: the full surface height is both the
-                    // from-offset and the distance — deterministic
-                    // and known at open time, unlike the granted
-                    // window height, which arrives later through the
-                    // double-reported `WindowResized` stream. The
-                    // slide toggle gates this entry: disabled, the
-                    // surface opens at rest with a byte-equal
-                    // render.
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "output px are < 2^24, exact in f32"
-                    )]
-                    let distance_px =
-                        geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
-                    self.slide =
-                        slide::show_slide(self.config.slide_animation_enabled, distance_px).map(
-                            |active| slide::Playing {
-                                started: std::time::Instant::now(),
-                                active,
-                            },
-                        );
                     // The shown surface takes the caret with it: the
                     // engine's focus flag — and the cursor cell's
                     // paint, which only a buffer rebuild applies —
@@ -3086,20 +2914,10 @@ impl DropTerm {
                     if let Some(tab) = self.active() {
                         tab.terminal.lock().unwrap().set_focused(true);
                     }
-                    return Task::batch([
-                        geometry::apply_geometry(id, geom, output),
-                        set_layer(id, surface::wlr_layer(self.config.layer)),
-                        set_keyboard_interactivity(
-                            id,
-                            surface::keyboard_interactivity(surface::shown_keyboard_mode(
-                                self.config.keyboard_mode,
-                                self.config.hide_on_focus_loss,
-                            )),
-                        ),
-                        set_exclusive_zone(id, surface::exclusive_zone(self.config.respect_panel)),
-                        widget::text_input::focus(self.terminal_id.clone()),
-                        clock_task,
-                    ]);
+                    // The show intents' translation is today's batch:
+                    // the shape triple, layer, keyboard hold, exclusive
+                    // zone, then the terminal input focus.
+                    return Task::batch([self.apply_surface_intents(&intents), clock_task]);
                 }
             }
             Message::WindowResized(id, height) => {
@@ -3120,8 +2938,11 @@ impl DropTerm {
                 // twice and the applies arrive at cadence rate, and
                 // reflowing the terminal on every echo made the drag
                 // sluggish on hardware.
-                if resize_acts_on(&self.surface, id)
-                    && self.drag.is_none()
+                if self
+                    .surface_exec
+                    .handle_of(id)
+                    .is_some_and(|handle| resize_acts_on(&self.surface.state, handle))
+                    && self.surface.drag.is_none()
                     && let Some(task) = self.offer_window_height(height)
                 {
                     return task;
@@ -3139,16 +2960,22 @@ impl DropTerm {
                 }
             }
             Message::LayerFocused(id) => {
-                if self.surface == SurfaceState::Shown(id) {
-                    self.surface_focused = true;
+                if let Some(handle) = self.surface_exec.handle_of(id)
+                    && self.surface.state == SurfaceState::Shown(handle)
+                {
+                    self.surface.focused = true;
                     if let Some(tab) = self.active() {
                         tab.terminal.lock().unwrap().set_focused(true);
                     }
-                    return widget::text_input::focus(self.terminal_id.clone());
+                    return self.apply_surface_intents(&[SurfaceIntent::Focus { handle }]);
                 }
             }
             Message::LayerUnfocused(id) => {
-                if layer_unfocused_acts_on(&self.surface, id) {
+                if self
+                    .surface_exec
+                    .handle_of(id)
+                    .is_some_and(|handle| layer_unfocused_acts_on(&self.surface.state, handle))
+                {
                     return self.focus_lost();
                 }
             }
@@ -3157,10 +2984,13 @@ impl DropTerm {
                 // waits for the next show (an output exists then, so
                 // no reopen loop while the monitor is gone); with the
                 // terminal up an output exists now, so heal at once.
-                if anchor_closed(&mut self.anchor, id) {
+                if anchor_closed(&mut self.surface_exec.anchor, id) {
                     log::warn!("the compositor closed the clipboard anchor");
-                    if self.surface != SurfaceState::Hidden {
-                        return heal_anchor(&mut self.anchor, self.config.show_in_dock);
+                    if self.surface.state != SurfaceState::Hidden {
+                        return heal_anchor(
+                            &mut self.surface_exec.anchor,
+                            self.config.show_in_dock,
+                        );
                     }
                 }
             }
@@ -3295,7 +3125,7 @@ impl DropTerm {
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::WindowFocused => {
-                self.surface_focused = true;
+                self.surface.focused = true;
                 if let Some(tab) = self.active() {
                     tab.terminal.lock().unwrap().set_focused(true);
                 }
@@ -3523,44 +3353,27 @@ impl DropTerm {
                 // apply, and the release settle is exact and
                 // immediate. Config is never touched while dragging;
                 // persistence is the release path.
-                if grab_bar_acts_on(&self.surface, self.slide.is_some())
-                    && let (SurfaceState::Shown(id), Some(output)) =
-                        (&self.surface, self.output_size)
-                {
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "output px are < 2^24, exact in f32"
-                    )]
-                    let anchored_px = geometry::surface_height(
-                        output.1 as f32,
-                        Geometry::from_config(&self.config).height_percent,
-                    );
-                    let drag = self.drag.get_or_insert(Drag {
-                        anchor: geometry::DragAnchor {
-                            anchored_px,
-                            applied_px: anchored_px,
-                            press_y: pointer_y,
-                        },
+                if grab_bar_acts_on(&self.surface.state, self.surface.slide.is_some()) {
+                    let drag = self.surface.drag_move(
                         pointer_y,
-                        applied: None,
-                    });
-                    drag.pointer_y = pointer_y;
-                    let target = geometry::drag_target_px(
-                        self.config.edge,
-                        output.1,
-                        drag.anchor,
-                        pointer_y,
+                        std::time::Instant::now(),
+                        SurfaceInputs::from_config(&self.config),
                     );
-                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
-                        return self.apply_drag_target(*id, output, target);
+                    if let Some(target) = drag.applied {
+                        return self.apply_drag(&drag.intents, Some(target));
                     }
                     // Throttled: land the latest target even if the
-                    // pointer pauses inside the interval. A stale fire
-                    // is a no-op — the apply path re-checks the gate.
-                    return Task::perform(
-                        tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
-                        |()| cosmic::Action::App(Message::DragApplyDue),
-                    );
+                    // pointer pauses inside the interval — the
+                    // decision's own `trailing_timer` says when (a
+                    // move that decided nothing arms no timer). A
+                    // stale fire is a no-op — the apply path
+                    // re-checks the gate.
+                    if drag.trailing_timer {
+                        return Task::perform(
+                            tokio::time::sleep(geometry::DRAG_APPLY_INTERVAL),
+                            |()| cosmic::Action::App(Message::DragApplyDue),
+                        );
+                    }
                 }
             }
             Message::DragApplyDue => {
@@ -3568,18 +3381,12 @@ impl DropTerm {
                 // from the latest reported pointer position and apply
                 // if the gate allows; a fire after the drag ended (or
                 // with nothing changed) does nothing.
-                if let (SurfaceState::Shown(id), Some(output)) = (&self.surface, self.output_size)
-                    && let Some(drag) = self.drag.as_ref()
-                {
-                    let target = geometry::drag_target_px(
-                        self.config.edge,
-                        output.1,
-                        drag.anchor,
-                        drag.pointer_y,
-                    );
-                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
-                        return self.apply_drag_target(*id, output, target);
-                    }
+                let drag = self.surface.drag_trailing(
+                    std::time::Instant::now(),
+                    SurfaceInputs::from_config(&self.config),
+                );
+                if let Some(target) = drag.applied {
+                    return self.apply_drag(&drag.intents, Some(target));
                 }
             }
             Message::GrabBarReleased => {
@@ -3598,29 +3405,31 @@ impl DropTerm {
                 // deferred (see `ConfigChanged`): width and alignment
                 // come from the current config, the height from the
                 // drag — the hand outranks the file.
-                if let (Some(drag), SurfaceState::Shown(id), Some(output)) =
-                    (self.drag.take(), &self.surface, self.output_size)
-                {
-                    let id = *id;
-                    let geom = self.settled_geometry(&drag, output);
-                    // Declare the release's request for the
-                    // stale-echo gate before issuing it.
-                    self.request_geometry_height(output, geom);
-                    // Write-only-if-changed: a drag that settles back
-                    // on the config's current percent persists nothing.
-                    if geom.height_percent != self.config.height_percent {
-                        self.config.height_percent = geom.height_percent;
-                        let generation = self.write_back.schedule(geom.height_percent).generation;
-                        return Task::batch([
-                            geometry::apply_geometry(id, geom, output),
-                            Task::perform(
-                                tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
-                                move |()| cosmic::Action::App(Message::WriteDue(generation)),
-                            ),
-                        ]);
-                    }
-                    return geometry::apply_geometry(id, geom, output);
+                let (intents, geom, write) = self
+                    .surface
+                    .drag_release(SurfaceInputs::from_config(&self.config));
+                if intents.is_empty() {
+                    return Task::none();
                 }
+                // Declare the release's request for the
+                // stale-echo gate before issuing it.
+                if let Some(output) = self.surface.output_size {
+                    self.request_geometry_height(output, geom);
+                }
+                // Write-only-if-changed: a drag that settles back
+                // on the config's current percent persists nothing.
+                if let Some(percent) = write {
+                    self.config.height_percent = percent;
+                    let generation = self.write_back.schedule(percent).generation;
+                    return Task::batch([
+                        self.apply_surface_intents(&intents),
+                        Task::perform(
+                            tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
+                            move |()| cosmic::Action::App(Message::WriteDue(generation)),
+                        ),
+                    ]);
+                }
+                return self.apply_surface_intents(&intents);
             }
             Message::WriteDue(generation) => {
                 // The debounce window elapsed: persist the settled
@@ -3663,33 +3472,13 @@ impl DropTerm {
                 // elapsed — which also drops the tick subscription
                 // until the next slide. Between completion and this
                 // parking tick the draw already clamps to exactly the
-                // endpoint, so there is no pop.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
-                )]
-                if let Some(playing) = self.slide
-                    && slide::finished(
-                        &playing.active,
-                        playing.started.elapsed().as_millis() as u64,
-                    )
-                {
-                    self.slide = None;
-                    // The animated hide's destroy point: an `Out`
-                    // slide's completion is the only path that
-                    // destroys a hiding surface — the app's single
-                    // `destroy_layer_surface` call for shown
-                    // surfaces, reached through the state machine's
-                    // completion event. Teardown note: app teardown
-                    // has no graceful path — process exit destroys
-                    // the surface compositor-side, inherently
-                    // immediate; any future quit action must bypass
-                    // the slide and destroy straight away, like this
-                    // does.
-                    if let SurfaceState::Hiding(id) = self.surface {
-                        self.surface = SurfaceState::Hidden;
-                        return destroy_layer_surface(id);
-                    }
+                // endpoint, so there is no pop. An `Out` slide's
+                // completion destroys the hiding surface — the
+                // decision and its teardown note live in
+                // `decide_slide_tick`.
+                let intents = self.surface.decide_slide_tick();
+                if !intents.is_empty() {
+                    return self.apply_surface_intents(&intents);
                 }
             }
             Message::OpenHyperlink(url) => {
@@ -4293,7 +4082,7 @@ impl DropTerm {
     /// `dbus_state`. Exhaustive on purpose — a new surface state must
     /// pick a phase here.
     fn surface_phase(&self) -> dbus_state::SurfacePhase {
-        match self.surface {
+        match self.surface.state {
             SurfaceState::Hidden => dbus_state::SurfacePhase::Hidden,
             SurfaceState::Measuring(_) => dbus_state::SurfacePhase::Measuring,
             SurfaceState::Shown(_) => dbus_state::SurfacePhase::Shown,

@@ -162,14 +162,6 @@ fn surface_tasks<M: 'static>(
     ])
 }
 
-/// The single path every settled geometry change goes through: anchors,
-/// margins, and width composed from `geom`; height from its
-/// (percent-quantized) config field.
-pub fn apply_geometry<M: 'static>(id: window::Id, geom: Geometry, output: (u32, u32)) -> Task<M> {
-    let (_, height) = requested_size(geom, output);
-    surface_tasks::<M>(id, geom, output, height)
-}
-
 /// [`apply_geometry`], but with the height pinned to live drag pixels:
 /// while a grab-bar drag is in progress the height follows the pointer
 /// one rounding step per move (see [`drag_target_px`]) instead of
