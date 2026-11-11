@@ -170,12 +170,15 @@ pub trait SurfaceExecutor {
 /// The headless executor: records every intent it executes, in order,
 /// and does nothing else — the second implementation that justifies
 /// the [`SurfaceExecutor`] trait, and the test harness the whole
-/// surface lifecycle runs against.
+/// surface lifecycle runs against. Test-only by design: production
+/// runs the libcosmic executor; every construction site is a test.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct RecordingExecutor {
     intents: Vec<SurfaceIntent>,
 }
 
+#[cfg(test)]
 impl RecordingExecutor {
     /// The executed intents, in execution order.
     pub fn recorded(&self) -> &[SurfaceIntent] {
@@ -183,6 +186,7 @@ impl RecordingExecutor {
     }
 }
 
+#[cfg(test)]
 impl SurfaceExecutor for RecordingExecutor {
     type Effect = ();
 

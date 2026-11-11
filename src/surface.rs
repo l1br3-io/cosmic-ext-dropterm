@@ -64,13 +64,6 @@ pub fn shown_keyboard_mode(mode: KeyboardMode, hide_on_focus_loss: bool) -> Keyb
     }
 }
 
-/// Exclusive-zone request for the shown surface: `-1` ignores other
-/// surfaces' reserved space (covers the panel); `0` asks the compositor
-/// to place the surface inside the usable area, below panels and docks.
-pub fn exclusive_zone(respect_panel: bool) -> i32 {
-    if respect_panel { 0 } else { -1 }
-}
-
 /// No `max_width`/`max_height` cap: the library default caps a layer
 /// surface at 1920x1080, which would clip a full-width drop-down on a
 /// larger or ultrawide output.
@@ -261,16 +254,6 @@ mod tests {
             shown_keyboard_mode(KeyboardMode::OnDemand, false),
             KeyboardMode::OnDemand
         );
-    }
-
-    #[test]
-    fn exclusive_zone_covers_reserved_space_by_default() {
-        assert_eq!(exclusive_zone(false), -1);
-    }
-
-    #[test]
-    fn exclusive_zone_respects_reserved_space_when_enabled() {
-        assert_eq!(exclusive_zone(true), 0);
     }
 
     // --- the clipboard anchor's hidden body (shell-presence spec) ---

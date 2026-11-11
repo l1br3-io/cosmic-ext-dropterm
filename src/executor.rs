@@ -17,15 +17,14 @@ use std::collections::HashMap;
 use cosmic::app::Task;
 use cosmic::iced::platform_specific::runtime::wayland::layer_surface::SctkLayerSurfaceSettings;
 use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    Anchor as ShellAnchor, KeyboardInteractivity, Layer as WlrLayer, destroy_layer_surface,
-    get_layer_surface, set_anchor, set_exclusive_zone, set_keyboard_interactivity, set_layer,
-    set_margin, set_size,
+    KeyboardInteractivity, Layer as WlrLayer, destroy_layer_surface, get_layer_surface,
+    set_exclusive_zone, set_keyboard_interactivity, set_layer,
 };
 use cosmic::iced::window;
 use cosmic::widget;
 
 use crate::app::{APP_ID, Message};
-use crate::geometry::{self, Margins};
+use crate::geometry::{self, Geometry};
 use crate::intent::{
     ExclusiveZone, KeyboardHold, ShapeHeight, SurfaceExecutor, SurfaceHandle, SurfaceIntent,
 };
@@ -186,15 +185,17 @@ enum Request {
     /// the executor just mapped for the intent's handle is
     /// `settings.id`).
     Probe(SctkLayerSurfaceSettings),
-    /// The reshape triple — `set_anchor` + `set_size` + `set_margin`,
-    /// always all three (zero margins included) so no transition can
-    /// leave a stale anchor, margin, or size behind.
+    /// The reshape triple — `set_anchor` + `set_size` + `set_margin`
+    /// through `geometry`'s single path, always all three (zero
+    /// margins included) so no transition can leave a stale anchor,
+    /// margin, or size behind. Carries the declarative inputs; the
+    /// anchor/margin derivation stays `geometry`'s, with its own
+    /// tests.
     ShapeTriple {
         id: window::Id,
-        anchor: ShellAnchor,
-        width: Option<u32>,
+        geometry: Geometry,
+        output: (u32, u32),
         height: u32,
-        margins: Margins,
     },
     SetLayer {
         id: window::Id,
@@ -226,15 +227,10 @@ impl Request {
             Request::Probe(settings) => get_layer_surface(settings),
             Request::ShapeTriple {
                 id,
-                anchor,
-                width,
+                geometry,
+                output,
                 height,
-                margins,
-            } => Task::batch([
-                set_anchor(id, anchor),
-                set_size(id, width, Some(height)),
-                set_margin(id, margins.top, margins.right, margins.bottom, margins.left),
-            ]),
+            } => geometry::apply_drag_geometry(id, geometry, output, height),
             Request::SetLayer { id, layer } => set_layer(id, layer),
             Request::SetKeyboard { id, interactivity } => {
                 set_keyboard_interactivity(id, interactivity)
@@ -282,7 +278,7 @@ impl LibcosmicExecutor {
     /// surface — the decision layer allocates the handle at `Measure`
     /// and retires it at `Destroy` — so a miss is a decision-layer
     /// bug, loud here rather than a silently wrong-window command.
-    pub(crate) fn window_id(&self, handle: SurfaceHandle) -> window::Id {
+    fn window_id(&self, handle: SurfaceHandle) -> window::Id {
         *self
             .ids
             .get(&handle)
@@ -342,15 +338,13 @@ impl LibcosmicExecutor {
                 zone,
             } => {
                 let id = self.window_id(handle);
-                let (anchor, margins) = geometry::anchor_margins(geometry, output);
-                let (width, height) = geometry::requested_size(geometry, output);
+                let (_, height) = geometry::requested_size(geometry, output);
                 vec![
                     Request::ShapeTriple {
                         id,
-                        anchor,
-                        width,
+                        geometry,
+                        output,
                         height,
-                        margins,
                     },
                     Request::SetLayer {
                         id,
@@ -373,7 +367,6 @@ impl LibcosmicExecutor {
                 height,
             } => {
                 let id = self.window_id(handle);
-                let (anchor, margins) = geometry::anchor_margins(geometry, output);
                 #[expect(
                     clippy::cast_precision_loss,
                     reason = "output px are < 2^24, exact in f32"
@@ -386,10 +379,9 @@ impl LibcosmicExecutor {
                 };
                 vec![Request::ShapeTriple {
                     id,
-                    anchor,
-                    width: geometry::requested_size(geometry, output).0,
+                    geometry,
+                    output,
                     height,
-                    margins,
                 }]
             }
             SurfaceIntent::Hold { handle, keyboard } => {
@@ -456,7 +448,7 @@ impl SurfaceExecutor for LibcosmicExecutor {
 mod tests {
     use super::*;
     use crate::config::{Edge, HAlign, KeyboardMode, Layer};
-    use crate::geometry::Geometry;
+    use cosmic::iced::platform_specific::shell::commands::layer_surface::Anchor as ShellAnchor;
 
     // --- the clipboard anchor ---
     //
@@ -693,11 +685,10 @@ mod tests {
         });
         assert!(matches!(
             requests.first(),
-            Some(Request::ShapeTriple { anchor, width, height, margins, .. })
-                if *anchor == ShellAnchor::TOP | ShellAnchor::LEFT | ShellAnchor::RIGHT
-                    && width.is_none()
+            Some(Request::ShapeTriple { geometry, height, .. })
+                if geometry.height_percent == 50
+                    && geometry.width_percent == 100
                     && *height == 540
-                    && *margins == Margins::default()
         ));
         assert!(matches!(
             requests.get(1),
@@ -716,6 +707,21 @@ mod tests {
             4,
             "the configure batch is exactly these four"
         );
+
+        // The other placement: arranging inside the reserved space
+        // asks for zone 0.
+        let requests = exec.requests(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1920, 1080),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::InsideReserved,
+        });
+        assert!(matches!(
+            requests.get(3),
+            Some(Request::SetExclusiveZone { zone, .. }) if *zone == 0
+        ));
     }
 
     #[test]

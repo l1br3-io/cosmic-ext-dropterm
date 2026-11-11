@@ -20,9 +20,6 @@ use cosmic::iced::event::listen_raw;
 use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
 use cosmic::iced::mouse;
-use cosmic::iced::platform_specific::shell::commands::layer_surface::{
-    destroy_layer_surface, set_exclusive_zone, set_keyboard_interactivity, set_layer,
-};
 use cosmic::iced::runtime::core::event::PlatformSpecific;
 use cosmic::iced::runtime::core::event::wayland::LayerEvent;
 use cosmic::iced::{Event, Subscription, window};
@@ -64,11 +61,12 @@ mod theme_glue;
 
 use self::remote::{Flags, ToggleAction, parse_forwarded_action, startup_action};
 use self::surface_lifecycle::{
-    Drag, SurfaceMachine, SurfaceState, config_edit_reshapes, grab_bar_acts_on,
-    layer_unfocused_acts_on, resize_acts_on,
+    SurfaceInputs, SurfaceMachine, SurfaceState, grab_bar_acts_on, layer_unfocused_acts_on,
+    resize_acts_on,
 };
 use self::tab_actions::{RenameEdit, open_trees};
 use self::theme_glue::{effective_is_dark, theme_override, theme_override_task};
+use crate::intent::{KeyboardHold, SurfaceIntent};
 
 /// The app's identity — the single string behind the single-instance
 /// key, the bus name, the config namespace, and the wayland app id.
@@ -449,10 +447,6 @@ pub struct DropTerm {
     /// request replaces the slot, any removal of the tab clears it,
     /// and it survives hide/show like the drawer does.
     pending_close: Option<TabId>,
-    /// An in-progress grab-bar height drag, if any: the absolute
-    /// anchor every target recomputes from, plus the runtime state of
-    /// the apply cadence (see `Drag`).
-    drag: Option<Drag>,
     /// Debounced drag-release config-write state: which release's
     /// persist is still pending.
     write_back: geometry::WriteBack,
@@ -2011,7 +2005,6 @@ impl Application for DropTerm {
             progress_decay_armed: false,
             rename: None,
             pending_close: None,
-            drag: None,
             write_back: geometry::WriteBack::default(),
             last_written: None,
             rename_input_id: widget::Id::unique(),
@@ -2763,10 +2756,13 @@ impl DropTerm {
                             && !self.config.hide_on_focus_loss
                             && let SurfaceState::Shown(handle) = self.surface.state
                         {
-                            set_keyboard_interactivity(
-                                self.surface_exec.window_id(handle),
-                                surface::keyboard_interactivity(KeyboardMode::OnDemand),
-                            )
+                            // A live release of the held grab, as a
+                            // desired hold: `OnDemand` and nothing
+                            // else changes.
+                            self.apply_surface_intents(&[SurfaceIntent::Hold {
+                                handle,
+                                keyboard: KeyboardHold::OnDemand,
+                            }])
                         } else {
                             Task::none()
                         },
@@ -2827,18 +2823,19 @@ impl DropTerm {
                 // queue). `config_edit_reshapes` keys on the slide's
                 // existence, not its direction, so this holds
                 // mid-slide-out and mid-reversal alike.
-                if config_edit_reshapes(
-                    geometry::geometry_changed(old_geom, new_geom),
-                    self.drag.is_some(),
-                    self.surface.slide.is_some(),
-                ) && let (SurfaceState::Shown(handle), Some(output)) =
-                    (&self.surface.state, self.surface.output_size)
+                let reshape = self.surface.decide_reshape(
+                    old_geom,
+                    new_geom,
+                    self.surface.drag.is_some(),
+                    SurfaceInputs::from_config(&self.config),
+                );
+                if !reshape.is_empty()
+                    && let Some(output) = self.surface.output_size
                 {
-                    let id = self.surface_exec.window_id(*handle);
                     // Declare the reshape's request for the
                     // stale-echo gate before issuing it.
                     self.request_geometry_height(output, new_geom);
-                    return geometry::apply_geometry(id, new_geom, output).chain(ticks_task);
+                    return self.apply_surface_intents(&reshape).chain(ticks_task);
                 }
                 return ticks_task;
             }
@@ -2870,18 +2867,17 @@ impl DropTerm {
                     && self.surface.state == SurfaceState::Measuring(handle)
                 {
                     // The measuring pass stretched across the output, so
-                    // its first `Opened` size *is* the output size. Keep
-                    // it: every later reshape recomputes pixels from it
-                    // without a new measuring pass.
+                    // its first `Opened` size *is* the output size.
+                    // `decide_configure` adopts it, moves to `Shown`,
+                    // arms the slide-in, and emits the show intents.
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         reason = "rounded surface px are non-negative and far below u32::MAX"
                     )]
                     let output = (size.width.round() as u32, size.height.round() as u32);
-                    self.surface.output_size = Some(output);
-                    let geom = Geometry::from_config(&self.config);
-                    self.surface.state = SurfaceState::Shown(handle);
+                    let inputs = SurfaceInputs::from_config(&self.config);
+                    let intents = self.surface.decide_configure(output, inputs);
                     // Arm the pin at the height the reshape below
                     // requests — before the tasks run, so their
                     // granted-size echoes meet an armed pin. The
@@ -2889,7 +2885,7 @@ impl DropTerm {
                     // full-output height; onto an empty pin it
                     // adopts immediately and grows the grid once
                     // per toggle (toggle-grid-stability).
-                    self.prearm_show_pin(output, geom);
+                    self.prearm_show_pin(output, inputs.geometry);
                     // The show arm's refresh (status-glance criterion
                     // 4): a landing surface narrates the present, not
                     // whatever the last piggyback point saw — the
@@ -2907,28 +2903,6 @@ impl DropTerm {
                     // the tick (the show-arm refresh picks the state
                     // up for free, criterion 6).
                     let clock_task = self.sync_status_clock().chain(self.sync_status_duration());
-                    // The slide-in starts here, with the shown
-                    // surface: the full surface height is both the
-                    // from-offset and the distance — deterministic
-                    // and known at open time, unlike the granted
-                    // window height, which arrives later through the
-                    // double-reported `WindowResized` stream. The
-                    // slide toggle gates this entry: disabled, the
-                    // surface opens at rest with a byte-equal
-                    // render.
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "output px are < 2^24, exact in f32"
-                    )]
-                    let distance_px =
-                        geometry::surface_height(output.1 as f32, geom.height_percent) as f32;
-                    self.surface.slide =
-                        slide::show_slide(self.config.slide_animation_enabled, distance_px).map(
-                            |active| slide::Playing {
-                                started: std::time::Instant::now(),
-                                active,
-                            },
-                        );
                     // The shown surface takes the caret with it: the
                     // engine's focus flag — and the cursor cell's
                     // paint, which only a buffer rebuild applies —
@@ -2943,20 +2917,10 @@ impl DropTerm {
                     if let Some(tab) = self.active() {
                         tab.terminal.lock().unwrap().set_focused(true);
                     }
-                    return Task::batch([
-                        geometry::apply_geometry(id, geom, output),
-                        set_layer(id, surface::wlr_layer(self.config.layer)),
-                        set_keyboard_interactivity(
-                            id,
-                            surface::keyboard_interactivity(surface::shown_keyboard_mode(
-                                self.config.keyboard_mode,
-                                self.config.hide_on_focus_loss,
-                            )),
-                        ),
-                        set_exclusive_zone(id, surface::exclusive_zone(self.config.respect_panel)),
-                        widget::text_input::focus(self.terminal_id.clone()),
-                        clock_task,
-                    ]);
+                    // The show intents' translation is today's batch:
+                    // the shape triple, layer, keyboard hold, exclusive
+                    // zone, then the terminal input focus.
+                    return Task::batch([self.apply_surface_intents(&intents), clock_task]);
                 }
             }
             Message::WindowResized(id, height) => {
@@ -2981,7 +2945,7 @@ impl DropTerm {
                     .surface_exec
                     .handle_of(id)
                     .is_some_and(|handle| resize_acts_on(&self.surface.state, handle))
-                    && self.drag.is_none()
+                    && self.surface.drag.is_none()
                     && let Some(task) = self.offer_window_height(height)
                 {
                     return task;
@@ -2999,16 +2963,14 @@ impl DropTerm {
                 }
             }
             Message::LayerFocused(id) => {
-                if self
-                    .surface_exec
-                    .handle_of(id)
-                    .is_some_and(|handle| self.surface.state == SurfaceState::Shown(handle))
+                if let Some(handle) = self.surface_exec.handle_of(id)
+                    && self.surface.state == SurfaceState::Shown(handle)
                 {
                     self.surface.focused = true;
                     if let Some(tab) = self.active() {
                         tab.terminal.lock().unwrap().set_focused(true);
                     }
-                    return widget::text_input::focus(self.terminal_id.clone());
+                    return self.apply_surface_intents(&[SurfaceIntent::Focus { handle }]);
                 }
             }
             Message::LayerUnfocused(id) => {
@@ -3394,37 +3356,14 @@ impl DropTerm {
                 // apply, and the release settle is exact and
                 // immediate. Config is never touched while dragging;
                 // persistence is the release path.
-                if grab_bar_acts_on(&self.surface.state, self.surface.slide.is_some())
-                    && let (SurfaceState::Shown(handle), Some(output)) =
-                        (&self.surface.state, self.surface.output_size)
-                {
-                    let id = self.surface_exec.window_id(*handle);
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "output px are < 2^24, exact in f32"
-                    )]
-                    let anchored_px = geometry::surface_height(
-                        output.1 as f32,
-                        Geometry::from_config(&self.config).height_percent,
-                    );
-                    let drag = self.drag.get_or_insert(Drag {
-                        anchor: geometry::DragAnchor {
-                            anchored_px,
-                            applied_px: anchored_px,
-                            press_y: pointer_y,
-                        },
+                if grab_bar_acts_on(&self.surface.state, self.surface.slide.is_some()) {
+                    let drag = self.surface.drag_move(
                         pointer_y,
-                        applied: None,
-                    });
-                    drag.pointer_y = pointer_y;
-                    let target = geometry::drag_target_px(
-                        self.config.edge,
-                        output.1,
-                        drag.anchor,
-                        pointer_y,
+                        std::time::Instant::now(),
+                        SurfaceInputs::from_config(&self.config),
                     );
-                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
-                        return self.apply_drag_target(id, output, target);
+                    if let Some(target) = drag.applied {
+                        return self.apply_drag(&drag.intents, Some(target));
                     }
                     // Throttled: land the latest target even if the
                     // pointer pauses inside the interval. A stale fire
@@ -3440,20 +3379,12 @@ impl DropTerm {
                 // from the latest reported pointer position and apply
                 // if the gate allows; a fire after the drag ended (or
                 // with nothing changed) does nothing.
-                if let (SurfaceState::Shown(handle), Some(output)) =
-                    (&self.surface.state, self.surface.output_size)
-                    && let Some(drag) = self.drag.as_ref()
-                {
-                    let id = self.surface_exec.window_id(*handle);
-                    let target = geometry::drag_target_px(
-                        self.config.edge,
-                        output.1,
-                        drag.anchor,
-                        drag.pointer_y,
-                    );
-                    if geometry::drag_apply_due(drag.applied, std::time::Instant::now(), target) {
-                        return self.apply_drag_target(id, output, target);
-                    }
+                let drag = self.surface.drag_trailing(
+                    std::time::Instant::now(),
+                    SurfaceInputs::from_config(&self.config),
+                );
+                if let Some(target) = drag.applied {
+                    return self.apply_drag(&drag.intents, Some(target));
                 }
             }
             Message::GrabBarReleased => {
@@ -3472,31 +3403,31 @@ impl DropTerm {
                 // deferred (see `ConfigChanged`): width and alignment
                 // come from the current config, the height from the
                 // drag — the hand outranks the file.
-                if let (Some(drag), SurfaceState::Shown(handle), Some(output)) = (
-                    self.drag.take(),
-                    &self.surface.state,
-                    self.surface.output_size,
-                ) {
-                    let id = self.surface_exec.window_id(*handle);
-                    let geom = self.settled_geometry(&drag, output);
-                    // Declare the release's request for the
-                    // stale-echo gate before issuing it.
-                    self.request_geometry_height(output, geom);
-                    // Write-only-if-changed: a drag that settles back
-                    // on the config's current percent persists nothing.
-                    if geom.height_percent != self.config.height_percent {
-                        self.config.height_percent = geom.height_percent;
-                        let generation = self.write_back.schedule(geom.height_percent).generation;
-                        return Task::batch([
-                            geometry::apply_geometry(id, geom, output),
-                            Task::perform(
-                                tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
-                                move |()| cosmic::Action::App(Message::WriteDue(generation)),
-                            ),
-                        ]);
-                    }
-                    return geometry::apply_geometry(id, geom, output);
+                let (intents, geom, write) = self
+                    .surface
+                    .drag_release(SurfaceInputs::from_config(&self.config));
+                if intents.is_empty() {
+                    return Task::none();
                 }
+                // Declare the release's request for the
+                // stale-echo gate before issuing it.
+                if let Some(output) = self.surface.output_size {
+                    self.request_geometry_height(output, geom);
+                }
+                // Write-only-if-changed: a drag that settles back
+                // on the config's current percent persists nothing.
+                if let Some(percent) = write {
+                    self.config.height_percent = percent;
+                    let generation = self.write_back.schedule(percent).generation;
+                    return Task::batch([
+                        self.apply_surface_intents(&intents),
+                        Task::perform(
+                            tokio::time::sleep(geometry::WRITE_BACK_DEBOUNCE),
+                            move |()| cosmic::Action::App(Message::WriteDue(generation)),
+                        ),
+                    ]);
+                }
+                return self.apply_surface_intents(&intents);
             }
             Message::WriteDue(generation) => {
                 // The debounce window elapsed: persist the settled
@@ -3539,33 +3470,13 @@ impl DropTerm {
                 // elapsed — which also drops the tick subscription
                 // until the next slide. Between completion and this
                 // parking tick the draw already clamps to exactly the
-                // endpoint, so there is no pop.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
-                )]
-                if let Some(playing) = self.surface.slide
-                    && slide::finished(
-                        &playing.active,
-                        playing.started.elapsed().as_millis() as u64,
-                    )
-                {
-                    self.surface.slide = None;
-                    // The animated hide's destroy point: an `Out`
-                    // slide's completion is the only path that
-                    // destroys a hiding surface — the app's single
-                    // `destroy_layer_surface` call for shown
-                    // surfaces, reached through the state machine's
-                    // completion event. Teardown note: app teardown
-                    // has no graceful path — process exit destroys
-                    // the surface compositor-side, inherently
-                    // immediate; any future quit action must bypass
-                    // the slide and destroy straight away, like this
-                    // does.
-                    if let SurfaceState::Hiding(handle) = self.surface.state {
-                        self.surface.state = SurfaceState::Hidden;
-                        return destroy_layer_surface(self.surface_exec.window_id(handle));
-                    }
+                // endpoint, so there is no pop. An `Out` slide's
+                // completion destroys the hiding surface — the
+                // decision and its teardown note live in
+                // `decide_slide_tick`.
+                let intents = self.surface.decide_slide_tick();
+                if !intents.is_empty() {
+                    return self.apply_surface_intents(&intents);
                 }
             }
             Message::OpenHyperlink(url) => {

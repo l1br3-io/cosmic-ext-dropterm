@@ -3,12 +3,13 @@
 use std::time::Instant;
 
 use cosmic::app::Task;
-use cosmic::iced::window;
 
 use super::{DropTerm, Message, ToggleAction};
-use crate::config::{DropTermConfig, KeyboardMode};
+use crate::config::{DropTermConfig, KeyboardMode, Layer};
 use crate::geometry::{self, Geometry};
-use crate::intent::{KeyboardHold, SurfaceExecutor, SurfaceHandle, SurfaceIntent};
+use crate::intent::{
+    ExclusiveZone, KeyboardHold, ShapeHeight, SurfaceExecutor, SurfaceHandle, SurfaceIntent,
+};
 use crate::settings;
 use crate::slide;
 use crate::surface;
@@ -37,18 +38,22 @@ pub(super) enum SurfaceState {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SurfaceInputs {
     pub(super) geometry: Geometry,
+    pub(super) layer: Layer,
     pub(super) keyboard_mode: KeyboardMode,
     pub(super) hide_on_focus_loss: bool,
     pub(super) slide_animation_enabled: bool,
+    pub(super) respect_panel: bool,
 }
 
 impl SurfaceInputs {
     pub(super) fn from_config(config: &DropTermConfig) -> Self {
         Self {
             geometry: Geometry::from_config(config),
+            layer: config.layer,
             keyboard_mode: config.keyboard_mode,
             hide_on_focus_loss: config.hide_on_focus_loss,
             slide_animation_enabled: config.slide_animation_enabled,
+            respect_panel: config.respect_panel,
         }
     }
 }
@@ -77,6 +82,24 @@ pub(super) struct SurfaceMachine {
     pub(super) output_size: Option<(u32, u32)>,
     /// The last accepted toggle, for the debounce.
     last_toggle: Option<Instant>,
+    /// An in-progress grab-bar height drag, if any: the absolute
+    /// anchor every target recomputes from, plus the apply cadence
+    /// (see [`Drag`]). Cleared by every hide — a leaving surface's
+    /// drag is moot.
+    pub(super) drag: Option<Drag>,
+}
+
+/// One live-drag decision's outcome: the intents (empty when the
+/// cadence gate throttled the move), the applied pixel target for
+/// the pin's request declaration — the pin is terminal-side
+/// state, so the app declares and offers it — and whether a
+/// trailing apply timer should arm, to land the latest target
+/// even if the pointer pauses inside the interval.
+#[derive(Debug, Default)]
+pub(super) struct DragOutcome {
+    pub(super) intents: Vec<SurfaceIntent>,
+    pub(super) applied: Option<u32>,
+    pub(super) trailing_timer: bool,
 }
 
 impl SurfaceMachine {
@@ -124,7 +147,7 @@ impl SurfaceMachine {
     /// hiding or hidden one leaves with nothing (no restart, no
     /// double destroy).
     pub(super) fn decide_hide(&mut self, inputs: SurfaceInputs) -> Vec<SurfaceIntent> {
-        match toggle_step(
+        let intents = match toggle_step(
             ToggleAction::Hide,
             &self.state,
             inputs.slide_animation_enabled,
@@ -172,7 +195,11 @@ impl SurfaceMachine {
             // `Hide` never decides to show, and a hiding or hidden
             // surface leaves with nothing.
             ToggleStep::Measure | ToggleStep::ReverseShow(_) | ToggleStep::Leave => Vec::new(),
-        }
+        };
+        // Any live grab-bar drag is moot on every leaving path, and
+        // the cleanup is idempotent on the leave-with-nothing one.
+        self.drag = None;
+        intents
     }
 
     /// Reverses a hiding slide back to shown: the live surface is
@@ -248,6 +275,243 @@ impl SurfaceMachine {
         (report_unfocus, hide)
     }
 
+    /// The first-configure decision (`SurfaceOpened` on the
+    /// measuring probe): adopts the measured output as the reshape
+    /// base, moves to `Shown` on the same handle, arms the slide-in
+    /// — gated by the slide toggle; the full surface height is both
+    /// the from-offset and the distance, deterministic and known at
+    /// open time, unlike the granted window height, which
+    /// double-reports through `WindowResized` — and emits the show
+    /// intents: the surface shown at the config geometry, riding the
+    /// configured layer, the resolved keyboard hold, and the
+    /// configured exclusive zone, with the terminal input focused.
+    /// A foreign window's open event finds no measuring surface and
+    /// leaves with nothing.
+    pub(super) fn decide_configure(
+        &mut self,
+        output: (u32, u32),
+        inputs: SurfaceInputs,
+    ) -> Vec<SurfaceIntent> {
+        let SurfaceState::Measuring(handle) = self.state else {
+            return Vec::new();
+        };
+        self.output_size = Some(output);
+        self.state = SurfaceState::Shown(handle);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
+        let distance_px =
+            geometry::surface_height(output.1 as f32, inputs.geometry.height_percent) as f32;
+        self.slide = slide::show_slide(inputs.slide_animation_enabled, distance_px).map(|active| {
+            slide::Playing {
+                started: Instant::now(),
+                active,
+            }
+        });
+        vec![
+            SurfaceIntent::Show {
+                handle,
+                geometry: inputs.geometry,
+                output,
+                layer: inputs.layer,
+                keyboard: surface::shown_keyboard_mode(
+                    inputs.keyboard_mode,
+                    inputs.hide_on_focus_loss,
+                ),
+                zone: ExclusiveZone::from_panel_respect(inputs.respect_panel),
+            },
+            SurfaceIntent::Focus { handle },
+        ]
+    }
+
+    /// The config-edit reshape decision: a shown surface at rest
+    /// reshapes in place when the geometry actually changed; a drag
+    /// armed mid-edit defers to the release settle (config reshapes
+    /// and drag deltas never interleave `set_size` calls); a
+    /// slide animating defers to the next show — geometry stays
+    /// frozen while animating, and the in-memory config (updated by
+    /// the caller first) applies on that show.
+    pub(super) fn decide_reshape(
+        &mut self,
+        old: Geometry,
+        new: Geometry,
+        drag_armed: bool,
+        inputs: SurfaceInputs,
+    ) -> Vec<SurfaceIntent> {
+        if config_edit_reshapes(
+            geometry::geometry_changed(old, new),
+            drag_armed,
+            self.slide.is_some(),
+        ) && let (SurfaceState::Shown(handle), Some(output)) = (&self.state, self.output_size)
+        {
+            let handle = *handle;
+            let _ = inputs;
+            return vec![SurfaceIntent::Shape {
+                handle,
+                geometry: new,
+                output,
+                height: ShapeHeight::Percent,
+            }];
+        }
+        Vec::new()
+    }
+
+    /// The live drag: arm on the first move — anchored at the height
+    /// the surface has right now — then retarget absolutely per move
+    /// in pixels: one pixel of pointer travel is one pixel of
+    /// surface, and the target recomputes from the height actually
+    /// applied, so the moving window frame of a bottom-anchored
+    /// surface cannot eat travel. The first move always applies —
+    /// no grab latency — and later applies pass a deadbanded,
+    /// interval-gated cadence: every apply reaches the app twice
+    /// (the runtime double-reports each `set_size`) and reflows the
+    /// terminal, so a fast drag cannot storm the pipeline; skipped
+    /// targets land via the trailing apply, and the release settle
+    /// is exact and immediate. The caller guarantees the
+    /// `grab_bar_acts_on` guard held.
+    pub(super) fn drag_move(
+        &mut self,
+        pointer_y: f32,
+        now: Instant,
+        inputs: SurfaceInputs,
+    ) -> DragOutcome {
+        self.drag_decide(pointer_y, now, inputs)
+    }
+
+    /// The trailing apply of a throttled live drag: recompute from
+    /// the latest reported pointer position and apply if the gate
+    /// allows; a fire after the drag ended (or with nothing changed)
+    /// does nothing — and never re-arms itself.
+    pub(super) fn drag_trailing(&mut self, now: Instant, inputs: SurfaceInputs) -> DragOutcome {
+        let Some(drag) = self.drag.as_ref() else {
+            return DragOutcome::default();
+        };
+        let mut outcome = self.drag_decide(drag.pointer_y, now, inputs);
+        outcome.trailing_timer = false;
+        outcome
+    }
+
+    /// The drag core both entry points share.
+    fn drag_decide(&mut self, pointer_y: f32, now: Instant, inputs: SurfaceInputs) -> DragOutcome {
+        let (SurfaceState::Shown(handle), Some(output)) = (&self.state, self.output_size) else {
+            return DragOutcome::default();
+        };
+        let handle = *handle;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "output px are < 2^24, exact in f32"
+        )]
+        let anchored_px = geometry::surface_height(output.1 as f32, inputs.geometry.height_percent);
+        let drag = self.drag.get_or_insert(Drag {
+            anchor: geometry::DragAnchor {
+                anchored_px,
+                applied_px: anchored_px,
+                press_y: pointer_y,
+            },
+            pointer_y,
+            applied: None,
+        });
+        drag.pointer_y = pointer_y;
+        let target =
+            geometry::drag_target_px(inputs.geometry.edge, output.1, drag.anchor, pointer_y);
+        if geometry::drag_apply_due(drag.applied, now, target) {
+            if let Some(drag) = self.drag.as_mut() {
+                drag.applied = Some((now, target));
+                drag.anchor.applied_px = target;
+            }
+            DragOutcome {
+                intents: vec![SurfaceIntent::Shape {
+                    handle,
+                    geometry: inputs.geometry,
+                    output,
+                    height: ShapeHeight::Pixels(target),
+                }],
+                applied: Some(target),
+                trailing_timer: false,
+            }
+        } else {
+            DragOutcome {
+                intents: Vec::new(),
+                applied: None,
+                trailing_timer: true,
+            }
+        }
+    }
+
+    /// The drag release — the settle: the dragged pixels quantize to
+    /// a whole percent once (the settled surface may snap by at most
+    /// half a percent, the accepted tolerance, and then matches the
+    /// persisted percent), targeting where the pointer released —
+    /// the latest move, not the last target the cadence landed.
+    /// Re-applying also flushes a config edit that arrived mid-drag
+    /// and was deferred: width and alignment come from the config,
+    /// the height from the drag — the hand outranks the file. The
+    /// second return is the settled percent when it differs from the
+    /// config's (write-only-if-changed: a drag settling back on the
+    /// standing percent persists nothing).
+    pub(super) fn drag_release(
+        &mut self,
+        inputs: SurfaceInputs,
+    ) -> (Vec<SurfaceIntent>, Geometry, Option<u8>) {
+        let (drag, state, output) = (self.drag.take(), self.state, self.output_size);
+        let (SurfaceState::Shown(handle), Some(output)) = (&state, output) else {
+            // A drag that outlived its surface hands its settle back:
+            // the take already cleared it, nothing applies.
+            return (Vec::new(), inputs.geometry, None);
+        };
+        let handle = *handle;
+        let Some(drag) = drag else {
+            return (Vec::new(), inputs.geometry, None);
+        };
+        let final_target =
+            geometry::drag_target_px(inputs.geometry.edge, output.1, drag.anchor, drag.pointer_y);
+        let mut geom = inputs.geometry;
+        geom.height_percent = geometry::percent_from_px(output.1, final_target);
+        let write =
+            (geom.height_percent != inputs.geometry.height_percent).then_some(geom.height_percent);
+        (
+            vec![SurfaceIntent::Shape {
+                handle,
+                geometry: geom,
+                output,
+                height: ShapeHeight::Percent,
+            }],
+            geom,
+            write,
+        )
+    }
+
+    /// The slide clock's parking decision: the eased offset is
+    /// evaluated at draw time inside `SlideBox`, so the tick's only
+    /// job is parking a finished slide (which drops the tick
+    /// subscription until the next one). An `Out` slide's completion
+    /// is the only path that destroys a hiding surface — the
+    /// destroy the state machine reaches through its own completion
+    /// event. Teardown note: app teardown has no graceful path —
+    /// process exit destroys the surface compositor-side, inherently
+    /// immediate; any future quit action must bypass the slide and
+    /// destroy straight away, like this does.
+    pub(super) fn decide_slide_tick(&mut self) -> Vec<SurfaceIntent> {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+        )]
+        if let Some(playing) = self.slide
+            && slide::finished(
+                &playing.active,
+                playing.started.elapsed().as_millis() as u64,
+            )
+        {
+            self.slide = None;
+            if let SurfaceState::Hiding(handle) = self.state {
+                self.state = SurfaceState::Hidden;
+                return vec![SurfaceIntent::Destroy { handle }];
+            }
+        }
+        Vec::new()
+    }
+
     /// The slide distance for the currently shown surface: the same
     /// deterministic `geometry::surface_height` formula `SurfaceOpened`
     /// used — deliberately not the granted window height, which
@@ -275,6 +539,7 @@ impl SurfaceMachine {
 /// double-reports each apply), so per-move applies at pointer rate
 /// saturate the single runtime thread — the drag froze input on
 /// hardware.
+#[derive(Debug)]
 pub(super) struct Drag {
     pub(super) anchor: geometry::DragAnchor,
     /// The pointer's window y as of the last `GrabBarDragged`, so the
@@ -462,7 +727,7 @@ impl DropTerm {
     /// batched — exactly today's composition (the measure pass's
     /// anchor heal chains strictly ahead of its probe inside the
     /// executor's own translation; no other intent sequences).
-    fn apply_surface_intents(&mut self, intents: &[SurfaceIntent]) -> Task<Message> {
+    pub(super) fn apply_surface_intents(&mut self, intents: &[SurfaceIntent]) -> Task<Message> {
         let tasks: Vec<Task<Message>> = intents
             .iter()
             .copied()
@@ -510,16 +775,15 @@ impl DropTerm {
             .decide_hide(SurfaceInputs::from_config(&self.config));
         let task = self.apply_surface_intents(&intents);
         // The surface is leaving on every destructive path, and the
-        // cleanup is idempotent for a leave-with-nothing: any live
-        // grab-bar drag is moot, the terminal pin's debounce state
-        // starts over so the next show's first granted size adopts
-        // immediately, and the active terminal keeps its reported
-        // focus — the dropdown's own visibility toggle is not a focus
-        // event for the PTY (a focus-reporting program — fish, vim,
-        // tmux — would repaint its prompt per toggle), and the PTY
-        // keeps running regardless, because PTYs live in tabs, not the
-        // window.
-        self.drag = None;
+        // cleanup is idempotent for a leave-with-nothing: the drag
+        // is the machine's (cleared inside `decide_hide`), the
+        // terminal pin's debounce state starts over so the next
+        // show's first granted size adopts immediately, and the
+        // active terminal keeps its reported focus — the dropdown's
+        // own visibility toggle is not a focus event for the PTY (a
+        // focus-reporting program — fish, vim, tmux — would repaint
+        // its prompt per toggle), and the PTY keeps running
+        // regardless, because PTYs live in tabs, not the window.
         self.pending_height = None;
         self.pin_applied = None;
         // The context menu's popup dies with the surface and its
@@ -568,41 +832,23 @@ impl DropTerm {
         commit
     }
 
-    /// The geometry a settled grab-bar drag leaves behind: the current
-    /// config's geometry with the height quantized once from where the
-    /// pointer released — the *latest* target, not the last one the
-    /// cadence gate landed, so throttling never decides the final
-    /// height. The settled surface then matches the persisted percent,
-    /// at most half a percent off the dragged pixels (accepted
-    /// tolerance).
-    pub(super) fn settled_geometry(&self, drag: &Drag, output: (u32, u32)) -> Geometry {
-        let final_target =
-            geometry::drag_target_px(self.config.edge, output.1, drag.anchor, drag.pointer_y);
-        let mut geom = Geometry::from_config(&self.config);
-        geom.height_percent = geometry::percent_from_px(output.1, final_target);
-        geom
-    }
-
-    /// Apply a live drag target now: the cadence gate has passed.
-    /// Records the apply, offers the height to the terminal pin —
-    /// adoptions are debounced (see `offer_window_height`), because
+    /// Applies a live drag decision's outcome: the intents through
+    /// the executor, and — when the decision applied a target — the
+    /// pin half beside it. The pin declaration matters before the
+    /// offer: the cadence-gated adoption is the drag's own grant
+    /// path, and the echo gate needs to know this height was asked
+    /// for; adoptions stay debounced (`offer_window_height`) because
     /// the runtime double-reports every `set_size` (once stale, once
     /// real) and each adoption costs a terminal reflow plus a pty
-    /// resize that made the drag sluggish on hardware — and sends the
-    /// single-path triple with the pixel height.
-    pub(super) fn apply_drag_target(
+    /// resize that made the drag sluggish on hardware.
+    pub(super) fn apply_drag(
         &mut self,
-        id: window::Id,
-        output: (u32, u32),
-        target: u32,
+        intents: &[SurfaceIntent],
+        applied: Option<u32>,
     ) -> Task<Message> {
-        if let Some(drag) = self.drag.as_mut() {
-            drag.applied = Some((std::time::Instant::now(), target));
-            drag.anchor.applied_px = target;
-        }
-        // Declare the request before offering it: the cadence-gated
-        // adoption below is the drag's own grant path, and the echo
-        // gate needs to know this height was asked for.
+        let Some(target) = applied else {
+            return self.apply_surface_intents(intents);
+        };
         #[expect(
             clippy::cast_precision_loss,
             reason = "surface px are < 2^24, exact in f32"
@@ -610,8 +856,7 @@ impl DropTerm {
         let requested = target as f32;
         self.requested_height = Some(requested);
         let pin_task = self.offer_window_height(requested);
-        let geom = Geometry::from_config(&self.config);
-        let apply = geometry::apply_drag_geometry(id, geom, output, target);
+        let apply = self.apply_surface_intents(intents);
         match pin_task {
             Some(t) => Task::batch([apply, t]),
             None => apply,

@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::config::{Edge, HAlign};
+use crate::intent::{ExclusiveZone, RecordingExecutor, ShapeHeight};
 
 /// Inputs of a stay-open, sliding, exclusive surface at half height
 /// on the test output — the ordinary configuration.
@@ -19,9 +20,11 @@ fn plain_inputs(slide_enabled: bool) -> SurfaceInputs {
             width_percent: 100,
             h_align: HAlign::Center,
         },
+        layer: crate::config::Layer::Overlay,
         keyboard_mode: KeyboardMode::Exclusive,
         hide_on_focus_loss: true,
         slide_animation_enabled: slide_enabled,
+        respect_panel: false,
     }
 }
 
@@ -609,4 +612,183 @@ fn toggles_inside_the_debounce_window_are_dropped() {
     let mut machine = hidden_machine(None);
     assert!(machine.toggle_accepted(std::time::Instant::now()));
     assert!(!machine.toggle_accepted(std::time::Instant::now()));
+}
+
+// --- the full lifecycle, headless through the intent layer ---
+//
+// The spec's success criterion: one test drives show, first
+// configure, drag, live edit, hide, a mid-slide reversal, and a
+// focus-loss hide through the decision layer with a recording
+// executor, asserting the intent sequence end to end — the
+// property that makes a spike REDESIGN survivable (the state
+// machine survives; only executors change).
+
+#[test]
+fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
+    let mut machine = SurfaceMachine::default();
+    let mut exec = RecordingExecutor::default();
+    let inputs = plain_inputs(true);
+
+    // Show: the measuring pass, with the resolved keyboard mode.
+    for intent in machine.decide_show(inputs) {
+        exec.execute(intent);
+    }
+    let SurfaceIntent::Measure { handle, .. } = exec.recorded()[0] else {
+        panic!("the lifecycle opens with the measuring pass");
+    };
+    assert_eq!(machine.state, SurfaceState::Measuring(handle));
+
+    // First configure (`SurfaceOpened` on the measuring probe): the
+    // surface shows — shape, layer, keyboard, zone — and the
+    // terminal input takes focus.
+    for intent in machine.decide_configure((1920, 1080), inputs) {
+        exec.execute(intent);
+    }
+    assert_eq!(
+        &exec.recorded()[1..3],
+        &[
+            SurfaceIntent::Show {
+                handle,
+                geometry: inputs.geometry,
+                output: (1920, 1080),
+                layer: crate::config::Layer::Overlay,
+                keyboard: KeyboardMode::Exclusive,
+                zone: ExclusiveZone::CoversReserved,
+            },
+            SurfaceIntent::Focus { handle },
+        ]
+    );
+    assert_eq!(machine.state, SurfaceState::Shown(handle));
+
+    // Drag: the first move arms at the surface's standing height
+    // (540 px at 50% of 1080) and applies immediately — no grab
+    // latency — at zero growth. A later move 100 px down, past both
+    // the deadband and the apply interval, applies the live pixel
+    // target.
+    let pressed = std::time::Instant::now();
+    let drag = machine.drag_move(30.0, pressed, inputs);
+    assert_eq!(
+        drag.intents,
+        vec![SurfaceIntent::Shape {
+            handle,
+            geometry: inputs.geometry,
+            output: (1920, 1080),
+            height: ShapeHeight::Pixels(540),
+        }]
+    );
+    let drag = machine.drag_move(130.0, pressed + geometry::DRAG_APPLY_INTERVAL, inputs);
+    assert_eq!(
+        drag.intents,
+        vec![SurfaceIntent::Shape {
+            handle,
+            geometry: inputs.geometry,
+            output: (1920, 1080),
+            height: ShapeHeight::Pixels(640),
+        }]
+    );
+
+    // Release: the pixels quantize once to a whole percent (640/1080
+    // rounds to 59) and the settle re-applies through the triple.
+    let (intents, _settled, write) = machine.drag_release(inputs);
+    assert_eq!(write, Some(59));
+    assert_eq!(
+        intents,
+        vec![SurfaceIntent::Shape {
+            handle,
+            geometry: Geometry {
+                height_percent: 59,
+                ..inputs.geometry
+            },
+            output: (1920, 1080),
+            height: ShapeHeight::Percent,
+        }]
+    );
+    for intent in intents {
+        exec.execute(intent);
+    }
+
+    // Live edit: a geometry change reshapes the shown surface in
+    // place, percent-quantized.
+    let mut edited = inputs;
+    edited.geometry.height_percent = 70;
+    for intent in machine.decide_reshape(inputs.geometry, edited.geometry, false, inputs) {
+        exec.execute(intent);
+    }
+    assert!(matches!(
+        exec.recorded().last(),
+        Some(SurfaceIntent::Shape {
+            height: ShapeHeight::Percent,
+            ..
+        })
+    ));
+
+    // Hide: the out-slide starts — the keyboard hold releases now,
+    // the destroy lands on the slide's completion tick.
+    for intent in machine.decide_hide(inputs) {
+        exec.execute(intent);
+    }
+    assert_eq!(
+        exec.recorded().last(),
+        Some(&SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::Released,
+        })
+    );
+    assert_eq!(machine.state, SurfaceState::Hiding(handle));
+
+    // Mid-slide reversal: the same live surface re-holds keyboard at
+    // the resolved mode and focuses the terminal input.
+    let ToggleStep::ReverseShow(reversed) = toggle_step(ToggleAction::Toggle, &machine.state, true)
+    else {
+        panic!("a mid-hide toggle reverses");
+    };
+    for intent in machine.decide_reverse_show(reversed, inputs) {
+        exec.execute(intent);
+    }
+    assert_eq!(
+        &exec.recorded()[exec.recorded().len() - 2..],
+        &[
+            SurfaceIntent::Hold {
+                handle,
+                keyboard: KeyboardHold::Exclusive,
+            },
+            SurfaceIntent::Focus { handle },
+        ]
+    );
+
+    // The slide parks, the reversal completes: nothing destroys.
+    assert!(machine.decide_slide_tick().is_empty());
+
+    // Focus-loss hide: the latch was set by a `LayerFocused`; the
+    // loss reports the unfocus and hides through the same out-slide.
+    machine.focused = true;
+    let (report, hides) = machine.decide_focus_loss(inputs);
+    assert!(report && hides);
+    for intent in machine.decide_hide(inputs) {
+        exec.execute(intent);
+    }
+    assert_eq!(
+        exec.recorded().last(),
+        Some(&SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::Released,
+        })
+    );
+
+    // The out-slide's completion tick destroys the surface.
+    machine.slide = Some(slide::Playing {
+        started: std::time::Instant::now()
+            .checked_sub(slide::SLIDE_TICK + std::time::Duration::from_millis(200))
+            .expect("now is far past the slide window"),
+        active: slide::Active {
+            direction: slide::Direction::Out,
+            from_offset_px: 0.0,
+            distance_px: 540.0,
+        },
+    });
+    assert_eq!(
+        machine.decide_slide_tick(),
+        vec![SurfaceIntent::Destroy { handle }]
+    );
+    assert_eq!(machine.state, SurfaceState::Hidden);
 }

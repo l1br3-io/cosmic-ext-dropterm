@@ -21,20 +21,9 @@ mod clipboard;
 mod config;
 mod context_menu;
 mod drawer_handle;
+mod executor;
 mod geometry;
 mod grab_bar;
-// Transient (surface-intents): the intent vocabulary's Show and
-// Shape variants wait for Task 4's handlers (nothing constructs them
-// outside tests yet), so the expectation is gated to non-test builds
-// and comes out when the last consumer lands.
-mod executor;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "surface-intents Tasks 3–4 route the decision layer and handlers through the vocabulary and executor"
-    )
-)]
 mod intent;
 mod keybinds;
 mod notify;
