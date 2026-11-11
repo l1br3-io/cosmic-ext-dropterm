@@ -752,7 +752,7 @@ the object path, or forward through a V1 method.
 
 ### `layer-shell-guard`: fail loudly without layer-shell
 
-**Status**: not started.
+**Status**: merged (f73cf27).
 
 **Objective.** Where the compositor offers no `zwlr_layer_shell_v1` (GNOME,
 a sandbox, a session without Wayland), DropTerm says so and exits non-zero.
