@@ -4,6 +4,8 @@ What each tagged release changed, newest first - a curated, linkable summary; th
 
 ## v0.4.0 (2026-11-09)
 
+*Tag-only: the tag's release workflow run failed and, ruled 2026-11-11, is not retried — no published v0.4.0 release exists. This section documents what the tag carries; the next release supersedes it.*
+
 The pasted-images release: an image on the clipboard - a screenshot tool's copy, or an image file copied in COSMIC Files or Nautilus - never renders in the grid. It lands in `~/.cache/dropterm/paste/` under its sniffed format's extension, its path pastes as text, and a new per-tab images panel keeps every paste findable after the prompt scrolls away. The status band gains its full dress on the way: ten leading glyphs beside the three segments that already own a mark, hairlines dividing adjacent segments, and a hover tip on every segment. Around them, the autosuggestion generators lose their toggle, the completions table loads off the startup path, and a run of clipboard, focus, and compositor fixes lands.
 
 - Pasted images - two clipboards into one pipeline: the image bytes on the clipboard, or exactly one local image file named by a `file://` URI, admitted by its own first bytes (never its name, its extension, or the URI's claim) and refused whole over 32 MiB; the path is the paste's only grid trace ([images](images.md#pasting-images))
