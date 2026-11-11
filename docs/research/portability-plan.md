@@ -680,7 +680,7 @@ owner): `notify` sanctioned.
 
 ### `surface-intents`: a toolkit-neutral surface vocabulary
 
-**Status**: not started.
+**Status**: merged (00cf77d).
 
 **Objective.** The surface state machine and the reshape paths emit
 toolkit-neutral intents, and a libcosmic executor turns them into today's
