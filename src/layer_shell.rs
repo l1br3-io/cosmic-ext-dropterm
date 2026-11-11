@@ -149,6 +149,19 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_layer_shell_globals_still_verdict_supported() {
+        // A registry that lists the global twice still counts as
+        // advertised — `contains` semantics, never a count, so a
+        // count-based refactor fails here.
+        let globals = [
+            "wl_compositor",
+            "zwlr_layer_shell_v1",
+            "zwlr_layer_shell_v1",
+        ];
+        assert_eq!(verdict(&globals), Verdict::Supported);
+    }
+
+    #[test]
     fn the_unsupported_startup_error_names_the_protocol_and_links_the_docs() {
         // The spec's always-boundary: whatever the session, the error
         // names the missing protocol and points at the docs.
