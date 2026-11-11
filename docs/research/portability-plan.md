@@ -1148,7 +1148,33 @@ not count against the gate.
 
 #### Session 1: COSMIC
 
-*Pending.*
+2026-11-11 · Pop!_OS 24.04 (the COSMIC validation VM) · cosmic-comp
+1.0.0 (git 8cb1802c), Wayland, output 1280x800 scale 1 · build: v0.4.0
+tag bb6fd74, `just build-release` · agent-driven through the QEMU guest
+agent (session-env execs, display captures, pixel analysis — no input
+injection, not eyes-on). The VM was snapshot before and restored after;
+its guest is back at the found state.
+
+- 1 Launch — pass: the surface maps at the top edge (shown↔hidden
+  display delta 372k px across the top ~60% of the screen); wgpu logs
+  EGL failures (no 3D accel in the VM) and falls back to llvmpipe — the
+  app runs on software rendering without complaint.
+- 4 Rapid double-toggles — pass: the debouncer coalesces rapid toggles
+  into one net state change; a single instance survives.
+- 8 Theme — pass: real COSMIC session, no `cosmic_config` watcher errors
+  in the logs (only the EGL/llvmpipe warnings).
+- 12 CLI — pass: `--is-visible` truth table (`true`/0, `false`/1 after
+  hide, `true`/0 after show) over the session bus.
+- 13 Second-launch handoff — pass: forward-and-exit in 3.6 ms in-guest.
+- 15 Session restore — pass: kill + relaunch reproduces the shown state
+  pixel-exactly (480 dark rows, identical band means).
+- 2, 3, 5, 6, 7, 9, 10, 11, 14, 16 — n-a in this driver: the guest
+  agent exposes no input injection, and these rows are input- or
+  drawer-bound; they are exactly the rows the owner's eyes-on COSMIC
+  session (or the manual checklist's existing walks) covers — the VM
+  recipe above reruns them on request.
+
+No failures to file: every programmatically exercisable check passed.
 
 #### Session 2a: sway
 
