@@ -988,4 +988,63 @@ mod tests {
             .expect("wire test timed out");
         });
     }
+
+    // --- the docs pin (contract-docs) ---
+
+    #[test]
+    fn every_dbus_member_is_documented() {
+        // The docs-as-code drift gate for the contract page, the
+        // dbus twin of `every_config_key_is_documented`: every member
+        // the served surface exposes on the two DropTerm interfaces
+        // must appear backticked in docs/dbus.md. The expectation is
+        // enumerated from a live introspection of the served pair —
+        // no hand-kept member list to drift — so a member added to
+        // either interface fails `just check` until the page carries
+        // it. The three D-Bus standards zbus adds are not this
+        // contract's members; the page cites their Get and
+        // PropertiesChanged calls in prose, which is their place in
+        // the docs.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: true,
+                    tab_count: 1,
+                }));
+                let (_server, client) = p2p_pair(state).await;
+                let introspectable = zbus::fdo::IntrospectableProxy::builder(&client)
+                    .destination(BUS_NAME)
+                    .and_then(|builder| builder.path(OBJECT_PATH))
+                    .expect("identity names")
+                    .build()
+                    .await
+                    .expect("introspectable proxy");
+                let xml = introspectable
+                    .introspect()
+                    .await
+                    .expect("introspect the object path");
+                let own = &xml[..xml.find("<node name=").unwrap_or(xml.len())];
+
+                let docs = include_str!("../docs/dbus.md");
+                for (interface, block) in interfaces(own) {
+                    if interface != INTERFACE && interface != "org.freedesktop.DbusActivation" {
+                        continue;
+                    }
+                    for (method, _) in methods(block) {
+                        assert!(
+                            docs.contains(&format!("`{method}`")),
+                            "method `{method}` of `{interface}` is not documented in docs/dbus.md"
+                        );
+                    }
+                    for (property, _, _) in properties(block) {
+                        assert!(
+                            docs.contains(&format!("`{property}`")),
+                            "property `{property}` of `{interface}` is not documented in docs/dbus.md"
+                        );
+                    }
+                }
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
 }

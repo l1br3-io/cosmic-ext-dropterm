@@ -56,11 +56,14 @@ members, and assert each appears in `docs/dbus.md`. A member added to
 the interface without a docs row fails the test.
 
 **Acceptance criteria:**
-- [ ] The test passes and enumerates its expectation from the served
+- [x] The test passes and enumerates its expectation from the served
       introspection, not a hand-maintained list
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check` *(mutation-checked ct-3 style:
+      de-backticking `TabCount` in the page fails the test with the
+      member named, the restored page passes; `just check` green on
+      the result)*
 
 **Dependencies:** Task 1 · **Files:** `src/dbus_state.rs` (test module)
 · **Scope:** S
