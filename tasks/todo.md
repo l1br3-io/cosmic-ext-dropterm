@@ -288,7 +288,13 @@ dated park notes, and Phase 2 proceeds independently.)*
       chrome rendering through them (dark band, blue link, dark popover
       on the screenshot) — the generator is committed as a Phase 3
       input)*
-- [ ] kp-5 Kit verdict appended
+- [x] kp-5 Kit verdict appended *(done 2026-11-13 — **Kit GO for the
+      pin**: the report's "Kit pass" section + the plan record's Phase 2
+      results carry the per-check evidence (C1 twice over, C2a, C2b kill
+      check green both compositors, C3 manifest-clean, C4 generator), the
+      one carried debt (the Root auto-border's 2×20 px surface inflation,
+      no opt-out at this pin), and the armed Phase 3 pin decision — the
+      snapshot is the GPUI source; research index row updated)*
 
 **Checkpoint — the spike report:** owner rules on the Kit and live
 geometry edits; Phase 3 slices get ids and specs.

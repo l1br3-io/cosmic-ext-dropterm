@@ -148,6 +148,64 @@ scale mismatch is the suspect; the display-metadata integer-rounding on
 both compositors rides along); (2) #61420, dormant — carried only if a
 runtime (non-recreate) keyboard re-grab is ever required.
 
+## Kit pass — the verdict on the snapshot (kit-pass, 2026-11-13)
+
+The owner ruled the Kit **adopt** (open ruling 1, 2026-11-13, at open
+ruling 2's recommended timing); kit-pass ran the same day on the
+scratch branch (`spike/gpui-layer-shell` d722652…cd06740, never
+merged). **Kit GO for the pin** — every condition passed on
+`gpui-pre` =0.3.12 with `gpui-component` =0.9.1, component-only:
+
+- **C1 PASS, twice over.** The whole 20-crate set pins at =0.3.12
+  exactly as the Kit consumes it; the first independent source diff
+  (file-hash mapping + two-direction tree diff against the zed
+  `d2a4fb6` checkout still on disk) finds 11 of the 16 Linux-relevant
+  crates byte-identical — including `gpui-pre-linux`, the entire
+  wayland backend — with every delta banner-marked by the pipeline and
+  exactly one real semantic delta: `gpui-pre-wgpu`'s wgpu 30.0.2
+  adaptation. The behavior re-run shows it invisible: release show
+  32/36/34 ms (base 34/35/34), recreate 139 ms with the keyboard
+  re-grab +142 ms, every cadence height, and the fractional row
+  identical (geometry honored, nothing visible, displays 640×400).
+  One honest observation: a consistent ~+13 ms same-class debug drift
+  on both compositors, invisible in release.
+- **C2a PASS.** A consumer crate whose graph is exactly
+  `gpui-pre` + `gpui-pre-platform` maps the drawer-shaped LayerShell
+  window on both compositors (`kit-c2a-2026-11-13.log`, screenshot
+  pixel-verified against the no-band fractional shot).
+- **C2b PASS — the kill check, green on both compositors.** Root (the
+  manual embedder-owned wrap) plus a programmatically-opened Popover
+  menu and a Tooltip view rendered on the layer surface through the
+  full 80 ms cadence without closing (`on_open_change` silent; the
+  screenshot shows the popover's items on the surface).
+- **C3 HOLDS.** Zero `gpui-shell` and zero `gpui-kit` edges in the
+  manifest; one GPUI in the graph; windows stay embedder-owned.
+- **C4 PASS.** The scheme → theme-JSON generator (committed on the
+  spike branch as a Phase 3 input, four RED-first unit tests) maps
+  DropTerm's resolved scheme onto 37 ThemeConfig keys, inventing no
+  colors, and applies through `Theme::update(apply_config)`; the
+  tokens read back the scheme and the chrome renders through them —
+  the screenshot shows a dark popover where the un-themed run showed
+  the Kit's default light one.
+
+**The one carried debt (the GO's asterisk):** the Kit's Root
+auto-decorates every Client-decorated window with its Linux
+`window_border` — SHADOW_SIZE 20 px, `pub(crate)` const, no per-window
+opt-out — and the wayland backend forces `Decorations::Client` on
+every surface (initialized Client at gpui-pre-linux wayland/window.rs
+:626; `request_decorations`' no-protocol arm forces Client back), so a
+would-be 1280×320 drawer negotiates **1320×360** on both compositors.
+DropTerm's edge-to-edge drawer needs a one-const/config carried patch
+into the Kit (multiplying the plan's pipeline-fork maintenance cost)
+or accepted non-flush edges — Phase 3's first Kit decision. The
+plan's snapshot-fidelity open question is answered by C1's source
+diff; the code-constructed-Theme question stands (C4 used the
+sanctioned JSON path).
+
+Phase 3's pin decision is armed: the snapshot is the GPUI source
+(gpui-pre 0.3.12, exact-pinned with the Kit at its release boundary
+per C5), per the plan's "the snapshot replaces the git pin".
+
 ## Sources
 
 Scratch repo `../dropterm-spike` branch `spike/gpui-layer-shell`

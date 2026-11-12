@@ -185,12 +185,26 @@ seams and the roadmap unchanged. Component-only adoption holds
 throughout: gpui-shell never enters the graph (C3).
 
 **Acceptance criteria:**
-- [ ] Verdict appended with evidence; C3 (no gpui-shell) holds in the
+- [x] Verdict appended with evidence; C3 (no gpui-shell) holds in the
       spike's manifest
 
 **Verification:**
-- [ ] Manual: the report arms Phase 3's pin decision (snapshot vs zed
+- [x] Manual: the report arms Phase 3's pin decision (snapshot vs zed
       git per the Kit ruling)
+
+*(Done 2026-11-13, main e82ffbf's successor. Verdict: **Kit GO for the
+pin** — appended as the "Kit pass" section of
+[the report](../docs/research/gpui-spike.md) and as a second paragraph
+of the plan record's Phase 2 results, with the research index row
+updated. C3's manifest check is on record in the chunk's Task 3 note
+and the verdict: zero gpui-shell and zero gpui-kit edges, windows
+embedder-owned throughout. Phase 3's pin decision is armed by the
+verdict itself: the snapshot (gpui-pre 0.3.12) is the GPUI source, per
+the plan's "the snapshot replaces the git pin". The GO carries one
+debt, stated in both surfaces: the Kit's Root auto-border inflates a
+layer surface 2×20 px with no opt-out at this pin — Phase 3's first
+Kit decision is the one-const carried patch vs accepted non-flush
+edges.)*
 
 **Dependencies:** Tasks 1–4 · **Files:** plan record ("Phase 2
 results" only) · **Scope:** S

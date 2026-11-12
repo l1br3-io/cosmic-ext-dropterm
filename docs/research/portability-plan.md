@@ -1475,8 +1475,31 @@ lockfile, the `unicode-properties` =0.1.3 pin). Carried ledger:
 fractional-scale visible output on COSMIC (geometry lands, pixels do
 not; display metadata integer-rounded on both compositors) and #61420
 dormant. Parked hardware rows: checks 12–13 (X11, macOS) and the GNOME
-detection branch. The Kit ruling (open ruling 2) stays with the owner
-and gates `kit-pass`.
+detection branch. The Kit ruling (open ruling 2) stayed with the owner
+and gated `kit-pass`.
+
+**Kit GO for the pin** — kit-pass ran 2026-11-13 after the owner ruled
+the Kit adopt (same day, at open ruling 2's timing; scratch branch
+d722652…cd06740): C1 passes twice over (the whole gpui-pre set at
+=0.3.12, and the first independent source diff finding the wayland
+backend byte-identical with only the pipeline-marked deltas — the one
+real one, gpui-pre-wgpu's wgpu 30.0.2 adaptation, invisible in the
+checks 0–4 re-run: release show 32/36/34 ms, recreate re-grab +142 ms,
+fractional row identical); C2a's consumer build maps LayerShell
+through gpui-pre alone; C2b — the Kit's kill check — is green on both
+compositors (Root + Popover menu + Tooltip on the layer surface
+through the full 80 ms cadence, never closing); C3 holds (zero
+gpui-shell/gpui-kit edges, embedder-owned windows); C4's scheme →
+theme-JSON generator (a Phase 3 input, committed on the spike branch)
+applies through `Theme::update(apply_config)` with the chrome
+rendering through the scheme. The GO's one carried debt: the Kit's
+Root auto-borders every Client-decorated window and wayland forces
+Client on all surfaces, so a 1280×320 drawer negotiates 1320×360 —
+edge-to-edge needs a one-const Kit carried patch (pipeline-fork cost)
+or accepted non-flush edges; Phase 3's first Kit decision. Full
+per-check evidence: [gpui-spike](gpui-spike.md) "Kit pass". Phase 3's
+pin decision is armed: the snapshot (gpui-pre 0.3.12) is the GPUI
+source.
 
 ## Assumptions: the plan's kill risks
 
