@@ -78,6 +78,7 @@ The details live in the `docs/` directory:
 
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
+- [The D-Bus contract](docs/dbus.md) - the V1 surface for integrators: the address, both interfaces' members, the CLI verbs' wire encoding, and the stability promise
 - [Configuration](docs/configuration.md) - all 52 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
