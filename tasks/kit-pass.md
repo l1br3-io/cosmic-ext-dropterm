@@ -152,12 +152,26 @@ DropTerm's scheme colors feeding the Kit's theme tokens. (Themes are
 `#[non_exhaustive]` since v0.9.0; no struct literals.)
 
 **Acceptance criteria:**
-- [ ] A DropTerm scheme renders the terminal chrome through the
+- [x] A DropTerm scheme renders the terminal chrome through the
       generated theme; the generator's code is committed on the spike
       branch as a Phase 3 input
 
 **Verification:**
-- [ ] Manual on COSMIC
+- [x] Manual on COSMIC
+
+*(Done 2026-11-13, spike cd06740. `src/theme_gen.rs` is the generator:
+input is DropTerm's resolved scheme type (Alacritty `Colors`, what
+theme_glue produces), output a ThemeConfig JSON value (`#[non_exhaustive]`
+since v0.9.0 — JSON, never struct literals), 37 token keys with unset
+slots left absent; four unit tests written RED-first pin it (including
+output-parses-as-ThemeConfig). Applied on both compositors via
+`serde_json::from_value::<ThemeConfig>` → `Theme::update(apply_config)`
+before any window opens; tokens read back the scheme (background
+#1A1B26, primary #7AA2F7, foreground #C0C5CE) and the LayerShell chrome
+rendered through them — the COSMIC screenshot shows the dark band, the
+blue link token, and a DARK popover where un-themed C2b showed the
+default light one. Evidence: `kit-c4-2026-11-13.log`,
+`vm-kit-c4-theme.png`, `cargo test` green.)*
 
 **Dependencies:** Task 2 · **Scope:** M
 

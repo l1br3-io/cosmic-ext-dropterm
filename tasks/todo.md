@@ -280,7 +280,14 @@ dated park notes, and Phase 2 proceeds independently.)*
       for a 1280×320 drawer, both compositors) with no public opt-out
       — edge-to-edge needs a Kit carried patch or accepted non-flush
       edges; goes to the verdict)*
-- [ ] kp-4 C4: theme generator through ThemeRegistry
+- [x] kp-4 C4: theme generator through ThemeRegistry *(done 2026-11-13,
+      spike cd06740 — theme_gen.rs maps the Alacritty Colors scheme onto
+      37 ThemeConfig JSON keys, no invented colors, 4 RED-first unit
+      tests green; applied via from_value → Theme::update(apply_config)
+      on sway + COSMIC with tokens reading back the scheme, and the
+      chrome rendering through them (dark band, blue link, dark popover
+      on the screenshot) — the generator is committed as a Phase 3
+      input)*
 - [ ] kp-5 Kit verdict appended
 
 **Checkpoint — the spike report:** owner rules on the Kit and live
