@@ -118,7 +118,19 @@ Start the carried-patch ledger here: every check that needs #61368,
       recreates costs about one extra show; the edited geometry landed
       exactly (L|B 800x240, margin 80); focus-return inconclusive
       headless (no seat — check 5's artifact), the COSMIC row decides
-      it; debug build on software GL, same caveat as every sway number)*
+      it; debug build on software GL, same caveat as every sway number;
+      check 8 banked sway-side 2026-11-13 (spike d6d9af5,
+      `SPIKE_CHECK=clipboard`): GPUI's wayland clipboard is
+      focus-gated, not surface-independent — the pinned source
+      (gpui_linux wayland/client.rs:1462) shows write_to_clipboard
+      silently no-ops without a mouse- or keyboard-focused window, and
+      the offer itself further needs a selection serial from a real
+      key/pointer press; observed matching (wl-paste saw nothing in
+      either phase, headless has no input so serials never come);
+      stronger than today's anchor workaround (bound surface); the
+      COSMIC row wants a small harness extension — a key-press-
+      triggered write in a typeable window — to watch the offer land
+      after a real keystroke)*
 - [ ] Check 1's chosen path has its creation-to-first-frame latency
       measured against the 130 ms slide (`SLIDE_DURATION_MS`,
       `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC's

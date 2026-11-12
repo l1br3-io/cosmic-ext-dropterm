@@ -179,6 +179,8 @@ dated park notes, and Phase 2 proceeds independently.)*
       — two-surface show immune, measure-free not; 2b banked sway-side
       2026-11-13, spike d59eaf4+95bff7c: recreate 142/133/146ms — one
       extra show's worth, geometry edit honored, focus the COSMIC row;
+      check 8 sway-side: clipboard is focus-gated, not
+      surface-independent (source-read client.rs:1462 + observed) —
       COSMIC rows open)*
 - [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
       aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
