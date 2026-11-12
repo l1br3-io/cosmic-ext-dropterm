@@ -1060,6 +1060,14 @@ git branch -d port/app-identity
   which keeps the gap between the two merges short. A fix that cannot wait
   for the pair can ship from a branch cut at the last tag; the release
   workflow fires on any `v*` tag.
+- Deferred (owner ruling, 2026-11-12): with both halves merged, the break
+  release is not cut yet — its prep (the 0.5.0 version bump, the staged
+  release notes, the agent-run walk rows of 2026-11-12) stays on main
+  uncut, the rehearsal and the publish are skipped for now, and Phase 1
+  building continues (`control-transport` next). Whenever it is cut it
+  carries everything merged by then — the staged notes grow with the later
+  packages — and the walk gate stands unchanged: the owner-pass halves and
+  the post-publish tarball walk still run before the tag moves.
 - Every other Phase 1 package ships in whatever release follows its merge.
 - Phase 3's GPUI binary ships nothing until its cutover slice.
 
