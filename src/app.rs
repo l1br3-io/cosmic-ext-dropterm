@@ -87,6 +87,15 @@ const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(15
 )]
 pub enum Message {
     ToggleAction(ToggleAction),
+    /// The control bus took the bus name and handed over its
+    /// connection (control-transport): serve the V1 state interface
+    /// on it — the takeover of the `dbus_connection` hook libcosmic's
+    /// `single-instance` feature used to call.
+    ControlBusConnection(zbus::Connection),
+    /// A second launch forwarded a verb over the control bus
+    /// (control-transport) — the takeover of the `dbus_activation`
+    /// hook. Decodes through the same parse path a CLI verb takes.
+    ForwardedAction(dbus_state::Forwarded),
     ConfigChanged(DropTermConfig),
     /// The `set_theme` task from a theme-preference change landed:
     /// re-run the color apply so the `WINDOW_BG_COLOR` derivation —
@@ -2255,6 +2264,105 @@ impl Application for DropTerm {
             },
         ));
 
+        // The control bus (control-transport): DropTerm owns its bus
+        // name itself. The interface is served before the name is
+        // requested — the object server must be up when the name
+        // lands, or a forward racing the ownership trips
+        // ServiceUnknown (libcosmic's ordering note, kept). On
+        // ownership the connection is handed over (V1 rides it) and
+        // every forwarded verb streams into the shared decode path.
+        // Losing the name to a concurrent first launch parks the
+        // stream: that instance runs unreachable — the loser's
+        // behavior under libcosmic's feature, kept.
+        if !crate::single_instance_disabled() {
+            struct ControlBusSubscription;
+            subs.push(Subscription::run_with(
+                std::any::TypeId::of::<ControlBusSubscription>(),
+                |_| {
+                    cosmic::iced::stream::channel(
+                        10,
+                        |mut output: cosmic::iced::futures::channel::mpsc::Sender<Message>|
+                         async move {
+                            use cosmic::iced::futures::SinkExt;
+
+                            let (tx, mut rx) = mpsc::unbounded_channel();
+                            let builder = match zbus::connection::Builder::session() {
+                                Ok(builder) => builder,
+                                Err(err) => {
+                                    log::warn!(
+                                        "no session bus for the control bus ({err}); \
+                                         forwarding and the applet state are off this run"
+                                    );
+                                    return;
+                                }
+                            };
+                            let conn = match builder.build().await {
+                                Ok(conn) => conn,
+                                Err(err) => {
+                                    log::warn!(
+                                        "no session bus for the control bus ({err}); \
+                                         forwarding and the applet state are off this run"
+                                    );
+                                    return;
+                                }
+                            };
+                            match conn
+                                .object_server()
+                                .at(dbus_state::OBJECT_PATH, dbus_state::Activation::new(tx))
+                                .await
+                            {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    log::error!("activation interface already served");
+                                    std::process::exit(1);
+                                }
+                                Err(err) => {
+                                    log::error!("failed to serve the activation interface: {err}");
+                                    std::process::exit(1);
+                                }
+                            }
+                            match conn
+                                .request_name_with_flags(
+                                    dbus_state::BUS_NAME,
+                                    zbus::fdo::RequestNameFlags::DoNotQueue.into(),
+                                )
+                                .await
+                            {
+                                Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => {}
+                                // Exists, in any wording: a concurrent
+                                // first launch took the name; this
+                                // instance's serving is unreachable
+                                // and its stream parks.
+                                Ok(reply) => {
+                                    log::warn!(
+                                        "another instance owns the bus name ({reply}); \
+                                         running without the control bus"
+                                    );
+                                    std::future::pending::<()>().await;
+                                }
+                                Err(err) => {
+                                    log::error!("failed to own the bus name: {err}");
+                                    std::process::exit(1);
+                                }
+                            }
+                            if output
+                                .send(Message::ControlBusConnection(conn.clone()))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            while let Some(fwd) = rx.recv().await {
+                                if output.send(Message::ForwardedAction(fwd)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        },
+                    )
+                },
+            ));
+        }
+
         // Slide clock: redraw-only ticks while a slide is live —
         // 1 ms saturation so every compositor frame window contains
         // a pending redraw request (see `SLIDE_TICK`). The stream is
@@ -2708,29 +2816,57 @@ impl Application for DropTerm {
 
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
         use cosmic::dbus_activation::Details;
-        match msg.msg {
-            Details::Activate => Task::done(cosmic::Action::App(Message::ToggleAction(
-                ToggleAction::Toggle,
-            ))),
+        // A delegation shim while the `single-instance` feature still
+        // builds this hook: the control bus's own subscription
+        // delivers through `forwarded_action`; libcosmic's path can
+        // no longer reach here under plain `run` (the hook's feature
+        // subscription stays off), and the feature leaves in this
+        // package's last task.
+        let fwd = match msg.msg {
+            Details::Activate => dbus_state::Forwarded::Activate,
+            Details::Open { .. } => {
+                return Task::none();
+            }
             Details::ActivateAction { action, args } => {
-                // The forwarded name plus its args re-parse through
-                // the clap definitions — a single source of truth for
-                // the action surface. A malformed forward degrades to
-                // a plain toggle, never an error surface.
+                dbus_state::Forwarded::ActivateAction { action, args }
+            }
+        };
+        Self::forwarded_action(fwd)
+    }
+
+    /// Serves the V1 state interface on the connection the control
+    /// bus owns. The snapshot is seeded from the app's current
+    /// fields, so a first read is correct even before any later sync
+    /// lands.
+    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
+        self.control_bus_connected(conn)
+    }
+}
+
+impl DropTerm {
+    /// Applies a verb a second launch forwarded over the control bus.
+    /// The forwarded name plus its args re-parse through the clap
+    /// definitions — a single source of truth for the action surface.
+    /// A malformed forward degrades to a plain toggle, never an error
+    /// surface.
+    fn forwarded_action(fwd: dbus_state::Forwarded) -> Task<Message> {
+        match fwd {
+            dbus_state::Forwarded::Activate => Task::done(cosmic::Action::App(
+                Message::ToggleAction(ToggleAction::Toggle),
+            )),
+            dbus_state::Forwarded::ActivateAction { action, args } => {
                 let mut words = vec![action];
                 words.extend(args);
                 let parsed = parse_forwarded_action(&words).unwrap_or_default();
                 Task::done(cosmic::Action::App(Message::ToggleAction(parsed)))
             }
-            Details::Open { .. } => Task::none(),
+            dbus_state::Forwarded::Open { .. } => Task::none(),
         }
     }
 
-    /// Serves the V1 state interface on the bus name single-instance
-    /// activation already owns. The snapshot is seeded from the
-    /// app's current fields, so a first read is correct even before
-    /// any later sync lands.
-    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
+    /// The control bus took the bus name and handed over its
+    /// connection: serve the V1 state interface on it.
+    fn control_bus_connected(&mut self, conn: zbus::Connection) -> Task<Message> {
         let state = self.derive_dbus_state();
         *self
             .dbus_shared
@@ -2756,12 +2892,12 @@ impl Application for DropTerm {
         });
         Task::none()
     }
-}
 
-impl DropTerm {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ToggleAction(action) => return self.debounced_toggle(action),
+            Message::ControlBusConnection(conn) => return self.control_bus_connected(conn),
+            Message::ForwardedAction(fwd) => return Self::forwarded_action(fwd),
             Message::ConfigChanged(config) => {
                 let old_geom = Geometry::from_config(&self.config);
                 let new_geom = Geometry::from_config(&config);

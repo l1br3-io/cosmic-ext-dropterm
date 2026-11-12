@@ -121,6 +121,62 @@ fn query_visibility() -> Option<bool> {
     })
 }
 
+/// libcosmic's debug escape hatch, kept (control-transport):
+/// `COSMIC_SINGLE_INSTANCE=false` (or `0`) runs this launch as a
+/// plain instance — no forwarding, no name ownership, no applet
+/// state — so a broken primary never blocks debugging a fresh one.
+/// Read once per process: main's launch decision and the app's
+/// control-bus subscription must agree for the whole run.
+pub(crate) fn single_instance_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("COSMIC_SINGLE_INSTANCE")
+            .is_ok_and(|value| value.to_lowercase() == "false" || value == "0")
+    })
+}
+
+/// Who owns the control bus's name, asked on a throwaway connection:
+/// the ownership itself is taken later, on the long-lived connection
+/// the app's runtime builds (a zbus connection's tasks ride the
+/// runtime that built it — a name taken here would die with this
+/// connection).
+enum BusName {
+    Unowned,
+    OwnedByAnother,
+    NoBus,
+}
+
+fn bus_name_status() -> BusName {
+    // The query path's runtime pattern: current-thread is enough for
+    // one synchronous-looking question.
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return BusName::NoBus;
+    };
+    runtime.block_on(async {
+        let conn = match zbus::connection::Builder::session() {
+            Ok(builder) => match builder.build().await {
+                Ok(conn) => conn,
+                Err(_) => return BusName::NoBus,
+            },
+            Err(_) => return BusName::NoBus,
+        };
+        let Ok(name) = dbus_state::BUS_NAME.try_into() else {
+            return BusName::NoBus;
+        };
+        match zbus::fdo::DBusProxy::new(&conn).await {
+            Ok(dbus) => match dbus.name_has_owner(name).await {
+                Ok(true) => BusName::OwnedByAnother,
+                Ok(false) => BusName::Unowned,
+                Err(_) => BusName::NoBus,
+            },
+            Err(_) => BusName::NoBus,
+        }
+    })
+}
+
 fn main() -> cosmic::iced::Result {
     env_logger::init();
 
@@ -135,7 +191,7 @@ fn main() -> cosmic::iced::Result {
     }
 
     let args = Args::parse();
-    // The query path exits before `run_single_instance` so a second
+    // The query path exits before any bus-name attempt so a second
     // launch asking a question never forwards an action to the
     // running instance.
     if args.is_visible {
@@ -163,11 +219,31 @@ fn main() -> cosmic::iced::Result {
         std::process::exit(1);
     }
 
+    // The control bus's launch half (control-transport): decide on a
+    // throwaway connection whether this launch is the instance. The
+    // ownership itself is taken inside the app's runtime, by the
+    // control-bus subscription; `run_single_instance` used to make
+    // this decision by attempting the forward itself.
+    if !single_instance_disabled() {
+        match bus_name_status() {
+            BusName::Unowned | BusName::NoBus => {}
+            BusName::OwnedByAnother => {
+                // Task 2 replaces this with the forward: interim
+                // behavior on this commit only.
+                eprintln!(
+                    "dropterm: another instance owns the bus name but did not answer \
+                     (stale binary?); refusing to start a second instance"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     let settings = cosmic::app::Settings::default()
         .no_main_window(true)
         .exit_on_close(false);
 
-    cosmic::app::run_single_instance::<DropTerm>(settings, flags)
+    cosmic::app::run::<DropTerm>(settings, flags)
 }
 
 #[cfg(test)]
