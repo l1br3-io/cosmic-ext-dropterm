@@ -129,10 +129,18 @@ and sway and reports `gnome-toplevel (unimplemented)` on GNOME —
 
 **Acceptance criteria:**
 - [ ] Detection verdicts recorded on COSMIC, sway, and GNOME (or the
-      sandbox equivalent)
+      sandbox equivalent) *(harness armed at spike aeea7b3:
+      `SPIKE_CHECK=detect` — layer-shell-guard's registry probe
+      re-expressed as the dispatch verdict, no window; the no-session
+      branch verified headless 2026-11-13, clean "could not find
+      wayland compositor" + exit 0 — and a found quirk recorded:
+      `App::quit` during startup needs a deferred tick to take; the
+      three verdict rows run in the COSMIC session, sway/weston can
+      carry two of them beforehand if the container is rebuilt)*
 
 **Verification:**
-- [ ] Manual across the three environments
+- [ ] Manual across the three environments *(no-session branch done;
+      the rest await the session)*
 
 **Dependencies:** Task 2 · **Scope:** S
 
@@ -147,10 +155,22 @@ the reference shape.
 
 **Acceptance criteria:**
 - [ ] A grid renders from a live PTY with attributes and resize;
-      evidence recorded; the `cosmic-text`-role note written
+      evidence recorded; the `cosmic-text`-role note written *(harness
+      armed at spike aeea7b3: `SPIKE_CHECK=grid` — a live `/bin/sh`
+      PTY feeds an `alacritty_terminal` Term, DropTerm's patched fork
+      pair resolving beside GPUI's tree under the pin (the build itself
+      proves the forks-resolve half — the crate-choice question), the
+      render walks the grid as per-run colored spans, resize drives
+      `Term::resize` + `Msg::Resize`/SIGWINCH, an ANSI color pattern
+      seeded through the pty gives attributes evidence without keys;
+      the `cosmic-text`-role note is written: GPUI's text stack is
+      cosmic-text-based at this pin, so DropTerm's engine-side buffers
+      have no role on this path — the runtime render rows run in the
+      COSMIC session)*
 
 **Verification:**
-- [ ] Manual on COSMIC
+- [ ] Manual on COSMIC *(build halves green; render rows pending the
+      session)*
 
 **Dependencies:** Task 2 · **Scope:** M
 
@@ -162,10 +182,18 @@ beside GPUI's executor — proving the loops coexist
 
 **Acceptance criteria:**
 - [ ] The scratch crate answers `--is-visible`-style queries over the
-      bus while rendering
+      bus while rendering *(harness armed at spike aeea7b3:
+      `SPIKE_CHECK=dbus` — a zbus 5 + tokio service on its own thread
+      owns `io.github.l1br3_io.dropterm.SpikeCheck` with the V1-shaped
+      IsVisible/SetVisible pair, the render loop showing the shared
+      state; a 30s window for the busctl round-trip, the command
+      printed by the harness; zbus version-matched to the 5.19 line
+      the gpui tree already compiles — the runtime rows run in the
+      COSMIC session)*
 
 **Verification:**
-- [ ] Manual on COSMIC
+- [ ] Manual on COSMIC *(service code compiled green beside GPUI's
+      tree; the round-trip rows pending the session)*
 
 **Dependencies:** Task 2 · **Scope:** S
 

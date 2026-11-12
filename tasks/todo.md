@@ -150,10 +150,18 @@ filled; the release cut.
       first-frame echo; #61368 no-disconnect at sway 1.5, but
       `cx.displays()` mis-sizes fractional outputs (integer-scale read)
       — two-surface show immune, measure-free not; COSMIC rows open)*
-- [ ] gs-4 Check 11: backend detection verdicts
+- [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
+      aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
+      headless; the three verdict rows run in the COSMIC session)*
 - [ ] gs-5 Check 9: terminal grid render (sets the shared-core
-      boundary)
-- [ ] gs-6 Check 10: zbus + V1 beside GPUI
+      boundary) *(harness armed, aeea7b3: `SPIKE_CHECK=grid`; the
+      patched forks proven to resolve beside GPUI's tree by the build
+      itself; the cosmic-text-role note written — no engine-side role
+      on GPUI's path; render rows run in the COSMIC session)*
+- [ ] gs-6 Check 10: zbus + V1 beside GPUI *(harness armed, aeea7b3:
+      `SPIKE_CHECK=dbus`; the V1-shaped service compiled green on its
+      own tokio thread beside GPUI; the busctl round-trip rows run in
+      the COSMIC session)*
 - [ ] gs-7 Checks 12–13: X11 and macOS PopUp
 - [ ] gs-8 Check 14: coexistence experiment (one commit, reverted)
 - [ ] gs-9 The report → "Phase 2 results" on main
