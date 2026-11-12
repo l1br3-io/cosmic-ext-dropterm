@@ -41,7 +41,7 @@ when each opens (plan rules) — no specs exist for them yet, by design.
 
 **Build order**: `app-identity` merges first and every other package merges
 after it; packages may start earlier and rebase, and `config-store` should,
-to keep the break release's gap short. `reality-check` and `gpui-spike` run
+to keep the gap between the two merges short. `reality-check` and `gpui-spike` run
 from day one beside everything; Phase 3 follows the spike report.
 
 ## Worktree split
@@ -97,11 +97,13 @@ permanent homes.
 
 ## Release boundary
 
-`app-identity` and `config-store` ship in one release — the break event —
-and no release is cut between their merges. Every other Phase 1 package
-ships in whatever release follows its merge. Phase 3's GPUI binary ships
-nothing until its cutover slice. Deferred (owner ruling, 2026-11-12): the
-break release is not cut yet — prep sits on main uncut, building continues,
+`app-identity` and `config-store` ship in one release, and no release is
+cut between their merges. No break note (owner ruling, 2026-11-12):
+pre-distribution — no released version, no users — nothing to break, so
+the notes are ordinary release notes. Every other Phase 1 package ships
+in whatever release follows its merge. Phase 3's GPUI binary ships
+nothing until its cutover slice. Deferred (owner ruling, 2026-11-12):
+the release is not cut yet — prep sits on main uncut, building continues,
 and the eventual release carries everything merged by then; the walk gate
 stands whenever it is cut (plan record, Release boundaries).
 

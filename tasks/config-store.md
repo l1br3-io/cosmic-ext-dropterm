@@ -2,8 +2,9 @@
 
 Spec: [SPEC-config-store.md](../SPEC-config-store.md) · Module id:
 `config-store` · Phase 1, lane B · branch `port/config-store` (worktree
-`../ced2`, from day one) · ships in the same release as
-`app-identity` (the break event).
+`../ced2`, from day one) · ships in the same release as `app-identity`
+(one release, no break note — owner ruling 2026-11-12:
+pre-distribution, no users).
 
 **Files touched:** `src/config.rs` (the derive at `:10,186` leaves),
 `src/config/tests.rs` (the 40 `with_custom_path` fixtures), `src/app.rs`
@@ -227,8 +228,10 @@ instead of falling through to the file watcher.
 **Dependencies:** Task 5 merged (or beside it) · **Files:** `Cargo.toml`
 · **Scope:** S
 
-## Checkpoint: the break event
+## Checkpoint: the one release
 
 - [ ] `app-identity` + `config-store` both merged, one release carrying
-      both, its notes carrying the break note (old files and directories
-      to remove, old config no longer read)
+      both; its notes are ordinary release notes (owner ruling
+      2026-11-12: pre-distribution — no released version, no users —
+      so no break note; the draft in app-identity's merge description
+      is moot)

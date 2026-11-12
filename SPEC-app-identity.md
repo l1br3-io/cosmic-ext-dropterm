@@ -61,8 +61,8 @@ plus the crate names. The rest is `res/`, CI, the justfile, and docs.
 
 - Plain `dropterm`; greenfield: no shims, no migration code, no dual bus
   names.
-- Ships in the same release as `config-store` (the break event); no release
-  is cut between their merges.
+- Ships in the same release as `config-store`; no release is cut between
+  their merges. (2026-11-12: no break note — pre-distribution, no users.)
 
 ## Code style
 
@@ -102,7 +102,9 @@ check — run it until the only matches are the deliberate survivors.
   `--is-visible` over the new bus name, and the rebuilt applet toggles it.
 - The release that ships it carries the break note: the old binary, desktop,
   metainfo, and icon files to remove (the v0.4.0 uninstall globs), and the
-  old config and state directories that are no longer read.
+  old config and state directories that are no longer read. Superseded
+  2026-11-12 (owner): pre-distribution, no users — no break note; the
+  draft in merge f698083's description is moot.
 
 ## Open questions (owner rulings; needed before `/build`)
 

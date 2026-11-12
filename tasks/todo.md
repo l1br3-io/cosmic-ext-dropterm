@@ -65,8 +65,9 @@ build toggles under the new name; applet follows.
       c5de59a review fixes; merged e6ad23b, plan record updated
       206d6a7; applet canary an owner row)*
 
-**Checkpoint — the break event:** app-identity + config-store in one
-release; notes carry the break note. *Deferred 2026-11-12 (owner): no
+**Checkpoint — the one release:** app-identity + config-store in one
+release; no break note (owner ruling 2026-11-12: pre-distribution, no
+users). *Deferred 2026-11-12 (owner): no
 release cut yet — building continues; the release, when cut, carries
 everything merged by then.*
 
@@ -129,7 +130,7 @@ everything merged by then.*
 - [ ] dr-5 Release-notes line; merge
 
 **Checkpoint — end of Phase 1:** the plan's exit line; Phase 0 slots
-filled; the break release cut.
+filled; the release cut.
 
 ## Phase 2 — the spike (worktree ../dropterm-spike; from day one)
 

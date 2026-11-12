@@ -75,9 +75,11 @@ What keeps the effort bounded:
   outside it.
 - The V1 D-Bus contract becomes *the* API; D-Bus is its Linux binding.
 - Identity renames to plain `dropterm`; greenfield, no backward-compat
-  shims; the rename lands with the config-store move as one break event.
-  (Review reading, 2026-11-10: the break event is one *release*; the two
-  packages merge separately, with no release cut between their merges.)
+  shims; the rename lands with the config-store move in one release.
+  (Review reading, 2026-11-10: the pairing is one *release*; the two
+  packages merge separately, with no release cut between their merges.
+  Owner ruling, 2026-11-12: pre-distribution — no released version, no
+  users — nothing to break, so the release carries no break note.)
 - gpui-shell (the Kit's JavaScript runtime layer) never enters the
   dependency graph.
 - The applet stays COSMIC-only; GNOME comes via a companion Shell extension
@@ -549,7 +551,7 @@ most of its 41 files are `res/`, CI, the justfile, and docs.
 
 Build order: `app-identity` merges first and every other package merges
 after it; packages may start earlier and rebase, and `config-store` should,
-to keep the break release's gap short. `reality-check` and `gpui-spike` run
+to keep the gap between the two merges short. `reality-check` and `gpui-spike` run
 from day one beside everything; Phase 3 follows the spike report.
 
 ## Work packages
@@ -627,6 +629,9 @@ code, no dual bus names (owner ruling). Ships in the same release as
 - The release that ships it carries the break note: the old binary,
   desktop, metainfo, and icon files to remove (the v0.4.0 uninstall globs),
   and the old config and state directories that are no longer read.
+  Superseded (owner ruling, 2026-11-12): pre-distribution — no released
+  version, no users — so no break note; the draft in merge f698083's
+  description is moot.
 
 **Ruled (2026-11-10, owner).** App id `io.github.l1br3_io.dropterm`; applet
 binary `dropterm-applet`, desktop id `io.github.l1br3_io.dropterm.Applet`;
@@ -1060,13 +1065,15 @@ git branch -d port/app-identity
 
 ### Release boundaries
 
-- `app-identity` and `config-store` ship in one release, the break event,
-  and no release is cut between their merges. `config-store` starts on day
+- `app-identity` and `config-store` ship in one release, and no release
+  is cut between their merges. No break note (owner ruling, 2026-11-12):
+  pre-distribution — no released version, no users — nothing to break,
+  so the notes are ordinary release notes. `config-store` starts on day
   one in lane B (its paths derive from `APP_ID`, so it follows the rename),
   which keeps the gap between the two merges short. A fix that cannot wait
   for the pair can ship from a branch cut at the last tag; the release
   workflow fires on any `v*` tag.
-- Deferred (owner ruling, 2026-11-12): with both halves merged, the break
+- Deferred (owner ruling, 2026-11-12): with both halves merged, the
   release is not cut yet — its prep (the 0.5.0 version bump, the staged
   release notes, the agent-run walk rows of 2026-11-12) stays on main
   uncut, the rehearsal and the publish are skipped for now, and Phase 1

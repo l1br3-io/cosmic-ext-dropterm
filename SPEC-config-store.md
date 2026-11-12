@@ -11,8 +11,9 @@ terminal crate. Configuration behaves the same on any desktop and under any
 toolkit, and the store no longer names a COSMIC namespace.
 
 Merge order: starts day one beside `app-identity` (its paths derive from
-`APP_ID`, so it follows the rename) and ships in the same release — the
-break event, with no release cut between the two merges.
+`APP_ID`, so it follows the rename) and ships in the same release, with
+no release cut between the two merges (no break note — owner ruling
+2026-11-12: pre-distribution, no users).
 
 ## Scope
 

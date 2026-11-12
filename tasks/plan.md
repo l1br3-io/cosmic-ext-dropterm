@@ -62,7 +62,8 @@ app-identity ──merges first──┬─ config-store ──── control-tr
   every package rebases      ├─ layer-shell-guard (lane C, small, first on main.rs)
   onto it                    ├─ keybind-docs (+ reality-check rows)
                             └─ distro-reach (+ reality-check session 6, rulings)
-app-identity + config-store ship as one release (the break event)
+app-identity + config-store ship as one release (no break note —
+pre-distribution, owner ruling 2026-11-12)
 ```
 
 ## Task list (index into the chunks)
@@ -90,8 +91,9 @@ app-identity + config-store ship as one release (the break event)
       ship review findings landed as c5de59a before the merge)*
       *(T1–T3 done on `port/control-transport` — e16a976, c7e2a4f,
       616cba1; T4 pending)*
-- **Checkpoint: the break event** — both packages merged, one release,
-  its notes carrying the break note. *Deferred 2026-11-12 (owner): the
+- **Checkpoint: the one release** — both packages merged, one release;
+  no break note (owner ruling 2026-11-12: pre-distribution, no users).
+  *Deferred 2026-11-12 (owner): the
   release is not cut yet — building continues; the release, when cut,
   carries everything merged by then (plan record, Release boundaries)*
 
@@ -113,7 +115,7 @@ app-identity + config-store ship as one release (the break event)
 - [ ] distro-reach Tasks 1–5 (rulings first; 3–4 contingent)
 - **Checkpoint: end of Phase 1** — the plan's exit: `just check` green,
   surface lifecycle headless end to end, `single-instance` and
-  `cosmic-config` gone from the terminal crate, the break release cut,
+  `cosmic-config` gone from the terminal crate, the release cut,
   Phase 0 slots filled
 
 ### Phase 2 — the spike ([gpui-spike](gpui-spike.md), [kit-pass](kit-pass.md))
