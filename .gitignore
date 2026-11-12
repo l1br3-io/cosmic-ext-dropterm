@@ -2,8 +2,6 @@
 /vendor/
 /vendor.tar
 /.cargo/config.toml
-SPEC*.md
-/tasks
 .zcode/plans
 # Jekyll build output (just docs-serve / actions/jekyll-build-pages)
 docs/_site/

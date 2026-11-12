@@ -46,7 +46,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - A shipped feature ships its user doc: a `docs/` page or section, linked from README's Documentation index.
 - A feature with a research record gets (or updates) its row in `docs/research/README.md` — status lives in the index; the records themselves are never edited after the fact.
 - Two gates hold the docs to the code: `cargo test` pins every serialized `DropTermConfig` key to `docs/configuration.md` (`every_config_key_is_documented`), and `just docs-check` (part of `just check`) verifies every internal markdown link resolves.
-- Committed docs never reference the gitignored `SPEC*.md`/`tasks/` artifacts — checklist rows and prose must be self-contained.
+- Committed docs stay self-contained: the `SPEC*.md`/`tasks/` set is in-tree since 2026-11-12 and may be linked from docs, but no docs page depends on it for its meaning.
 
 ## Rust project notes
 
@@ -54,31 +54,30 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - Unit tests live inline in `#[cfg(test)] mod tests`. When a test module outgrows ~500 lines, move it to a sibling `tests.rs` (e.g. `src/app/tests.rs`) declared as `#[cfg(test)] mod tests;` — it stays a child module, keeping private access and cfg gating while keeping whole-file reads cheap for agents. Never move unit tests to a top-level `tests/` dir; that is integration-test territory and loses private access.
 - This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/testing.md`); unit tests cover what can be tested headless.
 
-## Spec & task artifacts (local working docs)
+## Spec & task artifacts (committed on main)
 
 - `SPEC.md` is the master index: the capability map (module ids, dependency
   direction, build order) and per-module status. Per-module specs live at
   `SPEC-<module-id>.md`; per-module task chunks at `tasks/<module-id>.md`.
   Global aggregates: `tasks/plan.md` and `tasks/todo.md`.
-- All of the above are local working artifacts, gitignored via `SPEC*.md`
-  and `/tasks`. Never commit them.
+- The set is committed (owner ruling, 2026-11-12; it was gitignored local
+  state before, with per-worktree seeded copies). Every change to it is a
+  commit, and worktrees see the whole set through git — branch, rebase,
+  merge — with no seeding or hand-syncing between checkouts.
 - Module ids come from the capability map in `SPEC.md`, are chosen once, and
   are never renamed mid-initiative.
 - Before implementing: read `SPEC.md` for orientation, then load the
   module's `SPEC-<id>.md` and `tasks/<id>.md` chunk. Never implement a
   module whose spec is not approved or whose chunk is not written.
 - `/build` consumes the chunk files; see `.opencode/commands/build.md` (mirrored at `.zcode/commands/build.md`).
-- PRs must copy the module's success criteria into the PR body, since
-  reviewers cannot see the local spec files.
-- Worktrees: these artifacts are per working directory, so a `git worktree`
-  never sees another checkout's. Each worktree holds the specs and chunks of
-  the modules it builds, seeded from the committed plan that defines them
-  (for portability, the work-package blocks in
-  `docs/research/portability-plan.md`); its `SPEC.md` copies that plan's
-  capability map and marks modules other worktrees own by their committed
-  status. Never symlink spec sets across worktrees: concurrent `/build` runs
-  would race on the shared status files. Cross-worktree status lives in the
-  committed plan, updated on main.
+- PRs may link the module's `SPEC-<id>.md` and chunk directly — reviewers
+  see them in-tree; copying success criteria into the PR body is welcome
+  but no longer required.
+- Worktrees: a lane edits only its own modules' spec and chunk (plus the
+  shared `SPEC.md` status lines and `tasks/todo.md` rows); status crosses
+  worktrees through git. The committed plan
+  (`docs/research/portability-plan.md`) remains the durable record of
+  merge Status, updated on main.
 
 
 ## File creation
