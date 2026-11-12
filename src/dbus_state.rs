@@ -710,4 +710,166 @@ mod tests {
             .expect("wire test timed out");
         });
     }
+
+    // --- the contract-surface pin (control-transport T3) ---
+
+    /// The `<method>` entries of one interface block: name → the
+    /// ordered `(type, direction)` list of its `<arg>`s, enumerated
+    /// from the introspection XML rather than string-matched — the
+    /// pin holds the served surface, not the XML's spelling of it.
+    fn methods(block: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
+        block
+            .split("<method")
+            .skip(1)
+            .map(|method| {
+                let body = &method[..method.find("</method>").unwrap_or(method.len())];
+                let name = attr_of(method, "name");
+                let args = body
+                    .split("<arg")
+                    .skip(1)
+                    .map(|arg| (attr_of(arg, "type"), attr_of(arg, "direction")))
+                    .collect();
+                (name, args)
+            })
+            .collect()
+    }
+
+    /// The `<property>` entries of one interface block:
+    /// `(name, type, access)`, enumerated like [`methods`].
+    fn properties(block: &str) -> Vec<(&str, &str, &str)> {
+        block
+            .split("<property")
+            .skip(1)
+            .map(|property| {
+                (
+                    attr_of(property, "name"),
+                    attr_of(property, "type"),
+                    attr_of(property, "access"),
+                )
+            })
+            .collect()
+    }
+
+    /// One `key="value"` attribute of an XML fragment (the first).
+    fn attr_of<'a>(fragment: &'a str, key: &str) -> &'a str {
+        fragment
+            .split(&format!("{key}=\""))
+            .nth(1)
+            .map_or("", |rest| &rest[..rest.find('"').unwrap_or(0)])
+    }
+
+    /// The `<interface name="...">...</interface>` blocks of the
+    /// introspection XML.
+    fn interfaces(xml: &str) -> Vec<(&str, &str)> {
+        xml.split("<interface")
+            .skip(1)
+            .map(|iface| {
+                let body = &iface[..iface.find("</interface>").unwrap_or(iface.len())];
+                (attr_of(iface, "name"), body)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn served_contract_surface_is_pinned() {
+        // The contract is *the* API: this pins what the control bus
+        // serves at the object path — the V1 interface and the
+        // activation member set with exactly the signatures
+        // libcosmic's `single-instance` feature served (read from its
+        // vendored source at /planning), so the ownership change
+        // changed nothing observable, and a new-served instance still
+        // answers an old second launch across an upgrade.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: true,
+                    tab_count: 2,
+                }));
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                let introspectable = zbus::fdo::IntrospectableProxy::builder(&client)
+                    .destination(BUS_NAME)
+                    .and_then(|builder| builder.path(OBJECT_PATH))
+                    .expect("identity names")
+                    .build()
+                    .await
+                    .expect("introspectable proxy");
+                let xml = introspectable
+                    .introspect()
+                    .await
+                    .expect("introspect the object path");
+                // The served node's own interfaces only: the XML
+                // also carries the child-node tree zbus walks below
+                // the path, where the D-Bus standards repeat per
+                // level.
+                let own = &xml[..xml.find("<node name=").unwrap_or(xml.len())];
+                let served = interfaces(own);
+
+                // The one object path carries exactly the two
+                // DropTerm interfaces beside the three D-Bus
+                // standards zbus adds.
+                let mut names: Vec<&str> = served.iter().map(|(name, _)| *name).collect();
+                names.sort_unstable();
+                assert_eq!(
+                    names,
+                    vec![
+                        "io.github.l1br3_io.dropterm.V1",
+                        "org.freedesktop.DBus.Introspectable",
+                        "org.freedesktop.DBus.Peer",
+                        "org.freedesktop.DBus.Properties",
+                        "org.freedesktop.DbusActivation",
+                    ]
+                );
+
+                let v1 = served
+                    .iter()
+                    .find(|(name, _)| *name == "io.github.l1br3_io.dropterm.V1")
+                    .expect("V1 served")
+                    .1;
+                // V1 is exactly the two read-only properties the
+                // applet and --is-visible speak; it has no methods.
+                assert!(
+                    methods(v1).is_empty(),
+                    "V1 serves no methods: {:?}",
+                    methods(v1)
+                );
+                let mut props = properties(v1);
+                props.sort_unstable();
+                assert_eq!(
+                    props,
+                    vec![("TabCount", "u", "read"), ("Visible", "b", "read")]
+                );
+
+                let activation = served
+                    .iter()
+                    .find(|(name, _)| *name == "org.freedesktop.DbusActivation")
+                    .expect("activation served")
+                    .1;
+                // libcosmic's member set, signature for signature:
+                // Activate(a{sv}), Open(as, a{sv}),
+                // ActivateAction(s, as, a{sv}) — all in, no reply
+                // payload, no properties.
+                let mut served_methods = methods(activation);
+                served_methods.sort_unstable();
+                assert_eq!(
+                    served_methods,
+                    vec![
+                        ("Activate", vec![("a{sv}", "in")]),
+                        (
+                            "ActivateAction",
+                            vec![("s", "in"), ("as", "in"), ("a{sv}", "in")]
+                        ),
+                        ("Open", vec![("as", "in"), ("a{sv}", "in")]),
+                    ]
+                );
+                assert!(
+                    properties(activation).is_empty(),
+                    "activation serves no properties: {:?}",
+                    properties(activation)
+                );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
 }
