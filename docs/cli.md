@@ -1,6 +1,6 @@
 # CLI reference
 
-One binary, one running instance: every action below rides DropTerm's single-instance D-Bus seam - a second launch tells the first instance what to do and exits.
+One binary, one running instance: every action below rides DropTerm's single-instance D-Bus seam ([the D-Bus contract](dbus.md)) - a second launch tells the first instance what to do and exits.
 
 ```sh
 dropterm [toggle]              # default: toggle the overlay

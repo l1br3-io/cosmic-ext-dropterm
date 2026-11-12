@@ -28,13 +28,22 @@ becomes *the* API, D-Bus its Linux binding. The applet is named the
 reference consumer ([applet](../docs/applet.md) links in).
 
 **Acceptance criteria:**
-- [ ] Every member `src/dbus_state.rs` serves appears on the page
-- [ ] No member is documented that does not exist; the stability
+- [x] Every member `src/dbus_state.rs` serves appears on the page
+- [x] No member is documented that does not exist; the stability
       promise goes no further than the plan's ruling
 
 **Verification:**
-- [ ] Manual: the page reviewed against `src/dbus_state.rs` line by
-      line
+- [x] Manual: the page reviewed against `src/dbus_state.rs` line by
+      line *(agent-run on port/contract-docs: every claim traced to
+      the source — the address and dev twin, the V1 property pair
+      with the change-signal rule, the three activation members with
+      signatures and the fire-and-forget/queue-64 semantics, the
+      CLI-verb encoding against `forward_words` and the Display
+      names; two draft errors caught by the review itself — a bare
+      `dropterm` sends `ActivateAction("toggle", [])` not `Activate`
+      (`src/main.rs`: the CLI never fires the plain member), and the
+      applet's click likewise sends `ActivateAction("toggle", [])`
+      (`applet/src/dbus.rs`))*
 
 **Dependencies:** `control-transport` merged (the ownership story is
 settled by it) · **Files:** `docs/dbus.md` · **Scope:** S
