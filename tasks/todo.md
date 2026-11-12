@@ -13,8 +13,12 @@ chunk's verification passing.
 - [ ] rc-4 Session 3: KDE Plasma (Wayland)
 - [ ] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
 - [x] rc-6 Session 5: one X11 session (record which) *(i3 over Xvfb, 482a37d: zombie + degenerate 32px DOCK band first launch, truthful --is-visible, libXi-less panic variant; expected-fail recorded)*
-- [ ] rc-7 Session 6: non-Pop distro — floor, ldd, fonts (feeds
-      distro-reach)
+- [x] rc-7 Session 6: non-Pop distro — floor, ldd, fonts (feeds
+      distro-reach) *(run 2026-11-11 on archlinux:latest, slot filled
+      8328d51: the artifact's own floor is GLIBC_2.39, source build
+      green, ldd under-reports through winit's dlopen, fontless base;
+      this box only catches todo up — the chunk and plan record
+      already carried it)*
 - [ ] rc-8 Close-out: every failure filed and named in its slot
 
 ## Phase 1 — app-identity (flag day; merges first)
@@ -53,7 +57,11 @@ build toggles under the new name; applet follows.
 - [x] cs-5 cosmic-config leaves; docs path; manual rows; merge
       *(merged f5199ec; the sudo-installed manual rows stay the
       owner's)*
-- [ ] cs-6 Gate (COSMIC hardware): the dbus-config feature decision
+- [x] cs-6 Gate (COSMIC hardware): the dbus-config feature decision
+      *(decided and landed 2026-11-11, 576d3bc: the feature drops —
+      theme follow verified live on the fallback watcher in the
+      validation VM; the chunk's boxes were already checked, this box
+      only catches todo up)*
 - [x] ct-1 Bus-name ownership at startup (replaces
       run_single_instance; activation shape kept — planning ruling)
       *(e16a976)*

@@ -18,7 +18,7 @@ vocabulary: `not started` · `in progress (port/<id>)` ·
 
 | Id | Phase | Kind | Depends on | Lane | Shares hot files with | Spec | Status |
 |---|---|---|---|---|---|---|---|
-| `reality-check` | 0 | manual, no code | none | hardware | none | [SPEC-reality-check.md](SPEC-reality-check.md) | in progress — 3/7 sessions filled (COSMIC/sway/X11; Hyprland+KDE+GNOME+the non-Pop distro session are owner-hardware) |
+| `reality-check` | 0 | manual, no code | none | hardware | none | [SPEC-reality-check.md](SPEC-reality-check.md) | in progress — 4/7 sessions filled (COSMIC/sway/X11/non-Pop distro; Hyprland+KDE+GNOME are owner-hardware) |
 | `app-identity` | 1 | code, `res/`, CI, docs; mechanical | none — merges first | flag day | every package (mostly docs) | [SPEC-app-identity.md](SPEC-app-identity.md) | merged (f698083) |
 | `config-store` | 1 | code | `app-identity`\* | B | `surface-intents` (`src/app.rs`), `control-transport` (`Cargo.toml` features) | [SPEC-config-store.md](SPEC-config-store.md) | merged (f5199ec) |
 | `surface-intents` | 1 | refactor + tests | `app-identity`\* | A | `config-store` (`src/app.rs`) | [SPEC-surface-intents.md](SPEC-surface-intents.md) | merged (00cf77d) |
