@@ -251,7 +251,12 @@ dated park notes, and Phase 2 proceeds independently.)*
       two-entry carried ledger; the plan record's Phase 2 results
       section filled from it; the Kit ruling stays with the owner and
       gates kit-pass/kp-0)*
-- [ ] kp-0 Gate: spike reported AND Kit ruled adopt (else stop)
+- [x] kp-0 Gate: spike reported AND Kit ruled adopt (else stop) *(held
+      2026-11-13: spike reported GO — checks 0–4 evidenced on the zed-git
+      pin per the report; Kit ruled adopt, owner ruling 1 made at the
+      `/build auto` gate at open ruling 2's recommended timing (after the
+      base spike read the carried ledger); already-ran case n/a — the base
+      spike never pulled Kit crates)*
 - [ ] kp-1 C1: pin swap to gpui-pre; checks 0–4 re-run
 - [ ] kp-2 C2a: consumer LayerShell through gpui-pre
 - [ ] kp-3 C2b: Kit overlays on layer-shell at 80 ms cadence

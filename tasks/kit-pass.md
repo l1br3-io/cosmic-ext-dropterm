@@ -23,7 +23,15 @@ the ruling reads the carried-patch ledger). If the Kit was ruled adopt
 is complete by definition — record that and stop.
 
 **Acceptance criteria:**
-- [ ] Preconditions hold, or the already-ran case is recorded
+- [x] Preconditions hold, or the already-ran case is recorded
+
+*(Held 2026-11-13: `gpui-spike` reported **GO** with checks 0–4 all
+evidenced on the zed-git pin ([the report](../docs/research/gpui-spike.md)),
+and the Kit ruled **adopt** — owner ruling 1, decided 2026-11-13 at the
+`/build auto` gate, which is exactly open ruling 2's recommended timing:
+after the base spike, so the ruling read the carried-patch ledger. The
+already-ran case does not apply — the base spike pinned zed git and never
+pulled Kit crates, so C2a/C2b/C4 genuinely remain.)*
 
 **Dependencies:** `gpui-spike` reported; Kit ruled adopt · **Scope:** XS
 
