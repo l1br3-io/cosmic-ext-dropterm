@@ -722,7 +722,7 @@ executor; the `dropterm-platform` crate, which lands with the GPUI executor
 
 ### `control-transport`: DropTerm owns its single instance
 
-**Status**: not started.
+**Status**: merged (e6ad23b).
 
 **Objective.** DropTerm owns its bus name, its second-launch forwarding,
 and the V1 contract over zbus, replacing libcosmic's `single-instance`
