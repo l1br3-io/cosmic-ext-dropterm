@@ -35,7 +35,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 ## Slash commands
 
-`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/release [x.y.z]`, `/webperf`. Run `/ship` before merge for a parallel fan-out review. `/release` drives the whole release — version proposal, notes curation, recipes, gated pushes — and never pushes for you (see `dropterm-release`). In ZCode the planning command is `/planning` — `/plan` is a reserved built-in there, so its mirror is renamed to `planning.md`; opencode keeps `/plan`.
+`/spec`, `/plan`, `/build [auto]`, `/test`, `/review`, `/constraints`, `/code-simplify`, `/ship`, `/release [x.y.z]`, `/webperf`, `/roadmap`. Run `/ship` before merge for a parallel fan-out review; `/roadmap` rebuilds the portability status board fresh from `tasks/todo.md` + `SPEC.md` (interactive in ZCode Desktop, a table elsewhere) — it never serves a cached snapshot. `/release` drives the whole release — version proposal, notes curation, recipes, gated pushes — and never pushes for you (see `dropterm-release`). In ZCode the planning command is `/planning` — `/plan` is a reserved built-in there, so its mirror is renamed to `planning.md`; opencode keeps `/plan`.
 
 ## Personas
 
