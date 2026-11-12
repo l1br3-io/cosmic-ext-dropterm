@@ -85,8 +85,9 @@ app-identity + config-store ship as one release (the break event)
       *(merged f5199ec)*
 - [ ] config-store Task 6 (hardware-gated): the dbus-config decision
       *(decision recorded; theme-follow manual row pending)*
-- [ ] control-transport Tasks 1–4: bus-name ownership → forwarding →
-      contract pin → feature drop + applet canary
+- [x] control-transport Tasks 1–4: bus-name ownership → forwarding →
+      contract pin → feature drop + applet canary *(merged e6ad23b;
+      ship review findings landed as c5de59a before the merge)*
       *(T1–T3 done on `port/control-transport` — e16a976, c7e2a4f,
       616cba1; T4 pending)*
 - **Checkpoint: the break event** — both packages merged, one release,

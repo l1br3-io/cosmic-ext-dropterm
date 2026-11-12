@@ -54,11 +54,16 @@ build toggles under the new name; applet follows.
       *(merged f5199ec; the sudo-installed manual rows stay the
       owner's)*
 - [ ] cs-6 Gate (COSMIC hardware): the dbus-config feature decision
-- [ ] ct-1 Bus-name ownership at startup (replaces
+- [x] ct-1 Bus-name ownership at startup (replaces
       run_single_instance; activation shape kept — planning ruling)
-- [ ] ct-2 Second-launch forwarding; exit codes unchanged
-- [ ] ct-3 Contract-surface pin test
-- [ ] ct-4 Drop single-instance; applet canary; merge
+      *(e16a976)*
+- [x] ct-2 Second-launch forwarding; exit codes unchanged *(c7e2a4f;
+      the one deliberate delta — stale owner refuses exit 1, not a
+      duplicate — pinned by forward_outcome after the ship review)*
+- [x] ct-3 Contract-surface pin test *(616cba1, mutation-checked)*
+- [x] ct-4 Drop single-instance; applet canary; merge *(d4856e5 +
+      c5de59a review fixes; merged e6ad23b, plan record updated
+      206d6a7; applet canary an owner row)*
 
 **Checkpoint — the break event:** app-identity + config-store in one
 release; notes carry the break note. *Deferred 2026-11-12 (owner): no

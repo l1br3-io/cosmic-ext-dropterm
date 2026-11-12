@@ -107,14 +107,21 @@ Manual verification, then merge (rebase over `layer-shell-guard` if the
 guard landed first on `src/main.rs`).
 
 **Acceptance criteria:**
-- [ ] With `single-instance` removed, every verb in [the CLI
+- [x] With `single-instance` removed, every verb in [the CLI
       reference](../docs/cli.md) and `--is-visible` behave as before,
-      and the applet toggles and reports state
-- [ ] `just check` green on the merge result
+      and the applet toggles and reports state *(transport half
+      agent-verified on the validation VM, d4856e5: ownership flip,
+      live introspect matching the pin, every verb exit 0 with applied
+      state, settled reads green; the applet canary and the per-verb
+      fine clauses are owner rows — testing.md's seam row carries the
+      annotation)*
+- [x] `just check` green on the merge result *(e6ad23b; the ship
+      review's findings landed first as c5de59a)*
 
 **Verification:**
-- [ ] Manual on COSMIC: the CLI verbs + the applet against an installed
-      build
+- [x] Manual on COSMIC: the CLI verbs + the applet against an installed
+      build *(agent-run transport half above; applet canary an owner
+      pass)*
 
 **Dependencies:** Task 3 · **Files:** `Cargo.toml`, `Cargo.lock`
 (regenerates) · **Scope:** S
