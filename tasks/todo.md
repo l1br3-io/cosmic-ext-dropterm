@@ -257,7 +257,14 @@ dated park notes, and Phase 2 proceeds independently.)*
       `/build auto` gate at open ruling 2's recommended timing (after the
       base spike read the carried ledger); already-ran case n/a — the base
       spike never pulled Kit crates)*
-- [ ] kp-1 C1: pin swap to gpui-pre; checks 0–4 re-run
+- [x] kp-1 C1: pin swap to gpui-pre; checks 0–4 re-run *(done 2026-11-13,
+      spike d722652 — whole 20-crate set at =0.3.12 as the Kit consumes
+      it; fidelity twice over: first independent source diff = 11/16
+      byte-identical incl. the whole wayland backend, one real delta
+      (gpui-pre-wgpu's wgpu 30.0.0→30.0.2 adaptation), and the behavior
+      re-run shows it invisible — release 32/36/34ms (base 34/35/34),
+      recreate 139ms + re-grab +142ms (base +141), fractional row
+      identical; checks 0–4 pass on both compositors)*
 - [ ] kp-2 C2a: consumer LayerShell through gpui-pre
 - [ ] kp-3 C2b: Kit overlays on layer-shell at 80 ms cadence
 - [ ] kp-4 C4: theme generator through ThemeRegistry

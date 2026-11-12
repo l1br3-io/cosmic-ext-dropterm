@@ -45,11 +45,35 @@ content was never independently diffed — this re-run is the fidelity
 check.
 
 **Acceptance criteria:**
-- [ ] Checks 0–4 re-run on the snapshot pin; any behavior differing
+- [x] Checks 0–4 re-run on the snapshot pin; any behavior differing
       from the zed-pin run is recorded as a snapshot-fidelity finding
 
 **Verification:**
-- [ ] Manual on COSMIC (fractional-scale output for check 1) and sway
+- [x] Manual on COSMIC (fractional-scale output for check 1) and sway
+
+*(Done 2026-11-13, spike d722652. The swap: `gpui = { package =
+"gpui-pre", version = "=0.3.12" }` + `gpui_platform = { package =
+"gpui-pre-platform", version = "=0.3.12" }` — the whole 20-crate set
+resolves together exactly as gpui-kit 0.9.1 (still newest) consumes it,
+dep keys unchanged so no source edits. Fidelity banked both ways: the
+first independent source diff (file-hash mapping + two-direction tree
+diff vs the zed `d2a4fb6` checkout still on disk) finds 11/16
+Linux-relevant crates byte-identical — including `gpui-pre-linux`, the
+entire wayland backend — with every delta banner-marked by the pipeline
+and exactly one real semantic delta: `gpui-pre-wgpu`'s 3-file wgpu
+30.0.1+ adaptation (lock 30.0.0→30.0.2), the renderer being the only
+non-identical subsystem; the behavior re-run (sway via the rig, COSMIC
+via the validation VM with snapshot discipline, fractional row included)
+then shows that delta invisible — release show 32/36/34 ms vs base
+34/35/34, recreate 139 ms (base 138) with the re-grab GAINED +142 ms
+(base +141), every cadence height, kb Exclusive/Top/zone −1 on every
+open, and the fractional row reproducing the carried ledger exactly
+(maps 1024×200, nothing visible, displays 640×400). One fidelity
+observation, not a regression: a consistent ~+13 ms same-class **debug**
+drift on both compositors (sway 134/135/133 vs 121/117/119; COSMIC 155
+vs 142), invisible in release. Evidence: `kit-rig-sway-2026-11-13.log`,
+`vm-kit-pass-2026-11-13.log` + 3 screenshots in the scratch repo's
+`cosmic-session-logs/`.)*
 
 **Dependencies:** Task 0 · **Scope:** M
 
