@@ -172,7 +172,7 @@ dated park notes, and Phase 2 proceeds independently.)*
       pixel-checked; COSMIC half green 2026-11-13 agent-run in the
       validation VM — spike 043eb4e, walk log + screenshots in
       cosmic-session-logs/, snapshot restored after)*
-- [ ] gs-3 Checks 1–8, 2b on COSMIC (ledger starts; latency vs 130 ms)
+- [x] gs-3 Checks 1–8, 2b on COSMIC (ledger starts; latency vs 130 ms)
       *(sway-witness data banked 2026-11-12, spike repo 5422181:
       two-surface show 121/117/119ms — inside the budget, debug+software
       GL; 80ms-cadence resize honored; displays populated; one 0-width
@@ -198,12 +198,17 @@ dated park notes, and Phase 2 proceeds independently.)*
       output banked — 1.25 maps the surface at 1024x200 but nothing
       visible lands on screen (screenshots held) with displays
       integer-rounded to 640x400, the same mis-read class as sway 1.5;
-      remaining: check 3's runtime re-grab (non-recreate) only)*
-- [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
+      check 3's direct runtime re-grab row parked (owner ruling,
+      2026-11-13, with the spike marked done — the 2b recreate path
+      evidences the redesign the GO criteria accept; un-park by running
+      the non-recreate evaluation if a runtime re-grab is ever wanted)*
+- [x] gs-4 Check 11: backend detection verdicts *(harness armed,
       aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
       headless; verdicts landed 2026-11-13 — layer-shell on COSMIC
       (validation VM) and on sway (the scripted rig, be1b1e8); the
-      GNOME no-layer-shell branch rides the parked GNOME session)*
+      GNOME no-layer-shell branch parked with the spike's done ruling
+      (2026-11-13) — it rides the parked GNOME session, and the
+      dispatch probe's shape is proven regardless)*
 - [x] gs-5 Check 9: terminal grid render (sets the shared-core
       boundary) *(harness armed, aeea7b3: `SPIKE_CHECK=grid`; the
       patched forks proven to resolve beside GPUI's tree by the build
@@ -227,7 +232,12 @@ dated park notes, and Phase 2 proceeds independently.)*
       live and back while rendering, clean exits — zbus's tokio loop
       and GPUI's executor coexist; also corrected: IsVisible is a
       method, not a property, so the read side is busctl call)*
-- [ ] gs-7 Checks 12–13: X11 and macOS PopUp
+- [ ] gs-7 Checks 12–13: X11 and macOS PopUp *(parked, owner ruling
+      2026-11-13, with the spike marked done on the GO verdict — the
+      Wayland-primary criteria never required them; un-park by running
+      an X11 session (the crate must also enable gpui's `x11` feature,
+      dropped per the spec's wayland-only scope) and a Mac sitting;
+      they gate Phase 4/5 mechanisms, not Phase 3)*
 - [x] gs-8 Check 14: coexistence experiment (one commit, reverted)
       *(run 2026-11-13, spike 5c2a1da reverted 974912c: ABSORBS — one
       lockfile reconciliation (unicode-properties 0.1.3, gpui_web's
@@ -235,7 +245,12 @@ dated park notes, and Phase 2 proceeds independently.)*
       the one lock, no links conflicts, the identical [patch] forks a
       non-issue; Phase 3's frontend can live in the root workspace
       carrying that pin)*
-- [ ] gs-9 The report → "Phase 2 results" on main
+- [x] gs-9 The report → "Phase 2 results" on main *(reported
+      2026-11-13: [docs/research/gpui-spike.md](../docs/research/gpui-spike.md)
+      carries the GO verdict, pin identity, per-check evidence, and the
+      two-entry carried ledger; the plan record's Phase 2 results
+      section filled from it; the Kit ruling stays with the owner and
+      gates kit-pass/kp-0)*
 - [ ] kp-0 Gate: spike reported AND Kit ruled adopt (else stop)
 - [ ] kp-1 C1: pin swap to gpui-pre; checks 0–4 re-run
 - [ ] kp-2 C2a: consumer LayerShell through gpui-pre

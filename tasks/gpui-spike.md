@@ -4,6 +4,13 @@ Spec: [SPEC-gpui-spike.md](../SPEC-gpui-spike.md) · Module id:
 `gpui-spike` · Phase 2, lane spike · branch `spike/gpui-layer-shell`
 (scratch dir `../dropterm-spike`, its own git repo) — never merged as code.
 
+> **Done (owner ruling, 2026-11-13):** the spike closed **GO** — the
+> report is [docs/research/gpui-spike.md](../docs/research/gpui-spike.md)
+> and the plan's Phase 2 results. Rows not run ride dated park notes
+> inside their tasks (checks 12–13 hardware, GNOME's detection branch,
+> check 3's direct runtime evaluation). The Kit ruling is the owner's
+> and gates `kit-pass`.
+
 **Files touched:** `spikes/gpui-layer-shell/**` (new, on the spike
 branch only; own `[workspace]`, own lockfile, both committed on the
 branch) and `docs/research/portability-plan.md` on main — only the
@@ -97,7 +104,7 @@ Start the carried-patch ledger here: every check that needs #61368,
 #64994, #61420, or a self-written setter gets its ledger entry.
 
 **Acceptance criteria:**
-- [ ] Each check recorded pass/fail with evidence; the ledger has an
+- [x] Each check recorded pass/fail with evidence; the ledger has an
       entry per carried need *(sway-witness data banked 2026-11-12,
       spike repo 5422181, headless Debian-trixie container: check 1's
       two-surface show measured OPEN→FIRST_FRAME 121/117/119ms — inside
@@ -138,7 +145,7 @@ Start the carried-patch ledger here: every check that needs #61368,
       COSMIC row wants a small harness extension — a key-press-
       triggered write in a typeable window — to watch the offer land
       after a real keystroke)*
-- [ ] Check 1's chosen path has its creation-to-first-frame latency
+- [x] Check 1's chosen path has its creation-to-first-frame latency
       measured against the 130 ms slide (`SLIDE_DURATION_MS`,
       `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC
       142ms debug+VM 2026-11-13 (zink→llvmpipe-fallback GL, same
@@ -179,18 +186,21 @@ console shows **no trace of the band or clock** where 100% showed the
 clock (two runs, screenshots held), and `cx.displays()` reads 640×400
 — the rounded-up integer wl_output scale, the same mis-read class as
 sway 1.5: right geometry, no visible output, integer-rounded
-metadata. Still open in this task: check 3's runtime re-grab
-(non-recreate) evaluation only.
+      metadata. Check 3's direct runtime re-grab row parked (owner
+      ruling, 2026-11-13, spike marked done on the GO verdict — the 2b
+      recreate path evidences the redesign the GO criteria accept);
+      the carried ledger lives in the report,
+      [docs/research/gpui-spike.md](../docs/research/gpui-spike.md))*
 
 **Verification:**
-- [ ] Manual on COSMIC (fractional-scale output included); sway as the
+- [x] Manual on COSMIC (fractional-scale output included); sway as the
       cross-compositor witness for the checks that differ there
       *(integer-scale COSMIC rows done agent-run in the VM 2026-11-13;
       the fractional-scale output (1.25, applied via cosmic-randr,
       evidence held — geometry honored, visible output missing,
       integer-rounded metadata) and the release-build number
       (34/35/34ms) banked by the same-day rerun; check 3's runtime
-      re-grab row is what remains)*
+      re-grab row parked with the done ruling above)*
 
 **Dependencies:** Task 2 · **Scope:** L (hardware-session work)
 
@@ -201,7 +211,7 @@ and sway and reports `gnome-toplevel (unimplemented)` on GNOME —
 `layer-shell-guard`'s probe, extended to dispatch.
 
 **Acceptance criteria:**
-- [ ] Detection verdicts recorded on COSMIC, sway, and GNOME (or the
+- [x] Detection verdicts recorded on COSMIC, sway, and GNOME (or the
       sandbox equivalent) *(harness armed at spike aeea7b3:
       `SPIKE_CHECK=detect` — layer-shell-guard's registry probe
       re-expressed as the dispatch verdict, no window; the no-session
@@ -210,13 +220,15 @@ and sway and reports `gnome-toplevel (unimplemented)` on GNOME —
       `App::quit` during startup needs a deferred tick to take; verdicts
       landed 2026-11-13: **layer-shell on COSMIC** (validation VM walk,
       spike 043eb4e) and **layer-shell on sway** (the scripted rig,
-      spike be1b1e8) — the GNOME no-layer-shell branch is the one row
-      left, riding the parked GNOME session or a weston-headless
-      sandbox leg whenever wanted)*
+      spike be1b1e8) — the GNOME no-layer-shell branch parked with the
+      spike's done ruling (2026-11-13): it rides the parked GNOME
+      session or a weston-headless sandbox leg whenever wanted, and the
+      dispatch probe's shape is proven regardless)*
 
 **Verification:**
-- [ ] Manual across the three environments *(no-session, COSMIC, and
-      sway done; GNOME pending with the parked session)*
+- [x] Manual across the three environments *(no-session, COSMIC, and
+      sway done; GNOME parked with the parked session — un-park by
+      running it)*
 
 **Dependencies:** Task 2 · **Scope:** S
 
@@ -296,6 +308,12 @@ beside GPUI's executor — proving the loops coexist
 
 ## Task 7: Checks 12–13 — X11 and macOS PopUp
 
+> **Parked (owner ruling, 2026-11-13):** the spike was ruled done on
+> the GO verdict — the Wayland-primary criteria never required these
+> rows. Un-park by running an X11 session (the crate must also enable
+> gpui's `x11` feature, dropped per the spec's wayland-only scope) and
+> a Mac sitting; the findings gate Phase 4/5 mechanisms either way.
+
 **Description**: The off-Wayland assumption: a `PopUp` window works
 topmost + positioned + focus-grabbing on an X11 session (12); `PopUp`
 over a fullscreen app and across Spaces plus a native global-hotkey
@@ -365,15 +383,26 @@ recreate cost open ruling 3 needs (flicker, re-slide, focus — from
 check 2b). Only "Phase 2 results" is edited on main.
 
 **Acceptance criteria:**
-- [ ] Every report element above present; verdict matches the recorded
-      check results
-- [ ] If the Kit was not yet ruled, the report arms the Kit ruling
+- [x] Every report element above present; verdict matches the recorded
+      check results *(reported 2026-11-13 as
+      [docs/research/gpui-spike.md](../docs/research/gpui-spike.md) —
+      GO per the criteria: 0/1/2/5/6 pass on both compositors, 4 holds,
+      3 workable via the evidenced recreate redesign; the pin identity,
+      per-check evidence, two-entry carried ledger, show latency
+      (34/35/34ms release vs the 130 budget), coexistence (ABSORBS),
+      and 2b's recreate cost + focus-return all present; the plan
+      record's "Phase 2 results" filled from it)*
+- [x] If the Kit was not yet ruled, the report arms the Kit ruling
       (open ruling 2's recommended timing is after this report)
+      *(the report's recommendation names the Kit ruling as the owner's
+      remaining gate on `kit-pass`/kp-0; no timing forced)*
 
 **Verification:**
 - [ ] Manual: the owner reads the report and rules on the Kit (if not
       yet) and on live geometry edits; Phase 3's slices get ids and
-      specs
+      specs *(the report is in; the reading and the rulings are the
+      owner's — the chunk closes on the done ruling 2026-11-13 with
+      this row named as the handoff)*
 
 **Dependencies:** Tasks 2–8 · **Files:**
 `docs/research/portability-plan.md` ("Phase 2 results" only) ·

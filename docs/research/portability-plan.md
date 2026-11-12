@@ -1461,7 +1461,22 @@ C4's theme generator, which the Kit conditions pull in as a spike artifact.
 
 ### Phase 2 results
 
-*Pending: the spike report lands here.*
+**GO** — reported 2026-11-13 in [gpui-spike](gpui-spike.md) (verdict,
+pin identity, per-check evidence, and the carried ledger live there).
+Headlines: release-build show 34 ms against the 130 ms slide (sway debug
+witness 121 ms); every 80 ms-cadence height honored on both compositors
+(#64994 never fired); the recreate path re-grabs the keyboard +141 ms
+after the swap at ~one extra show's cost (138–146 ms) — open ruling 3's
+numbers; the clipboard gate is focus+serial and the anchor workaround
+dies; the dbus walk's "never owned" was a dropped connection in the
+harness, and the V1 round-trip runs beside the render loop on both
+compositors; check 14 says the root workspace ABSORBS the frontend (one
+lockfile, the `unicode-properties` =0.1.3 pin). Carried ledger:
+fractional-scale visible output on COSMIC (geometry lands, pixels do
+not; display metadata integer-rounded on both compositors) and #61420
+dormant. Parked hardware rows: checks 12–13 (X11, macOS) and the GNOME
+detection branch. The Kit ruling (open ruling 2) stays with the owner
+and gates `kit-pass`.
 
 ## Assumptions: the plan's kill risks
 
