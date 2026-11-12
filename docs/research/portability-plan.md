@@ -62,6 +62,61 @@ What keeps the effort bounded:
 - The engine's `/proc` reads already sit behind `cfg(target_os = "linux")`
   with non-Linux fallbacks.
 
+## The port at a glance
+
+One picture of the whole initiative: one binary, one contract, and a
+surface backend picked at runtime per desktop. The diagram here is the
+maintained source of truth for this shape;
+[`porting-architecture.html`](porting-architecture.html), beside this
+record, is an interactive convenience view of the same content (pick a
+desktop, watch its path light up) — on drift, this diagram wins. The
+[adapter inventory](#the-adapter-inventory-six-seams-plain-swaps-out-of-core)
+below carries the six seams in full.
+
+```mermaid
+flowchart TD
+    subgraph DESK["1 · the desktop (+ companion)"]
+        direction LR
+        LSW["COSMIC · sway · Hyprland · KDE<br/>(the applet rides COSMIC)"]
+        GNM["GNOME + Shell extension (Phase 4)<br/>edge-pinning and keep-on-top live in the extension"]
+        OTH["X11 · macOS · Windows"]
+    end
+    KB["2 · the desktop's keybind spawns dropterm toggle<br/>external on every desktop today"]
+    CT["3 · ControlTransport — the V1 contract<br/>one instance owns the name; second launches forward and exit"]
+    subgraph INST["4 · the one running instance"]
+        DET["startup detection — the layer-shell global + XDG_CURRENT_DESKTOP<br/>picks one backend; all compiled in, nothing loaded at runtime"]
+        LC["surface lifecycle"] --> INT["intents (toolkit-neutral)<br/>show · measure · shape · drag · hide"]
+        INT --> EXE["executor — libcosmic today<br/>GPUI after the Phase 3 rewrite"]
+        CORE["terminal core — PTY engine · XDG config · sessions<br/>desktop-neutral since Phase 1"]
+    end
+    subgraph BK["5 · SurfaceBackend (runtime-picked)"]
+        direction LR
+        B1["layer-shell<br/>COSMIC · sway · Hyprland · KDE<br/>exists today"]
+        B2["xdg-toplevel — GNOME, positioned by the extension<br/>Phase 3–4 · positioning mechanics the open design item"]
+        B3["PopUp / topmost<br/>X11 · macOS · Windows<br/>Phase 4–5"]
+    end
+    LSW --> KB
+    GNM --> KB
+    OTH --> KB
+    KB --> CT --> DET
+    EXE --> B1 & B2 & B3
+```
+
+Per-desktop status (moves with the work packages' Status lines and the
+Phase 0 results; this section records the shape, the plan's text makes
+the rulings):
+
+| Desktop | Surface path | Status (2026-11-12) |
+|---|---|---|
+| COSMIC | layer-shell | the known-good baseline; the input-bound Phase 0 rows await the eyes-on pass |
+| sway | layer-shell | core checks green in session 2a; keyboard rows (2, 3, 5) and the bell rewalk await hardware |
+| Hyprland | layer-shell | expected; session 2b open |
+| KDE Plasma | layer-shell | expected; session 3 open |
+| GNOME | xdg-toplevel + the Shell extension | blocked on the missing protocol — the guard exits cleanly today; the plain-window backend rides Phase 3, the extension is Phase 4 |
+| X11 | PopUp / topmost | guard refuses; the Phase 4 backend's first design input (session 5's dock-band finding) is banked |
+| macOS | PopUp | Phase 5 (maybe) |
+| Windows | PopUp | builds-only in CI until test hardware exists |
+
 ## The decision stack
 
 **Decided** (owner rulings 2026-11-09, evidence below):
