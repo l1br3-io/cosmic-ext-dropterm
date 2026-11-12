@@ -2272,8 +2272,13 @@ impl Application for DropTerm {
         // ownership the connection is handed over (V1 rides it) and
         // every forwarded verb streams into the shared decode path.
         // Losing the name to a concurrent first launch parks the
-        // stream: that instance runs unreachable — the loser's
-        // behavior under libcosmic's feature, kept.
+        // stream — a deliberate delta from libcosmic, whose loser
+        // queued and silently inherited the name when the winner
+        // died: promoting a zombie that has been running a parallel
+        // session (both instances write session.ron and watch the
+        // config) resurrects that split brain, so the loser stays a
+        // quiet never-primary instead, and the next launch after the
+        // winner's death owns the name clean.
         if !crate::single_instance_disabled() {
             struct ControlBusSubscription;
             subs.push(Subscription::run_with(
@@ -2285,7 +2290,7 @@ impl Application for DropTerm {
                          async move {
                             use cosmic::iced::futures::SinkExt;
 
-                            let (tx, mut rx) = mpsc::unbounded_channel();
+                            let (tx, mut rx) = mpsc::channel(dbus_state::FORWARD_CAPACITY);
                             let builder = match zbus::connection::Builder::session() {
                                 Ok(builder) => builder,
                                 Err(err) => {

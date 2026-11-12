@@ -235,6 +235,28 @@ fn forward_to_running(flags: &Flags) -> Result<(), zbus::Error> {
     })
 }
 
+/// What a forward's result means for this launch, pure so the one
+/// deliberate delta from libcosmic's second-launch behavior is
+/// pinned headless: a delivered verb exits 0 (the contract's code),
+/// and a name owned but unanswered — a stale binary mid-upgrade —
+/// refuses with exit 1, where libcosmic fell through to a full
+/// duplicate instance (two terminals, the applet talking to the
+/// corpse).
+enum ForwardOutcome {
+    /// The running instance took the verb; this launch exits 0.
+    Delivered,
+    /// Nobody answered behind the owned name; this launch exits 1
+    /// with the stale-binary note.
+    Refused,
+}
+
+fn forward_outcome(result: &Result<(), zbus::Error>) -> ForwardOutcome {
+    match result {
+        Ok(()) => ForwardOutcome::Delivered,
+        Err(_) => ForwardOutcome::Refused,
+    }
+}
+
 fn main() -> cosmic::iced::Result {
     env_logger::init();
 
@@ -285,22 +307,19 @@ fn main() -> cosmic::iced::Result {
     if !single_instance_disabled() {
         match bus_name_status() {
             BusName::Unowned | BusName::NoBus => {}
-            BusName::OwnedByAnother => match forward_to_running(&flags) {
+            BusName::OwnedByAnother => match forward_outcome(&forward_to_running(&flags)) {
                 // The running instance applied the verb; a second
                 // surface must never appear. Today's contract: the
                 // forwarding launch exits 0.
-                Ok(()) => std::process::exit(0),
-                Err(err) => {
-                    // The name is owned but nobody answered — a stale
-                    // binary mid-upgrade. libcosmic's second launch
-                    // fell through to a full duplicate instance here
-                    // (two terminals, the applet talking to the
-                    // corpse); this refuses instead, in the query
-                    // path's own wording.
+                ForwardOutcome::Delivered => std::process::exit(0),
+                // The name is owned but nobody answered — a stale
+                // binary mid-upgrade. libcosmic's second launch fell
+                // through to a full duplicate instance here; this
+                // refuses instead, in the query path's own wording.
+                ForwardOutcome::Refused => {
                     eprintln!(
                         "dropterm: another instance owns the bus name but did not \
-                         answer ({err}; stale binary?); refusing to start a second \
-                         instance"
+                         answer (stale binary?); refusing to start a second instance"
                     );
                     std::process::exit(1);
                 }
@@ -609,5 +628,45 @@ mod tests {
     #[test]
     fn platform_data_is_empty_without_the_env_tokens() {
         assert!(platform_data(None, None).is_empty());
+    }
+
+    #[test]
+    fn platform_data_carries_each_token_independently() {
+        // Two independent arms: one token present must not leak the
+        // other's key.
+        fn str_of<'a>(value: &'a zbus::zvariant::Value<'_>) -> Option<&'a str> {
+            match value {
+                zbus::zvariant::Value::Str(text) => Some(text.as_str()),
+                _ => None,
+            }
+        }
+        let token_only = platform_data(Some("token-42".to_string()), None);
+        assert_eq!(
+            token_only.get("activation-token").and_then(str_of),
+            Some("token-42")
+        );
+        assert!(!token_only.contains_key("desktop-startup-id"));
+
+        let startup_only = platform_data(None, Some("startup-7".to_string()));
+        assert!(!startup_only.contains_key("activation-token"));
+        assert_eq!(
+            startup_only.get("desktop-startup-id").and_then(str_of),
+            Some("startup-7")
+        );
+    }
+
+    #[test]
+    fn a_delivered_forward_exits_zero_and_a_dead_owner_refuses() {
+        // The pinned delta from libcosmic: Ok is the 0-exit delivery;
+        // any error against the owned name refuses (exit 1), never a
+        // duplicate instance.
+        assert!(matches!(
+            forward_outcome(&Ok(())),
+            ForwardOutcome::Delivered
+        ));
+        assert!(matches!(
+            forward_outcome(&Err(zbus::Error::Handshake("stale".into()))),
+            ForwardOutcome::Refused
+        ));
     }
 }

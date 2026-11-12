@@ -188,17 +188,53 @@ pub enum Forwarded {
     ActivateAction { action: String, args: Vec<String> },
 }
 
+/// How many forwarded verbs may sit queued between the wire and the
+/// app's message loop before the next call is dropped: the forward is
+/// fire-and-forget, so a full queue (the app stalled, or a same-user
+/// caller flooding) drops with a warn instead of growing unbounded —
+/// libcosmic's equivalent channel was bounded at ten and applied
+/// backpressure inside the D-Bus handler instead.
+pub const FORWARD_CAPACITY: usize = 64;
+
 /// Server side of the activation interface. Every member converts its
 /// wire call into a [`Forwarded`] on the channel the launcher handed
 /// in; the app's subscription turns each into an application message
 /// through the same decode path a CLI verb takes.
 pub struct Activation {
-    tx: tokio::sync::mpsc::UnboundedSender<Forwarded>,
+    tx: tokio::sync::mpsc::Sender<Forwarded>,
 }
 
 impl Activation {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Forwarded>) -> Self {
+    pub fn new(tx: tokio::sync::mpsc::Sender<Forwarded>) -> Self {
         Self { tx }
+    }
+
+    /// The fire-and-forget send every member shares: a full queue
+    /// drops the verb with a warn, a dead receiver (the app gone) is
+    /// silence — the wire call itself always succeeds, exactly as
+    /// libcosmic's members replied.
+    fn forward(&self, forwarded: Forwarded) {
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(forwarded)) =
+            self.tx.try_send(forwarded)
+        {
+            log::warn!(
+                "dropping a forwarded verb (queue full): {:?}",
+                forwarded.action_name()
+            );
+        }
+    }
+}
+
+impl Forwarded {
+    /// The verb's own name, for the queue-full warning — `Activate`
+    /// for the bare summon, the action name for `ActivateAction`,
+    /// nothing worth reporting for the ignored `Open`.
+    fn action_name(&self) -> &str {
+        match self {
+            Self::Activate => "Activate",
+            Self::ActivateAction { action, .. } => action,
+            Self::Open { .. } => "Open",
+        }
     }
 }
 
@@ -212,9 +248,7 @@ impl Activation {
         // Accepted for the contract's signature, dropped for its
         // semantics (see [`Forwarded`]).
         drop(platform_data);
-        // A dead receiver means the app is gone; like every member
-        // here the call is fire-and-forget — nothing to report.
-        let _ = self.tx.send(Forwarded::Activate);
+        self.forward(Forwarded::Activate);
     }
 
     /// Open the given URIs.
@@ -224,7 +258,7 @@ impl Activation {
         platform_data: HashMap<String, zbus::zvariant::OwnedValue>,
     ) {
         drop(platform_data);
-        let _ = self.tx.send(Forwarded::Open { uris });
+        self.forward(Forwarded::Open { uris });
     }
 
     /// Activate the given action.
@@ -235,7 +269,7 @@ impl Activation {
         platform_data: HashMap<String, zbus::zvariant::OwnedValue>,
     ) {
         drop(platform_data);
-        let _ = self.tx.send(Forwarded::ActivateAction {
+        self.forward(Forwarded::ActivateAction {
             action: action_name,
             args: parameter,
         });
@@ -436,7 +470,7 @@ mod tests {
     /// [`serve_pair`] with a discard-only [`Activation`] — the V1 wire
     /// tests below have no forwarded actions to observe.
     async fn p2p_pair(state: Arc<Mutex<State>>) -> (zbus::Connection, zbus::Connection) {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
         serve_pair(state, Activation::new(tx)).await
     }
 
@@ -618,13 +652,13 @@ mod tests {
     async fn activation_pair() -> (
         zbus::Connection,
         zbus::Connection,
-        tokio::sync::mpsc::UnboundedReceiver<Forwarded>,
+        tokio::sync::mpsc::Receiver<Forwarded>,
     ) {
         let state = Arc::new(Mutex::new(State {
             visible: false,
             tab_count: 0,
         }));
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
         let (server, client) = serve_pair(state, Activation::new(tx)).await;
         (server, client, rx)
     }
@@ -668,6 +702,88 @@ mod tests {
                         args: vec!["--cwd".to_string(), "/tmp".to_string()]
                     })
                 );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    #[test]
+    fn a_dead_receiver_never_wedges_the_served_object() {
+        // Fire-and-forget's error contract: the receiver can die (the
+        // app gone) and every member still replies Ok on the wire —
+        // the send's failure is silence, never a broken dispatch.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: false,
+                    tab_count: 0,
+                }));
+                let (tx, rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                drop(rx);
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+                assert!(proxy.activate(no_platform_data()).await.is_ok());
+                assert!(
+                    proxy
+                        .open(vec!["file:///tmp/x"], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+                assert!(
+                    proxy
+                        .activate_action("toggle", vec![], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_verb_and_still_replies_ok() {
+        // The bounded channel's other half: FORWARD_CAPACITY verbs
+        // queued with no drain, then one more — the wire call still
+        // succeeds (the drop is the app-side policy, the caller never
+        // learns), and the queue holds exactly the capacity.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: false,
+                    tab_count: 0,
+                }));
+                let (tx, mut rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+                for _ in 0..FORWARD_CAPACITY {
+                    assert!(
+                        proxy
+                            .activate_action("toggle", vec![], no_platform_data())
+                            .await
+                            .is_ok()
+                    );
+                }
+                // The queue is full but not yet observed drained; give
+                // the object server a beat to land every send, then
+                // push one past the capacity — still Ok on the wire.
+                tokio::task::yield_now().await;
+                assert!(
+                    proxy
+                        .activate_action("toggle", vec![], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+                let mut queued = 0;
+                while rx.try_recv().is_ok() {
+                    queued += 1;
+                }
+                assert_eq!(queued, FORWARD_CAPACITY);
             })
             .await
             .expect("wire test timed out");
@@ -785,7 +901,7 @@ mod tests {
                     visible: true,
                     tab_count: 2,
                 }));
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let (tx, _rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
                 let (_server, client) = serve_pair(state, Activation::new(tx)).await;
                 let introspectable = zbus::fdo::IntrospectableProxy::builder(&client)
                     .destination(BUS_NAME)
