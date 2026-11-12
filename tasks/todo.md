@@ -186,8 +186,19 @@ dated park notes, and Phase 2 proceeds independently.)*
       COSMIC walk 2026-11-13 agent-run in the validation VM (spike
       043eb4e): show 142ms debug/VM, reshape all heights, focus GAINED
       +193ms, recreate 138ms with the re-grab GAINED +141ms — open
-      ruling 3's fact; remaining: release-build number, fractional
-      COSMIC output, check 3's runtime re-grab, check 8's key-trigger)*
+      ruling 3's fact; COSMIC rerun 2026-11-13 (spike c2c992b+
+      9a0e0a4+354af89, vm-rerun log): release-build number banked —
+      34/35/34ms across three runs, comfortably inside the 130ms
+      budget (~4x under debug in the same VM), VM+software-GL caveat;
+      check 8's key-trigger closed on BOTH compositors — the
+      clipboard-key extension + wtype's virtual keyboard, wl-paste
+      read the marker on sway and COSMIC, the gate is focus+serial
+      exactly as pinned (and sway-headless activation recast: no
+      keyboard on the seat, not no activation); fractional COSMIC
+      output banked — 1.25 maps the surface at 1024x200 but nothing
+      visible lands on screen (screenshots held) with displays
+      integer-rounded to 640x400, the same mis-read class as sway 1.5;
+      remaining: check 3's runtime re-grab (non-recreate) only)*
 - [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
       aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
       headless; verdicts landed 2026-11-13 — layer-shell on COSMIC
@@ -201,14 +212,21 @@ dated park notes, and Phase 2 proceeds independently.)*
       validation VM — forks ran, grid drew 8x20→128x20 through
       Term::resize+SIGWINCH, seeded ANSI pattern visible in row0,
       screenshot held)*
-- [ ] gs-6 Check 10: zbus + V1 beside GPUI *(harness armed, aeea7b3:
+- [x] gs-6 Check 10: zbus + V1 beside GPUI *(harness armed, aeea7b3:
       `SPIKE_CHECK=dbus`; the V1-shaped service compiled green on its
-      own tokio thread beside GPUI; run 2026-11-13 and found a harness
-      bug — the service builds but the bus name is never owned beside
-      GPUI, isolated to the interplay (a no-GPUI bin owns the name
-      through the same route on host and guest), fix pending; the
-      round-trip row rides the fix; also corrected: IsVisible is a
-      method, not a property)*
+      own tokio thread beside GPUI; the 2026-11-13 walk found a
+      harness bug — "service up" printed but the name never owned —
+      and the rerun pinned it: the zbus Connection was bound as
+      `_conn` inside a match arm and dropped at the arm's end,
+      releasing the name (not GPUI; the isolate bin's binding lived
+      across the sleep, the executor-drop theory retired); fix spike
+      c2c992b holds the connection and self-verifies with a
+      NameHasOwner row; round-trip green on BOTH compositors — sway
+      rig (rig-dbus-fix log) and COSMIC in the VM (vm-rerun log):
+      name owned, IsVisible b true, SetVisible flipping the render
+      live and back while rendering, clean exits — zbus's tokio loop
+      and GPUI's executor coexist; also corrected: IsVisible is a
+      method, not a property, so the read side is busctl call)*
 - [ ] gs-7 Checks 12–13: X11 and macOS PopUp
 - [x] gs-8 Check 14: coexistence experiment (one commit, reverted)
       *(run 2026-11-13, spike 5c2a1da reverted 974912c: ABSORBS — one

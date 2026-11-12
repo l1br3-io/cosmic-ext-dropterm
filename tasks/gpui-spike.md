@@ -143,8 +143,10 @@ Start the carried-patch ledger here: every check that needs #61368,
       `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC
       142ms debug+VM 2026-11-13 (zink→llvmpipe-fallback GL, same
       caveat class) with the measure-free variant at 193ms confirming
-      the two-surface path on both compositors; COSMIC's
-      release-build number is the primary one pending)*
+      the two-surface path on both compositors; COSMIC release build
+      in the same VM: **34/35/34ms** across three runs — comfortably
+      inside budget, ~4x under debug, VM+software-GL caveat attached
+      and the real-hardware release number still the primary)*
 
 **COSMIC-walk run notes (2026-11-13, spike 043eb4e — agent-run in the
 validation VM, every row in cosmic-session-logs/):** check 1 two-surface
@@ -156,16 +158,39 @@ check 6 displays 1 at startup, 1280x800 correct; check 7 the single
 0-width first frame, no double-reporting; check 2b recreate 138ms with
 **B activation GAINED at +141ms after the swap — the recreated surface
 re-grabs the keyboard**, open ruling 3's missing fact (geometry edit
-honored exactly). Still open in this task: check 1's release-build
-number, check 3's runtime re-grab (non-recreate) evaluation, check 8's
-key-trigger row (the extension), a fractional-scale COSMIC output (the
-VM is integer-scale; sway 1.5 carries the protocol risk so far).
+honored exactly). **Rerun 2026-11-13 (spike c2c992b+9a0e0a4+354af89,
+agent-run in the VM, vm-rerun log) closed three of the four:**
+check 1's release-build number — OPEN→FIRST_FRAME **34/35/34 ms**
+across three runs (budget 130) against debug's 142 in the same VM:
+release buys ~4x, VM+llvmpipe caveat, real hardware stays primary;
+check 8's key-trigger row — the `clipboard-key` extension (a typeable
+Exclusive window where every KeyDownEvent writes a marker; the API
+finding banked: `on_key_down` + `track_focus` on one stateful div is
+what receives keys, key dispatch walks root→focused-node only) plus
+wtype's virtual keyboard closed the row on BOTH compositors — sway
+gains activation only when the keyboard joins the seat (recasting
+check 5's "headless grants no activation" as "no keyboard on the
+seat"), COSMIC gains it at +12ms with the SPICE keyboard, and
+wl-paste read the marker on both: **the offer lands after a real
+keystroke**, the gate is exactly focus+serial as pinned; the
+fractional-scale COSMIC output — cosmic-randr applied 1.25, the
+surface **maps at 1024×200** (fractional honored in geometry) but the
+console shows **no trace of the band or clock** where 100% showed the
+clock (two runs, screenshots held), and `cx.displays()` reads 640×400
+— the rounded-up integer wl_output scale, the same mis-read class as
+sway 1.5: right geometry, no visible output, integer-rounded
+metadata. Still open in this task: check 3's runtime re-grab
+(non-recreate) evaluation only.
 
 **Verification:**
 - [ ] Manual on COSMIC (fractional-scale output included); sway as the
       cross-compositor witness for the checks that differ there
       *(integer-scale COSMIC rows done agent-run in the VM 2026-11-13;
-      the fractional-scale output and the release-build number remain)*
+      the fractional-scale output (1.25, applied via cosmic-randr,
+      evidence held — geometry honored, visible output missing,
+      integer-rounded metadata) and the release-build number
+      (34/35/34ms) banked by the same-day rerun; check 3's runtime
+      re-grab row is what remains)*
 
 **Dependencies:** Task 2 · **Scope:** L (hardware-session work)
 
@@ -239,27 +264,33 @@ beside GPUI's executor — proving the loops coexist
 (`dbus_state` is framework-agnostic; this is the coexistence proof).
 
 **Acceptance criteria:**
-- [ ] The scratch crate answers `--is-visible`-style queries over the
+- [x] The scratch crate answers `--is-visible`-style queries over the
       bus while rendering *(harness armed at spike aeea7b3:
       `SPIKE_CHECK=dbus` — a zbus 5 + tokio service on its own thread
       owns `io.github.l1br3_io.dropterm.SpikeCheck` with the V1-shaped
       IsVisible/SetVisible pair, the render loop showing the shared
-      state; a 30s window for the busctl round-trip, the command
-      printed by the harness; zbus version-matched to the 5.19 line
-      the gpui tree already compiles — the runtime rows run in the
-      COSMIC session; **run 2026-11-13 and found a harness bug, spike
-      043eb4e**: the service builds ("service up" printed) but the bus
-      name is never owned beside GPUI — isolated to the interplay,
-      because a no-GPUI bin (src/bin/dbusname.rs) owning the very same
-      name through the very same route works on both host and guest;
-      leading suspect: the executor zbus's tokio path builds inside
-      build_inner being dropped after build, killing the connection's
-      tasks; the fix and the round-trip row are the remaining work —
-      the coexistence question itself is honestly unproven either way)*
+      state; zbus version-matched to the 5.19 line the gpui tree
+      already compiles. The 2026-11-13 COSMIC walk found a harness
+      bug — "service up" printed but the name never owned — and the
+      rerun pinned the root cause: **not GPUI, a dropped connection** —
+      the zbus `Connection` was bound as `_conn` inside a match arm,
+      so it dropped microseconds after the println, releasing the
+      name; the no-GPUI isolate bin worked because its binding lives
+      across the sleep, and the executor-drop theory retired. Fix
+      (spike c2c992b) holds the connection across the serve loop and
+      self-verifies with a NameHasOwner row. Round-trip green on BOTH
+      compositors 2026-11-13: sway rig (rig-dbus-fix log) and COSMIC
+      in the validation VM (vm-rerun log) — name owned, IsVisible
+      `b true`, SetVisible flips the render live and back while
+      rendering, clean exits. The coexistence proof holds: zbus's
+      tokio loop and GPUI's executor run beside each other. Run-sheet
+      correction also landed: IsVisible is a method, so the read side
+      is `busctl call`, not `get-property`)*
 
 **Verification:**
-- [ ] Manual on COSMIC *(service code compiled green beside GPUI's
-      tree; the round-trip rows pending the session)*
+- [x] Manual on COSMIC *(agent-run in the validation VM 2026-11-13,
+      spike c2c992b+354af89, snapshot discipline kept; sway rig as the
+      cross-compositor witness)*
 
 **Dependencies:** Task 2 · **Scope:** S
 
