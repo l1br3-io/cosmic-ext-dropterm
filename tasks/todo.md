@@ -265,7 +265,11 @@ dated park notes, and Phase 2 proceeds independently.)*
       re-run shows it invisible — release 32/36/34ms (base 34/35/34),
       recreate 139ms + re-grab +142ms (base +141), fractional row
       identical; checks 0–4 pass on both compositors)*
-- [ ] kp-2 C2a: consumer LayerShell through gpui-pre
+- [x] kp-2 C2a: consumer LayerShell through gpui-pre *(done 2026-11-13,
+      spike fef2790 — spikes/kit-consumer/, graph exactly gpui-pre +
+      gpui-pre-platform, maps the drawer shape green on sway-headless
+      and COSMIC-VM, screenshot pixel-verified; the manifest
+      confirmation + this build close C2a)*
 - [ ] kp-3 C2b: Kit overlays on layer-shell at 80 ms cadence
 - [ ] kp-4 C4: theme generator through ThemeRegistry
 - [ ] kp-5 Kit verdict appended

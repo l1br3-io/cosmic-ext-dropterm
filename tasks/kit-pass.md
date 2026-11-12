@@ -86,11 +86,23 @@ forwards to its Linux crate); the consumer build is the remaining
 proof.
 
 **Acceptance criteria:**
-- [ ] The scratch crate, depending only on gpui-pre crates, opens and
+- [x] The scratch crate, depending only on gpui-pre crates, opens and
       maps a `LayerShell` window
 
 **Verification:**
-- [ ] Manual on COSMIC
+- [x] Manual on COSMIC
+
+*(Done 2026-11-13, spike fef2790. `spikes/kit-consumer/` is the
+consumer: its graph is exactly `gpui-pre` + `gpui-pre-platform`
+(`cargo tree --depth 1` shows two edges; the wayland path reads
+`gpui-pre → gpui-pre-linux → gpui-pre-platform`), opening DropTerm's
+drawer shape through the same `gpui_platform` boot the harness uses.
+Green both compositors: sway-headless maps (0-width echo → 1280×200,
+287 ms debug, clean exit); COSMIC in the VM maps identically at 203 ms
+with the band's pixels verified by region-differencing the screenshot
+against the no-band fractional shot (−94 mean, −175 darkest row, −30
+drift control). The 2026-11-10 manifest confirmation + this build
+close C2a. Evidence: `kit-c2a-2026-11-13.log`, `vm-kit-c2a.png`.)*
 
 **Dependencies:** Task 1 · **Scope:** S
 
