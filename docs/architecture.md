@@ -21,7 +21,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 | `app/remote.rs` | The CLI verbs handled inside the running instance |
 | `config.rs` | The 43-key on-disk config (`DropTermConfig`): enums, clamping, shell resolution |
 | `context_menu.rs` | The terminal context-menu model - rows, labels, item→`terminal::Action` mapping (pure; picks land in the same path keybinds use) |
-| `dbus_state.rs` | The read-only served state: `Visible` and `TabCount` on the `…dropterm.V1` interface |
+| `dbus_state.rs` | The served contract at the owned bus name: the read-only `Visible`/`TabCount` V1 interface and the `org.freedesktop.DbusActivation` members a second launch forwards through |
 | `drawer_handle.rs` | The settings drawer's drag-resize handle |
 | `executor.rs` | The libcosmic surface executor: translates each intent into today's layer-shell command sequence and owns the clipboard anchor |
 | `geometry.rs` | Pure geometry math plus the single anchor/size/margin triple every reshape goes through |
@@ -44,7 +44,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 
 ## The load-bearing seams
 
-- **Single-instance D-Bus.** A second launch of the binary never starts a second app: it rides libcosmic's `org.freedesktop.DbusActivation` to the running instance. The CLI verbs (`src/app/remote.rs`) and the applet's toggle use the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)).
+- **Single-instance D-Bus.** A second launch of the binary never starts a second app: `DropTerm` owns its bus name itself (the control transport, `dbus_state`'s activation interface served beside the V1 contract; libcosmic's `single-instance` feature is gone), and a second launch forwards its verb through `org.freedesktop.DbusActivation` to the running instance. The CLI verbs (`src/app/remote.rs`) and the applet's toggle use the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)).
 - **Config as the source of truth.** Every setting lives in plain RON under `$XDG_CONFIG_HOME` (the config store, `src/config/store.rs`): one file per writer - settings, profiles, keybinds - plus `completions.toml`, all watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
 - **One surface-intent path.** The surface lifecycle decides in the headless `SurfaceMachine` (`app/surface_lifecycle.rs`) and emits declarative intents (`intent.rs`); the libcosmic executor (`executor.rs`) translates each into today's layer-shell commands, request order included. Every reshape still lands through one geometry triple, so no path can leave a stale anchor, margin, or size.)
 - **One spawn funnel.** `app/spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface.

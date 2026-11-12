@@ -2813,34 +2813,6 @@ impl Application for DropTerm {
         .into();
         self.close_confirm_modal(drawer)
     }
-
-    fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
-        use cosmic::dbus_activation::Details;
-        // A delegation shim while the `single-instance` feature still
-        // builds this hook: the control bus's own subscription
-        // delivers through `forwarded_action`; libcosmic's path can
-        // no longer reach here under plain `run` (the hook's feature
-        // subscription stays off), and the feature leaves in this
-        // package's last task.
-        let fwd = match msg.msg {
-            Details::Activate => dbus_state::Forwarded::Activate,
-            Details::Open { .. } => {
-                return Task::none();
-            }
-            Details::ActivateAction { action, args } => {
-                dbus_state::Forwarded::ActivateAction { action, args }
-            }
-        };
-        Self::forwarded_action(fwd)
-    }
-
-    /// Serves the V1 state interface on the connection the control
-    /// bus owns. The snapshot is seeded from the app's current
-    /// fields, so a first read is correct even before any later sync
-    /// lands.
-    fn dbus_connection(&mut self, conn: zbus::Connection) -> Task<Self::Message> {
-        self.control_bus_connected(conn)
-    }
 }
 
 impl DropTerm {
