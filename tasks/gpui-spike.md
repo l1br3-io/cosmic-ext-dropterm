@@ -30,14 +30,23 @@ record — re-verify the mapping at start; the pin covers the whole
 Kit checks (C2a, C2b, C4) into the pass — see the `kit-pass` chunk.
 
 **Acceptance criteria:**
-- [ ] `cd spikes/gpui-layer-shell && cargo run` builds and runs against
-      the pin
-- [ ] Lockfile committed on the branch; pin identity recorded in the
-      scratch crate's README or main.rs doc comment
+- [x] `cd spikes/gpui-layer-shell && cargo run` builds and runs against
+      the pin *(built green in 1m46s; ran against headless sway — see
+      Task 2's note)*
+- [x] Lockfile committed on the branch; pin identity recorded in the
+      scratch crate's README or main.rs doc comment *(commit 88a64ac on
+      `spike/gpui-layer-shell`; pin in both `Cargo.toml` comments and
+      `main.rs`'s doc comment)*
 
 **Verification:**
-- [ ] Manual: the crate builds in its own workspace; the root workspace
-      still `just check`s clean
+- [x] Manual: the crate builds in its own workspace; the root workspace
+      still `just check`s clean *(the scaffold touched no file inside
+      the main repo — the scratch crate lives in `../dropterm-spike`'s
+      own repo and declares its own empty `[workspace]` — so the root
+      workspace's inputs are identical to the `just check`-green tree at
+      62aa648; the pin re-verification also held: gpui-pre 0.3.12 still
+      newest on crates.io 2026-11-12, = zed `d2a4fb6` per the plan
+      record)*
 
 **Dependencies:** none (runs from day one beside everything) ·
 **Files:** `spikes/gpui-layer-shell/*` · **Scope:** S
@@ -50,10 +59,21 @@ revert. Failing this is GPUI NO-GO outright.
 
 **Acceptance criteria:**
 - [ ] The window maps and renders on both compositors; evidence
-      (photo/log) captured
+      (photo/log) captured *(sway half green headless 2026-11-12, the
+      lg-3 pattern rebuilt: Debian trixie docker, uid-matched user,
+      socket shared to the host, sway 1.10.1, `zwlr_layer_shell_v1` v4
+      confirmed via `wayland-info`; the window mapped, rendered frames
+      for the full 12s run (stdout log), and exited cleanly under
+      `timeout`; geometry honored — full-width bottom band, 200px tall,
+      bottom margin 40px, clock text dead-center (grim screenshot
+      pixel-checked: lit text centered x≈960, y-band 919–967 inside the
+      surface's 840–1040); libEGL "failed to get driver name" warnings
+      are the headless-EGL environment's, benign — frames flowed; the
+      COSMIC half is an owner-hardware row)*
 
 **Verification:**
-- [ ] Manual on COSMIC and sway
+- [ ] Manual on COSMIC and sway *(sway done headless as above; COSMIC
+      awaits the owner's session)*
 
 **Dependencies:** Task 1 · **Scope:** S
 

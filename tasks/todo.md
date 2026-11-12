@@ -134,9 +134,15 @@ filled; the release cut.
 
 ## Phase 2 — the spike (worktree ../dropterm-spike; from day one)
 
-- [ ] gs-1 Worktree + scratch crate (own workspace, lockfile committed,
-      pin recorded)
-- [ ] gs-2 Check 0: boot and map on COSMIC + sway
+- [x] gs-1 Worktree + scratch crate (own workspace, lockfile committed,
+      pin recorded) *(88a64ac on the spike repo's
+      `spike/gpui-layer-shell`; pin zed `d2a4fb6` re-verified current —
+      gpui-pre 0.3.12 still newest on crates.io 2026-11-12; built green
+      in 1m46s)*
+- [ ] gs-2 Check 0: boot and map on COSMIC + sway *(sway half green
+      headless 2026-11-12 over the rebuilt lg-3 container pattern —
+      mapped, rendered, geometry honored, clean exit, grim screenshot
+      pixel-checked; COSMIC half is an owner-hardware row)*
 - [ ] gs-3 Checks 1–8, 2b on COSMIC (ledger starts; latency vs 130 ms)
 - [ ] gs-4 Check 11: backend detection verdicts
 - [ ] gs-5 Check 9: terminal grid render (sets the shared-core
