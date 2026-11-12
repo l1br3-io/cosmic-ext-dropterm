@@ -109,7 +109,16 @@ Start the carried-patch ledger here: every check that needs #61368,
       1280x720 logical) — the measure-free show would mis-size on
       fractionally scaled outputs, the two-surface show stays correct; a
       real input to check 1's path choice. COSMIC halves remain
-      owner-hardware rows)*
+      owner-hardware rows; check 2b banked sway-side 2026-11-13 (spike
+      d59eaf4 + 95bff7c, `SPIKE_CHECK=recreate`, rig scripted at
+      rig/sway-headless.sh): removing the shown surface and opening the
+      edited one in one event-loop turn measured RECREATE
+      REMOVE->FIRST_FRAME 142/133/146ms across three runs — the same
+      class as the show itself plus ~20ms, so a geometry edit that
+      recreates costs about one extra show; the edited geometry landed
+      exactly (L|B 800x240, margin 80); focus-return inconclusive
+      headless (no seat — check 5's artifact), the COSMIC row decides
+      it; debug build on software GL, same caveat as every sway number)*
 - [ ] Check 1's chosen path has its creation-to-first-frame latency
       measured against the 130 ms slide (`SLIDE_DURATION_MS`,
       `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC's

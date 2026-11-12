@@ -176,7 +176,10 @@ dated park notes, and Phase 2 proceeds independently.)*
       GL; 80ms-cadence resize honored; displays populated; one 0-width
       first-frame echo; #61368 no-disconnect at sway 1.5, but
       `cx.displays()` mis-sizes fractional outputs (integer-scale read)
-      — two-surface show immune, measure-free not; COSMIC rows open)*
+      — two-surface show immune, measure-free not; 2b banked sway-side
+      2026-11-13, spike d59eaf4+95bff7c: recreate 142/133/146ms — one
+      extra show's worth, geometry edit honored, focus the COSMIC row;
+      COSMIC rows open)*
 - [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
       aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
       headless; the three verdict rows run in the COSMIC session)*
