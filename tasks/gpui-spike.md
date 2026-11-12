@@ -91,10 +91,29 @@ Start the carried-patch ledger here: every check that needs #61368,
 
 **Acceptance criteria:**
 - [ ] Each check recorded pass/fail with evidence; the ledger has an
-      entry per carried need
+      entry per carried need *(sway-witness data banked 2026-11-12,
+      spike repo 5422181, headless Debian-trixie container: check 1's
+      two-surface show measured OPEN→FIRST_FRAME 121/117/119ms — inside
+      the 130ms budget in a debug build on software GL, the measure
+      surface warming wgpu pipelines being what buys it (cold
+      single-window: 240ms); check 2's 80ms-cadence resize landed every
+      height in one configure round-trip once the request carried a real
+      width (explicit heights survive — no #64994 behavior on sway);
+      check 6's `cx.displays()` populated at startup; check 7 saw one
+      echo artifact — a 0-width first frame before the compositor
+      configure — then no double-reporting; check 5 inconclusive
+      headless (keyboard-less session grants no activation —
+      environment artifact); #61368 fractional variant at sway scale 1.5:
+      no disconnect, 119ms, but `cx.displays()` reads the rounded-up
+      integer wl_output scale (960x540 vs the compositor's true
+      1280x720 logical) — the measure-free show would mis-size on
+      fractionally scaled outputs, the two-surface show stays correct; a
+      real input to check 1's path choice. COSMIC halves remain
+      owner-hardware rows)*
 - [ ] Check 1's chosen path has its creation-to-first-frame latency
       measured against the 130 ms slide (`SLIDE_DURATION_MS`,
-      `src/slide.rs:44`)
+      `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC's
+      release-build number is the primary one pending)*
 
 **Verification:**
 - [ ] Manual on COSMIC (fractional-scale output included); sway as the

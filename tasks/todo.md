@@ -144,6 +144,12 @@ filled; the release cut.
       mapped, rendered, geometry honored, clean exit, grim screenshot
       pixel-checked; COSMIC half is an owner-hardware row)*
 - [ ] gs-3 Checks 1–8, 2b on COSMIC (ledger starts; latency vs 130 ms)
+      *(sway-witness data banked 2026-11-12, spike repo 5422181:
+      two-surface show 121/117/119ms — inside the budget, debug+software
+      GL; 80ms-cadence resize honored; displays populated; one 0-width
+      first-frame echo; #61368 no-disconnect at sway 1.5, but
+      `cx.displays()` mis-sizes fractional outputs (integer-scale read)
+      — two-surface show immune, measure-free not; COSMIC rows open)*
 - [ ] gs-4 Check 11: backend detection verdicts
 - [ ] gs-5 Check 9: terminal grid render (sets the shared-core
       boundary)
