@@ -166,10 +166,12 @@ dated park notes, and Phase 2 proceeds independently.)*
       `spike/gpui-layer-shell`; pin zed `d2a4fb6` re-verified current —
       gpui-pre 0.3.12 still newest on crates.io 2026-11-12; built green
       in 1m46s)*
-- [ ] gs-2 Check 0: boot and map on COSMIC + sway *(sway half green
+- [x] gs-2 Check 0: boot and map on COSMIC + sway *(sway half green
       headless 2026-11-12 over the rebuilt lg-3 container pattern —
       mapped, rendered, geometry honored, clean exit, grim screenshot
-      pixel-checked; COSMIC half is an owner-hardware row)*
+      pixel-checked; COSMIC half green 2026-11-13 agent-run in the
+      validation VM — spike 043eb4e, walk log + screenshots in
+      cosmic-session-logs/, snapshot restored after)*
 - [ ] gs-3 Checks 1–8, 2b on COSMIC (ledger starts; latency vs 130 ms)
       *(sway-witness data banked 2026-11-12, spike repo 5422181:
       two-surface show 121/117/119ms — inside the budget, debug+software
@@ -180,20 +182,33 @@ dated park notes, and Phase 2 proceeds independently.)*
       2026-11-13, spike d59eaf4+95bff7c: recreate 142/133/146ms — one
       extra show's worth, geometry edit honored, focus the COSMIC row;
       check 8 sway-side: clipboard is focus-gated, not
-      surface-independent (source-read client.rs:1462 + observed) —
-      COSMIC rows open)*
+      surface-independent (source-read client.rs:1462 + observed);
+      COSMIC walk 2026-11-13 agent-run in the validation VM (spike
+      043eb4e): show 142ms debug/VM, reshape all heights, focus GAINED
+      +193ms, recreate 138ms with the re-grab GAINED +141ms — open
+      ruling 3's fact; remaining: release-build number, fractional
+      COSMIC output, check 3's runtime re-grab, check 8's key-trigger)*
 - [ ] gs-4 Check 11: backend detection verdicts *(harness armed,
       aeea7b3: `SPIKE_CHECK=detect`; no-session branch verified
-      headless; the three verdict rows run in the COSMIC session)*
-- [ ] gs-5 Check 9: terminal grid render (sets the shared-core
+      headless; verdicts landed 2026-11-13 — layer-shell on COSMIC
+      (validation VM) and on sway (the scripted rig, be1b1e8); the
+      GNOME no-layer-shell branch rides the parked GNOME session)*
+- [x] gs-5 Check 9: terminal grid render (sets the shared-core
       boundary) *(harness armed, aeea7b3: `SPIKE_CHECK=grid`; the
       patched forks proven to resolve beside GPUI's tree by the build
       itself; the cosmic-text-role note written — no engine-side role
-      on GPUI's path; render rows run in the COSMIC session)*
+      on GPUI's path; rendered on COSMIC 2026-11-13 agent-run in the
+      validation VM — forks ran, grid drew 8x20→128x20 through
+      Term::resize+SIGWINCH, seeded ANSI pattern visible in row0,
+      screenshot held)*
 - [ ] gs-6 Check 10: zbus + V1 beside GPUI *(harness armed, aeea7b3:
       `SPIKE_CHECK=dbus`; the V1-shaped service compiled green on its
-      own tokio thread beside GPUI; the busctl round-trip rows run in
-      the COSMIC session)*
+      own tokio thread beside GPUI; run 2026-11-13 and found a harness
+      bug — the service builds but the bus name is never owned beside
+      GPUI, isolated to the interplay (a no-GPUI bin owns the name
+      through the same route on host and guest), fix pending; the
+      round-trip row rides the fix; also corrected: IsVisible is a
+      method, not a property)*
 - [ ] gs-7 Checks 12–13: X11 and macOS PopUp
 - [x] gs-8 Check 14: coexistence experiment (one commit, reverted)
       *(run 2026-11-13, spike 5c2a1da reverted 974912c: ABSORBS — one

@@ -58,7 +58,7 @@ sway, no crash — the regression check for the 2025-07-30 upstream
 revert. Failing this is GPUI NO-GO outright.
 
 **Acceptance criteria:**
-- [ ] The window maps and renders on both compositors; evidence
+- [x] The window maps and renders on both compositors; evidence
       (photo/log) captured *(sway half green headless 2026-11-12, the
       lg-3 pattern rebuilt: Debian trixie docker, uid-matched user,
       socket shared to the host, sway 1.10.1, `zwlr_layer_shell_v1` v4
@@ -68,12 +68,19 @@ revert. Failing this is GPUI NO-GO outright.
       bottom margin 40px, clock text dead-center (grim screenshot
       pixel-checked: lit text centered x≈960, y-band 919–967 inside the
       surface's 840–1040); libEGL "failed to get driver name" warnings
-      are the headless-EGL environment's, benign — frames flowed; the
-      COSMIC half is an owner-hardware row)*
+      are the headless-EGL environment's, benign — frames flowed; COSMIC
+      half green 2026-11-13, agent-run in the validation VM (walk log
+      and screenshots at the spike repo's cosmic-session-logs/, spike
+      043eb4e): maps, renders the clock at bottom-center over the
+      near-transparent band (vm-cosmic-shape.png), clean exit, the same
+      benign 0-width-first-frame echo as sway)*
 
 **Verification:**
-- [ ] Manual on COSMIC and sway *(sway done headless as above; COSMIC
-      awaits the owner's session)*
+- [x] Manual on COSMIC and sway *(sway done headless as above; COSMIC
+      done agent-run in the validation VM 2026-11-13, snapshot
+      pre-spike-cosmic-walk taken before and restored after — the
+      owner's real-hardware confirmation remains welcome but nothing
+      gates on it)*
 
 **Dependencies:** Task 1 · **Scope:** S
 
@@ -133,12 +140,32 @@ Start the carried-patch ledger here: every check that needs #61368,
       after a real keystroke)*
 - [ ] Check 1's chosen path has its creation-to-first-frame latency
       measured against the 130 ms slide (`SLIDE_DURATION_MS`,
-      `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC's
+      `src/slide.rs:44`) *(sway: 121/117/119ms debug+software; COSMIC
+      142ms debug+VM 2026-11-13 (zink→llvmpipe-fallback GL, same
+      caveat class) with the measure-free variant at 193ms confirming
+      the two-surface path on both compositors; COSMIC's
       release-build number is the primary one pending)*
+
+**COSMIC-walk run notes (2026-11-13, spike 043eb4e — agent-run in the
+validation VM, every row in cosmic-session-logs/):** check 1 two-surface
+show 142ms (budget 130, debug/VM caveat); check 2 every height of the
+80ms cycle landed within ~100ms — explicit heights survive on COSMIC
+too, no #64994; check 5 **GAINED at +193ms** — COSMIC grants the
+exclusive surface activation, green where sway-headless could not test;
+check 6 displays 1 at startup, 1280x800 correct; check 7 the single
+0-width first frame, no double-reporting; check 2b recreate 138ms with
+**B activation GAINED at +141ms after the swap — the recreated surface
+re-grabs the keyboard**, open ruling 3's missing fact (geometry edit
+honored exactly). Still open in this task: check 1's release-build
+number, check 3's runtime re-grab (non-recreate) evaluation, check 8's
+key-trigger row (the extension), a fractional-scale COSMIC output (the
+VM is integer-scale; sway 1.5 carries the protocol risk so far).
 
 **Verification:**
 - [ ] Manual on COSMIC (fractional-scale output included); sway as the
       cross-compositor witness for the checks that differ there
+      *(integer-scale COSMIC rows done agent-run in the VM 2026-11-13;
+      the fractional-scale output and the release-build number remain)*
 
 **Dependencies:** Task 2 · **Scope:** L (hardware-session work)
 
@@ -153,15 +180,18 @@ and sway and reports `gnome-toplevel (unimplemented)` on GNOME —
       sandbox equivalent) *(harness armed at spike aeea7b3:
       `SPIKE_CHECK=detect` — layer-shell-guard's registry probe
       re-expressed as the dispatch verdict, no window; the no-session
-      branch verified headless 2026-11-13, clean "could not find
-      wayland compositor" + exit 0 — and a found quirk recorded:
-      `App::quit` during startup needs a deferred tick to take; the
-      three verdict rows run in the COSMIC session, sway/weston can
-      carry two of them beforehand if the container is rebuilt)*
+      branch verified headless 2026-11-13, clean "could not find wayland
+      compositor" + exit 0 — and a found quirk recorded:
+      `App::quit` during startup needs a deferred tick to take; verdicts
+      landed 2026-11-13: **layer-shell on COSMIC** (validation VM walk,
+      spike 043eb4e) and **layer-shell on sway** (the scripted rig,
+      spike be1b1e8) — the GNOME no-layer-shell branch is the one row
+      left, riding the parked GNOME session or a weston-headless
+      sandbox leg whenever wanted)*
 
 **Verification:**
-- [ ] Manual across the three environments *(no-session branch done;
-      the rest await the session)*
+- [ ] Manual across the three environments *(no-session, COSMIC, and
+      sway done; GNOME pending with the parked session)*
 
 **Dependencies:** Task 2 · **Scope:** S
 
@@ -175,7 +205,7 @@ core's boundary — Phase 3's slice 1 input). Zed's `crates/terminal` is
 the reference shape.
 
 **Acceptance criteria:**
-- [ ] A grid renders from a live PTY with attributes and resize;
+- [x] A grid renders from a live PTY with attributes and resize;
       evidence recorded; the `cosmic-text`-role note written *(harness
       armed at spike aeea7b3: `SPIKE_CHECK=grid` — a live `/bin/sh`
       PTY feeds an `alacritty_terminal` Term, DropTerm's patched fork
@@ -186,12 +216,19 @@ the reference shape.
       seeded through the pty gives attributes evidence without keys;
       the `cosmic-text`-role note is written: GPUI's text stack is
       cosmic-text-based at this pin, so DropTerm's engine-side buffers
-      have no role on this path — the runtime render rows run in the
-      COSMIC session)*
+      have no role on this path — **rendered on COSMIC 2026-11-13,
+      agent-run in the validation VM (spike 043eb4e)**: the forks
+      resolved and ran, the grid drew its first frame 8x20 then resized
+      to 128x20 through Term::resize + PTY SIGWINCH, and row0 shows the
+      seeded ANSI pattern ("BLUE…" and the RED/GREEN/BLUE printf) —
+      vm-cosmic-grid.png and the walk log held in cosmic-session-logs/;
+      the optional owner-typing pass adds color but nothing gates on
+      it)*
 
 **Verification:**
-- [ ] Manual on COSMIC *(build halves green; render rows pending the
-      session)*
+- [x] Manual on COSMIC *(agent-run in the validation VM 2026-11-13,
+      snapshot discipline kept; an owner's typeable pass on real
+      hardware remains welcome)*
 
 **Dependencies:** Task 2 · **Scope:** M
 
@@ -210,7 +247,15 @@ beside GPUI's executor — proving the loops coexist
       state; a 30s window for the busctl round-trip, the command
       printed by the harness; zbus version-matched to the 5.19 line
       the gpui tree already compiles — the runtime rows run in the
-      COSMIC session)*
+      COSMIC session; **run 2026-11-13 and found a harness bug, spike
+      043eb4e**: the service builds ("service up" printed) but the bus
+      name is never owned beside GPUI — isolated to the interplay,
+      because a no-GPUI bin (src/bin/dbusname.rs) owning the very same
+      name through the very same route works on both host and guest;
+      leading suspect: the executor zbus's tokio path builds inside
+      build_inner being dropped after build, killing the connection's
+      tasks; the fix and the round-trip row are the remaining work —
+      the coexistence question itself is honestly unproven either way)*
 
 **Verification:**
 - [ ] Manual on COSMIC *(service code compiled green beside GPUI's
