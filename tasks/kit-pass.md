@@ -115,11 +115,32 @@ a failure here is a Kit NO-GO *for this pin* and leaves GPUI's verdict
 as it stands.
 
 **Acceptance criteria:**
-- [ ] Overlays render and behave through sustained reshapes; evidence
+- [x] Overlays render and behave through sustained reshapes; evidence
       recorded
 
 **Verification:**
-- [ ] Manual on COSMIC
+- [x] Manual on COSMIC
+
+*(Done 2026-11-13, spike 40fe302. The kill check is GREEN on both
+compositors: the drawer's root view is the Kit's Root (the manual wrap
+C3 names), a Popover-hosted PopupMenu opened programmatically plus a
+built Tooltip stayed on the surface through the full 80 ms cadence
+(`on_open_change` silent, every height landed, clean exits), and the
+COSMIC screenshot shows the popover's three items and the tooltip pill
+rendering on the layer surface. C3 holds in the manifest: zero
+gpui-shell/gpui-kit edges, one GPUI in the graph. **One adoption-debt
+finding for the verdict**: the Kit's Root auto-decorates every
+Client-decorated window with its Linux `window_border` (SHADOW_SIZE
+20 px, `pub(crate)` const, no per-window opt-out), and
+`set_client_inset(20)` inflates the negotiated layer surface by 2×20
+on both axes — a would-be 1280×320 drawer configures at 1320×360 on
+both compositors — unreachable at this pin because the wayland backend
+initializes every surface `Decorations::Client` (gpui-pre-linux
+wayland/window.rs:626) and `request_decorations`' no-protocol arm
+forces Client back. DropTerm's edge-to-edge drawer needs a Kit carried
+patch (one const/config — multiplying the plan's pipeline-fork cost)
+or non-flush edges accepted. Evidence: `kit-c2b-2026-11-13.log`,
+`vm-kit-c2b-{mid,late}.png`.)*
 
 **Dependencies:** Task 2 · **Scope:** M
 

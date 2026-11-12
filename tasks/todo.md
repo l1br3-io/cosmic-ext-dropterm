@@ -270,7 +270,16 @@ dated park notes, and Phase 2 proceeds independently.)*
       gpui-pre-platform, maps the drawer shape green on sway-headless
       and COSMIC-VM, screenshot pixel-verified; the manifest
       confirmation + this build close C2a)*
-- [ ] kp-3 C2b: Kit overlays on layer-shell at 80 ms cadence
+- [x] kp-3 C2b: Kit overlays on layer-shell at 80 ms cadence *(done
+      2026-11-13, spike 40fe302 — GREEN on both compositors: menu
+      popover + tooltip render on the layer surface through the full
+      cadence, never closing; C3 holds (no gpui-shell/gpui-kit edges);
+      adoption debt found: the Kit's Root auto-borders every
+      Client-decorated window and wayland forces Client on all
+      surfaces, inflating the layer surface 2×20 both axes (1320×360
+      for a 1280×320 drawer, both compositors) with no public opt-out
+      — edge-to-edge needs a Kit carried patch or accepted non-flush
+      edges; goes to the verdict)*
 - [ ] kp-4 C4: theme generator through ThemeRegistry
 - [ ] kp-5 Kit verdict appended
 
