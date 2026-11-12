@@ -176,7 +176,6 @@ terminal = [
     "libcosmic/wayland",
     "libcosmic/wgpu",
     "libcosmic/tokio",
-    "libcosmic/single-instance",
 ]
 # Re-identifies the terminal as `io.github.l1br3_io.dropterm.Dev`
 # — its own single-instance slot, bus name, config file, state

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Queryable `DropTerm` state over D-Bus.
+//! Queryable `DropTerm` state over D-Bus, plus the activation
+//! interface a second launch forwards through.
 //!
 //! Serves the read-only `Visible` and `TabCount` properties on the
-//! `io.github.l1br3_io.dropterm.V1` interface, at the bus name
-//! and object path the app already owns through libcosmic's
-//! single-instance activation. The module deliberately keeps the app's
-//! types out: it lives in the workspace's lib target so the panel
-//! applet consumes the same contract implementation, and the app
+//! `io.github.l1br3_io.dropterm.V1` interface, and the
+//! `org.freedesktop.DbusActivation` members a second launch calls, at
+//! the bus name and object path the app owns itself (the
+//! control-transport package: `DropTerm` owns its bus name; libcosmic's
+//! `single-instance` feature used to). The module deliberately keeps
+//! the app's types out: it lives in the workspace's lib target so the
+//! panel applet consumes the same contract implementation, and the app
 //! converts its own state into the types defined here.
 //!
 //! The applet-facing contract is [`BUS_NAME`], [`OBJECT_PATH`],
@@ -16,6 +19,7 @@
 //! The remaining items are `pub` only because the terminal bin reaches
 //! them through this lib target as well.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use zbus::{interface, proxy};
@@ -157,6 +161,148 @@ pub trait V1Interface {
     fn tab_count(&self) -> zbus::Result<u32>;
 }
 
+/// What a second launch forwarded to the running instance, decoded
+/// from an `org.freedesktop.DbusActivation` member call. The member
+/// names and signatures are the ones libcosmic's `single-instance`
+/// feature served (the contract is *the* API; a new-protocol second
+/// launch must reach an old-protocol running instance across an
+/// upgrade, and vice versa), pinned by the wire tests below.
+///
+/// The platform-data dictionary (activation token, startup id) is
+/// accepted on the wire and dropped here: `DropTerm`'s surface is a
+/// layer surface, not the main window libcosmic's token handling
+/// unminimizes, so the token had no effect on this app even when
+/// libcosmic carried it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Forwarded {
+    /// `Activate` — summon with no verb. The app applies its default
+    /// (`Toggle`).
+    Activate,
+    /// `Open` — open URIs. `DropTerm` defines no openable target, so
+    /// the payload is carried raw and the app ignores the message;
+    /// the member stays served for contract completeness.
+    Open { uris: Vec<String> },
+    /// `ActivateAction` — the verb's `Display` name plus its argument
+    /// words, re-parsed by the receiving instance through the same
+    /// clap definitions the CLI uses.
+    ActivateAction { action: String, args: Vec<String> },
+}
+
+/// How many forwarded verbs may sit queued between the wire and the
+/// app's message loop before the next call is dropped: the forward is
+/// fire-and-forget, so a full queue (the app stalled, or a same-user
+/// caller flooding) drops with a warn instead of growing unbounded —
+/// libcosmic's equivalent channel was bounded at ten and applied
+/// backpressure inside the D-Bus handler instead.
+pub const FORWARD_CAPACITY: usize = 64;
+
+/// Server side of the activation interface. Every member converts its
+/// wire call into a [`Forwarded`] on the channel the launcher handed
+/// in; the app's subscription turns each into an application message
+/// through the same decode path a CLI verb takes.
+pub struct Activation {
+    tx: tokio::sync::mpsc::Sender<Forwarded>,
+}
+
+impl Activation {
+    pub fn new(tx: tokio::sync::mpsc::Sender<Forwarded>) -> Self {
+        Self { tx }
+    }
+
+    /// The fire-and-forget send every member shares: a full queue
+    /// drops the verb with a warn, a dead receiver (the app gone) is
+    /// silence — the wire call itself always succeeds, exactly as
+    /// libcosmic's members replied.
+    fn forward(&self, forwarded: Forwarded) {
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(forwarded)) =
+            self.tx.try_send(forwarded)
+        {
+            log::warn!(
+                "dropping a forwarded verb (queue full): {:?}",
+                forwarded.action_name()
+            );
+        }
+    }
+}
+
+impl Forwarded {
+    /// The verb's own name, for the queue-full warning — `Activate`
+    /// for the bare summon, the action name for `ActivateAction`,
+    /// nothing worth reporting for the ignored `Open`.
+    fn action_name(&self) -> &str {
+        match self {
+            Self::Activate => "Activate",
+            Self::ActivateAction { action, .. } => action,
+            Self::Open { .. } => "Open",
+        }
+    }
+}
+
+#[interface(name = "org.freedesktop.DbusActivation")]
+impl Activation {
+    /// Activate the application. The platform-data dictionary is
+    /// accepted and dropped (see [`Forwarded`]). Owned arg types —
+    /// the wire signature (`a{sv}`) is what the pin test holds, not
+    /// the borrow shape.
+    fn activate(&mut self, platform_data: HashMap<String, zbus::zvariant::OwnedValue>) {
+        // Accepted for the contract's signature, dropped for its
+        // semantics (see [`Forwarded`]).
+        drop(platform_data);
+        self.forward(Forwarded::Activate);
+    }
+
+    /// Open the given URIs.
+    fn open(
+        &mut self,
+        uris: Vec<String>,
+        platform_data: HashMap<String, zbus::zvariant::OwnedValue>,
+    ) {
+        drop(platform_data);
+        self.forward(Forwarded::Open { uris });
+    }
+
+    /// Activate the given action.
+    fn activate_action(
+        &mut self,
+        action_name: String,
+        parameter: Vec<String>,
+        platform_data: HashMap<String, zbus::zvariant::OwnedValue>,
+    ) {
+        drop(platform_data);
+        self.forward(Forwarded::ActivateAction {
+            action: action_name,
+            args: parameter,
+        });
+    }
+}
+
+/// Client side of the activation interface, generated from the same
+/// contract — the second launch's forward path. Like
+/// [`V1InterfaceProxy`], no `default_service`/`default_path`: every
+/// caller passes [`BUS_NAME`]/[`OBJECT_PATH`], keeping the release
+/// identity out of dev builds.
+#[proxy(interface = "org.freedesktop.DbusActivation")]
+pub trait ActivationInterface {
+    /// Activate the application.
+    fn activate(&self, platform_data: HashMap<&str, zbus::zvariant::Value<'_>>)
+    -> zbus::Result<()>;
+
+    /// Open the given URIs.
+    fn open(
+        &self,
+        uris: Vec<&str>,
+        platform_data: HashMap<&str, zbus::zvariant::Value<'_>>,
+    ) -> zbus::Result<()>;
+
+    /// Activate the given action.
+    fn activate_action(
+        &self,
+        action_name: &str,
+        parameter: Vec<&str>,
+        platform_data: HashMap<&str, zbus::zvariant::Value<'_>>,
+    ) -> zbus::Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,12 +430,16 @@ mod tests {
         assert_eq!(crate::APP_ID, "io.github.l1br3_io.dropterm.Dev");
     }
 
-    /// Headless test harness: serves [`V1`] over a peer-to-peer unix
-    /// socket so the wire tests need no session bus and no display.
-    /// Mirrors the p2p setup of zbus's own e2e suite: both ends of the
-    /// handshake must be driven concurrently or the SASL exchange
-    /// deadlocks.
-    async fn p2p_pair(state: Arc<Mutex<State>>) -> (zbus::Connection, zbus::Connection) {
+    /// Headless test harness: serves [`V1`] and [`Activation`] over a
+    /// peer-to-peer unix socket — the control bus's real serving
+    /// shape, both interfaces at the one object path — so the wire
+    /// tests need no session bus and no display. Mirrors the p2p
+    /// setup of zbus's own e2e suite: both ends of the handshake must
+    /// be driven concurrently or the SASL exchange deadlocks.
+    async fn serve_pair(
+        state: Arc<Mutex<State>>,
+        activation: Activation,
+    ) -> (zbus::Connection, zbus::Connection) {
         let guid: zbus::Guid = "664a0d6b8db84a7e9e41e46a2d2817ba"
             .parse()
             .expect("valid guid");
@@ -303,6 +453,8 @@ mod tests {
                 .p2p()
                 .serve_at(OBJECT_PATH, V1::new(state))
                 .expect("serve V1")
+                .serve_at(OBJECT_PATH, activation)
+                .expect("serve activation")
                 .build(),
             connection::Builder::unix_stream(client_stream)
                 .p2p()
@@ -313,6 +465,13 @@ mod tests {
             server.expect("server connection"),
             client.expect("client connection"),
         )
+    }
+
+    /// [`serve_pair`] with a discard-only [`Activation`] — the V1 wire
+    /// tests below have no forwarded actions to observe.
+    async fn p2p_pair(state: Arc<Mutex<State>>) -> (zbus::Connection, zbus::Connection) {
+        let (tx, _rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+        serve_pair(state, Activation::new(tx)).await
     }
 
     /// zbus's p2p support needs the tokio feature set (rt, net, time)
@@ -471,6 +630,359 @@ mod tests {
                 // new values.
                 assert_eq!(proxy.visible().await, Ok(true));
                 assert_eq!(proxy.tab_count().await, Ok(2));
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    // --- the activation interface (control-transport) ---
+
+    /// The empty platform-data dictionary every activation call in
+    /// these tests carries (the payload-bearing half is exercised by
+    /// the pin test's signature assertions, not the forwarding ones).
+    fn no_platform_data() -> HashMap<&'static str, zbus::zvariant::Value<'static>> {
+        HashMap::new()
+    }
+
+    /// Serves [`Activation`] with an observed channel, hands back
+    /// both connections (the server one must outlive the calls — a
+    /// dropped server closes the socket) and the receiver — the shape
+    /// the activation wire tests share.
+    async fn activation_pair() -> (
+        zbus::Connection,
+        zbus::Connection,
+        tokio::sync::mpsc::Receiver<Forwarded>,
+    ) {
+        let state = Arc::new(Mutex::new(State {
+            visible: false,
+            tab_count: 0,
+        }));
+        let (tx, rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+        let (server, client) = serve_pair(state, Activation::new(tx)).await;
+        (server, client, rx)
+    }
+
+    #[test]
+    fn activation_forwards_every_member_as_its_message() {
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let (_server, client, mut rx) = activation_pair().await;
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+
+                // Call order is reply order on one connection, so the
+                // messages arrive in the same sequence.
+                proxy.activate(no_platform_data()).await.expect("activate");
+                assert_eq!(rx.recv().await, Some(Forwarded::Activate));
+
+                proxy
+                    .open(
+                        vec!["file:///tmp/one", "file:///tmp/two"],
+                        no_platform_data(),
+                    )
+                    .await
+                    .expect("open");
+                assert_eq!(
+                    rx.recv().await,
+                    Some(Forwarded::Open {
+                        uris: vec!["file:///tmp/one".to_string(), "file:///tmp/two".to_string()]
+                    })
+                );
+
+                proxy
+                    .activate_action("new-tab", vec!["--cwd", "/tmp"], no_platform_data())
+                    .await
+                    .expect("activate_action");
+                assert_eq!(
+                    rx.recv().await,
+                    Some(Forwarded::ActivateAction {
+                        action: "new-tab".to_string(),
+                        args: vec!["--cwd".to_string(), "/tmp".to_string()]
+                    })
+                );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    #[test]
+    fn a_dead_receiver_never_wedges_the_served_object() {
+        // Fire-and-forget's error contract: the receiver can die (the
+        // app gone) and every member still replies Ok on the wire —
+        // the send's failure is silence, never a broken dispatch.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: false,
+                    tab_count: 0,
+                }));
+                let (tx, rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                drop(rx);
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+                assert!(proxy.activate(no_platform_data()).await.is_ok());
+                assert!(
+                    proxy
+                        .open(vec!["file:///tmp/x"], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+                assert!(
+                    proxy
+                        .activate_action("toggle", vec![], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_verb_and_still_replies_ok() {
+        // The bounded channel's other half: FORWARD_CAPACITY verbs
+        // queued with no drain, then one more — the wire call still
+        // succeeds (the drop is the app-side policy, the caller never
+        // learns), and the queue holds exactly the capacity.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: false,
+                    tab_count: 0,
+                }));
+                let (tx, mut rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+                for _ in 0..FORWARD_CAPACITY {
+                    assert!(
+                        proxy
+                            .activate_action("toggle", vec![], no_platform_data())
+                            .await
+                            .is_ok()
+                    );
+                }
+                // The queue is full but not yet observed drained; give
+                // the object server a beat to land every send, then
+                // push one past the capacity — still Ok on the wire.
+                tokio::task::yield_now().await;
+                assert!(
+                    proxy
+                        .activate_action("toggle", vec![], no_platform_data())
+                        .await
+                        .is_ok()
+                );
+                let mut queued = 0;
+                while rx.try_recv().is_ok() {
+                    queued += 1;
+                }
+                assert_eq!(queued, FORWARD_CAPACITY);
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    #[test]
+    fn activation_payloads_carry_the_verbs_a_second_launch_sends() {
+        // The exact words the CLI forwards (forward_words' encoding)
+        // survive the wire untouched — the receiving instance
+        // re-parses exactly what the second launch serialized.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let (_server, client, mut rx) = activation_pair().await;
+                let proxy = ActivationInterfaceProxy::new(&client, BUS_NAME, OBJECT_PATH)
+                    .await
+                    .expect("proxy");
+
+                proxy
+                    .activate_action(
+                        "rename-tab",
+                        vec!["work in progress", "--tab-index", "2"],
+                        no_platform_data(),
+                    )
+                    .await
+                    .expect("activate_action");
+                assert_eq!(
+                    rx.recv().await,
+                    Some(Forwarded::ActivateAction {
+                        action: "rename-tab".to_string(),
+                        args: vec![
+                            "work in progress".to_string(),
+                            "--tab-index".to_string(),
+                            "2".to_string()
+                        ]
+                    })
+                );
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
+
+    // --- the contract-surface pin (control-transport T3) ---
+
+    /// The `<method>` entries of one interface block: name → the
+    /// ordered `(type, direction)` list of its `<arg>`s, enumerated
+    /// from the introspection XML rather than string-matched — the
+    /// pin holds the served surface, not the XML's spelling of it.
+    fn methods(block: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
+        block
+            .split("<method")
+            .skip(1)
+            .map(|method| {
+                let body = &method[..method.find("</method>").unwrap_or(method.len())];
+                let name = attr_of(method, "name");
+                let args = body
+                    .split("<arg")
+                    .skip(1)
+                    .map(|arg| (attr_of(arg, "type"), attr_of(arg, "direction")))
+                    .collect();
+                (name, args)
+            })
+            .collect()
+    }
+
+    /// The `<property>` entries of one interface block:
+    /// `(name, type, access)`, enumerated like [`methods`].
+    fn properties(block: &str) -> Vec<(&str, &str, &str)> {
+        block
+            .split("<property")
+            .skip(1)
+            .map(|property| {
+                (
+                    attr_of(property, "name"),
+                    attr_of(property, "type"),
+                    attr_of(property, "access"),
+                )
+            })
+            .collect()
+    }
+
+    /// One `key="value"` attribute of an XML fragment (the first).
+    fn attr_of<'a>(fragment: &'a str, key: &str) -> &'a str {
+        fragment
+            .split(&format!("{key}=\""))
+            .nth(1)
+            .map_or("", |rest| &rest[..rest.find('"').unwrap_or(0)])
+    }
+
+    /// The `<interface name="...">...</interface>` blocks of the
+    /// introspection XML.
+    fn interfaces(xml: &str) -> Vec<(&str, &str)> {
+        xml.split("<interface")
+            .skip(1)
+            .map(|iface| {
+                let body = &iface[..iface.find("</interface>").unwrap_or(iface.len())];
+                (attr_of(iface, "name"), body)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn served_contract_surface_is_pinned() {
+        // The contract is *the* API: this pins what the control bus
+        // serves at the object path — the V1 interface and the
+        // activation member set with exactly the signatures
+        // libcosmic's `single-instance` feature served (read from its
+        // vendored source at /planning), so the ownership change
+        // changed nothing observable, and a new-served instance still
+        // answers an old second launch across an upgrade.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: true,
+                    tab_count: 2,
+                }));
+                let (tx, _rx) = tokio::sync::mpsc::channel(FORWARD_CAPACITY);
+                let (_server, client) = serve_pair(state, Activation::new(tx)).await;
+                let introspectable = zbus::fdo::IntrospectableProxy::builder(&client)
+                    .destination(BUS_NAME)
+                    .and_then(|builder| builder.path(OBJECT_PATH))
+                    .expect("identity names")
+                    .build()
+                    .await
+                    .expect("introspectable proxy");
+                let xml = introspectable
+                    .introspect()
+                    .await
+                    .expect("introspect the object path");
+                // The served node's own interfaces only: the XML
+                // also carries the child-node tree zbus walks below
+                // the path, where the D-Bus standards repeat per
+                // level.
+                let own = &xml[..xml.find("<node name=").unwrap_or(xml.len())];
+                let served = interfaces(own);
+
+                // The one object path carries exactly the two
+                // DropTerm interfaces beside the three D-Bus
+                // standards zbus adds.
+                let mut names: Vec<&str> = served.iter().map(|(name, _)| *name).collect();
+                names.sort_unstable();
+                assert_eq!(
+                    names,
+                    vec![
+                        "io.github.l1br3_io.dropterm.V1",
+                        "org.freedesktop.DBus.Introspectable",
+                        "org.freedesktop.DBus.Peer",
+                        "org.freedesktop.DBus.Properties",
+                        "org.freedesktop.DbusActivation",
+                    ]
+                );
+
+                let v1 = served
+                    .iter()
+                    .find(|(name, _)| *name == "io.github.l1br3_io.dropterm.V1")
+                    .expect("V1 served")
+                    .1;
+                // V1 is exactly the two read-only properties the
+                // applet and --is-visible speak; it has no methods.
+                assert!(
+                    methods(v1).is_empty(),
+                    "V1 serves no methods: {:?}",
+                    methods(v1)
+                );
+                let mut props = properties(v1);
+                props.sort_unstable();
+                assert_eq!(
+                    props,
+                    vec![("TabCount", "u", "read"), ("Visible", "b", "read")]
+                );
+
+                let activation = served
+                    .iter()
+                    .find(|(name, _)| *name == "org.freedesktop.DbusActivation")
+                    .expect("activation served")
+                    .1;
+                // libcosmic's member set, signature for signature:
+                // Activate(a{sv}), Open(as, a{sv}),
+                // ActivateAction(s, as, a{sv}) — all in, no reply
+                // payload, no properties.
+                let mut served_methods = methods(activation);
+                served_methods.sort_unstable();
+                assert_eq!(
+                    served_methods,
+                    vec![
+                        ("Activate", vec![("a{sv}", "in")]),
+                        (
+                            "ActivateAction",
+                            vec![("s", "in"), ("as", "in"), ("a{sv}", "in")]
+                        ),
+                        ("Open", vec![("as", "in"), ("a{sv}", "in")]),
+                    ]
+                );
+                assert!(
+                    properties(activation).is_empty(),
+                    "activation serves no properties: {:?}",
+                    properties(activation)
+                );
             })
             .await
             .expect("wire test timed out");
