@@ -11,6 +11,7 @@ Classify each task into exactly one status:
 - **hardware** — gated on an owner-hardware session or COSMIC-on-metal verification
 - **owner** — waiting on an owner ruling or decision (release cut, floor, channels, Kit, …)
 - **gated** — waiting on another task finishing first
+- **parked** — unchecked but carrying a dated owner parking note in its todo row; render dimmed and last in its phase, and exclude it from the open counts and the closing actionable line
 
 Render one board, phase by phase (0; 1 flag day and lanes A–C; 2; future 3–5), checkpoints styled as milestone rows:
 

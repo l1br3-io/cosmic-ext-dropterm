@@ -7,11 +7,17 @@ chunk's verification passing.
 
 ## Phase 0 — reality-check (hardware; parallel-safe)
 
-- [x] rc-1 Session 1: COSMIC baseline (16 checks, slot filled) *(agent-run 2026-11-11 in the validation VM, 9091b19: 1/4/8/12/13/15 pass, input rows n-a — owner's eyes-on)*
-- [x] rc-2 Session 2a: sway (shared with the spike) *(agent-run headless, 1deed62: green where exercisable — maps/renders/lifecycle/handoff; input rows + bell row want one hardware sway session)*
-- [ ] rc-3 Session 2b: Hyprland
-- [ ] rc-4 Session 3: KDE Plasma (Wayland)
+- [x] rc-1 Session 1: COSMIC baseline (16 checks, slot filled) *(agent-run 2026-11-11 in the validation VM, 9091b19: 1/4/8/12/13/15 pass, input rows n-a — owner's eyes-on, parked 2026-11-13)*
+- [x] rc-2 Session 2a: sway (shared with the spike) *(agent-run headless, 1deed62: green where exercisable — maps/renders/lifecycle/handoff; input rows + bell row want one hardware sway session — parked
+      2026-11-13)*
+- [ ] rc-3 Session 2b: Hyprland *(parked 2026-11-13, owner ruling —
+      un-park by running the session; a headless-docker attempt may
+      still carry it the way sway's session went)*
+- [ ] rc-4 Session 3: KDE Plasma (Wayland) *(parked 2026-11-13, owner
+      ruling — un-park by running the session)*
 - [ ] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
+      *(parked 2026-11-13, owner ruling — expected-fail and
+      confirmatory; the guard already has weston-headless evidence)*
 - [x] rc-6 Session 5: one X11 session (record which) *(i3 over Xvfb, 482a37d: zombie + degenerate 32px DOCK band first launch, truthful --is-visible, libXi-less panic variant; expected-fail recorded)*
 - [x] rc-7 Session 6: non-Pop distro — floor, ldd, fonts (feeds
       distro-reach) *(run 2026-11-11 on archlinux:latest, slot filled
@@ -20,6 +26,8 @@ chunk's verification passing.
       this box only catches todo up — the chunk and plan record
       already carried it)*
 - [ ] rc-8 Close-out: every failure filed and named in its slot
+      *(parked 2026-11-13 with the three open sessions — it sweeps
+      what they fill)*
 
 ## Phase 1 — app-identity (flag day; merges first)
 
@@ -50,13 +58,13 @@ build toggles under the new name; applet follows.
       moved *(merged f5199ec)*
 - [x] cs-3 Wire the app (writers, completions path, echo apply kept)
       *(merged f5199ec; the chunk's drawer-write/restart manual row
-      stays the owner's)*
+      stays the owner's — parked 2026-11-13)*
 - [x] cs-4 External-edit reload — gate: the `notify` dependency ask
       (fallback re-read at show) *(notify sanctioned 2026-11-10;
       merged f5199ec)*
 - [x] cs-5 cosmic-config leaves; docs path; manual rows; merge
       *(merged f5199ec; the sudo-installed manual rows stay the
-      owner's)*
+      owner's — parked 2026-11-13)*
 - [x] cs-6 Gate (COSMIC hardware): the dbus-config feature decision
       *(decided and landed 2026-11-11, 576d3bc: the feature drops —
       theme follow verified live on the fallback watcher in the
@@ -71,7 +79,7 @@ build toggles under the new name; applet follows.
 - [x] ct-3 Contract-surface pin test *(616cba1, mutation-checked)*
 - [x] ct-4 Drop single-instance; applet canary; merge *(d4856e5 +
       c5de59a review fixes; merged e6ad23b, plan record updated
-      206d6a7; applet canary an owner row)*
+      206d6a7; applet canary an owner row — parked 2026-11-13)*
 
 **Checkpoint — the one release:** app-identity + config-store in one
 release; no break note (owner ruling 2026-11-12: pre-distribution, no
@@ -94,7 +102,8 @@ everything merged by then.*
       landed first as 3e30c35, just check green; the surface rows were
       walked on the validation VM per the chunk — the chunk's
       merge-result check row predates the merge and the mid-slide
-      reversal's keybind press stays a human-at-console row)*
+      reversal's keybind press stays a human-at-console row — parked
+      2026-11-13)*
 
 **Checkpoint:** the lifecycle is headless — a spike REDESIGN survives.
 
@@ -117,7 +126,9 @@ everything merged by then.*
       wayland-client dep ask still stands open to the owner's veto
       before any push)*
 - [ ] kd-1 docs/summon.md — gate: Phase 0 rows + app-identity; every
-      row cites its session
+      row cites its session *(parked 2026-11-13, owner ruling — rides
+      the parked sessions; the least-work un-park writes it with the
+      three filled sessions' rows and untested marks for the rest)*
 - [x] cd-1 docs/dbus.md derived from src/dbus_state.rs *(every claim
       traced to the source; the review itself caught two draft
       errors — a bare `dropterm` and the applet's click both send
@@ -131,14 +142,22 @@ everything merged by then.*
       proxy claim truthed, the "additive growth" promise dropped, the
       docs pin vacuous-pass-guarded; optional notes recorded in the
       chunk as follow-ups)*
-- [ ] dr-1 Facts brief from session 6
-- [ ] dr-2 Owner rulings: glibc floor; channels
+- [ ] dr-1 Facts brief from session 6 *(parked 2026-11-13, owner
+      ruling — its gate is actually filled (rc-7), so this is free
+      desk work whenever un-parked)*
+- [ ] dr-2 Owner rulings: glibc floor; channels *(parked 2026-11-13,
+      owner ruling — deferred with the release)*
 - [ ] dr-3 Floor ruling implemented (README states it either way)
+      *(parked with dr-2, 2026-11-13)*
 - [ ] dr-4 Channel recipes (contingent on dr-2; nothing published)
-- [ ] dr-5 Release-notes line; merge
+      *(parked with dr-2, 2026-11-13)*
+- [ ] dr-5 Release-notes line; merge *(parked with dr-2, 2026-11-13 —
+      rides the deferred release)*
 
 **Checkpoint — end of Phase 1:** the plan's exit line; Phase 0 slots
-filled; the release cut.
+filled; the release cut. *(The exit line itself is parked with the
+2026-11-13 ruling — the release stays deferred, the open rows carry
+dated park notes, and Phase 2 proceeds independently.)*
 
 ## Phase 2 — the spike (worktree ../dropterm-spike; from day one)
 

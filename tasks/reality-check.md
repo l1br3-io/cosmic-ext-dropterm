@@ -3,6 +3,10 @@
 Spec: [SPEC-reality-check.md](../SPEC-reality-check.md) · Module id:
 `reality-check` · Phase 0, lane hardware · no branch, no worktree, no code.
 
+> **Parked (owner ruling, 2026-11-13):** Tasks 3–5 (Hyprland, KDE,
+> GNOME) and Task 8 (close-out) wait on sessions the owner parked;
+> Tasks 1, 2, 6, 7 are filled. Un-park by running a session.
+
 The checks and the recording template live in the committed plan record —
 run them from there, never from this chunk:
 [docs/research/portability-plan.md](../docs/research/portability-plan.md),

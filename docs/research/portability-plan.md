@@ -613,10 +613,11 @@ from day one beside everything; Phase 3 follows the spike report.
 
 ### `reality-check`: does today's binary work off COSMIC?
 
-**Status**: in progress — four of seven sessions filled (2026-11-11:
-COSMIC, sway, X11, non-Pop distro, all agent-run; GNOME, KDE, and
-Hyprland remain owner-hardware sessions, and the input-bound rows of
-the filled sessions want one eyes-on pass each).
+**Status**: parked (owner ruling, 2026-11-13) — four of seven sessions
+filled (2026-11-11: COSMIC, sway, X11, non-Pop distro, all agent-run);
+the GNOME, KDE, and Hyprland sessions, the close-out sweep, and the
+filled sessions' input-bound eyes-on rows are parked with the ruling,
+un-parked by running any of them.
 
 **Objective.** Learn what the shipped binary does outside COSMIC before
 writing code. Green results on sway, Hyprland, and KDE collapse "other
@@ -845,7 +846,8 @@ an ask-first decision.
 
 ### `keybind-docs`: binding the summon key per desktop
 
-**Status**: not started.
+**Status**: parked (owner ruling, 2026-11-13) — rides the parked
+Phase 0 sessions.
 
 **Objective.** A per-desktop page for binding `dropterm toggle`: sway
 `bindsym`, Hyprland `bind`, KDE custom shortcuts, Xfce keyboard settings,
@@ -884,7 +886,8 @@ green.
 
 ### `distro-reach`: what "works on other distros" ships as
 
-**Status**: not started.
+**Status**: parked (owner ruling, 2026-11-13) — the two owner
+rulings deferred with the release.
 
 **Objective.** Decide and deliver the install story beyond the Ubuntu-built
 tarball, from Phase 0's distro session: the glibc floor (2.39 today), any

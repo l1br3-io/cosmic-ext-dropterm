@@ -4,6 +4,10 @@ Spec: [SPEC-keybind-docs.md](../SPEC-keybind-docs.md) · Module id:
 `keybind-docs` · Phase 1, lane C · branch `port/keybind-docs` (main
 checkout).
 
+> **Parked (owner ruling, 2026-11-13):** rides the parked Phase 0
+> sessions; /build skips this chunk while parked. The least-work
+> un-park writes the page with the three filled sessions' rows.
+
 **Files touched:** `docs/summon.md` (new), `README.md` (Documentation
 index).
 

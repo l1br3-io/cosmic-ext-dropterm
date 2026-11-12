@@ -4,6 +4,11 @@ Spec: [SPEC-distro-reach.md](../SPEC-distro-reach.md) · Module id:
 `distro-reach` · Phase 1, lane C · branch `port/distro-reach` (main
 checkout).
 
+> **Parked (owner ruling, 2026-11-13):** the Task 2 rulings are
+> deferred with the release; /build skips this chunk while parked.
+> Task 1's gate (session 6) is already filled — the brief is free
+> desk work on un-park.
+
 **Files touched:** `.github/workflows/release.yml` (shared with
 `app-identity`'s tarball-name rename — this package edits after it),
 `README.md` (install section), plus whatever recipes the rulings choose.

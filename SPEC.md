@@ -14,19 +14,21 @@ verbatim from the plan's capability map; the plan's work-package Status
 lines are the durable record, this table the working view. Status
 vocabulary: `not started` · `in progress (port/<id>)` ·
 `merged (<short sha>)` · `blocked: <reason>`; the spike adds
-`reported: GO | REDESIGN | NO-GO`.
+`reported: GO | REDESIGN | NO-GO`; `parked (<date>, owner ruling)`
+marks deliberately deferred work — it is out of the workflow's way
+until its note's un-park condition is met.
 
 | Id | Phase | Kind | Depends on | Lane | Shares hot files with | Spec | Status |
 |---|---|---|---|---|---|---|---|
-| `reality-check` | 0 | manual, no code | none | hardware | none | [SPEC-reality-check.md](SPEC-reality-check.md) | in progress — 4/7 sessions filled (COSMIC/sway/X11/non-Pop distro; Hyprland+KDE+GNOME are owner-hardware) |
+| `reality-check` | 0 | manual, no code | none | hardware | none | [SPEC-reality-check.md](SPEC-reality-check.md) | parked (owner ruling, 2026-11-13) — 4/7 sessions filled (COSMIC/sway/X11/non-Pop distro); Hyprland+KDE+GNOME+close-out parked with it |
 | `app-identity` | 1 | code, `res/`, CI, docs; mechanical | none — merges first | flag day | every package (mostly docs) | [SPEC-app-identity.md](SPEC-app-identity.md) | merged (f698083) |
 | `config-store` | 1 | code | `app-identity`\* | B | `surface-intents` (`src/app.rs`), `control-transport` (`Cargo.toml` features) | [SPEC-config-store.md](SPEC-config-store.md) | merged (f5199ec) |
 | `surface-intents` | 1 | refactor + tests | `app-identity`\* | A | `config-store` (`src/app.rs`) | [SPEC-surface-intents.md](SPEC-surface-intents.md) | merged (00cf77d) |
 | `control-transport` | 1 | code | `app-identity`\*; after `config-store` in lane B | B | `layer-shell-guard` (`src/main.rs`) | [SPEC-control-transport.md](SPEC-control-transport.md) | merged (e6ad23b) |
 | `layer-shell-guard` | 1 | code, small | `app-identity`\* | C | `control-transport` (`src/main.rs`) | [SPEC-layer-shell-guard.md](SPEC-layer-shell-guard.md) | merged (f73cf27) |
-| `keybind-docs` | 1 | docs | `app-identity`, `reality-check` | C | none | [SPEC-keybind-docs.md](SPEC-keybind-docs.md) | not started |
+| `keybind-docs` | 1 | docs | `app-identity`, `reality-check` | C | none | [SPEC-keybind-docs.md](SPEC-keybind-docs.md) | parked (owner ruling, 2026-11-13) — rides the parked Phase 0 sessions |
 | `contract-docs` | 1 | docs | `control-transport` | C | none | [SPEC-contract-docs.md](SPEC-contract-docs.md) | merged (5bf146b) |
-| `distro-reach` | 1 | release and packaging | `reality-check`, `app-identity` | C | `.github/workflows/release.yml` | [SPEC-distro-reach.md](SPEC-distro-reach.md) | not started |
+| `distro-reach` | 1 | release and packaging | `reality-check`, `app-identity` | C | `.github/workflows/release.yml` | [SPEC-distro-reach.md](SPEC-distro-reach.md) | parked (owner ruling, 2026-11-13) — the floor and channels rulings deferred with the release |
 | `gpui-spike` | 2 | throwaway crate + report | none | spike | none (own workspace) | [SPEC-gpui-spike.md](SPEC-gpui-spike.md) | in progress — sway-witness green for 0/1/2/6/7 (5422181; show 121ms ≤ 130ms budget; #61368 clear at 1.5, `cx.displays()` mis-sizes fractional outputs); checks 9/10/11 harnesses armed (aeea7b3 — forks resolve under the pin, dbus/detect/grid await the session); COSMIC rows are owner-hardware |
 | `kit-pass` | 2 | spike second pass | `gpui-spike`; the Kit ruled "adopt" | spike | none | [SPEC-kit-pass.md](SPEC-kit-pass.md) | not started |
 
@@ -117,8 +119,9 @@ day-one owner rulings are decided (2026-11-10, before distribution):
 app id `io.github.l1br3_io.dropterm`; applet `dropterm-applet` +
 `io.github.l1br3_io.dropterm.Applet`; repo rename now (the sweep writes
 the new URLs, the act stays the owner's); watcher `notify` sanctioned.
-Still open by design: distro-reach's two, the Kit ruling, live
-geometry — see `tasks/plan.md`'s Open questions.
+Still open by design: the Kit ruling, live geometry (both Phase 2).
+Parked by owner ruling (2026-11-13): distro-reach's two rulings,
+deferred with the release — see `tasks/plan.md`'s Open questions.
 - Never implement a module whose spec is not approved or whose chunk is not
   written. Chunks are `/build`'s only source of tasks.
 - `tasks/gpui-portability-verification.md` is the research-phase

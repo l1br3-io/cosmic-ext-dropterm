@@ -169,7 +169,8 @@ evidence record, not a chunk.
 4. **Live geometry edits under GPUI** (open ruling 3): answered by the
    spike's check 2b recreate-cost measurement.
 5. **config-store's dbus-config feature** (chunk Task 6): decided on
-   COSMIC hardware, not at a desk.
+   COSMIC hardware, not at a desk. — DECIDED 2026-11-11: dropped
+   (576d3bc), theme follow verified live on the fallback watcher.
 6. **distro-reach's two rulings** (chunk Task 2): the glibc floor and
    the native channels — the chunk is a shell until they land, as its
-   spec is.
+   spec is. — PARKED 2026-11-13 (owner): deferred with the release.
