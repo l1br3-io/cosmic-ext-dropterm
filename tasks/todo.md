@@ -109,8 +109,14 @@ everything merged by then.*
       before any push)*
 - [ ] kd-1 docs/summon.md — gate: Phase 0 rows + app-identity; every
       row cites its session
-- [ ] cd-1 docs/dbus.md derived from src/dbus_state.rs
-- [ ] cd-2 every_dbus_member_is_documented pinning test
+- [x] cd-1 docs/dbus.md derived from src/dbus_state.rs *(every claim
+      traced to the source; the review itself caught two draft
+      errors — a bare `dropterm` and the applet's click both send
+      `ActivateAction("toggle", [])`, the CLI never fires the plain
+      `Activate` member)*
+- [x] cd-2 every_dbus_member_is_documented pinning test *(served
+      introspection over the p2p harness is the expectation list;
+      mutation-checked)*
 - [ ] cd-3 README index; merge
 - [ ] dr-1 Facts brief from session 6
 - [ ] dr-2 Owner rulings: glibc floor; channels

@@ -988,4 +988,84 @@ mod tests {
             .expect("wire test timed out");
         });
     }
+
+    // --- the docs pin (contract-docs) ---
+
+    #[test]
+    fn every_dbus_member_is_documented() {
+        // The docs-as-code drift gate for the contract page, the
+        // dbus twin of `every_config_key_is_documented`: every member
+        // (methods and properties — neither interface serves a
+        // signal, and the helpers below would not see one) the
+        // served surface exposes on the two DropTerm interfaces must
+        // appear backticked in docs/dbus.md. The expectation is
+        // enumerated from a live introspection of the served pair —
+        // no hand-kept member list to drift — so a member added to
+        // either interface fails `just check` until the page carries
+        // it. The three D-Bus standards zbus adds are not this
+        // contract's members; the page cites their Get and
+        // PropertiesChanged calls in prose, which is their place in
+        // the docs.
+        current_thread_runtime().block_on(async {
+            tokio::time::timeout(WIRE_TEST_TIMEOUT, async {
+                let state = Arc::new(Mutex::new(State {
+                    visible: true,
+                    tab_count: 1,
+                }));
+                let (_server, client) = p2p_pair(state).await;
+                let introspectable = zbus::fdo::IntrospectableProxy::builder(&client)
+                    .destination(BUS_NAME)
+                    .and_then(|builder| builder.path(OBJECT_PATH))
+                    .expect("identity names")
+                    .build()
+                    .await
+                    .expect("introspectable proxy");
+                let xml = introspectable
+                    .introspect()
+                    .await
+                    .expect("introspect the object path");
+                // The served node's own interfaces only — the XML
+                // also carries the child-node tree zbus walks below
+                // the path (`served_contract_surface_is_pinned` cuts
+                // at the same seam).
+                let own = &xml[..xml.find("<node name=").unwrap_or(xml.len())];
+                let served = interfaces(own);
+
+                // Guard against a vacuous pass: if the filter below
+                // matched nothing (a changed XML shape, a typo'd
+                // interface literal), the loops would assert over an
+                // empty set and stay green. Both contract interfaces
+                // must be in the enumeration for the pin to mean
+                // anything.
+                let names: Vec<&str> = served.iter().map(|(name, _)| *name).collect();
+                for expected in [INTERFACE, "org.freedesktop.DbusActivation"] {
+                    assert!(
+                        names.contains(&expected),
+                        "introspection did not serve `{expected}`: the docs pin would pass vacuously"
+                    );
+                }
+
+                let docs = include_str!("../docs/dbus.md");
+                for (interface, block) in served {
+                    if interface != INTERFACE && interface != "org.freedesktop.DbusActivation" {
+                        continue;
+                    }
+                    for (method, _) in methods(block) {
+                        assert!(
+                            docs.contains(&format!("`{method}`")),
+                            "method `{method}` of `{interface}` is not documented in docs/dbus.md"
+                        );
+                    }
+                    for (property, _, _) in properties(block) {
+                        assert!(
+                            docs.contains(&format!("`{property}`")),
+                            "property `{property}` of `{interface}` is not documented in docs/dbus.md"
+                        );
+                    }
+                }
+            })
+            .await
+            .expect("wire test timed out");
+        });
+    }
 }
