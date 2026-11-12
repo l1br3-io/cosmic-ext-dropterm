@@ -802,7 +802,13 @@ from README's Documentation index; `just docs-check` green.
 
 ### `contract-docs`: the V1 contract for integrators
 
-**Status**: not started.
+**Status**: merged (5bf146b). `docs/dbus.md` carries the whole V1
+contract for out-of-core integrators, every member derived from
+`src/dbus_state.rs`; `every_dbus_member_is_documented` pins the page
+to the served introspection (enum from the live surface, a
+vacuous-pass guard, mutation-checked both ways), and the `/ship`
+fan-out's findings landed before the merge (3e4783c). Optional
+follow-ups recorded in the chunk, not taken.
 
 **Objective.** An integrator-facing page for the V1 contract (bus name,
 object path, interface, methods, properties, the CLI equivalents, the

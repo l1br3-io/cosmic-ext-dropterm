@@ -74,9 +74,38 @@ the interface without a docs row fails the test.
 `just docs-check` green; merge.
 
 **Acceptance criteria:**
-- [ ] Linked from README's Documentation index; `just docs-check` green
+- [x] Linked from README's Documentation index; `just docs-check` green
 
 **Verification:**
-- [ ] Tests pass: `just check` (docs-check included)
+- [x] Tests pass: `just check` (docs-check included) *(merged 5bf146b,
+      local --no-ff, after the `/ship` fan-out review's findings
+      landed on the branch as 3e4783c — review verdict GO, no
+      Critical findings; `just check` green on the merge result)*
 
 **Dependencies:** Task 2 · **Files:** `README.md` · **Scope:** XS
+
+## Recorded follow-ups (the ship review's optional notes — not taken)
+
+Wait for a real need; none blocks this module's close:
+
+- **Signature-column pinning** — the docs pin asserts member *names*
+  on the page; the tables' signature cells are held only by the wire
+  pin (`served_contract_surface_is_pinned`) and review. Extending
+  `every_dbus_member_is_documented` to assert each row's signature
+  would close the gap (the helpers already extract the types).
+- **Table-row anchoring** — a member name appearing backticked in
+  prose satisfies the pin, so deleting a table row can pass while
+  prose keeps the name (same looseness as
+  `every_config_key_is_documented`, which has a compensating
+  row-level test).
+- **The `--cwd` non-UTF-8 encode-drop** — the wire table says "only
+  the flags actually given"; a non-UTF-8 `--cwd` path is silently
+  dropped at the CLI edge (`src/app/remote.rs`), so the wire can
+  carry fewer flags than were given. CLI-internal; a clause on
+  either page would close it.
+- **Reverse-direction pin** — nothing in the repo fails when a member
+  is *removed* from an interface and the page keeps its row
+  (forward-only is this test's declared scope; Task 1's
+  "no member documented that does not exist" rests on the recorded
+  line-by-line review). A page-members ⊆ served-members assert would
+  close it if a member is ever removed.

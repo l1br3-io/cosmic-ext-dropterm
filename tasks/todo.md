@@ -117,7 +117,11 @@ everything merged by then.*
 - [x] cd-2 every_dbus_member_is_documented pinning test *(served
       introspection over the p2p harness is the expectation list;
       mutation-checked)*
-- [ ] cd-3 README index; merge
+- [x] cd-3 README index; merge *(merged 5bf146b, local --no-ff; the
+      ship fan-out's findings landed first as 3e4783c — the applet
+      proxy claim truthed, the "additive growth" promise dropped, the
+      docs pin vacuous-pass-guarded; optional notes recorded in the
+      chunk as follow-ups)*
 - [ ] dr-1 Facts brief from session 6
 - [ ] dr-2 Owner rulings: glibc floor; channels
 - [ ] dr-3 Floor ruling implemented (README states it either way)

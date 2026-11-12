@@ -108,7 +108,8 @@ app-identity + config-store ship as one release (the break event)
 - [ ] layer-shell-guard Tasks 1–3 (land before control-transport on
       `src/main.rs`, or rebase after)
 - [ ] keybind-docs Task 1 (after reality-check rows + app-identity)
-- [ ] contract-docs Tasks 1–3 (after control-transport)
+- [x] contract-docs Tasks 1–3 (after control-transport) *(merged
+      5bf146b; ship fan-out findings landed first as 3e4783c)*
 - [ ] distro-reach Tasks 1–5 (rulings first; 3–4 contingent)
 - **Checkpoint: end of Phase 1** — the plan's exit: `just check` green,
   surface lifecycle headless end to end, `single-instance` and
