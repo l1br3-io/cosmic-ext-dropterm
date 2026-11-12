@@ -1,6 +1,6 @@
 # The D-Bus contract
 
-Everything an integrator needs to drive or query DropTerm from another program - a GNOME Shell extension, a KDE widget, a swaybar module - without reading Rust: the address, the two interfaces, the CLI's wire encoding, and the stability promise. The [panel applet](applet.md) is the reference consumer. The member tables below are pinned to the served surface by a wire test in the terminal's own suite, so this page cannot drift from the code.
+Everything an integrator needs to drive or query DropTerm from another program - a GNOME Shell extension, a KDE widget, a swaybar module - without reading Rust: the address, the two interfaces, the CLI's wire encoding, and the stability promise. The [panel applet](applet.md) is the reference consumer. Every member named below is pinned to the served surface by a wire test in the terminal's own suite: a member added to either interface without a row on this page fails `just check`.
 
 ## The address
 
@@ -35,9 +35,9 @@ What a second launch - or your program, standing in for one - calls to make Drop
 
 The `a{sv} platform_data` dictionary (activation token, startup id) is accepted on the wire and dropped: DropTerm's surface is a layer surface, not the main window that token handling would unminimize.
 
-Every member is fire-and-forget, and that is the contract: the call always replies `Ok` - even when the verb's queue is full (bounded at 64 pending verbs; overflow is dropped with a server-side warning) or the receiver side has died. An `Ok` reply means *delivered to the running instance*, never *applied* - if you need to observe the effect, watch `Visible`/`TabCount`.
+Every member is fire-and-forget, and that is the contract: the call always replies `Ok` - even when the verb's queue is full (bounded at 64 pending verbs; overflow is dropped with a server-side warning) or the receiver side has died. An `Ok` reply means the running instance's server accepted the call, never that the verb was applied - if you need to observe the effect, watch `Visible`/`TabCount`.
 
-The authority model is the CLI's own: any process in the same session can drive every verb. That is exactly the authority a `dropterm --cmd ...` launch has always had; the seam's trust boundary is the session bus ([Architecture](architecture.md)).
+The authority model is the CLI's own: any process in the same session can drive every verb, including spawning a command through `new-tab --cmd`. That is exactly the authority a `dropterm --cmd ...` launch has always had; the seam's trust boundary is the session bus ([Architecture](architecture.md)).
 
 ## The CLI verbs over the wire
 
@@ -71,8 +71,8 @@ busctl --user get-property io.github.l1br3_io.dropterm /io/github/l1br3_io/dropt
 
 ## The stability promise
 
-The plan's ruling, stated exactly: **the V1 D-Bus contract is *the* API; D-Bus is its Linux binding.** For an integrator that means the members documented here - their names, signatures, and the semantics above - are the stable surface: a newer DropTerm keeps answering an older caller across an upgrade, which is the same rule the second launch itself obeys. The served surface is pinned by wire tests (`just check`), so a member cannot change shape quietly. Nothing beyond that is promised: no versioning scheme, no pre-announced members, and any growth is additive.
+The plan's ruling, stated exactly: **the V1 D-Bus contract is *the* API; D-Bus is its Linux binding.** For an integrator that means the members documented here - their names, signatures, and the semantics above - are the stable surface: a newer DropTerm keeps answering an older caller across an upgrade, which is the same rule the second launch itself obeys. The served surface is pinned by wire tests (`just check`), so a member cannot change shape quietly. Nothing beyond that is promised: no versioning scheme, no pre-announced members.
 
 ## Writing a consumer
 
-The [panel applet](applet.md) is the reference: it watches the bus name for the terminal's lifecycle, reads both V1 properties, and sends the same `ActivateAction("toggle", [])` a second CLI launch would - all through the generated proxy in the terminal crate's library, which the applet shares so the two can never drift. An out-of-tree consumer needs only a D-Bus client; everything on this page is the whole contract.
+The [panel applet](applet.md) is the reference: it watches the bus name for the terminal's lifecycle, reads both V1 properties through the generated proxy in the terminal crate's library (the shared half of the contract - the state types can never drift between the two binaries), and sends the same `ActivateAction("toggle", [])` a second CLI launch would through its own thin proxy, pinned byte-identical to the CLI's message by a wire test in the applet's own suite. An out-of-tree consumer needs only a D-Bus client; everything on this page is the whole contract.

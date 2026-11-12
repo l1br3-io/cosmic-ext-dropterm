@@ -995,8 +995,10 @@ mod tests {
     fn every_dbus_member_is_documented() {
         // The docs-as-code drift gate for the contract page, the
         // dbus twin of `every_config_key_is_documented`: every member
-        // the served surface exposes on the two DropTerm interfaces
-        // must appear backticked in docs/dbus.md. The expectation is
+        // (methods and properties — neither interface serves a
+        // signal, and the helpers below would not see one) the
+        // served surface exposes on the two DropTerm interfaces must
+        // appear backticked in docs/dbus.md. The expectation is
         // enumerated from a live introspection of the served pair —
         // no hand-kept member list to drift — so a member added to
         // either interface fails `just check` until the page carries
@@ -1022,10 +1024,29 @@ mod tests {
                     .introspect()
                     .await
                     .expect("introspect the object path");
+                // The served node's own interfaces only — the XML
+                // also carries the child-node tree zbus walks below
+                // the path (`served_contract_surface_is_pinned` cuts
+                // at the same seam).
                 let own = &xml[..xml.find("<node name=").unwrap_or(xml.len())];
+                let served = interfaces(own);
+
+                // Guard against a vacuous pass: if the filter below
+                // matched nothing (a changed XML shape, a typo'd
+                // interface literal), the loops would assert over an
+                // empty set and stay green. Both contract interfaces
+                // must be in the enumeration for the pin to mean
+                // anything.
+                let names: Vec<&str> = served.iter().map(|(name, _)| *name).collect();
+                for expected in [INTERFACE, "org.freedesktop.DbusActivation"] {
+                    assert!(
+                        names.contains(&expected),
+                        "introspection did not serve `{expected}`: the docs pin would pass vacuously"
+                    );
+                }
 
                 let docs = include_str!("../docs/dbus.md");
-                for (interface, block) in interfaces(own) {
+                for (interface, block) in served {
                     if interface != INTERFACE && interface != "org.freedesktop.DbusActivation" {
                         continue;
                     }
