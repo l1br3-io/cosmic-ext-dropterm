@@ -223,12 +223,34 @@ dependency trees)? Revert the commit after; the result decides how the
 GPUI frontend shares the repository during Phase 3.
 
 **Acceptance criteria:**
-- [ ] Coexistence result recorded: absorbs, or needs its own workspace
-- [ ] The experiment commit is reverted; the branch keeps its own
+- [x] Coexistence result recorded: absorbs, or needs its own workspace
+- [x] The experiment commit is reverted; the branch keeps its own
       lockfile
 
 **Verification:**
-- [ ] Manual: the experiment commit's build outcome on the branch
+- [x] Manual: the experiment commit's build outcome on the branch
+
+**Run notes (T8) — RESOLVED 2026-11-13: ABSORBS, after one lockfile
+reconciliation.** The one commit on the spike branch is 5c2a1da (table
+out), reverted at 974912c; the experiment ran in the main checkout
+(working tree only — the copy and the members edit were never
+committed, restored after; `git status` clean on both repos at the
+end). First resolution failed on exactly one crate:
+`unicode-properties` — gpui's `gpui_web` exact-pins `=0.1.3` while the
+root lock held 0.1.4 (libcosmic → iced_tiny_skia → resvg → usvg →
+rustybuzz wants `^0.1.3`); one lockfile means one version.
+`cargo update -p unicode-properties --precise 0.1.3` reconciled it,
+the whole gpui tree entered the root lockfile (+2700 lines), and both
+halves built green off the one lock: the spike crate (28.5 s) and
+dropterm + dropterm-applet (`cargo check`, 14.4 s — the downgrade
+costs the existing packages nothing). No `links` conflicts anywhere —
+the [patch.crates-io] forks are identical in both manifests, so patch
+unification is a non-issue. Runtime was not exercised (no compositor
+in the session); the check's criterion is resolution + build.
+Verdict for Phase 3: the GPUI frontend can grow on main inside the
+root workspace, carrying the 0.1.3 pin as a named condition; the
+fallback (own workspace in the same repo, own lockfile) stays the
+documented answer if that pin ever stings.
 
 **Dependencies:** Task 2 · **Scope:** S
 

@@ -190,7 +190,13 @@ dated park notes, and Phase 2 proceeds independently.)*
       own tokio thread beside GPUI; the busctl round-trip rows run in
       the COSMIC session)*
 - [ ] gs-7 Checks 12–13: X11 and macOS PopUp
-- [ ] gs-8 Check 14: coexistence experiment (one commit, reverted)
+- [x] gs-8 Check 14: coexistence experiment (one commit, reverted)
+      *(run 2026-11-13, spike 5c2a1da reverted 974912c: ABSORBS — one
+      lockfile reconciliation (unicode-properties 0.1.3, gpui_web's
+      exact pin vs libcosmic's resvg chain), both trees built green off
+      the one lock, no links conflicts, the identical [patch] forks a
+      non-issue; Phase 3's frontend can live in the root workspace
+      carrying that pin)*
 - [ ] gs-9 The report → "Phase 2 results" on main
 - [ ] kp-0 Gate: spike reported AND Kit ruled adopt (else stop)
 - [ ] kp-1 C1: pin swap to gpui-pre; checks 0–4 re-run
