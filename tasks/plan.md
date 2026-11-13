@@ -4,7 +4,9 @@ The plan-of-record is the committed
 [portability plan](../docs/research/portability-plan.md) — this file is
 its working breakdown: what `/build` consumes, per module, from the
 chunks in this directory. Written by `/planning` 2026-11-10 over the
-eleven approved specs; the chunks are the only source of tasks.
+eleven approved specs; extended 2026-11-13 for Phase 3 (ids and specs
+assigned per the spike-report checkpoint, on the GO + Kit-GO verdicts and
+rulings items 7–8). The chunks are the only source of tasks.
 
 ## Overview
 
@@ -12,8 +14,11 @@ Phase 0 (hardware reality check) and Phase 2 (the GPUI spike) run from
 day one beside Phase 1's three lanes: the flag-day rename
 (`app-identity`), lane B's config-and-transport pair, lane A's surface
 vocabulary, and lane C's small packages. Phase 1 pays off even if the
-spike NO-GOs. Phase 3 waits for the spike report and gets its ids
-there — nothing here covers it, by design.
+spike NO-GOs. Phase 3 is the GPUI rewrite: ten modules on main —
+`shared-core` extracts the toolkit-free crate both frontends share, then
+`gpui-scaffold` pins the ruled gpui-pre set with the Kit and its carried
+border patch, and the rest build the GPUI drawer slice by slice to
+parity, cutover, and the deferred release.
 
 ## Architecture decisions
 
@@ -65,6 +70,46 @@ app-identity ──merges first──┬─ config-store ──── control-tr
 app-identity + config-store ship as one release (no break note —
 pre-distribution, owner ruling 2026-11-12)
 ```
+
+### Phase 3 dependency graph
+
+```mermaid
+flowchart TD
+    SC["shared-core: dropterm-core, zero toolkit deps"]
+    SF["gpui-scaffold: crate + ruled pin + Kit + carried patch + contract"]
+    SR["gpui-surface: the GPUI SurfaceExecutor"]
+    GT["gpui-terminal: grid view, input, clipboard"]
+    GM["gpui-theme: scheme to Kit theme in-tree"]
+    GB["gpui-tabs"]
+    GN["gpui-status"]
+    GC["gpui-chrome: drawer, menus, pickers"]
+    PY["gpui-parity: remaining features + the checklist walk"]
+    CU["gpui-cutover: the swap + the deferred release"]
+    LC["libcosmic frontend (unchanged behavior, consumes core)"]
+    AP["dropterm-applet (contract via core)"]
+    SC --> SF
+    SF --> SR
+    SF --> GT
+    SF --> GM
+    GT --> GB
+    GT --> GN
+    GB --> GC
+    GN --> GC
+    GM --> GC
+    SR --> PY
+    GT --> PY
+    GB --> PY
+    GN --> PY
+    GC --> PY
+    PY --> CU
+    SC --> LC
+    SC --> AP
+```
+
+Parallel after `gpui-scaffold`: `gpui-surface` ∥ `gpui-terminal` ∥
+`gpui-theme`; then `gpui-tabs` ∥ `gpui-status`. The worktrees `../ced`
+and `../ced2` host the parallel branches as in Phase 1; the sequential
+spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
 
 ## Task list (index into the chunks)
 
@@ -124,19 +169,61 @@ pre-distribution, owner ruling 2026-11-12)
 - [ ] kit-pass Tasks 0–5 (only if the Kit is ruled adopt after the
       spike): gate → C1 re-run → C2a → C2b → C4 → verdict
 - **Checkpoint: the spike report** — owner rules on the Kit (if not
-  yet) and live geometry edits; Phase 3 slices get ids and specs
+  yet) and live geometry edits; Phase 3 slices get ids and specs.
+  *(Held 2026-11-13: GO + Kit GO; the ids and specs exist — Phase 3
+  below.)*
+
+### Phase 3 — the GPUI rewrite (ids from the spike report; main lane)
+- [ ] [shared-core](shared-core.md) Tasks 1–5: crate + pure movers →
+      split movers → identity/contract + applet re-point → decision
+      layer + transport → no-behavior-change walk + merge
+- **Checkpoint: the core stands alone** — zero toolkit deps pinned by
+  test; libcosmic binary and applet identical
+- [ ] [gpui-scaffold](gpui-scaffold.md) Tasks 1–4: crate + the ruled pin
+      → Kit + `carried/gpui-component` + dev docs → startup dispatch →
+      contract beside the loop + CLI parity
+- **Checkpoint: the frontend exists** — pinned, patched, boots on both
+  compositors, owns the name
+- [ ] [gpui-surface](gpui-surface.md) Tasks 1–4: executor + two-surface
+      show → cadence resize + recreate edit → holds + slide +
+      focus-loss → budget + rows + merge
+- [ ] [gpui-terminal](gpui-terminal.md) Tasks 1–4: grid view + resize →
+      input/keybinds/selection/scrollback → mouse + clipboard →
+      integration + merge
+- [ ] [gpui-theme](gpui-theme.md) Tasks 1–2: carry the generator → the
+      apply path (first frame + live)
+- **Checkpoint: a working, themed terminal drawer on GPUI**
+      (surface ∥ terminal ∥ theme after scaffold)
+- [ ] [gpui-tabs](gpui-tabs.md) Tasks 1–3 · [gpui-status](gpui-status.md)
+      Tasks 1–3 (parallel after terminal)
+- [ ] [gpui-chrome](gpui-chrome.md) Tasks 1–3: menus + pickers → the
+      drawer → cadence row + merge
+- **Checkpoint: full UI parity feature set**
+- [ ] [gpui-parity](gpui-parity.md) Tasks 1–4: suggest → images → bell +
+      session restore → the whole-checklist walk, both compositors
+      *(gate: open question item 9 ruled)*
+- **Checkpoint: parity — Phase 3's exit line**
+- [ ] [gpui-cutover](gpui-cutover.md) Tasks 1–3: the swap (owner-gated)
+      → docs true → the deferred release (owner fires `/release`)
+- **Checkpoint: Phase 3 exits** — parity proven, one binary, the release
+  cut; Phase 4 may open
 
 ## Parallelization
 
 Safe to parallelize: the three Phase 1 lanes (separate worktrees, by
 design); Phase 0 sessions (pre-made slots prevent line collisions); the
-spike (own workspace, never shares `target/`). Must be sequential: lane
-B's own pair (`config-store` → `control-transport`); every merge after
-`app-identity`. Needs coordination: `src/app.rs` between
-`surface-intents` and `config-store` (different regions, second merger
-rebases); `src/main.rs` between `layer-shell-guard` and
-`control-transport` (guard lands first); `Cargo.toml`'s feature list in
-lane B sequence.
+spike (own workspace, never shares `target/`). Phase 3: `gpui-surface` ∥
+`gpui-terminal` ∥ `gpui-theme` after `gpui-scaffold` (the parallel
+branches live in `../ced` and `../ced2`; each touches its own region of
+the new crate, second merger rebases), then `gpui-tabs` ∥ `gpui-status`.
+Must be sequential: lane B's own pair (`config-store` →
+`control-transport`); every merge after `app-identity`; Phase 3's spine —
+`shared-core` merges alone (it moves everything), then `gpui-scaffold`,
+then the closers (`gpui-chrome` after its three feeders, `gpui-parity`
+after everything, `gpui-cutover` last). Needs coordination: the root
+`Cargo.toml`/lockfile between `gpui-scaffold` and any parallel slice that
+adds dependencies; the `dropterm-gpui` crate's app-shell wiring between
+the parallel UI slices (integration tasks land last in each chunk).
 
 ## Worktree seeding
 
@@ -154,6 +241,11 @@ evidence record, not a chunk.
 | app-identity rulings delayed | Medium | Task 1 is the gate; the sweep tasks cannot start without the literals — ask early |
 | `src/app.rs` rebase conflicts between lanes A and B | Medium | Different regions by spec; second merger rebases; lanes are short-lived branches |
 | The `notify` dependency declined | Low | Fallback is re-read-at-show (one manual checklist row); the store itself is unaffected |
+| `shared-core`'s move regresses the shipped binary | High | The existing test set moves with the code and is the pin; the slice's last task is a no-behavior-change VM walk before merge; it merges alone, fresh off main |
+| GPUI text rendering can't hold the terminal's perf (damage, scrollback) | Medium | Damage-first is ruled in the chunk; Zed's `crates/terminal` is the worked reference; the perf rows are explicit walk rows, and a miss is fixable inside the slice before parity |
+| A Kit bump breaks the carried patch or the pin set | Medium | The manifest pin test fails `just check` on any drift; the comeback checklist (kit-root-border) re-runs the kill check on every bump; the pin is `=`, not `^` |
+| Dock mode has no GPUI answer by parity time | Medium | Open question item 9 rules it before the parity walk reaches those rows; the config surface keeps parsing either way, so the degradation is behavioral only |
+| The parity walk finds a row GPUI cannot express | Medium | The chunk's rule: the row stops the task and files an owner ruling — deviation is a decision, never a silent skip |
 
 ## Open questions (owner rulings outstanding)
 
@@ -195,3 +287,38 @@ evidence record, not a chunk.
    gpui-pre =0.3.12 set, never a zed git pin (the standing "the
    snapshot replaces the git pin" rule), and the Kit
    (gpui-component =0.9.1, component-only) rides the same pin.
+9. **Dock mode under GPUI** (surfaced at `/planning` 2026-11-13):
+   `show_in_dock` buys its dock/switcher presence from the clipboard
+   anchor — a persistent toplevel — and check 8 killed the anchor on
+   GPUI (the gate is focus+serial; the terminal satisfies it by
+   construction). The manual checklist's shell-presence rows force a
+   choice before `gpui-parity`'s walk reaches them: replicate the
+   presence with a persistent toplevel on the GPUI side, or accept a
+   degradation (dock mode rides hidden-mode behavior) and amend the
+   rows. The config key keeps parsing either way. Default
+   recommendation: replicate — the feature is behavior parity, and a
+   hidden toplevel is cheap; the ruling is the owner's.
+
+## Phase 3 planning rulings (made at /planning 2026-11-13; veto at
+review)
+
+Each is also recorded in its chunk:
+
+1. **The shared crate is `dropterm-core`**, a path member of the root
+   workspace (one lockfile — check 14's absorption), and the decision
+   layer moves with it ("the state machine survives; only its executors
+   change" — a state machine left libcosmic-side is duplication, not
+   sharing). Engine-side cosmic-text buffers stay with the widget
+   (check 9's boundary).
+2. **The Phase 3 bin is `dropterm-gpui`**; cutover renames it to
+   `dropterm` and deletes the libcosmic frontend outright (history
+   keeps it; a parked second frontend is unsanctioned debt).
+3. **The carried Kit copy lives at `carried/gpui-component/`** under
+   `[patch.crates-io]` (the `vendor/` name is the release recipe's),
+   with a manifest pin test so any drift fails `just check`.
+4. **The surface executor's reconcile split is resize-vs-recreate**
+   (cadence resize in place, anchor/margin edits recreate — open
+   ruling 3's numbers), and `Hold { Released }` may ride a recreate at
+   this pin, cost inside the slide budget.
+5. **Dock mode is an owner question** (open questions item 9), ruled
+   before the parity walk reaches the shell-presence rows.

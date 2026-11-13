@@ -297,4 +297,83 @@ dated park notes, and Phase 2 proceeds independently.)*
       snapshot is the GPUI source; research index row updated)*
 
 **Checkpoint — the spike report:** owner rules on the Kit and live
-geometry edits; Phase 3 slices get ids and specs.
+geometry edits; Phase 3 slices get ids and specs. *(Held 2026-11-13: GO +
+Kit GO for the pin; rulings items 7–8; ids and specs below, from
+`/planning` the same day.)*
+
+## Phase 3 — the GPUI rewrite (ids from the spike report; main lane)
+
+- [ ] sc-1 `dropterm-core` crate; the pure movers (config store, session,
+      tabs, profiles, intent vocabulary); zero-toolkit pin test
+- [ ] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
+      keybinds, theme-glue models
+- [ ] sc-3 Identity + contract move; applet re-points to core
+- [ ] sc-4 Decision layer + transport halves move (Task continuation
+      goes executor-neutral)
+- [ ] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
+
+**Checkpoint — the core stands alone:** zero toolkit deps pinned by
+test; libcosmic binary + applet identical behavior.
+
+- [ ] sf-1 `dropterm-gpui` crate; the ruled pin in the root workspace;
+      manifest pin test; LayerShell boot on rig + VM
+- [ ] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
+      + flush edges both compositors; development.md carried-patches
+      section (ledger entry 3)
+- [ ] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
+- [ ] sf-4 V1 + activation beside the render loop (Connection held,
+      self-check); CLI parity; SetVisible flips live — merge
+
+**Checkpoint — the frontend exists:** pinned, patched, boots, owns the
+name, answers the contract on both compositors.
+
+- [ ] sr-1 GPUI executor skeleton; reconcile tests; two-surface show
+      (never reads displays)
+- [ ] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
+      recreate with the re-grab
+- [ ] sr-3 Holds; the slide ported (release at slide-out start, destroy
+      at completion); focus-loss hide
+- [ ] sr-4 Budget banked; surface rows both compositors; merge
+- [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
+- [ ] gt-2 Input + keybinds; selection; scrollback
+- [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;
+      data-control for not-focused)
+- [ ] gt-4 Wire into the executor's windows; terminal rows both
+      compositors; merge — after sr-4 or coordinated with it
+- [ ] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
+      cleanup); four tests green
+- [ ] gm-2 Apply path: before first frame + live re-theme; C4-class
+      evidence — merge
+
+**Checkpoint — a working, themed terminal drawer on GPUI** (sr ∥ gt ∥ gm
+after sf; gb ∥ gn after gt).
+
+- [ ] gb-1 Tab bar view model + rendering · gb-2 reorder/rename/menu/
+      close · gb-3 rows + merge
+- [ ] gn-1 Band layout + clock + base segments · gn-2 OSC-fed segments ·
+      gn-3 rows + merge
+- [ ] gc-1 Context menu + pickers on the Kit popover path
+- [ ] gc-2 Settings drawer (write contract unchanged; control map
+      ported; config↔docs pin green)
+- [ ] gc-3 Cadence row + chrome rows + merge
+
+**Checkpoint — full UI parity feature set.**
+
+- [ ] py-1 Suggest overlay + menu
+- [ ] py-2 Inline images
+- [ ] py-3 Bell + session restore
+- [ ] py-4 The parity walk: the whole manual checklist, COSMIC + sway,
+      row-named evidence; deviations filed — gate: open question item 9
+      ruled (dock mode)
+
+**Checkpoint — parity:** Phase 3's exit line holds on both compositors.
+
+- [ ] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
+      deleted; applet canary — owner-gated
+- [ ] cu-2 Docs true (architecture rewrite incl. diagrams;
+      known-issues fractional row)
+- [ ] cu-3 The deferred release, `/release` ritual, walk gate — owner
+      fires it
+
+**Checkpoint — Phase 3 exits:** parity proven, one binary, the release
+cut; Phase 4 may open.

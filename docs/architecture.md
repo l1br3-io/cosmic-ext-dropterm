@@ -7,6 +7,51 @@ How the DropTerm codebase is laid out: two crates, one module inventory, a handf
 - **`dropterm`** (`src/`) - the terminal itself, built as a lib plus bin. The lib target exists so the applet can share the D-Bus state contract (`src/lib.rs` re-exports `dbus_state`) instead of duplicating it.
 - **`dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
+## How it connects
+
+One process, one bus name, one surface - and every external touch goes through a seam the diagrams below make visible. GitHub renders these diagrams; the raw markdown carries the same text.
+
+```mermaid
+flowchart LR
+    subgraph clients["Session-bus clients"]
+        CLI["dropterm CLI (second launch)"]
+        APPLET["dropterm-applet (panel button)"]
+    end
+    subgraph process["dropterm (libcosmic frontend)"]
+        MAIN["main.rs: clap verbs, single-instance handoff"]
+        DBUS["dbus_state: V1 + DbusActivation"]
+        ROOT["app.rs: composition root"]
+        MACHINE["SurfaceMachine (headless decisions)"]
+        EXEC["LibcosmicExecutor"]
+        CONFIG["config store: RON sections + watcher"]
+        TABS["tab model + terminal engine (alacritty grid, PTY)"]
+        CHROME["chrome: tab bar, status band, settings, menus"]
+        THEME["theme_source: scheme registry"]
+    end
+    subgraph desktop["Desktop"]
+        BUS[("session bus")]
+        WL["Wayland compositor (layer-shell)"]
+        FILES[("XDG_CONFIG_HOME/dropterm")]
+        STATE[("XDG_STATE_HOME session file")]
+    end
+    CLI -->|forward verb| BUS
+    APPLET -->|toggle + watches| BUS
+    BUS --> DBUS
+    MAIN -->|owns name or forwards| BUS
+    MAIN --> ROOT
+    DBUS -->|remote verbs, state| ROOT
+    ROOT --> MACHINE
+    ROOT --> TABS
+    ROOT --> CHROME
+    ROOT --> CONFIG
+    MACHINE -->|SurfaceIntent| EXEC
+    EXEC -->|layer-shell requests| WL
+    CHROME --> TABS
+    THEME --> TABS
+    CONFIG <--> FILES
+    TABS -->|capture/restore| STATE
+```
+
 ## Module inventory
 
 The recurring split is *pure model* vs *wiring*: pure modules hold plain data and functions, free of iced types, unit-testable headless; wiring modules own the runtime halves that need a compositor. Unit tests live inline in `#[cfg(test)]` sibling modules (`src/*/tests.rs`).
@@ -49,6 +94,65 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 - **One surface-intent path.** The surface lifecycle decides in the headless `SurfaceMachine` (`app/surface_lifecycle.rs`) and emits declarative intents (`intent.rs`); the libcosmic executor (`executor.rs`) translates each into today's layer-shell commands, request order included. Every reshape still lands through one geometry triple, so no path can leave a stale anchor, margin, or size.)
 - **One spawn funnel.** `app/spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface.
 - **Theme by name.** Schemes are registry names resolved in `terminal/theme_source.rs`; the profile appearance rule is `profile ?? global` per field, re-resolved on every config pass so live tabs follow edits.
+
+## The adapter surfaces
+
+Every toolkit-shaped or desktop-shaped duty in DropTerm sits behind a named contract, so "which backend answers" is always a lookup, never archaeology. The surface lifecycle is the worked example - a trait with two implementations today - and the rest of the table is the same shape at smaller seams.
+
+```mermaid
+classDiagram
+    class SurfaceHandle {
+        monotonic u64
+        +next() SurfaceHandle
+    }
+    class SurfaceIntent {
+        <<enum: declarative desired state>>
+        Measure(handle keyboard)
+        Show(handle geometry output layer keyboard zone)
+        Shape(handle geometry output height)
+        Focus(handle)
+        Hold(handle keyboard)
+        Destroy(handle)
+    }
+    class SurfaceExecutor {
+        <<trait>>
+        +execute(SurfaceIntent) Effect
+    }
+    class RecordingExecutor {
+        <<test-only>>
+        +recorded() intents in order
+    }
+    class LibcosmicExecutor {
+        anchor heal at show
+        reshape triple order pinned
+        clipboard anchor owner
+    }
+    class SurfaceMachine {
+        headless decision layer
+        show hide drag edit focus-loss
+    }
+    class Geometry {
+        edge height_percent width_percent h_align
+    }
+    SurfaceExecutor <|.. RecordingExecutor
+    SurfaceExecutor <|.. LibcosmicExecutor
+    SurfaceMachine ..> SurfaceIntent : emits
+    SurfaceIntent o-- SurfaceHandle : carries
+    SurfaceIntent o-- Geometry : shaped by
+```
+
+| Backend surface | Contract | Implementations |
+|---|---|---|
+| Surface lifecycle | `SurfaceExecutor` over `SurfaceIntent` (`intent.rs`) | `LibcosmicExecutor` (`executor.rs`); `RecordingExecutor` (tests) |
+| Control transport | V1 interface + `DbusActivation` at the owned bus name (`dbus_state.rs`, zbus) | the terminal binary serves; CLI verbs (`app/remote.rs`) and the applet are clients |
+| Config backend | section files, one per writer (`config/store.rs`) | plain RON + `notify` watcher; settings drawer is just another writer |
+| Session backend | versioned RON state file (`session.rs`) | capture / restore planning / quarantine / atomic save |
+| Theme | scheme registry names resolving to `alacritty` `Colors` (`terminal/theme_source.rs`) | the 12-scheme registry; `profile ?? global` re-resolved per config pass |
+| Clipboard | copy and paste paths (`clipboard.rs`) | wl-clipboard-rs data-control (focus-free serving); the libcosmic runtime binding with its never-destroyed anchor |
+| Terminal engine | the `alacritty_terminal` grid (`terminal/engine.rs`) | PTY + grid + the two patched forks carrying OSC 133;D passthrough |
+| Surface backend dispatch | the startup probe (`main.rs` guard) | registry roundtrip asking for `zwlr_layer_shell_v1`; refuse and exit when absent |
+
+Where these surfaces are headed - one core crate under two frontends, the GPUI executor joining the trait - is the portability initiative's plan, not this page: see the [portability plan](research/portability-plan.md) and its [interactive desktop-seams view](research/porting-architecture.html).
 
 ## Testing posture
 
