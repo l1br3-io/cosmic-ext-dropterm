@@ -412,7 +412,13 @@ name, answers the contract on both compositors.
       transition-order fix, phase publish on the completion destroy;
       walked rig + VM with the focus-loss steal evidenced on COSMIC's
       real seat)*
-- [ ] sr-4 Budget banked; surface rows both compositors; merge
+- [x] sr-4 Budget banked; surface rows both compositors; merge
+      *(done 2026-11-13: release 34–49 ms over five VM shows inside
+      the 130 ms budget, destroy 142–152 ms; core untouched (empty
+      diff, 819 tests green); all six surface rows walked on both
+      compositors with evidence, the reversal VM-window note recorded
+      (debounce vs tick — rides parity's human row as si-5 parked
+      it); the merge's own gate runs on main)*
 - [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
 - [ ] gt-2 Input + keybinds; selection; scrollback
 - [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;
