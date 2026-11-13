@@ -481,12 +481,6 @@ pub fn select_tab_target(len: usize, one_based: usize) -> Option<usize> {
 /// program and trailing arguments: whitespace-split
 /// exactly like the `args` config — quoting is not supported. `None`
 /// when the line holds no program at all.
-pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = line.split_whitespace();
-    let program = parts.next()?.to_string();
-    Some((program, parts.map(str::to_string).collect()))
-}
-
 /// Which way a move-bind shifts the active tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveDirection {

@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::profile::command_line_parts;
+
 #[test]
 fn after_current_placement_puts_the_new_tab_after_active() {
     let mut list = vec![10, 20, 30];

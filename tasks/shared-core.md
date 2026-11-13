@@ -41,13 +41,32 @@ behavior. A manifest/`cargo tree` pin test lands with the crate: zero
 libcosmic/iced edges, or `just check` fails.
 
 **Acceptance criteria:**
-- [ ] `dropterm-core` builds with zero libcosmic/iced dependencies, pinned
+- [x] `dropterm-core` builds with zero libcosmic/iced dependencies, pinned
       by a test
-- [ ] `just check` green across the workspace; the moved modules' tests
+- [x] `just check` green across the workspace; the moved modules' tests
       run from core
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check`
+
+**Done (2026-11-13, port/shared-core):** moved — config (+store, +tests),
+session (+tests), profile (+tests), intent (+tests), theme_source (the
+theme data table; pure, engine-colors only), the keybinds model
+(`Binding`/`ModifierName`; `to_key_bind` stays frontend — it produces a
+toolkit `KeyBind`), the geometry model (pure math incl. the drag and
+write-back machines; `anchor_margins`/`apply_drag_geometry` stay
+frontend), `StatusToggles` (config's fold target; status_bar re-exports),
+`command_line_parts` (profile validates through it), and `APP_ID`
+(store/session read it; the dropterm lib re-exports, `dev-identity`
+forwards — Task 3 shrinks to dbus_state + the applet re-point).
+`tabs.rs` deferred to Task 2: it holds `Mutex<Terminal>`, the spec's own
+engine-state grouping. The pin test was mutation-verified (a manifest
+mention fails it; the tree half proven against the applet's real
+libcosmic graph). One test moved homes: the `KeybindsWrite` store pin
+now runs in settings' tests (it pins a frontend type). The
+`RecordingExecutor` harness got a frontend twin in
+surface_lifecycle/tests.rs (a core `cfg(test)` item is invisible across
+crates); it retires with that file in Task 4.
 
 **Dependencies:** Phase 3 entry (met) · **Files:** new crate,
 the moved modules, both `Cargo.toml`s · **Scope:** M

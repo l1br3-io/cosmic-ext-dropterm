@@ -7,7 +7,8 @@ use cosmic::app::Task;
 use super::{DropTerm, Message, resolved_profile};
 use crate::config::{DropTermConfig, ThemePreference};
 use crate::profile;
-use crate::terminal::{self, theme_source};
+use crate::terminal;
+use crate::theme_source;
 
 /// The window-background source decision: a scheme that resolves a
 /// background owns the window background — the tab-bar/grab-bar

@@ -1560,7 +1560,7 @@ fn tab_title_mode_selection_mirrors_the_config_value() {
 
 #[test]
 fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
-    let options = crate::terminal::theme_source::scheme_names();
+    let options = crate::theme_source::scheme_names();
     // Twelve shipped schemes, COSMIC pair first — the picker's
     // order is the registry's order.
     assert_eq!(options.len(), 12);
@@ -1570,7 +1570,7 @@ fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
     // a pick can never name a scheme lookup would reject.
     for name in &options {
         assert!(
-            crate::terminal::theme_source::by_name(name).is_some(),
+            crate::theme_source::by_name(name).is_some(),
             "{name:?} does not resolve"
         );
     }
@@ -1590,7 +1590,7 @@ fn scheme_dropdown_picks_commit_registry_names_only() {
     );
     // Out of range (including exactly len) rejects instead of
     // panicking — no index past the table commits anything.
-    let len = crate::terminal::theme_source::scheme_names().len();
+    let len = crate::theme_source::scheme_names().len();
     assert_eq!(dropdown_write(ConfigKey::ColorSchemeDark, len), None);
 }
 
@@ -3170,6 +3170,27 @@ fn a_planned_write_into_a_missing_store_starts_from_the_live_config() {
     let loaded = DropTermConfig::load_from(&dir.0);
     assert_eq!(loaded.opacity, 80);
     assert_eq!(loaded.height_percent, 70);
+}
+
+#[test]
+fn keybinds_write_persists_the_whole_map_through_the_store() {
+    // The settings module's whole-map write lands as one section
+    // save of `keybinds.ron` — the ProfileWrite precedent — and the
+    // next load reads exactly the written map back. (Moved from the
+    // config store's tests with the shared-core split: it pins this
+    // module's write type, so it runs where the type lives.)
+    let dir = TempDir::new("keybinds-write");
+    let write = KeybindsWrite(BTreeMap::from([(
+        "copy".to_string(),
+        crate::keybinds::Binding {
+            modifiers: vec![crate::keybinds::ModifierName::Alt],
+            key: "C".to_string(),
+        },
+    )]));
+    write.persist(&dir.0).expect("persist the whole map");
+
+    let loaded = DropTermConfig::load_from(&dir.0);
+    assert_eq!(loaded.custom_key_binds, write.0);
 }
 
 #[test]

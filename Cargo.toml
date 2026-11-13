@@ -17,7 +17,7 @@ name = "dropterm"
 path = "src/lib.rs"
 
 [workspace]
-members = [".", "applet"]
+members = [".", "applet", "dropterm-core"]
 
 [workspace.dependencies]
 # Bare URL, deliberately: libcosmic's own `applet` feature pulls
@@ -51,6 +51,14 @@ alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "118
 [dependencies]
 alacritty_terminal = "0.25.1"
 clap = { version = "4", features = ["derive"] }
+
+# The toolkit-neutral core (shared-core spec): config store and
+# model, session, profiles, intents, theme data, and the pure
+# geometry/keybind models — the state the GPUI frontend will build
+# on. The lib target re-exports `APP_ID` from it; the bin imports
+# its modules at the crate root.
+dropterm-core = { path = "dropterm-core" }
+
 env_logger = "0.11"
 
 # Bell → desktop notification (bell-notify spec): direct D-Bus
@@ -182,8 +190,10 @@ terminal = [
 # directory, and namespace — so a dev build never shares runtime
 # identity with an installed release. Never default: release artifacts
 # carry the plain identity. The applet's same-named feature enables
-# this one so both ends of the D-Bus contract move together.
-dev-identity = []
+# this one so both ends of the D-Bus contract move together; it
+# forwards to the core crate's own `dev-identity`, which owns the
+# const the store and session paths read.
+dev-identity = ["dropterm-core/dev-identity"]
 
 [dev-dependencies]
 # The config-key ↔ docs sync test enumerates `DropTermConfig`'s

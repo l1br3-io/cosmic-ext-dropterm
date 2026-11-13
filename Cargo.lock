@@ -1470,6 +1470,7 @@ dependencies = [
  "clap",
  "cosmic-text",
  "dirs",
+ "dropterm-core",
  "enumflags2",
  "env_logger",
  "flate2",
@@ -1503,6 +1504,17 @@ dependencies = [
  "log",
  "tokio",
  "zbus",
+]
+
+[[package]]
+name = "dropterm-core"
+version = "0.5.0"
+dependencies = [
+ "alacritty_terminal",
+ "log",
+ "ron",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -453,7 +453,7 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 /// `$XDG_STATE_HOME/<app id>/session.ron`, defaulting to
 /// `~/.local/state/…` per the XDG base-directory specification (only
 /// an absolute `XDG_STATE_HOME` is honored). The directory is this
-/// build's app id ([`crate::app::APP_ID`]) — the dev identity gets
+/// build's app id ([`crate::APP_ID`]) — the dev identity gets
 /// its own session file.
 pub fn state_file_path() -> PathBuf {
     // XDG base-directory specification: only an absolute XDG_STATE_HOME
@@ -464,9 +464,9 @@ pub fn state_file_path() -> PathBuf {
         .filter(|base| base.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
     match base {
-        Some(base) => base.join(crate::app::APP_ID).join("session.ron"),
+        Some(base) => base.join(crate::APP_ID).join("session.ron"),
         None => PathBuf::from(".local/state")
-            .join(crate::app::APP_ID)
+            .join(crate::APP_ID)
             .join("session.ron"),
     }
 }

@@ -241,66 +241,11 @@ pub const DROP_ORDER: [SegmentId; 11] = [
     SegmentId::Clock,
 ];
 
-/// The per-segment visibility switches, folded from the config's
-/// `status_bar_show_*` bools. A hidden segment is absent
-/// downstream — and its costly inputs are never gathered.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "thirteen independent visibility switches — one per config key, by design"
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StatusToggles {
-    /// The state disc + process name.
-    pub process: bool,
-    /// The command timer's reading.
-    pub duration: bool,
-    /// The exit chip.
-    pub exit: bool,
-    /// The progress chip.
-    pub progress: bool,
-    /// The program status's disc tint + name-seat percent
-    /// (osc7501-status) — one switch for the report's two seats,
-    /// riding the process segment's own visibility.
-    pub program_status: bool,
-    /// The `~`-collapsed cwd.
-    pub path: bool,
-    /// The git branch of the cwd.
-    pub branch: bool,
-    /// The profile name.
-    pub profile: bool,
-    /// The terminal's cell dimensions.
-    pub grid: bool,
-    /// The tab position.
-    pub tab: bool,
-    /// The zoom percent.
-    pub zoom: bool,
-    /// The scrolled-back chip.
-    pub scrolled: bool,
-    /// The wall clock.
-    pub clock: bool,
-}
-
-impl StatusToggles {
-    /// Every segment shown — the all-on default the config's
-    /// `true` keys fold into.
-    pub const fn all() -> Self {
-        Self {
-            process: true,
-            duration: true,
-            exit: true,
-            progress: true,
-            program_status: true,
-            path: true,
-            branch: true,
-            profile: true,
-            grid: true,
-            tab: true,
-            zoom: true,
-            scrolled: true,
-            clock: true,
-        }
-    }
-}
+// The toggle model (`StatusToggles`) lives in `dropterm-core`'s
+// config module — the config bools' fold target (shared-core spec).
+// Re-exported here so every `crate::status_bar::StatusToggles` path
+// keeps resolving; the band that renders it stays frontend-side.
+pub use crate::config::StatusToggles;
 
 /// The resolved segments of the active tab's status band, left
 /// cluster then right, values without labels — a path reads as a

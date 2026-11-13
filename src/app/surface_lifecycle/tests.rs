@@ -8,7 +8,33 @@
 
 use super::*;
 use crate::config::{Edge, HAlign};
-use crate::intent::{ExclusiveZone, RecordingExecutor, ShapeHeight};
+use crate::intent::{ExclusiveZone, ShapeHeight, SurfaceExecutor};
+
+/// The headless executor twin: records every intent it executes, in
+/// order, and does nothing else. `dropterm-core`'s intent module
+/// carries its own `cfg(test)` twin for its unit tests (a core
+/// `#[cfg(test)]` item is invisible across crates); this copy retires
+/// with this file when the shared-core split moves the decision
+/// layer's tests into core beside it.
+#[derive(Debug, Default)]
+struct RecordingExecutor {
+    intents: Vec<SurfaceIntent>,
+}
+
+impl RecordingExecutor {
+    /// The executed intents, in execution order.
+    fn recorded(&self) -> &[SurfaceIntent] {
+        &self.intents
+    }
+}
+
+impl SurfaceExecutor for RecordingExecutor {
+    type Effect = ();
+
+    fn execute(&mut self, intent: SurfaceIntent) {
+        self.intents.push(intent);
+    }
+}
 
 /// Inputs of a stay-open, sliding, exclusive surface at half height
 /// on the test output — the ordinary configuration.

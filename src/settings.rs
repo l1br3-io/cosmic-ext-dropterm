@@ -22,8 +22,8 @@ use crate::config::{
     TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::profile::Profile;
-use crate::tabs::command_line_parts;
-use crate::terminal::theme_source::{SchemePreview, scheme_names, scheme_previews};
+use crate::profile::command_line_parts;
+use crate::theme_source::{SchemePreview, scheme_names, scheme_previews};
 
 mod font_picker;
 mod scheme_picker;

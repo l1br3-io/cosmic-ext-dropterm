@@ -13,7 +13,6 @@ pub mod mouse_reporter;
 // data file (suggest-specs-data spec) and hands it down through
 // `TerminalOptions` — the model itself never reads files.
 pub(crate) mod suggest;
-pub mod theme_source;
 mod widget;
 
 pub use engine::{

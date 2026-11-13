@@ -647,11 +647,76 @@ impl Default for DropTermConfig {
     }
 }
 
+/// The per-segment visibility switches of the status band, folded
+/// from the config's `status_bar_show_*` bools
+/// ([`DropTermConfig::status_toggles`]). A hidden segment is absent
+/// downstream — and its costly inputs are never gathered. (Moved
+/// from the frontend's status bar by the shared-core spec: it is the
+/// config model's fold target; the band that renders it stays
+/// frontend-side.)
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "thirteen independent visibility switches — one per config key, by design"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusToggles {
+    /// The state disc + process name.
+    pub process: bool,
+    /// The command timer's reading.
+    pub duration: bool,
+    /// The exit chip.
+    pub exit: bool,
+    /// The progress chip.
+    pub progress: bool,
+    /// The program status's disc tint + name-seat percent
+    /// (osc7501-status) — one switch for the report's two seats,
+    /// riding the process segment's own visibility.
+    pub program_status: bool,
+    /// The `~`-collapsed cwd.
+    pub path: bool,
+    /// The git branch of the cwd.
+    pub branch: bool,
+    /// The profile name.
+    pub profile: bool,
+    /// The terminal's cell dimensions.
+    pub grid: bool,
+    /// The tab position.
+    pub tab: bool,
+    /// The zoom percent.
+    pub zoom: bool,
+    /// The scrolled-back chip.
+    pub scrolled: bool,
+    /// The wall clock.
+    pub clock: bool,
+}
+
+impl StatusToggles {
+    /// Every segment shown — the all-on default the config's
+    /// `true` keys fold into.
+    pub const fn all() -> Self {
+        Self {
+            process: true,
+            duration: true,
+            exit: true,
+            progress: true,
+            program_status: true,
+            path: true,
+            branch: true,
+            profile: true,
+            grid: true,
+            tab: true,
+            zoom: true,
+            scrolled: true,
+            clock: true,
+        }
+    }
+}
+
 impl DropTermConfig {
     /// The status band's per-segment visibility, folded from the
     /// additive bools — the resolver's toggle set.
-    pub fn status_toggles(&self) -> crate::status_bar::StatusToggles {
-        crate::status_bar::StatusToggles {
+    pub fn status_toggles(&self) -> StatusToggles {
+        StatusToggles {
             process: self.status_bar_show_process,
             duration: self.status_bar_show_duration,
             exit: self.status_bar_show_exit_status,
@@ -670,6 +735,7 @@ impl DropTermConfig {
 
     /// Clamp fields that come from a config file (which may hold stale or
     /// hand-edited values) into their valid ranges.
+    #[must_use]
     pub fn clamped(mut self) -> Self {
         self.height_percent = self
             .height_percent
@@ -792,7 +858,7 @@ pub struct KeybindsSection {
 /// before they reach a pty whose failure would kill the whole tab,
 /// not predict every exec failure (races and permission oddities
 /// still land in `Terminal::new`'s error log).
-pub(crate) fn program_is_runnable(program: &str) -> bool {
+pub fn program_is_runnable(program: &str) -> bool {
     let runnable_file = |path: &Path| {
         use std::os::unix::fs::PermissionsExt;
 

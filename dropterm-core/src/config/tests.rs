@@ -663,25 +663,6 @@ fn missing_autosuggestions_aliases_key_loads_as_the_empty_map() {
 }
 
 #[test]
-fn keybinds_write_persists_the_whole_map_through_the_store() {
-    // The settings module's whole-map write lands as one section
-    // save of `keybinds.ron` — the ProfileWrite precedent — and the
-    // next load reads exactly the written map back.
-    let dir = TempDir::new("keybinds-write");
-    let write = crate::settings::KeybindsWrite(BTreeMap::from([(
-        "copy".to_string(),
-        crate::keybinds::Binding {
-            modifiers: vec![crate::keybinds::ModifierName::Alt],
-            key: "C".to_string(),
-        },
-    )]));
-    write.persist(&dir.0).expect("persist the whole map");
-
-    let loaded = load_config(&dir);
-    assert_eq!(loaded.custom_key_binds, write.0);
-}
-
-#[test]
 fn height_percent_is_clamped_into_range() {
     let mut config = DropTermConfig {
         height_percent: 0,
@@ -1226,7 +1207,7 @@ fn every_config_key_is_documented() {
     let keys = serialized_section_keys();
     assert!(!keys.is_empty(), "key enumeration came back empty");
 
-    let docs = include_str!("../../docs/configuration.md");
+    let docs = include_str!("../../../docs/configuration.md");
     for key in keys {
         assert!(
             docs.contains(&format!("`{key}`")),
@@ -1250,7 +1231,7 @@ fn every_config_keys_default_is_sampled() {
     let sections = serialized_default_sections();
     assert!(!sections.is_empty(), "default enumeration came back empty");
 
-    let docs = include_str!("../../docs/configuration.md");
+    let docs = include_str!("../../../docs/configuration.md");
     let (_, rest) = docs
         .split_once("## The default config directory")
         .expect("docs/configuration.md carries the default-config sample section");

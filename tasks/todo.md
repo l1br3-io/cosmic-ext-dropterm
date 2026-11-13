@@ -303,10 +303,11 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 
 ## Phase 3 — the GPUI rewrite (ids from the spike report; main lane)
 
-- [ ] sc-1 `dropterm-core` crate; the pure movers (config store, session,
+- [x] sc-1 `dropterm-core` crate; the pure movers (config store, session,
       tabs, profiles, intent vocabulary); zero-toolkit pin test
 - [ ] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
-      keybinds, theme-glue models
+      keybinds, theme-glue models (sc-1 note: `tabs.rs` deferred here — it
+      holds `Mutex<Terminal>`, the spec's engine-state grouping)
 - [ ] sc-3 Identity + contract move; applet re-points to core
 - [ ] sc-4 Decision layer + transport halves move (Task continuation
       goes executor-neutral)

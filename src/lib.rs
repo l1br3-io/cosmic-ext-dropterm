@@ -28,19 +28,15 @@ pub mod font_list;
 /// single-instance key, the D-Bus bus name and object path, the
 /// config store directory, the XDG state directory, the
 /// layer-shell namespace, and the wayland app id. One const, owned
-/// here, so no consumer can drift from another.
+/// in `dropterm-core` (moved there by the shared-core spec — every
+/// frontend and the applet share it), re-exported here so existing
+/// `dropterm::APP_ID` paths keep resolving; no consumer can drift
+/// from another.
 ///
 /// A cargo feature, not an environment variable: cargo does not
 /// fingerprint arbitrary env vars, so an `option_env!` identity would
-/// silently reuse stale binaries between identity flips.
-#[cfg(not(feature = "dev-identity"))]
-pub const APP_ID: &str = "io.github.l1br3_io.dropterm";
-
-/// The dev build's identity (see the release const above): every
-/// runtime name carries the `.Dev` suffix, so a dev build owns its own
-/// single-instance slot, bus name, config file, and state directory —
-/// it never forwards to, or shares files with, an installed release.
-/// Enabled by the justfile's dev recipes and the applet's same-named
-/// feature; never by a release build.
-#[cfg(feature = "dev-identity")]
-pub const APP_ID: &str = "io.github.l1br3_io.dropterm.Dev";
+/// silently reuse stale binaries between identity flips. The `.Dev`
+/// twin is core's `dev-identity` feature; this crate's same-named
+/// feature forwards to it (the applet forwards here), so both ends
+/// of the D-Bus contract move together.
+pub use dropterm_core::APP_ID;

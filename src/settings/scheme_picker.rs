@@ -27,7 +27,7 @@ use super::{
     inherit_scheme_preview, profile_scheme_selected, scheme_preview_by_name,
 };
 use crate::config::DropTermConfig;
-use crate::terminal::theme_source::{SchemePreview, scheme_names, scheme_previews, scheme_swatch};
+use crate::theme_source::{SchemePreview, scheme_names, scheme_previews, scheme_swatch};
 
 /// The row's scheme chip: the profile's palette miniaturized — the
 /// scheme's own background carrying its six ANSI accents in
@@ -209,7 +209,7 @@ fn mini_chip(size: f32, color: Option<cosmic::iced::Color>) -> Element<'static, 
 /// controls render it; the profile form's scheme feedback
 /// (`profile-manager`) reuses it with zero new chip code.
 fn scheme_chip_strip(preview: SchemePreview) -> Element<'static, SettingsEvent> {
-    let rgb_color = |rgb: crate::terminal::theme_source::Rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b);
+    let rgb_color = |rgb: crate::theme_source::Rgb| Color::from_rgb8(rgb.r, rgb.g, rgb.b);
     let chips = std::iter::once(preview.background.map(rgb_color))
         .chain(std::iter::once(preview.foreground.map(rgb_color)))
         .chain(preview.ansi.iter().map(|slot| slot.map(rgb_color)))

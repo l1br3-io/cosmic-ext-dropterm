@@ -11,7 +11,18 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tabs::command_line_parts;
+/// Splits a command line into its program and arguments on
+/// whitespace. `None` when nothing non-blank precedes — a command
+/// must have a program to be spawnable. The one command-line
+/// authority everywhere (profiles, the spawn paths, the settings
+/// page): whitespace-split, quoting unsupported. (Moved from the tabs
+/// model by the shared-core spec: profiles validate through it and it
+/// holds no tab state.)
+pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = line.split_whitespace();
+    let program = parts.next()?.to_string();
+    Some((program, parts.map(str::to_string).collect()))
+}
 
 /// A named preset of spawn parameters: what a tab runs and where.
 ///
@@ -23,14 +34,14 @@ pub struct Profile {
     /// Display name; also the lookup id.
     pub name: String,
     /// Command line to run, e.g. `ssh web-prod`. Must survive
-    /// [`crate::tabs::command_line_parts`] (non-blank, has a program).
+    /// [`command_line_parts`] (non-blank, has a program).
     pub command: String,
     /// Working directory for the spawned program. `None` = default
     /// cwd. Not existence-checked: a profile may be written before
     /// its directory exists; spawn-time fallback is `profile-launch`'s.
     pub cwd: Option<PathBuf>,
     /// Color scheme the profile's tabs run: a built-in registry name
-    /// ([`crate::terminal::theme_source::scheme_names`]'s vocabulary,
+    /// ([`crate::theme_source::scheme_names`]'s vocabulary,
     /// the same one the global pickers offer), applied per tab at
     /// spawn and in the live config-apply pass. `None` (the default)
     /// follows the global scheme pick. One name, mode-independent —
@@ -125,7 +136,7 @@ pub fn effective_scheme_name<'a>(
     let global = if is_dark { global_dark } else { global_light };
     profile
         .and_then(|profile| profile.color_scheme.as_deref())
-        .filter(|name| crate::terminal::theme_source::by_name(name).is_some())
+        .filter(|name| crate::theme_source::by_name(name).is_some())
         .unwrap_or(global)
 }
 
