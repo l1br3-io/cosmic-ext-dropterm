@@ -28,15 +28,16 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::color::Colors;
 use gpui::{
-    App, Context, Entity, FontWeight, Pixels, TextAlign, UnderlineStyle, canvas, fill, point,
+    App, Context, Entity, FontWeight, Pixels, TextAlign, UnderlineStyle, canvas, div, fill, point,
     prelude::*, px,
 };
 use tokio::sync::mpsc;
 
 use dropterm_core::tabs::TabId;
-use dropterm_core::terminal::Terminal;
+use dropterm_core::terminal::{Terminal, TerminalOptions};
 
 use super::grid::{self, StyledRun};
+use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
 
 /// The walk evidence rows' dedup state (the last logged grid and
 /// caret cells — one row per change, not per frame).
@@ -80,6 +81,13 @@ pub(crate) struct TerminalPane {
     /// the tab chrome slices land).
     title: Option<String>,
     walk_log: Arc<Mutex<WalkLog>>,
+    /// The effective chords (defaults + the config overlay).
+    binds: std::collections::HashMap<Chord, TermAction>,
+    /// The pane's engine options, retained for the zoom pass's
+    /// `set_config` (the metrics reapply *is* the zoom).
+    options: TerminalOptions,
+    /// The pane's focus handle — the keyboard routes here.
+    focus: gpui::FocusHandle,
 }
 
 impl TerminalPane {
@@ -96,6 +104,9 @@ impl TerminalPane {
         colors: Colors,
         opacity: u8,
         font: gpui::Font,
+        binds: std::collections::HashMap<Chord, TermAction>,
+        options: TerminalOptions,
+        focus: gpui::FocusHandle,
     ) -> Self {
         {
             // The pane is the focused surface by construction (the
@@ -113,6 +124,9 @@ impl TerminalPane {
             },
             title: None,
             walk_log: Arc::new(Mutex::new(WalkLog::default())),
+            binds,
+            options,
+            focus,
         }
     }
 
@@ -237,22 +251,153 @@ impl TerminalPane {
     }
 }
 
+impl TerminalPane {
+    /// One matched action through the pane — the terminal-view
+    /// slice's execution (the libcosmic `perform_action` pared to
+    /// the pane's own surface; clipboard lands with its task, the
+    /// surface hide with the shell wiring).
+    fn perform_action(&mut self, action: TermAction, cx: &mut Context<Self>) {
+        match action {
+            TermAction::Copy | TermAction::CopyPrimary => {
+                println!(
+                    "dropterm-gpui: pane action {action:?} (the clipboard write arrives with its task)"
+                );
+            }
+            TermAction::Paste | TermAction::PastePrimary => {
+                println!(
+                    "dropterm-gpui: pane action {action:?} (the clipboard read arrives with its task)"
+                );
+            }
+            TermAction::SelectAll => {
+                self.terminal.lock().expect("engine lock").select_all();
+                self.needs_update = true;
+            }
+            TermAction::ClearScrollback => {
+                self.terminal
+                    .lock()
+                    .expect("engine lock")
+                    .term
+                    .lock()
+                    .grid_mut()
+                    .clear_history();
+                self.needs_update = true;
+            }
+            TermAction::ZoomIn | TermAction::ZoomOut | TermAction::ZoomReset => {
+                let mut terminal = self.terminal.lock().expect("engine lock");
+                let adj = match action {
+                    TermAction::ZoomIn => terminal.zoom_adj().saturating_add(1),
+                    TermAction::ZoomOut => terminal.zoom_adj().saturating_sub(1),
+                    _ => 0,
+                };
+                // The metrics reapply *is* the zoom: `set_config`
+                // recomputes metrics from the live `zoom_adj` and
+                // re-fires the cell resize from there.
+                terminal.set_zoom_adj(adj);
+                let options = self.options.clone();
+                let colors = self.skin.colors;
+                terminal.set_config(&options, &colors);
+                drop(terminal);
+                self.needs_update = true;
+            }
+            TermAction::Hide => {
+                println!(
+                    "dropterm-gpui: pane hide action (the shell wiring routes it with the integration task)"
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// One key press through the translation and its outcome.
+    fn on_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let modes = {
+            let terminal = self.terminal.lock().expect("engine lock");
+            let term = terminal.term.lock();
+            KeyModes {
+                app_cursor: term
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::APP_CURSOR),
+                has_selection: term.selection.is_some(),
+            }
+        };
+        match input::translate(keystroke, &self.binds, modes) {
+            KeyInput::Bytes(bytes) => {
+                // Escape's selection-cancel is the one swallow with a
+                // visible side effect: clear it, repaint.
+                if bytes.is_empty() && modes.has_selection {
+                    self.terminal
+                        .lock()
+                        .expect("engine lock")
+                        .term
+                        .lock()
+                        .selection = None;
+                    self.needs_update = true;
+                    cx.notify();
+                    return;
+                }
+                self.terminal
+                    .lock()
+                    .expect("engine lock")
+                    .input_scroll(bytes);
+            }
+            KeyInput::Action(action) => self.perform_action(action, cx),
+            KeyInput::Scroll(scroll) => {
+                self.terminal.lock().expect("engine lock").scroll(scroll);
+                self.needs_update = true;
+                cx.notify();
+            }
+            KeyInput::Swallowed => {
+                if modes.has_selection {
+                    // The swallow-with-selection rule: cancel it.
+                    self.terminal
+                        .lock()
+                        .expect("engine lock")
+                        .term
+                        .lock()
+                        .selection = None;
+                    self.needs_update = true;
+                    cx.notify();
+                }
+            }
+        }
+    }
+}
+
 impl gpui::Render for TerminalPane {
     fn render(
         &mut self,
-        _window: &mut gpui::Window,
-        _cx: &mut Context<Self>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
     ) -> impl gpui::IntoElement {
+        // The pane takes the keyboard when it renders into a window
+        // (the drawer holds it by construction); focusing an already
+        // focused handle is a no-op.
+        self.focus.focus(window, cx);
         let terminal = Arc::clone(&self.terminal);
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
-        canvas(
-            move |bounds, _, _| bounds,
-            move |bounds, _, window, cx| {
-                paint_pane(&terminal, &skin, &walk_log, bounds, window, cx);
-            },
-        )
-        .size_full()
+        let pane = cx.entity();
+        // The focusable frame: keys route to the pane, the canvas
+        // paints inside it (carrying its own `size_full` — a
+        // default-styled child collapses; the first walk's lesson).
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down({
+                let pane = pane.clone();
+                move |event: &gpui::KeyDownEvent, _window, cx| {
+                    pane.update(cx, |pane, cx| pane.on_key(&event.keystroke, cx));
+                }
+            })
+            .child(
+                canvas(
+                    move |bounds, _, _| bounds,
+                    move |bounds, _, window, cx| {
+                        paint_pane(&terminal, &skin, &walk_log, bounds, window, cx);
+                    },
+                )
+                .size_full(),
+            )
     }
 }
 
@@ -498,16 +643,24 @@ pub(crate) fn boot_colors(config: &dropterm_core::config::DropTermConfig) -> Col
 
 /// The pane factory the walk harness and the shell wiring share:
 /// pane and pump in one entity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pane's construction inputs: the engine, the scheme trio, the keybind overlay, and the event channel — a param struct would hide the spawn's one-shot shape"
+)]
 pub(crate) fn pane_with_pump(
     cx: &mut App,
     terminal: Arc<Mutex<Terminal>>,
     colors: &Colors,
     opacity: u8,
     font: gpui::Font,
+    options: TerminalOptions,
+    custom_binds: &std::collections::BTreeMap<String, dropterm_core::keybinds::Binding>,
     events: mpsc::UnboundedReceiver<(TabId, TermEvent)>,
 ) -> Entity<TerminalPane> {
+    let binds = input::effective_key_binds(custom_binds);
+    let focus = cx.focus_handle();
     cx.new(|cx| {
-        let mut pane = TerminalPane::new(terminal, *colors, opacity, font);
+        let mut pane = TerminalPane::new(terminal, *colors, opacity, font, binds, options, focus);
         pane.spawn_pump(events, cx);
         pane
     })

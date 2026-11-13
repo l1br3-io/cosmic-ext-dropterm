@@ -17,4 +17,5 @@
 
 pub(crate) mod grid;
 pub(crate) mod host;
+pub(crate) mod input;
 pub(crate) mod view;
