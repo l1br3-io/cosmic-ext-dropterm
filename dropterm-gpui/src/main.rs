@@ -16,6 +16,7 @@
 
 mod app_shell;
 mod dbus;
+mod executor;
 mod kit_check;
 mod startup;
 
@@ -153,11 +154,21 @@ fn main() {
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
     let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
-    let visible = Arc::clone(&served.visible);
-    gpui_platform::application().run(move |cx: &mut gpui::App| match check {
-        Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
-        None => app_shell::boot(cx, exit_after, &visible),
-    });
+    let phase = Arc::clone(&served.phase);
+    let verbs = served.verbs;
+    // Explicit quit only: the app's lifetime is its own, never the
+    // windows'. GPUI's default mode on Linux quits when the last
+    // window closes — correct for an editor, wrong for a single-
+    // instance daemon that boots hidden (zero windows) and hides by
+    // destroying its surface (momentarily zero windows again while a
+    // swap or a hide runs; the first walk caught the swap's
+    // destroy-before-create frame quitting the whole instance).
+    gpui_platform::application()
+        .with_quit_mode(gpui::QuitMode::Explicit)
+        .run(move |cx: &mut gpui::App| match check {
+            Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
+            None => app_shell::boot(cx, exit_after, &phase, verbs),
+        });
     println!("dropterm-gpui: event loop exited cleanly");
 }
 

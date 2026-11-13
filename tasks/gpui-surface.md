@@ -34,13 +34,37 @@ handle map and reconcile-choice logic land headless-tested. `Measure` →
 reading `cx.displays()` — with layer, keyboard mode, and zone at creation.
 
 **Acceptance criteria:**
-- [ ] Headless tests pin the reconcile choices and handle-map rules
-- [ ] Show lands the configured geometry on both compositors; wire logs
+- [x] Headless tests pin the reconcile choices and handle-map rules
+- [x] Show lands the configured geometry on both compositors; wire logs
       show the two-surface sequence
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: show walk on rig + VM (logs, screenshots)
+- [x] Tests pass: `just check`
+- [x] Manual: show walk on rig + VM (logs, screenshots)
+
+*Done 2026-11-13 (sr-1): 19 executor tests pin the reconcile split
+(resize vs recreate by placement equality — the ruled split, including
+center-width-edits-recreate and full-width-alignment-is-moot), the
+handle map (adopt at apply, remap at swap, loud miss), and both option
+derivations (the full-output measuring stretch, the shaped window's
+anchor/margins/size). Walked on rig + VM: the two-surface sequence in
+the logs (measure → granted 1280x720/1280x800, never `cx.displays()` →
+swap), the configured geometry landing exactly (custom 80%×30% Left
+config → 1024x216 sway / 1024x240 COSMIC at origin 0,0; the VM pair
+pixel-verified: 216,649 px changed inside the band, 0 right of it, 0
+below), release OPEN→FIRST_FRAME 36–46 ms inside the 130 ms slide
+budget. Two walk findings made structural: the probe fires on the
+configured bounds (open_window's synchronous first draw sees the
+degenerate pre-configure 1×1) and reports through a polled slot (an
+entity update queued from render flushes inside the caller's borrow —
+"already being updated"); plus one lifetime fix in main: GPUI's
+default quit mode on Linux quits when the last window closes, wrong
+for a single instance that boots hidden — the app now runs
+QuitMode::Explicit. A hide on a shown surface logs the task-3
+deferral loudly and the surface truthfully stays (the slide owns the
+hide). Evidence: target/rig-evidence-gs1-show-*.log,
+target/vm-evidence-gs1-{show.log,hidden,shown}.png (snapshot
+pre-gpui-surface-walk held, VM restored after).*
 
 **Dependencies:** `gpui-scaffold` merged · **Files:** the crate's executor
 module · **Scope:** M

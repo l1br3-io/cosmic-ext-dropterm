@@ -386,8 +386,13 @@ test; libcosmic binary + applet identical behavior.
 **Checkpoint — the frontend exists:** pinned, patched, boots, owns the
 name, answers the contract on both compositors.
 
-- [ ] sr-1 GPUI executor skeleton; reconcile tests; two-surface show
-      (never reads displays)
+- [x] sr-1 GPUI executor skeleton; reconcile tests; two-surface show
+      (never reads displays) *(done 2026-11-13 on port/gpui-surface: 19
+      executor tests; walked rig + VM — configured geometry exact in
+      logs and pixels (1024x216 sway / 1024x240 COSMIC, band
+      pixel-verified), release 36–46 ms inside the budget; three walk
+      findings made structural: probe fires on configured bounds +
+      reports via polled slot + QuitMode::Explicit)*
 - [ ] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
       recreate with the re-grab
 - [ ] sr-3 Holds; the slide ported (release at slide-out start, destroy

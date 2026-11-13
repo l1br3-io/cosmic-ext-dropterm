@@ -1,85 +1,51 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The app shell (gpui-scaffold Task 1): the `LayerShell` drawer window,
-//! seeded from the spike harness (`spikes/gpui-layer-shell` and
-//! `spikes/kit-consumer` on the spike branch — reference only, never
-//! merged as code) and rewritten as this crate's shell. The spike's
-//! evidence-line shapes are carried over (`dropterm-gpui:` prefixed)
-//! so the rig and VM walks read the same rows they always did.
+//! The app shell (gpui-scaffold Task 1, grown by gpui-surface): the
+//! surface lifecycle's app-side glue — the decision layer
+//! ([`dropterm_core::surface_lifecycle::SurfaceMachine`]) runs
+//! unchanged from core, and this shell drives it with the dbus
+//! verbs, feeds it the measuring window's granted bounds, and applies
+//! the [`GpuiExecutor`](crate::executor::GpuiExecutor)'s actions
+//! against live windows.
+//!
+//! The coexistence seam stays the scaffold's: the dbus drainer
+//! forwards verbs into a queue this shell drains on its 100 ms tick
+//! (the drainer cannot touch this context), and the shell publishes
+//! its machine phase for the drainer's served-state mirror.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gpui::{
-    App, Bounds, Context, Pixels, Size, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, div, layer_shell, layer_shell::KeyboardInteractivity, point, prelude::*, px, rems,
-    rgba, white,
-};
+use gpui::{App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, rems, rgba, white};
 
-/// The drawer's window shape: full width, bottom edge, over panels —
-/// the spike's `drawer_options`, re-identified through core's
-/// [`dropterm_core::APP_ID`] (one identity const behind the
-/// layer-shell namespace and the wayland app id, exactly the strings
-/// the libcosmic binary derives).
-pub(crate) fn drawer_options(height: Pixels, kb: KeyboardInteractivity) -> gpui::WindowOptions {
-    gpui::WindowOptions {
-        titlebar: None,
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(0.), px(0.)),
-            size: Size::new(px(0.), height), // width compositor-controlled: L|R anchored
-        })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
-        window_background: WindowBackgroundAppearance::Transparent,
-        kind: WindowKind::LayerShell(layer_shell::LayerShellOptions {
-            namespace: dropterm_core::APP_ID.to_string(),
-            layer: layer_shell::Layer::Top,
-            anchor: layer_shell::Anchor::LEFT
-                | layer_shell::Anchor::RIGHT
-                | layer_shell::Anchor::BOTTOM,
-            exclusive_zone: Some(px(-1.)),
-            exclusive_edge: None,
-            margin: Some((px(0.), px(0.), px(0.), px(0.))),
-            keyboard_interactivity: kb,
-        }),
-        ..Default::default()
-    }
-}
+use dropterm_core::config::DropTermConfig;
+use dropterm_core::dbus_state::SurfacePhase;
+use dropterm_core::intent::SurfaceExecutor;
+use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+
+use crate::dbus::Verb;
+use crate::executor::{Action, GpuiExecutor};
 
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
 /// and every non-positive or unparsable value — means a real app's
 /// lifetime (run until the session ends); a positive value quits
-/// through the event loop after the window has mapped and rendered, so
-/// "maps and exits clean" is a logged, replayable row on the rig and
-/// the VM. The real quit UX arrives with the surface slices.
+/// through the event loop, so "maps and exits clean" is a logged,
+/// replayable row on the rig and the VM.
 pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
     let ms: u64 = raw?.trim().parse().ok()?;
     (ms > 0).then(|| Duration::from_millis(ms))
 }
 
-/// Auto-quit timer: the shell's deterministic exit path (see
-/// [`exit_after_from_env`]).
-pub(crate) fn quit_after<T: 'static>(cx: &mut Context<T>, after: Duration) {
-    cx.spawn(async move |_, cx| {
-        cx.background_executor().timer(after).await;
-        let () = cx.update(|cx| cx.quit());
-    })
-    .detach();
-}
-
-/// The placeholder band the scaffold renders, carried from the
-/// spike's panel: while served-visible, a clock face proving the
-/// render loop stays alive; hidden, a faint band naming its state —
-/// the scaffold's stand-in for the slide, so a served verb's flip is
-/// visible in pixels and in the log both. The real surface arrives
-/// with the gpui-surface slice.
-fn band(visible: bool) -> impl IntoElement {
-    let (bg, label) = if visible {
-        (rgba(0x0000_0044), clock_text())
-    } else {
-        (rgba(0x0000_0011), "hidden".to_string())
-    };
+/// The clock band the shaped surface renders while shown — the
+/// scaffold's stand-in content, proving the render loop stays alive
+/// until the terminal slice replaces it.
+fn band() -> impl IntoElement {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     div()
         .size_full()
         .flex()
@@ -87,64 +53,302 @@ fn band(visible: bool) -> impl IntoElement {
         .justify_center()
         .text_size(rems(4.5))
         .text_color(white())
-        .bg(bg)
-        .child(label)
+        .bg(rgba(0x0000_0044))
+        .child(format!(
+            "{:02}:{:02}:{:02}",
+            (now / 3600) % 24,
+            (now / 60) % 60,
+            now % 60
+        ))
 }
 
-fn clock_text() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!(
-        "{:02}:{:02}:{:02}",
-        (now / 3600) % 24,
-        (now / 60) % 60,
-        now % 60
-    )
+/// The machine state as the served contract's phase vocabulary.
+fn phase_of(state: &SurfaceState) -> SurfacePhase {
+    match state {
+        SurfaceState::Hidden => SurfacePhase::Hidden,
+        SurfaceState::Measuring(_) => SurfacePhase::Measuring,
+        SurfaceState::Shown(_) => SurfacePhase::Shown,
+        SurfaceState::Hiding(_) => SurfacePhase::Hiding,
+    }
 }
 
-/// The drawer's root view: logs mapped-bounds evidence rows (the
-/// spike's shape — first frame, every change), renders the served
-/// visibility's band, and logs each render flip (the spike's check-10
-/// row) so a walk reads the flip in the log beside seeing it in pixels.
+/// The shell view: the shaped window's root. Owns the decision layer
+/// and the executor, renders the band, and logs the mapped-bounds
+/// evidence rows (first frame, every change) the walks read.
 pub(crate) struct Shell {
-    pub(crate) open: Instant,
+    pub(crate) boot: Instant,
+    /// When the current surface's shaped window opened (the
+    /// OPEN->FIRST_FRAME budget row's clock).
+    show_open: Instant,
     frames: u64,
     last_bounds: Option<Bounds<Pixels>>,
-    visible: Arc<AtomicBool>,
-    last_visible: bool,
+    machine: SurfaceMachine,
+    executor: GpuiExecutor,
+    inputs: SurfaceInputs,
+    /// The machine phase this shell publishes for the dbus mirror.
+    phase: Arc<Mutex<SurfacePhase>>,
+    /// The forwarded verbs, drained on the tick.
+    verbs: Receiver<Verb>,
+    /// The measuring probe's granted-bounds slot: the probe writes
+    /// the configured output size (never from inside a render does it
+    /// touch this shell — queued entity updates flush inside the
+    /// caller's borrow), and the tick takes it into the
+    /// first-configure decision.
+    measured: Arc<Mutex<Option<(u32, u32)>>>,
+    exit_at: Option<Instant>,
 }
 
 impl Shell {
-    pub(crate) fn new(open: Instant, visible: Arc<AtomicBool>) -> Self {
+    fn new(
+        boot: Instant,
+        inputs: SurfaceInputs,
+        phase: Arc<Mutex<SurfacePhase>>,
+        verbs: Receiver<Verb>,
+        exit_after: Option<Duration>,
+    ) -> Self {
         Self {
-            open,
+            boot,
+            show_open: boot,
             frames: 0,
             last_bounds: None,
-            visible,
-            last_visible: true,
+            machine: SurfaceMachine::default(),
+            executor: GpuiExecutor::new(),
+            inputs,
+            phase,
+            verbs,
+            measured: Arc::new(Mutex::new(None)),
+            exit_at: exit_after.map(|after| boot + after),
         }
     }
 
-    /// Notify loop keeps frames (and the clock) flowing at a tick a
-    /// served flip lands inside (the drainer cannot touch this
-    /// context; the poll is the coexistence seam).
-    fn keep_alive(cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                let _ = this.update(cx, |_, cx| cx.notify());
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
+    /// The probe's granted-bounds slot, cloned into each measuring
+    /// window this shell opens.
+    fn measured_slot(&self) -> Arc<Mutex<Option<(u32, u32)>>> {
+        Arc::clone(&self.measured)
+    }
+
+    /// Publishes the machine's phase for the served-state mirror (the
+    /// drainer reads it on its own tick and emits `PropertiesChanged`
+    /// on the change).
+    fn publish_phase(&self) {
+        let phase = phase_of(&self.machine.state);
+        if let Ok(mut published) = self.phase.lock() {
+            *published = phase;
+        }
+    }
+
+    /// One pump: drains the forwarded verbs and the measuring slot
+    /// through the decision layer, executing every intent into
+    /// actions — pure decision work, no window touched. The tick
+    /// applies the returned actions at App level: opening a window
+    /// draws its root synchronously, and drawing the Shell while this
+    /// entity is mid-update panics ("already being updated" — the
+    /// first walk's lesson, made structural).
+    fn pump(&mut self) -> Pumped {
+        let mut actions = Vec::new();
+        while let Ok(verb) = self.verbs.try_recv() {
+            self.verb(verb, &mut actions);
+        }
+        let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
+        if let Some(output) = granted {
+            self.measured(output, &mut actions);
+        }
+        let quit = match self.exit_at {
+            Some(deadline) if Instant::now() >= deadline => {
+                println!(
+                    "dropterm-gpui: exit timer fired at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                true
             }
-        })
-        .detach();
+            _ => false,
+        };
+        Pumped { actions, quit }
+    }
+
+    /// One forwarded surface verb through the toggle funnel: the
+    /// debounce first, then the state-matched decision. The show path
+    /// runs the two-surface show; a hide on a shown surface is the
+    /// slide's to walk (gpui-surface Task 3) — until then it logs
+    /// loudly and the surface (truthfully) stays.
+    fn verb(&mut self, verb: Verb, actions: &mut Vec<Action>) {
+        if !self.machine.toggle_accepted(Instant::now()) {
+            println!(
+                "dropterm-gpui: verb {verb:?} dropped by the toggle debounce at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            return;
+        }
+        println!(
+            "dropterm-gpui: verb {verb:?} accepted at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        match (verb, &self.machine.state) {
+            (Verb::Show | Verb::Toggle, SurfaceState::Hidden) => {
+                let intents = self.machine.decide_show(self.inputs);
+                self.execute_into(intents, actions);
+            }
+            // A measuring surface has no reshaped content to animate:
+            // its hide is the machine's destroy-now, applied whole.
+            (Verb::Hide | Verb::Toggle, SurfaceState::Measuring(_)) => {
+                let intents = self.machine.decide_hide(self.inputs);
+                self.execute_into(intents, actions);
+            }
+            (Verb::Hide | Verb::Toggle, SurfaceState::Shown(_)) => {
+                println!(
+                    "dropterm-gpui: hide on a shown surface arrives with the slide (task 3); \
+                     the surface stays shown"
+                );
+            }
+            // Show while already on its way, hide while hidden: the
+            // decision layer's own guards leave these with nothing.
+            _ => {}
+        }
+        self.publish_phase();
+    }
+
+    /// The measuring window's granted bounds: the output's real size,
+    /// read off the surface the compositor just configured — never
+    /// `cx.displays()`, so fractional outputs mis-size nothing. Runs
+    /// the first-configure decision and lands the shaped window.
+    fn measured(&mut self, output: (u32, u32), actions: &mut Vec<Action>) {
+        println!(
+            "dropterm-gpui: measuring window granted {}x{} at +{}ms — pass 1 complete",
+            output.0,
+            output.1,
+            self.boot.elapsed().as_millis()
+        );
+        let intents = self.machine.decide_configure(output, self.inputs);
+        self.execute_into(intents, actions);
+        self.publish_phase();
+    }
+
+    /// Executes intents through the GPUI executor, logging each intent
+    /// row (the wire evidence the walks read) and collecting the
+    /// actions for the tick to apply.
+    fn execute_into(
+        &mut self,
+        intents: Vec<dropterm_core::intent::SurfaceIntent>,
+        actions: &mut Vec<Action>,
+    ) {
+        for intent in intents {
+            println!(
+                "dropterm-gpui: surface intent {intent:?} at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            actions.extend(self.executor.execute(intent));
+        }
     }
 }
 
-impl Render for Shell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+/// One pump's outcome: the window actions to apply at App level, and
+/// whether the deterministic exit fired.
+struct Pumped {
+    actions: Vec<Action>,
+    quit: bool,
+}
+
+/// Applies one window action against live windows — App-level work by
+/// necessity (see [`Shell::pump`]): opens draw their root view
+/// synchronously, so no shell update may be on the stack.
+fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
+    match action {
+        Action::OpenMeasuring { handle, options } => {
+            let slot = shell.read(cx).measured_slot();
+            let opened = Instant::now();
+            match cx.open_window(options, |_, cx| {
+                cx.new(|_| MeasureProbe {
+                    slot,
+                    opened,
+                    fired: false,
+                })
+            }) {
+                Ok(window) => {
+                    shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
+                    println!(
+                        "dropterm-gpui: two-surface show pass 1: measuring window opened at \
+                         +{}ms",
+                        shell.read(cx).boot.elapsed().as_millis()
+                    );
+                }
+                Err(err) => {
+                    eprintln!("dropterm-gpui: measuring window open failed: {err:?}");
+                    cx.quit();
+                }
+            }
+        }
+        Action::SwapWindow {
+            handle,
+            options,
+            reason,
+        } => {
+            let old = shell.read(cx).executor.window_of(handle);
+            let _ = old.update(cx, |_, window, _| window.remove_window());
+            shell.update(cx, |shell, _| {
+                shell.show_open = Instant::now();
+                shell.frames = 0;
+                shell.last_bounds = None;
+            });
+            match cx.open_window(options, |_, _| shell.clone()) {
+                Ok(window) => {
+                    shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
+                    println!(
+                        "dropterm-gpui: window swap ({reason}) opened at +{}ms",
+                        shell.read(cx).boot.elapsed().as_millis()
+                    );
+                }
+                Err(err) => {
+                    eprintln!("dropterm-gpui: swapped window open failed: {err:?}");
+                    cx.quit();
+                }
+            }
+        }
+        Action::Resize {
+            handle,
+            width,
+            height,
+        } => {
+            let window = shell.read(cx).executor.window_of(handle);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "px of a <= 2^24 output share: exact in f32"
+            )]
+            let _ = window.update(cx, |_, window, _| {
+                // A fill surface's width is compositor-controlled:
+                // carry the live width so the resize never asks for a
+                // degenerate zero width.
+                let w = width.map_or_else(|| window.viewport_size().width, |w| gpui::px(w as f32));
+                window.resize(gpui::Size::new(w, gpui::px(height as f32)));
+            });
+            println!(
+                "dropterm-gpui: resized to {}x{height} at +{}ms",
+                width.map_or_else(|| "fill".to_string(), |w| w.to_string()),
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+        Action::Remove { handle } => {
+            let window = shell.read(cx).executor.window_of(handle);
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+            println!(
+                "dropterm-gpui: surface destroyed at +{}ms",
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+        Action::FocusTerminal { handle } => {
+            // The terminal input arrives with the gpui-terminal slice;
+            // the intent's presence stays a logged row so the walks see
+            // the focus decision land.
+            println!(
+                "dropterm-gpui: terminal focus for {handle:?} (input arrives with \
+                 gpui-terminal) at +{}ms",
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+    }
+}
+
+impl gpui::Render for Shell {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.frames += 1;
         let b = window.bounds();
         if self.last_bounds.as_ref() != Some(&b) {
@@ -155,105 +359,121 @@ impl Render for Shell {
                 b.origin.y.as_f32(),
                 b.size.width.as_f32(),
                 b.size.height.as_f32(),
-                self.open.elapsed().as_millis()
+                self.boot.elapsed().as_millis()
             );
             self.last_bounds = Some(b);
         }
-        let visible = self.visible.load(Ordering::Relaxed);
-        if visible != self.last_visible || self.frames == 1 {
-            println!(
-                "dropterm-gpui: render state visible={visible} (frame {}) at +{}ms",
-                self.frames,
-                self.open.elapsed().as_millis()
-            );
-            self.last_visible = visible;
-        }
         if self.frames == 1 {
             println!(
-                "dropterm-gpui: OPEN->FIRST_FRAME {}ms",
-                self.open.elapsed().as_millis()
+                "dropterm-gpui: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
+                self.show_open.elapsed().as_millis()
             );
-            Self::keep_alive(cx);
         }
-        band(visible)
+        band()
     }
 }
 
-/// Boot the shell: open the drawer window on the app and run the
-/// event loop to its clean exit. `visible` is the served visibility
-/// the band renders and the dbus drainer flips.
-pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>, visible: &Arc<AtomicBool>) {
-    let open = Instant::now();
-    println!(
-        "dropterm-gpui: opening the drawer (L|R|B, layer Top, zone -1, kb None) as {}",
-        dropterm_core::APP_ID
-    );
-    match cx.open_window(
-        drawer_options(px(200.), KeyboardInteractivity::None),
-        |_, cx| {
-            cx.new(|cx| {
-                if let Some(after) = exit_after {
-                    quit_after(cx, after);
-                }
-                Shell::new(open, Arc::clone(visible))
-            })
-        },
-    ) {
-        Ok(_) => println!("dropterm-gpui: drawer window opened"),
-        Err(err) => {
-            eprintln!("dropterm-gpui: open_window failed: {err:?}");
-            std::process::exit(1);
+/// The measuring probe: the two-surface show's first pass. A
+/// transparent full-output stretch whose granted bounds carry the
+/// output's real size, reported through a slot the shell's tick
+/// polls. Two timing facts shape the report: `open_window` draws once
+/// before the compositor's configure arrives (the first render sees
+/// the degenerate pre-configure bounds, so the probe waits for bounds
+/// that grew past it), and the probe must never touch the shell from
+/// inside its render — queued entity updates flush inside the
+/// caller's borrow, so the report rides plain shared state instead.
+struct MeasureProbe {
+    slot: Arc<Mutex<Option<(u32, u32)>>>,
+    opened: Instant,
+    fired: bool,
+}
+
+impl gpui::Render for MeasureProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let b = window.bounds().size;
+        let granted = b.width.as_f32() > 1. && b.height.as_f32() > 1.;
+        if !self.fired && granted {
+            self.fired = true;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "granted logical px of an output: round keeps the compositor's size; positive by the guard above"
+            )]
+            let output = (
+                b.width.as_f32().round().max(1.) as u32,
+                b.height.as_f32().round().max(1.) as u32,
+            );
+            println!(
+                "dropterm-gpui: measure pass granted {}x{} at +{}ms",
+                output.0,
+                output.1,
+                self.opened.elapsed().as_millis()
+            );
+            if let Ok(mut slot) = self.slot.lock() {
+                *slot = Some(output);
+            }
+        } else if !self.fired {
+            // Keep frames coming until the configure lands (the
+            // pre-configure draw alone never re-renders on its own).
+            cx.notify();
         }
+        div()
     }
+}
+
+/// Boot the shell: load the config, create the shell entity, and run
+/// the tick that drains verbs and keeps frames flowing. The surface
+/// itself starts hidden — the machine's resting state — exactly like
+/// the libcosmic app; the first show verb runs the two-surface show.
+pub(crate) fn boot(
+    cx: &mut App,
+    exit_after: Option<Duration>,
+    phase: &Arc<Mutex<SurfacePhase>>,
+    verbs: Receiver<Verb>,
+) {
+    let boot = Instant::now();
+    let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+    let inputs = SurfaceInputs::from_config(&config);
+    println!(
+        "dropterm-gpui: surface shell booted hidden (edge {:?}, {}% height, {}% width, align \
+         {:?}, layer {:?}, kb {:?})",
+        inputs.geometry.edge,
+        inputs.geometry.height_percent,
+        inputs.geometry.width_percent,
+        inputs.geometry.h_align,
+        inputs.layer,
+        inputs.keyboard_mode,
+    );
+    let shell = cx.new(|_| Shell::new(boot, inputs, Arc::clone(phase), verbs, exit_after));
+    // The tick: 100 ms of verb drain + frame pump, holding the shell
+    // entity strongly for the app's lifetime (the surface's windows
+    // come and go; the shell owns the machine and must not).
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            cx.update(|cx| {
+                let pumped = shell.update(cx, |shell, _| shell.pump());
+                for action in pumped.actions {
+                    apply_action(cx, &shell, action);
+                }
+                if pumped.quit {
+                    cx.quit();
+                } else {
+                    // Keep frames flowing (the clock band) — the
+                    // scaffold's coexistence seam.
+                    shell.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
-    use gpui::{WindowKind, px};
-
-    #[test]
-    fn drawer_options_carries_the_drawer_shape_and_the_app_identity() {
-        let opts = drawer_options(px(320.), KeyboardInteractivity::Exclusive);
-        // One identity const behind the wayland app id and the
-        // layer-shell namespace — the same strings the libcosmic
-        // binary derives, so compositor rules (COSMIC's blur, sway's
-        // criteria) see the same surface.
-        assert_eq!(opts.app_id.as_deref(), Some(dropterm_core::APP_ID));
-        let WindowKind::LayerShell(ls) = opts.kind else {
-            panic!("the drawer is a layer-shell surface");
-        };
-        assert_layer_shape(&ls);
-        assert_eq!(ls.keyboard_interactivity, KeyboardInteractivity::Exclusive);
-    }
-
-    #[test]
-    fn drawer_options_passes_the_keyboard_mode_through() {
-        let WindowKind::LayerShell(ls) = drawer_options(px(200.), KeyboardInteractivity::None).kind
-        else {
-            panic!("the drawer is a layer-shell surface");
-        };
-        assert_layer_shape(&ls);
-        assert_eq!(ls.keyboard_interactivity, KeyboardInteractivity::None);
-    }
-
-    /// The drawer shape every variant shares: Top layer (over panels),
-    /// anchored left+right+bottom (full width, bottom edge), zone -1
-    /// (over everything, reserving nothing), flush margins.
-    fn assert_layer_shape(ls: &LayerShellOptions) {
-        assert_eq!(ls.namespace, dropterm_core::APP_ID);
-        assert_eq!(ls.layer, Layer::Top);
-        assert!(ls.anchor.contains(Anchor::LEFT));
-        assert!(ls.anchor.contains(Anchor::RIGHT));
-        assert!(ls.anchor.contains(Anchor::BOTTOM));
-        assert_eq!(ls.exclusive_zone, Some(px(-1.)));
-        assert_eq!(
-            ls.margin,
-            Some((px(0.), px(0.), px(0.), px(0.))),
-            "the scaffold docks flush; margins arrive with the geometry slice"
-        );
-    }
 
     #[test]
     fn exit_after_parses_positive_milliseconds_only() {
@@ -274,5 +494,23 @@ mod tests {
         assert_eq!(exit_after_from_env(Some("soon")), None);
         assert_eq!(exit_after_from_env(Some("0")), None);
         assert_eq!(exit_after_from_env(Some("-5")), None);
+    }
+
+    #[test]
+    fn the_machine_states_map_onto_the_served_phases() {
+        use dropterm_core::intent::SurfaceHandle;
+        assert_eq!(phase_of(&SurfaceState::Hidden), SurfacePhase::Hidden);
+        assert_eq!(
+            phase_of(&SurfaceState::Measuring(SurfaceHandle::next())),
+            SurfacePhase::Measuring
+        );
+        assert_eq!(
+            phase_of(&SurfaceState::Shown(SurfaceHandle::next())),
+            SurfacePhase::Shown
+        );
+        assert_eq!(
+            phase_of(&SurfaceState::Hiding(SurfaceHandle::next())),
+            SurfacePhase::Hiding
+        );
     }
 }

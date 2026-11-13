@@ -16,14 +16,52 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, Context, Pixels, Size, Window, div, layer_shell::KeyboardInteractivity,
-    prelude::*, px, rgba, white,
+    App, Bounds, Context, Pixels, Size, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowKind, div, point, prelude::*, px, rgba, white,
+};
+use gpui::{
+    layer_shell::Anchor, layer_shell::KeyboardInteractivity, layer_shell::Layer,
+    layer_shell::LayerShellOptions,
 };
 use gpui_component::{
     Root as KitRoot, button::Button, menu::PopupMenu, popover::Popover, tooltip::Tooltip,
 };
 
-use crate::app_shell;
+/// The kill check's drawer shape — the scaffold's original
+/// `drawer_options`: full width, bottom edge, over panels, flush
+/// margins. Superseded for the real surface by the executor's
+/// derivation; kept here because the kill check pins the carried
+/// patch against this exact shape.
+fn drawer_options(height: Pixels, kb: KeyboardInteractivity) -> gpui::WindowOptions {
+    gpui::WindowOptions {
+        titlebar: None,
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: Size::new(px(0.), height), // width compositor-controlled: L|R anchored
+        })),
+        app_id: Some(dropterm_core::APP_ID.to_string()),
+        window_background: WindowBackgroundAppearance::Transparent,
+        kind: WindowKind::LayerShell(LayerShellOptions {
+            namespace: dropterm_core::APP_ID.to_string(),
+            layer: Layer::Top,
+            anchor: Anchor::LEFT | Anchor::RIGHT | Anchor::BOTTOM,
+            exclusive_zone: Some(px(-1.)),
+            exclusive_edge: None,
+            margin: Some((px(0.), px(0.), px(0.), px(0.))),
+            keyboard_interactivity: kb,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Auto-quit timer: the kill check's deterministic exit.
+fn quit_after<T: 'static>(cx: &mut Context<T>, after: Duration) {
+    cx.spawn(async move |_, cx| {
+        cx.background_executor().timer(after).await;
+        let () = cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
 
 /// The drag cadence the border finding was measured against (kit-pass
 /// C2b); the kill check drives its reshape cycle at exactly this beat.
@@ -45,11 +83,11 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         "dropterm-gpui: CHECK-C2b Root + Kit overlays on the layer surface, {CADENCE_MS}ms cadence"
     );
     match cx.open_window(
-        app_shell::drawer_options(px(KIT_HEIGHTS[0]), KeyboardInteractivity::None),
+        drawer_options(px(KIT_HEIGHTS[0]), KeyboardInteractivity::None),
         |window, cx| {
             let chrome = cx.new(|cx| {
                 if let Some(after) = exit_after {
-                    app_shell::quit_after(cx, after);
+                    quit_after(cx, after);
                 }
                 KitChrome {
                     open,
