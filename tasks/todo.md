@@ -386,13 +386,39 @@ test; libcosmic binary + applet identical behavior.
 **Checkpoint — the frontend exists:** pinned, patched, boots, owns the
 name, answers the contract on both compositors.
 
-- [ ] sr-1 GPUI executor skeleton; reconcile tests; two-surface show
-      (never reads displays)
-- [ ] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
-      recreate with the re-grab
-- [ ] sr-3 Holds; the slide ported (release at slide-out start, destroy
-      at completion); focus-loss hide
-- [ ] sr-4 Budget banked; surface rows both compositors; merge
+- [x] sr-1 GPUI executor skeleton; reconcile tests; two-surface show
+      (never reads displays) *(done 2026-11-13 on port/gpui-surface: 19
+      executor tests; walked rig + VM — configured geometry exact in
+      logs and pixels (1024x216 sway / 1024x240 COSMIC, band
+      pixel-verified), release 36–46 ms inside the budget; three walk
+      findings made structural: probe fires on configured bounds +
+      reports via polled slot + QuitMode::Explicit)*
+- [x] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
+      recreate with the re-grab *(done 2026-11-13 on port/gpui-surface:
+      drag through the machine's real funnel (walk-fed positions),
+      config edits through a notify watcher + decide_reshape with a
+      300 ms echo quiet window, slide clock ticked by the shell;
+      walked rig + VM — cadence targets echoed on both, settle 65%/62%
+      with the snap, the edit recreated at 1024x360/1024x400 with
+      activation GAINED on the VM's seat the same millisecond as the
+      swap)*
+- [x] sr-3 Holds; the slide ported (release at slide-out start, destroy
+      at completion); focus-loss hide *(done 2026-11-13 on
+      port/gpui-surface: Hold recreates at the pin's create-only
+      keyboard, the slide clock destroys at ~137-146 ms in release, the
+      reversal re-holds mid-slide, activation loss runs the focus-loss
+      gate into the hide; four walk findings made structural —
+      apply-time handle retirement, transition-gated focus-loss flag,
+      transition-order fix, phase publish on the completion destroy;
+      walked rig + VM with the focus-loss steal evidenced on COSMIC's
+      real seat)*
+- [x] sr-4 Budget banked; surface rows both compositors; merge
+      *(done 2026-11-13: release 34–49 ms over five VM shows inside
+      the 130 ms budget, destroy 142–152 ms; core untouched (empty
+      diff, 819 tests green); all six surface rows walked on both
+      compositors with evidence, the reversal VM-window note recorded
+      (debounce vs tick — rides parity's human row as si-5 parked
+      it); the merge's own gate runs on main)*
 - [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
 - [ ] gt-2 Input + keybinds; selection; scrollback
 - [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;

@@ -2108,6 +2108,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "notify",
  "tokio",
  "wayland-client",
  "zbus",
