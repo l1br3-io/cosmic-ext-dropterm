@@ -84,11 +84,11 @@ libcosmic binary — check 11's shape. The no-layer-shell branch keeps the
 guard's exit-code and message contract.
 
 **Acceptance criteria:**
-- [ ] Layer-shell session: boots; non-layer-shell (weston-headless
+- [x] Layer-shell session: boots; non-layer-shell (weston-headless
       evidence route): the guard's message + exit 1, no probe reason
 
 **Verification:**
-- [ ] Manual: the lg-2/lg-3 evidence routes replayed for this binary
+- [x] Manual: the lg-2/lg-3 evidence routes replayed for this binary
 
 **Dependencies:** Task 1 · **Files:** the crate's startup module ·
 **Scope:** S

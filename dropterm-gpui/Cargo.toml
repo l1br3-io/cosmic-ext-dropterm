@@ -33,8 +33,17 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features =
 gpui-component = { version = "=0.9.1", default-features = false }
 
 # The GPUI frontend's toolkit-neutral half: the served-state D-Bus
-# contract, the startup transport, and the APP_ID identity const.
+# contract, the startup transport (including the layer-shell verdict),
+# and the APP_ID identity const.
 dropterm-core = { path = "../dropterm-core" }
+
+# The layer-shell startup probe (gpui-scaffold Task 3): one registry
+# roundtrip before any surface exists, on this binary's own
+# connection — the same direct-dependency ruling the libcosmic
+# frontend's guard took (no existing dependency exposes a usable
+# connection). Version-matched to the 0.31 line both gpui-pre and the
+# libcosmic tree already carry in the lock.
+wayland-client = "0.31"
 
 [features]
 # Re-identifies the frontend as `io.github.l1br3_io.dropterm.Dev` —

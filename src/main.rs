@@ -176,10 +176,10 @@ fn main() -> cosmic::iced::Result {
     // answer is truthful because the guard keeps an unsupported
     // session from ever hosting an instance.
     let session = layer_shell::startup_verdict();
-    if !matches!(session, Ok(layer_shell::Verdict::Supported)) {
+    if !matches!(session, Ok(transport::Verdict::Supported)) {
         eprintln!(
             "{}",
-            layer_shell::unsupported_startup_error(session.err().as_deref())
+            transport::unsupported_startup_error(session.err().as_deref())
         );
         std::process::exit(1);
     }

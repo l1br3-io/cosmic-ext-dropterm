@@ -353,7 +353,15 @@ test; libcosmic binary + applet identical behavior.
       target/rig-evidence-sf2-kill.log / target/vm-evidence-sf2-kill.{log,png},
       VM rewound after; the copy is drift-gated by test — a bump that
       forgets the const fails just check)*
-- [ ] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
+- [x] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
+      *(walked 2026-11-13: the verdict function moved to
+      core::transport (7 tests re-homed, frontend probe consumes it —
+      one decision, both frontends); lg-2 replay on the rig boots
+      through the guard (target/rig-evidence-sf3-boot.log); lg-3
+      replay on weston 13 headless over docker — 19 globals, no zwlr —
+      refuses with core's message + exit 1 and no probe reason, the
+      cannot-ask control carries the probe reason
+      (target/weston-evidence-sf3{,-control}.log))*
 - [ ] sf-4 V1 + activation beside the render loop (Connection held,
       self-check); CLI parity; SetVisible flips live — merge
 

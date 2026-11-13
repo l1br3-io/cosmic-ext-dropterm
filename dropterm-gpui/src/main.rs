@@ -16,6 +16,7 @@
 
 mod app_shell;
 mod kit_check;
+mod startup;
 
 /// The env-selected scenario the scaffold can boot besides the shell —
 /// the carried patch's verification harness (`DROPTERM_CHECK`).
@@ -38,6 +39,11 @@ fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
 
 fn main() {
     println!("dropterm-gpui: booting on the gpui-pre 0.3.12 pin (wayland)");
+    // The layer-shell guard, before any GPUI initialization — the
+    // probe takes its connection from the environment before the
+    // platform reads it, and an unsupported session never reaches the
+    // toolkit at all.
+    startup::guard_or_exit();
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
     let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
