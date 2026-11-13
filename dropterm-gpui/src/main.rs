@@ -19,6 +19,8 @@ mod dbus;
 mod executor;
 mod kit_check;
 mod startup;
+mod terminal;
+mod terminal_walk;
 
 use std::fmt;
 use std::sync::Arc;
@@ -88,6 +90,8 @@ fn forward_words(_action: Action) -> Vec<&'static str> {
 enum CheckMode {
     /// kit-pass C2b: Root + Kit overlays through the reshape cadence.
     KitC2b,
+    /// gpui-terminal Task 1: the live pane's render + resize walk.
+    TerminalGrid,
 }
 
 /// `DROPTERM_CHECK`'s parse: unset or empty boots the real shell; only
@@ -97,6 +101,7 @@ enum CheckMode {
 fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
     match raw?.trim() {
         "kit-c2b" => Some(CheckMode::KitC2b),
+        "terminal-grid" => Some(CheckMode::TerminalGrid),
         _ => None,
     }
 }
@@ -167,6 +172,7 @@ fn main() {
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx: &mut gpui::App| match check {
             Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
+            Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
             None => app_shell::boot(cx, exit_after, &phase, verbs),
         });
     println!("dropterm-gpui: event loop exited cleanly");
@@ -291,12 +297,17 @@ mod tests {
             check_mode_from_env(Some(" kit-c2b ")),
             Some(CheckMode::KitC2b)
         );
+        assert_eq!(
+            check_mode_from_env(Some("terminal-grid")),
+            Some(CheckMode::TerminalGrid)
+        );
         // Unset, empty, and every misspelling boot the real shell;
         // surrounding whitespace is not a misspelling.
         assert_eq!(check_mode_from_env(None), None);
         assert_eq!(check_mode_from_env(Some("")), None);
         assert_eq!(check_mode_from_env(Some("KIT-C2B")), None);
         assert_eq!(check_mode_from_env(Some("kitc2b")), None);
+        assert_eq!(check_mode_from_env(Some("terminal_grid")), None);
     }
 
     #[test]

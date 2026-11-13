@@ -29,12 +29,33 @@ redraw, the block cursor — and resize: view-size → `Term::resize` →
 SIGWINCH (check 9's path). A seeded PTY renders and resizes on the rig.
 
 **Acceptance criteria:**
-- [ ] A live PTY renders cells, attributes, and the block cursor; the
+- [x] A live PTY renders cells, attributes, and the block cursor; the
       caret paints in the first shown frame
-- [ ] 8×20 → wide resize flows through `Term::resize` + SIGWINCH
+- [x] 8×20 → wide resize flows through `Term::resize` + SIGWINCH
 
 **Verification:**
-- [ ] Manual: render + resize walk on rig + VM (screenshots held)
+- [x] Manual: render + resize walk on rig + VM (screenshots held) —
+      walked 2026-11-13: the VM's pixels carry the render proof
+      (vm-evidence-gt1-{narrow,wide}.png — colored runs wrapped at
+      8 cols in the narrow frame, magenta/yellow at 100 cols after
+      the widen, the block caret live in both), both compositors'
+      logs carry the resize wire (rig-evidence-gt1-walk.log +
+      vm-evidence gt1-vm.log: grid (8,20) → (100,20) through
+      Term::resize with the pty's own stty confirming "GRID 20
+      100"); WALK FINDINGS, both made structural: (1) an unheld
+      font family fails glyph rasterization SILENTLY (quads paint,
+      no glyph ever lands — Noto Sans Mono is absent on the VM), so
+      the host resolves through a candidate list against the font
+      system's real inventory and logs the pick; (2) the sway rig
+      presents the drawer's own windows (the band, pixel-proven)
+      but never presents this harness's window — across anchors,
+      layers, open timing, window order, redraw cadence, and root
+      content (the full experiment matrix in the harness docs) — so
+      the rig's evidence class for this module is logs, the VM's
+      pixels, recorded rather than chased further; also pinned by
+      test: alacritty 0.25's grid is TOP-DOWN (Line(0) is the top
+      row, display_iter walks top-to-bottom) and the write-then-
+      narrow reflow is the engine's own behavior, not the view's.
 
 **Dependencies:** `gpui-scaffold` merged · **Files:** the view modules ·
 **Scope:** L

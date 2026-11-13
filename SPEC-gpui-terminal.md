@@ -1,6 +1,6 @@
 # SPEC: gpui-terminal — the terminal view on GPUI
 
-Status: not started · Phase 3 · lane: main (branch `port/gpui-terminal`, after
+Status: in progress (Task 1 done) · Phase 3 · lane: main (branch `port/gpui-terminal`, after
 `gpui-scaffold`; runs beside `gpui-surface`, integrates after both)
 
 ## Objective
