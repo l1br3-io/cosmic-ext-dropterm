@@ -174,11 +174,13 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
   below.)*
 
 ### Phase 3 — the GPUI rewrite (ids from the spike report; main lane)
-- [ ] [shared-core](shared-core.md) Tasks 1–5: crate + pure movers →
+- [x] [shared-core](shared-core.md) Tasks 1–5: crate + pure movers →
       split movers → identity/contract + applet re-point → decision
       layer + transport → no-behavior-change walk + merge
+      *(merged 0db7f38, 2026-11-13 — the walk green on the validation
+      VM, evidence in the lane's `target/vm-evidence-sc5/`)*
 - **Checkpoint: the core stands alone** — zero toolkit deps pinned by
-  test; libcosmic binary and applet identical
+  test; libcosmic binary and applet identical *(held at the merge)*
 - [ ] [gpui-scaffold](gpui-scaffold.md) Tasks 1–4: crate + the ruled pin
       → Kit + `carried/gpui-component` + dev docs → startup dispatch →
       contract beside the loop + CLI parity
