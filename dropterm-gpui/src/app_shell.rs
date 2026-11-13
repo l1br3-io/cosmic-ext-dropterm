@@ -18,11 +18,16 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gpui::{App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, rems, rgba, white};
+use gpui::{
+    Animation, AnimationExt, App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, px,
+    rems, rgba, white,
+};
 
 use dropterm_core::config::DropTermConfig;
+use dropterm_core::config::Edge;
 use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
+use dropterm_core::slide::{self, SLIDE_DURATION_MS};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
 use notify::Watcher as _;
 
@@ -111,6 +116,10 @@ pub(crate) struct Shell {
     /// The last logged activation state (the keyboard re-grab's
     /// evidence rows ride on its transitions).
     last_active: Option<bool>,
+    /// An activation loss observed in render, waiting for the tick's
+    /// focus-loss decision (window work never runs inside render —
+    /// sr-1's re-entrancy lesson).
+    focus_lost: bool,
     /// The machine phase this shell publishes for the dbus mirror.
     phase: Arc<Mutex<SurfacePhase>>,
     /// The forwarded verbs, drained on the tick.
@@ -148,6 +157,7 @@ impl Shell {
             config_changes,
             config_quiet_until: None,
             last_active: None,
+            focus_lost: false,
             phase,
             verbs,
             measured: Arc::new(Mutex::new(None)),
@@ -187,6 +197,30 @@ impl Shell {
         if let Some(output) = granted {
             self.measured(output, &mut actions);
         }
+        // An activation loss while shown: the focus-loss decision
+        // (the config gate plus the machine's focus latch — only a
+        // `LayerFocused`-class GAINED ever armed it), then the hide
+        // funnel when it fires.
+        if self.focus_lost {
+            self.focus_lost = false;
+            if let SurfaceState::Shown(handle) = self.machine.state
+                && dropterm_core::surface_lifecycle::layer_unfocused_acts_on(
+                    &self.machine.state,
+                    handle,
+                )
+            {
+                let (report_unfocus, hide) = self.machine.decide_focus_loss(self.inputs);
+                println!(
+                    "dropterm-gpui: activation lost while shown -> focus-loss decision \
+                     (report_unfocus={report_unfocus}, hide={hide}) at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                if hide {
+                    let intents = self.machine.decide_hide(self.inputs);
+                    self.execute_into(intents, &mut actions);
+                }
+            }
+        }
         // The slide clock: parking finished slides is the machine's
         // own truth (an `In` slide rides every shown surface until it
         // parks, and an unparked slide would block reshapes and drags
@@ -196,6 +230,10 @@ impl Shell {
         let slide_intents = self.machine.decide_slide_tick();
         if !slide_intents.is_empty() {
             self.execute_into(slide_intents, &mut actions);
+            // The completion tick's destroy is a state change the
+            // served mirror must see: Hiding became Hidden with no
+            // verb anywhere in the path.
+            self.publish_phase();
         }
         self.drag_walk_step(&mut actions);
         self.drain_config_changes(&mut actions);
@@ -323,10 +361,10 @@ impl Shell {
     }
 
     /// One forwarded surface verb through the toggle funnel: the
-    /// debounce first, then the state-matched decision. The show path
-    /// runs the two-surface show; a hide on a shown surface is the
-    /// slide's to walk (gpui-surface Task 3) — until then it logs
-    /// loudly and the surface (truthfully) stays.
+    /// debounce first, then the state-matched decision — show from
+    /// hidden (the two-surface show), reversal from mid-slide, hide
+    /// from measuring or shown (the slide-out wire, or destroy-now
+    /// for a measuring surface).
     fn verb(&mut self, verb: Verb, actions: &mut Vec<Action>) {
         if !self.machine.toggle_accepted(Instant::now()) {
             println!(
@@ -344,17 +382,21 @@ impl Shell {
                 let intents = self.machine.decide_show(self.inputs);
                 self.execute_into(intents, actions);
             }
-            // A measuring surface has no reshaped content to animate:
-            // its hide is the machine's destroy-now, applied whole.
-            (Verb::Hide | Verb::Toggle, SurfaceState::Measuring(_)) => {
-                let intents = self.machine.decide_hide(self.inputs);
+            // A mid-slide reversal: the live surface is reused, the
+            // slide re-targets `In`, and the keyboard re-holds at the
+            // resolved mode — task 3's wire, served.
+            (Verb::Show | Verb::Toggle, SurfaceState::Hiding(handle)) => {
+                let handle = *handle;
+                let intents = self.machine.decide_reverse_show(handle, self.inputs);
                 self.execute_into(intents, actions);
             }
-            (Verb::Hide | Verb::Toggle, SurfaceState::Shown(_)) => {
-                println!(
-                    "dropterm-gpui: hide on a shown surface arrives with the slide (task 3); \
-                     the surface stays shown"
-                );
+            // The hide: a measuring surface has no reshaped content
+            // to animate (destroy-now); a shown one slides out —
+            // keyboard released at slide-out start, destroyed at the
+            // slide clock's completion tick.
+            (Verb::Hide | Verb::Toggle, SurfaceState::Measuring(_) | SurfaceState::Shown(_)) => {
+                let intents = self.machine.decide_hide(self.inputs);
+                self.execute_into(intents, actions);
             }
             // Show while already on its way, hide while hidden: the
             // decision layer's own guards leave these with nothing.
@@ -485,6 +527,7 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
         Action::Remove { handle } => {
             let window = shell.read(cx).executor.window_of(handle);
             let _ = window.update(cx, |_, window, _| window.remove_window());
+            shell.update(cx, |shell, _| shell.executor.retire(handle));
             println!(
                 "dropterm-gpui: surface destroyed at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
@@ -500,6 +543,48 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 shell.read(cx).boot.elapsed().as_millis()
             );
         }
+    }
+}
+
+impl Shell {
+    /// The band, translated by the live slide: GPUI's animation
+    /// element drives the frames (the chunk's ruling — GPUI's
+    /// animation replaces the libcosmic draw-time translation), while
+    /// the position is core's own slide model, one clock for pixels
+    /// and wire alike — a mid-slide window swap (the keyboard-hold
+    /// recreate) remounts the frame driver but the translation stays
+    /// continuous off the machine's `started`.
+    fn sliding_band(&mut self) -> impl IntoElement {
+        let Some(playing) = self.machine.slide else {
+            return div().size_full().child(band());
+        };
+        let (active, started) = (playing.active, playing.started);
+        let edge = self.inputs.geometry.edge;
+        div().size_full().child(
+            div()
+                .absolute()
+                .size_full()
+                .with_animation(
+                    "slide",
+                    Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
+                    move |band, _progress| {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+                        )]
+                        let offset =
+                            slide::offset(&active, started.elapsed().as_millis() as u64);
+                        match edge {
+                            // Sliding out toward the free edge: a
+                            // top-anchored drawer drops down, a
+                            // bottom-anchored one rises.
+                            Edge::Top => band.top(px(offset)),
+                            Edge::Bottom => band.top(px(-offset)),
+                        }
+                    },
+                )
+                .child(band()),
+        )
     }
 }
 
@@ -534,9 +619,20 @@ impl gpui::Render for Shell {
                 self.boot.elapsed().as_millis(),
                 self.frames
             );
+            // The transition itself carries both halves of the
+            // focus-loss wiring: GAINED arms the machine's focus latch
+            // (the `LayerFocused` analog), a LOST that leaves a shown
+            // surface queues the focus-loss decision for the tick —
+            // never the seatless rest state, which reads LOST every
+            // frame without ever having gained.
+            if active {
+                self.machine.focused = true;
+            } else if self.last_active == Some(true) {
+                self.focus_lost = true;
+            }
             self.last_active = Some(active);
         }
-        band()
+        self.sliding_band()
     }
 }
 

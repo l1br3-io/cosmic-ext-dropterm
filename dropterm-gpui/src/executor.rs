@@ -404,6 +404,14 @@ impl GpuiExecutor {
             .window
     }
 
+    /// Retires a handle: the apply half of [`Action::Remove`], after
+    /// the window is gone. A surface lifecycle never reuses a handle
+    /// (monotonic by construction), so a retired handle has no
+    /// successor to mis-name — every later intent naming it is loud.
+    pub(crate) fn retire(&mut self, handle: SurfaceHandle) {
+        self.live.remove(&handle);
+    }
+
     /// The creation a handle's window was shaped by (the reconcile's
     /// live record); loud on a miss for the same reason as
     /// [`Self::window_of`].
@@ -573,8 +581,11 @@ impl SurfaceExecutor for GpuiExecutor {
             SurfaceIntent::Hold { handle, keyboard } => self.execute_hold(handle, keyboard),
             SurfaceIntent::Focus { handle } => vec![Action::FocusTerminal { handle }],
             SurfaceIntent::Destroy { handle } => {
+                // Liveness asserted here (a decision bug is loud);
+                // retirement itself is apply-time — the applier still
+                // needs the window to remove it, mirroring how
+                // adoption is apply-time for opens.
                 let _ = self.window_of(handle);
-                self.live.remove(&handle);
                 vec![Action::Remove { handle }]
             }
         }
@@ -954,10 +965,11 @@ mod tests {
     }
 
     #[test]
-    fn destroy_removes_the_window_and_retires_the_handle() {
-        // Destroy resolves the live window for removal and retires the
-        // handle: a surface lifecycle never reuses a handle, so a
-        // retired handle has no successor to mis-name.
+    fn destroy_derives_the_remove_and_retirement_is_apply_time() {
+        // Destroy's derivation asserts liveness and yields the remove;
+        // the handle retires only when the applier has removed the
+        // window (it still needs the map to find it). A later intent
+        // naming the retired handle is loud.
         let mut exec = GpuiExecutor::new();
         let handle = SurfaceHandle::next();
         exec.execute(SurfaceIntent::Measure {
@@ -971,6 +983,9 @@ mod tests {
             actions.as_slice(),
             [Action::Remove { handle: h }] if *h == handle
         ));
+        // Pre-retirement (the applier's window lookup): still live.
+        assert_eq!(exec.window_of(handle), probe);
+        exec.retire(handle);
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { exec.window_of(handle) }))
                 .is_err()

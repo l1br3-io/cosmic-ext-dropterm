@@ -125,13 +125,49 @@ animation with the pinned wire shape; activation-loss drives
 `Destroy` destroys.
 
 **Acceptance criteria:**
-- [ ] Wire shape matches: keyboard release at slide-out start, destroy at
+- [x] Wire shape matches: keyboard release at slide-out start, destroy at
       completion (~130 ms later), both compositors
-- [ ] Focus-loss hides with the instance surviving; the caret returns on
+- [x] Focus-loss hides with the instance surviving; the caret returns on
       re-show
 
 **Verification:**
-- [ ] Manual: the si-5-class walk on rig + VM
+- [x] Manual: the si-5-class walk on rig + VM
+
+*Done 2026-11-13 (sr-3): the hide funnel is served whole — Hold's
+recreate-at-released lands the keyboard release at slide-out start
+(the wire), the shell's slide clock (ticked since sr-2) parks the
+out-slide at completion and destroys, the mid-slide reversal re-holds
+at the resolved mode through the same recreate path, and an activation
+loss on a shown surface runs decide_focus_loss (the machine's focus
+latch armed by a real GAINED — the `LayerFocused` analog) into the
+hide funnel when the config gate fires. The slide visual rides GPUI's
+animation element (`with_animation` drives the frames, the chunk's
+ruling) while the position is core's slide model — one clock for
+pixels and wire, so the keyboard-hold swap mid-slide remounts the
+frame driver without a visual jump. THE WALK FINDINGS, made
+structural: (1) the executor retired a handle at Destroy *derivation*
+while the applier still needed the map to remove the window — the
+first hide crashed on our own loud-miss; retirement is now apply-time
+(mirroring adoption), pinned by the reworked test; (2) the focus-loss
+flag armed on every LOST render instead of the transition (the
+seatless rig's rest state is LOST every frame — 25 no-op decision
+rows); (3) the render updated last_active before the transition check
+read it, so the first VM steal never armed the flag at all; (4) the
+slide clock's destroy path never published the phase — the surface
+was gone while the served state said visible (a lie the is-visible
+query surfaced). Walked on rig + VM: the hide wire on both compositors
+(Hold{Released} derived at the accepted-verb millisecond, destroy at
+137/142/146 ms in release — the ~130 ms completion, 244 ms on the
+debug rig, tick-quantized), the mid-slide reversal at 101 ms into the
+slide (Toggle → Hold{Exclusive} + Focus → re-held, visible stayed
+true), a full re-show cycle on a fresh handle, and the focus-loss
+hide on the VM's real seat: cosmic-edit steals focus → LOST →
+decision → slide-out → destroyed 146 ms later → mirrored visible=false
+→ --is-visible false/1 answered by the surviving instance. The
+caret-returns-on-reshow clause rides the terminal slice (the band has
+no caret). Evidence: target/rig-evidence-gs3-slide-instance.log +
+target/vm-evidence-gs3-{slide.log,shown,focusloss}.png (snapshot
+held, VM restored after).
 
 **Dependencies:** Task 2 · **Files:** the executor + animation modules ·
 **Scope:** M

@@ -402,8 +402,16 @@ name, answers the contract on both compositors.
       with the snap, the edit recreated at 1024x360/1024x400 with
       activation GAINED on the VM's seat the same millisecond as the
       swap)*
-- [ ] sr-3 Holds; the slide ported (release at slide-out start, destroy
-      at completion); focus-loss hide
+- [x] sr-3 Holds; the slide ported (release at slide-out start, destroy
+      at completion); focus-loss hide *(done 2026-11-13 on
+      port/gpui-surface: Hold recreates at the pin's create-only
+      keyboard, the slide clock destroys at ~137-146 ms in release, the
+      reversal re-holds mid-slide, activation loss runs the focus-loss
+      gate into the hide; four walk findings made structural —
+      apply-time handle retirement, transition-gated focus-loss flag,
+      transition-order fix, phase publish on the completion destroy;
+      walked rig + VM with the focus-loss steal evidenced on COSMIC's
+      real seat)*
 - [ ] sr-4 Budget banked; surface rows both compositors; merge
 - [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
 - [ ] gt-2 Input + keybinds; selection; scrollback
