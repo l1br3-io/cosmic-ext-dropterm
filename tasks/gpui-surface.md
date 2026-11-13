@@ -77,12 +77,42 @@ keyboard re-grab verified (+141 ms class). The config-edit reshape and the
 drag both land through `Shape`.
 
 **Acceptance criteria:**
-- [ ] Every cadence height honored on both compositors (drag-class logs)
-- [ ] A live geometry edit lands exactly via recreate, with the re-grab
+- [x] Every cadence height honored on both compositors (drag-class logs)
+- [x] A live geometry edit lands exactly via recreate, with the re-grab
       evidenced
 
 **Verification:**
-- [ ] Manual: the 2/2b-class walks on rig + VM
+- [x] Manual: the 2/2b-class walks on rig + VM
+
+*Done 2026-11-13 (sr-2): the drag runs through the machine's own
+funnel — a walk driver feeds absolute pointer positions
+(`DROPTERM_DRAG_WALK`, strict-parsed, tested) one per tick once shown
+and at rest, through `drag_move`/`drag_trailing`/`drag_release`, so
+the cadence gate, the deadband, and the release settle are the real
+decision paths, logged as drag-class rows (move → applied target →
+Shape Pixels → resized → frame bounds echo). The live config edit
+rides a notify watcher (the sanctioned crate, version-matched): any
+event in the config dir signals the tick, which reloads, recomputes
+inputs, and runs `decide_reshape` — geometry-only edits resize in
+place, anchor/alignment/width-mode edits recreate through the
+executor's reconcile; an absorbed echo opens a 300 ms quiet window so
+one write's inotify burst costs one row, not dozens. The shell also
+ticks the machine's slide clock (parking finished slide-ins — an
+unparked slide would block reshapes and drags by the decision layer's
+own guards) and logs activation transitions (the re-grab evidence
+rows). Walked on rig + VM: every cadence target applied and echoed on
+both compositors (216→470 rig / 240→494 VM, each landing in the next
+frame's mapped bounds), the release settled at 65%/62% with the
+half-percent snap (470→468, 494→496) and the would-persist row logged
+(persistence itself is the config-write slice's), the live edit
+recreated at the exact new geometry (1024x360 rig / 1024x400 VM,
+bottom-left, 0 px changed right of the band) with the re-grab
+evidenced on the VM's real seat (activation LOST at the swap's frame
+1, GAINED at frame 2 in the same millisecond — release class; the
+headless rig has no seat, so its activation row reads LOST
+throughout). Evidence: target/rig-evidence-gs2-shape-instance.log +
+target/vm-evidence-gs2-{shape.log,drag-settled,edited}.png (snapshot
+held, VM restored after).
 
 **Dependencies:** Task 1 · **Files:** the executor module · **Scope:** M
 

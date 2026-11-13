@@ -393,8 +393,15 @@ name, answers the contract on both compositors.
       pixel-verified), release 36–46 ms inside the budget; three walk
       findings made structural: probe fires on configured bounds +
       reports via polled slot + QuitMode::Explicit)*
-- [ ] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
-      recreate with the re-grab
+- [x] sr-2 Shape: 80 ms cadence resize in place; anchor/margin edits via
+      recreate with the re-grab *(done 2026-11-13 on port/gpui-surface:
+      drag through the machine's real funnel (walk-fed positions),
+      config edits through a notify watcher + decide_reshape with a
+      300 ms echo quiet window, slide clock ticked by the shell;
+      walked rig + VM — cadence targets echoed on both, settle 65%/62%
+      with the snap, the edit recreated at 1024x360/1024x400 with
+      activation GAINED on the VM's seat the same millisecond as the
+      swap)*
 - [ ] sr-3 Holds; the slide ported (release at slide-out start, destroy
       at completion); focus-loss hide
 - [ ] sr-4 Budget banked; surface rows both compositors; merge

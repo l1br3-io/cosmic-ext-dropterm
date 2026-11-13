@@ -13,6 +13,7 @@
 //! (the drainer cannot touch this context), and the shell publishes
 //! its machine phase for the drainer's served-state mirror.
 
+use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,6 +24,7 @@ use dropterm_core::config::DropTermConfig;
 use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+use notify::Watcher as _;
 
 use crate::dbus::Verb;
 use crate::executor::{Action, GpuiExecutor};
@@ -62,6 +64,13 @@ fn band() -> impl IntoElement {
         ))
 }
 
+/// Whether the drag handlers may act: the decision layer's
+/// [`dropterm_core::surface_lifecycle::grab_bar_acts_on`] guard, read
+/// through (shown and at rest — no drag arms while a slide animates).
+fn grab_bar_at_rest(machine: &SurfaceMachine) -> bool {
+    dropterm_core::surface_lifecycle::grab_bar_acts_on(&machine.state, machine.slide.is_some())
+}
+
 /// The machine state as the served contract's phase vocabulary.
 fn phase_of(state: &SurfaceState) -> SurfacePhase {
     match state {
@@ -85,6 +94,23 @@ pub(crate) struct Shell {
     machine: SurfaceMachine,
     executor: GpuiExecutor,
     inputs: SurfaceInputs,
+    /// The drag-walk driver's remaining pointer positions (see
+    /// [`drag_walk_positions`]); fed one per tick once the surface is
+    /// shown and at rest, with the settle release a beat after the
+    /// last.
+    drag_walk: VecDeque<f32>,
+    drag_release_at: Option<Instant>,
+    /// External config edits, signaled by the watcher thread; drained
+    /// and coalesced per tick into one reload-and-reshape.
+    config_changes: Receiver<()>,
+    /// A no-change reload's quiet window: one write lands as a burst
+    /// of inotify events across several ticks, and re-logging an
+    /// absorbed echo per tick is log spam, not evidence — signals
+    /// inside the window are dropped without a reload.
+    config_quiet_until: Option<Instant>,
+    /// The last logged activation state (the keyboard re-grab's
+    /// evidence rows ride on its transitions).
+    last_active: Option<bool>,
     /// The machine phase this shell publishes for the dbus mirror.
     phase: Arc<Mutex<SurfacePhase>>,
     /// The forwarded verbs, drained on the tick.
@@ -99,11 +125,14 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         boot: Instant,
         inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         verbs: Receiver<Verb>,
+        drag_walk: Option<Vec<f32>>,
+        config_changes: Receiver<()>,
         exit_after: Option<Duration>,
     ) -> Self {
         Self {
@@ -114,6 +143,11 @@ impl Shell {
             machine: SurfaceMachine::default(),
             executor: GpuiExecutor::new(),
             inputs,
+            drag_walk: drag_walk.unwrap_or_default().into(),
+            drag_release_at: None,
+            config_changes,
+            config_quiet_until: None,
+            last_active: None,
             phase,
             verbs,
             measured: Arc::new(Mutex::new(None)),
@@ -153,6 +187,18 @@ impl Shell {
         if let Some(output) = granted {
             self.measured(output, &mut actions);
         }
+        // The slide clock: parking finished slides is the machine's
+        // own truth (an `In` slide rides every shown surface until it
+        // parks, and an unparked slide would block reshapes and drags
+        // by the decision layer's own guards). The animated
+        // translation of an `Out` slide is task 3's; the clock is
+        // this shell's to tick.
+        let slide_intents = self.machine.decide_slide_tick();
+        if !slide_intents.is_empty() {
+            self.execute_into(slide_intents, &mut actions);
+        }
+        self.drag_walk_step(&mut actions);
+        self.drain_config_changes(&mut actions);
         let quit = match self.exit_at {
             Some(deadline) if Instant::now() >= deadline => {
                 println!(
@@ -164,6 +210,116 @@ impl Shell {
             _ => false,
         };
         Pumped { actions, quit }
+    }
+
+    /// One tick of the drag-walk driver: the trailing apply first (a
+    /// position the cadence gate skipped lands here), then one fed
+    /// position — only while the grab-bar guard holds (shown, at
+    /// rest) — and the settle release a beat after the last position.
+    fn drag_walk_step(&mut self, actions: &mut Vec<Action>) {
+        if self.machine.drag.is_some() {
+            let trailing = self.machine.drag_trailing(Instant::now(), self.inputs);
+            if let Some(applied) = trailing.applied {
+                println!(
+                    "dropterm-gpui: drag walk trailing apply landed target={applied}px at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            self.execute_into(trailing.intents, actions);
+        }
+        let at_rest = grab_bar_at_rest(&self.machine);
+        if at_rest && let Some(pointer_y) = self.drag_walk.pop_front() {
+            println!(
+                "dropterm-gpui: drag walk move pointer_y={pointer_y:.0} at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            let outcome = self
+                .machine
+                .drag_move(pointer_y, Instant::now(), self.inputs);
+            if let Some(target) = outcome.applied {
+                println!(
+                    "dropterm-gpui: drag walk cadence applied target={target}px at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            self.execute_into(outcome.intents, actions);
+            if self.drag_walk.is_empty() && self.drag_release_at.is_none() {
+                // A beat after the last move: the release settle.
+                self.drag_release_at = Some(Instant::now() + Duration::from_millis(300));
+            }
+        }
+        if let Some(when) = self.drag_release_at
+            && Instant::now() >= when
+        {
+            self.drag_release_at = None;
+            let (intents, settled, write) = self.machine.drag_release(self.inputs);
+            println!(
+                "dropterm-gpui: drag walk release settled at {}% at +{}ms",
+                settled.height_percent,
+                self.boot.elapsed().as_millis()
+            );
+            if let Some(percent) = write {
+                // The persist itself is the config-write slice's;
+                // the walk logs the decision the libcosmic app would
+                // write.
+                println!(
+                    "dropterm-gpui: drag settle would persist height_percent={percent} \
+                     (persistence arrives with the config-write slice)"
+                );
+            }
+            self.inputs.geometry = settled;
+            self.execute_into(intents, actions);
+        }
+    }
+
+    /// External config edits: coalesce every signaled change into one
+    /// reload, recompute the decision inputs, and reshape the live
+    /// surface if the geometry actually changed (the machine's own
+    /// guards defer while a drag is armed or a slide animates).
+    fn drain_config_changes(&mut self, actions: &mut Vec<Action>) {
+        let mut signaled = false;
+        while self.config_changes.try_recv().is_ok() {
+            signaled = true;
+        }
+        if !signaled {
+            return;
+        }
+        if let Some(quiet_until) = self.config_quiet_until
+            && Instant::now() < quiet_until
+        {
+            // An echo of an already-absorbed write, inside the quiet
+            // window: nothing to reload, nothing to log.
+            return;
+        }
+        let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+        let new_inputs = SurfaceInputs::from_config(&config);
+        let old_geometry = self.inputs.geometry;
+        let drag_armed = self.machine.drag.is_some();
+        let intents = self
+            .machine
+            .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
+        if intents.is_empty() && old_geometry == new_inputs.geometry {
+            // The write (or its echo) changed nothing the surface
+            // reads: absorb silently, and open the quiet window so
+            // the rest of the write's event burst costs no rows.
+            self.config_quiet_until = Some(Instant::now() + Duration::from_millis(300));
+            return;
+        }
+        println!(
+            "dropterm-gpui: config changed -> reshape decision: {} intent(s) \
+             (geometry {}%/{}% {:?} {:?} -> {}%/{}% {:?} {:?})",
+            intents.len(),
+            old_geometry.height_percent,
+            old_geometry.width_percent,
+            old_geometry.h_align,
+            old_geometry.edge,
+            new_inputs.geometry.height_percent,
+            new_inputs.geometry.width_percent,
+            new_inputs.geometry.h_align,
+            new_inputs.geometry.edge,
+        );
+        self.inputs = new_inputs;
+        self.execute_into(intents, actions);
     }
 
     /// One forwarded surface verb through the toggle funnel: the
@@ -369,6 +525,17 @@ impl gpui::Render for Shell {
                 self.show_open.elapsed().as_millis()
             );
         }
+        let active = window.is_window_active();
+        if self.last_active != Some(active) {
+            println!(
+                "dropterm-gpui: activation {} at +{}ms (frame {}) — the keyboard re-grab \
+                 evidence",
+                if active { "GAINED" } else { "LOST" },
+                self.boot.elapsed().as_millis(),
+                self.frames
+            );
+            self.last_active = Some(active);
+        }
         band()
     }
 }
@@ -421,6 +588,26 @@ impl gpui::Render for MeasureProbe {
     }
 }
 
+/// `DROPTERM_DRAG_WALK`'s parse: a strictly-parsed comma-separated
+/// list of absolute window-y pointer positions the walk feeds through
+/// the machine's live-drag funnel once the surface is shown — one
+/// position per tick, the machine's own cadence gate deciding which
+/// apply (the drag-class evidence rows; a real pointer drives the same
+/// funnel through the grab bar once the chrome slices land it).
+pub(crate) fn drag_walk_positions(raw: Option<&str>) -> Option<Vec<f32>> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let positions = raw.split(',').map(str::trim).collect::<Vec<_>>();
+    let parsed = positions
+        .iter()
+        .map(|p| p.parse::<f32>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some(parsed)
+}
+
 /// Boot the shell: load the config, create the shell entity, and run
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
@@ -432,7 +619,8 @@ pub(crate) fn boot(
     verbs: Receiver<Verb>,
 ) {
     let boot = Instant::now();
-    let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+    let config_dir = dropterm_core::config::store::store_dir();
+    let config = DropTermConfig::load_from(&config_dir);
     let inputs = SurfaceInputs::from_config(&config);
     println!(
         "dropterm-gpui: surface shell booted hidden (edge {:?}, {}% height, {}% width, align \
@@ -444,7 +632,40 @@ pub(crate) fn boot(
         inputs.layer,
         inputs.keyboard_mode,
     );
-    let shell = cx.new(|_| Shell::new(boot, inputs, Arc::clone(phase), verbs, exit_after));
+    let drag_walk = drag_walk_positions(std::env::var("DROPTERM_DRAG_WALK").ok().as_deref());
+    if drag_walk.is_some() {
+        println!("dropterm-gpui: drag walk armed (positions fed once shown and at rest)");
+    }
+    let (config_tx, config_changes) = std::sync::mpsc::channel::<()>();
+    let watch_dir = config_dir.clone();
+    std::thread::spawn(move || {
+        let mut watcher = match notify::recommended_watcher(move |event| {
+            let _ = event; // any event in the config dir: reload and compare
+            let _ = config_tx.send(());
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => return eprintln!("dropterm-gpui: config watcher failed: {err:?}"),
+        };
+        if let Err(err) = watcher.watch(&watch_dir, notify::RecursiveMode::NonRecursive) {
+            return eprintln!("dropterm-gpui: config watch failed: {err:?}");
+        }
+        println!(
+            "dropterm-gpui: config watcher armed on {}",
+            watch_dir.display()
+        );
+        std::thread::park();
+    });
+    let shell = cx.new(|_| {
+        Shell::new(
+            boot,
+            inputs,
+            Arc::clone(phase),
+            verbs,
+            drag_walk,
+            config_changes,
+            exit_after,
+        )
+    });
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
     // come and go; the shell owns the machine and must not).
@@ -512,5 +733,22 @@ mod tests {
             phase_of(&SurfaceState::Hiding(SurfaceHandle::next())),
             SurfacePhase::Hiding
         );
+    }
+
+    #[test]
+    fn drag_walk_positions_parse_strictly() {
+        // The walk's affordance: a comma-separated list of absolute
+        // window-y pointer positions. Every entry must parse — a
+        // malformed list boots no drag walk at all (visibly wrong in
+        // a walk log, never silently half-armed).
+        assert_eq!(drag_walk_positions(None), None);
+        assert_eq!(drag_walk_positions(Some("")), None);
+        assert_eq!(drag_walk_positions(Some("   ")), None);
+        assert_eq!(drag_walk_positions(Some("216")), Some(vec![216.]));
+        assert_eq!(
+            drag_walk_positions(Some("216, 240,270 , 305")),
+            Some(vec![216., 240., 270., 305.])
+        );
+        assert_eq!(drag_walk_positions(Some("216,soon,270")), None);
     }
 }
