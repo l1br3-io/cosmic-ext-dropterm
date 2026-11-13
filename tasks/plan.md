@@ -193,9 +193,19 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
       bounded at 5 s for both frontends)*
 - **Checkpoint: the frontend exists** — pinned, patched, boots on both
   compositors, owns the name *(held at the merge)*
-- [ ] [gpui-surface](gpui-surface.md) Tasks 1–4: executor + two-surface
+- [x] [gpui-surface](gpui-surface.md) Tasks 1–4: executor + two-surface
       show → cadence resize + recreate edit → holds + slide +
       focus-loss → budget + rows + merge
+      *(merged 05ac2ba, 2026-11-13 — every task walked on the sway rig
+      and the validation VM under snapshot discipline, evidence under
+      `target/` (rig-evidence-gs{1,2,3}*, vm-evidence-gs{1,2,3,4}*);
+      dropterm-core untouched (empty diff, 819 tests green); seven
+      structural findings banked from the walks, the load-bearing one
+      being the lifetime rule: GPUI's default quit mode quits on
+      last-window-close, fatal for a hidden-boot single instance —
+      the binary runs QuitMode::Explicit; the mid-slide reversal is
+      wire-evidenced on the rig and rides parity's human-at-console
+      row on the VM, as si-5 parked it for the libcosmic build)*
 - [ ] [gpui-terminal](gpui-terminal.md) Tasks 1–4: grid view + resize →
       input/keybinds/selection/scrollback → mouse + clipboard →
       integration + merge
