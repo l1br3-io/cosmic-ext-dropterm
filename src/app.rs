@@ -75,11 +75,6 @@ use crate::intent::{KeyboardHold, SurfaceIntent};
 /// release's instance slot.
 pub const APP_ID: &str = dropterm_core::APP_ID;
 
-/// Debounce window for toggle requests, guarding against the double
-/// key-press events a compositor occasionally delivers for one physical
-/// press (see the README's known-risks section).
-const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
-
 #[derive(Debug, Clone)]
 #[expect(
     clippy::large_enum_variant,
@@ -2884,8 +2879,9 @@ impl DropTerm {
                 let old_hide_on_focus_loss = self.config.hide_on_focus_loss;
                 // Whether the shown surface holds `Exclusive` under
                 // the OLD config — the resolved mode it mapped with
-                // (`surface::shown_keyboard_mode`), captured before
-                // the assignment below for the live release guard.
+                // (`surface_lifecycle::shown_keyboard_mode`), captured
+                // before the assignment below for the live release
+                // guard.
                 let old_shown_exclusive =
                     old_hide_on_focus_loss && self.config.keyboard_mode == KeyboardMode::Exclusive;
                 self.config = config;

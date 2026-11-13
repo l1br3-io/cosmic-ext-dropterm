@@ -157,11 +157,39 @@ maps it back), and `main.rs`'s transport halves (bus-name decision,
 move with their code, unchanged.
 
 **Acceptance criteria:**
-- [ ] The decision-layer tests green in core, unchanged in content
-- [ ] `forward_outcome` tests green in core
+- [x] The decision-layer tests green in core, unchanged in content
+- [x] `forward_outcome` tests green in core
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check`
+
+**Done (2026-11-13, port/shared-core):** the decision core
+(`SurfaceMachine`, `SurfaceInputs`, the guards, `toggle_step`,
+`TOGGLE_DEBOUNCE`, and `shown_keyboard_mode` from surface.rs) moved
+to `dropterm_core::surface_lifecycle` with its 44 tests — assertions
+byte-identical; the one vocabulary change is the funnel's action
+enum: the CLI's clap-derived `ToggleAction` stays frontend (Task 4's
+file list never named remote.rs, and core owning a CLI enum would
+hand the applet clap), so core owns `ToggleIntent` — the three
+surface verbs the funnel actually acts on — and the frontend maps
+onto it with the old unreachable arm (remote verbs apply outside the
+funnel) as the total match that proves it. The slide *model*
+(Direction/Active/Playing/offset/reverse/finished/show_slide +
+constants and tests) moved with the machine — it is machine state —
+as `dropterm_core::slide`; the SlideBox widget and translation_y
+stay frontend, re-exporting the model so every `crate::slide::`
+path kept resolving. The `RecordingExecutor` frontend twin retired
+as Task 1 predicted (core's own `cfg(test)` twin is same-crate
+visible now). main.rs's transport halves (`bus_name_status`/
+`BusName`, `platform_data`, `forward_to_running`,
+`forward_outcome`) moved as `dropterm_core::transport` with the four
+forward-outcome/platform-data tests; `forward_to_running` grew its
+one seam — the verb name and forward words are parameters now (the
+frontend serializes through `CosmicFlags::args`, libcosmic's own
+client encoding), so every frontend forwards through the same member
+with its own CLI's serialization. `query_visibility` and
+`single_instance_disabled` stayed frontend-side: the chunk names
+neither, and both are this launch's own client behavior.
 
 **Dependencies:** Tasks 1–2 · **Files:** `src/app/surface_lifecycle*`,
 `src/executor.rs` (effect mapping), `src/main.rs` · **Scope:** M

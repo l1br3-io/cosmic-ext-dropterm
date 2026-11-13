@@ -315,8 +315,14 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
       retired entirely: `font_list` became a bin module, the applet
       depends on `dropterm-core` with `default-features = false` and
       forwards `dev-identity` straight to core; zero new lock packages)*
-- [ ] sc-4 Decision layer + transport halves move (Task continuation
-      goes executor-neutral)
+- [x] sc-4 Decision layer + transport halves move (Task continuation
+      goes executor-neutral) *(the machine, guards, `TOGGLE_DEBOUNCE`,
+      `shown_keyboard_mode`, and the slide model moved with 44
+      unchanged tests — `ToggleIntent` is the funnel's 3-verb
+      vocabulary, the clap `ToggleAction` maps onto it frontend-side;
+      the transport halves moved as `core::transport` with
+      `forward_to_running` parameterized over the verb's name+words —
+      the frontend serializes through `CosmicFlags::args`)*
 - [ ] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
 
 **Checkpoint — the core stands alone:** zero toolkit deps pinned by
