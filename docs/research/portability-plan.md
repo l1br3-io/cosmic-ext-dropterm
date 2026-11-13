@@ -1499,7 +1499,11 @@ edge-to-edge needs a one-const Kit carried patch (pipeline-fork cost)
 or accepted non-flush edges; Phase 3's first Kit decision. Full
 per-check evidence: [gpui-spike](gpui-spike.md) "Kit pass". Phase 3's
 pin decision is armed: the snapshot (gpui-pre 0.3.12) is the GPUI
-source.
+source. The first Kit decision is ruled (2026-11-13, owner): the
+carried patch — a private one-const copy under `[patch]`, not a
+public fork, an upstream opt-out ask as its retirement path;
+edge-to-edge stands. Dev docs for the copy ship with the Phase 3
+module that creates it (task plan, open questions item 7).
 
 ## Assumptions: the plan's kill risks
 

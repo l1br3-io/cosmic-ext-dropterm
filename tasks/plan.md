@@ -165,7 +165,10 @@ evidence record, not a chunk.
 2. **config-store's watcher dependency** (chunk Task 4's gate) —
    DECIDED 2026-11-10: `notify` sanctioned.
 3. **The Kit ruling** (open ruling 1; recommended after the spike
-   reads the ledger) and its timing (open ruling 2).
+   reads the ledger) and its timing (open ruling 2). — DECIDED
+   2026-11-13: adopt, ruled at open ruling 2's recommended timing at
+   the `/build auto` gate (recorded at kp-0 and the plan record's
+   Phase 2 results).
 4. **Live geometry edits under GPUI** (open ruling 3): answered by the
    spike's check 2b recreate-cost measurement.
 5. **config-store's dbus-config feature** (chunk Task 6): decided on
@@ -174,3 +177,13 @@ evidence record, not a chunk.
 6. **distro-reach's two rulings** (chunk Task 2): the glibc floor and
    the native channels — the chunk is a shell until they land, as its
    spec is. — PARKED 2026-11-13 (owner): deferred with the release.
+7. **The Kit auto-border debt** (the Kit GO's one carried debt; the
+   record's "Phase 3's first Kit decision"): DECIDED 2026-11-13 — the
+   one-const carried patch wins: a private source copy under
+   `[patch]`, never a public fork, with an upstream opt-out ask as the
+   retirement path; the drawer stays edge-to-edge. The carried-patch
+   ledger takes its third entry when Phase 3 lands the copy, and the
+   dev docs (a carried-patches section in development.md) ship with
+   that module, not before — the docs-to-code gates forbid describing
+   code that does not exist yet. Still open beside it: the pin half
+   (snapshot gpui-pre =0.3.12 as the GPUI source).
