@@ -1498,8 +1498,10 @@ Client on all surfaces, so a 1280×320 drawer negotiates 1320×360 —
 edge-to-edge needs a one-const Kit carried patch (pipeline-fork cost)
 or accepted non-flush edges; Phase 3's first Kit decision. Full
 per-check evidence: [gpui-spike](gpui-spike.md) "Kit pass". Phase 3's
-pin decision is armed: the snapshot (gpui-pre 0.3.12) is the GPUI
-source. The first Kit decision is ruled (2026-11-13, owner): the
+pin decision is ruled too (2026-11-13, owner, on the recommendation
+after kp-1's fidelity proof): the snapshot (gpui-pre 0.3.12) is the
+GPUI source — published crates, never a zed git pin (task plan, open
+questions item 8). The first Kit decision is ruled (2026-11-13, owner): the
 carried patch — a private one-const copy under `[patch]`, not a
 public fork, an upstream opt-out ask as its retirement path;
 edge-to-edge stands. Dev docs for the copy ship with the Phase 3
