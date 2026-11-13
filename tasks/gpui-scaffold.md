@@ -37,15 +37,15 @@ the spike harness (carried as reference, rewritten as the crate's shell)
 and exits cleanly.
 
 **Acceptance criteria:**
-- [ ] One lockfile; `cargo tree` shows the 20-crate set at `=0.3.12`
-- [ ] A manifest pin test (the `=0.3.12` set, zero gpui-shell/gpui-kit
+- [x] One lockfile; `cargo tree` shows the 20-crate set at `=0.3.12`
+- [x] A manifest pin test (the `=0.3.12` set, zero gpui-shell/gpui-kit
       edges) runs in `just check`
-- [ ] The window maps and exits clean on the sway rig and the validation
+- [x] The window maps and exits clean on the sway rig and the validation
       VM
 
 **Verification:**
-- [ ] Build: `cargo build -p dropterm-gpui` and `just check`
-- [ ] Manual: map + clean exit on rig and VM (logs held)
+- [x] Build: `cargo build -p dropterm-gpui` and `just check`
+- [x] Manual: map + clean exit on rig and VM (logs held)
 
 **Dependencies:** `shared-core` merged · **Files:** the new crate, root
 `Cargo.toml`, `Cargo.lock` · **Scope:** M

@@ -13,7 +13,7 @@ name = "dropterm"
 path = "src/main.rs"
 
 [workspace]
-members = [".", "applet", "dropterm-core"]
+members = [".", "applet", "dropterm-core", "dropterm-gpui"]
 
 [workspace.dependencies]
 # Bare URL, deliberately: libcosmic's own `applet` feature pulls

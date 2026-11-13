@@ -336,8 +336,14 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 **Checkpoint — the core stands alone:** zero toolkit deps pinned by
 test; libcosmic binary + applet identical behavior.
 
-- [ ] sf-1 `dropterm-gpui` crate; the ruled pin in the root workspace;
-      manifest pin test; LayerShell boot on rig + VM
+- [x] sf-1 `dropterm-gpui` crate; the ruled pin in the root workspace;
+      manifest pin test; LayerShell boot on rig + VM *(walked 2026-11-13:
+      rig 327 ms debug first frame, frame 2 = 1280×200 full width, clean
+      loop exit 0 (target/rig-evidence-sf1.log); VM 186 ms first frame,
+      band pixel-evidenced over the desktop (target/vm-evidence-sf1.log +
+      -boot.png), snapshot pre-gpui-scaffold-walk taken and VM rewound
+      after; the lockfile took the ruled unicode-properties =0.1.3 plus
+      one automatic icu_* 2.3→2.4 unification, git pins untouched)*
 - [ ] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
       + flush edges both compositors; development.md carried-patches
       section (ledger entry 3)

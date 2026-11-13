@@ -1,0 +1,38 @@
+[package]
+name = "dropterm-gpui"
+version = "0.5.0"
+authors = ["l1br3-io"]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.93"
+description = "DropTerm's GPUI frontend (Phase 3 portability: the second binary beside the libcosmic one; ships nothing until cutover)"
+repository = "https://github.com/l1br3-io/dropterm"
+
+[[bin]]
+name = "dropterm-gpui"
+path = "src/main.rs"
+
+[dependencies]
+# The ruled pin (plan open questions item 8, ruled 2026-11-13 on the
+# Kit pass's recommendation): published crates, never a zed git pin —
+# gpui-pre exact at 0.3.12 (the crates.io snapshot of zed
+# d2a4fb6ded7c470be25d1541281da3882495b65b, the rev the spike ran its
+# checks on), default features off, wayland + font-kit only — exactly
+# the set the Kit itself consumes. GPUI's x11/macOS features are
+# Phase 4–5's call and never enter here. gpui-pre-platform rides the
+# same exact version; its `wayland` feature is the consumer-side
+# switch into the Linux crate's wayland backend.
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["wayland", "font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland"] }
+
+# The GPUI frontend's toolkit-neutral half: the served-state D-Bus
+# contract, the startup transport, and the APP_ID identity const.
+dropterm-core = { path = "../dropterm-core" }
+
+[features]
+# Re-identifies the frontend as `io.github.l1br3_io.dropterm.Dev` —
+# its own single-instance slot, bus name, and namespace — riding the
+# same pattern as every other member: the const lives in core, this
+# feature only forwards to it. Never default: release artifacts carry
+# the plain identity.
+dev-identity = ["dropterm-core/dev-identity"]
