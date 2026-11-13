@@ -1,0 +1,70 @@
+[package]
+name = "dropterm-core"
+version = "0.5.0"
+authors = ["l1br3-io"]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.93"
+description = "DropTerm's toolkit-neutral core — config store, session, profiles, intents, and the pure geometry/keybind models — shared by every frontend"
+repository = "https://github.com/l1br3-io/dropterm"
+
+[dependencies]
+# The engine's text stack — plain data plus the shaper the test host
+# uses; iced's font system never enters this crate (the buffers stay
+# frontend-side, spike check 9). Version-matched to the root crate's
+# 0.19 line with the same features, so no new code enters the build.
+cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-cache"] }
+# The engine's metadata set (grid cell styling) — the root crate's
+# version-matched line.
+indexmap = "2"
+# The engine's event channel (`tokio::sync::mpsc`).
+tokio = { version = "1", features = ["sync"] }
+# The inline-image decode and store (iterm-images spec): same four
+# formats, same strict no-default-features line as the root crate.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# The inline-image wire's base64 and the completions file's inflate
+# and parse — version-matched to the root crate's lines.
+base64 = "0.22"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+toml = "0.5"
+dirs = "6"
+# `tcgetpgrp`/`getpgid` for foreground-process detection — no safe
+# std API exists for either.
+libc = "0.2"
+# The theme data table's color types (`Colors`, `NamedColor`, `Rgb`)
+# come from the terminal engine — not a toolkit; the engine itself
+# moves here with the shared-core spec's Task 2. Version-matched to
+# the root crate's patched 0.25.1 line (the workspace [patch] applies
+# here too), so no new code enters the build.
+alacritty_terminal = "0.25.1"
+log = "0.4"
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+# The served-state contract (`dbus_state`, moved by the shared-core
+# spec): the V1/activation interfaces, their proxies, and the bounded
+# forward channel (`tokio::sync::mpsc` arrives through the tokio dep
+# above). Version-matched to the lock's 5.19 line the root crate and
+# applet already carry; `default-features = false` selects the tokio
+# executor, and the `p2p` feature exists for the headless
+# peer-to-peer wire tests only, mirroring their declarations.
+zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
+
+[dev-dependencies]
+# The config-key ↔ docs sync test enumerates `DropTermConfig`'s
+# serialized keys via `serde_json::to_value`. Version-matched to the
+# 1.0.151 line the workspace lock already carries, so no new code
+# enters the build.
+serde_json = "1"
+# The dbus_state wire tests' stream combinators and `join!` — the
+# toolkit-free twin of the frontend's `cosmic::iced::futures`
+# re-export. Version-matched to the 0.3.34 line the lock already
+# carries, so no new code enters the build.
+futures = "0.3"
+
+[features]
+# Re-identifies as `io.github.l1br3_io.dropterm.Dev` — its own
+# single-instance slot, bus name, config file, state directory, and
+# namespace. The root crate's and the applet's same-named features
+# forward here, so both ends of the D-Bus contract move together.
+# Never default: release artifacts carry the plain identity.
+dev-identity = []

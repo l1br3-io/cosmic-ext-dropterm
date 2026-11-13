@@ -3025,8 +3025,8 @@ fn the_embedded_floor_is_the_core_tier() {
     // keep their seats in it.
     use std::io::Read as _;
 
-    let raw = include_str!("../../../data/completions.toml");
-    let compressed: &[u8] = include_bytes!("../../../data/completions.toml.gz");
+    let raw = include_str!("../../../../data/completions.toml");
+    let compressed: &[u8] = include_bytes!("../../../../data/completions.toml.gz");
     assert_eq!(
         &compressed[..2],
         &[0x1f, 0x8b],
@@ -3289,12 +3289,12 @@ fn file_descriptions_reach_the_menu_rows() {
 
 /// The extended tier, never embedded: installed as a data file behind
 /// `autosuggestions_completions_extended` (suggest-embed).
-const EXTENDED_TIER: &str = include_str!("../../../data/completions-extended.toml");
+const EXTENDED_TIER: &str = include_str!("../../../../data/completions-extended.toml");
 
 /// The core tier's committed bytes, named beside its companion: the
 /// header pin reads this text, every parse-reading pin the fixtures
 /// below, so each raw path seats in exactly one place.
-const CORE_TIER: &str = include_str!("../../../data/completions.toml");
+const CORE_TIER: &str = include_str!("../../../../data/completions.toml");
 
 /// The tiers parsed once per run and shared: a 4 MiB parse costs
 /// seconds and the corpus and seed pins all read the same two tables
@@ -3862,12 +3862,10 @@ fn the_xdg_walk_finds_the_first_seated_file() {
     // data-local root leads, each root tries the running identity's
     // seat first, and a dev build's walk also finds the release
     // install's un-suffixed seat.
-    let release_id = dropterm::APP_ID
-        .strip_suffix(".Dev")
-        .unwrap_or(dropterm::APP_ID);
+    let release_id = crate::APP_ID.strip_suffix(".Dev").unwrap_or(crate::APP_ID);
     let primary_root = completions_fixture("walk-primary");
     let primary_seat = primary_root
-        .join(dropterm::APP_ID)
+        .join(crate::APP_ID)
         .join("completions-extended.toml");
     std::fs::create_dir_all(primary_seat.parent().expect("seat parent")).expect("seat dir");
     std::fs::write(&primary_seat, "").expect("seat file");
@@ -3879,7 +3877,7 @@ fn the_xdg_walk_finds_the_first_seated_file() {
     std::fs::write(&fallback_seat, "").expect("seat file");
     let later_root = completions_fixture("walk-later");
     let later_seat = later_root
-        .join(dropterm::APP_ID)
+        .join(crate::APP_ID)
         .join("completions-extended.toml");
     std::fs::create_dir_all(later_seat.parent().expect("seat parent")).expect("seat dir");
     std::fs::write(&later_seat, "").expect("seat file");

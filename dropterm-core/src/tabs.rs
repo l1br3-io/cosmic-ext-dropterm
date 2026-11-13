@@ -37,16 +37,14 @@ pub enum Attention {
 
 impl Attention {
     /// Transition on a bell in this tab.
-    #[expect(
-        clippy::unused_self,
-        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
-    )]
+    #[must_use]
     pub fn on_bell(self) -> Self {
         Self::Bell
     }
 
     /// Transition on output in this tab while it is inactive: activity
     /// at least — never demoting an existing bell marker.
+    #[must_use]
     pub fn on_activity(self) -> Self {
         match self {
             Self::Bell => Self::Bell,
@@ -56,10 +54,7 @@ impl Attention {
 
     /// Transition on the tab becoming active: whatever marker it wore
     /// is cleared.
-    #[expect(
-        clippy::unused_self,
-        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
-    )]
+    #[must_use]
     pub fn on_activated(self) -> Self {
         Self::None
     }
@@ -481,12 +476,6 @@ pub fn select_tab_target(len: usize, one_based: usize) -> Option<usize> {
 /// program and trailing arguments: whitespace-split
 /// exactly like the `args` config — quoting is not supported. `None`
 /// when the line holds no program at all.
-pub fn command_line_parts(line: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = line.split_whitespace();
-    let program = parts.next()?.to_string();
-    Some((program, parts.map(str::to_string).collect()))
-}
-
 /// Which way a move-bind shifts the active tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveDirection {

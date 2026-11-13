@@ -1,28 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The terminal engine and widget: a `Terminal` (PTY + `alacritty_terminal`
-//! grid + cosmic-text buffer) rendered by a `TerminalBox` iced widget.
+//! The terminal's libcosmic frontend: the render widget
+//! (`TerminalBox`), the iced input translation, and the toolkit's
+//! text host. The engine itself (PTY + `alacritty_terminal` grid +
+//! suggest model) lives in `dropterm-core` (shared-core spec) and is
+//! re-exported whole, so every `crate::terminal::…` path keeps
+//! resolving; the cosmic-text buffers stay here with the widget
+//! (spike check 9's boundary — they have no role on GPUI's path).
 //!
 //! Adapted from cosmic-term (<https://github.com/pop-os/cosmic-term>);
-//! see the module-level comments in `engine.rs`, `widget.rs` and
-//! `theme_source.rs` for what changed and why.
+//! see the module-level comments in the engine (core) and `widget.rs`
+//! for what changed and why.
 
-mod engine;
-pub mod mouse_reporter;
-// pub(crate) for one consumer: the app layer loads the spec table's
-// data file (suggest-specs-data spec) and hands it down through
-// `TerminalOptions` — the model itself never reads files.
-pub(crate) mod suggest;
-pub mod theme_source;
+mod host;
+mod input;
 mod widget;
 
-pub use engine::{
-    ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress, Terminal,
-    TerminalOptions, TerminalScroll, WINDOW_BG_COLOR,
+pub use dropterm_core::terminal::{
+    Metadata, ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress, Terminal,
+    TerminalOptions, TerminalScroll, TextHost, WINDOW_BG_COLOR,
 };
-// pub(crate) for one consumer outside the engine: the images panel's
-// thumbnail decode (paste-panel spec) rides the engine's own
-// decompression-bomb guard — clipboard-originated cache files meet
-// the same ceilings every OSC decode already had.
-pub(crate) use engine::decode_image;
+
+// The app layer loads the spec table's data file (suggest-specs-data
+// spec) and hands it down through `TerminalOptions` — the model
+// itself never reads files.
+pub use dropterm_core::terminal::suggest;
+
+pub use host::CosmicHost;
 pub use widget::{Action, TerminalBox};
+
+// The images panel's thumbnail decode (paste-panel spec) rides the
+// engine's own decompression-bomb guard — clipboard-originated cache
+// files meet the same ceilings every OSC decode already had.
+pub(crate) use dropterm_core::terminal::decode_image;

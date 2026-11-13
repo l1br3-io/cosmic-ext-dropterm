@@ -1,5 +1,6 @@
 use super::*;
 
+use dropterm_core::terminal::ssh_destination;
 fn home() -> std::path::PathBuf {
     std::path::PathBuf::from("/home/jpt")
 }
@@ -2137,167 +2138,6 @@ fn the_halo_stands_alone_centered_in_the_leading_padding_when_the_process_segmen
 }
 
 // --- the command timer (command-lifecycle) ---
-//
-// Pure policy over the foreground diff the engine already computes:
-// a start counts only when the timer witnessed the idle→running
-// crossing, a finish freezes the elapsed, and a command born
-// mid-observation never yields a duration — the both-edges honesty
-// rule.
-
-#[test]
-fn a_witnessed_start_sets_the_start_and_the_elapsed_grows_with_now() {
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(false, t0);
-    timer.step(true, t0 + Duration::from_secs(1));
-    assert_eq!(
-        timer.live_elapsed(t0 + Duration::from_secs(3)),
-        Some(Duration::from_secs(2))
-    );
-    assert_eq!(
-        timer.live_elapsed(t0 + Duration::from_secs(11)),
-        Some(Duration::from_secs(10))
-    );
-}
-
-#[test]
-fn a_witnessed_finish_freezes_the_elapsed_and_ends_the_live_read() {
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(false, t0);
-    timer.step(true, t0);
-    timer.step(false, t0 + Duration::from_secs(3));
-    assert_eq!(timer.last_duration(), Some(Duration::from_secs(3)));
-    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(10)), None);
-}
-
-#[test]
-fn the_next_start_clears_the_freeze_and_re_arms() {
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(false, t0);
-    timer.step(true, t0);
-    timer.step(false, t0 + Duration::from_secs(3));
-    timer.step(true, t0 + Duration::from_secs(10));
-    assert_eq!(
-        timer.last_duration(),
-        None,
-        "the next start clears the freeze"
-    );
-    assert_eq!(
-        timer.live_elapsed(t0 + Duration::from_secs(12)),
-        Some(Duration::from_secs(2))
-    );
-}
-
-#[test]
-fn same_state_repeats_are_no_ops() {
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    // Idle repeats on a fresh timer arm nothing.
-    timer.step(false, t0);
-    timer.step(false, t0 + Duration::from_secs(5));
-    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(6)), None);
-    // Running repeats keep the original start — the elapsed measures
-    // from the crossing, not the last observation.
-    timer.step(true, t0 + Duration::from_secs(10));
-    timer.step(true, t0 + Duration::from_secs(15));
-    assert_eq!(
-        timer.live_elapsed(t0 + Duration::from_secs(20)),
-        Some(Duration::from_secs(10))
-    );
-}
-
-#[test]
-fn a_timer_born_mid_run_never_reports_that_command() {
-    // The profile-tab spawn case: the first observation is already
-    // running, so the start went unwitnessed — no live elapsed, and
-    // the finish freezes nothing rather than guessing.
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(true, t0);
-    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(4)), None);
-    timer.step(false, t0 + Duration::from_secs(5));
-    assert_eq!(timer.last_duration(), None);
-}
-
-#[test]
-fn default_is_a_clean_idle_timer() {
-    let timer = CommandTimer::default();
-    assert_eq!(timer.live_elapsed(Instant::now()), None);
-    assert_eq!(timer.last_duration(), None);
-    assert_eq!(timer.last_exit(), None);
-}
-
-// --- the exit verdict (status-exit) ---
-//
-// The shell's own 133;D report rides the frozen pair's lifecycle:
-// verbatim except success, set regardless of a witnessed start, and
-// cleared by the next witnessed start beside the frozen duration —
-// one rule for both facts.
-
-#[test]
-fn a_non_zero_verdict_holds_through_reads() {
-    let mut timer = CommandTimer::default();
-    timer.note_exit(1);
-    assert_eq!(timer.last_exit(), Some(1));
-    assert_eq!(
-        timer.last_exit(),
-        Some(1),
-        "a held verdict is not drained by reads"
-    );
-}
-
-#[test]
-fn success_normalizes_to_the_unmarked_default() {
-    let mut timer = CommandTimer::default();
-    timer.note_exit(0);
-    assert_eq!(timer.last_exit(), None);
-}
-
-#[test]
-fn the_next_witnessed_start_clears_a_held_verdict() {
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(false, t0);
-    timer.step(true, t0);
-    timer.step(false, t0 + Duration::from_secs(3));
-    timer.note_exit(1);
-    assert_eq!(timer.last_exit(), Some(1));
-    timer.step(true, t0 + Duration::from_secs(10));
-    assert_eq!(
-        timer.last_exit(),
-        None,
-        "the next start clears the verdict with the freeze"
-    );
-}
-
-#[test]
-fn an_unwitnessed_mid_run_timer_still_holds_a_verdict() {
-    // OQ-3 default: the verdict needs no start, only the finish's own
-    // report — a timer born mid-run freezes no duration yet holds the
-    // verdict the shell reported after it.
-    let t0 = Instant::now();
-    let mut timer = CommandTimer::default();
-    timer.step(true, t0);
-    timer.step(false, t0 + Duration::from_secs(5));
-    timer.note_exit(2);
-    assert_eq!(timer.last_duration(), None);
-    assert_eq!(timer.last_exit(), Some(2));
-}
-
-#[test]
-fn format_duration_renders_mss_under_an_hour() {
-    assert_eq!(format_duration(Duration::from_secs(4)), "0:04");
-    assert_eq!(format_duration(Duration::from_secs(161)), "2:41");
-    assert_eq!(format_duration(Duration::from_secs(3599)), "59:59");
-}
-
-#[test]
-fn format_duration_renders_hmmss_at_and_over_an_hour() {
-    assert_eq!(format_duration(Duration::from_secs(3600)), "1:00:00");
-    assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
-}
 
 // --- the git branch (real fixture trees under temp) ---
 
@@ -3318,4 +3158,17 @@ fn absent_segments_tip_nothing() {
             "{id:?} tips nothing"
         );
     }
+}
+
+#[test]
+fn format_duration_renders_mss_under_an_hour() {
+    assert_eq!(format_duration(Duration::from_secs(4)), "0:04");
+    assert_eq!(format_duration(Duration::from_secs(161)), "2:41");
+    assert_eq!(format_duration(Duration::from_secs(3599)), "59:59");
+}
+
+#[test]
+fn format_duration_renders_hmmss_at_and_over_an_hour() {
+    assert_eq!(format_duration(Duration::from_secs(3600)), "1:00:00");
+    assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
 }

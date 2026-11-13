@@ -4,11 +4,12 @@
 //! toggle matrix, and the machine executors' intent sequences — all
 //! over the toolkit-neutral types (`SurfaceHandle`, never
 //! `window::Id`), so the whole lifecycle is testable without a
-//! runtime.
+//! runtime. Moved from the frontend with the decision core
+//! (shared-core spec), assertions unchanged.
 
 use super::*;
 use crate::config::{Edge, HAlign};
-use crate::intent::{ExclusiveZone, RecordingExecutor, ShapeHeight};
+use crate::intent::{ExclusiveZone, RecordingExecutor, ShapeHeight, SurfaceExecutor};
 
 /// Inputs of a stay-open, sliding, exclusive surface at half height
 /// on the test output — the ordinary configuration.
@@ -72,8 +73,8 @@ fn drag_and_slide_together_still_skip_the_reshape() {
 // matching `Shown` alone does not exclude it — a press inside the
 // 130 ms window must neither arm a drag nor send `set_size` on the
 // animating surface. With arming gated, `DragApplyDue` and
-// `GrabBarReleased` are covered by construction: they only act on
-// an armed drag, and `hide()` clears any live drag before a
+// `GrabBarReleased` are covered by construction: they only act on an
+// armed drag, and the hide decision clears any live drag before a
 // slide can start.
 
 #[test]
@@ -114,11 +115,11 @@ fn grab_bar_drag_ignores_every_non_shown_state() {
 #[test]
 fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Hidden, true),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Hidden, true),
         ToggleStep::Measure
     );
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Hidden, true),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Hidden, true),
         ToggleStep::Measure
     );
 }
@@ -129,11 +130,11 @@ fn toggle_or_hide_from_measuring_destroys_immediately() {
     // the surface dies now, not in 130 ms.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Measuring(handle), true),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Measuring(handle), true),
         ToggleStep::DestroyNow(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(handle), true),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Measuring(handle), true),
         ToggleStep::DestroyNow(handle)
     );
 }
@@ -145,11 +146,11 @@ fn toggle_or_hide_from_shown_slides_out() {
     // the live eased offset, so nothing teleports.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(handle), true),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Shown(handle), true),
         ToggleStep::SlideOut(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Shown(handle), true),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Shown(handle), true),
         ToggleStep::SlideOut(handle)
     );
 }
@@ -162,11 +163,11 @@ fn toggle_or_show_mid_hiding_reverses_on_the_same_surface() {
     // interactivity on it per config.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(handle), true),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Hiding(handle), true),
         ToggleStep::ReverseShow(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Hiding(handle), true),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Hiding(handle), true),
         ToggleStep::ReverseShow(handle)
     );
 }
@@ -175,11 +176,11 @@ fn toggle_or_show_mid_hiding_reverses_on_the_same_surface() {
 fn show_while_measuring_or_shown_is_already_satisfied() {
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Measuring(handle), true),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Measuring(handle), true),
         ToggleStep::Leave
     );
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Shown(handle), true),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Shown(handle), true),
         ToggleStep::Leave
     );
 }
@@ -187,13 +188,13 @@ fn show_while_measuring_or_shown_is_already_satisfied() {
 #[test]
 fn hide_while_hiding_neither_restarts_nor_double_destroys() {
     // Idempotence carried into the matrix: `WindowUnfocused`
-    // reaches `focus_lost` unguarded, and the keyboard release
-    // synthesizes its own `Unfocused` — a second hide request
-    // must neither restart the out-slide nor queue a second
-    // destroy task.
+    // reaches the focus-loss decision unguarded, and the keyboard
+    // release synthesizes its own `Unfocused` — a second hide
+    // request must neither restart the out-slide nor queue a
+    // second destroy task.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Hiding(handle), true),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Hiding(handle), true),
         ToggleStep::Leave
     );
 }
@@ -201,17 +202,17 @@ fn hide_while_hiding_neither_restarts_nor_double_destroys() {
 #[test]
 fn hide_while_hidden_destroys_nothing_in_the_matrix() {
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, true),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Hidden, true),
         ToggleStep::Leave
     );
 }
 
 #[test]
 fn a_hide_intent_never_decides_to_show() {
-    // Pins `hide()`'s unreachable arms as intended behavior: the
-    // hide column of the matrix only ever destroys, slides out,
-    // or leaves — under either slide-toggle value (the flag
-    // swaps the destroy *style*, never the direction).
+    // Pins the hide column's unreachable arms as intended
+    // behavior: the hide column of the matrix only ever destroys,
+    // slides out, or leaves — under either slide-toggle value (the
+    // flag swaps the destroy *style*, never the direction).
     let handle = SurfaceHandle::next();
     for slide_enabled in [true, false] {
         for surface in [
@@ -221,7 +222,7 @@ fn a_hide_intent_never_decides_to_show() {
             SurfaceState::Hiding(handle),
         ] {
             assert!(matches!(
-                toggle_step(ToggleAction::Hide, &surface, slide_enabled),
+                toggle_step(ToggleIntent::Hide, &surface, slide_enabled),
                 ToggleStep::DestroyNow(_) | ToggleStep::SlideOut(_) | ToggleStep::Leave
             ));
         }
@@ -237,11 +238,11 @@ fn shown_hide_with_slides_disabled_destroys_immediately() {
     // Applies to a plain hide and a toggle alike.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Shown(handle), false),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Shown(handle), false),
         ToggleStep::DestroyNow(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Shown(handle), false),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Shown(handle), false),
         ToggleStep::DestroyNow(handle)
     );
 }
@@ -254,11 +255,11 @@ fn hiding_reversal_ignores_the_slide_toggle() {
     // `toggle_step` takes no mid-flight input by construction.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Hiding(handle), false),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Hiding(handle), false),
         ToggleStep::ReverseShow(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Toggle, &SurfaceState::Hiding(handle), false),
+        toggle_step(ToggleIntent::Toggle, &SurfaceState::Hiding(handle), false),
         ToggleStep::ReverseShow(handle)
     );
 }
@@ -306,15 +307,15 @@ fn measuring_and_hidden_cells_ignore_the_slide_toggle() {
     // still leaves.
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Measuring(handle), false),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Measuring(handle), false),
         ToggleStep::DestroyNow(handle)
     );
     assert_eq!(
-        toggle_step(ToggleAction::Show, &SurfaceState::Hidden, false),
+        toggle_step(ToggleIntent::Show, &SurfaceState::Hidden, false),
         ToggleStep::Measure
     );
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Hidden, false),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Hidden, false),
         ToggleStep::Leave
     );
 }
@@ -367,8 +368,44 @@ fn explicit_hides_never_consult_the_focus_loss_gate() {
     assert!(!focus_loss_hides(false));
     let handle = SurfaceHandle::next();
     assert_eq!(
-        toggle_step(ToggleAction::Hide, &SurfaceState::Shown(handle), true),
+        toggle_step(ToggleIntent::Hide, &SurfaceState::Shown(handle), true),
         ToggleStep::SlideOut(handle)
+    );
+}
+
+// --- the resolved keyboard mode of a shown surface ---
+
+#[test]
+fn a_stay_open_surface_never_holds_exclusive_keyboard() {
+    // The keyboard-hostage bug: `Exclusive` held while
+    // `hide_on_focus_loss` is off means the compositor's focus
+    // fixup returns the keyboard to the terminal on every refresh
+    // cycle, so no other input could keep focus while it stayed
+    // open. Proven failing against passing the configured mode
+    // through untouched.
+    assert_eq!(
+        shown_keyboard_mode(KeyboardMode::Exclusive, false),
+        KeyboardMode::OnDemand
+    );
+}
+
+#[test]
+fn a_hiding_surface_runs_the_configured_mode() {
+    // With the focus-loss hide on, `Exclusive` is safe — the first
+    // unfocus unmaps the surface and releases the keyboard at
+    // slide-out start — so the configured mode passes through in
+    // every other combination.
+    assert_eq!(
+        shown_keyboard_mode(KeyboardMode::Exclusive, true),
+        KeyboardMode::Exclusive
+    );
+    assert_eq!(
+        shown_keyboard_mode(KeyboardMode::OnDemand, true),
+        KeyboardMode::OnDemand
+    );
+    assert_eq!(
+        shown_keyboard_mode(KeyboardMode::OnDemand, false),
+        KeyboardMode::OnDemand
     );
 }
 
@@ -411,9 +448,9 @@ fn resize_from_a_foreign_window_never_feeds_the_pin() {
 
 // --- the machine executors' intent sequences ---
 //
-// The decision layer returns intents (never `cosmic::app::Task`),
+// The decision layer returns intents (never a toolkit task type),
 // so its tests assert the intent sequences directly — the
-// recording executor of the full-lifecycle test (Task 4) replays
+// recording executor of the full-lifecycle test replays
 // these same decisions through a real executor seam.
 
 #[test]
@@ -845,7 +882,7 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
 
     // Mid-slide reversal: the same live surface re-holds keyboard at
     // the resolved mode and focuses the terminal input.
-    let ToggleStep::ReverseShow(reversed) = toggle_step(ToggleAction::Toggle, &machine.state, true)
+    let ToggleStep::ReverseShow(reversed) = toggle_step(ToggleIntent::Toggle, &machine.state, true)
     else {
         panic!("a mid-hide toggle reverses");
     };

@@ -137,7 +137,7 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 /// the flatpak `HOME` otherwise), outside it the XDG base-directory
 /// rules — only an absolute `XDG_CONFIG_HOME` counts, `~/.config`
 /// otherwise. The directory is this build's app id
-/// ([`crate::app::APP_ID`]), so the dev identity gets its own config
+/// ([`crate::APP_ID`]), so the dev identity gets its own config
 /// files.
 pub fn store_dir() -> PathBuf {
     store_dir_with(
@@ -177,8 +177,8 @@ fn store_dir_with(
             .or_else(|| home_config(home))
     };
     match base {
-        Some(base) => base.join(crate::app::APP_ID),
-        None => PathBuf::from(".config").join(crate::app::APP_ID),
+        Some(base) => base.join(crate::APP_ID),
+        None => PathBuf::from(".config").join(crate::APP_ID),
     }
 }
 
@@ -245,7 +245,7 @@ mod tests {
         // the same absolute-only rule — a relative
         // `HOST_XDG_CONFIG_HOME` falls to the flatpak HOME like an
         // unset one.
-        let app = PathBuf::from(crate::app::APP_ID);
+        let app = PathBuf::from(crate::APP_ID);
         let os = |value: &str| Some(std::ffi::OsString::from(value));
         assert_eq!(
             store_dir_with(false, None, os("/custom/config"), os("/home/u")),

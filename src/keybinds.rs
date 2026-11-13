@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use cosmic::iced::keyboard::key::{Named, Physical};
 use cosmic::iced::keyboard::{Key, Modifiers};
 use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
-use serde::{Deserialize, Serialize};
 
 use crate::terminal::Action;
 
@@ -207,57 +206,39 @@ pub fn matched_action(
         .map(|(_, action)| *action)
 }
 
-/// The serde-friendly modifier names a persisted [`Binding`] carries —
-/// cosmic's own [`Modifier`] is not serializable, so the config shape
-/// spells its own four and converts at the boundary
-/// ([`Binding::to_key_bind`]). Ported from cosmic-term.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum ModifierName {
-    Ctrl,
-    Shift,
-    Alt,
-    Super,
-}
+// The persisted binding model (`Binding`, `ModifierName`) lives in
+// `dropterm-core`'s keybinds module — the config file's shape,
+// shared with the store (shared-core spec: the chord map moves, the
+// libcosmic action mapping below does not). Re-exported so every
+// `crate::keybinds::Binding` path keeps resolving.
+pub use dropterm_core::keybinds::{Binding, ModifierName};
 
-impl ModifierName {
-    fn to_modifier(self) -> Modifier {
-        match self {
-            Self::Ctrl => Modifier::Ctrl,
-            Self::Shift => Modifier::Shift,
-            Self::Alt => Modifier::Alt,
-            Self::Super => Modifier::Super,
+/// A persisted [`Binding`]'s runtime matching shape, or `None` when
+/// the key name does not parse (a hand-edited config can hold one).
+/// Frontend-side because it produces a toolkit `KeyBind`.
+fn to_key_bind(binding: &Binding) -> Option<KeyBind> {
+    fn to_modifier(name: ModifierName) -> Modifier {
+        match name {
+            ModifierName::Ctrl => Modifier::Ctrl,
+            ModifierName::Shift => Modifier::Shift,
+            ModifierName::Alt => Modifier::Alt,
+            ModifierName::Super => Modifier::Super,
         }
     }
-}
-
-/// A persisted key binding: modifier names plus a key name string
-/// (`"C"`, `"Tab"`, `"PageUp"`, `"Space"`, …) — the config file's
-/// shape, converted to a runtime [`KeyBind`] by [`to_key_bind`].
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct Binding {
-    pub modifiers: Vec<ModifierName>,
-    pub key: String,
-}
-
-impl Binding {
-    /// The runtime matching shape, or `None` when the key name does
-    /// not parse (a hand-edited config can hold one).
-    pub fn to_key_bind(&self) -> Option<KeyBind> {
-        let key = key_from_string(&self.key)?;
-        let mut modifiers = Vec::new();
-        for modifier in [
-            ModifierName::Ctrl,
-            ModifierName::Shift,
-            ModifierName::Alt,
-            ModifierName::Super,
-        ] {
-            if self.modifiers.contains(&modifier) {
-                modifiers.push(modifier.to_modifier());
-            }
+    let key = key_from_string(&binding.key)?;
+    let mut modifiers = Vec::new();
+    for modifier in [
+        ModifierName::Ctrl,
+        ModifierName::Shift,
+        ModifierName::Alt,
+        ModifierName::Super,
+    ] {
+        if binding.modifiers.contains(&modifier) {
+            modifiers.push(to_modifier(modifier));
         }
-
-        Some(KeyBind { modifiers, key })
     }
+
+    Some(KeyBind { modifiers, key })
 }
 
 /// The ids of the numbered activate-tab rows: 1-based display number
@@ -370,7 +351,7 @@ pub fn effective_key_binds(custom: &BTreeMap<String, Binding>) -> HashMap<KeyBin
     let resolved: Vec<(Action, KeyBind)> = custom
         .iter()
         .filter_map(|(id, binding)| {
-            if let (Some(action), Some(key_bind)) = (action_from_id(id), binding.to_key_bind()) {
+            if let (Some(action), Some(key_bind)) = (action_from_id(id), to_key_bind(binding)) {
                 Some((action, key_bind))
             } else {
                 log::warn!("ignoring invalid custom key bind {id:?}: {binding:?}");
@@ -503,9 +484,7 @@ pub fn action_label(action: Action) -> &'static str {
 /// [`KeyBind`]'s display; a key that does not parse falls back to the
 /// raw key string.
 pub fn binding_display(binding: &Binding) -> String {
-    binding
-        .to_key_bind()
-        .map_or_else(|| binding.key.clone(), |key_bind| key_bind.to_string())
+    to_key_bind(binding).map_or_else(|| binding.key.clone(), |key_bind| key_bind.to_string())
 }
 
 /// The binding a pressed chord captures — or `None` when the press is
@@ -638,7 +617,7 @@ pub fn commit_verdict(
     binding: &Binding,
     custom: &BTreeMap<String, Binding>,
 ) -> CommitVerdict {
-    let Some(key_bind) = binding.to_key_bind() else {
+    let Some(key_bind) = to_key_bind(binding) else {
         return CommitVerdict::Unsupported;
     };
     match effective_key_binds(custom).get(&key_bind) {

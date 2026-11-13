@@ -801,7 +801,7 @@ struct SpecsFile {
 static BUILTIN_SPECS: LazyLock<Vec<SpecCommand>> = LazyLock::new(|| {
     use std::io::Read as _;
 
-    let compressed: &[u8] = include_bytes!("../../data/completions.toml.gz");
+    let compressed: &[u8] = include_bytes!("../../../data/completions.toml.gz");
     let mut text = String::new();
     // The bytes are ours — committed beside this source, schema-gated
     // by the corpus suite on every test run — so a failed inflate or
@@ -842,7 +842,7 @@ pub(crate) fn builtin_specs_arc() -> Arc<[SpecCommand]> {
 /// the app hands down while the completion files still load on a
 /// background thread — the specs tier answers nothing until the real
 /// table lands, and the menu's loading row is the only specs surface.
-pub(crate) fn empty_specs() -> Arc<[SpecCommand]> {
+pub fn empty_specs() -> Arc<[SpecCommand]> {
     Arc::from(&[][..])
 }
 
@@ -873,13 +873,13 @@ fn parse_completions(contents: &str) -> Result<Vec<SpecCommand>, toml::de::Error
 /// rejected like any other invalid file. A real completions file
 /// nests a handful of levels; 64 is far past legitimate and far
 /// short of the abort.
-const COMPLETIONS_MAX_NESTING: usize = 64;
+pub const COMPLETIONS_MAX_NESTING: usize = 64;
 
 /// Whether a file's bracket nesting stays within `cap` — a linear
 /// byte scan, `false` on the first level past it. Bracket
 /// characters inside strings count too, which can only over-reject
 /// a file that is invalid for the schema anyway.
-fn nesting_within_cap(contents: &str, cap: usize) -> bool {
+pub fn nesting_within_cap(contents: &str, cap: usize) -> bool {
     let mut depth: usize = 0;
     for byte in contents.bytes() {
         match byte {
@@ -910,7 +910,7 @@ fn nesting_within_cap(contents: &str, cap: usize) -> bool {
 /// both tiers, exactly as it always has. Deterministic throughout:
 /// equal names resolve by the stable sort's file order, and the
 /// merged table ends sorted by name.
-fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecCommand> {
+pub fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecCommand> {
     let mut table = BUILTIN_SPECS.clone();
     for command in extended {
         if !table.iter().any(|existing| existing.name == command.name) {
@@ -939,7 +939,7 @@ fn merge_tiers(extended: &[SpecCommand], user: Vec<SpecCommand>) -> Vec<SpecComm
 /// layer whole with a `debug!` log, never a half-loaded table; the
 /// caller is the app layer, engine-side and once per load point, so
 /// the model never touches the filesystem.
-pub(crate) fn load_completions(dir: Option<&Path>, extended: bool) -> Arc<[SpecCommand]> {
+pub fn load_completions(dir: Option<&Path>, extended: bool) -> Arc<[SpecCommand]> {
     let extended_path = extended.then(extended_completions_path).flatten();
     load_completions_from(dir, extended_path.as_deref())
 }
@@ -1033,7 +1033,7 @@ fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Opti
     // The lib's own const is the canonical seat (app.rs re-exports
     // it for its tree); the `.Dev` suffix marks the dev identity,
     // whose walk also tries the release install's un-suffixed seat.
-    let app_id = dropterm::APP_ID;
+    let app_id = crate::APP_ID;
     let release_id = app_id.strip_suffix(".Dev").unwrap_or(app_id);
     let ids = if release_id == app_id {
         vec![app_id]
@@ -1059,7 +1059,7 @@ fn resolve_extended_in(data_local: Option<&Path>, data_dirs: &[PathBuf]) -> Opti
 /// command of this schema seats exactly once — cached for the
 /// process like the parse (a system data file does not change under
 /// a running app). `None` is "not installed": the caption says so.
-pub(crate) fn extended_tier_status() -> Option<(usize, PathBuf)> {
+pub fn extended_tier_status() -> Option<(usize, PathBuf)> {
     static STATUS: LazyLock<Option<(usize, PathBuf)>> = LazyLock::new(|| {
         let path = extended_completions_path()?;
         let bytes = std::fs::read(&path).ok()?;
@@ -1459,9 +1459,9 @@ fn merged_candidate(
 /// merge ranking orders by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuCandidate {
-    pub(crate) label: String,
+    pub label: String,
     pub(crate) suffix: String,
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     pub(crate) source: SuggestionSource,
 }
 
@@ -1693,7 +1693,7 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
 /// eight rows with a scroll offset — Warp/VS Code show ~10; eight
 /// fits the drop-down's short surface. Shared by the model's scroll
 /// arithmetic and the renderer's window.
-pub(crate) const MENU_VISIBLE_ROWS: usize = 8;
+pub const MENU_VISIBLE_ROWS: usize = 8;
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —

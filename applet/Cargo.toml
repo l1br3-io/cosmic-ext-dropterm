@@ -23,12 +23,12 @@ tokio = { version = "1", features = ["sync", "time", "process"] }
 log = "0.4"
 
 # The V1 D-Bus contract proxy and its mock server for wire tests come
-# from the root lib — one contract, one implementation.
-# `default-features = false` keeps the terminal's libcosmic feature
-# set (wgpu above all) out of this crate's build: cargo unifies a path
-# dependency's static features into this graph, and only package
-# features can be switched off from the consuming side.
-dropterm = { path = "..", default-features = false }
+# from the toolkit-neutral core — one contract, one implementation.
+# `default-features = false` carries the consumption pattern over
+# verbatim (the shared-core planning ruling): only package features
+# can be switched off from the consuming side, so the pattern stays
+# even though the core owns no default features today.
+dropterm-core = { path = "../dropterm-core", default-features = false }
 
 # `wgpu` must never be added here: on panel (layer-shell) surfaces the
 # wgpu renderer fails to bind the GPU and silently falls back to
@@ -44,7 +44,8 @@ features = ["applet", "applet-token", "tokio", "wayland"]
 [features]
 # Re-identifies the applet as `io.github.l1br3_io.dropterm.Applet.Dev`
 # and switches its terminal summon to the dev launcher — a second
-# panel entry that coexists with an installed applet. Enables the root
-# crate's same-named feature so both ends of the D-Bus contract move
-# together. Never default: release artifacts carry the plain identity.
-dev-identity = ["dropterm/dev-identity"]
+# panel entry that coexists with an installed applet. Enables the
+# core crate's same-named feature (which the terminal bin also
+# forwards to) so both ends of the D-Bus contract move together.
+# Never default: release artifacts carry the plain identity.
+dev-identity = ["dropterm-core/dev-identity"]

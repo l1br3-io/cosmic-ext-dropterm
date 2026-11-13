@@ -69,16 +69,11 @@ use crate::intent::{KeyboardHold, SurfaceIntent};
 
 /// The app's identity — the single string behind the single-instance
 /// key, the bus name, the config namespace, and the wayland app id.
-/// The lib's `dropterm::APP_ID` owns the value so the
-/// applet consumes the same one; the `dev-identity` feature swaps in
+/// `dropterm_core::APP_ID` owns the value so the applet and every
+/// frontend consume the same one; the `dev-identity` feature swaps in
 /// the `.Dev` variant that keeps a dev build off an installed
 /// release's instance slot.
-pub const APP_ID: &str = dropterm::APP_ID;
-
-/// Debounce window for toggle requests, guarding against the double
-/// key-press events a compositor occasionally delivers for one physical
-/// press (see the README's known-risks section).
-const TOGGLE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+pub const APP_ID: &str = dropterm_core::APP_ID;
 
 #[derive(Debug, Clone)]
 #[expect(
@@ -2046,7 +2041,7 @@ impl Application for DropTerm {
             keybind_capture: None,
             keybind_search: String::new(),
             open_picker: None,
-            font_families: dropterm::font_list::load_monospace_families(),
+            font_families: crate::font_list::load_monospace_families(),
             keybind_conflict: None,
             settings_open: false,
             images_panel_open: false,
@@ -2884,8 +2879,9 @@ impl DropTerm {
                 let old_hide_on_focus_loss = self.config.hide_on_focus_loss;
                 // Whether the shown surface holds `Exclusive` under
                 // the OLD config — the resolved mode it mapped with
-                // (`surface::shown_keyboard_mode`), captured before
-                // the assignment below for the live release guard.
+                // (`surface_lifecycle::shown_keyboard_mode`), captured
+                // before the assignment below for the live release
+                // guard.
                 let old_shown_exclusive =
                     old_hide_on_focus_loss && self.config.keyboard_mode == KeyboardMode::Exclusive;
                 self.config = config;

@@ -303,14 +303,35 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 
 ## Phase 3 — the GPUI rewrite (ids from the spike report; main lane)
 
-- [ ] sc-1 `dropterm-core` crate; the pure movers (config store, session,
+- [x] sc-1 `dropterm-core` crate; the pure movers (config store, session,
       tabs, profiles, intent vocabulary); zero-toolkit pin test
-- [ ] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
-      keybinds, theme-glue models
-- [ ] sc-3 Identity + contract move; applet re-points to core
-- [ ] sc-4 Decision layer + transport halves move (Task continuation
-      goes executor-neutral)
-- [ ] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
+- [x] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
+      keybinds, theme-glue models (sc-1 note: `tabs.rs` deferred here — it
+      holds `Mutex<Terminal>`, the spec's engine-state grouping)
+- [x] sc-3 Identity + contract move; applet re-points to core
+      *(APP_ID already stood in core from sc-1; `dbus_state` moved with
+      its 19 tests — the wire tests' futures import swapped off
+      `cosmic::iced`, the dbus↔docs pin re-pathed — and the lib target
+      retired entirely: `font_list` became a bin module, the applet
+      depends on `dropterm-core` with `default-features = false` and
+      forwards `dev-identity` straight to core; zero new lock packages)*
+- [x] sc-4 Decision layer + transport halves move (Task continuation
+      goes executor-neutral) *(the machine, guards, `TOGGLE_DEBOUNCE`,
+      `shown_keyboard_mode`, and the slide model moved with 44
+      unchanged tests — `ToggleIntent` is the funnel's 3-verb
+      vocabulary, the clap `ToggleAction` maps onto it frontend-side;
+      the transport halves moved as `core::transport` with
+      `forward_to_running` parameterized over the verb's name+words —
+      the frontend serializes through `CosmicFlags::args`)*
+- [x] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
+      *(walk green 2026-11-13 on the validation VM, evidence in
+      `target/vm-evidence-sc5/`: show 40 % pixel-exact with the block
+      caret in the first frame, `sleep 97 &` surviving a hide/show
+      cycle, drag live-apply + settle + single write-back (52), live
+      in-place edit (70→35, same pid), focus-loss hide, CLI round-trips
+      exit 0; harness notes for the next walk: `virsh send-key` keys are
+      one chord — type one key per call — and pointer input rides QMP
+      `input-send-event`, per-axis, unbatched)*
 
 **Checkpoint — the core stands alone:** zero toolkit deps pinned by
 test; libcosmic binary + applet identical behavior.

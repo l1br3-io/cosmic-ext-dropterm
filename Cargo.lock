@@ -1470,6 +1470,7 @@ dependencies = [
  "clap",
  "cosmic-text",
  "dirs",
+ "dropterm-core",
  "enumflags2",
  "env_logger",
  "flate2",
@@ -1497,11 +1498,33 @@ dependencies = [
 name = "dropterm-applet"
 version = "0.5.0"
 dependencies = [
- "dropterm",
+ "dropterm-core",
  "env_logger",
  "libcosmic",
  "log",
  "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "dropterm-core"
+version = "0.5.0"
+dependencies = [
+ "alacritty_terminal",
+ "base64",
+ "cosmic-text",
+ "dirs",
+ "flate2",
+ "futures",
+ "image",
+ "indexmap",
+ "libc",
+ "log",
+ "ron",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
  "zbus",
 ]
 

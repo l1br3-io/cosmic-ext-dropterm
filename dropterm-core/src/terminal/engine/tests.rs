@@ -6,6 +6,8 @@
 
 use super::*;
 
+use crate::terminal::PlainHost;
+
 #[test]
 fn tagged_event_proxy_stamps_events_with_tab_id() {
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -71,6 +73,7 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -106,6 +109,7 @@ fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -159,6 +163,7 @@ fn foreground_check_tracks_a_live_pty_from_idle_to_child_and_back() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -199,6 +204,7 @@ fn grid_floors_the_live_pixel_size_into_cells() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -247,6 +253,7 @@ fn spawn_grid_terminal() -> Terminal {
     use alacritty_terminal::tty::Shell as PtyShell;
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -452,6 +459,7 @@ fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -524,6 +532,7 @@ fn a_non_ssh_foreground_comm_yields_no_destination() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -572,6 +581,7 @@ fn a_live_ssh_comm_reads_its_cmdline_destination() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -629,6 +639,7 @@ fn autosuggest_terminal() -> Terminal {
     use alacritty_terminal::tty::Shell as PtyShell;
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -1055,6 +1066,7 @@ fn command_timer_steps_with_autosuggestions_disabled() {
     use alacritty_terminal::tty::Shell as PtyShell;
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -1098,6 +1110,7 @@ fn the_path_spawn_gate_reads_spawn_resolved_truth_from_the_options() {
     let gate = |spawned_program: &str| {
         let (tx, _rx) = mpsc::unbounded_channel();
         let terminal = Terminal::new(
+            Box::new(PlainHost::default()),
             TabId(0),
             tx,
             Config::default(),
@@ -1747,6 +1760,7 @@ fn generator_terminal(dir: &Path) -> Terminal {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -1868,6 +1882,7 @@ fn latch_terminal() -> Terminal {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -1946,6 +1961,7 @@ fn cwd_report_terminal() -> Terminal {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -2056,6 +2072,7 @@ fn progress_report_terminal() -> (Terminal, mpsc::UnboundedReceiver<(TabId, Even
 
     let (tx, rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -2581,6 +2598,7 @@ fn image_terminal() -> Terminal {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     Terminal::new(
+        Box::new(PlainHost::default()),
         TabId(0),
         tx,
         Config::default(),
@@ -3112,65 +3130,6 @@ fn store_never_evicts_the_image_just_inserted() {
     // the shipped budget.
     assert!(store.get(1).is_some());
     assert_eq!(store.total_bytes(), len);
-}
-
-#[test]
-fn handle_for_builds_once_and_dies_with_eviction() {
-    let mut store = super::ImageStore::default();
-    let image = || image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]));
-    let budget = 2 * image().len();
-    store.insert_with_budget(1, image(), budget);
-    store.insert_with_budget(2, image(), budget);
-
-    // One build, then clones: the ids match, so the renderer's cache
-    // sees one handle — one upload — for the id's whole life.
-    let first = store.handle_for(1).expect("the id stands behind pixels");
-    assert_eq!(store.handle_for(1), Some(first));
-
-    // Evicting id 1 drops its handle with its pixels.
-    store.insert_with_budget(3, image(), budget);
-    assert!(store.get(1).is_none());
-    assert_eq!(store.handle_for(1), None);
-}
-
-// ===== Kitty graphics (kitty-images spec) =====
-
-/// One APC `G` payload as the fork delivers it: the `G`, the control
-/// keys, and the base64 payload behind the first `;` (omitted when
-/// empty, the empty-final-chunk wire shape).
-fn apc(keys: &str, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = format!("G{keys}").into_bytes();
-    if !payload.is_empty() {
-        bytes.push(b';');
-        bytes.extend_from_slice(&b64(payload));
-    }
-    bytes
-}
-
-/// The wire form whose base64 slice is already encoded (for chunks
-/// split at a base64 boundary, exactly like real clients).
-fn apc_b64(keys: &str, encoded: &str) -> Vec<u8> {
-    format!("G{keys};{encoded}").into_bytes()
-}
-
-/// Flat RGBA bytes for the `f=32` raw path.
-fn raw_rgba(width: u32, height: u32) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for _ in 0..width * height {
-        bytes.extend_from_slice(&[10, 20, 30, 255]);
-    }
-    bytes
-}
-
-/// zlib-compress bytes the `o=z` wire form arrives in.
-fn zlib_bytes(data: &[u8]) -> Vec<u8> {
-    use flate2::Compression;
-    use flate2::write::ZlibEncoder;
-    use std::io::Write;
-
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data).expect("compress the test payload");
-    encoder.finish().expect("finish the zlib stream")
 }
 
 #[test]
@@ -4030,4 +3989,215 @@ fn kitty_replaces_move_their_layer_on_an_explicit_z() {
         1,
         "a z on the image's own re-place moves the transmission too"
     );
+}
+
+/// One APC `G` payload as the fork delivers it: the `G`, the control
+/// keys, and the base64 payload behind the first `;` (omitted when
+/// empty, the empty-final-chunk wire shape).
+/// zlib-compress bytes the `o=z` wire form arrives in.
+fn zlib_bytes(data: &[u8]) -> Vec<u8> {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).expect("compress the test payload");
+    encoder.finish().expect("finish the zlib stream")
+}
+
+fn apc(keys: &str, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = format!("G{keys}").into_bytes();
+    if !payload.is_empty() {
+        bytes.push(b';');
+        bytes.extend_from_slice(&b64(payload));
+    }
+    bytes
+}
+
+/// The wire form whose base64 slice is already encoded (for chunks
+/// split at a base64 boundary, exactly like real clients).
+fn apc_b64(keys: &str, encoded: &str) -> Vec<u8> {
+    format!("G{keys};{encoded}").into_bytes()
+}
+
+/// Flat RGBA bytes for the `f=32` raw path.
+fn raw_rgba(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for _ in 0..width * height {
+        bytes.extend_from_slice(&[10, 20, 30, 255]);
+    }
+    bytes
+}
+
+/// zlib-compress bytes the `o=z` wire form arrives in.
+
+// --- the command timer (moved from the status bar's tests with the
+// type by the shared-core split: the engine is its only consumer) ---
+
+//
+// Pure policy over the foreground diff the engine already computes:
+// a start counts only when the timer witnessed the idle→running
+// crossing, a finish freezes the elapsed, and a command born
+// mid-observation never yields a duration — the both-edges honesty
+// rule.
+
+#[test]
+fn a_witnessed_start_sets_the_start_and_the_elapsed_grows_with_now() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0 + Duration::from_secs(1));
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(3)),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(11)),
+        Some(Duration::from_secs(10))
+    );
+}
+
+#[test]
+fn a_witnessed_finish_freezes_the_elapsed_and_ends_the_live_read() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    assert_eq!(timer.last_duration(), Some(Duration::from_secs(3)));
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(10)), None);
+}
+
+#[test]
+fn the_next_start_clears_the_freeze_and_re_arms() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    timer.step(true, t0 + Duration::from_secs(10));
+    assert_eq!(
+        timer.last_duration(),
+        None,
+        "the next start clears the freeze"
+    );
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(12)),
+        Some(Duration::from_secs(2))
+    );
+}
+
+#[test]
+fn same_state_repeats_are_no_ops() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    // Idle repeats on a fresh timer arm nothing.
+    timer.step(false, t0);
+    timer.step(false, t0 + Duration::from_secs(5));
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(6)), None);
+    // Running repeats keep the original start — the elapsed measures
+    // from the crossing, not the last observation.
+    timer.step(true, t0 + Duration::from_secs(10));
+    timer.step(true, t0 + Duration::from_secs(15));
+    assert_eq!(
+        timer.live_elapsed(t0 + Duration::from_secs(20)),
+        Some(Duration::from_secs(10))
+    );
+}
+
+#[test]
+fn a_timer_born_mid_run_never_reports_that_command() {
+    // The profile-tab spawn case: the first observation is already
+    // running, so the start went unwitnessed — no live elapsed, and
+    // the finish freezes nothing rather than guessing.
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(true, t0);
+    assert_eq!(timer.live_elapsed(t0 + Duration::from_secs(4)), None);
+    timer.step(false, t0 + Duration::from_secs(5));
+    assert_eq!(timer.last_duration(), None);
+}
+
+#[test]
+fn default_is_a_clean_idle_timer() {
+    let timer = CommandTimer::default();
+    assert_eq!(timer.live_elapsed(Instant::now()), None);
+    assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), None);
+}
+
+// --- the exit verdict (status-exit) ---
+//
+// The shell's own 133;D report rides the frozen pair's lifecycle:
+// verbatim except success, set regardless of a witnessed start, and
+// cleared by the next witnessed start beside the frozen duration —
+// one rule for both facts.
+
+#[test]
+fn a_non_zero_verdict_holds_through_reads() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    assert_eq!(
+        timer.last_exit(),
+        Some(1),
+        "a held verdict is not drained by reads"
+    );
+}
+
+#[test]
+fn success_normalizes_to_the_unmarked_default() {
+    let mut timer = CommandTimer::default();
+    timer.note_exit(0);
+    assert_eq!(timer.last_exit(), None);
+}
+
+#[test]
+fn the_next_witnessed_start_clears_a_held_verdict() {
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(false, t0);
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(3));
+    timer.note_exit(1);
+    assert_eq!(timer.last_exit(), Some(1));
+    timer.step(true, t0 + Duration::from_secs(10));
+    assert_eq!(
+        timer.last_exit(),
+        None,
+        "the next start clears the verdict with the freeze"
+    );
+}
+
+#[test]
+fn an_unwitnessed_mid_run_timer_still_holds_a_verdict() {
+    // OQ-3 default: the verdict needs no start, only the finish's own
+    // report — a timer born mid-run freezes no duration yet holds the
+    // verdict the shell reported after it.
+    let t0 = Instant::now();
+    let mut timer = CommandTimer::default();
+    timer.step(true, t0);
+    timer.step(false, t0 + Duration::from_secs(5));
+    timer.note_exit(2);
+    assert_eq!(timer.last_duration(), None);
+    assert_eq!(timer.last_exit(), Some(2));
+}
+
+#[test]
+fn removals_feed_the_frontend_handle_cache() {
+    // Eviction, explicit removal, and clear all land their ids in
+    // take_removed — the feed the frontend's handle cache drains so
+    // dead handles die with their pixels (the shared-core split's
+    // replacement for the in-store handle cache).
+    let mut store = super::ImageStore::default();
+    let one = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+    let two = image::RgbaImage::from_pixel(2, 2, image::Rgba([4, 5, 6, 255]));
+    store.insert_with_budget(1, one, 16);
+    store.insert_with_budget(2, two, 16); // evicts 1 under the 16-byte budget
+    store.remove(2);
+    store.clear();
+    let removed = store.take_removed();
+    assert!(removed.contains(&1), "the evicted id feeds the cache");
+    assert!(removed.contains(&2), "the removed id feeds the cache");
+    assert!(store.take_removed().is_empty(), "the feed is drained once");
 }

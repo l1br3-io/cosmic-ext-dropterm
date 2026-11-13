@@ -73,8 +73,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::engine::{Metadata, Terminal, TerminalScroll};
+use super::input::{MouseReporter, report_mouse, scroll_as_arrows, scroll_mouse};
 use super::suggest::{AcceptKind, MenuKey};
+use super::{Metadata, Terminal, TerminalScroll};
 
 /// Which app-level action a bound key triggers.
 ///
@@ -1000,7 +1001,30 @@ where
                 };
                 // Evicted: the cell stands, the pixels are gone — the
                 // blank is the honest draw (OQ-3).
-                let Some(handle) = images.handle_for(sub.image) else {
+                // Pixels-to-handle exactly once per id; the
+                // engine's removal report drops dead handles.
+                for removed in images.take_removed() {
+                    state.image_handles.borrow_mut().remove(&removed);
+                }
+                let handle = state
+                    .image_handles
+                    .borrow()
+                    .get(&sub.image)
+                    .cloned()
+                    .or_else(|| {
+                        let rgba = images.get(sub.image)?;
+                        let handle = cosmic::iced::widget::image::Handle::from_rgba(
+                            rgba.width(),
+                            rgba.height(),
+                            rgba.as_raw().clone(),
+                        );
+                        state
+                            .image_handles
+                            .borrow_mut()
+                            .insert(sub.image, handle.clone());
+                        Some(handle)
+                    });
+                let Some(handle) = handle else {
                     continue;
                 };
                 #[expect(
@@ -1925,7 +1949,14 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
+                        report_mouse(
+                            &terminal,
+                            &mut state.mouse_reporter,
+                            event,
+                            state.modifiers,
+                            col as u32,
+                            row as u32,
+                        );
                     } else {
                         state.is_focused = true;
 
@@ -2107,7 +2138,14 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
+                        report_mouse(
+                            &terminal,
+                            &mut state.mouse_reporter,
+                            event,
+                            state.modifiers,
+                            col as u32,
+                            row as u32,
+                        );
                     } else {
                         shell.capture_event();
                     }
@@ -2131,7 +2169,14 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
+                        report_mouse(
+                            &terminal,
+                            &mut state.mouse_reporter,
+                            event,
+                            state.modifiers,
+                            col as u32,
+                            row as u32,
+                        );
                     }
                 }
             }
@@ -2187,7 +2232,14 @@ where
                                 clippy::cast_sign_loss,
                                 reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                             )]
-                            terminal.report_mouse(event, state.modifiers, col as u32, row as u32);
+                            report_mouse(
+                                &terminal,
+                                &mut state.mouse_reporter,
+                                event,
+                                state.modifiers,
+                                col as u32,
+                                row as u32,
+                            );
                         }
                     } else {
                         let handled_buffer_drag = update_buffer_drag(
@@ -2246,9 +2298,16 @@ where
                             clippy::cast_sign_loss,
                             reason = "px/cell ratios are non-negative; the mouse grid is far below u32::MAX"
                         )]
-                        terminal.scroll_mouse(*delta, state.modifiers, col as u32, row as u32);
+                        scroll_mouse(
+                            &terminal,
+                            &mut state.mouse_reporter,
+                            *delta,
+                            state.modifiers,
+                            col as u32,
+                            row as u32,
+                        );
                     } else if terminal.term.lock().mode().contains(TermMode::ALT_SCREEN) {
-                        terminal.scroll_as_arrows(*delta);
+                        scroll_as_arrows(&terminal, &mut state.mouse_reporter, *delta);
                         shell.capture_event();
                     } else {
                         match delta {
@@ -2782,6 +2841,15 @@ pub struct State {
     /// (the ghost cache's precedent, interior-mutable for the same
     /// reason).
     menu_glyphs: RefCell<Option<(MenuGlyphKey, Arc<MenuGlyphs>)>>,
+    /// The xterm mouse encoder's accumulation state (shared-core
+    /// split: input translation is frontend-side, so its reporter
+    /// rides the widget's state).
+    mouse_reporter: MouseReporter,
+    /// The renderer-handle cache (iterm-images spec, shared-core
+    /// split): pixels-to-handle made exactly once per id, dead ids
+    /// dropped when the engine reports their removal. Interior-
+    /// mutable like the caches above — `draw` sees `&State`.
+    image_handles: RefCell<HashMap<u64, cosmic::iced::widget::image::Handle>>,
 }
 
 impl State {
@@ -2799,6 +2867,8 @@ impl State {
             preedit: None,
             ghost: RefCell::new(None),
             menu_glyphs: RefCell::new(None),
+            mouse_reporter: MouseReporter::default(),
+            image_handles: RefCell::new(HashMap::new()),
         }
     }
 }

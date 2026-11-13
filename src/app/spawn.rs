@@ -13,7 +13,7 @@ use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
 use crate::terminal::suggest;
-use crate::terminal::{Terminal, TerminalOptions};
+use crate::terminal::{CosmicHost, Terminal, TerminalOptions};
 
 /// What a new tab runs: the user's shell — config-resolved or per-tab
 /// recorded — paired with the config's shell arguments, an explicit
@@ -211,7 +211,7 @@ fn spawn_parts(command: &SpawnCommand, config: &DropTermConfig) -> SpawnParts {
             log::warn!("shell {shell:?} cannot run; spawning the configured shell instead");
             plain()
         }
-        SpawnCommand::CommandLine(line) => match tabs::command_line_parts(line) {
+        SpawnCommand::CommandLine(line) => match profile::command_line_parts(line) {
             Some((program, trailing)) if program_is_runnable(&program) => SpawnParts {
                 program,
                 trailing,
@@ -306,7 +306,7 @@ fn spawned_as_program(command: &SpawnCommand, config: &DropTermConfig) -> String
     match command {
         SpawnCommand::Shell(shell) if program_is_runnable(shell) => shell.clone(),
         SpawnCommand::Shell(_) => plain(),
-        SpawnCommand::CommandLine(line) => match tabs::command_line_parts(line) {
+        SpawnCommand::CommandLine(line) => match profile::command_line_parts(line) {
             Some((program, ..)) if program_is_runnable(&program) => program,
             _ => plain(),
         },
@@ -314,7 +314,7 @@ fn spawned_as_program(command: &SpawnCommand, config: &DropTermConfig) -> String
         // runnable or not — so its leading program is the spawn truth
         // regardless of runnability; only the blank line (a
         // hand-edited config) degrades to the plain shell.
-        SpawnCommand::Profile { command, .. } => match tabs::command_line_parts(command) {
+        SpawnCommand::Profile { command, .. } => match profile::command_line_parts(command) {
             Some((program, ..)) => program,
             None => plain(),
         },
@@ -496,6 +496,7 @@ impl DropTerm {
         self.next_tab_id += 1;
 
         match Terminal::new(
+            Box::new(CosmicHost::new()),
             tab_id,
             tx,
             term_config,
