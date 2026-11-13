@@ -15,8 +15,71 @@
 //! the release boundary holds.
 
 mod app_shell;
+mod dbus;
 mod kit_check;
 mod startup;
+
+use std::fmt;
+use std::sync::Arc;
+
+use clap::Parser;
+
+use dropterm_core::dbus_state;
+use dropterm_core::transport::{self, BusName, ForwardOutcome};
+
+/// The scaffold's CLI surface — the libcosmic binary's verbs, minus
+/// the tab verbs the terminal slices will own: a bare launch toggles,
+/// `toggle`/`show`/`hide` name the surface verbs, and `--is-visible`
+/// asks the running instance without ever summoning it.
+#[derive(Parser, Debug, Clone)]
+// `--is-visible` is a query; pairing it with an action subcommand is
+// a contradiction, rejected at parse (the frontend's rule verbatim).
+#[command(
+    name = "dropterm-gpui",
+    version,
+    about,
+    args_conflicts_with_subcommands = true
+)]
+struct Args {
+    /// Print whether the running terminal's surface is visible
+    /// (true/false) and exit with a matching code (0 visible, 1
+    /// hidden or not running). Never summons the terminal.
+    #[arg(long)]
+    is_visible: bool,
+
+    #[command(subcommand)]
+    action: Option<Action>,
+}
+
+/// The surface verbs — the words both CLIs forward as
+/// `ActivateAction`'s action name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::Subcommand)]
+enum Action {
+    #[default]
+    Toggle,
+    Show,
+    Hide,
+}
+
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Toggle => "toggle",
+            Self::Show => "show",
+            Self::Hide => "hide",
+        };
+        f.write_str(name)
+    }
+}
+
+/// The words a second launch forwards alongside the verb's Display
+/// name — none for every surface verb, exactly the libcosmic encoder's
+/// no-payload rule (`forward_words`: "actions without payloads forward
+/// nothing"), so both CLIs put the same shape on the wire and either
+/// receiver decodes either sender.
+fn forward_words(_action: Action) -> Vec<&'static str> {
+    Vec::new()
+}
 
 /// The env-selected scenario the scaffold can boot besides the shell —
 /// the carried patch's verification harness (`DROPTERM_CHECK`).
@@ -39,17 +102,61 @@ fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
 
 fn main() {
     println!("dropterm-gpui: booting on the gpui-pre 0.3.12 pin (wayland)");
+    let args = Args::parse();
+    // The query path exits before any bus-name attempt and before the
+    // guard's probe: it creates no surfaces, and its not-running answer
+    // is truthful because the guard keeps an unsupported session from
+    // ever hosting an instance (the frontend's ordering, kept).
+    if args.is_visible {
+        let (visible, code) = dbus_state::is_visible_decision(transport::query_visibility());
+        println!("{visible}");
+        std::process::exit(i32::from(code));
+    }
     // The layer-shell guard, before any GPUI initialization — the
     // probe takes its connection from the environment before the
     // platform reads it, and an unsupported session never reaches the
     // toolkit at all.
     startup::guard_or_exit();
+
+    // The control bus's launch half: on a throwaway connection decide
+    // whether this launch is the instance (the ownership itself is
+    // taken by the served loop, on its own runtime).
+    let action = args.action.unwrap_or_default();
+    if !transport::single_instance_disabled() {
+        match transport::bus_name_status() {
+            BusName::Unowned | BusName::NoBus => {}
+            BusName::OwnedByAnother => {
+                match transport::forward_outcome(&transport::forward_to_running(
+                    &action.to_string(),
+                    forward_words(action),
+                )) {
+                    // The running instance applied the verb; a second
+                    // surface must never appear. Today's contract: the
+                    // forwarding launch exits 0.
+                    ForwardOutcome::Delivered => std::process::exit(0),
+                    // The name is owned but nobody answered — a stale
+                    // binary mid-upgrade. Refuse, never a duplicate
+                    // instance (the frontend's wording, kept).
+                    ForwardOutcome::Refused => {
+                        eprintln!(
+                            "dropterm: another instance owns the bus name but did not \
+                             answer (stale binary?); refusing to start a second instance"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
+
+    let served = dbus::spawn_service();
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
     let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
+    let visible = Arc::clone(&served.visible);
     gpui_platform::application().run(move |cx: &mut gpui::App| match check {
         Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
-        None => app_shell::boot(cx, exit_after),
+        None => app_shell::boot(cx, exit_after, &visible),
     });
     println!("dropterm-gpui: event loop exited cleanly");
 }
@@ -111,6 +218,54 @@ mod tests {
         // Phase 4–5 own those.
         for line in text.lines().filter(|l| l.contains("gpui-pre")) {
             assert!(!line.contains("x11"), "no x11 feature: {line}");
+        }
+    }
+
+    #[test]
+    fn the_surface_verbs_parse_and_default_to_toggle() {
+        use super::Action;
+        use super::Args;
+        use clap::Parser as _;
+        let bare = Args::parse_from(["dropterm-gpui"]);
+        assert_eq!(bare.action, None);
+        assert_eq!(bare.action.unwrap_or_default(), Action::Toggle);
+        assert_eq!(
+            Args::parse_from(["dropterm-gpui", "show"]).action,
+            Some(Action::Show)
+        );
+        assert_eq!(
+            Args::parse_from(["dropterm-gpui", "hide"]).action,
+            Some(Action::Hide)
+        );
+        assert_eq!(
+            Args::parse_from(["dropterm-gpui", "toggle"]).action,
+            Some(Action::Toggle)
+        );
+    }
+
+    #[test]
+    fn is_visible_parses_alone_and_conflicts_with_subcommands() {
+        use super::Args;
+        use clap::Parser as _;
+        let alone = Args::try_parse_from(["dropterm-gpui", "--is-visible"]).expect("parses alone");
+        assert!(alone.is_visible);
+        assert_eq!(alone.action, None);
+        assert!(Args::try_parse_from(["dropterm-gpui", "--is-visible", "show"]).is_err());
+        assert!(Args::try_parse_from(["dropterm-gpui", "show", "--is-visible"]).is_err());
+    }
+
+    #[test]
+    fn surface_verbs_forward_no_words_like_the_libcosmic_encoder() {
+        // The cross-frontend wire pin: the libcosmic CLI's forward
+        // encoder sends the verb's Display name with no words for the
+        // surface verbs; this CLI must put the identical shape on the
+        // wire or the other side's decode drifts.
+        use super::{Action, forward_words};
+        for action in [Action::Toggle, Action::Show, Action::Hide] {
+            assert!(
+                forward_words(action).is_empty(),
+                "{action} forwards no words"
+            );
         }
     }
 

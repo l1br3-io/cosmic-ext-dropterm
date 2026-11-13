@@ -104,15 +104,15 @@ core's transport, stale-owner refusal exit codes). `SetVisible` flips the
 band live — the spike's check-10 shape, in-tree.
 
 **Acceptance criteria:**
-- [ ] Contract round-trip on both compositors: name owned, `IsVisible`
+- [x] Contract round-trip on both compositors: name owned, `IsVisible`
       read, `SetVisible` flipping the render live and back
-- [ ] A second launch forwards and exits 0; the stale-owner case refuses
+- [x] A second launch forwards and exits 0; the stale-owner case refuses
       exit 1
-- [ ] `--is-visible` answers true/false with matching exit codes
+- [x] `--is-visible` answers true/false with matching exit codes
 
 **Verification:**
-- [ ] Manual: the round-trip walk on rig + VM (logs held)
-- [ ] Tests pass: `just check`
+- [x] Manual: the round-trip walk on rig + VM (logs held)
+- [x] Tests pass: `just check`
 
 **Dependencies:** Tasks 1–3 · **Files:** the crate's dbus/startup modules ·
 **Scope:** M

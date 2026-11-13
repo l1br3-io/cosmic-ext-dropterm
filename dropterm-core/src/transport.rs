@@ -113,9 +113,28 @@ pub fn forward_to_running(action: &str, args: Vec<&str>) -> Result<(), zbus::Err
             std::env::var("XDG_ACTIVATION_TOKEN").ok(),
             std::env::var("DESKTOP_STARTUP_ID").ok(),
         );
-        proxy.activate_action(action, args, data).await
+        // zbus 5 carries no default method timeout, so a wedged owner
+        // (alive, name held, never answering — the stale-binary window
+        // the refusal exists for) would hang this launch forever:
+        // every keybind press blocks. Bound the wait; silence past the
+        // deadline is the same refusal as a failed send. Found on the
+        // gpui-scaffold walk against a SIGSTOPped holder (sf-4,
+        // 2026-11-13); the bound applies to both frontends.
+        let deadline = std::time::Duration::from_secs(FORWARD_DEADLINE_SECS);
+        match tokio::time::timeout(deadline, proxy.activate_action(action, args, data)).await {
+            Ok(result) => result,
+            Err(_) => Err(zbus::Error::Handshake(format!(
+                "no answer from the bus name owner within {FORWARD_DEADLINE_SECS} s"
+            ))),
+        }
     })
 }
+
+/// How long a second launch waits for the running instance to take its
+/// verb before refusing (see [`forward_to_running`]): generous against
+/// a busy instance answering in milliseconds, short against a wedged
+/// one blocking every summon.
+pub const FORWARD_DEADLINE_SECS: u64 = 5;
 
 /// What a forward's result means for this launch, pure so the one
 /// deliberate delta from libcosmic's second-launch behavior is
@@ -189,6 +208,67 @@ pub fn unsupported_startup_error(reason: Option<&str>) -> String {
         let _ = std::fmt::Write::write_fmt(&mut msg, format_args!(" (probe: {reason})"));
     }
     msg
+}
+
+/// libcosmic's debug escape hatch, kept (control-transport) and moved
+/// here at gpui-scaffold Task 4 — both frontends' launch decisions
+/// need it: `COSMIC_SINGLE_INSTANCE=false` (or `0`) runs this launch
+/// as a plain instance — no forwarding, no name ownership, no applet
+/// state — so a broken primary never blocks debugging a fresh one.
+/// Read once per process: the launch decision and the served loop must
+/// agree for the whole run.
+pub fn single_instance_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("COSMIC_SINGLE_INSTANCE")
+            .is_ok_and(|value| value.to_lowercase() == "false" || value == "0")
+    })
+}
+
+/// The bus half of `--is-visible` (moved from the libcosmic frontend's
+/// `main.rs` at gpui-scaffold Task 4): `Some(visible)` when a running
+/// instance answered, `None` when the name is unowned (no note owed)
+/// or owned without the V1 interface (stale binary mid-upgrade — noted
+/// on stderr). Query-only: nothing here activates or spawns the app,
+/// so the flag can never summon the terminal.
+pub fn query_visibility() -> Option<bool> {
+    // zbus needs a runtime with io and time; a current-thread runtime
+    // is enough for one synchronous-looking query. Its feature set
+    // arrives through zbus's own tokio dependency.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(async {
+        let conn = zbus::connection::Builder::session().ok()?.build().await.ok()?;
+        let owned = zbus::fdo::DBusProxy::new(&conn)
+            .await
+            .ok()?
+            .name_has_owner(crate::dbus_state::BUS_NAME.try_into().ok()?)
+            .await
+            .ok()?;
+        if !owned {
+            return None;
+        }
+        let read = async {
+            crate::dbus_state::V1InterfaceProxy::new(
+                &conn,
+                crate::dbus_state::BUS_NAME,
+                crate::dbus_state::OBJECT_PATH,
+            )
+            .await?
+            .visible()
+            .await
+        };
+        if let Ok(visible) = read.await {
+            Some(visible)
+        } else {
+            eprintln!(
+                "dropterm: bus name owned but the V1 state                  interface is missing (stale binary?); treating as not                  visible"
+            );
+            None
+        }
+    })
 }
 
 // --- the layer-shell startup verdict (gpui-scaffold Task 3) -----------

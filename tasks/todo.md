@@ -362,8 +362,26 @@ test; libcosmic binary + applet identical behavior.
       refuses with core's message + exit 1 and no probe reason, the
       cannot-ask control carries the probe reason
       (target/weston-evidence-sf3{,-control}.log))*
-- [ ] sf-4 V1 + activation beside the render loop (Connection held,
+- [x] sf-4 V1 + activation beside the render loop (Connection held,
       self-check); CLI parity; SetVisible flips live — merge
+      *(walked 2026-11-13 on rig + VM: name owned with the
+      name_has_owner self-check row, the V1 `Visible` property read
+      true/false, `ActivateAction` hide/show/toggle flipping the render
+      live and back — render-state rows in the logs, the two VM
+      screenshots pixel-differing through the flip (band mean 67
+      visible vs 84 hidden) — second launch exits 0 with the verb
+      answered, `--is-visible` answers with matching codes, and the
+      stale-owner row (a SIGSTOPped holder) refuses exit 1 after the
+      walk found and fixed a real hole: zbus 5 carries no default
+      method timeout, so a wedged-but-alive owner hung every summon
+      forever — core's forward_to_running now bounds the wait at 5 s
+      (`FORWARD_DEADLINE_SECS`), both frontends; evidence in
+      target/rig-evidence-sf4-{roundtrip,busctl,stale}.log and
+      target/vm-evidence-sf4-{roundtrip.log,visible,hidden}.png, VM
+      rewound after; the "SetVisible"/"IsVisible" vocabulary is the
+      spike's shorthand — on the contract it is the `Visible` property
+      read and the `ActivateAction` verbs both CLIs and the applet
+      send)*
 
 **Checkpoint — the frontend exists:** pinned, patched, boots, owns the
 name, answers the contract on both compositors.

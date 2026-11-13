@@ -7,6 +7,8 @@
 //! evidence-line shapes are carried over (`dropterm-gpui:` prefixed)
 //! so the rig and VM walks read the same rows they always did.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
@@ -66,11 +68,18 @@ pub(crate) fn quit_after<T: 'static>(cx: &mut Context<T>, after: Duration) {
     .detach();
 }
 
-/// The placeholder band the scaffold renders: a clock face proving the
-/// render loop stays alive (the notify loop below keeps frames
-/// flowing), carried from the spike's panel. The real surface arrives
+/// The placeholder band the scaffold renders, carried from the
+/// spike's panel: while served-visible, a clock face proving the
+/// render loop stays alive; hidden, a faint band naming its state —
+/// the scaffold's stand-in for the slide, so a served verb's flip is
+/// visible in pixels and in the log both. The real surface arrives
 /// with the gpui-surface slice.
-fn band() -> impl IntoElement {
+fn band(visible: bool) -> impl IntoElement {
+    let (bg, label) = if visible {
+        (rgba(0x0000_0044), clock_text())
+    } else {
+        (rgba(0x0000_0011), "hidden".to_string())
+    };
     div()
         .size_full()
         .flex()
@@ -78,8 +87,8 @@ fn band() -> impl IntoElement {
         .justify_center()
         .text_size(rems(4.5))
         .text_color(white())
-        .bg(rgba(0x0000_0044))
-        .child(clock_text())
+        .bg(bg)
+        .child(label)
 }
 
 fn clock_text() -> String {
@@ -96,30 +105,37 @@ fn clock_text() -> String {
 }
 
 /// The drawer's root view: logs mapped-bounds evidence rows (the
-/// spike's shape — first frame, every change) and keeps the clock
-/// rendering.
+/// spike's shape — first frame, every change), renders the served
+/// visibility's band, and logs each render flip (the spike's check-10
+/// row) so a walk reads the flip in the log beside seeing it in pixels.
 pub(crate) struct Shell {
     pub(crate) open: Instant,
     frames: u64,
     last_bounds: Option<Bounds<Pixels>>,
+    visible: Arc<AtomicBool>,
+    last_visible: bool,
 }
 
 impl Shell {
-    pub(crate) fn new(open: Instant) -> Self {
+    pub(crate) fn new(open: Instant, visible: Arc<AtomicBool>) -> Self {
         Self {
             open,
             frames: 0,
             last_bounds: None,
+            visible,
+            last_visible: true,
         }
     }
 
-    /// Notify loop keeps frames (and the clock) flowing.
+    /// Notify loop keeps frames (and the clock) flowing at a tick a
+    /// served flip lands inside (the drainer cannot touch this
+    /// context; the poll is the coexistence seam).
     fn keep_alive(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 let _ = this.update(cx, |_, cx| cx.notify());
                 cx.background_executor()
-                    .timer(Duration::from_millis(500))
+                    .timer(Duration::from_millis(100))
                     .await;
             }
         })
@@ -143,6 +159,15 @@ impl Render for Shell {
             );
             self.last_bounds = Some(b);
         }
+        let visible = self.visible.load(Ordering::Relaxed);
+        if visible != self.last_visible || self.frames == 1 {
+            println!(
+                "dropterm-gpui: render state visible={visible} (frame {}) at +{}ms",
+                self.frames,
+                self.open.elapsed().as_millis()
+            );
+            self.last_visible = visible;
+        }
         if self.frames == 1 {
             println!(
                 "dropterm-gpui: OPEN->FIRST_FRAME {}ms",
@@ -150,13 +175,14 @@ impl Render for Shell {
             );
             Self::keep_alive(cx);
         }
-        band()
+        band(visible)
     }
 }
 
 /// Boot the shell: open the drawer window on the app and run the
-/// event loop to its clean exit.
-pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
+/// event loop to its clean exit. `visible` is the served visibility
+/// the band renders and the dbus drainer flips.
+pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>, visible: &Arc<AtomicBool>) {
     let open = Instant::now();
     println!(
         "dropterm-gpui: opening the drawer (L|R|B, layer Top, zone -1, kb None) as {}",
@@ -169,7 +195,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
                 if let Some(after) = exit_after {
                     quit_after(cx, after);
                 }
-                Shell::new(open)
+                Shell::new(open, Arc::clone(visible))
             })
         },
     ) {
