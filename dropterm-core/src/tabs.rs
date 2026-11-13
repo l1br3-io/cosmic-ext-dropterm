@@ -37,16 +37,14 @@ pub enum Attention {
 
 impl Attention {
     /// Transition on a bell in this tab.
-    #[expect(
-        clippy::unused_self,
-        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
-    )]
+    #[must_use]
     pub fn on_bell(self) -> Self {
         Self::Bell
     }
 
     /// Transition on output in this tab while it is inactive: activity
     /// at least — never demoting an existing bell marker.
+    #[must_use]
     pub fn on_activity(self) -> Self {
         match self {
             Self::Bell => Self::Bell,
@@ -56,10 +54,7 @@ impl Attention {
 
     /// Transition on the tab becoming active: whatever marker it wore
     /// is cleared.
-    #[expect(
-        clippy::unused_self,
-        reason = "transition-family API: on_bell/on_activity/on_activated stay uniform method calls at every site"
-    )]
+    #[must_use]
     pub fn on_activated(self) -> Self {
         Self::None
     }

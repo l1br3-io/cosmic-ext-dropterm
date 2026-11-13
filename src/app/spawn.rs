@@ -13,7 +13,7 @@ use crate::profile;
 use crate::session;
 use crate::tabs::{self, Tab, TabId};
 use crate::terminal::suggest;
-use crate::terminal::{Terminal, TerminalOptions};
+use crate::terminal::{CosmicHost, Terminal, TerminalOptions};
 
 /// What a new tab runs: the user's shell — config-resolved or per-tab
 /// recorded — paired with the config's shell arguments, an explicit
@@ -496,6 +496,7 @@ impl DropTerm {
         self.next_tab_id += 1;
 
         match Terminal::new(
+            Box::new(CosmicHost::new()),
             tab_id,
             tx,
             term_config,

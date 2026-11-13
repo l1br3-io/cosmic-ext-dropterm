@@ -1027,6 +1027,7 @@ fn tab_records_its_spawn_shell() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
+        Box::new(crate::terminal::PlainHost::default()),
         TabId(0),
         tx,
         TermConfig::default(),

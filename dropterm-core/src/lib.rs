@@ -7,6 +7,22 @@
 // fires, for the same reason as the root crate's table.
 #![warn(clippy::pedantic)]
 #![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
+#![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty
+#![expect(
+    clippy::too_many_lines,
+    reason = "standing: OQ-4 — dissolved by module-decomposition"
+)]
+// Exported-API standings the bin never needed (a bin exports nothing):
+// the engine's constructor/OSC handlers predate the lib split; docs
+// land with the GPUI slices that make them consumer-facing.
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "standing: engine ctor docs predate the core split"
+)]
+#![expect(
+    clippy::missing_panics_doc,
+    reason = "standing: engine OSC handlers lock a Mutex the engine owns"
+)]
 #![expect(
     clippy::must_use_candidate,
     reason = "standing: OQ-3 — no #[must_use] attribute sweep"
@@ -50,4 +66,7 @@ pub mod intent;
 pub mod keybinds;
 pub mod profile;
 pub mod session;
+pub mod tabs;
+pub mod terminal;
+pub mod theme_glue;
 pub mod theme_source;

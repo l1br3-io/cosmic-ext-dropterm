@@ -33,10 +33,9 @@ use alacritty_terminal::{
     tty::{self, Options},
     vte::ansi::{Color, CursorShape, NamedColor, Rgb},
 };
-use cosmic::iced::{advanced::graphics::text::font_system, mouse::ScrollDelta};
 use cosmic_text::{
     Attrs, AttrsList, Buffer, BufferLine, CacheKeyFlags, Family, LineEnding, Metrics, Shaping,
-    Stretch, Weight, Wrap,
+    Stretch, Weight,
 };
 use indexmap::IndexSet;
 use std::{
@@ -55,9 +54,8 @@ use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
-use crate::status_bar::CommandTimer;
+use super::host::TextHost;
 use crate::tabs::TabId;
-use crate::terminal::mouse_reporter::MouseReporter;
 use crate::terminal::suggest::{self, AcceptKind, Suggest};
 
 // TEMPORARY AUTOSUGGEST DEBUG TRACE (dropterm debugging, remove after
@@ -434,7 +432,7 @@ fn read_comm(pid: i32) -> Option<String> {
 
 /// The ssh stand-in's destination token (status-remote spec):
 /// `/proc/<fg-pid>/cmdline` — NUL-split argv through
-/// [`crate::status_bar::ssh_destination`] — read only when the
+/// [`ssh_destination`] — read only when the
 /// foreground group's own comm is `ssh` (any other comm never
 /// reaches the cmdline read). `None` whenever the shell owns the
 /// foreground, the inputs are missing, or the argv is unreadable,
@@ -472,7 +470,7 @@ pub fn foreground_ssh_destination(
 /// spec): the process's own comm must read `ssh` before the cmdline
 /// is touched — the getter's gate, so a non-ssh foreground never
 /// pays (or risks) the read. The NUL-split argv goes to the pure
-/// parser ([`crate::status_bar::ssh_destination`]); strict UTF-8,
+/// parser ([`ssh_destination`]); strict UTF-8,
 /// and anything unreadable or unparseable reads `None` — the local
 /// path stands, never a guessed host.
 #[cfg(target_os = "linux")]
@@ -495,7 +493,7 @@ fn read_ssh_destination(pid: i32) -> Option<String> {
     // else rather than rendering a half-read token.
     let text = String::from_utf8(raw).ok()?;
     let argv: Vec<&str> = text.split('\0').filter(|token| !token.is_empty()).collect();
-    crate::status_bar::ssh_destination(&argv)
+    ssh_destination(&argv)
 }
 
 /// Per-cell rendering metadata (background, underline color, cell
@@ -546,13 +544,12 @@ pub struct Terminal {
     pub active_regex_match: Option<alacritty_terminal::term::search::Match>,
     pub active_hyperlink_id: Option<String>,
     bold_font_weight: Weight,
-    buffer: Arc<Buffer>,
+    host: Box<dyn TextHost>,
     is_focused: bool,
     master_fd: Option<fs::File>,
     colors: Colors,
     default_attrs: Attrs<'static>,
     dim_font_weight: Weight,
-    mouse_reporter: MouseReporter,
     notifier: Notifier,
     /// Whether autosuggestions compute (autosuggest spec) — the
     /// resolved options flag, re-read at every `set_config`.
@@ -1342,6 +1339,7 @@ impl Terminal {
         reason = "fg/bg pair is terminal color vocabulary"
     )]
     pub fn new(
+        mut host: Box<dyn TextHost>,
         tab_id: TabId,
         event_tx: mpsc::UnboundedSender<(TabId, Event)>,
         term_config: Config,
@@ -1372,20 +1370,11 @@ impl Terminal {
             .color(default_fg)
             .metadata(default_metada_idx);
 
-        let mut buffer = Buffer::new_empty(metrics);
-
-        let (cell_width, cell_height) = {
-            let mut font_system = font_system().write().unwrap();
-            let font_system = font_system.raw();
-            buffer.set_wrap(Wrap::None);
-
-            // Use size of space to determine cell size
-            buffer.set_text(" ", &default_attrs, Shaping::Advanced, None);
-            let layout = buffer.line_layout(font_system, 0).unwrap();
-            let w = layout[0].w;
-            buffer.set_monospace_width(Some(w));
-            (w, metrics.line_height)
-        };
+        // The host owns the buffer and measures the cell through its
+        // toolkit's font system (the shared-core seam): everything
+        // above is plain cosmic-text data, everything below is grid
+        // arithmetic on the measured answer.
+        let (cell_width, cell_height) = host.init_and_measure(&default_attrs, &metrics);
 
         #[expect(
             clippy::cast_possible_truncation,
@@ -1462,12 +1451,11 @@ impl Terminal {
             url_regex_search: url_regex_search(),
             regex_matches: Vec::new(),
             bold_font_weight: Weight(bold_font_weight),
-            buffer: Arc::new(buffer),
+            host,
             colors: *colors,
             default_attrs,
             dim_font_weight: Weight(dim_font_weight),
             metadata_set,
-            mouse_reporter: MouseReporter::default(),
             needs_update: true,
             notifier,
             autosuggestions_enabled: options.autosuggestions_enabled,
@@ -1545,17 +1533,17 @@ impl Terminal {
     }
 
     pub fn buffer_weak(&self) -> Weak<Buffer> {
-        Arc::downgrade(&self.buffer)
+        self.host.buffer_weak()
     }
 
     /// Get the internal [`Buffer`]
     pub fn with_buffer<F: FnOnce(&Buffer) -> T, T>(&self, f: F) -> T {
-        f(&self.buffer)
+        f(self.host.buffer())
     }
 
     /// Get the internal [`Buffer`], mutably
     pub fn with_buffer_mut<F: FnOnce(&mut Buffer) -> T, T>(&mut self, f: F) -> T {
-        f(Arc::make_mut(&mut self.buffer))
+        f(self.host.buffer_mut())
     }
 
     pub fn colors(&self) -> &Colors {
@@ -1688,7 +1676,7 @@ impl Terminal {
     }
 
     pub fn redraw(&self) -> bool {
-        self.buffer.redraw()
+        self.host.redraw()
     }
 
     pub fn set_redraw(&mut self, redraw: bool) {
@@ -2350,7 +2338,7 @@ impl Terminal {
     /// routed into the terminal pane is the user saying "seen".
     /// Internal engine writes ride [`Self::input_no_scroll`]
     /// directly, so they never masquerade as touches.
-    pub(crate) fn clear_missed_activity(&self) {
+    pub fn clear_missed_activity(&self) {
         self.missed_activity.set(false);
     }
 
@@ -2898,8 +2886,8 @@ impl Terminal {
         }
 
         let metrics = options.metrics(zoom_adj);
-        if metrics != self.buffer.metrics() {
-            self.with_buffer_mut(|buffer| buffer.set_metrics(metrics));
+        if self.host.metrics_differ(&metrics) {
+            self.host.buffer_mut().set_metrics(metrics);
             update_cell_size = true;
         }
 
@@ -3038,19 +3026,7 @@ impl Terminal {
 
     pub fn update_cell_size(&mut self) {
         let default_attrs = self.default_attrs.clone();
-        let (cell_width, cell_height) = {
-            let mut font_system = font_system().write().unwrap();
-            self.with_buffer_mut(|buffer| {
-                buffer.set_wrap(Wrap::None);
-
-                // Use size of space to determine cell size
-                buffer.set_text(" ", &default_attrs, Shaping::Advanced, None);
-                let layout = buffer.line_layout(font_system.raw(), 0).unwrap();
-                let w = layout[0].w;
-                buffer.set_monospace_width(Some(w));
-                (w, buffer.metrics().line_height)
-            })
-        };
+        let (cell_width, cell_height) = self.host.remeasure(&default_attrs);
 
         let old_size = self.size;
         self.size = Size {
@@ -3133,7 +3109,7 @@ impl Terminal {
         // TODO: is redraw needed after all events?
         // TODO: use LineDamageBounds
         {
-            let buffer = Arc::make_mut(&mut self.buffer);
+            let buffer = self.host.buffer_mut();
 
             let mut line_i = 0;
             let mut last_point = None;
@@ -3553,105 +3529,105 @@ impl Terminal {
                 buffer.lines.truncate(line_i);
                 buffer.set_redraw(true);
             }
-
-            // Shape and trim shape run cache
-            {
-                let mut font_system = font_system().write().unwrap();
-                buffer.shape_until_scroll(font_system.raw(), true);
-                font_system.raw().shape_run_cache.trim(1024);
-            }
         }
+
+        // Shape the projected lines through the host's font system,
+        // trimming its run cache.
+        self.host.shape();
 
         log::debug!("buffer update {:?}", instant.elapsed());
 
-        self.buffer.redraw()
+        self.host.redraw()
     }
 
     pub fn viewport_to_point(&self, point: Point<usize>) -> Point {
         let term = self.term.lock();
         viewport_to_point(term.grid().display_offset(), point)
     }
+}
 
-    pub fn report_mouse(
-        &mut self,
-        event: &cosmic::iced::Event,
-        modifiers: cosmic::iced::keyboard::Modifiers,
-        x: u32,
-        y: u32,
-    ) {
-        let term_lock = self.term.lock();
-        let mode = term_lock.mode();
+// --- the command timer (command-lifecycle spec) ---
 
-        #[expect(
-            clippy::collapsible_else_if,
-            reason = "the SGR/normal split stays parallel if/else blocks, mirroring upstream's shape"
-        )]
-        if mode.contains(TermMode::SGR_MOUSE) {
-            if let Some(code) = self.mouse_reporter.sgr_mouse_code(event, modifiers, x, y) {
-                self.input_no_scroll(code);
+/// The command timer's edge model (command-lifecycle spec): pure
+/// over the foreground diff `Terminal::update` already computes. A
+/// start sets `started_at` only when the diff witnessed the
+/// idle→running crossing — a timer born mid-run never learns that
+/// command's start, so it never reports a duration for it. A finish
+/// freezes the elapsed as the last command's duration; the next
+/// start clears the freeze. (Moved from the frontend's status bar by
+/// the shared-core spec: the engine is its only consumer.)
+#[derive(Default)]
+pub struct CommandTimer {
+    /// The last observed foreground state — `None` until the first
+    /// observation, so a timer born mid-run knows its start went
+    /// unwitnessed.
+    last_foreground: Option<bool>,
+    /// The running command's witnessed start.
+    started_at: Option<Instant>,
+    /// The last finished command's duration, until the next start.
+    frozen: Option<Duration>,
+    /// The last finished command's exit code, until the next start —
+    /// the shell's own 133;D report, never a guess (status-exit
+    /// spec). `None` is both the absent fact (no shell integration)
+    /// and success: code 0 is the unmarked default. Set regardless of
+    /// whether the start was witnessed — the verdict needs no start,
+    /// only the finish's own report.
+    last_exit: Option<u32>,
+}
+
+impl CommandTimer {
+    /// One update's observation. `foreground` is the honesty input:
+    /// the engine's own kernel truth at `update()` entry, not a
+    /// guess; consecutive same-state observations are no-ops.
+    pub fn step(&mut self, foreground: bool, now: Instant) {
+        match (self.last_foreground, foreground) {
+            // The witnessed idle→running crossing: the start.
+            (Some(false), true) => {
+                self.started_at = Some(now);
+                self.frozen = None;
+                // One rule for both facts: the next command's start
+                // retires the previous verdict with the freeze.
+                self.last_exit = None;
             }
-        } else {
-            if let Some(code) = self.mouse_reporter.normal_mouse_code(
-                event,
-                modifiers,
-                mode.contains(TermMode::UTF8_MOUSE),
-                x,
-                y,
-            ) {
-                self.input_no_scroll(code);
+            // The witnessed running→idle crossing: freeze the
+            // elapsed of a witnessed start — an unwitnessed one has
+            // no duration to freeze (the both-edges honesty rule).
+            (Some(true), false) => {
+                if let Some(start) = self.started_at.take() {
+                    self.frozen = Some(now.saturating_duration_since(start));
+                }
             }
+            // A first observation, or a same-state repeat: no edge.
+            _ => {}
         }
+        self.last_foreground = Some(foreground);
     }
 
-    pub fn scroll_mouse(
-        &mut self,
-        delta: ScrollDelta,
-        modifiers: cosmic::iced::keyboard::Modifiers,
-        x: u32,
-        y: u32,
-    ) {
-        let is_sgr = self.term.lock().mode().contains(TermMode::SGR_MOUSE);
-
-        if is_sgr {
-            let codes = self.mouse_reporter.sgr_mouse_wheel_scroll(
-                self.size().cell_width,
-                self.size().cell_height,
-                delta,
-                &modifiers,
-                x,
-                y,
-            );
-
-            for code in codes {
-                self.notifier.notify(code);
-            }
-        } else {
-            self.scroll_as_arrows(delta);
-        }
+    /// The running command's elapsed, only while a witnessed start
+    /// runs — `None` for a command whose start went unwitnessed.
+    pub fn live_elapsed(&self, now: Instant) -> Option<Duration> {
+        self.started_at
+            .map(|start| now.saturating_duration_since(start))
     }
 
-    pub fn scroll_as_arrows(&mut self, delta: ScrollDelta) {
-        const SCROLL_SPEED: u32 = 3;
-        let cell_width = self.size().cell_width;
-        let cell_height = self.size().cell_height;
-        let (_, lines_y) = self
-            .mouse_reporter
-            .accumulate_scroll(delta, cell_width, cell_height);
-        let is_app_cursor = self.term.lock().mode().contains(TermMode::APP_CURSOR);
-        let (up, down) = if is_app_cursor {
-            (&b"\x1BOA"[..], &b"\x1BOB"[..])
-        } else {
-            (&b"\x1B[A"[..], &b"\x1B[B"[..])
-        };
-        for _ in 0..(lines_y.unsigned_abs() * SCROLL_SPEED) {
-            if lines_y > 0 {
-                self.input_no_scroll(up);
-            } else if lines_y < 0 {
-                self.input_no_scroll(down);
-            }
-        }
+    /// The last finished command's duration, until the next start.
+    pub fn last_duration(&self) -> Option<Duration> {
+        self.frozen
+    }
+
+    /// Records the shell's own verdict for the finished command
+    /// (OSC 133;D): verbatim, except success (code 0) normalizes to
+    /// `None` — the unmarked default.
+    pub fn note_exit(&mut self, code: u32) {
+        self.last_exit = (code != 0).then_some(code);
+    }
+
+    /// The last finished command's exit code, until the next start.
+    pub fn last_exit(&self) -> Option<u32> {
+        self.last_exit
     }
 }
+
 /// Iterate over all visible regex matches.
 /// This includes the screen ± 100 lines ([`MAX_SEARCH_LINES`]).
 /// Duplicated from alacritty's display/hint.rs.
@@ -3875,7 +3851,7 @@ pub struct ReportedProgress {
     /// The decay anchor — engine policy, read through
     /// [`Terminal::progress_decay_deadline`]; crate-visible only so
     /// the band's headless fixtures can stand a report.
-    pub(crate) refreshed_at: Instant,
+    pub refreshed_at: Instant,
 }
 
 impl ReportedProgress {
@@ -4270,8 +4246,10 @@ pub struct ImageStore {
     images: VecDeque<(u64, image::RgbaImage)>,
     /// The running decoded-byte total across live images.
     bytes: usize,
-    /// Renderer handles by id — pixels-to-handle made exactly once.
-    handles: HashMap<u64, cosmic::iced::widget::image::Handle>,
+    /// Ids whose pixels left the store (eviction, removal, clear)
+    /// since the last [`Self::take_removed`] — the frontend's handle
+    /// cache drains this so dead handles die with their pixels.
+    pending_removals: Vec<u64>,
     /// z-indexes by id (kitty-images spec): z < 0 draws beneath the
     /// glyphs, z >= 0 above them and below the cursor. An unrecorded
     /// id — every iterm image — draws beneath, the drawing the first
@@ -4289,24 +4267,6 @@ impl ImageStore {
             .iter()
             .find(|(stored, _)| *stored == id)
             .map(|(_, rgba)| rgba)
-    }
-
-    /// The renderer handle for an id, building it from the pixels on
-    /// first ask and serving the clone after — the renderer's cache
-    /// keys on the handle, so one build is one upload, forever.
-    /// `None` when the id stands behind no pixels.
-    pub fn handle_for(&mut self, id: u64) -> Option<cosmic::iced::widget::image::Handle> {
-        if let Some(handle) = self.handles.get(&id) {
-            return Some(handle.clone());
-        }
-        let rgba = self.get(id)?;
-        let handle = cosmic::iced::widget::image::Handle::from_rgba(
-            rgba.width(),
-            rgba.height(),
-            rgba.as_raw().clone(),
-        );
-        self.handles.insert(id, handle.clone());
-        Some(handle)
     }
 
     /// The running decoded-byte total (test surface for the budget).
@@ -4327,8 +4287,8 @@ impl ImageStore {
         while self.bytes > budget && self.images.len() > 1 {
             if let Some((oldest, evicted)) = self.images.pop_front() {
                 self.bytes -= evicted.len();
-                self.handles.remove(&oldest);
                 self.layers.remove(&oldest);
+                self.pending_removals.push(oldest);
             }
         }
     }
@@ -4349,7 +4309,7 @@ impl ImageStore {
         self.layers.get(&id).copied().unwrap_or(-1)
     }
 
-    /// Remove one image's pixels, handle, and layer by id (kitty-images
+    /// Remove one image's pixels and layer by id (kitty-images
     /// spec's `a=d` free): a freed id draws the same blank an evicted
     /// one does. A missing id is silence.
     pub fn remove(&mut self, id: u64) {
@@ -4358,18 +4318,80 @@ impl ImageStore {
         {
             self.bytes -= evicted.len();
         }
-        self.handles.remove(&id);
         self.layers.remove(&id);
+        self.pending_removals.push(id);
+    }
+
+    /// Take the ids whose pixels left since the last call — the
+    /// frontend handle cache's eviction feed.
+    pub fn take_removed(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.pending_removals)
     }
 
     /// Empty the store whole (kitty-images spec's `d=A`): every
     /// placement left standing draws blank, the grid's own honesty.
     pub fn clear(&mut self) {
-        self.images.clear();
-        self.handles.clear();
+        for (id, _) in self.images.drain(..) {
+            self.pending_removals.push(id);
+        }
         self.layers.clear();
         self.bytes = 0;
     }
+}
+
+/// The ssh command's destination token (status-remote spec): the
+/// last argument that is neither an option nor a value an option
+/// consumed — `ssh -p 2222 box`, `ssh -i key git@host`, and
+/// `ssh host -W %h:%p` all yield their host token, because the
+/// value-taking options' arguments are skipped and a bare `--`
+/// ends the option walk. `None` when nothing survives: the local
+/// path stands, never a wrong host.
+pub fn ssh_destination(argv: &[&str]) -> Option<String> {
+    /// The short options whose *separate* next argument is a value,
+    /// not an operand — ssh(1)'s own consuming set (the 9.6 usage
+    /// line: every option that names what follows it). Attached
+    /// spellings (`-p2222`) and bundles (`-vA`) carry their values
+    /// inside or take none: the token itself is the option either
+    /// way, and only the exact single-letter spellings consume.
+    const VALUE_SHORTS: [char; 22] = [
+        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
+        'R', 'S', 'W', 'w',
+    ];
+
+    let mut destination = None;
+    let mut consume_next = false;
+    let mut options_done = false;
+    for &token in argv.iter().skip(1) {
+        if consume_next {
+            consume_next = false;
+            continue;
+        }
+        if !options_done && token.starts_with("--") {
+            if token == "--" {
+                options_done = true;
+            } else if token.contains('=') {
+                // `--name=value` carries its value inside.
+            } else {
+                // A bare long form consumes what follows: this ssh
+                // (9.6) has no long spellings, and 9.8's flag-forms
+                // are unknown from here — consuming is the
+                // degrade-safe bias, because an uncertifiable value
+                // must never be shown as the host.
+                consume_next = true;
+            }
+            continue;
+        }
+        if !options_done && token.starts_with('-') {
+            consume_next = token
+                .strip_prefix('-')
+                .filter(|rest| rest.chars().count() == 1)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|flag| VALUE_SHORTS.contains(&flag));
+            continue;
+        }
+        destination = Some(token.to_string());
+    }
+    destination
 }
 
 /// One accumulating `MultipartFile` session (iterm-images spec): the
@@ -4388,8 +4410,9 @@ struct PendingImage {
 /// and drops whole). Synchronous by design: no threads touch the
 /// damage path. `pub(crate)` for one consumer beside the damage path:
 /// the images panel's thumbnails decode clipboard-originated cache
-/// files through this same guard.
-pub(crate) fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
+/// files through this same guard. `pub` for the frontend's images
+/// panel (the crate boundary crossed by the shared-core split).
+pub fn decode_image(payload: &[u8]) -> Option<image::RgbaImage> {
     use image::ImageDecoder;
 
     let mut limits = image::Limits::default();

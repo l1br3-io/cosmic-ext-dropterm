@@ -1511,10 +1511,19 @@ name = "dropterm-core"
 version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
+ "base64",
+ "cosmic-text",
+ "dirs",
+ "flate2",
+ "image",
+ "indexmap",
+ "libc",
  "log",
  "ron",
  "serde",
  "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

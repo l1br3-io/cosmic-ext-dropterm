@@ -305,7 +305,7 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 
 - [x] sc-1 `dropterm-core` crate; the pure movers (config store, session,
       tabs, profiles, intent vocabulary); zero-toolkit pin test
-- [ ] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
+- [x] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
       keybinds, theme-glue models (sc-1 note: `tabs.rs` deferred here — it
       holds `Mutex<Terminal>`, the spec's engine-state grouping)
 - [ ] sc-3 Identity + contract move; applet re-points to core

@@ -9,6 +9,28 @@ description = "DropTerm's toolkit-neutral core — config store, session, profil
 repository = "https://github.com/l1br3-io/dropterm"
 
 [dependencies]
+# The engine's text stack — plain data plus the shaper the test host
+# uses; iced's font system never enters this crate (the buffers stay
+# frontend-side, spike check 9). Version-matched to the root crate's
+# 0.19 line with the same features, so no new code enters the build.
+cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-cache"] }
+# The engine's metadata set (grid cell styling) — the root crate's
+# version-matched line.
+indexmap = "2"
+# The engine's event channel (`tokio::sync::mpsc`).
+tokio = { version = "1", features = ["sync"] }
+# The inline-image decode and store (iterm-images spec): same four
+# formats, same strict no-default-features line as the root crate.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# The inline-image wire's base64 and the completions file's inflate
+# and parse — version-matched to the root crate's lines.
+base64 = "0.22"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+toml = "0.5"
+dirs = "6"
+# `tcgetpgrp`/`getpgid` for foreground-process detection — no safe
+# std API exists for either.
+libc = "0.2"
 # The theme data table's color types (`Colors`, `NamedColor`, `Rgb`)
 # come from the terminal engine — not a toolkit; the engine itself
 # moves here with the shared-core spec's Task 2. Version-matched to

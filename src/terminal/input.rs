@@ -5,10 +5,14 @@
 // (<https://github.com/pop-os/cosmic-term>) src/mouse_reporter.rs at
 // commit 9129277.
 
+use alacritty_terminal::term::TermMode;
+
 use cosmic::{
     iced::mouse::{Event as MouseEvent, ScrollDelta},
     iced::{Event, keyboard::Modifiers, mouse::Button},
 };
+
+use super::Terminal;
 
 /// Builds xterm mouse-tracking escape sequences from iced mouse
 /// events, in the legacy/UTF-8 and SGR encodings.
@@ -268,5 +272,91 @@ impl MouseReporter {
                 let term_code = format!("\x1b[<{};{};{}M", button_no, x + 1, y + 1);
                 term_code.as_bytes().to_vec()
             })
+    }
+}
+
+// --- the iced input translation (moved off `Terminal` by the
+// shared-core split: these take toolkit events, so they live with the
+// toolkit; the engine takes bytes) ---
+
+/// Forward one iced mouse event to the pty as xterm tracking bytes
+/// when the program asked for them (the moved `Terminal::report_mouse`).
+pub fn report_mouse(
+    terminal: &Terminal,
+    reporter: &mut MouseReporter,
+    event: &Event,
+    modifiers: Modifiers,
+    x: u32,
+    y: u32,
+) {
+    let term_lock = terminal.term.lock();
+    let mode = term_lock.mode();
+
+    #[expect(
+        clippy::collapsible_else_if,
+        reason = "the SGR/normal split stays parallel if/else blocks, mirroring upstream's shape"
+    )]
+    if mode.contains(TermMode::SGR_MOUSE) {
+        if let Some(code) = reporter.sgr_mouse_code(event, modifiers, x, y) {
+            terminal.input_no_scroll(code);
+        }
+    } else {
+        if let Some(code) =
+            reporter.normal_mouse_code(event, modifiers, mode.contains(TermMode::UTF8_MOUSE), x, y)
+        {
+            terminal.input_no_scroll(code);
+        }
+    }
+}
+
+/// Forward one wheel delta to the program when it tracks the mouse
+/// (the moved `Terminal::scroll_mouse`).
+pub fn scroll_mouse(
+    terminal: &Terminal,
+    reporter: &mut MouseReporter,
+    delta: ScrollDelta,
+    modifiers: Modifiers,
+    x: u32,
+    y: u32,
+) {
+    let is_sgr = terminal.term.lock().mode().contains(TermMode::SGR_MOUSE);
+
+    if is_sgr {
+        let codes = reporter.sgr_mouse_wheel_scroll(
+            terminal.size().cell_width,
+            terminal.size().cell_height,
+            delta,
+            &modifiers,
+            x,
+            y,
+        );
+
+        for code in codes {
+            terminal.input_no_scroll(code);
+        }
+    } else {
+        scroll_as_arrows(terminal, reporter, delta);
+    }
+}
+
+/// Scroll by arrow-key bytes — the shell's own scrollback (the moved
+/// `Terminal::scroll_as_arrows`).
+pub fn scroll_as_arrows(terminal: &Terminal, reporter: &mut MouseReporter, delta: ScrollDelta) {
+    const SCROLL_SPEED: u32 = 3;
+    let cell_width = terminal.size().cell_width;
+    let cell_height = terminal.size().cell_height;
+    let (_, lines_y) = reporter.accumulate_scroll(delta, cell_width, cell_height);
+    let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
+    let (up, down) = if is_app_cursor {
+        (&b"\x1BOA"[..], &b"\x1BOB"[..])
+    } else {
+        (&b"\x1B[A"[..], &b"\x1B[B"[..])
+    };
+    for _ in 0..(lines_y.unsigned_abs() * SCROLL_SPEED) {
+        if lines_y > 0 {
+            terminal.input_no_scroll(up);
+        } else if lines_y < 0 {
+            terminal.input_no_scroll(down);
+        }
     }
 }

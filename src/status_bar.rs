@@ -246,6 +246,10 @@ pub const DROP_ORDER: [SegmentId; 11] = [
 // Re-exported here so every `crate::status_bar::StatusToggles` path
 // keeps resolving; the band that renders it stays frontend-side.
 pub use crate::config::StatusToggles;
+// The ssh parser moved to the engine (core); the tests still reach
+// it through this module.
+// ssh_destination moved to the engine (core); the tests import it
+// straight from there.
 
 /// The resolved segments of the active tab's status band, left
 /// cluster then right, values without labels — a path reads as a
@@ -807,61 +811,6 @@ pub fn program_needs_attention(program_status: Option<crate::terminal::ProgramSt
     use crate::terminal::ProgramState;
     program_status
         .is_some_and(|status| matches!(status.state, ProgramState::Blocked | ProgramState::Error))
-}
-
-/// The ssh command's destination token (status-remote spec): the
-/// last argument that is neither an option nor a value an option
-/// consumed — `ssh -p 2222 box`, `ssh -i key git@host`, and
-/// `ssh host -W %h:%p` all yield their host token, because the
-/// value-taking options' arguments are skipped and a bare `--`
-/// ends the option walk. `None` when nothing survives: the local
-/// path stands, never a wrong host.
-pub fn ssh_destination(argv: &[&str]) -> Option<String> {
-    /// The short options whose *separate* next argument is a value,
-    /// not an operand — ssh(1)'s own consuming set (the 9.6 usage
-    /// line: every option that names what follows it). Attached
-    /// spellings (`-p2222`) and bundles (`-vA`) carry their values
-    /// inside or take none: the token itself is the option either
-    /// way, and only the exact single-letter spellings consume.
-    const VALUE_SHORTS: [char; 22] = [
-        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
-        'R', 'S', 'W', 'w',
-    ];
-
-    let mut destination = None;
-    let mut consume_next = false;
-    let mut options_done = false;
-    for &token in argv.iter().skip(1) {
-        if consume_next {
-            consume_next = false;
-            continue;
-        }
-        if !options_done && token.starts_with("--") {
-            if token == "--" {
-                options_done = true;
-            } else if token.contains('=') {
-                // `--name=value` carries its value inside.
-            } else {
-                // A bare long form consumes what follows: this ssh
-                // (9.6) has no long spellings, and 9.8's flag-forms
-                // are unknown from here — consuming is the
-                // degrade-safe bias, because an uncertifiable value
-                // must never be shown as the host.
-                consume_next = true;
-            }
-            continue;
-        }
-        if !options_done && token.starts_with('-') {
-            consume_next = token
-                .strip_prefix('-')
-                .filter(|rest| rest.chars().count() == 1)
-                .and_then(|rest| rest.chars().next())
-                .is_some_and(|flag| VALUE_SHORTS.contains(&flag));
-            continue;
-        }
-        destination = Some(token.to_string());
-    }
-    destination
 }
 
 /// Collapse a `home`-prefixed path to `~` plus its remainder — on
@@ -1553,87 +1502,6 @@ pub fn next_tick_delay(now: &jiff::Zoned) -> std::time::Duration {
             .try_into()
             .expect("a minute-boundary delay is 0..=60 s of nanoseconds"),
     )
-}
-
-// --- the command timer (command-lifecycle spec) ---
-
-/// The command timer's edge model (command-lifecycle spec): pure
-/// over the foreground diff `Terminal::update` already computes. A
-/// start sets `started_at` only when the diff witnessed the
-/// idle→running crossing — a timer born mid-run never learns that
-/// command's start, so it never reports a duration for it. A finish
-/// freezes the elapsed as the last command's duration; the next
-/// start clears the freeze.
-#[derive(Default)]
-pub struct CommandTimer {
-    /// The last observed foreground state — `None` until the first
-    /// observation, so a timer born mid-run knows its start went
-    /// unwitnessed.
-    last_foreground: Option<bool>,
-    /// The running command's witnessed start.
-    started_at: Option<Instant>,
-    /// The last finished command's duration, until the next start.
-    frozen: Option<Duration>,
-    /// The last finished command's exit code, until the next start —
-    /// the shell's own 133;D report, never a guess (status-exit
-    /// spec). `None` is both the absent fact (no shell integration)
-    /// and success: code 0 is the unmarked default. Set regardless of
-    /// whether the start was witnessed — the verdict needs no start,
-    /// only the finish's own report.
-    last_exit: Option<u32>,
-}
-
-impl CommandTimer {
-    /// One update's observation. `foreground` is the honesty input:
-    /// the engine's own kernel truth at `update()` entry, not a
-    /// guess; consecutive same-state observations are no-ops.
-    pub fn step(&mut self, foreground: bool, now: Instant) {
-        match (self.last_foreground, foreground) {
-            // The witnessed idle→running crossing: the start.
-            (Some(false), true) => {
-                self.started_at = Some(now);
-                self.frozen = None;
-                // One rule for both facts: the next command's start
-                // retires the previous verdict with the freeze.
-                self.last_exit = None;
-            }
-            // The witnessed running→idle crossing: freeze the
-            // elapsed of a witnessed start — an unwitnessed one has
-            // no duration to freeze (the both-edges honesty rule).
-            (Some(true), false) => {
-                if let Some(start) = self.started_at.take() {
-                    self.frozen = Some(now.saturating_duration_since(start));
-                }
-            }
-            // A first observation, or a same-state repeat: no edge.
-            _ => {}
-        }
-        self.last_foreground = Some(foreground);
-    }
-
-    /// The running command's elapsed, only while a witnessed start
-    /// runs — `None` for a command whose start went unwitnessed.
-    pub fn live_elapsed(&self, now: Instant) -> Option<Duration> {
-        self.started_at
-            .map(|start| now.saturating_duration_since(start))
-    }
-
-    /// The last finished command's duration, until the next start.
-    pub fn last_duration(&self) -> Option<Duration> {
-        self.frozen
-    }
-
-    /// Records the shell's own verdict for the finished command
-    /// (OSC 133;D): verbatim, except success (code 0) normalizes to
-    /// `None` — the unmarked default.
-    pub fn note_exit(&mut self, code: u32) {
-        self.last_exit = (code != 0).then_some(code);
-    }
-
-    /// The last finished command's exit code, until the next start.
-    pub fn last_exit(&self) -> Option<u32> {
-        self.last_exit
-    }
 }
 
 /// `m:ss` under an hour, `h:mm:ss` over — one shape live and frozen

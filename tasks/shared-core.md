@@ -81,12 +81,30 @@ libcosmic action mapping stays; `theme_glue.rs`'s pure decisions move with
 the system-palette reader left behind, passed in packed.
 
 **Acceptance criteria:**
-- [ ] Core's engine tests (grid, suggest fixtures) run green from core
-- [ ] The libcosmic halves compile against core's types; `just check`
+- [x] Core's engine tests (grid, suggest fixtures) run green from core
+- [x] The libcosmic halves compile against core's types; `just check`
       green
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check`
+
+**Done (2026-11-13, port/shared-core):** the engine (`engine.rs` +
+tests, suggest + tests + walker) and `tabs.rs` moved, minus exactly
+the widget-serving halves the spec names: the cosmic-text buffers now
+live behind a `TextHost` trait the frontend implements (`CosmicHost`,
+iced's global font system) and core tests drive with `PlainHost`
+(cosmic-text's own FontSystem — the shaper without the toolkit; GPUI's
+stack is cosmic-text-based at this pin, spike check 9, so the crate in
+core's graph costs that frontend nothing); the iced input translation
+(`report_mouse`/`scroll_mouse`/`scroll_as_arrows` + `MouseReporter`)
+moved onto the widget's state; `ImageStore`'s iced handle cache split
+frontend-side with a core `take_removed` eviction feed (pinned by
+test); `CommandTimer` and `ssh_destination` moved with their only
+consumer (the engine); theme glue's pure decisions (`window_bg_color`,
+`effective_colors`, `effective_is_dark`, `theme_override`) are
+`dropterm_core::theme_glue` with their tests, the palette reader and
+`set_theme` task stay frontend. The widget kept every
+`with_buffer`/`buffer_weak` path — Terminal delegates to the host.
 
 **Dependencies:** Task 1 · **Files:** `src/terminal/`, `src/geometry.rs`,
 `src/keybinds.rs`, `src/app/theme_glue.rs` + their frontend remainders ·

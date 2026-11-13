@@ -31,7 +31,6 @@ mod slide;
 mod status_bar;
 mod surface;
 mod tab_bar;
-mod tabs;
 mod terminal;
 
 // The toolkit-neutral movers (shared-core spec) live in the
@@ -39,7 +38,7 @@ mod terminal;
 // session, profile, intent. Imported at the crate root so every
 // `crate::config`/`crate::session`/… path in the bin's modules keeps
 // resolving unchanged — the move is a re-home, not a rewrite.
-use dropterm_core::{config, intent, profile, session, theme_source};
+use dropterm_core::{config, intent, profile, session, tabs, theme_glue, theme_source};
 
 // The served-state contract lives in the lib target (src/lib.rs) so
 // the panel applet crate consumes the same implementation.
