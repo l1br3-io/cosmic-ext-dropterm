@@ -37,15 +37,15 @@ the spike harness (carried as reference, rewritten as the crate's shell)
 and exits cleanly.
 
 **Acceptance criteria:**
-- [ ] One lockfile; `cargo tree` shows the 20-crate set at `=0.3.12`
-- [ ] A manifest pin test (the `=0.3.12` set, zero gpui-shell/gpui-kit
+- [x] One lockfile; `cargo tree` shows the 20-crate set at `=0.3.12`
+- [x] A manifest pin test (the `=0.3.12` set, zero gpui-shell/gpui-kit
       edges) runs in `just check`
-- [ ] The window maps and exits clean on the sway rig and the validation
+- [x] The window maps and exits clean on the sway rig and the validation
       VM
 
 **Verification:**
-- [ ] Build: `cargo build -p dropterm-gpui` and `just check`
-- [ ] Manual: map + clean exit on rig and VM (logs held)
+- [x] Build: `cargo build -p dropterm-gpui` and `just check`
+- [x] Manual: map + clean exit on rig and VM (logs held)
 
 **Dependencies:** `shared-core` merged · **Files:** the new crate, root
 `Cargo.toml`, `Cargo.lock` · **Scope:** M
@@ -63,14 +63,14 @@ development.md ships here — the ledger's third entry, with the comeback
 checklist and the upgrade ritual.
 
 **Acceptance criteria:**
-- [ ] Kill check green on COSMIC and sway; flush edges evidenced
-- [ ] development.md's carried-patches section exists and names all three
+- [x] Kill check green on COSMIC and sway; flush edges evidenced
+- [x] development.md's carried-patches section exists and names all three
       entries (vte, alacritty_terminal, gpui-component)
-- [ ] `just check` green (docs-check included)
+- [x] `just check` green (docs-check included)
 
 **Verification:**
-- [ ] Manual: the kill-check walk on rig + VM (screenshots held)
-- [ ] Tests pass: `just check`
+- [x] Manual: the kill-check walk on rig + VM (screenshots held)
+- [x] Tests pass: `just check`
 
 **Dependencies:** Task 1 · **Files:** `carried/gpui-component/`, root
 `Cargo.toml`, development.md · **Scope:** M
@@ -84,11 +84,11 @@ libcosmic binary — check 11's shape. The no-layer-shell branch keeps the
 guard's exit-code and message contract.
 
 **Acceptance criteria:**
-- [ ] Layer-shell session: boots; non-layer-shell (weston-headless
+- [x] Layer-shell session: boots; non-layer-shell (weston-headless
       evidence route): the guard's message + exit 1, no probe reason
 
 **Verification:**
-- [ ] Manual: the lg-2/lg-3 evidence routes replayed for this binary
+- [x] Manual: the lg-2/lg-3 evidence routes replayed for this binary
 
 **Dependencies:** Task 1 · **Files:** the crate's startup module ·
 **Scope:** S
@@ -104,15 +104,15 @@ core's transport, stale-owner refusal exit codes). `SetVisible` flips the
 band live — the spike's check-10 shape, in-tree.
 
 **Acceptance criteria:**
-- [ ] Contract round-trip on both compositors: name owned, `IsVisible`
+- [x] Contract round-trip on both compositors: name owned, `IsVisible`
       read, `SetVisible` flipping the render live and back
-- [ ] A second launch forwards and exits 0; the stale-owner case refuses
+- [x] A second launch forwards and exits 0; the stale-owner case refuses
       exit 1
-- [ ] `--is-visible` answers true/false with matching exit codes
+- [x] `--is-visible` answers true/false with matching exit codes
 
 **Verification:**
-- [ ] Manual: the round-trip walk on rig + VM (logs held)
-- [ ] Tests pass: `just check`
+- [x] Manual: the round-trip walk on rig + VM (logs held)
+- [x] Tests pass: `just check`
 
 **Dependencies:** Tasks 1–3 · **Files:** the crate's dbus/startup modules ·
 **Scope:** M

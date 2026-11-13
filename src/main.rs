@@ -76,72 +76,6 @@ struct Args {
     action: Option<ToggleAction>,
 }
 
-/// The bus half of `--is-visible`: `Some(visible)` when a running
-/// instance answered, `None` when the name is unowned (no note owed)
-/// or owned without the V1 interface (stale binary mid-upgrade —
-/// noted on stderr). Query-only: nothing here activates or spawns the
-/// app, so the flag can never summon the terminal.
-fn query_visibility() -> Option<bool> {
-    // zbus needs a runtime with io and time; a current-thread runtime
-    // is enough for one synchronous-looking query. Its feature set
-    // arrives through zbus's own tokio dependency, not our `sync` +
-    // `time` declaration.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async {
-        let conn = zbus::connection::Builder::session()
-            .ok()?
-            .build()
-            .await
-            .ok()?;
-        let owned = zbus::fdo::DBusProxy::new(&conn)
-            .await
-            .ok()?
-            .name_has_owner(dbus_state::BUS_NAME.try_into().ok()?)
-            .await
-            .ok()?;
-        if !owned {
-            return None;
-        }
-        let read = async {
-            dbus_state::V1InterfaceProxy::new(&conn, dbus_state::BUS_NAME, dbus_state::OBJECT_PATH)
-                .await?
-                .visible()
-                .await
-        };
-        if let Ok(visible) = read.await {
-            Some(visible)
-        } else {
-            eprintln!(
-                "dropterm: bus name owned but the V1 state \
-                 interface is missing (stale binary?); treating as not \
-                 visible"
-            );
-            None
-        }
-    })
-}
-
-/// libcosmic's debug escape hatch, kept (control-transport):
-/// `COSMIC_SINGLE_INSTANCE=false` (or `0`) runs this launch as a
-/// plain instance — no forwarding, no name ownership, no applet
-/// state — so a broken primary never blocks debugging a fresh one.
-/// Read once per process: main's launch decision and the app's
-/// control-bus subscription must agree for the whole run.
-pub(crate) fn single_instance_disabled() -> bool {
-    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DISABLED.get_or_init(|| {
-        std::env::var("COSMIC_SINGLE_INSTANCE")
-            .is_ok_and(|value| value.to_lowercase() == "false" || value == "0")
-    })
-}
-
-// Who owns the control bus's name and the second launch's forward
-// through the activation member live in the core crate's `transport`
-// module (shared-core spec), beside the contract they serve; the
-// launch decision below drives them.
 fn main() -> cosmic::iced::Result {
     env_logger::init();
 
@@ -160,7 +94,7 @@ fn main() -> cosmic::iced::Result {
     // launch asking a question never forwards an action to the
     // running instance.
     if args.is_visible {
-        let (visible, code) = dbus_state::is_visible_decision(query_visibility());
+        let (visible, code) = dbus_state::is_visible_decision(transport::query_visibility());
         println!("{visible}");
         std::process::exit(i32::from(code));
     }
@@ -176,10 +110,10 @@ fn main() -> cosmic::iced::Result {
     // answer is truthful because the guard keeps an unsupported
     // session from ever hosting an instance.
     let session = layer_shell::startup_verdict();
-    if !matches!(session, Ok(layer_shell::Verdict::Supported)) {
+    if !matches!(session, Ok(transport::Verdict::Supported)) {
         eprintln!(
             "{}",
-            layer_shell::unsupported_startup_error(session.err().as_deref())
+            transport::unsupported_startup_error(session.err().as_deref())
         );
         std::process::exit(1);
     }
@@ -189,7 +123,7 @@ fn main() -> cosmic::iced::Result {
     // ownership itself is taken inside the app's runtime, by the
     // control-bus subscription; `run_single_instance` used to make
     // this decision by attempting the forward itself.
-    if !single_instance_disabled() {
+    if !transport::single_instance_disabled() {
         match transport::bus_name_status() {
             transport::BusName::Unowned | transport::BusName::NoBus => {}
             transport::BusName::OwnedByAnother => {

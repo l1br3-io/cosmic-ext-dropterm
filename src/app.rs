@@ -2274,7 +2274,7 @@ impl Application for DropTerm {
         // config) resurrects that split brain, so the loser stays a
         // quiet never-primary instead, and the next launch after the
         // winner's death owns the name clean.
-        if !crate::single_instance_disabled() {
+        if !dropterm_core::transport::single_instance_disabled() {
             struct ControlBusSubscription;
             subs.push(Subscription::run_with(
                 std::any::TypeId::of::<ControlBusSubscription>(),

@@ -336,14 +336,52 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 **Checkpoint — the core stands alone:** zero toolkit deps pinned by
 test; libcosmic binary + applet identical behavior.
 
-- [ ] sf-1 `dropterm-gpui` crate; the ruled pin in the root workspace;
-      manifest pin test; LayerShell boot on rig + VM
-- [ ] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
+- [x] sf-1 `dropterm-gpui` crate; the ruled pin in the root workspace;
+      manifest pin test; LayerShell boot on rig + VM *(walked 2026-11-13:
+      rig 327 ms debug first frame, frame 2 = 1280×200 full width, clean
+      loop exit 0 (target/rig-evidence-sf1.log); VM 186 ms first frame,
+      band pixel-evidenced over the desktop (target/vm-evidence-sf1.log +
+      -boot.png), snapshot pre-gpui-scaffold-walk taken and VM rewound
+      after; the lockfile took the ruled unicode-properties =0.1.3 plus
+      one automatic icu_* 2.3→2.4 unification, git pins untouched)*
+- [x] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
       + flush edges both compositors; development.md carried-patches
-      section (ledger entry 3)
-- [ ] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
-- [ ] sf-4 V1 + activation beside the render loop (Connection held,
+      section (ledger entry 3) *(walked 2026-11-13: rig and VM both
+      echo every cadence height exactly — 320 requested, 320 drawn (no
+      2×20 inflation), `on_open_change` silent through the full 80 ms
+      cycle, clean exits; logs + VM screenshot held at
+      target/rig-evidence-sf2-kill.log / target/vm-evidence-sf2-kill.{log,png},
+      VM rewound after; the copy is drift-gated by test — a bump that
+      forgets the const fails just check)*
+- [x] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
+      *(walked 2026-11-13: the verdict function moved to
+      core::transport (7 tests re-homed, frontend probe consumes it —
+      one decision, both frontends); lg-2 replay on the rig boots
+      through the guard (target/rig-evidence-sf3-boot.log); lg-3
+      replay on weston 13 headless over docker — 19 globals, no zwlr —
+      refuses with core's message + exit 1 and no probe reason, the
+      cannot-ask control carries the probe reason
+      (target/weston-evidence-sf3{,-control}.log))*
+- [x] sf-4 V1 + activation beside the render loop (Connection held,
       self-check); CLI parity; SetVisible flips live — merge
+      *(walked 2026-11-13 on rig + VM: name owned with the
+      name_has_owner self-check row, the V1 `Visible` property read
+      true/false, `ActivateAction` hide/show/toggle flipping the render
+      live and back — render-state rows in the logs, the two VM
+      screenshots pixel-differing through the flip (band mean 67
+      visible vs 84 hidden) — second launch exits 0 with the verb
+      answered, `--is-visible` answers with matching codes, and the
+      stale-owner row (a SIGSTOPped holder) refuses exit 1 after the
+      walk found and fixed a real hole: zbus 5 carries no default
+      method timeout, so a wedged-but-alive owner hung every summon
+      forever — core's forward_to_running now bounds the wait at 5 s
+      (`FORWARD_DEADLINE_SECS`), both frontends; evidence in
+      target/rig-evidence-sf4-{roundtrip,busctl,stale}.log and
+      target/vm-evidence-sf4-{roundtrip.log,visible,hidden}.png, VM
+      rewound after; the "SetVisible"/"IsVisible" vocabulary is the
+      spike's shorthand — on the contract it is the `Visible` property
+      read and the `ActivateAction` verbs both CLIs and the applet
+      send)*
 
 **Checkpoint — the frontend exists:** pinned, patched, boots, owns the
 name, answers the contract on both compositors.
