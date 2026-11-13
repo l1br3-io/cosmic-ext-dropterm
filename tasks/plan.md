@@ -181,11 +181,18 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
       VM, evidence in the lane's `target/vm-evidence-sc5/`)*
 - **Checkpoint: the core stands alone** — zero toolkit deps pinned by
   test; libcosmic binary and applet identical *(held at the merge)*
-- [ ] [gpui-scaffold](gpui-scaffold.md) Tasks 1–4: crate + the ruled pin
+- [x] [gpui-scaffold](gpui-scaffold.md) Tasks 1–4: crate + the ruled pin
       → Kit + `carried/gpui-component` + dev docs → startup dispatch →
       contract beside the loop + CLI parity
+      *(merged 1a25154, 2026-11-13 — every task walked on the sway rig
+      and the validation VM under snapshot discipline, evidence under
+      `target/` (rig-evidence-sf{1,2,3,4}*, vm-evidence-sf{1,2,4}*,
+      weston-evidence-sf3*); the walk also found and fixed a latent
+      hole in core's transport: zbus 5 has no default method timeout,
+      so a wedged owner hung every second launch — the forward is now
+      bounded at 5 s for both frontends)*
 - **Checkpoint: the frontend exists** — pinned, patched, boots on both
-  compositors, owns the name
+  compositors, owns the name *(held at the merge)*
 - [ ] [gpui-surface](gpui-surface.md) Tasks 1–4: executor + two-surface
       show → cadence resize + recreate edit → holds + slide +
       focus-loss → budget + rows + merge

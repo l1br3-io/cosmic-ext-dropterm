@@ -119,6 +119,8 @@ band live — the spike's check-10 shape, in-tree.
 
 ## Checkpoint: the frontend exists
 
-- [ ] `dropterm-gpui` builds on the ruled pin in the root workspace, maps
+- [x] `dropterm-gpui` builds on the ruled pin in the root workspace, maps
       on both compositors, owns the bus name, answers the contract — and
       the carried patch is in place with its docs
+      *(merged 1a25154, 2026-11-13; all evidence under the lane's
+      `target/` per the task rows above)*
