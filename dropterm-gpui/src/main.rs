@@ -15,13 +15,35 @@
 //! the release boundary holds.
 
 mod app_shell;
+mod kit_check;
+
+/// The env-selected scenario the scaffold can boot besides the shell —
+/// the carried patch's verification harness (`DROPTERM_CHECK`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckMode {
+    /// kit-pass C2b: Root + Kit overlays through the reshape cadence.
+    KitC2b,
+}
+
+/// `DROPTERM_CHECK`'s parse: unset or empty boots the real shell; only
+/// the exact scenario name arms its harness (a typo falls back to the
+/// shell, whose evidence lines name no scenario — visibly wrong in a
+/// walk log, never silently half-armed).
+fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
+    match raw?.trim() {
+        "kit-c2b" => Some(CheckMode::KitC2b),
+        _ => None,
+    }
+}
 
 fn main() {
     println!("dropterm-gpui: booting on the gpui-pre 0.3.12 pin (wayland)");
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
-    gpui_platform::application().run(move |cx: &mut gpui::App| {
-        app_shell::boot(cx, exit_after);
+    let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
+    gpui_platform::application().run(move |cx: &mut gpui::App| match check {
+        Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
+        None => app_shell::boot(cx, exit_after),
     });
     println!("dropterm-gpui: event loop exited cleanly");
 }
@@ -33,6 +55,7 @@ mod tests {
     // edge to the Kit's aggregates — so a careless bump fails
     // `just check` instead of shipping.
 
+    use super::check_mode_from_env;
     use std::process::Command;
 
     /// This crate's own manifest text.
@@ -85,6 +108,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn check_mode_arms_only_the_exact_scenario_name() {
+        use super::CheckMode;
+        assert_eq!(
+            check_mode_from_env(Some("kit-c2b")),
+            Some(CheckMode::KitC2b)
+        );
+        assert_eq!(
+            check_mode_from_env(Some(" kit-c2b ")),
+            Some(CheckMode::KitC2b)
+        );
+        // Unset, empty, and every misspelling boot the real shell;
+        // surrounding whitespace is not a misspelling.
+        assert_eq!(check_mode_from_env(None), None);
+        assert_eq!(check_mode_from_env(Some("")), None);
+        assert_eq!(check_mode_from_env(Some("KIT-C2B")), None);
+        assert_eq!(check_mode_from_env(Some("kitc2b")), None);
+    }
+
+    #[test]
+    fn the_kit_enters_component_only_at_the_ruled_version() {
+        // kit-pass C3 + plan item 7's ruling: gpui-component exact at
+        // 0.9.1, component-only (default-features = false) — the
+        // gpui-kit aggregate never enters by our hand, and the graph
+        // side of that fence is the no-aggregate-edges test below.
+        let text = manifest();
+        let kit = text
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("gpui-component"))
+            .expect("a gpui-component dependency line in the manifest");
+        assert!(
+            kit.contains("version = \"=0.9.1\""),
+            "the Kit is exact-pinned: {kit}"
+        );
+        assert!(
+            kit.contains("default-features = false"),
+            "component-only, no aggregate features: {kit}"
+        );
+    }
+
+    #[test]
+    fn the_carried_copy_is_the_patched_kit() {
+        // The ruling (plan item 7): carried/gpui-component is the 0.9.1
+        // source under [patch.crates-io] with exactly one const change
+        // — the Linux SHADOW_SIZE zeroed, so a Client-decorated layer
+        // surface negotiates its configured size instead of 2×20 px
+        // larger. This drift-gates the copy: a bumped copy that
+        // forgets the const fails `just check`.
+        let toml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../carried/gpui-component/Cargo.toml"
+        ))
+        .expect("the carried copy's manifest");
+        assert!(
+            toml.contains("name = \"gpui-component\""),
+            "the copy keeps the patch's identity"
+        );
+        assert!(
+            toml.contains("version = \"0.9.1\""),
+            "the copy is the ruled 0.9.1 source"
+        );
+        let border = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../carried/gpui-component/src/window_border.rs"
+        ))
+        .expect("the carried copy's window_border.rs");
+        assert!(
+            !border.contains("px(20.0)"),
+            "the 20 px shadow is gone from the carried source"
+        );
+        let linux_arm = border
+            .lines()
+            .zip(border.lines().skip(1))
+            .find(|(cfg, _)| cfg.contains("cfg(target_os = \"linux\")"))
+            .map(|(_, const_line)| const_line.to_string())
+            .expect("the Linux const arm");
+        assert!(
+            linux_arm.contains("SHADOW_SIZE: Pixels = px(0.0)"),
+            "the one-const change stands: {linux_arm}"
+        );
+        let root = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.toml"))
+            .expect("the workspace manifest");
+        assert!(
+            root.contains("gpui-component = { path = \"carried/gpui-component\" }"),
+            "the [patch.crates-io] entry points at the copy"
+        );
+    }
+
     /// Every `(package, version)` pair in this crate's normal
     /// dependency graph, deduplicated — `cargo tree --prefix none`
     /// emits one `name vX.Y.Z (source)` per node.
@@ -126,17 +238,22 @@ mod tests {
     fn the_graph_resolves_the_gpui_family_at_the_pin() {
         let pkgs = graph_packages();
         // Non-vacuous: the family must be present at all — an emptied
-        // manifest would otherwise pass every version check below.
+        // manifest would otherwise pass every version check below. The
+        // prefix is gpui-pre (the snapshot family); the Kit's own
+        // crates (gpui-component, gpui-base, 0.9.x) ride their own
+        // line and are not held to this pin.
         let family: Vec<&(String, String)> = pkgs
             .iter()
-            .filter(|(name, _)| name.starts_with("gpui"))
+            .filter(|(name, _)| name.starts_with("gpui-pre"))
             .collect();
-        assert!(!family.is_empty(), "the gpui family is in the graph at all");
+        assert!(
+            !family.is_empty(),
+            "the gpui-pre snapshot family is in the graph at all"
+        );
         for (name, version) in &family {
             // gpui-pre-reqwest rides its own 0.12 line (its semver
             // universe); every other family crate is a 0.3.12 snapshot
-            // cut. The renamed top-level `gpui` alias resolves to
-            // gpui-pre and shows under the family prefix either way.
+            // cut.
             assert!(
                 version == "0.3.12" || name == "gpui-pre-reqwest",
                 "{name} resolved at {version}, not the ruled 0.3.12 snapshot"

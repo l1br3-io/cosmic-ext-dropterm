@@ -344,9 +344,15 @@ test; libcosmic binary + applet identical behavior.
       -boot.png), snapshot pre-gpui-scaffold-walk taken and VM rewound
       after; the lockfile took the ruled unicode-properties =0.1.3 plus
       one automatic icu_* 2.3→2.4 unification, git pins untouched)*
-- [ ] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
+- [x] sf-2 The Kit + `carried/gpui-component` one-const copy; kill check
       + flush edges both compositors; development.md carried-patches
-      section (ledger entry 3)
+      section (ledger entry 3) *(walked 2026-11-13: rig and VM both
+      echo every cadence height exactly — 320 requested, 320 drawn (no
+      2×20 inflation), `on_open_change` silent through the full 80 ms
+      cycle, clean exits; logs + VM screenshot held at
+      target/rig-evidence-sf2-kill.log / target/vm-evidence-sf2-kill.{log,png},
+      VM rewound after; the copy is drift-gated by test — a bump that
+      forgets the const fails just check)*
 - [ ] sf-3 Startup dispatch: the guard's verdicts on the GPUI connection
 - [ ] sf-4 V1 + activation beside the render loop (Connection held,
       self-check); CLI parity; SetVisible flips live — merge

@@ -25,6 +25,13 @@ path = "src/main.rs"
 gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["wayland", "font-kit"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland"] }
 
+# The Kit (plan item 7's adoption, kit-pass C2b/C3): gpui-component
+# exact at 0.9.1, component-only — default features off, never the
+# gpui-kit aggregate, never gpui-shell; windows stay embedder-owned
+# (cx.open_window + a manual Root wrap). Resolves to the carried copy
+# through the root [patch.crates-io] (the Root auto-border, zeroed).
+gpui-component = { version = "=0.9.1", default-features = false }
+
 # The GPUI frontend's toolkit-neutral half: the served-state D-Bus
 # contract, the startup transport, and the APP_ID identity const.
 dropterm-core = { path = "../dropterm-core" }

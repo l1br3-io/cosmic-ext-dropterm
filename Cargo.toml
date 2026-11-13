@@ -43,6 +43,19 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = fa
 [patch.crates-io]
 vte = { git = "https://github.com/l1br3-io/vte", rev = "52dadb7b7ccc0429439c662490bd603824bd35c0" }
 alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "1185ffd98e1c16345230188fb02682a44bdefa3e" }
+# The Kit's Root auto-border, carried (plan open questions item 7,
+# ruled 2026-11-13): gpui-component 0.9.1 hard-codes a 20 px window
+# border with no public opt-out, and Wayland forces Client decorations
+# on every surface — inflating a layer surface 2×20 px on both axes (a
+# 1280×320 drawer negotiates 1320×360). This path patch REPLACES the
+# registry source with a private copy of the exact 0.9.1 sources whose
+# single change zeroes the Linux `SHADOW_SIZE` const — never a public
+# fork. The upgrade ritual and the verification every bump re-runs
+# (the C2b kill check + a flush-edges screenshot, both compositors)
+# live in docs/development.md's carried-patches section; the durable
+# record is docs/research/kit-root-border.md. Retirement: an upstream
+# per-window border opt-out (the ask stays the owner's outward action).
+gpui-component = { path = "carried/gpui-component" }
 
 [dependencies]
 alacritty_terminal = "0.25.1"

@@ -224,6 +224,51 @@ The version is semver: additive features take the minor, fixes the patch.
 A failed gate mid-recipe leaves the version bumps uncommitted in the tree;
 fix and re-run.
 
+## Carried patches
+
+Private source copies that replace a published crate through the root
+manifest's `[patch.crates-io]` — never public forks. The ledger, and each
+entry's retirement path:
+
+| # | Crate | Carries | Retirement |
+|---|---|---|---|
+| 1 | `vte` 0.15.0 (git fork, branch `dropterm-osc133d`) | the OSC 133;D status-exit passthrough upstream logs away — parsed into a default-no-op `Handler` method | upstream PRs (the root manifest's patch comment names them) |
+| 2 | `alacritty_terminal` 0.25.1 (git fork, branch `dropterm-osc133d`) | `Event::PromptExit(code)` implementing that parse on `Term` | same |
+| 3 | `gpui-component` 0.9.1 (path copy, `carried/gpui-component/`) | one const: the Linux `SHADOW_SIZE` in `src/window_border.rs` zeroed — Root's auto-border inflated every layer surface 2×20 px (a 1280×320 drawer negotiated 1320×360, no opt-out at this pin) | an upstream per-window border opt-out; [kit-root-border](research/kit-root-border.md) is the durable record and the standing reminder |
+
+### The gpui-component upgrade ritual (entry 3)
+
+On every Kit bump — and any time the border is questioned:
+
+1. Replace `carried/gpui-component/`'s sources with the new release
+   (the copy keeps the published layout: manifest, `src/`, `locales/`,
+   `build.rs`).
+2. Re-apply the one-const change: `src/window_border.rs`, the
+   `#[cfg(target_os = "linux")]` `SHADOW_SIZE` arm, to `px(0.0)`. The
+   `dropterm-gpui` crate's `the_carried_copy_is_the_patched_kit` test
+   fails `just check` if this is forgotten.
+3. Check the release for a public border opt-out (changelog, `Root`
+   docs, the `window_border` constant). If one exists: drop the copy,
+   depend on the real crate again, re-run the verification below, and
+   retire the entry — kit-root-border's row moves to its archive.
+4. Re-run the verification on the sway-headless rig and the COSMIC
+   validation VM (the walk routes are the ones above):
+
+   ```sh
+   DROPTERM_CHECK=kit-c2b DROPTERM_EXIT_AFTER_MS=9000 dropterm-gpui
+   ```
+
+   The pass rows, in the log: every cadence height echoes back exactly
+   (`kit resize #3 requested 1280x320` followed by
+   `kit frame … drew size=1280x320` — any 2×20 px inflation means the
+   carried const regressed), `kit popover open_changed` absent (the
+   overlays survived the full cadence), and the event loop exits
+   cleanly. Hold one screenshot per compositor beside the log.
+
+The vte/alacritty forks (entries 1–2) re-apply their one arm on their
+own bump; each branch is cut from the exact crates.io publish commit,
+so the patched sources stay the lockfile's versions plus the one arm.
+
 ## Architecture
 
 The module map - the two crates, the module inventory, the load-bearing seams,

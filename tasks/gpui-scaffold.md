@@ -63,14 +63,14 @@ development.md ships here — the ledger's third entry, with the comeback
 checklist and the upgrade ritual.
 
 **Acceptance criteria:**
-- [ ] Kill check green on COSMIC and sway; flush edges evidenced
-- [ ] development.md's carried-patches section exists and names all three
+- [x] Kill check green on COSMIC and sway; flush edges evidenced
+- [x] development.md's carried-patches section exists and names all three
       entries (vte, alacritty_terminal, gpui-component)
-- [ ] `just check` green (docs-check included)
+- [x] `just check` green (docs-check included)
 
 **Verification:**
-- [ ] Manual: the kill-check walk on rig + VM (screenshots held)
-- [ ] Tests pass: `just check`
+- [x] Manual: the kill-check walk on rig + VM (screenshots held)
+- [x] Tests pass: `just check`
 
 **Dependencies:** Task 1 · **Files:** `carried/gpui-component/`, root
 `Cargo.toml`, development.md · **Scope:** M
