@@ -185,7 +185,10 @@ evidence record, not a chunk.
    ledger takes its third entry when Phase 3 lands the copy, and the
    dev docs (a carried-patches section in development.md) ship with
    that module, not before — the docs-to-code gates forbid describing
-   code that does not exist yet. The pin half: item 8.
+   code that does not exist yet. Durable record:
+   docs/research/kit-root-border.md — this spec/task set archives
+   after the initiative; that record is the comeback copy. The pin
+   half: item 8.
 8. **Phase 3's pin** (the decision the Kit verdict armed): DECIDED
    2026-11-13, on the recommendation after kp-1's fidelity proof —
    the snapshot is the GPUI source: Phase 3 builds on the published
