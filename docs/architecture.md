@@ -1,10 +1,11 @@
 # Architecture
 
-How the DropTerm codebase is laid out: two crates, one module inventory, a handful of load-bearing seams, and where the reasoning behind each lives.
+How the DropTerm codebase is laid out: three crates, one module inventory, a handful of load-bearing seams, and where the reasoning behind each lives.
 
-## Two crates, one workspace
+## Three crates, one workspace
 
-- **`dropterm`** (`src/`) - the terminal itself, built as a lib plus bin. The lib target exists so the applet can share the D-Bus state contract (`src/lib.rs` re-exports `dbus_state`) instead of duplicating it.
+- **`dropterm`** (`src/`) - the terminal itself, a bin (the lib target was retired by the shared-core split: nothing it served remains frontend-side). The D-Bus state contract the applet shares lives in the core crate instead of a lib target.
+- **`dropterm-core`** (`dropterm-core/`) - the toolkit-neutral core (shared-core split): the config store, session, profiles, the engine, the pure models, and `dbus_state` — the state every frontend and the applet consume.
 - **`dropterm-applet`** (`applet/`) - the COSMIC panel applet. A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 
 ## How it connects
@@ -66,7 +67,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 | `app/remote.rs` | The CLI verbs handled inside the running instance |
 | `config.rs` | The 43-key on-disk config (`DropTermConfig`): enums, clamping, shell resolution |
 | `context_menu.rs` | The terminal context-menu model - rows, labels, item→`terminal::Action` mapping (pure; picks land in the same path keybinds use) |
-| `dbus_state.rs` | The served contract at the owned bus name: the read-only `Visible`/`TabCount` V1 interface and the `org.freedesktop.DbusActivation` members a second launch forwards through |
+| `dbus_state.rs` | The served contract at the owned bus name: the read-only `Visible`/`TabCount` V1 interface and the `org.freedesktop.DbusActivation` members a second launch forwards through (moved to `dropterm-core` by the shared-core split) |
 | `drawer_handle.rs` | The settings drawer's drag-resize handle |
 | `executor.rs` | The libcosmic surface executor: translates each intent into today's layer-shell command sequence and owns the clipboard anchor |
 | `geometry.rs` | Pure geometry math plus the single anchor/size/margin triple every reshape goes through |
@@ -85,7 +86,7 @@ The recurring split is *pure model* vs *wiring*: pure modules hold plain data an
 | `terminal/` | The engine and widget adapted from cosmic-term: `engine.rs` (PTY + `alacritty_terminal` grid + cosmic-text), `widget.rs` (`TerminalBox`), `mouse_reporter.rs`, `theme_source.rs` (the 12-scheme registry with per-scheme license provenance) |
 | `applet/` | The applet crate: the panel button (state-driven opacity, tooltip), the D-Bus watches, the click decision |
 
-`main.rs` and `lib.rs` also carry the pedantic-lint table `just clippy` enforces - `standing:` owner-approved exceptions and `transient:` worklist entries that self-clean as their lint class is cleared.
+`main.rs` (and the core crate's `lib.rs`) also carry the pedantic-lint table `just clippy` enforces - `standing:` owner-approved exceptions and `transient:` worklist entries that self-clean as their lint class is cleared.
 
 ## The load-bearing seams
 

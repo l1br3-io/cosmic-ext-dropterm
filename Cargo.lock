@@ -1498,7 +1498,7 @@ dependencies = [
 name = "dropterm-applet"
 version = "0.5.0"
 dependencies = [
- "dropterm",
+ "dropterm-core",
  "env_logger",
  "libcosmic",
  "log",
@@ -1515,6 +1515,7 @@ dependencies = [
  "cosmic-text",
  "dirs",
  "flate2",
+ "futures",
  "image",
  "indexmap",
  "libc",
@@ -1524,6 +1525,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "zbus",
 ]
 
 [[package]]

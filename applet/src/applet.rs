@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use crate::dbus;
 use crate::subscriptions::{self, Update};
-use dropterm::dbus_state;
+use dropterm_core::dbus_state;
 
 /// The symbolic icon the panel surface shows; installed alongside the
 /// binary and theme-recolorable. `utilities-terminal-symbolic` exists

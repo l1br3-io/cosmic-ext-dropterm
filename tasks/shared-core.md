@@ -119,11 +119,30 @@ or disappears if nothing remains); `applet/Cargo.toml` consumes
 moves with the module.
 
 **Acceptance criteria:**
-- [ ] The applet builds and its tests pass against `dropterm-core`
-- [ ] The `every_dbus_member_is_documented` pin green from its new home
+- [x] The applet builds and its tests pass against `dropterm-core`
+- [x] The `every_dbus_member_is_documented` pin green from its new home
 
 **Verification:**
-- [ ] Tests pass: `just check` (all members)
+- [x] Tests pass: `just check` (all members)
+
+**Done (2026-11-13, port/shared-core):** `APP_ID` already stood in
+core (Task 1's note), so this landed as the dbus_state move plus the
+retirement: `dbus_state.rs` moved with all 19 tests (the wire tests'
+`cosmic::iced::futures` import became a plain `futures` dev-dependency
+— version-matched to the lock's 0.3.34 line, zero new packages — and
+the dbus↔docs pin re-pathed to `../../docs/dbus.md`, the config
+precedent); the `dropterm` lib target disappeared because nothing it
+served remained — `font_list` (bin-only, its only caller the settings
+drawer) became a bin module, `APP_ID` reads `dropterm_core::APP_ID`
+directly, and the `[lib]` section went; the applet's dependency
+re-pointed to `dropterm-core` with `default-features = false` carried
+over verbatim (the planning ruling) and `dev-identity` forwarding
+straight to core — both ends of the contract still move together, now
+one hop shorter. The root's zbus declaration kept its `tokio` feature
+(transport and control bus still use it directly) and dropped the
+test-only `p2p`. docs/architecture.md's crate list and lint-table line
+re-truthed; its module inventory still describes the pre-split tree
+(Task 1–2 debt, one coherent pass owed before merge).
 
 **Dependencies:** Task 1 · **Files:** `src/lib.rs`, `src/dbus_state.rs`,
 `applet/Cargo.toml`, `applet/` imports · **Scope:** S

@@ -308,7 +308,13 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
 - [x] sc-2 The split movers — engine minus cosmic-text buffers, geometry,
       keybinds, theme-glue models (sc-1 note: `tabs.rs` deferred here — it
       holds `Mutex<Terminal>`, the spec's engine-state grouping)
-- [ ] sc-3 Identity + contract move; applet re-points to core
+- [x] sc-3 Identity + contract move; applet re-points to core
+      *(APP_ID already stood in core from sc-1; `dbus_state` moved with
+      its 19 tests — the wire tests' futures import swapped off
+      `cosmic::iced`, the dbus↔docs pin re-pathed — and the lib target
+      retired entirely: `font_list` became a bin module, the applet
+      depends on `dropterm-core` with `default-features = false` and
+      forwards `dev-identity` straight to core; zero new lock packages)*
 - [ ] sc-4 Decision layer + transport halves move (Task continuation
       goes executor-neutral)
 - [ ] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)

@@ -21,6 +21,7 @@ mod clipboard;
 mod context_menu;
 mod drawer_handle;
 mod executor;
+mod font_list;
 mod geometry;
 mod grab_bar;
 mod keybinds;
@@ -35,14 +36,11 @@ mod terminal;
 
 // The toolkit-neutral movers (shared-core spec) live in the
 // `dropterm-core` workspace member: config (store and model),
-// session, profile, intent. Imported at the crate root so every
-// `crate::config`/`crate::session`/… path in the bin's modules keeps
-// resolving unchanged — the move is a re-home, not a rewrite.
-use dropterm_core::{config, intent, profile, session, tabs, theme_glue, theme_source};
-
-// The served-state contract lives in the lib target (src/lib.rs) so
-// the panel applet crate consumes the same implementation.
-use dropterm::dbus_state;
+// session, profile, intent, and the served-state D-Bus contract.
+// Imported at the crate root so every `crate::config`/
+// `crate::session`/`crate::dbus_state`/… path in the bin's modules
+// keeps resolving unchanged — the move is a re-home, not a rewrite.
+use dropterm_core::{config, dbus_state, intent, profile, session, tabs, theme_glue, theme_source};
 
 use clap::Parser;
 

@@ -31,13 +31,14 @@
 //! `DropTerm`'s toolkit-neutral core — the state both frontends share.
 //!
 //! The config store and model, session persistence, profiles, the
-//! surface intent vocabulary, the theme data table, and the pure
-//! geometry and keybind models live here (shared-core spec), so the
-//! GPUI frontend builds on exactly the engine state the libcosmic
-//! binary runs today. This crate admits no toolkit dependency —
-//! libcosmic, iced, or GPUI — pinned by test
-//! (`tests/no_toolkit_deps.rs`): the frontend-typed halves stay with
-//! their frontends.
+//! surface intent vocabulary, the theme data table, the pure geometry
+//! and keybind models, and the served-state D-Bus contract live here
+//! (shared-core spec), so the GPUI frontend builds on exactly the
+//! engine state the libcosmic binary runs today, and the panel applet
+//! consumes the same contract implementation the terminal serves. This
+//! crate admits no toolkit dependency — libcosmic, iced, or GPUI —
+//! pinned by test (`tests/no_toolkit_deps.rs`): the frontend-typed
+//! halves stay with their frontends.
 
 /// The terminal's desktop identity — the single string behind the
 /// single-instance key, the D-Bus bus name and object path, the
@@ -61,6 +62,7 @@ pub const APP_ID: &str = "io.github.l1br3_io.dropterm";
 pub const APP_ID: &str = "io.github.l1br3_io.dropterm.Dev";
 
 pub mod config;
+pub mod dbus_state;
 pub mod geometry;
 pub mod intent;
 pub mod keybinds;

@@ -9,15 +9,15 @@
 //! the bus name and object path the app owns itself (the
 //! control-transport package: `DropTerm` owns its bus name; libcosmic's
 //! `single-instance` feature used to). The module deliberately keeps
-//! the app's types out: it lives in the workspace's lib target so the
-//! panel applet consumes the same contract implementation, and the app
-//! converts its own state into the types defined here.
+//! the app's types out: it lives in `dropterm-core` so the panel applet
+//! and every frontend consume the same contract implementation, and the
+//! app converts its own state into the types defined here.
 //!
 //! The applet-facing contract is [`BUS_NAME`], [`OBJECT_PATH`],
 //! [`INTERFACE`], [`State`], and the [`V1InterfaceProxy`] client (plus
 //! the [`V1`] server, which the applet's wire tests use as a mock).
-//! The remaining items are `pub` only because the terminal bin reaches
-//! them through this lib target as well.
+//! The remaining items are `pub` because the terminal bin and the
+//! applet reach them through this crate as well.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use zbus::{interface, proxy};
 
 /// Bus name the running instance owns (libcosmic single-instance) —
-/// this build's identity; the lib's [`crate::APP_ID`] is the single
+/// this build's identity; core's [`crate::APP_ID`] is the single
 /// source of truth.
 pub const BUS_NAME: &str = crate::APP_ID;
 
@@ -306,7 +306,10 @@ pub trait ActivationInterface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmic::iced::futures::{StreamExt, join};
+    // The wire tests' stream combinators and `join!` — the toolkit-free
+    // twin of the frontend's `cosmic::iced::futures` re-export
+    // (dev-dependency, tests only).
+    use futures::{StreamExt, join};
     use zbus::connection;
 
     #[test]
@@ -1045,7 +1048,7 @@ mod tests {
                     );
                 }
 
-                let docs = include_str!("../docs/dbus.md");
+                let docs = include_str!("../../docs/dbus.md");
                 for (interface, block) in served {
                     if interface != INTERFACE && interface != "org.freedesktop.DbusActivation" {
                         continue;

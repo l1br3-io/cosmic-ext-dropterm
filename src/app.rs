@@ -69,11 +69,11 @@ use crate::intent::{KeyboardHold, SurfaceIntent};
 
 /// The app's identity — the single string behind the single-instance
 /// key, the bus name, the config namespace, and the wayland app id.
-/// The lib's `dropterm::APP_ID` owns the value so the
-/// applet consumes the same one; the `dev-identity` feature swaps in
+/// `dropterm_core::APP_ID` owns the value so the applet and every
+/// frontend consume the same one; the `dev-identity` feature swaps in
 /// the `.Dev` variant that keeps a dev build off an installed
 /// release's instance slot.
-pub const APP_ID: &str = dropterm::APP_ID;
+pub const APP_ID: &str = dropterm_core::APP_ID;
 
 /// Debounce window for toggle requests, guarding against the double
 /// key-press events a compositor occasionally delivers for one physical
@@ -2046,7 +2046,7 @@ impl Application for DropTerm {
             keybind_capture: None,
             keybind_search: String::new(),
             open_picker: None,
-            font_families: dropterm::font_list::load_monospace_families(),
+            font_families: crate::font_list::load_monospace_families(),
             keybind_conflict: None,
             settings_open: false,
             images_panel_open: false,

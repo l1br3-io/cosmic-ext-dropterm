@@ -12,10 +12,6 @@ repository = "https://github.com/l1br3-io/dropterm"
 name = "dropterm"
 path = "src/main.rs"
 
-[lib]
-name = "dropterm"
-path = "src/lib.rs"
-
 [workspace]
 members = [".", "applet", "dropterm-core"]
 
@@ -53,10 +49,10 @@ alacritty_terminal = "0.25.1"
 clap = { version = "4", features = ["derive"] }
 
 # The toolkit-neutral core (shared-core spec): config store and
-# model, session, profiles, intents, theme data, and the pure
-# geometry/keybind models — the state the GPUI frontend will build
-# on. The lib target re-exports `APP_ID` from it; the bin imports
-# its modules at the crate root.
+# model, session, profiles, intents, theme data, the pure
+# geometry/keybind models, and the served-state D-Bus contract — the
+# state the GPUI frontend will build on and the applet consumes. The
+# bin imports its modules at the crate root.
 dropterm-core = { path = "dropterm-core" }
 
 env_logger = "0.11"
@@ -101,13 +97,14 @@ tokio = { version = "1", features = ["sync", "time"] }
 # lands copies. Per-copy serving thread, no fork.
 wl-clipboard-rs = "0.9"
 
-# Queryable state on the app's owned bus name (dbus-state spec): direct
-# zbus dep, version-matched to the lock's 5.19 line that libcosmic and
-# notify-rust already pull in so no new code enters the build.
-# default-features = false mirrors libcosmic's own zbus declaration and
-# selects the tokio executor (the app's executor is tokio-backed); the
-# `p2p` feature exists for the headless peer-to-peer wire tests only.
-zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
+# The startup transport and the control-bus connection (control-
+# transport package): direct zbus dep, version-matched to the lock's
+# 5.19 line that libcosmic and notify-rust already pull in so no new
+# code enters the build. default-features = false mirrors libcosmic's
+# own zbus declaration and selects the tokio executor (the app's
+# executor is tokio-backed). The contract itself (dbus_state) and its
+# headless `p2p` wire tests live in dropterm-core now.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 # The completions data file's format (suggest-specs-data spec):
 # `completions.toml` beside the config parses through serde with
@@ -175,11 +172,11 @@ features = []
 
 [features]
 default = ["terminal"]
-# Everything the terminal bin needs beyond the lib target's plain zbus
-# contract. `wgpu` must stay in here (never on the applet path): on
-# panel layer-shell surfaces the wgpu renderer fails to bind the GPU
-# and silently falls back to llvmpipe software rendering; tiny_skia is
-# the renderer stock COSMIC applets use.
+# The terminal bin's libcosmic feature set, feature-gated rather than
+# plain dependencies so a `default-features = false` consumer never
+# inherits them (`wgpu` above all: on panel layer-shell surfaces it
+# fails to bind the GPU and silently falls back to llvmpipe software
+# rendering — the renderer rationale lives in the applet's manifest).
 terminal = [
     "libcosmic/wayland",
     "libcosmic/wgpu",
@@ -189,10 +186,10 @@ terminal = [
 # — its own single-instance slot, bus name, config file, state
 # directory, and namespace — so a dev build never shares runtime
 # identity with an installed release. Never default: release artifacts
-# carry the plain identity. The applet's same-named feature enables
-# this one so both ends of the D-Bus contract move together; it
-# forwards to the core crate's own `dev-identity`, which owns the
-# const the store and session paths read.
+# carry the plain identity. Forwards to the core crate's own
+# `dev-identity`, which owns the const; the applet enables core's
+# feature directly, so both ends of the D-Bus contract still move
+# together.
 dev-identity = ["dropterm-core/dev-identity"]
 
 [dev-dependencies]
