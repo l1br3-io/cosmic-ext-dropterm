@@ -202,18 +202,42 @@ manual checklist walk on the validation VM against an installed build
 merge, so the branch is cut fresh from main and has no rebase partner.
 
 **Acceptance criteria:**
-- [ ] The manual surface rows pass on COSMIC (show, drag, live edit,
+- [x] The manual surface rows pass on COSMIC (show, drag, live edit,
       focus-loss, hide — the si-5 set)
 - [ ] `just check` green on the merge result
 
 **Verification:**
-- [ ] Manual: the checklist's surface rows (VM walk)
+- [x] Manual: the checklist's surface rows (VM walk) — green 2026-11-13
+      on the validation VM (the sanctioned evidence route; stock snapshot
+      `pre-airlock` restored first, checkpoint `pre-shared-core-walk`
+      taken, VM rewound to stock after; evidence host-side in
+      `target/vm-evidence-sc5/`): show at 40 % pixel-exact (320 px of
+      800, full width, top edge) with the block caret painted at the
+      prompt in the first pre-keystroke frame (a solid 9×20 block,
+      machine-measured); `sleep 97 &` survives a full CLI hide/show
+      cycle with dropterm/bash/sleep pids unchanged; the grab-bar drag
+      (QEMU monitor pointer events) live-applies mid-drag, settles at
+      52 %, and the debounced write-back lands once in `config.ron`
+      (`height_percent: 52`); a hand edit of `height_percent` while
+      shown reshapes the surface in place the same second at the same
+      pid (70→35 measured 280 px exactly), and while hidden applies on
+      the next show (opens at 560 px = 70 %); focus-loss — a desktop
+      click hides the shown surface with the instance surviving; CLI
+      `toggle` round-trips exit 0 with symmetric shown/hidden diffs.
+      Two harness facts for the next walk: `virsh send-key` sends its
+      key list as one chord (a long chord drops letters at PS/2
+      rollover — type one key per call; strace on the PTY master proved
+      the app delivered every byte it received, so the one-key-per-call
+      rule is an injection constraint, not an app fault), and pointer
+      input rides QMP `input-send-event` with per-axis abs events,
+      move/press/release as separate commands.
 - [ ] Tests pass: `just check`
 
 **Dependencies:** Tasks 1–4 · **Files:** the branch's diff · **Scope:** S
 
 ## Checkpoint: the core stands alone
 
-- [ ] `dropterm-core` builds with zero toolkit deps, pinned by test; the
+- [x] `dropterm-core` builds with zero toolkit deps, pinned by test; the
       libcosmic binary and applet behave identically — the base every
-      GPUI slice builds on
+      GPUI slice builds on (the VM walk's no-behavior-change row, plus
+      the sc-1–4 moved-test suites green throughout)

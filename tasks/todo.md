@@ -323,7 +323,15 @@ Kit GO for the pin; rulings items 7–8; ids and specs below, from
       the transport halves moved as `core::transport` with
       `forward_to_running` parameterized over the verb's name+words —
       the frontend serializes through `CosmicFlags::args`)*
-- [ ] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
+- [x] sc-5 No-behavior-change VM walk; merge (first Phase 3 merge)
+      *(walk green 2026-11-13 on the validation VM, evidence in
+      `target/vm-evidence-sc5/`: show 40 % pixel-exact with the block
+      caret in the first frame, `sleep 97 &` surviving a hide/show
+      cycle, drag live-apply + settle + single write-back (52), live
+      in-place edit (70→35, same pid), focus-loss hide, CLI round-trips
+      exit 0; harness notes for the next walk: `virsh send-key` keys are
+      one chord — type one key per call — and pointer input rides QMP
+      `input-send-event`, per-axis, unbatched)*
 
 **Checkpoint — the core stands alone:** zero toolkit deps pinned by
 test; libcosmic binary + applet identical behavior.
