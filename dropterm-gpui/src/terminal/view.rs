@@ -56,6 +56,47 @@ pub(crate) struct WalkLog {
     rows: Vec<String>,
 }
 
+/// A pane's handed-up signal to the shell that owns the tab fleet:
+/// the Hide action (the shell's tick runs the machine's hide funnel)
+/// and the engine's own exit request (the tabs slice's ungated close
+/// — a shell exit never confirms). The standalone walk pane has no
+/// shell and only logs.
+pub(crate) enum PaneSignal {
+    Hide,
+    /// The pane's terminal exited; the tab closes through the
+    /// ungated tail, never the confirm gate.
+    Exited(TabId),
+}
+
+/// The pane's polled attention latch (the tab markers' input): bell
+/// and output signals accumulate between the shell's polls, so a
+/// storm of either reads as one row — the marker is a state, not a
+/// counter — and a take hands the pair over and resets.
+#[derive(Default)]
+pub(crate) struct AttentionFlags {
+    bell: bool,
+    output: bool,
+}
+
+impl AttentionFlags {
+    fn note_output(&mut self) {
+        self.output = true;
+    }
+
+    fn note_bell(&mut self) {
+        self.bell = true;
+    }
+
+    /// Hands the latched pair over — `(bell, output)` — and resets
+    /// both for the next window.
+    fn take(&mut self) -> (bool, bool) {
+        let latched = (self.bell, self.output);
+        self.bell = false;
+        self.output = false;
+        latched
+    }
+}
+
 /// The pane's paint skin: everything one frame's paint needs beside
 /// the engine itself, bundled so the render closures capture one
 /// value and the paint functions stay under the argument budget.
@@ -111,10 +152,15 @@ pub(crate) struct TerminalPane {
     /// included — so a bypass that starts as a selection never hands
     /// the child a release it never saw).
     reporting_gesture: bool,
-    /// The pane's Hide action handed up to a shell that owns the
-    /// surface lifecycle (`None` in the standalone walk harness —
-    /// the action only logs there).
-    hide_request: Option<std::sync::mpsc::Sender<()>>,
+    /// The pane's signals handed up to a shell that owns the tab
+    /// fleet (`None` in the standalone walk harness — the Hide
+    /// action only logs there).
+    shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
+    /// The pane's tab id (the Exited signal's address).
+    id: TabId,
+    /// The latched attention signals since the shell's last poll —
+    /// the tab markers' input.
+    attention: AttentionFlags,
 }
 
 impl TerminalPane {
@@ -135,6 +181,25 @@ impl TerminalPane {
             .working_directory()
     }
 
+    /// Whether the tab's foreground child is running (the engine's
+    /// `/proc` foreground check) — the close gate's detection, read
+    /// at request time so a mid-session toggle flip applies to the
+    /// very next close.
+    #[expect(dead_code, reason = "the shell's close flow slice consumes it")]
+    pub(crate) fn foreground_child_running(&self) -> bool {
+        self.terminal
+            .lock()
+            .expect("engine lock")
+            .foreground_child_running()
+    }
+
+    /// Hands the pane's latched attention signals over — `(bell,
+    /// output)` since the last poll — and resets the latch (the
+    /// shell's tick polls each pane).
+    pub(crate) fn take_attention(&mut self) -> (bool, bool) {
+        self.attention.take()
+    }
+
     /// Build the pane around a live engine terminal. The caller
     /// owns the terminal's construction (PTY spawn included) and
     /// hands over the receiver half of the engine's event channel —
@@ -143,7 +208,12 @@ impl TerminalPane {
         clippy::large_types_passed_by_value,
         reason = "a Copy scheme table, moved once at the pane's construction; the pane owns it"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pane's construction inputs beside the pump's channel: the id, the engine, the scheme trio, and the keybind overlay — a param struct would hide the spawn's one-shot shape"
+    )]
     pub(crate) fn new(
+        id: TabId,
         terminal: Arc<Mutex<Terminal>>,
         colors: Colors,
         opacity: u8,
@@ -176,7 +246,9 @@ impl TerminalPane {
             scroll_lines: 0.,
             reporter: MouseReporter::default(),
             reporting_gesture: false,
-            hide_request: None,
+            shell_signals: None,
+            id,
+            attention: AttentionFlags::default(),
         }
     }
 
@@ -208,6 +280,10 @@ impl TerminalPane {
         match event {
             TermEvent::Wakeup => {
                 self.needs_update = true;
+                // Output latches an attention signal for the shell's
+                // poll (the active tab's poll drops it — the markers
+                // accrue only for inactive tabs).
+                self.attention.note_output();
                 cx.notify();
             }
             TermEvent::Title(title) => {
@@ -217,7 +293,9 @@ impl TerminalPane {
                 self.title = None;
             }
             TermEvent::Bell => {
-                println!("dropterm-gpui: bell (notifications arrive with the chrome slices)");
+                // The marker latches here (desktop notifications
+                // arrive with the chrome slices).
+                self.attention.note_bell();
             }
             TermEvent::ClipboardStore(kind, text) => {
                 // OSC 52 store: a program copying out (tmux's copy
@@ -311,8 +389,20 @@ impl TerminalPane {
             // The engine's own shutdown request: the pane has no
             // app-level surface to route it through yet; the tabs
             // slice owns closes.
-            TermEvent::Exit => {
-                println!("dropterm-gpui: pane exit request (tab lifecycle arrives with its slice)");
+            TermEvent::Exit => self.signal_exit(),
+        }
+    }
+
+    /// A shell exit hands its close up to the shell that owns the
+    /// fleet (the walk pane has none and only logs): the tab closes
+    /// through the ungated tail — never the confirm gate.
+    fn signal_exit(&self) {
+        match &self.shell_signals {
+            Some(signals) => {
+                let _ = signals.send(PaneSignal::Exited(self.id));
+            }
+            None => {
+                println!("dropterm-gpui: pane exit request (no shell in the walk harness)");
             }
         }
     }
@@ -481,11 +571,14 @@ impl TerminalPane {
                 // Handed to the shell that owns the surface lifecycle
                 // (its tick runs the machine's hide funnel); the
                 // standalone walk pane has no shell and only logs.
-                if let Some(hide) = &self.hide_request {
-                    println!("dropterm-gpui: pane hide action -> the shell's funnel");
-                    let _ = hide.send(());
-                } else {
-                    println!("dropterm-gpui: pane hide action (no shell in the walk harness)");
+                match &self.shell_signals {
+                    Some(signals) => {
+                        println!("dropterm-gpui: pane hide action -> the shell's funnel");
+                        let _ = signals.send(PaneSignal::Hide);
+                    }
+                    None => {
+                        println!("dropterm-gpui: pane hide action (no shell in the walk harness)");
+                    }
                 }
             }
         }
@@ -1314,6 +1407,7 @@ pub(crate) fn boot_colors(config: &dropterm_core::config::DropTermConfig) -> Col
 )]
 pub(crate) fn pane_with_pump(
     cx: &mut App,
+    id: TabId,
     terminal: Arc<Mutex<Terminal>>,
     colors: &Colors,
     opacity: u8,
@@ -1325,7 +1419,8 @@ pub(crate) fn pane_with_pump(
     let binds = input::effective_key_binds(custom_binds);
     let focus = cx.focus_handle();
     cx.new(|cx| {
-        let mut pane = TerminalPane::new(terminal, *colors, opacity, font, binds, options, focus);
+        let mut pane =
+            TerminalPane::new(id, terminal, *colors, opacity, font, binds, options, focus);
         pane.spawn_pump(events, cx);
         pane
     })
@@ -1336,15 +1431,16 @@ pub(crate) fn pane_with_pump(
 /// 4's integration): config → host → PTY → engine → the pane entity
 /// with its pump and the config's keybind overlay. `shell` overrides
 /// the PTY's program (the walk's seeding affordance); `None` is the
-/// tty default. The optional channel carries the pane's Hide action
-/// to a shell that owns the surface lifecycle (the walk's standalone
-/// pane passes `None` and only logs).
+/// tty default. The optional channel carries the pane's handed-up
+/// signals (its Hide action, its terminal's exit request) to a shell
+/// that owns the tab fleet (the walk's standalone pane passes `None`
+/// and only logs).
 pub(crate) fn boot_pane(
     cx: &mut App,
     config: &dropterm_core::config::DropTermConfig,
     shell: Option<alacritty_terminal::tty::Shell>,
     id: TabId,
-    hide_request: Option<std::sync::mpsc::Sender<()>>,
+    shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
     let colors = boot_colors(config);
     let host = crate::terminal::host::GpuiHost::new(cx);
@@ -1380,6 +1476,7 @@ pub(crate) fn boot_pane(
     let terminal = Arc::new(Mutex::new(terminal));
     let pane = pane_with_pump(
         cx,
+        id,
         Arc::clone(&terminal),
         &colors,
         config.opacity,
@@ -1388,6 +1485,36 @@ pub(crate) fn boot_pane(
         &config.custom_key_binds,
         event_rx,
     );
-    pane.update(cx, |pane, _| pane.hide_request = hide_request);
+    pane.update(cx, |pane, _| pane.shell_signals = shell_signals);
     Some((terminal, pane))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attention_flags_latch_signals_and_clear_on_take() {
+        // The pane's polled attention seam: signals latch between
+        // polls (a bell storm stays one row, an output batch one
+        // marker), the bell outranks output, and a take hands the
+        // pair over and resets — the next poll starts clean.
+        let mut flags = AttentionFlags::default();
+        assert_eq!(
+            flags.take(),
+            (false, false),
+            "a fresh pane has signaled nothing"
+        );
+
+        flags.note_output();
+        assert_eq!(flags.take(), (false, true));
+
+        flags.note_bell();
+        flags.note_output();
+        assert_eq!(flags.take(), (true, true));
+        assert_eq!(flags.take(), (false, false), "the take cleared both");
+
+        flags.note_bell();
+        assert_eq!(flags.take(), (true, false));
+    }
 }

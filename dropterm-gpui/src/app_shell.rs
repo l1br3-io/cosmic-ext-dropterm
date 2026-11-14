@@ -189,14 +189,14 @@ pub(crate) struct Shell {
     /// strip's placement, border, and title mode read from it.
     config: DropTermConfig,
     /// The hide channel's sender half — every spawned pane shares it.
-    hide_tx: std::sync::mpsc::Sender<()>,
+    signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
     /// The title mode the tab titles were last resolved under (the
     /// live mode-flip detector).
     applied_title_mode: TabTitleMode,
     /// The pane's Hide action, handed up through the channel and run
     /// through the machine's hide funnel on the tick — window work
     /// never runs inside a pane's event handler (sr-1's lesson).
-    hide_requests: Receiver<()>,
+    pane_signals: Receiver<view::PaneSignal>,
     /// The applied theme identity (gpui-theme Task 2): the config
     /// echo's change detector — an edit whose identity matches the
     /// applied one re-themes nothing.
@@ -223,8 +223,8 @@ impl Shell {
         tabs: tab_bar::TabList,
         panes: HashMap<TabId, Entity<TerminalPane>>,
         config: DropTermConfig,
-        hide_tx: std::sync::mpsc::Sender<()>,
-        hide_requests: Receiver<()>,
+        signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
+        pane_signals: Receiver<view::PaneSignal>,
         theme: (String, bool),
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
@@ -242,9 +242,9 @@ impl Shell {
             tabs,
             panes,
             config,
-            hide_tx,
+            signals_tx,
             applied_title_mode,
-            hide_requests,
+            pane_signals,
             theme,
             pending_theme: None,
             drag_walk: drag_walk.unwrap_or_default().into(),
@@ -288,16 +288,30 @@ impl Shell {
         while let Ok(verb) = self.verbs.try_recv() {
             self.verb(verb, &mut actions);
         }
-        // The pane's Hide action: one drain (repeat sends coalesce —
-        // a second hide on a hidden surface decides nothing), run
-        // through the machine's hide funnel exactly like the verb's.
-        while self.hide_requests.try_recv().is_ok() {
-            println!(
-                "dropterm-gpui: pane hide action -> the hide funnel at +{}ms",
-                self.boot.elapsed().as_millis()
-            );
-            let intents = self.machine.decide_hide(self.inputs);
-            self.execute_into(intents, &mut actions);
+        // The panes' handed-up signals: one drain (repeat Hide sends
+        // coalesce — a second hide on a hidden surface decides
+        // nothing), the Hide actions run through the machine's hide
+        // funnel exactly like the verb's.
+        while let Ok(signal) = self.pane_signals.try_recv() {
+            match signal {
+                view::PaneSignal::Hide => {
+                    println!(
+                        "dropterm-gpui: pane hide action -> the hide funnel at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    let intents = self.machine.decide_hide(self.inputs);
+                    self.execute_into(intents, &mut actions);
+                }
+                view::PaneSignal::Exited(id) => {
+                    // A shell exit closes its tab ungated (never the
+                    // confirm gate) — the close flow's slice wires the
+                    // teardown; the row is its evidence until then.
+                    println!(
+                        "dropterm-gpui: pane {id:?} exited -> tab close at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                }
+            }
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -725,7 +739,7 @@ impl Shell {
     fn new_tab(&mut self, cx: &mut Context<Self>) {
         let id = self.tabs.spawn(self.config.new_tab_after_current);
         let Some((_terminal, pane)) =
-            view::boot_pane(cx, &self.config, None, id, Some(self.hide_tx.clone()))
+            view::boot_pane(cx, &self.config, None, id, Some(self.signals_tx.clone()))
         else {
             eprintln!("dropterm-gpui: new tab's terminal failed to spawn; closing its record");
             self.tabs.close(id);
@@ -774,6 +788,42 @@ impl Shell {
             {
                 println!("dropterm-gpui: tab {id:?} retitled -> {}", tab.title);
             }
+        }
+    }
+
+    /// One attention poll (the tick's apply point beside the title
+    /// sync): each pane's latched bell/output signals land on its tab
+    /// through core's transitions — inactive tabs only; the active
+    /// tab's signals drop, the user is already looking at it (the
+    /// reference app's own rule, decided here at the poll because the
+    /// pane cannot know which tab is active).
+    fn poll_tab_attention(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<TabId> = self.tabs.records().iter().map(|tab| tab.id).collect();
+        for id in ids {
+            let Some(pane) = self.panes.get(&id) else {
+                continue;
+            };
+            let (bell, output) = pane.update(cx, |pane, _| pane.take_attention());
+            if !bell && !output {
+                continue;
+            }
+            let active = self.tabs.active_id() == Some(id);
+            self.tabs.note_attention(id, bell, output);
+            if active {
+                continue;
+            }
+            let marker = self
+                .tabs
+                .records()
+                .iter()
+                .find(|tab| tab.id == id)
+                .map(|tab| tab.attention);
+            println!(
+                "dropterm-gpui: tab {id:?} attention -> {} ({}) at +{}ms",
+                marker.map_or("none", |state| state.marker().unwrap_or("none")),
+                if bell { "bell" } else { "output" },
+                self.boot.elapsed().as_millis(),
+            );
         }
     }
 
@@ -999,8 +1049,8 @@ pub(crate) fn tab_walk_count(raw: Option<&str>) -> usize {
 struct TabFleet {
     tabs: tab_bar::TabList,
     panes: HashMap<TabId, Entity<TerminalPane>>,
-    hide_tx: std::sync::mpsc::Sender<()>,
-    hide_requests: Receiver<()>,
+    signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
+    pane_signals: Receiver<view::PaneSignal>,
 }
 
 /// The drawer's tab fleet (gpui-tabs Task 1's boot half): N panes —
@@ -1020,13 +1070,13 @@ fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<T
             alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), vec!["-c".to_string(), raw])
         }
     });
-    let (hide_tx, hide_requests) = std::sync::mpsc::channel::<()>();
+    let (signals_tx, pane_signals) = std::sync::mpsc::channel::<view::PaneSignal>();
     let mut tabs = tab_bar::TabList::default();
     let mut panes = HashMap::new();
     for _ in 0..tab_count {
         let id = tabs.spawn(false);
         let Some((_terminal, pane)) =
-            view::boot_pane(cx, config, pty_shell.clone(), id, Some(hide_tx.clone()))
+            view::boot_pane(cx, config, pty_shell.clone(), id, Some(signals_tx.clone()))
         else {
             eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
             return None;
@@ -1054,8 +1104,8 @@ fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<T
     Some(TabFleet {
         tabs,
         panes,
-        hide_tx,
-        hide_requests,
+        signals_tx,
+        pane_signals,
     })
 }
 
@@ -1127,8 +1177,8 @@ pub(crate) fn boot(
             fleet.tabs,
             fleet.panes,
             config,
-            fleet.hide_tx,
-            fleet.hide_requests,
+            fleet.signals_tx,
+            fleet.pane_signals,
             boot_theme_identity,
             drag_walk,
             config_changes,
@@ -1153,6 +1203,9 @@ pub(crate) fn boot(
                 // apply point — each pane's report and cwd polled,
                 // re-resolved through core only on a move.
                 shell.update(cx, Shell::sync_tab_titles);
+                // gpui-tabs Task 2: each pane's latched attention
+                // signals land on the same apply point.
+                shell.update(cx, Shell::poll_tab_attention);
                 for action in pumped.actions {
                     apply_action(cx, &shell, action);
                 }
