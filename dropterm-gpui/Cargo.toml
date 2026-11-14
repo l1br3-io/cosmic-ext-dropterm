@@ -90,6 +90,13 @@ cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-c
 # frontend, so no new code enters the build.
 wl-clipboard-rs = "0.9"
 
+# The status band's clock (gpui-status spec): `Zoned::now` for the
+# minute-boundary text — core owns the arithmetic, this frontend
+# reads the wall clock the same leg the libcosmic app does.
+# Version-matched to the root crate's and core's 0.2 line, so no new
+# code enters the build.
+jiff = "0.2"
+
 # The generator's output medium (gpui-theme spec): the carried kit-pass
 # C4 module emits the scheme → theme mapping as a `serde_json::Value`
 # for `from_value::<ThemeConfig>` — the sanctioned JSON path (the

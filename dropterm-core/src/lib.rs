@@ -69,6 +69,7 @@ pub mod keybinds;
 pub mod profile;
 pub mod session;
 pub mod slide;
+pub mod status;
 pub mod surface_lifecycle;
 pub mod tabs;
 pub mod terminal;

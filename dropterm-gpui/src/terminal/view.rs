@@ -121,10 +121,6 @@ struct GridGeometry {
 /// base font the host measured the cell through.
 pub(crate) struct TerminalPane {
     pub(crate) terminal: Arc<Mutex<Terminal>>,
-    /// The engine's wakeup flag — the pump sets it, the next frame's
-    /// paint runs `update()` and clears it (the widget's own
-    /// layout-time update, verbatim).
-    needs_update: bool,
     skin: PaneSkin,
     /// The shell's latest title report (stored now, consumed when
     /// the tab chrome slices land).
@@ -235,7 +231,6 @@ impl TerminalPane {
         }
         Self {
             terminal,
-            needs_update: true,
             skin: PaneSkin {
                 colors,
                 opacity_alpha: f32::from(opacity.min(100)) / 100.,
@@ -284,7 +279,7 @@ impl TerminalPane {
     fn on_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Wakeup => {
-                self.needs_update = true;
+                self.terminal.lock().expect("engine lock").needs_update = true;
                 // Output latches an attention signal for the shell's
                 // poll (the active tab's poll drops it — the markers
                 // accrue only for inactive tabs).
@@ -438,13 +433,12 @@ impl TerminalPane {
                 .background_executor()
                 .spawn(async move { clipboard::read_primary_blocking() })
                 .await;
-            let _ = this.update(cx, |pane, cx| {
+            let _ = this.update(cx, |_pane, cx| {
                 let reply = format(&data.unwrap_or_default()).into_bytes();
                 let mut terminal = terminal.lock().expect("engine lock");
                 terminal.input_no_scroll(reply);
                 terminal.needs_update = true;
                 drop(terminal);
-                pane.needs_update = true;
                 cx.notify();
             });
         })
@@ -460,12 +454,12 @@ impl TerminalPane {
     /// re-themes the terminal with the chrome.
     pub(crate) fn retheme(&mut self, colors: &Colors, cx: &mut Context<Self>) {
         let options = self.options.clone();
-        self.terminal
-            .lock()
-            .expect("engine lock")
-            .set_config(&options, colors);
+        {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.set_config(&options, colors);
+            engine.needs_update = true;
+        }
         self.skin.colors = *colors;
-        self.needs_update = true;
         cx.notify();
     }
 
@@ -506,8 +500,9 @@ impl TerminalPane {
                         "dropterm-gpui: pane action Paste — {} bytes through the engine's paste",
                         text.len()
                     );
-                    self.terminal.lock().expect("engine lock").paste(&text);
-                    self.needs_update = true;
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.paste(&text);
+                    engine.needs_update = true;
                 }
                 None => {
                     println!("dropterm-gpui: pane action Paste — the clipboard holds no text");
@@ -525,13 +520,14 @@ impl TerminalPane {
                         .spawn(async move { clipboard::read_primary_blocking() })
                         .await;
                     if let Some(text) = text {
-                        let _ = this.update(cx, |pane, cx| {
+                        let _ = this.update(cx, |_pane, cx| {
                             println!(
                                 "dropterm-gpui: paste primary — {} bytes through the engine's paste",
                                 text.len()
                             );
-                            terminal.lock().expect("engine lock").paste(&text);
-                            pane.needs_update = true;
+                            let mut engine = terminal.lock().expect("engine lock");
+                            engine.paste(&text);
+                            engine.needs_update = true;
                             cx.notify();
                         });
                     }
@@ -540,19 +536,15 @@ impl TerminalPane {
             }
             TermAction::SelectAll => {
                 println!("dropterm-gpui: pane action SelectAll (every row selected)");
-                self.terminal.lock().expect("engine lock").select_all();
-                self.needs_update = true;
+                let mut engine = self.terminal.lock().expect("engine lock");
+                engine.select_all();
+                engine.needs_update = true;
             }
             TermAction::ClearScrollback => {
                 println!("dropterm-gpui: pane action ClearScrollback (history dropped)");
-                self.terminal
-                    .lock()
-                    .expect("engine lock")
-                    .term
-                    .lock()
-                    .grid_mut()
-                    .clear_history();
-                self.needs_update = true;
+                let mut engine = self.terminal.lock().expect("engine lock");
+                engine.term.lock().grid_mut().clear_history();
+                engine.needs_update = true;
             }
             TermAction::ZoomIn | TermAction::ZoomOut | TermAction::ZoomReset => {
                 let mut terminal = self.terminal.lock().expect("engine lock");
@@ -569,8 +561,8 @@ impl TerminalPane {
                 let options = self.options.clone();
                 let colors = self.skin.colors;
                 terminal.set_config(&options, &colors);
+                terminal.needs_update = true;
                 drop(terminal);
-                self.needs_update = true;
             }
             TermAction::Hide => {
                 // Handed to the shell that owns the surface lifecycle
@@ -627,7 +619,7 @@ impl TerminalPane {
                         .term
                         .lock()
                         .selection = None;
-                    self.needs_update = true;
+                    self.terminal.lock().expect("engine lock").needs_update = true;
                     cx.notify();
                     return;
                 }
@@ -639,8 +631,10 @@ impl TerminalPane {
             KeyInput::Action(action) => self.perform_action(action, cx),
             KeyInput::Scroll(scroll) => {
                 println!("dropterm-gpui: pane scroll {scroll:?} (Shift+PageUp/Down/Home/End)");
-                self.terminal.lock().expect("engine lock").scroll(scroll);
-                self.needs_update = true;
+                let mut engine = self.terminal.lock().expect("engine lock");
+                engine.scroll(scroll);
+                engine.needs_update = true;
+                drop(engine);
                 cx.notify();
             }
             KeyInput::Swallowed => {
@@ -652,7 +646,7 @@ impl TerminalPane {
                         .term
                         .lock()
                         .selection = None;
-                    self.needs_update = true;
+                    self.terminal.lock().expect("engine lock").needs_update = true;
                     cx.notify();
                 }
             }

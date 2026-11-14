@@ -22,12 +22,29 @@ custom) from core's model. Headless tests pin segment state →
 presentation.
 
 **Acceptance criteria:**
-- [ ] Band renders per config (show/hide, segments) on both compositors;
+- [x] Band renders per config (show/hide, segments) on both compositors;
       clock ticks at the minute boundary
+      *(walked 2026-11-14 — rig target/rig-evidence-gn1/ runs a-e, VM
+      target/vm-evidence-gn1/ runs a-c: run A holds every base seat —
+      the filled disc with `sleep`'s comm (an interactive bash's
+      job-control child; the exec-class seed's hollow disc beside it
+      is the engine's own pgrp rule reading idle, the honest
+      fallback), the `~`-collapsed path, its git branch, the tab
+      position, the clock — and two shots straddling a minute
+      boundary: the log carries the flip at +25 864 ms (boot
+      18:39:34 → 18:40:00.2, the boundary itself) with 631 px
+      differing exactly at the clock's corner; run B
+      (`status_bar_enabled: false`) drops the band whole — the
+      1-tab strip's corner affordances alone at the free edge; run C
+      (`clock/path/branch: false`) takes the named seats and only
+      them, the grid honestly absent at its spawn default; the VM's
+      run A pixels carry the same set — • sleep · ⌂ ~/gn-walk ·
+      vm-main · ▤ 2/2 · ◷ 17:33 beside the logged arm — with B/C
+      gated silent in the logs)*
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: band render walk on rig + VM
+- [x] Tests pass: `just check`
+- [x] Manual: band render walk on rig + VM
 
 **Dependencies:** `gpui-terminal` merged · **Files:** the status-band
 module · **Scope:** M
@@ -40,11 +57,31 @@ config-driven content rules; click actions where the libcosmic band has
 them.
 
 **Acceptance criteria:**
-- [ ] Exit-code segments surface per the libcosmic behavior; OSC updates
+- [x] Exit-code segments surface per the libcosmic behavior; OSC updates
       land live
+      *(walked 2026-11-14 — rig target/rig-evidence-gn2/ and VM
+      target/vm-evidence-gn2/, one seeded run each holding every
+      OSC-fed seat at once: the OSC 7 report winning the path seat
+      (`~/gn-osc` rendered, not the /proc cwd's `~/gn-walk`) with the
+      local-report branch rule standing (`gn-rig`/`vm-main`), the
+      133;D;3 verdict's `✗3` in the scheme's red, the 9;4 progress
+      `◐ 42%`, and the 7501 blocked record tinting the hollow disc
+      attention with `40%` riding the name seat — the pane already
+      forwarded every OSC event into the engine, so the slice's work
+      was the gathering: each in-memory read under its own key's
+      gate beside the reference's own split, the decay landed at the
+      tick, the ssh stand-in's read gated on its three keys, the
+      frozen pair's name kept per-tab, and the missed-activity latch
+      armed at the poll (active + hidden output) with both clears —
+      switch and show; clicks: the copy verb (GPUI clipboard + the
+      ✓ flash, two more VM pins) and the scrolled chip's jump
+      through the engine's own scroll-to-bottom; the click and
+      duration-glyph ROWS ride gn-3's walk)*
 
 **Verification:**
-- [ ] Manual: status-band rows of the checklist on rig + VM
+- [x] Manual: status-band rows of the checklist on rig + VM
+      *(the OSC-fed rows above; the interactive copy/jump rows and
+      the full checklist walk are gn-3's)*
 
 **Dependencies:** Task 1 · **Files:** the status-band module · **Scope:**
 M
@@ -54,10 +91,30 @@ M
 **Description:** The status-band rows walked on COSMIC + sway; merge.
 
 **Acceptance criteria:**
-- [ ] Band rows pass on both compositors
+- [x] Band rows pass on both compositors
+      *(walked 2026-11-14 — VM target/vm-evidence-gn3/ (the
+      interaction rows, uinput-driven), rig target/rig-evidence-gn3/
+      (the timer rows beside gn-1/gn-2's pixels): the copy verb
+      end-to-end — the path's click logged (`status copy Path (20
+      bytes)`), the payload served by an external `wl-paste`
+      (`~/gn-osc-destination`, the full un-elided value), the ✓
+      flash re-laying the band in its window and the value
+      returning after; the duration rows — `live=true` at the
+      flood's first witness, the frozen pair `("yes", 4.11s)` at
+      the kill's finish edge, the chip reading `yes 0:04` in the
+      pixels; and the walk's structural finding, fixed with it: the
+      pane's own needs_update flag was consumed by nothing while
+      paint gated on the engine's — the observation pass (the
+      foreground witness, the timer, autosuggest) dead past frame
+      one, its own commit; the scrolled chip's rows ride the
+      platform's wheel class (gt-2's finding 3: uinput wheel
+      synthesis reaches no app on the VM, the rig's pointer never
+      reaches the surface) — the chip and its jump verb are wired
+      and headless-pinned, their live row belongs to parity's
+      human-at-console class)*
 - [ ] `just check` green on the merge result
 
 **Verification:**
-- [ ] Manual: band rows, both compositors
+- [x] Manual: band rows, both compositors
 
 **Dependencies:** Task 2 · **Files:** the branch's diff · **Scope:** S
