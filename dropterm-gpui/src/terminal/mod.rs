@@ -14,12 +14,14 @@
 //! Module map: [`grid`] is the pure row projection (headless-tested),
 //! [`host`] is the engine's `TextHost` seam implemented against
 //! GPUI's font system, [`clipboard`] is the pane's copy/paste seam
-//! (GPUI's clipboard while focused, data-control otherwise), and
-//! [`view`] is the render entity.
+//! (GPUI's clipboard while focused, data-control otherwise),
+//! [`suggest`] is the autosuggest view-model (routing and geometry,
+//! headless-tested), and [`view`] is the render entity.
 
 pub(crate) mod clipboard;
 pub(crate) mod grid;
 pub(crate) mod host;
 pub(crate) mod input;
 pub(crate) mod selection;
+pub(crate) mod suggest;
 pub(crate) mod view;

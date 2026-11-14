@@ -295,6 +295,73 @@ pub(crate) struct Shell {
     /// The command timer's last logged state (the boundary rows'
     /// change detector).
     status_timer_logged: (bool, Option<(String, std::time::Duration)>, Option<u32>),
+    /// The completions table's shared load (gpui-parity Task 1): the
+    /// loaded table beside the channel its background loads land on —
+    /// `None` is the loading placeholder the panes carry.
+    specs: SpecsWatch,
+}
+
+/// The specs provider's table (the app-owned completions load):
+/// built-in floor overlaid by `completions.toml` and the extended
+/// tier, as one shared slice every pane renders from.
+type SpecsTable = Arc<[dropterm_core::terminal::suggest::SpecCommand]>;
+
+/// The completions table's shared load (gpui-parity Task 1; the
+/// libcosmic `completions_reload_task` port): the CPU-bound read +
+/// parse runs on a plain thread (the config watcher's own shape) and
+/// lands on the channel the shell's tick drains — the tick stores it
+/// and pushes it to every pane through the live options pass, never
+/// blocking startup or a config echo on the parse. Armed at boot and
+/// re-armed on every absorbed config echo (an edited
+/// `completions.toml` and the extended toggle's flip both apply
+/// live).
+struct SpecsWatch {
+    table: Option<SpecsTable>,
+    tx: std::sync::mpsc::Sender<SpecsTable>,
+    rx: std::sync::mpsc::Receiver<SpecsTable>,
+}
+
+impl SpecsWatch {
+    /// The boot watch: the channel plus the initial load thread.
+    fn spawn_initial(config: &DropTermConfig) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<SpecsTable>();
+        Self::arm_load(&tx, config.autosuggestions_completions_extended);
+        Self {
+            table: None,
+            tx,
+            rx,
+        }
+    }
+
+    /// One background load into the channel (the watcher-thread
+    /// precedent: a plain thread, parked away when done).
+    fn arm_load(tx: &std::sync::mpsc::Sender<SpecsTable>, extended: bool) {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let dir = dropterm_core::config::store::store_dir();
+            let table = dropterm_core::terminal::suggest::load_completions(Some(&dir), extended);
+            let _ = tx.send(table);
+        });
+    }
+
+    /// Arms a reload after a config echo (the store dir holds
+    /// `completions.toml`, and the watcher fires on the whole dir).
+    fn arm_reload(&self, config: &DropTermConfig) {
+        Self::arm_load(&self.tx, config.autosuggestions_completions_extended);
+    }
+
+    /// Takes a landed table, if any load finished since the last
+    /// drain.
+    fn drain(&mut self) -> Option<SpecsTable> {
+        let mut landed = None;
+        while let Ok(table) = self.rx.try_recv() {
+            landed = Some(table);
+        }
+        if landed.is_some() {
+            self.table.clone_from(&landed);
+        }
+        landed
+    }
 }
 
 impl Shell {
@@ -316,6 +383,7 @@ impl Shell {
         exit_after: Option<Duration>,
         band_font: gpui::Font,
         settings_focus: gpui::FocusHandle,
+        specs: SpecsWatch,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         Self {
@@ -360,6 +428,7 @@ impl Shell {
                 .ok()
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
+            specs,
         }
     }
 
@@ -565,6 +634,12 @@ impl Shell {
         // lands the snapshot the next frame reads.
         self.config = config.clone();
         self.settings.config_epoch += 1;
+        // gpui-parity Task 1: the config echo reloads the
+        // completions table on a background thread — an edited
+        // `completions.toml` or the extended toggle's flip applies
+        // live at the pane pass below (the libcosmic echo's own
+        // re-arm).
+        self.specs.arm_reload(&config);
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
         // The identity compare absorbs echoes (an unchanged scheme is
@@ -625,6 +700,24 @@ impl Shell {
         // panes are a fleet now).
         for pane in self.panes.values() {
             pane.update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
+        }
+    }
+
+    /// The tick's completions apply point (gpui-parity Task 1): a
+    /// landed background load stores the shared table and pushes it
+    /// to every pane through the live options pass — the loading row
+    /// the menu carried clears, and the specs tier answers from the
+    /// next typed prefix.
+    fn drain_completions(&mut self, cx: &mut Context<Self>) {
+        if let Some(table) = self.specs.drain() {
+            println!(
+                "dropterm-gpui: completions table loaded ({} command(s)) -> every pane",
+                table.len()
+            );
+            for pane in self.panes.values() {
+                let options = crate::terminal::suggest::pane_options(&self.config, Some(&table));
+                pane.update(cx, |pane, cx| pane.apply_options(options, cx));
+            }
         }
     }
 
@@ -886,9 +979,14 @@ impl Shell {
     /// failed PTY closing the record back (the rollback).
     fn spawn_tab(&mut self, cx: &mut Context<Self>) -> Option<TabId> {
         let id = self.tabs.spawn(self.config.new_tab_after_current);
-        let Some((_terminal, pane)) =
-            view::boot_pane(cx, &self.config, None, id, Some(self.signals_tx.clone()))
-        else {
+        let Some((_terminal, pane)) = view::boot_pane(
+            cx,
+            &self.config,
+            None,
+            self.specs.table.as_ref(),
+            id,
+            Some(self.signals_tx.clone()),
+        ) else {
             eprintln!("dropterm-gpui: new tab's terminal failed to spawn; closing its record");
             self.tabs.close(id);
             return None;
@@ -1510,9 +1608,14 @@ impl Shell {
         let id = self
             .tabs
             .spawn_duplicate(source, self.config.tab_title_mode);
-        let Some((_terminal, pane)) =
-            view::boot_pane(cx, &self.config, None, id, Some(self.signals_tx.clone()))
-        else {
+        let Some((_terminal, pane)) = view::boot_pane(
+            cx,
+            &self.config,
+            None,
+            self.specs.table.as_ref(),
+            id,
+            Some(self.signals_tx.clone()),
+        ) else {
             eprintln!(
                 "dropterm-gpui: duplicate tab's terminal failed to spawn; closing its record"
             );
@@ -2584,14 +2687,25 @@ struct TabFleet {
 /// line when a walk sets it (seeding every tab alike), the tty
 /// default otherwise. `None` when any pane's PTY fails to spawn — the
 /// drawer is never left half-fleeted.
-fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<TabFleet> {
+fn boot_tab_fleet(
+    cx: &mut App,
+    config: &DropTermConfig,
+    specs_table: Option<&SpecsTable>,
+    edge: Edge,
+) -> Option<TabFleet> {
     let tab_count = tab_walk_count(std::env::var("DROPTERM_TABS").ok().as_deref());
-    let pty_shell = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
+    let pty_spawn = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
         let raw = raw.trim().to_string();
         if raw.is_empty() {
-            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), Vec::new())
+            view::PaneSpawn {
+                program: "/bin/sh".to_string(),
+                args: Vec::new(),
+            }
         } else {
-            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), vec!["-c".to_string(), raw])
+            view::PaneSpawn {
+                program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), raw],
+            }
         }
     });
     let (signals_tx, pane_signals) = std::sync::mpsc::channel::<view::PaneSignal>();
@@ -2599,9 +2713,14 @@ fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<T
     let mut panes = HashMap::new();
     for _ in 0..tab_count {
         let id = tabs.spawn(false);
-        let Some((_terminal, pane)) =
-            view::boot_pane(cx, config, pty_shell.clone(), id, Some(signals_tx.clone()))
-        else {
+        let Some((_terminal, pane)) = view::boot_pane(
+            cx,
+            config,
+            pty_spawn.clone(),
+            specs_table,
+            id,
+            Some(signals_tx.clone()),
+        ) else {
             eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
             return None;
         };
@@ -2683,8 +2802,13 @@ pub(crate) fn boot(
     let boot_theme = resolve_theme(&config);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
-    // The drawer's tab fleet (gpui-tabs Task 1).
-    let Some(fleet) = boot_tab_fleet(cx, &config, inputs.geometry.edge) else {
+    // The drawer's tab fleet (gpui-tabs Task 1). The completions
+    // load starts before it (gpui-parity Task 1): the first panes
+    // carry the loading placeholder, and the tick's drain pushes the
+    // landed table the moment the thread finishes.
+    let specs = SpecsWatch::spawn_initial(&config);
+    let Some(fleet) = boot_tab_fleet(cx, &config, specs.table.as_ref(), inputs.geometry.edge)
+    else {
         cx.quit();
         return;
     };
@@ -2733,6 +2857,7 @@ pub(crate) fn boot(
             exit_after,
             band_font,
             cx.focus_handle(),
+            specs,
         )
     });
     // The tick: 100 ms of verb drain + frame pump, holding the shell
@@ -2749,6 +2874,9 @@ pub(crate) fn boot(
                 // the next frame — the App context lives here, not in
                 // pump (the same split every window action takes).
                 shell.update(cx, Shell::apply_pending_theme);
+                // gpui-parity Task 1: a landed completions load
+                // stores the table and pushes it to the panes.
+                shell.update(cx, Shell::drain_completions);
                 // gpui-tabs Task 1: the tab titles sync on the same
                 // apply point — each pane's report and cwd polled,
                 // re-resolved through core only on a move.

@@ -31,6 +31,7 @@ use gpui::{
     App, Context, Entity, FontWeight, Pixels, TextAlign, UnderlineStyle, canvas, div, fill, point,
     prelude::*, px,
 };
+use gpui_component::ActiveTheme as _;
 use tokio::sync::mpsc;
 
 use dropterm_core::tabs::TabId;
@@ -46,6 +47,7 @@ use super::clipboard;
 use super::grid::{self, StyledRun};
 use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
 use super::selection::{self, ClickKind};
+use super::suggest;
 
 /// The walk evidence rows' dedup state (the last logged grid and
 /// caret cells — one row per change, not per frame).
@@ -54,6 +56,12 @@ pub(crate) struct WalkLog {
     grid: Option<(usize, usize)>,
     caret: Option<(usize, usize)>,
     rows: Vec<String>,
+    /// The last logged ghost's visible string (the autosuggest
+    /// rows' evidence: one line per change the suggestion makes).
+    ghost: Option<String>,
+    /// The last logged menu shape (its row count and selection —
+    /// one line per change the menu makes).
+    menu: Option<(usize, usize)>,
 }
 
 /// A pane's handed-up signal to the shell that owns the tab fleet:
@@ -157,6 +165,16 @@ pub(crate) struct TerminalPane {
     /// The latched attention signals since the shell's last poll —
     /// the tab markers' input.
     attention: AttentionFlags,
+    /// Whether a suggest-reveal timer sleeps in the task queue
+    /// (suggest-delay spec, the libcosmic `reveal_armed` shape): one
+    /// at a time; the fire drives one update and re-syncs against
+    /// then-current truth.
+    reveal_armed: bool,
+    /// The focus/activation subscriptions, wired on the first render
+    /// (they need a window): the engine's `set_focused` rides real
+    /// focus changes, so the ghost and the menu dismiss on focus
+    /// loss and the caret state tracks the keyboard.
+    focus_wiring: Option<[gpui::Subscription; 3]>,
 }
 
 impl TerminalPane {
@@ -249,6 +267,8 @@ impl TerminalPane {
             shell_signals: None,
             id,
             attention: AttentionFlags::default(),
+            reveal_armed: false,
+            focus_wiring: None,
         }
     }
 
@@ -284,6 +304,7 @@ impl TerminalPane {
                 // poll (the active tab's poll drops it — the markers
                 // accrue only for inactive tabs).
                 self.attention.note_output();
+                self.arm_reveal_after_damage(cx);
                 cx.notify();
             }
             TermEvent::Title(title) => {
@@ -444,6 +465,122 @@ impl TerminalPane {
         })
         .detach();
     }
+
+    /// The reveal arm for the Wakeup point (suggest-delay spec, the
+    /// libcosmic `arm_suggest_reveal_after_damage` port): damage just
+    /// landed, but the update that re-steps the suggest model runs in
+    /// the paint this notify schedules — the precise sync would read
+    /// one state behind. So arm on the pane's own truth: a nonzero
+    /// delay with suggestions on and no foreground child (output
+    /// while a command runs can never withhold) arms the full-delay
+    /// one-shot; the fire drives one update, and the next damage
+    /// re-arms.
+    fn arm_reveal_after_damage(&mut self, cx: &mut Context<Self>) {
+        if self.reveal_armed
+            || !self.options.autosuggestions_enabled
+            || self.options.autosuggestions_delay_ms == 0
+            || self.foreground_child_running()
+        {
+            return;
+        }
+        self.reveal_armed = true;
+        let delay =
+            std::time::Duration::from_millis(u64::from(self.options.autosuggestions_delay_ms));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |pane, cx| {
+                // The fired sleep consumed itself: the engine update
+                // it drives is the point — the idle fact resolves at
+                // update()'s step site, so the ghost appears with no
+                // new keystroke.
+                pane.reveal_armed = false;
+                pane.terminal.lock().expect("engine lock").needs_update = true;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The completion menu's routing for one press (the libcosmic
+    /// `menu_consumes_press` port): `true` — the menu consumed it (a
+    /// claimed key, or the soft chord that opened one); `false` —
+    /// nothing claims it, and the press flows through the normal
+    /// handling below, its bytes forwarded verbatim.
+    fn route_menu_press(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        trigger_chord: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let consumed;
+        {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            match suggest::menu_routing(
+                &keystroke.key,
+                keystroke.modifiers,
+                engine.menu_is_open(),
+                trigger_chord,
+            ) {
+                Some(suggest::MenuRouting::Consume(key)) => {
+                    engine.menu_press(key);
+                    engine.needs_update = true;
+                    consumed = true;
+                }
+                Some(suggest::MenuRouting::CloseThenProcess) => {
+                    // The press closes the menu, then still processes
+                    // below (a claimed key's bytes, an action chord,
+                    // an accept) — the repaint now, the press next.
+                    engine.menu_close();
+                    engine.needs_update = true;
+                    consumed = false;
+                }
+                // The soft trigger: no menu, the chord pressed — try
+                // the open; a decline forwards the chord's own shell
+                // bytes through the normal handling below.
+                None if trigger_chord => {
+                    let opened = engine.menu_open();
+                    engine.needs_update = opened;
+                    consumed = opened;
+                }
+                None => return false,
+            }
+        }
+        cx.notify();
+        consumed
+    }
+
+    /// The engine's focus flag over real focus changes (the
+    /// libcosmic app's focus-event wiring): the ghost's eligibility,
+    /// the menu's open state, and the caret's swap all ride
+    /// `set_focused`, so the pane's handle gaining or losing the
+    /// keyboard (the drawer, a modal, the window itself) and the
+    /// window's own activation land on the engine. Wired on the
+    /// first render — the subscriptions need a window.
+    fn wire_focus(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if self.focus_wiring.is_some() {
+            return;
+        }
+        let focus = self.focus.clone();
+        let on_focus = cx.on_focus(&focus, window, |pane, _window, cx| {
+            let mut engine = pane.terminal.lock().expect("engine lock");
+            engine.set_focused(true);
+            drop(engine);
+            cx.notify();
+        });
+        let on_blur = cx.on_blur(&focus, window, |pane, _window, cx| {
+            let mut engine = pane.terminal.lock().expect("engine lock");
+            engine.set_focused(false);
+            drop(engine);
+            cx.notify();
+        });
+        let on_activation = cx.observe_window_activation(window, |pane, window, cx| {
+            let mut engine = pane.terminal.lock().expect("engine lock");
+            engine.set_focused(window.is_window_active());
+            drop(engine);
+            cx.notify();
+        });
+        self.focus_wiring = Some([on_focus, on_blur, on_activation]);
+    }
 }
 
 impl TerminalPane {
@@ -463,6 +600,23 @@ impl TerminalPane {
         cx.notify();
     }
 
+    /// The live config pass (gpui-parity Task 1): fresh options from
+    /// a config echo re-apply through the engine's `set_config`
+    /// (spawn truth stays the pane's own — it is read once at
+    /// construction and never rewritten), so a Behavior toggle or a
+    /// delay edit applies at the next update with no respawn — the
+    /// libcosmic config echo's own shape.
+    pub(crate) fn apply_options(&mut self, options: TerminalOptions, cx: &mut Context<Self>) {
+        let colors = self.skin.colors;
+        {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.set_config(&options, &colors);
+            engine.needs_update = true;
+        }
+        self.options = options;
+        cx.notify();
+    }
+
     /// The menu's entry into the pane's action funnel: the same
     /// [`perform_action`] a matched chord drives, exposed for the
     /// context menu's pane-routed picks (gpui-chrome) — the menu
@@ -472,6 +626,35 @@ impl TerminalPane {
         self.perform_action(action, cx);
     }
 
+    /// The copy actions' shared body: the selection out of the
+    /// engine, the regular write through GPUI's clipboard (the chord
+    /// just landed in the focused pane, so focus plus input serial
+    /// hold by construction — check 8's ruling), the primary write
+    /// through data-control (no GPUI API).
+    fn copy_selection(&mut self, primary: bool, cx: &mut Context<Self>) {
+        let text = {
+            let terminal = self.terminal.lock().expect("engine lock");
+            let term = terminal.term.lock();
+            term.selection_to_string()
+        };
+        match text {
+            Some(text) => {
+                println!(
+                    "dropterm-gpui: pane action Copy{} — {} bytes",
+                    if primary { "Primary" } else { "" },
+                    text.len()
+                );
+                clipboard::write(text, primary, !primary, cx);
+            }
+            None => {
+                println!(
+                    "dropterm-gpui: pane action Copy{} — nothing selected",
+                    if primary { "Primary" } else { "" }
+                );
+            }
+        }
+    }
+
     /// One matched action through the pane — the terminal-view
     /// slice's execution (the libcosmic `perform_action` pared to
     /// the pane's own surface; clipboard lands with its task, the
@@ -479,29 +662,7 @@ impl TerminalPane {
     fn perform_action(&mut self, action: TermAction, cx: &mut Context<Self>) {
         match action {
             TermAction::Copy | TermAction::CopyPrimary => {
-                // The chord just landed in the focused pane, so the
-                // regular write rides GPUI's clipboard (focus plus
-                // input serial, by construction — check 8's ruling);
-                // the primary write has no GPUI API and rides
-                // data-control.
-                let text = {
-                    let terminal = self.terminal.lock().expect("engine lock");
-                    let term = terminal.term.lock();
-                    term.selection_to_string()
-                };
-                match text {
-                    Some(text) => {
-                        println!(
-                            "dropterm-gpui: pane action {action:?} — {} bytes",
-                            text.len()
-                        );
-                        let primary = matches!(action, TermAction::CopyPrimary);
-                        clipboard::write(text, primary, !primary, cx);
-                    }
-                    None => {
-                        println!("dropterm-gpui: pane action {action:?} — nothing selected");
-                    }
-                }
+                self.copy_selection(matches!(action, TermAction::CopyPrimary), cx);
             }
             TermAction::Paste => match clipboard::read(cx) {
                 Some(text) => {
@@ -587,6 +748,15 @@ impl TerminalPane {
                     }
                 }
             }
+            // The trigger's own arm is a documented no-op (the
+            // libcosmic precedent): the routing in [`Self::on_key`]
+            // owns the open and the toggle where a declined chord's
+            // shell bytes live. This arm fires only when the map
+            // swallow sees the chord unmolested — a declined open
+            // that fell through translate, nothing to do.
+            TermAction::ShowCompletions => {
+                println!("dropterm-gpui: pane show-completions action (the routing owns it)");
+            }
         }
         cx.notify();
     }
@@ -617,6 +787,29 @@ impl TerminalPane {
                 has_selection: term.selection.is_some(),
             }
         };
+        // The completion menu's routing (suggest-menu spec), before
+        // the keybind swallow and every mapping — a showing menu
+        // outranks them all; the soft trigger chord tries the open
+        // here, its decline falling through with the chord's own
+        // shell bytes still to send.
+        let trigger_chord = matches!(
+            input::matched_action(&self.binds, keystroke),
+            Some(TermAction::ShowCompletions)
+        );
+        if self.route_menu_press(keystroke, trigger_chord, cx) {
+            return;
+        }
+        // The Space special case (the libcosmic widget's own, verbatim):
+        // Ctrl+Space is the NUL press wherever it is not consumed
+        // above — the trigger's decline included, never a swallow.
+        if keystroke.key == "space" && keystroke.modifiers.control {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.input_scroll(b"\x00".to_vec());
+            engine.needs_update = true;
+            drop(engine);
+            cx.notify();
+            return;
+        }
         match input::translate(keystroke, &self.binds, modes) {
             KeyInput::Bytes(bytes) => {
                 // Escape's selection-cancel is the one swallow with a
@@ -629,6 +822,26 @@ impl TerminalPane {
                         .lock()
                         .selection = None;
                     self.terminal.lock().expect("engine lock").needs_update = true;
+                    cx.notify();
+                    return;
+                }
+                // The autosuggest soft keys (autosuggest spec): accept
+                // only while the engine shows a suggestion — with
+                // nothing showing the arm falls through, and Right
+                // maps to its escape code exactly as before.
+                if let Some(kind) = suggest::accept_kind(&keystroke.key, keystroke.modifiers)
+                    && self
+                        .terminal
+                        .lock()
+                        .expect("engine lock")
+                        .suggestion()
+                        .is_some()
+                {
+                    println!("dropterm-gpui: pane accept {kind:?} — the showing suffix lands");
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.accept_suggestion(kind);
+                    engine.needs_update = true;
+                    drop(engine);
                     cx.notify();
                     return;
                 }
@@ -1011,6 +1224,7 @@ impl gpui::Render for TerminalPane {
         if !another_holds {
             self.focus.focus(window, cx);
         }
+        self.wire_focus(window, cx);
         let terminal = Arc::clone(&self.terminal);
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
@@ -1296,6 +1510,210 @@ fn paint_pane(
             log.caret = Some(cell_at);
         }
     }
+
+    // The ghost-text overlay (gpui-parity Task 1; the libcosmic
+    // widget's rule, same seat): the showing's visible string as dim
+    // glyphs starting one cell past the cursor — an overlay, never
+    // the grid and never the engine's own buffers, so selection,
+    // scrollback, and copy see nothing. The clip already guaranteed
+    // the fit, and an empty visible (below the three-column draw
+    // threshold) fills nothing while the showing still accepts.
+    // Scrolled back renders nothing (the offset gate).
+    let ghost_row = usize::try_from(cursor.line.0).unwrap_or(0) + display_offset;
+    if display_offset == 0
+        && let Some(visible) = terminal.suggestion().map(str::to_string)
+        && !visible.is_empty()
+    {
+        let tint = color_hsla(terminal.ghost_color());
+        let shaped = shape_overlay_line(&visible, &skin.font, tint, geometry.font_size, window);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "cell indices < 2^24, exact in f32"
+        )]
+        let origin = point(
+            bounds.origin.x + geometry.cell_width * (cursor.column.0 + 1) as f32,
+            bounds.origin.y + geometry.cell_height * ghost_row as f32,
+        );
+        let _ = shaped.paint(
+            origin,
+            geometry.cell_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let mut log = walk_log.lock().expect("walk log");
+        if log.ghost.as_deref() != Some(visible.as_str()) {
+            println!(
+                "dropterm-gpui: pane ghost now {:?} ({} cells past the caret)",
+                visible,
+                visible.chars().count()
+            );
+            log.ghost = Some(visible);
+        }
+    } else {
+        // The ghost's dismissal is evidence too — the dismissal rows
+        // (another keystroke, a resize, a focus loss) name it.
+        let mut log = walk_log.lock().expect("walk log");
+        if log.ghost.take().is_some() {
+            println!("dropterm-gpui: pane ghost cleared");
+        }
+    }
+
+    // The completion-menu overlay (gpui-parity Task 1; the libcosmic
+    // panel, same rules): a pure overlay anchored at the cursor's
+    // cell — dropping below it, flipping above at the floor, clamped
+    // into the view — carrying the visible window from the scroll
+    // offset, the selected row's highlight, and right-aligned
+    // descriptions in the ghost's own dim tint. The panel surface is
+    // the Kit's popover token (theme_gen keeps it on the scheme), an
+    // opaque elevated surface over the grid's window background.
+    // GPUI's scene interleaves quads and glyphs by paint order, so
+    // the panel quad and its rows issued after the grid float above
+    // it with no layering ceremony (the libcosmic build needed
+    // `with_layer` for the same effect — wgpu sorts by kind there).
+    if display_offset == 0 && terminal.menu_is_open() {
+        let all_rows = terminal.menu_rows();
+        let range = suggest::menu_visible_window(terminal.menu_scroll(), all_rows.len());
+        if !range.is_empty() {
+            let visible = &all_rows[range.clone()];
+            let selected = terminal.menu_selected();
+            let label_color = color_hsla(terminal.foreground_color());
+            let dim = color_hsla(terminal.ghost_color());
+            let mut shaped: Vec<(gpui::ShapedLine, Option<(gpui::ShapedLine, Pixels)>)> =
+                Vec::with_capacity(visible.len());
+            let mut rows_width = px(0.);
+            for row in visible {
+                let label = shape_overlay_line(
+                    &row.label,
+                    &skin.font,
+                    label_color,
+                    geometry.font_size,
+                    window,
+                );
+                let description = row.description.as_deref().map(|text| {
+                    shape_overlay_line(text, &skin.font, dim, geometry.font_size, window)
+                });
+                // The description right-aligns at the trailing pad
+                // with the ghost's own two-cell clip rhythm between.
+                let gap = geometry.cell_width * 2.;
+                let desc_width = description.as_ref().map_or(px(0.), |d| d.width);
+                rows_width = rows_width.max(label.width + gap + desc_width);
+                shaped.push((label, description.map(|d| (d, desc_width))));
+            }
+            let pad = px(4.);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "cell indices < 2^24, exact in f32"
+            )]
+            let anchor = point(
+                bounds.origin.x + geometry.cell_width * cursor.column.0 as f32,
+                bounds.origin.y + geometry.cell_height * ghost_row as f32,
+            );
+            let panel = suggest::menu_panel_bounds(
+                anchor,
+                geometry.cell_height,
+                visible.len(),
+                rows_width + pad * 2.,
+                bounds,
+            );
+            window.paint_quad(gpui::PaintQuad {
+                bounds: panel,
+                background: cx.theme().popover.into(),
+                border_color: cx.theme().border,
+                corner_radii: gpui::Corners::all(cx.theme().radius),
+                border_widths: gpui::Edges::all(px(1.)),
+                border_style: gpui::BorderStyle::Solid,
+            });
+            if range.contains(&selected) {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a visible-row index < the eight-row budget: exact in f32"
+                )]
+                let row = (selected - range.start) as f32;
+                window.paint_quad(fill(
+                    gpui::Bounds {
+                        origin: point(panel.origin.x, panel.origin.y + geometry.cell_height * row),
+                        size: gpui::size(panel.size.width, geometry.cell_height),
+                    },
+                    cx.theme().secondary_hover,
+                ));
+            }
+            for (index, (label, description)) in shaped.into_iter().enumerate() {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a visible-row index < the eight-row budget: exact in f32"
+                )]
+                let row = index as f32;
+                let origin = point(
+                    panel.origin.x + pad,
+                    panel.origin.y + geometry.cell_height * row,
+                );
+                let _ = label.paint(
+                    origin,
+                    geometry.cell_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                if let Some((description, width)) = description {
+                    let origin = point(panel.origin.x + panel.size.width - pad - width, origin.y);
+                    let _ = description.paint(
+                        origin,
+                        geometry.cell_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            let mut log = walk_log.lock().expect("walk log");
+            let shape = (all_rows.len(), selected);
+            if log.menu != Some(shape) {
+                println!(
+                    "dropterm-gpui: pane menu now {} rows (selected {}) — {:?}",
+                    all_rows.len(),
+                    selected,
+                    visible.iter().map(|r| r.label.clone()).collect::<Vec<_>>()
+                );
+                log.menu = Some(shape);
+            }
+        }
+    }
+}
+
+/// A cosmic-text color as GPUI color (the ghost tint and the menu's
+/// text seats — the engine hands scheme colors over in cosmic-text's
+/// shape).
+fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
+    gpui::rgb(u32::from(color.r()) << 16 | u32::from(color.g()) << 8 | u32::from(color.b())).into()
+}
+
+/// One overlay text line — the ghost's visible string or a menu row
+/// — shaped once in the pane's font at its color, natural width (no
+/// cell-grid forcing: the overlays are not the grid).
+fn shape_overlay_line(
+    text: &str,
+    font: &gpui::Font,
+    color: gpui::Hsla,
+    font_size: Pixels,
+    window: &mut gpui::Window,
+) -> gpui::ShapedLine {
+    window.text_system().shape_line(
+        text.into(),
+        font_size,
+        &[gpui::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    )
 }
 
 /// The scheme's foreground as GPUI color (the selection overlay's
@@ -1449,41 +1867,71 @@ pub(crate) fn pane_with_pump(
     })
 }
 
+/// The pane's spawn: the program word beside the PTY shape —
+/// `tty::Shell` keeps its fields private, and the program is spawn
+/// truth the suggest gate reads, so it stays readable where the
+/// `Shell` is constructed (the walk's seeding line, the shell's
+/// tab spawn).
+#[derive(Clone)]
+pub(crate) struct PaneSpawn {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
 /// The one construction path for a pane and its engine terminal —
 /// the walk harness and the app shell share it (gpui-terminal Task
 /// 4's integration): config → host → PTY → engine → the pane entity
-/// with its pump and the config's keybind overlay. `shell` overrides
-/// the PTY's program (the walk's seeding affordance); `None` is the
-/// tty default. The optional channel carries the pane's handed-up
+/// with its pump and the config's keybind overlay. `spawn` overrides
+/// the PTY's program (the walk's seeding affordance); `None` spawns
+/// the config's resolved shell (the libcosmic default's own
+/// resolution — `config.shell` honored, `$SHELL` then `/bin/sh`
+/// beneath it). The completions table is the app's shared load
+/// (async-completions): `None` means the background load has not
+/// landed yet, and the pane carries the empty placeholder plus the
+/// loading flag until the load's `set_config` pass swaps the real
+/// table in. The optional channel carries the pane's handed-up
 /// signals (its Hide action, its terminal's exit request) to a shell
 /// that owns the tab fleet (the walk's standalone pane passes `None`
 /// and only logs).
 pub(crate) fn boot_pane(
     cx: &mut App,
     config: &dropterm_core::config::DropTermConfig,
-    shell: Option<alacritty_terminal::tty::Shell>,
+    spawn: Option<PaneSpawn>,
+    specs_table: Option<&Arc<[dropterm_core::terminal::suggest::SpecCommand]>>,
     id: TabId,
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
     let colors = boot_colors(config);
     let host = crate::terminal::host::GpuiHost::new(cx);
     let font = host.font();
+    let spawned_program = suggest::spawned_as_program(
+        spawn
+            .as_ref()
+            .map(|PaneSpawn { program, .. }| program.as_str()),
+        config,
+    );
+    let pty_shell =
+        spawn.map(|PaneSpawn { program, args }| alacritty_terminal::tty::Shell::new(program, args));
     println!(
         "dropterm-gpui: pane pty spawning {}",
-        shell.as_ref().map_or_else(
-            || "the tty default shell".to_string(),
+        pty_shell.as_ref().map_or_else(
+            || "the config's resolved shell".to_string(),
             |sh| format!("{sh:?}")
         )
     );
     let pty_options = alacritty_terminal::tty::Options {
-        shell,
+        shell: pty_shell.or_else(|| {
+            // The plain spawn rides the configured default — the
+            // libcosmic default's own resolution, so `config.shell`
+            // owns the GPUI pty exactly as it owns the libcosmic one.
+            let resolved = config.resolved_shell();
+            Some(alacritty_terminal::tty::Shell::new(resolved, Vec::new()))
+        }),
         drain_on_exit: true,
         ..alacritty_terminal::tty::Options::default()
     };
-    let options = TerminalOptions {
-        font_size: config.font_size,
-        ..TerminalOptions::default()
-    };
+    let mut options = suggest::pane_options(config, specs_table);
+    options.spawned_program = spawned_program;
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
         Box::new(host),

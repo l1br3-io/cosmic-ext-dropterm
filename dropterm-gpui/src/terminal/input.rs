@@ -32,6 +32,13 @@ pub(crate) enum TermAction {
     ZoomOut,
     ZoomReset,
     Hide,
+    /// Open (or close) the completion menu at the prompt
+    /// (`Ctrl+Space`, suggest-menu spec — the libcosmic
+    /// `ShowCompletions`): a soft trigger owned by the pane's key
+    /// routing, where a declined chord's shell bytes live; the
+    /// action arm itself is a documented no-op (the engine's menu
+    /// state is the action).
+    ShowCompletions,
 }
 
 /// The stable string id of an action — the `custom_key_binds` key,
@@ -53,6 +60,7 @@ pub(crate) fn action_id(action: TermAction) -> &'static str {
         TermAction::ZoomOut => "zoom_out",
         TermAction::ZoomReset => "zoom_reset",
         TermAction::Hide => "hide",
+        TermAction::ShowCompletions => "show_completions",
     }
 }
 
@@ -71,6 +79,7 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "zoom_out" => Some(TermAction::ZoomOut),
         "zoom_reset" => Some(TermAction::ZoomReset),
         "hide" => Some(TermAction::Hide),
+        "show_completions" => Some(TermAction::ShowCompletions),
         _ => None,
     }
 }
@@ -127,6 +136,14 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     map.insert(chord(cs, "-"), TermAction::ZoomOut);
     map.insert(chord(&[ModifierName::Ctrl], "0"), TermAction::ZoomReset);
     map.insert(chord(cs, "q"), TermAction::Hide);
+    // The completion menu's soft trigger (suggest-menu spec): the
+    // pane's key routing owns the open/toggle before this map's
+    // swallow sees the chord; the map entry carries a custom
+    // `show_completions` binding into the same routing.
+    map.insert(
+        chord(&[ModifierName::Ctrl], "space"),
+        TermAction::ShowCompletions,
+    );
     map
 }
 
@@ -570,6 +587,7 @@ mod tests {
             TermAction::ZoomOut,
             TermAction::ZoomReset,
             TermAction::Hide,
+            TermAction::ShowCompletions,
         ] {
             assert_eq!(action_from_id(action_id(action)), Some(action));
         }
@@ -590,8 +608,8 @@ mod tests {
         }
         // And the counts stay honest: the clipboard pair, the
         // primary paste, select-all, clear-scrollback, the zoom
-        // cluster's six, and the hide.
-        assert_eq!(default_key_binds().len(), 13);
+        // cluster's six, the hide, and the completion trigger.
+        assert_eq!(default_key_binds().len(), 14);
     }
 
     #[test]

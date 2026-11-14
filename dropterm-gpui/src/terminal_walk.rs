@@ -53,7 +53,6 @@
 
 use std::time::Duration;
 
-use alacritty_terminal::tty;
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{App, Bounds, Size, WindowBackgroundAppearance, WindowBounds, WindowKind, point, px};
 
@@ -114,6 +113,12 @@ fn pane_window_options(width: u32, height: u32) -> gpui::WindowOptions {
 pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
 
+    // The Kit's theme global (gpui-parity Task 1): the completion
+    // menu's panel reads the popover tokens, so the harness
+    // initializes the same global the app shell does (the pickers'
+    // test pattern) — the menu paints identically here.
+    gpui_component::init(cx);
+
     // The shared construction path (the shell wiring's own, Task 4):
     // one boot_pane for the harness and the drawer alike. The walk
     // seeds its PTY through `DROPTERM_TERM_CMD`'s shell line.
@@ -121,7 +126,11 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     let Some((terminal, pane)) = view::boot_pane(
         cx,
         &config,
-        Some(tty::Shell::new(shell, args)),
+        Some(view::PaneSpawn {
+            program: shell,
+            args,
+        }),
+        None,
         dropterm_core::tabs::TabId(0),
         None,
     ) else {
