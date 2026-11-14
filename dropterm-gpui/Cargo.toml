@@ -111,3 +111,10 @@ serde_json = "1"
 # feature only forwards to it. Never default: release artifacts carry
 # the plain identity.
 dev-identity = ["dropterm-core/dev-identity"]
+
+[dev-dependencies]
+# The pickers' component tests (gpui-chrome Task 1): the Kit's own
+# test harness — TestAppContext/add_empty_window for headless picker
+# state, seeding, and confirm wiring. The same exact pin as the Kit's
+# own select tests ride; test builds only, never the shipped binary.
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
