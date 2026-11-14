@@ -36,6 +36,7 @@ use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::menu::ContextMenuExt as _;
 use notify::Watcher as _;
 
 use crate::dbus::Verb;
@@ -1120,6 +1121,46 @@ impl Shell {
         }
     }
 
+    /// One terminal context-menu pick (gpui-chrome) — every row's
+    /// verb routed to the path its keybind uses: the clipboard and
+    /// scrollback cluster through the active pane's own action
+    /// funnel, the tab and settings verbs through the shell calls
+    /// the tab menu's rows already use (the click away from an open
+    /// rename commits first, exactly like a tab-menu pick).
+    fn context_menu_pick(
+        &mut self,
+        item: crate::context_menu::Item,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::context_menu::{PickRoute, ShellPick};
+        println!(
+            "dropterm-gpui: context menu pick {item:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.commit_open_rename(cx);
+        match crate::context_menu::route(item) {
+            PickRoute::Pane(action) => {
+                let Some(pane) = self.active_pane() else {
+                    return;
+                };
+                pane.update(cx, |pane, cx| pane.perform_term_action(action, cx));
+            }
+            PickRoute::Shell(ShellPick::NewTab) => self.new_tab(cx),
+            PickRoute::Shell(ShellPick::RenameTab) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.start_rename(id, window, cx);
+                }
+            }
+            PickRoute::Shell(ShellPick::DuplicateTab) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.duplicate_tab(id, cx);
+                }
+            }
+            PickRoute::Shell(ShellPick::Settings) => self.settings_requested(cx),
+        }
+    }
+
     /// Duplicates the tab with `source` (the menu's row): a fresh
     /// pane in its cwd carrying its rename pin, landing after the
     /// active tab and activated (the record through core; the pane
@@ -1655,12 +1696,29 @@ impl Shell {
         let Some(pane) = self.active_pane() else {
             return div().size_full();
         };
-        let pane_area = div()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .child(pane)
-            .into_any_element();
+        let pane_area = {
+            // The terminal context menu (gpui-chrome): the pane's
+            // default-mode right press bubbles to this wrap and opens
+            // core's rows through the Kit's popover path — the same
+            // route the per-tab menu rides. The profile folders stay
+            // honestly absent (the module's scope note): the empty
+            // list is the front's truth until a profile spawn path
+            // exists.
+            let shell = cx.entity();
+            let pick: crate::context_menu::PickFn =
+                std::rc::Rc::new(move |item, window: &mut Window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.context_menu_pick(item, window, cx));
+                });
+            div()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(pane)
+                .context_menu(move |menu, _window, _cx| {
+                    crate::context_menu::build_menu(menu, &[], &pick)
+                })
+                .into_any_element()
+        };
         let bar = bar.into_any_element();
 
         // The column through core's own stacking rule (gpui-status

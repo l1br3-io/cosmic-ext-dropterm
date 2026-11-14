@@ -463,6 +463,15 @@ impl TerminalPane {
         cx.notify();
     }
 
+    /// The menu's entry into the pane's action funnel: the same
+    /// [`perform_action`] a matched chord drives, exposed for the
+    /// context menu's pane-routed picks (gpui-chrome) — the menu
+    /// lands its clipboard/scrollback rows in the keybind's own
+    /// path, never a parallel one.
+    pub(crate) fn perform_term_action(&mut self, action: TermAction, cx: &mut Context<Self>) {
+        self.perform_action(action, cx);
+    }
+
     /// One matched action through the pane — the terminal-view
     /// slice's execution (the libcosmic `perform_action` pared to
     /// the pane's own surface; clipboard lands with its task, the
@@ -734,6 +743,13 @@ impl TerminalPane {
         if self.pointer_child_owns(modifiers.shift) {
             self.reporting_gesture = true;
             self.report_pointer(PointerEvent::Pressed(neutral), position, modifiers);
+            // The child process owns a right press while reporting is
+            // active — the menu's default-mode rule read from the
+            // child's side: stop the press here so the pane-hosting
+            // context-menu wrap never opens over the child's bytes.
+            if neutral == PointerButton::Right {
+                cx.stop_propagation();
+            }
             return;
         }
         if neutral != PointerButton::Left {
