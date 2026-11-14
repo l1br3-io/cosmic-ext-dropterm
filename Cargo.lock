@@ -2086,6 +2086,7 @@ dependencies = [
  "cosmic-text",
  "dirs 6.0.0",
  "flate2",
+ "fontdb",
  "futures",
  "image",
  "indexmap",

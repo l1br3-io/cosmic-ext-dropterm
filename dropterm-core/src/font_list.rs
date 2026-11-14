@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The font picker's enumeration seam (font-picker spec): the pure
-//! collector over `(family, monospaced)` face pairs — filter, dedupe,
-//! case-insensitive sort — and the one fontdb scan that feeds it. All
-//! fontdb knowledge lives here; the settings drawer consumes only the
-//! resulting family list.
+//! The font picker's enumeration seam (font-picker spec, moved here
+//! by the gpui-chrome spec): the pure collector over `(family,
+//! monospaced)` face pairs — filter, dedupe, case-insensitive sort —
+//! and the one fontdb scan that feeds it. All fontdb knowledge lives
+//! here; the settings drawer consumes only the resulting family list.
 
 /// Collect the distinct monospace family names from a font
 /// database's `(family, monospaced)` face pairs: proportional faces
