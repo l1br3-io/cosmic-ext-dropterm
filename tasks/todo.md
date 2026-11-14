@@ -550,7 +550,12 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       every OSC seat walked on both compositors: the report winning
       the path, the red ✗ verdict, progress, the tinted disc; the
       gated gathering + the copy/jump verbs landed with two more
-      pins)* · gn-3 rows + merge
+      pins)* · gn-3 rows + merge *(rows walked 2026-11-14 — the copy
+      verb end-to-end with an external wl-paste serving the payload,
+      the ✓ flash and its return, the duration's live/frozen chain
+      proven after the walk's structural find: the pane's starved
+      engine-flag fix, its own commit; the scrolled rows ride the
+      wheel class; merged below)
 - [ ] gc-1 Context menu + pickers on the Kit popover path
 - [ ] gc-2 Settings drawer (write contract unchanged; control map
       ported; config↔docs pin green)
