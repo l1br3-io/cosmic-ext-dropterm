@@ -567,8 +567,16 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       reporting gate decoded from the child's X10 bytes; rig n-a, the
       pointer class); profile folders deferred to a spawn path,
       pickers' runtime rows ride gc-2/gc-3)
-- [ ] gc-2 Settings drawer (write contract unchanged; control map
-      ported; config↔docs pin green)
+- [x] gc-2 Settings drawer (write contract unchanged; control map
+      ported; config↔docs pin green) (done 2026-11-14: the drawer's
+      framework-free half in core with its 162 tests, the five pages
+      write-through over it — Profiles' transactional form, the keybind
+      editor over a core registry pinned chord-for-chord — and the
+      drawer on a shell-rendered overlay with the resize handle; the
+      walk's reentrancy find fixed in its own commit and re-walked
+      green (vm-evidence-gc2b; owner-ruled standing 2026-11-15); `just
+      check` green on the result 2026-11-15; the scheme picker's and
+      cadence rows ride gc-3)
 - [ ] gc-3 Cadence row + chrome rows + merge
 
 **Checkpoint — full UI parity feature set.**

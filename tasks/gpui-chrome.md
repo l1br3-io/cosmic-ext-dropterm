@@ -74,7 +74,7 @@ holding as for the tab menu — is recorded, not fixed here.
 **Dependencies:** `gpui-tabs`/`gpui-status`/`gpui-theme` merged ·
 **Files:** the chrome modules · **Scope:** M
 
-## Task 2: The settings drawer
+## Task 2: The settings drawer — done 2026-11-14
 
 **Description:** The five pages, profile manager form, keybind editor
 with capture, and the drawer handle's resize — write-through per commit
@@ -83,14 +83,54 @@ point, mapped to config keys exactly as the libcosmic drawer
 port).
 
 **Acceptance criteria:**
-- [ ] Every drawer control writes its key per the write contract; no
+- [x] Every drawer control writes its key per the write contract; no
       Apply button exists
-- [ ] The config↔docs pin test green
+- [x] The config↔docs pin test green
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: settings rows on rig + VM (drawer edit ↔ hand edit = one
+- [x] Tests pass: `just check`
+- [x] Manual: settings rows on rig + VM (drawer edit ↔ hand edit = one
       stream)
+
+**Done record:** landed as five increments over the moved model — the
+whole framework-free half of the libcosmic drawer re-homed to
+dropterm-core with its 162 tests (the write contract, `ConfigKey` and
+the section→key map, `PlannedWrite`'s clamped/persist, the option
+tables and shell enumeration, the profile manager's pure half, the
+keybinds write, the picker planners; the libcosmic crate a re-export
+front, its own halves the view builders and the draft-lock gate;
+56f4ca7); the drawer itself over the live terminal with one
+`SettingsState` and the one write path every commit rides — clamp,
+persist through `PlannedWrite`, the watcher's echo driving every apply
+so drawer writes and hand edits stay one event stream, an echo-refresh
+pass re-seeding un-drafted controls after every reload (01eaf6e); the
+Profiles page (the transactional form through `plan_profile_save`, the
+delete/reorder clusters, the default cascade; 40879dc); the Keybindings
+page over a registry that became core's, pinned chord-for-chord against
+the libcosmic firing tables, the capture gate's verdicts committing one
+whole-map write (acc9dd1); and the drawer's own hosting — off the Kit's
+fixed-width Sheet onto a shell-rendered overlay holding every pointer
+event over the live band (the libcosmic context_drawer capture rule)
+with the resize handle writing `SettingsDrawerWidth` once per release
+and a double-click resetting it (bfaea85). Walked on the VM 2026-11-14
+(`vm-evidence-gc2/` then `vm-evidence-gc2b/` after the fix): the first
+walk caught the drawer's constructor reading the shell inside its own
+update — the panic verbatim three times from both settings entry
+points — fixed in its own commit (the build a pure read pass outside
+any update, the menu's Settings pick routed before the update begins;
+20631e7); the re-walk green across drawer open/close by the gear, the
+menu's Settings row, and repeat-press, the Behavior and Advanced pages,
+the wheel rows (pane, drawer page, picker popover, over the live band),
+the font picker through its popover, the keybind capture, and the
+slider's buffered release, with the seeded panes' rows holding under
+the open drawer (the surface stays live beneath) and the watcher armed
+on the walk's own config dir (the one-stream rule's witness). Owner
+ruling 2026-11-15: this walk stands as the task's manual verification
+(it ran minutes before the walks-go-manual ruling landed); no separate
+rig walk ran — the remaining chrome verification rides gc-3's
+both-compositor rows. `just check` green on the result (2026-11-15),
+the config↔docs pin among it. Scope carried to gc-3: the scheme
+picker's runtime row and the popover-through-cadence row.
 
 **Dependencies:** Task 1 · **Files:** the drawer modules · **Scope:** L
 
