@@ -559,73 +559,96 @@ uninstall:
 # full recipe lives at docs/development.md#the-cosmic-validation-vm).
 # Delegates to scripts/vm.sh — ported from cosmic-ext-airlock's CP4
 # harness — which drives the guest through the QEMU guest agent (no
-# SSH): `just vm-status` is the preflight doctor, `just vm-help` the
-# command reference. The VM itself is the sibling repo's existing
-# PopOs24.04 domain on this host; every variable (VM_NAME, VM_USER,
-# BRIDGE_IP, PORT) overrides per run.
+# SSH): `just vm-status` is the preflight doctor, `just vm-list` names
+# the domains and their guest users, `just vm-help` the command
+# reference. The default target is the sibling repo's existing
+# PopOs24.04 domain on this host, but every recipe that acts on a VM
+# takes the libvirt domain as an optional argument — `just vm-push
+# OtherVm`, `just vm-exec 'pgrep -a cosmic-comp' OtherVm` — and the
+# recipes that use the guest user take it right after the domain:
+# `just vm-status OtherVm alice`. The variable forms still override
+# per run: `VM_NAME=OtherVm VM_USER=alice just vm-push`, or `just
+# vm-name=OtherVm vm-user=alice vm-push` (assignment before the
+# recipe). BRIDGE_IP and PORT stay variables.
 vm-name := env_var_or_default("VM_NAME", "PopOs24.04")
 vm-user := env_var_or_default("VM_USER", "jpt-virt")
-# vm-push's tarball, under the ignored target/ so neither it nor its
-# staging tree (target/vm-stage) ever shows up as untracked files.
+# vm-push's tarball (vm-install's guest-side source, staged under the
+# ignored target/), so neither the tarball nor the staging tree
+# (target/vm-stage) ever shows up as untracked files.
 vm-tarball := cargo-target-dir / 'dropterm-vm.tar.gz'
 
 vm-help:
     scripts/vm.sh help
 
-vm-status:
-    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh status
+# The libvirt domains on this host — the targets the vm-* recipes
+# accept (`just vm-push <domain>`) — with each domain's state and
+# guest users (the candidates for VM_USER).
+vm-list:
+    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh list
+
+vm-status vm=vm-name user=vm-user:
+    VM_NAME={{vm}} VM_USER={{user}} scripts/vm.sh status
 
 # Run a shell command in the guest as root, positionally (just's
 # `cmd=value` form leaks the `cmd=` prefix into the value for
-# space-carrying arguments): just vm-exec 'pgrep -a cosmic-comp'
-vm-exec cmd:
-    VM_NAME={{vm-name}} scripts/vm.sh exec "{{cmd}}"
+# space-carrying arguments), optionally naming the target domain:
+# just vm-exec 'pgrep -a cosmic-comp' [domain]
+vm-exec cmd vm=vm-name:
+    VM_NAME={{vm}} scripts/vm.sh exec "{{cmd}}"
 
 # Run it as the desktop user inside the session env (runtime dir, session
-# bus, Wayland socket): just vm-exec-user 'dropterm toggle'
-vm-exec-user cmd:
-    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh exec-user "{{cmd}}"
+# bus, Wayland socket): just vm-exec-user 'dropterm toggle' [domain] [user]
+vm-exec-user cmd vm=vm-name user=vm-user:
+    VM_NAME={{vm}} VM_USER={{user}} scripts/vm.sh exec-user "{{cmd}}"
 
 # Transfer a file into the guest (sha256 verified both sides)
-vm-put file dest:
-    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh put "{{file}}" "{{dest}}"
+vm-put file dest vm=vm-name user=vm-user:
+    VM_NAME={{vm}} VM_USER={{user}} scripts/vm.sh put "{{file}}" "{{dest}}"
 
-# The one-command install/update: builds both artifacts, stages the
+# Build both artifacts and ship the install payload: builds, stages the
 # usr/ tree exactly as release CI does (release.yml runs
-# `just rootdir=stage install` before tarring), ships the tarball into
-# the guest (sha256 verified both sides by vm.sh put), unpacks it over
-# / (--no-same-owner: the tarball records the host uid, and a root-side
-# extract would chown /usr files to it), refreshes the desktop
-# database, and stops anything still running a replaced binary — the
-# guest-side half of stop-stale-release, since a warm process keeps
-# its old inode and the applet waits for its panel supervisor to
-# respawn it. The stops match an anchored full-command pattern: the
-# `(^|/)…([ ]|$)` anchors keep the exec wrapper shells (name
-# mid-command-line) and the pattern's own text out of the match, and
-# stop the terminal's pattern short of the applet, whose name extends
-# it. The next summon (keybind, panel, CLI) runs this build;
-# no relogin. Install and update are the same command: the tarball
-# always overwrites the nine files `install` stages.
-vm-push:
+# `just rootdir=stage install` before tarring), tars it, and transfers
+# the tarball into the guest (sha256 verified both sides by vm.sh put),
+# leaving it at /root/dropterm-vm.tar.gz. Nothing the guest runs changes
+# until `just vm-install`, which can then re-run the install half
+# without rebuilding. Install and update are the same install: the
+# tarball always overwrites the nine files `install` stages.
+vm-push vm=vm-name user=vm-user:
     #!/usr/bin/env sh
     set -eu
     {{just_executable()}} build-all
     rm -rf {{cargo-target-dir / 'vm-stage'}} {{vm-tarball}}
     {{just_executable()}} rootdir='{{cargo-target-dir / 'vm-stage'}}' install
     tar -C {{cargo-target-dir / 'vm-stage'}} -czf {{vm-tarball}} usr
-    VM_NAME={{vm-name}} VM_USER={{vm-user}} scripts/vm.sh put {{vm-tarball}} /root/dropterm-vm.tar.gz
-    VM_NAME={{vm-name}} scripts/vm.sh exec 'tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && { update-desktop-database /usr/share/applications 2>/dev/null || true; }'
-    VM_NAME={{vm-name}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"; pkill -f "(^|/){{applet}}([ ]|$)" && echo "vm: stopped the panel applet; cosmic-panel respawns it on this build" || echo "vm: no applet was running"'
+    VM_NAME={{vm}} VM_USER={{user}} scripts/vm.sh put {{vm-tarball}} /root/dropterm-vm.tar.gz
+    echo "vm: pushed to {{vm}}; run: just vm-install {{vm}}"
+
+# The guest-side half: unpacks the pushed tarball over / (--no-same-owner:
+# the tarball records the host uid, and a root-side extract would chown
+# /usr files to it), refreshes the desktop database, and stops anything
+# still running a replaced binary — the guest-side half of
+# stop-stale-release, since a warm process keeps its old inode and the
+# applet waits for its panel supervisor to respawn it. Installs whatever
+# the last push to that domain left at /root. The stops match an anchored
+# full-command pattern: the `(^|/)…([ ]|$)` anchors keep the exec wrapper
+# shells (name mid-command-line) and the pattern's own text out of the
+# match, and stop the terminal's pattern short of the applet, whose name
+# extends it. The next summon (keybind, panel, CLI) runs this build;
+# no relogin.
+vm-install vm=vm-name:
+    VM_NAME={{vm}} scripts/vm.sh exec 'test -f /root/dropterm-vm.tar.gz || { echo "vm: no pushed tarball in the guest — run: just vm-push {{vm}}" >&2; exit 1; }; tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && { update-desktop-database /usr/share/applications 2>/dev/null || true; }'
+    VM_NAME={{vm}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"; pkill -f "(^|/){{applet}}([ ]|$)" && echo "vm: stopped the panel applet; cosmic-panel respawns it on this build" || echo "vm: no applet was running"'
+    echo "vm: installed into {{vm}}; the next summon runs this build"
 
 # Capture the VM's display (evidence screenshots)
-vm-screenshot file:
-    VM_NAME={{vm-name}} scripts/vm.sh screenshot "{{file}}"
+vm-screenshot file vm=vm-name:
+    VM_NAME={{vm}} scripts/vm.sh screenshot "{{file}}"
 
-vm-snapshot name="checkpoint":
-    VM_NAME={{vm-name}} scripts/vm.sh snapshot "{{name}}"
+vm-snapshot name="checkpoint" vm=vm-name:
+    VM_NAME={{vm}} scripts/vm.sh snapshot "{{name}}"
 
-vm-restore name:
-    VM_NAME={{vm-name}} scripts/vm.sh restore "{{name}}"
+vm-restore name vm=vm-name:
+    VM_NAME={{vm}} scripts/vm.sh restore "{{name}}"
 
 # ── Release ──
 #

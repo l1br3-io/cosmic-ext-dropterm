@@ -34,14 +34,18 @@ require() {  # require <command> <install hint>
     command -v "$1" >/dev/null 2>&1 || die "'$1' not found on this host — $2"
 }
 
-check_host() {
+check_libvirt() {
     require virsh "sudo apt install libvirt-clients (or the full virt-manager stack)"
+    virsh -c qemu:///system version >/dev/null 2>&1 ||
+        die $'cannot reach qemu:///system\n  → permission denied usually means: sudo usermod -aG libvirt "$USER", then log out and back in'
+}
+
+check_host() {
+    check_libvirt
     require python3 "sudo apt install python3"
     require curl "sudo apt install curl"
     require ip "sudo apt install iproute2"
     require ss "sudo apt install iproute2"
-    virsh -c qemu:///system version >/dev/null 2>&1 ||
-        die $'cannot reach qemu:///system\n  → permission denied usually means: sudo usermod -aG libvirt "$USER", then log out and back in'
 }
 
 domain_state() { virsh -q domstate "$VM_NAME" 2>/dev/null; }
@@ -254,6 +258,49 @@ cmd_snapshots() {
     virsh snapshot-list "$VM_NAME" --name 2>/dev/null | sed '/^$/d'
 }
 
+# Human accounts in a running guest, comma-joined — the candidates for
+# VM_USER. UID 1000..65533 excludes root and nobody; a shut-off VM or
+# a silent agent says so instead of inventing a list.
+guest_users() {  # guest_users <domain>
+    local name="$1" state users
+    state="$(virsh -q domstate "$name" 2>/dev/null || true)"
+    if [[ "$state" != "running" ]]; then
+        echo "(not running)"
+        return 0
+    fi
+    if ! ( VM_NAME="$name"; agent_alive ); then
+        echo "(guest agent unavailable)"
+        return 0
+    fi
+    users="$( ( VM_NAME="$name"; guest_exec "awk -F: '\$3 >= 1000 && \$3 < 65534 {print \$1}' /etc/passwd" ) 2>/dev/null || true)"
+    users="$(printf '%s\n' "$users" | sed '/^$/d' | paste -sd',' - | sed 's/,/, /g')"
+    echo "${users:-(none found)}"
+}
+
+# The domains this host offers as targets, on the same connection the
+# other commands use, with their state and guest users: the answer to
+# "what can I pass to vm-push / vm-exec", and what to use as VM_USER.
+cmd_list() {
+    check_libvirt
+    require python3 "sudo apt install python3"
+    local list
+    list="$(virsh -q list --all)" ||
+        die "could not list libvirt domains — run 'virsh list --all' to see why"
+    if [[ -z "$list" ]]; then
+        echo "vm: no libvirt domains defined — create one in virt-manager"
+        return 0
+    fi
+    echo "vm: libvirt domains (targets for the vm-* recipes):"
+    printf '  %-28s %-13s %s\n' name state users
+    local id name rest users
+    while read -r id name rest; do
+        [[ -n "$name" ]] || continue
+        users="$(guest_users "$name")"
+        printf '  %-28s %-13s %s\n' "$name" "$rest" "$users"
+    done <<<"$list"
+    echo "vm: defaults: VM_NAME=$VM_NAME · VM_USER=$VM_USER"
+}
+
 # Doctor: runs every precondition and reports ok/missing instead of failing.
 # Beyond airlock's host checks this also probes the walk's own guest
 # preconditions (session, disk headroom).
@@ -347,8 +394,16 @@ Override forms (VM_USER shown; same for every variable):
   just vm-user=alice vm-status               assignment, before the recipe
   just --set vm-user alice vm-status         same, long form
 
+The just recipes also take the domain as an optional argument —
+`just vm-push PopOs25.04`, `just vm-exec 'pgrep -a cosmic-comp'
+PopOs25.04` — defaulting to VM_NAME, and the recipes that use the
+guest user take it next (`just vm-status PopOs25.04 alice`),
+defaulting to VM_USER; scripts/vm.sh itself reads only the
+environment.
+
 Commands:
   status                          preflight doctor — run this first
+  list                            libvirt domains, state, and guest users
   ip                              the guest's current NAT IP
   exec '<cmd>'                    run a shell command in the guest (root)
   exec-user '<cmd>'               run it as VM_USER inside the session env
@@ -372,6 +427,7 @@ cmd="${1:-help}"
 shift || true
 case "$cmd" in
     ip)          cmd_ip ;;
+    list)        cmd_list ;;
     exec)        [[ -n "${1:-}" ]] || die "usage: vm.sh exec '<cmd>'"; check_host; domain_must_run; guest_exec "$1" ;;
     exec-user)   [[ -n "${1:-}" ]] || die "usage: vm.sh exec-user '<cmd>'"; check_host; guest_exec_as_user "$1" ;;
     put)         cmd_put "$@" ;;
