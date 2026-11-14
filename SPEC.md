@@ -145,6 +145,17 @@ stands whenever it is cut (plan record, Release boundaries).
   first. Contributor diagrams (connection
   graph, adapter surfaces, class diagram) live in
   [docs/architecture.md](docs/architecture.md).
+- Owner ruling (2026-11-14): every VM walk and hardware test is manual — the
+  owner runs them. The agent never runs `just vm-*` or a platform session and
+  never dispatches a runner (the `dropterm-hw-gate` apparatus was retired the
+  same day, before it ever landed); at each walk or check its whole
+  deliverable is one concise instruction — the rows to walk, the build to
+  install, the harness and snapshot, the evidence each clause needs — and
+  only the owner's reported result is recorded, in the row's own voice with
+  the date and "owner-run". Earlier "agent-run" evidence in this set
+  predates the ruling and stands as recorded. The ruling covers every
+  module's walks, `gpui-parity`'s full-checklist walk, and the release walk
+  gate.
 - Never implement a module whose spec is not approved or whose chunk is not
   written. Chunks are `/build`'s only source of tasks.
 - `tasks/gpui-portability-verification.md` is the research-phase

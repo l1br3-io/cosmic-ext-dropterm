@@ -31,6 +31,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - Security-sensitive input, auth, secrets, dependencies → `security-and-hardening`
 - Performance requirements or suspected regressions → `performance-optimization`
 - Cutting a release / publishing a version → `dropterm-release` (or `/release`) — the project's release ritual, adapted from cosmic-ext-airlock's `airlock-release`; it supersedes the pack's generic `release-orchestration` here
+- Runtime verification on a live session (any platform) — `docs/testing.md` rows, `just vm-*` validation-VM walks, portability sessions — → manual, owner-run (owner ruling, 2026-11-14): the agent never runs or dispatches these; at each walk/check it hands the owner one concise instruction — the rows to walk, the build to install, the harness and snapshot, the evidence each clause needs — and records only the owner's reported result
 - Making a change (always) → `git-workflow-and-versioning`
 
 ## Slash commands
@@ -50,9 +51,9 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 
 ## Rust project notes
 
-- Run `cargo clippy` and `cargo fmt --check` before a change counts as done; `cargo test` is the verification gate.
+- Run every gate through the just recipes, never raw cargo: `just check` (fmt-check, clippy, test, docs-check) before a change counts as done; `just test` / `just clippy` / `just fmt` for a single gate. The recipes run cargo under the justfile's `quietly` wrapper — output is captured and printed only on failure — so a green run is silent. Raw `cargo test` / `cargo clippy` prints on success and is never invoked directly.
 - Unit tests live inline in `#[cfg(test)] mod tests`. When a test module outgrows ~500 lines, move it to a sibling `tests.rs` (e.g. `src/app/tests.rs`) declared as `#[cfg(test)] mod tests;` — it stays a child module, keeping private access and cfg gating while keeping whole-file reads cheap for agents. Never move unit tests to a top-level `tests/` dir; that is integration-test territory and loses private access.
-- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/testing.md`); unit tests cover what can be tested headless.
+- This is a COSMIC Wayland app: runtime behavior is only testable on real COSMIC hardware (see the manual test checklist in `docs/testing.md`); unit tests cover what can be tested headless. Runtime rows are walked manually by the owner (validation VM or platform sessions per `docs/research/portability-plan.md`; owner ruling, 2026-11-14): the agent's whole part is one concise instruction per walk — rows to walk, build to install, harness and snapshot, evidence to capture — and recording the owner's reported result; it never runs `just vm-*` or a platform walk itself and never marks a runtime row green.
 
 ## Spec & task artifacts (committed on main)
 
