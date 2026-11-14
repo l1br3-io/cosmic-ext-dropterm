@@ -459,13 +459,6 @@ impl TabList {
     /// through core's transitions — but only while the tab is
     /// inactive: the active tab is the one the user is already
     /// looking at and never accrues a marker.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn note_attention(&mut self, id: TabId, bell: bool, output: bool) {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return;
@@ -620,13 +613,6 @@ pub(crate) fn tab_menu_rows(tab_count: usize, tab_index: usize, pinned: bool) ->
 /// foreground child is running — either input false closes
 /// immediately, today's behavior. Pure so the truth table stays
 /// headless-testable.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned by its test; the interaction wiring slice consumes it"
-    )
-)]
 pub(crate) fn confirm_needed(enabled: bool, foreground_running: bool) -> bool {
     enabled && foreground_running
 }
@@ -655,10 +641,13 @@ const MAX_BUTTON_WIDTH: f32 = 200.0;
 /// The border hairline's alpha — the strip foreground at low
 /// strength, hierarchy by alpha, never a new hue (the reference bar's
 /// `BORDER_ALPHA`).
-const BORDER_ALPHA: f32 = 0.3;
+pub(crate) const BORDER_ALPHA: f32 = 0.3;
 
 /// The strip's select callback: one tab id into the shell.
 type SelectFn = std::rc::Rc<dyn Fn(TabId, &mut gpui::Window, &mut gpui::App)>;
+/// The strip's close callback: one tab id into the shell's gated
+/// front door (the `×` glyph's press and the row's middle-click).
+type CloseFn = std::rc::Rc<dyn Fn(TabId, &mut gpui::Window, &mut gpui::App)>;
 /// The strip's corner-affordance callbacks (`+`, gear).
 type CornerFn = std::rc::Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
 
@@ -675,6 +664,7 @@ pub(crate) struct TabBarView {
     show_border: bool,
     at_bottom: bool,
     on_select: SelectFn,
+    on_close: CloseFn,
     on_new_tab: CornerFn,
     on_settings: CornerFn,
 }
@@ -688,6 +678,7 @@ impl TabBarView {
             show_border: true,
             at_bottom: false,
             on_select: std::rc::Rc::new(|_, _, _| {}),
+            on_close: std::rc::Rc::new(|_, _, _| {}),
             on_new_tab: std::rc::Rc::new(|_, _| {}),
             on_settings: std::rc::Rc::new(|_, _| {}),
         }
@@ -715,6 +706,16 @@ impl TabBarView {
         self
     }
 
+    /// The strip's close callback — the gated front door's address
+    /// (the `×` glyph and the row's middle-click ride it).
+    pub(crate) fn on_close(
+        mut self,
+        on_close: impl Fn(TabId, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_close = std::rc::Rc::new(on_close);
+        self
+    }
+
     pub(crate) fn on_new_tab(
         mut self,
         on_new_tab: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
@@ -732,9 +733,16 @@ impl TabBarView {
     }
 
     /// One tab button: pill background and brighter text when active,
-    /// the composed label, and the close glyph (its click wiring and
-    /// close decisions arrive with Task 2's interactions).
-    fn row_element(row: &RowVm, fg: gpui::Hsla, on_select: SelectFn) -> gpui::Div {
+    /// the composed label, and the close glyph — whose press rides the
+    /// shell's gated front door (the confirm flow lives there), never
+    /// selecting the row beneath it; a middle-click on the row closes
+    /// the same way.
+    fn row_element(
+        row: &RowVm,
+        fg: gpui::Hsla,
+        on_select: SelectFn,
+        on_close: CloseFn,
+    ) -> gpui::Div {
         let active_pill = gpui::Hsla { a: 0.18, ..fg };
         let text = if row.is_active {
             fg
@@ -742,6 +750,9 @@ impl TabBarView {
             gpui::Hsla { a: 0.65, ..fg }
         };
         let id = row.id;
+        // The row's middle-click keeps its own share beside the
+        // glyph's move.
+        let on_close_middle = std::rc::Rc::clone(&on_close);
         gpui::div()
             .h_full()
             .min_w(gpui::px(MIN_BUTTON_WIDTH))
@@ -768,11 +779,29 @@ impl TabBarView {
                     .items_center()
                     .justify_center()
                     .text_color(gpui::Hsla { a: 0.7, ..fg })
-                    .child("×"),
+                    .child("×")
+                    // The glyph's press closes its tab through the
+                    // gated front door, and never also selects it
+                    // (the row's own handler sits beneath).
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            cx.stop_propagation();
+                            on_close(id, window, cx);
+                        },
+                    ),
             )
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 move |_, window: &mut gpui::Window, cx: &mut gpui::App| on_select(id, window, cx),
+            )
+            // A middle-click on the row closes whichever part of the
+            // button it lands on (the reference bar's rule).
+            .on_mouse_down(
+                gpui::MouseButton::Middle,
+                move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                    on_close_middle(id, window, cx);
+                },
             )
     }
 
@@ -824,11 +853,15 @@ impl gpui::RenderOnce for TabBarView {
         }
         if shows_tab_buttons(self.rows.len()) {
             let on_select = std::rc::Rc::clone(&self.on_select);
-            bar = bar.children(
-                self.rows
-                    .iter()
-                    .map(|row| Self::row_element(row, fg, std::rc::Rc::clone(&on_select))),
-            );
+            let on_close = std::rc::Rc::clone(&self.on_close);
+            bar = bar.children(self.rows.iter().map(|row| {
+                Self::row_element(
+                    row,
+                    fg,
+                    std::rc::Rc::clone(&on_select),
+                    std::rc::Rc::clone(&on_close),
+                )
+            }));
         }
         bar.child(gpui::div().flex_1())
             .child(Self::glyph_button("+", fg, self.on_new_tab))

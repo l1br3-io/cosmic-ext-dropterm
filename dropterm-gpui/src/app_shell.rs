@@ -39,6 +39,15 @@ use crate::executor::{Action, GpuiExecutor};
 use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
 
+// The close-confirm modal's Escape (bound in the `close-confirm`
+// key context; every other key the modal holds is swallowed — no
+// binds fire, nothing types).
+gpui::actions!(dropterm_gpui, [DismissCloseConfirm]);
+
+/// The modal callback shape: the dismissal paths hand the shell both
+/// halves the strip's callbacks get.
+type ModalFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
 /// and every non-positive or unparsable value — means a real app's
@@ -210,6 +219,14 @@ pub(crate) struct Shell {
     /// caller's borrow), and the tick takes it into the
     /// first-configure decision.
     measured: Arc<Mutex<Option<(u32, u32)>>>,
+    /// The single-slot pending close (the confirm gate): the tab the
+    /// in-surface modal names while it waits for a human decision; a
+    /// new request replaces whatever the slot held.
+    pending_close: Option<TabId>,
+    /// The confirm modal's keyboard handle — holds the keyboard while
+    /// the modal waits (the pane's render-time claim defers to it),
+    /// handed back to the active pane when the decision resolves.
+    modal_focus: gpui::FocusHandle,
     exit_at: Option<Instant>,
 }
 
@@ -228,6 +245,7 @@ impl Shell {
         theme: (String, bool),
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
+        modal_focus: gpui::FocusHandle,
         exit_after: Option<Duration>,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
@@ -256,6 +274,8 @@ impl Shell {
             phase,
             verbs,
             measured: Arc::new(Mutex::new(None)),
+            pending_close: None,
+            modal_focus,
             exit_at: exit_after.map(|after| boot + after),
         }
     }
@@ -285,6 +305,7 @@ impl Shell {
     /// first walk's lesson, made structural).
     fn pump(&mut self) -> Pumped {
         let mut actions = Vec::new();
+        let mut exited = Vec::new();
         while let Ok(verb) = self.verbs.try_recv() {
             self.verb(verb, &mut actions);
         }
@@ -304,12 +325,14 @@ impl Shell {
                 }
                 view::PaneSignal::Exited(id) => {
                     // A shell exit closes its tab ungated (never the
-                    // confirm gate) — the close flow's slice wires the
-                    // teardown; the row is its evidence until then.
+                    // confirm gate); the close touches panes and may
+                    // respawn, so it applies at the tick's App-level
+                    // point like every window-adjacent action.
                     println!(
-                        "dropterm-gpui: pane {id:?} exited -> tab close at +{}ms",
+                        "dropterm-gpui: pane {id:?} exited -> closing its tab at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
+                    exited.push(id);
                 }
             }
         }
@@ -367,7 +390,11 @@ impl Shell {
             }
             _ => false,
         };
-        Pumped { actions, quit }
+        Pumped {
+            actions,
+            exited,
+            quit,
+        }
     }
 
     /// One tick of the drag-walk driver: the trailing apply first (a
@@ -600,6 +627,9 @@ impl Shell {
 /// whether the deterministic exit fired.
 struct Pumped {
     actions: Vec<Action>,
+    /// Tabs whose shells exited this pump — closed ungated at the
+    /// tick's apply point.
+    exited: Vec<TabId>,
     quit: bool,
 }
 
@@ -737,21 +767,112 @@ impl Shell {
     /// core's insert, and activate — the drawer's never-empty rule
     /// keeps at least this tab alive whatever closes later.
     fn new_tab(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.spawn_tab(cx) {
+            println!(
+                "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
+                self.tabs.records().len(),
+                self.boot.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// The one pane-spawning body every new tab rides — the `+`, the
+    /// menu's rows, the never-empty respawn: the record through
+    /// core's insert (the config's placement) plus its pane, a
+    /// failed PTY closing the record back (the rollback).
+    fn spawn_tab(&mut self, cx: &mut Context<Self>) -> Option<TabId> {
         let id = self.tabs.spawn(self.config.new_tab_after_current);
         let Some((_terminal, pane)) =
             view::boot_pane(cx, &self.config, None, id, Some(self.signals_tx.clone()))
         else {
             eprintln!("dropterm-gpui: new tab's terminal failed to spawn; closing its record");
             self.tabs.close(id);
-            return;
+            return None;
         };
         self.panes.insert(id, pane);
+        cx.notify();
+        Some(id)
+    }
+
+    /// The gated front door every user-initiated close rides — the
+    /// strip's `×` and middle-click, the menu's Close rows and sweeps
+    /// (the sweeps call it per target): a pinned tab refuses (warn
+    /// and no-op, no dialog); with the confirm toggle on and the
+    /// tab's foreground child running, the single-slot pending close
+    /// arms and the in-surface modal waits for a human decision;
+    /// otherwise the close runs now. The gate reads the config and
+    /// the pane at request time, so a mid-session toggle flip applies
+    /// to the very next close.
+    fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        if tab.pinned {
+            println!(
+                "dropterm-gpui: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            return;
+        }
+        let running = self
+            .panes
+            .get(&id)
+            .is_some_and(|pane| pane.read(cx).foreground_child_running());
+        if tab_bar::confirm_needed(self.config.close_confirmation_enabled, running) {
+            self.pending_close = Some(id);
+            self.modal_focus.focus(window, cx);
+            println!(
+                "dropterm-gpui: close {id:?} gated -> the confirm modal armed at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        } else {
+            self.close_now(id, cx);
+        }
+    }
+
+    /// The shared close tail every close path funnels into — the
+    /// gated front door's immediate arm, the modal's Close Tab, and a
+    /// shell exit (never the gate): the record closes through core's
+    /// decision, the pane tears down, a pending confirm naming the
+    /// tab retires (the stale guard — no later Close may act on it),
+    /// and the never-empty respawn answers a last-tab close.
+    fn close_now(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if self.pending_close == Some(id) {
+            self.pending_close = None;
+        }
+        let Some(decision) = self.tabs.close(id) else {
+            return;
+        };
+        self.panes.remove(&id);
         println!(
-            "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
+            "dropterm-gpui: tab {id:?} closed -> {} left, active {:?} at +{}ms",
             self.tabs.records().len(),
+            self.tabs.active_id(),
             self.boot.elapsed().as_millis()
         );
+        if decision.respawn {
+            println!(
+                "dropterm-gpui: last tab closed -> the never-empty respawn at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            self.spawn_tab(cx);
+        }
         cx.notify();
+    }
+
+    /// Cancels the pending close (the modal's Escape, scrim press, or
+    /// Cancel): the slot clears and the keyboard returns to the
+    /// active pane — the tab, its process, and its selection state
+    /// stay untouched (the render's focus repair hands the keyboard
+    /// back).
+    fn cancel_pending_close(&mut self) {
+        if let Some(id) = self.pending_close.take() {
+            println!(
+                "dropterm-gpui: close {id:?} canceled (modal dismissed) at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+        }
     }
 
     /// The gear affordance's press: the settings entry point arrives
@@ -851,6 +972,12 @@ impl Shell {
                 let shell = shell.clone();
                 move |id, _window, cx: &mut App| {
                     shell.update(cx, |shell, cx| shell.select_tab(id, cx));
+                }
+            })
+            .on_close({
+                let shell = shell.clone();
+                move |id, window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.request_close(id, window, cx));
                 }
             })
             .on_new_tab({
@@ -961,7 +1088,138 @@ impl gpui::Render for Shell {
             }
             self.last_active = Some(active);
         }
-        self.sliding_band(cx)
+        // The modal's focus repair: a resolved or vanished
+        // confirmation leaves its handle dangling (an armed modal
+        // dismissed without a keyboard-carrying path — its tab exited
+        // underneath it), and the keyboard must return to the active
+        // pane. The pane's own render-time claim defers to any holder
+        // (the cooperative rule), so the repair runs here — the same
+        // class of render-time focus work the pane itself does.
+        if self.pending_close.is_none()
+            && self.modal_focus.is_focused(window)
+            && let Some(pane) = self.active_pane()
+        {
+            pane.read(cx).focus_handle().focus(window, cx);
+        }
+        let pending = self.pending_close;
+        let band = self.sliding_band(cx).into_any_element();
+        let Some(pending) = pending else {
+            return band;
+        };
+        self.close_confirm_modal(pending, band, cx)
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    /// Composes the pending close-confirmation over the band —
+    /// armed-only (no pending close passes the band through
+    /// untouched): a full-surface scrim whose press cancels, carrying
+    /// a centered card naming the tab by its title only — never the
+    /// process name — with the modal holding the keyboard (its key
+    /// context swallows everything but Escape, the reference bar's
+    /// own routing).
+    fn close_confirm_modal(
+        &self,
+        pending: TabId,
+        band: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let title = self
+            .tabs
+            .records()
+            .iter()
+            .find(|tab| tab.id == pending)
+            .map(|tab| tab.title.clone())
+            .unwrap_or_default();
+        let shell = cx.entity();
+        let cancel: ModalFn = std::rc::Rc::new({
+            let shell = shell.clone();
+            move |window: &mut Window, cx: &mut App| {
+                shell.update(cx, |shell, _| shell.cancel_pending_close());
+                let _ = window;
+            }
+        });
+        let proceed: ModalFn = std::rc::Rc::new({
+            let shell = shell.clone();
+            move |_window: &mut Window, cx: &mut App| {
+                shell.update(cx, |shell, cx| shell.close_now(pending, cx));
+            }
+        });
+        let modal_focus = self.modal_focus.clone();
+        let pane_background = resolve_theme(&self.config).colors
+            [alacritty_terminal::vte::ansi::NamedColor::Background];
+        let (card, fg) = tab_bar::strip_pair(pane_background);
+        let hairline = gpui::Hsla {
+            a: tab_bar::BORDER_ALPHA,
+            ..fg
+        };
+        let button = |label: &'static str, on_press: ModalFn| {
+            gpui::div()
+                .px(gpui::px(12.))
+                .py(gpui::px(5.))
+                .rounded_sm()
+                .text_color(gpui::Hsla { a: 0.8, ..fg })
+                .child(label)
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    move |_, window: &mut Window, cx| on_press(window, cx),
+                )
+        };
+        let card = gpui::div()
+            .w(gpui::px(320.))
+            .rounded_md()
+            .border_1()
+            .border_color(hairline)
+            .bg(card)
+            .text_color(fg)
+            .text_size(gpui::px(14.))
+            .p(gpui::px(16.))
+            .flex()
+            .flex_col()
+            .gap(gpui::px(10.))
+            .child(gpui::div().text_size(gpui::px(15.)).child("Close tab?"))
+            .child(gpui::div().child(format!(
+                "\u{201c}{title}\u{201d} is running a process. Close it anyway?"
+            )))
+            .child(
+                gpui::div()
+                    .flex()
+                    .flex_row()
+                    .gap(gpui::px(8.))
+                    .justify_end()
+                    .child(button("Cancel", std::rc::Rc::clone(&cancel)))
+                    .child(button("Close Tab", std::rc::Rc::clone(&proceed))),
+            );
+        div().size_full().relative().child(band).child(
+            div()
+                .absolute()
+                .size_full()
+                .bg(gpui::rgba(0x0000_0080))
+                .flex()
+                .items_center()
+                .justify_center()
+                // The modal's keyboard: it holds focus while
+                // pending (the pane's claim defers), its context
+                // binds Escape to the dismissal, and every other
+                // key dies on the path — no binds fire, nothing
+                // types.
+                .key_context("close-confirm")
+                .track_focus(&modal_focus)
+                .on_action({
+                    let shell = shell.clone();
+                    move |_: &DismissCloseConfirm, _window: &mut Window, cx: &mut App| {
+                        shell.update(cx, |shell, _| shell.cancel_pending_close());
+                    }
+                })
+                // The scrim's press cancels (the card's buttons
+                // capture their own presses first).
+                .on_mouse_down(gpui::MouseButton::Left, {
+                    let cancel = std::rc::Rc::clone(&cancel);
+                    move |_, window: &mut Window, cx: &mut App| cancel(window, cx)
+                })
+                .child(card),
+        )
     }
 }
 
@@ -1141,6 +1399,14 @@ pub(crate) fn boot(
     // applied before any window exists — every Kit surface and token
     // reads the DropTerm scheme from its first frame (C4's route).
     gpui_component::init(cx);
+    // The close-confirm modal's Escape (gpui-tabs Task 2): bound in
+    // the modal's own key context, so the key reaches the dismissal
+    // while the modal holds the keyboard and dies there otherwise.
+    cx.bind_keys([gpui::KeyBinding::new(
+        "escape",
+        DismissCloseConfirm,
+        Some("close-confirm"),
+    )]);
     let boot_theme = resolve_theme(&config);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
@@ -1168,7 +1434,7 @@ pub(crate) fn boot(
         );
         std::thread::park();
     });
-    let shell = cx.new(|_| {
+    let shell = cx.new(|cx| {
         Shell::new(
             boot,
             inputs,
@@ -1182,6 +1448,7 @@ pub(crate) fn boot(
             boot_theme_identity,
             drag_walk,
             config_changes,
+            cx.focus_handle(),
             exit_after,
         )
     });
@@ -1206,6 +1473,12 @@ pub(crate) fn boot(
                 // gpui-tabs Task 2: each pane's latched attention
                 // signals land on the same apply point.
                 shell.update(cx, Shell::poll_tab_attention);
+                // A shell exit closes its tab ungated — pane teardown
+                // and the never-empty respawn apply here, where the
+                // App context lives.
+                for id in pumped.exited {
+                    shell.update(cx, |shell, cx| shell.close_now(id, cx));
+                }
                 for action in pumped.actions {
                     apply_action(cx, &shell, action);
                 }

@@ -185,7 +185,6 @@ impl TerminalPane {
     /// `/proc` foreground check) — the close gate's detection, read
     /// at request time so a mid-session toggle flip applies to the
     /// very next close.
-    #[expect(dead_code, reason = "the shell's close flow slice consumes it")]
     pub(crate) fn foreground_child_running(&self) -> bool {
         self.terminal
             .lock()
@@ -198,6 +197,12 @@ impl TerminalPane {
     /// shell's tick polls each pane).
     pub(crate) fn take_attention(&mut self) -> (bool, bool) {
         self.attention.take()
+    }
+
+    /// The pane's focus handle — the shell's modal hands the keyboard
+    /// back through it when its confirmation resolves.
+    pub(crate) fn focus_handle(&self) -> gpui::FocusHandle {
+        self.focus.clone()
     }
 
     /// Build the pane around a live engine terminal. The caller
@@ -986,8 +991,16 @@ impl gpui::Render for TerminalPane {
     ) -> impl gpui::IntoElement {
         // The pane takes the keyboard when it renders into a window
         // (the drawer holds it by construction); focusing an already
-        // focused handle is a no-op.
-        self.focus.focus(window, cx);
+        // focused handle is a no-op. A shell-owned modal outranks the
+        // claim: while another handle holds the keyboard (the
+        // close-confirm gate), the pane waits — its keys stay the
+        // modal's to swallow.
+        let another_holds = window
+            .focused(cx)
+            .is_some_and(|focused| focused != self.focus);
+        if !another_holds {
+            self.focus.focus(window, cx);
+        }
         let terminal = Arc::clone(&self.terminal);
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
