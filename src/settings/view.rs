@@ -9,8 +9,8 @@ use super::{
     ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS, KEYBOARD_MODE_OPTIONS,
     LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, PickerId, ProfileDraft, ProfileDraftMode, ProfileField,
     ReorderDirection, SchemePickerId, Section, SettingsBuffer, SettingsTab, TAB_POSITION_OPTIONS,
-    TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField, apply_timing, can_move,
-    default_picker_options, default_picker_selected, dropdown_selected, effective_default_row,
+    TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField, can_move, default_picker_options,
+    default_picker_selected, drawer_description, dropdown_selected, effective_default_row,
     etc_shells_content, shell_dropdown_selected, shell_label, shell_picker_options, tab_header,
     tab_sections,
 };
@@ -157,91 +157,6 @@ pub enum SettingsEvent {
     /// The handle was double-clicked: reset to the built-in
     /// default width and clear the stored value (criterion 5).
     DrawerReset,
-}
-
-impl Section {
-    /// The card's heading text.
-    pub(super) const fn title(self) -> &'static str {
-        match self {
-            Section::Appearance => "Appearance",
-            Section::Window => "Window",
-            Section::Tabs => "Tabs",
-            Section::StatusBar => "Status bar",
-            Section::Dropdown => "Dropdown",
-            Section::Terminal => "Terminal",
-            Section::Advanced => "Advanced",
-        }
-    }
-}
-
-impl ConfigKey {
-    /// The control's human-facing label (its file field is
-    /// [`ConfigKey::key_name`]).
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            ConfigKey::HeightPercent => "Height",
-            ConfigKey::WidthPercent => "Width",
-            ConfigKey::HAlign => "Alignment",
-            ConfigKey::Edge => "Edge",
-            ConfigKey::TabPosition => "Tab bar position",
-            ConfigKey::FontName => "Font",
-            ConfigKey::FontSize => "Font size",
-            ConfigKey::Opacity => "Opacity",
-            ConfigKey::HideOnFocusLoss => "Hide on focus loss",
-            ConfigKey::SessionPersistenceEnabled => "Session persistence",
-            ConfigKey::SlideAnimationEnabled => "Slide animation",
-            ConfigKey::BellNotificationEnabled => "Bell notifications",
-            ConfigKey::CommandFinishNotificationEnabled => "Command finish notifications",
-            ConfigKey::CommandFinishNotificationAfterSecs => "Command finish threshold (seconds)",
-            ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
-            ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
-            ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
-            ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
-            ConfigKey::ImagesEnabled => "Inline images",
-            ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
-            ConfigKey::AutosuggestionsMenuAuto => "Open the menu as you type",
-            ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
-            ConfigKey::TabTitleMode => "Tab titles",
-            ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
-            ConfigKey::NewTabCwd => "New tab directory",
-            ConfigKey::CloseConfirmationEnabled => "Confirm closing a tab with a running process",
-            ConfigKey::SettingsDrawerClickClose => {
-                "Close the settings drawer by clicking the terminal"
-            }
-            ConfigKey::RespectPanel => "Respect panel",
-            ConfigKey::ShowInDock => "Show in dock and window switcher",
-            ConfigKey::Shell => "Shell",
-            ConfigKey::Args => "Arguments",
-            ConfigKey::DefaultCwd => "Default directory",
-            ConfigKey::ScrollbackLines => "Scrollback lines",
-            ConfigKey::Layer => "Layer",
-            ConfigKey::KeyboardMode => "Keyboard mode",
-            ConfigKey::ColorSchemeDark => "Dark color scheme",
-            ConfigKey::ColorSchemeLight => "Light color scheme",
-            ConfigKey::ThemePreference => "Application theme",
-            // No control renders this label (no section lists the
-            // key); the arm keeps the match exhaustive for the
-            // drag-only writer.
-            ConfigKey::SettingsDrawerWidth => "Drawer width",
-            ConfigKey::StatusBarEnabled => "Show the status band",
-            ConfigKey::StatusBarShowProcess => "Show the process name",
-            ConfigKey::StatusBarShowPath => "Show the working directory",
-            ConfigKey::StatusBarShowBranch => "Show the git branch",
-            ConfigKey::StatusBarShowProfile => "Show the profile",
-            ConfigKey::StatusBarShowGrid => "Show the terminal size",
-            ConfigKey::StatusBarShowTab => "Show the tab position",
-            ConfigKey::StatusBarShowZoom => "Show the zoom level",
-            ConfigKey::StatusBarShowClock => "Show the clock",
-            ConfigKey::StatusBarShowDuration => "Show the command duration",
-            ConfigKey::StatusBarShowExitStatus => "Show the exit status",
-            ConfigKey::StatusBarShowProgress => "Show the progress chip",
-            ConfigKey::StatusBarShowProgramStatus => "Show the program status",
-            ConfigKey::StatusBarShowScrollback => "Show the scrolled-back lines",
-            ConfigKey::TabBarBorder => "Show the tab bar border",
-            ConfigKey::StatusBarBorder => "Show the status band border",
-            ConfigKey::StatusBarActivityMark => "Show the missed-activity halo",
-        }
-    }
 }
 
 /// The font-size slider's display range. The slider constrains what
@@ -958,36 +873,6 @@ fn drawer_section(
     built.into()
 }
 
-/// The item description a key renders: its apply-timing label, with
-/// the three plain-spawn rows carrying the `default_profile` note
-/// (ruling 4) — a set, existing default still owns command, cwd, env,
-/// and colors outright; the picker and `default_cwd` govern only the
-/// no-default path.
-pub(super) fn drawer_description(key: ConfigKey) -> String {
-    match key {
-        ConfigKey::Shell | ConfigKey::NewTabCwd | ConfigKey::DefaultCwd => format!(
-            "{} — a default profile still owns plain spawns",
-            apply_timing(key).label()
-        ),
-        // The extended tier's honest state line (suggest-embed spec,
-        // OQ-1's recommended wording): the count and the path — the
-        // one thing a user needs when it reads "not installed".
-        ConfigKey::AutosuggestionsCompletionsExtended => {
-            let timing = apply_timing(key).label();
-            match crate::terminal::suggest::extended_tier_status() {
-                Some((count, path)) => {
-                    format!(
-                        "{timing} — {count} more commands — found at {}",
-                        path.display()
-                    )
-                }
-                None => format!("{timing} — not installed"),
-            }
-        }
-        _ => apply_timing(key).label().to_string(),
-    }
-}
-
 /// One drawer item: the key's label with its apply timing as the
 /// item description (the honesty rule carried into the drawer), and
 /// the key's control on the drawer's natural widths — the window's
@@ -1245,7 +1130,7 @@ fn text_control(
 #[cfg(test)]
 mod tests {
     use super::super::ProfileFieldError;
-    use super::super::tests::{env_row, profile, sourced_profile};
+    use super::super::{env_row, profile, sourced_profile};
     use super::*;
     use std::collections::BTreeMap;
 

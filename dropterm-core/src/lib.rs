@@ -27,6 +27,14 @@
     clippy::must_use_candidate,
     reason = "standing: OQ-3 — no #[must_use] attribute sweep"
 )]
+// Another exported-API standing the bin never needed (the settings
+// model's move made it fire): `PlannedWrite::clamped` returns Self by
+// contract — the write path's own one call site — and rides OQ-3's
+// no-sweep ruling with its sibling above.
+#![expect(
+    clippy::return_self_not_must_use,
+    reason = "standing: OQ-3 — no #[must_use] attribute sweep"
+)]
 
 //! `DropTerm`'s toolkit-neutral core — the state both frontends share.
 //!
@@ -70,6 +78,7 @@ pub mod intent;
 pub mod keybinds;
 pub mod profile;
 pub mod session;
+pub mod settings;
 pub mod slide;
 pub mod status;
 pub mod surface_lifecycle;
