@@ -14,8 +14,8 @@
 
 use cosmic::widget::menu;
 
-use dropterm_core::context_menu::{Item, Row};
 pub use dropterm_core::context_menu::rows;
+use dropterm_core::context_menu::{Item, Row};
 // The tab-actions tests' historical `crate::context_menu::ROWS`
 // reach: the bin itself composes through `rows`.
 #[cfg(test)]
