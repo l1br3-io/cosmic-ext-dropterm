@@ -187,6 +187,11 @@ pub(crate) struct TabRecord {
     /// so a switch can never pair one tab's name with another's
     /// duration; an empty name is the honest floor.
     pub(crate) last_running_comm: Option<String>,
+    /// The tab's pasted-image ledger (paste-ledger spec; gpui-parity
+    /// Task 2): core's row type, one per image paste, existence-
+    /// backed and deliberately not serialized (the rows die with the
+    /// tab while the files outlive them in the paste cache).
+    pub(crate) pasted_images: Vec<dropterm_core::tabs::PastedImage>,
 }
 
 /// Resolves one record's display title through core — the one resolve
@@ -236,6 +241,7 @@ impl TabList {
             pinned: false,
             attention: Attention::None,
             last_running_comm: None,
+            pasted_images: Vec::new(),
         };
         self.active = insert_new_tab(&mut self.tabs, self.active, after_current, tab);
         id
@@ -454,6 +460,7 @@ impl TabList {
             shell_title: None,
             cwd,
             last_running_comm: None,
+            pasted_images: Vec::new(),
             title_override,
             pinned: false,
             attention: Attention::None,
@@ -496,6 +503,19 @@ impl TabList {
         if bell {
             tab.attention = tab.attention.on_bell();
         }
+    }
+
+    /// Records one image paste on the tab with `id` (the
+    /// [`PaneSignal::ImagePasted` funnel): core's `PastedImage` row —
+    /// the stamp from the pasted filename, the dimensions from a
+    /// header-only read of the bytes. An unknown id records nothing.
+    pub(crate) fn note_pasted_image(&mut self, id: TabId, path: PathBuf, bytes: &[u8]) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        self.tabs[index]
+            .pasted_images
+            .push(dropterm_core::tabs::PastedImage::new(path, bytes));
     }
 
     /// The records mutably — the tests' state seeding (pinned flags,

@@ -486,6 +486,19 @@ impl Shell {
                     );
                     exited.push(id);
                 }
+                view::PaneSignal::ImagePasted(id, path, bytes) => {
+                    // The paste's ledger row (paste-ledger spec): the
+                    // pane already pasted the cache file's path at its
+                    // prompt; the shell records the row on the pane's
+                    // tab — the pasted-images chip's input. The panel
+                    // that lists the rows rides the chrome slices.
+                    println!(
+                        "dropterm-gpui: pane {id:?} pasted {} ({} bytes) -> the tab's ledger",
+                        path.display(),
+                        bytes.len()
+                    );
+                    self.tabs.note_pasted_image(id, path, &bytes);
+                }
             }
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());

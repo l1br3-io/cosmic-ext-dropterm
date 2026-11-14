@@ -62,6 +62,9 @@ pub(crate) struct WalkLog {
     /// The last logged menu shape (its row count and selection —
     /// one line per change the menu makes).
     menu: Option<(usize, usize)>,
+    /// The image ids whose placement has been logged (the images
+    /// rows' evidence: one line per placed image, not per frame).
+    placed_images: Vec<u64>,
 }
 
 /// A pane's handed-up signal to the shell that owns the tab fleet:
@@ -74,6 +77,12 @@ pub(crate) enum PaneSignal {
     /// The pane's terminal exited; the tab closes through the
     /// ungated tail, never the confirm gate.
     Exited(TabId),
+    /// The pane pasted clipboard image bytes (paste-image spec,
+    /// PI-1): the cache file's path already pasted as text at the
+    /// prompt; the shell records the ledger row on the pane's tab
+    /// (the pasted-images chip's input — the panel itself rides the
+    /// chrome slices).
+    ImagePasted(TabId, std::path::PathBuf, Vec<u8>),
 }
 
 /// The pane's polled attention latch (the tab markers' input): bell
@@ -134,6 +143,10 @@ pub(crate) struct TerminalPane {
     /// the tab chrome slices land).
     title: Option<String>,
     walk_log: Arc<Mutex<WalkLog>>,
+    /// The inline-image pixels-to-handles cache (gpui-parity Task 2):
+    /// one `RenderImage` per engine image id, shared into the paint
+    /// closure like the walk log.
+    image_cache: Arc<Mutex<super::images::ImageCache>>,
     /// The effective chords (defaults + the config overlay).
     binds: std::collections::HashMap<Chord, TermAction>,
     /// The pane's engine options, retained for the zoom pass's
@@ -256,6 +269,7 @@ impl TerminalPane {
             },
             title: None,
             walk_log: Arc::new(Mutex::new(WalkLog::default())),
+            image_cache: Arc::new(Mutex::new(super::images::ImageCache::default())),
             binds,
             options,
             focus,
@@ -626,6 +640,65 @@ impl TerminalPane {
         self.perform_action(action, cx);
     }
 
+    /// The paste-image road (paste-image spec, PI-1; the libcosmic
+    /// handler's port): with no text offer standing, one data-control
+    /// image read off the UI thread; the bytes land in the paste
+    /// cache (core's exclusive-create write) and the FILE'S PATH
+    /// pastes as text — the same channel a text paste uses, so
+    /// bracketed paste rides unchanged. The path is the paste's one
+    /// grid trace; the ledger row records it shell-side through the
+    /// [`PaneSignal::ImagePasted`] hand-up (the panel that lists
+    /// rows rides the chrome slices).
+    #[expect(
+        clippy::unused_self,
+        reason = "the pane's own funnel shape: called on the pane beside every other action, its body rides the spawned `this` the closure needs"
+    )]
+    fn paste_clipboard_image(&mut self, primary: bool, cx: &mut Context<Self>) {
+        println!(
+            "dropterm-gpui: pane action Paste{} — no text offer; trying the image road",
+            if primary { "Primary" } else { "" }
+        );
+        cx.spawn(async move |this, cx| {
+            let bytes = cx
+                .background_executor()
+                .spawn(async move { clipboard::read_image_blocking(primary) })
+                .await;
+            let Some(bytes) = bytes else {
+                println!("dropterm-gpui: paste image — no image offer either; nothing pasted");
+                return;
+            };
+            let cached = cx
+                .background_executor()
+                .spawn(async move {
+                    dropterm_core::paste_cache::write_paste_image(&bytes).map(|path| (path, bytes))
+                })
+                .await;
+            let Some((path, bytes)) = cached else {
+                return;
+            };
+            let _ = this.update(cx, |pane, cx| {
+                println!(
+                    "dropterm-gpui: paste image — {} pastes at the prompt ({} bytes cached)",
+                    path,
+                    bytes.len()
+                );
+                let mut engine = pane.terminal.lock().expect("engine lock");
+                engine.paste(&path);
+                engine.needs_update = true;
+                drop(engine);
+                if let Some(signals) = &pane.shell_signals {
+                    let _ = signals.send(PaneSignal::ImagePasted(
+                        pane.id,
+                        std::path::PathBuf::from(&path),
+                        bytes,
+                    ));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// The copy actions' shared body: the selection out of the
     /// engine, the regular write through GPUI's clipboard (the chord
     /// just landed in the focused pane, so focus plus input serial
@@ -674,9 +747,7 @@ impl TerminalPane {
                     engine.paste(&text);
                     engine.needs_update = true;
                 }
-                None => {
-                    println!("dropterm-gpui: pane action Paste — the clipboard holds no text");
-                }
+                None => self.paste_clipboard_image(false, cx),
             },
             TermAction::PastePrimary => {
                 // The primary selection has no GPUI API: one
@@ -689,17 +760,22 @@ impl TerminalPane {
                         .background_executor()
                         .spawn(async move { clipboard::read_primary_blocking() })
                         .await;
-                    if let Some(text) = text {
-                        let _ = this.update(cx, |_pane, cx| {
-                            println!(
-                                "dropterm-gpui: paste primary — {} bytes through the engine's paste",
-                                text.len()
-                            );
-                            let mut engine = terminal.lock().expect("engine lock");
-                            engine.paste(&text);
-                            engine.needs_update = true;
-                            cx.notify();
-                        });
+                    match text {
+                        Some(text) => {
+                            let _ = this.update(cx, |_pane, cx| {
+                                println!(
+                                    "dropterm-gpui: paste primary — {} bytes through the engine's paste",
+                                    text.len()
+                                );
+                                let mut engine = terminal.lock().expect("engine lock");
+                                engine.paste(&text);
+                                engine.needs_update = true;
+                                cx.notify();
+                            });
+                        }
+                        None => {
+                            let _ = this.update(cx, |pane, cx| pane.paste_clipboard_image(true, cx));
+                        }
                     }
                 })
                 .detach();
@@ -1228,6 +1304,7 @@ impl gpui::Render for TerminalPane {
         let terminal = Arc::clone(&self.terminal);
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
+        let image_cache = Arc::clone(&self.image_cache);
         let pane = cx.entity();
         // The focusable frame: keys and the pointer route to the
         // pane, the canvas
@@ -1335,7 +1412,15 @@ impl gpui::Render for TerminalPane {
                 canvas(
                     move |bounds, _, _| bounds,
                     move |bounds, _, window, cx| {
-                        paint_pane(&terminal, &skin, &walk_log, bounds, window, cx);
+                        paint_pane(
+                            &terminal,
+                            &skin,
+                            &walk_log,
+                            &image_cache,
+                            bounds,
+                            window,
+                            cx,
+                        );
                     },
                 )
                 .size_full(),
@@ -1357,6 +1442,7 @@ fn paint_pane(
     terminal: &Arc<Mutex<Terminal>>,
     skin: &PaneSkin,
     walk_log: &Arc<Mutex<WalkLog>>,
+    image_cache: &Arc<Mutex<super::images::ImageCache>>,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -1433,6 +1519,90 @@ fn paint_pane(
     bg.a *= skin.opacity_alpha;
     window.paint_quad(fill(bounds, bg));
 
+    // Inline images, seat collection (gpui-parity Task 2; the
+    // libcosmic widget's two-pass rule): every covered cell carries
+    // its normalized sub-rect of the shared image — the draw clips
+    // to the cell, the clip the sub-rect. A beneath-layer id (an
+    // unrecorded one — every iterm image — or kitty `z<0`) draws
+    // under the glyph pass; an above-layer one (kitty `z>=0`)
+    // collects for the pass after the glyphs, still below the
+    // cursor and the ghost overlays. An evicted id draws blank
+    // (OQ-3): the cell stands, the handle dying with the pixels
+    // through the store's removal report.
+    let mut beneath_images: Vec<(
+        gpui::Bounds<Pixels>,
+        gpui::Bounds<Pixels>,
+        Arc<gpui::RenderImage>,
+    )> = Vec::new();
+    let mut above_images: Vec<(
+        gpui::Bounds<Pixels>,
+        gpui::Bounds<Pixels>,
+        Arc<gpui::RenderImage>,
+    )> = Vec::new();
+    {
+        let store = Arc::clone(&terminal.images);
+        let mut store = store.lock().expect("image store");
+        let mut cache = image_cache.lock().expect("image cache");
+        cache.sync_removals(store.take_removed());
+        for (row, cells) in display_rows.iter().enumerate() {
+            for (col, cell) in cells.iter().enumerate() {
+                let Some(sub) = cell.image() else {
+                    continue;
+                };
+                let Some(handle) = cache.handle_for(sub.image, || store.get(sub.image).cloned())
+                else {
+                    continue;
+                };
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "cell indices < 2^24, exact in f32"
+                )]
+                let (x, y) = (
+                    bounds.origin.x + geometry.cell_width * col as f32,
+                    bounds.origin.y + geometry.cell_height * row as f32,
+                );
+                let cell_bounds = gpui::Bounds {
+                    origin: point(x, y),
+                    size: gpui::size(geometry.cell_width, geometry.cell_height),
+                };
+                let seat = (
+                    super::images::image_draw_bounds(cell_bounds, sub),
+                    cell_bounds,
+                    handle,
+                );
+                if store.layer_of(sub.image) < 0 {
+                    beneath_images.push(seat);
+                } else {
+                    above_images.push(seat);
+                }
+                let mut log = walk_log.lock().expect("walk log");
+                if !log.placed_images.contains(&sub.image) {
+                    log.placed_images.push(sub.image);
+                    println!(
+                        "dropterm-gpui: pane image {} placed (first covered cell col {col} row {row}, {} layer)",
+                        sub.image,
+                        if store.layer_of(sub.image) < 0 {
+                            "beneath"
+                        } else {
+                            "above"
+                        }
+                    );
+                }
+            }
+        }
+    }
+    // The beneath pass: under the glyphs.
+    for (image_bounds, cell_bounds, handle) in beneath_images {
+        let _ = window.paint_image(
+            cell_bounds,
+            image_bounds,
+            gpui::Corners::default(),
+            handle,
+            0,
+            false,
+        );
+    }
+
     for (row, cells) in display_rows.iter().enumerate() {
         #[expect(
             clippy::cast_precision_loss,
@@ -1462,6 +1632,19 @@ fn paint_pane(
             point(bounds.origin.x, row_origin_y),
             window,
             cx,
+        );
+    }
+
+    // The above-layer pass (kitty z>=0): over the glyphs, under the
+    // cursor, the ghost, and the menu that follow.
+    for (image_bounds, cell_bounds, handle) in above_images {
+        let _ = window.paint_image(
+            cell_bounds,
+            image_bounds,
+            gpui::Corners::default(),
+            handle,
+            0,
+            false,
         );
     }
 

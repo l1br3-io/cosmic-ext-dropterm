@@ -21,6 +21,7 @@
 pub(crate) mod clipboard;
 pub(crate) mod grid;
 pub(crate) mod host;
+pub(crate) mod images;
 pub(crate) mod input;
 pub(crate) mod selection;
 pub(crate) mod suggest;

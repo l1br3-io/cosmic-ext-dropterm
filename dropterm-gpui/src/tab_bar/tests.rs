@@ -599,3 +599,43 @@ fn running_comm_records_per_tab_and_reads_back_the_last() {
     let fresh = tabs.spawn(true);
     assert_eq!(tabs.running_comm(fresh), None);
 }
+
+#[test]
+fn a_pasted_image_records_its_ledger_row_on_the_pasting_tab() {
+    // The paste-ledger funnel (gpui-parity Task 2): the pane's
+    // ImagePasted hand-up lands one core PastedImage row on the
+    // pasting tab alone — the stamp from the pasted filename, the
+    // dimensions from a header-only read of the bytes (None for
+    // non-image bytes, the honest floor). An unknown id records
+    // nothing; a fresh spawn inherits no rows.
+    let mut tabs = TabList::default();
+    let a = tabs.spawn(true);
+    let b = tabs.spawn(true);
+    let path = std::path::PathBuf::from("/tmp/paste-20261115-101010-1.png");
+    tabs.note_pasted_image(b, path.clone(), b"not an image");
+    let rows = &tabs.records()[1].pasted_images;
+    assert_eq!(rows.len(), 1, "the pasting tab alone carries the row");
+    assert_eq!(rows[0].path, path);
+    assert_eq!(rows[0].stamp, "paste-20261115-101010-1");
+    assert_eq!(rows[0].dims, None, "plain bytes carry no dimensions");
+    assert!(
+        tabs.records()
+            .iter()
+            .find(|tab| tab.id == a)
+            .expect("a stands")
+            .pasted_images
+            .is_empty(),
+        "the neighbor carries nothing"
+    );
+    tabs.note_pasted_image(TabId(9999), path, b"x");
+    assert_eq!(tabs.records()[1].pasted_images.len(), 1);
+    let fresh = tabs.spawn(true);
+    assert!(
+        tabs.records()
+            .iter()
+            .find(|tab| tab.id == fresh)
+            .expect("the fresh tab stands")
+            .pasted_images
+            .is_empty()
+    );
+}

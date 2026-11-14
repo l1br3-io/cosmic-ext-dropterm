@@ -11,6 +11,8 @@
 //! Each data-control copy serves on its own detached thread, exactly
 //! the libcosmic clipboard module's shape.
 
+use std::io::Read as _;
+
 use gpui::{App, ClipboardItem};
 
 /// Serve one data-control copy on its own thread: the call returns
@@ -82,6 +84,42 @@ pub(crate) fn read_primary_blocking() -> Option<String> {
         .inspect_err(|err| println!("dropterm-gpui: data-control primary read failed ({err})"))
         .ok()?;
     Some(text)
+}
+
+/// One data-control read of the clipboard's image offer — the paste
+/// path's image road (paste-image spec, PI-1; the libcosmic
+/// `load_image` port): PNG, the one interchange format every
+/// compositor converts clipboard images to, read under the paste
+/// cap. `None` is every no-image state — an empty clipboard, no
+/// PNG offer, a transport failure, an over-cap offer — each the
+/// paste's honest silence (warned once where owed).
+pub(crate) fn read_image_blocking(primary: bool) -> Option<Vec<u8>> {
+    let cap = u64::try_from(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP + 1)
+        .expect("the paste cap is a constant far below u64::MAX");
+    let (pipe, _mime) = wl_clipboard_rs::paste::get_contents(
+        if primary {
+            wl_clipboard_rs::paste::ClipboardType::Primary
+        } else {
+            wl_clipboard_rs::paste::ClipboardType::Regular
+        },
+        wl_clipboard_rs::paste::Seat::Unspecified,
+        wl_clipboard_rs::paste::MimeType::Specific("image/png"),
+    )
+    .inspect_err(|err| println!("dropterm-gpui: data-control image read — no offer ({err})"))
+    .ok()?;
+    let mut bytes = Vec::new();
+    let mut offer = pipe.take(cap);
+    std::io::Read::read_to_end(&mut offer, &mut bytes)
+        .inspect_err(|err| println!("dropterm-gpui: data-control image read failed ({err})"))
+        .ok()?;
+    if bytes.len() > dropterm_core::paste_cache::PASTE_PAYLOAD_CAP {
+        println!(
+            "dropterm-gpui: image offer refused — over the {}-byte paste cap",
+            dropterm_core::paste_cache::PASTE_PAYLOAD_CAP
+        );
+        return None;
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]

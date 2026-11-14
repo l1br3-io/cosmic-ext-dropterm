@@ -76,6 +76,11 @@ notify = "8.2"
 # [patch.crates-io] entry pins it; no new code enters the build).
 alacritty_terminal = "0.25.1"
 
+# The image store's pixels become GPUI `RenderImage` frames (gpui-
+# parity Task 2): types only, no codecs — decode stays core's. Same
+# 0.25 line the lock already carries for core and gpui.
+image = { version = "0.25", default-features = false }
+
 # The engine's `TextHost` seam is cosmic-text-typed (shared-core
 # spec): the host owns a real `Buffer` for the engine's projection
 # while the view renders from the grid (check 9's ruling — the

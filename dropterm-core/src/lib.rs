@@ -76,6 +76,7 @@ pub mod font_list;
 pub mod geometry;
 pub mod intent;
 pub mod keybinds;
+pub mod paste_cache;
 pub mod profile;
 pub mod session;
 pub mod settings;
