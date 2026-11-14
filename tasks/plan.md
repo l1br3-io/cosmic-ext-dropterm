@@ -226,10 +226,29 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
       typed, selected, scrolled, copied, hidden by the pane's own
       chord, re-shown — first frames 35–54 ms inside the 130 ms
       budget on both compositors)*
-- [ ] [gpui-theme](gpui-theme.md) Tasks 1–2: carry the generator → the
-      apply path (first frame + live)
+- [x] [gpui-theme](gpui-theme.md) Tasks 1–2: carry the generator → the
+      apply path (first frame + live) *(merged 36648c1, 2026-11-14:
+      the C4 generator carried byte-identical from the spike (cd06740
+      + the SPDX header, diff-checked) with its four tests and the
+      pedantic adaptation on main.rs's mod declaration, and the apply
+      path walked green on rig + VM — the scheme applies in boot()
+      before any window exists (tokens reading back Dracula
+      background l=0.184 = #282A36, primary riding its Blue), a live
+      Dracula→Nord edit re-themes without restart with the drawer
+      band's pixels following on both compositors (40,42,54 →
+      46,52,64 = #2E3440), a geometry-only edit reshapes without
+      re-theming (the identity detector, pinned by unit test too),
+      the pane re-themes on the same resolution (the resolve/
+      boot_colors one-chain agreement pinned field-wise), and the
+      kill check now themes through the same route with its flush
+      edges intact — the standing C4 chrome harness; 77 crate tests,
+      just check green on the merge result; evidence under the lane's
+      target/{rig,vm}-evidence-gm2-*)*
 - **Checkpoint: a working, themed terminal drawer on GPUI**
-      (surface ∥ terminal ∥ theme after scaffold)
+      (surface ∥ terminal ∥ theme after scaffold) — **held
+      2026-11-14**: all three parallel slices merged (05ac2ba ·
+      761547d · 36648c1); the drawer is a working, themed terminal on
+      GPUI; next: `gpui-tabs` ∥ `gpui-status`
 - [ ] [gpui-tabs](gpui-tabs.md) Tasks 1–3 · [gpui-status](gpui-status.md)
       Tasks 1–3 (parallel after terminal)
 - [ ] [gpui-chrome](gpui-chrome.md) Tasks 1–3: menus + pickers → the

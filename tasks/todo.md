@@ -469,7 +469,8 @@ name, answers the contract on both compositors.
       the one new direct dep, already in the lock — the lockfile took
       only the dep edge)*
 - [x] gm-2 Apply path: before first frame + live re-theme; C4-class
-      evidence — merge *(done 2026-11-14 on port/gpui-theme: the Kit
+      evidence — merge *(merged 36648c1; done 2026-11-14 on
+      port/gpui-theme, just check green on the merge result: the Kit
       initialized and the scheme applied in boot() before any window
       exists, the config echo resolves and compares a theme identity
       (scheme name + mode — geometry-only edits never re-theme, live
@@ -490,7 +491,8 @@ name, answers the contract on both compositors.
       agreement)*
 
 **Checkpoint — a working, themed terminal drawer on GPUI** (sr ∥ gt ∥ gm
-after sf; gb ∥ gn after gt).
+after sf; gb ∥ gn after gt). *(Held 2026-11-14: all three parallel
+slices merged — 05ac2ba · 761547d · 36648c1.)*
 
 - [ ] gb-1 Tab bar view model + rendering · gb-2 reorder/rename/menu/
       close · gb-3 rows + merge
