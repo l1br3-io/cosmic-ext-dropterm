@@ -54,6 +54,13 @@ zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"]
 # new code enters the build.
 jiff = "0.2"
 
+# The font picker's enumeration (moved from the root crate by the
+# gpui-chrome spec): walks the system font dirs once at startup.
+# Version-matched to the 0.23.0 line cosmic-text already pulls into
+# the lock — with every default feature (std, fs, memmap,
+# fontconfig) already unified on — so no new code enters the build.
+fontdb = "0.23"
+
 [dev-dependencies]
 # The config-key ↔ docs sync test enumerates `DropTermConfig`'s
 # serialized keys via `serde_json::to_value`. Version-matched to the

@@ -16,9 +16,12 @@
 //! the release boundary holds.
 
 mod app_shell;
+mod context_menu;
 mod dbus;
+mod drawer;
 mod executor;
 mod kit_check;
+mod pickers;
 mod startup;
 mod status_bar;
 mod tab_bar;

@@ -586,6 +586,22 @@ impl overlay::Overlay<SettingsEvent, Theme, Renderer> for FontPopover<'_> {
 mod tests {
     use super::*;
 
+    // The popover wheel clamp's pin (rode the model's tests in the
+    // bin; the move left it with the widget it pins).
+    #[test]
+    fn font_popover_scroll_clamps_at_both_ends() {
+        // Criterion 5's clamp: the wheel offset lives in
+        // [0, content − viewport] px, so every listed family is
+        // reachable and neither end runs past — and a list shorter than
+        // its viewport (nothing to scroll into) pins at 0.
+        assert_eq!(clamp_scroll(-40.0, 600.0, 300.0), 0.0);
+        assert_eq!(clamp_scroll(0.0, 600.0, 300.0), 0.0);
+        assert_eq!(clamp_scroll(120.0, 600.0, 300.0), 120.0);
+        assert_eq!(clamp_scroll(300.0, 600.0, 300.0), 300.0);
+        assert_eq!(clamp_scroll(320.0, 600.0, 300.0), 300.0);
+        assert_eq!(clamp_scroll(120.0, 200.0, 300.0), 0.0);
+    }
+
     // --- the font picker's widget (font-picker T2) ---
 
     #[test]

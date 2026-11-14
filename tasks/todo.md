@@ -557,10 +557,32 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       engine-flag fix, its own commit; the scrolled rows ride the
       wheel class; merged 35ea4cf with `just check` green on
       the result)
-- [ ] gc-1 Context menu + pickers on the Kit popover path
-- [ ] gc-2 Settings drawer (write contract unchanged; control map
-      ported; config↔docs pin green)
-- [ ] gc-3 Cadence row + chrome rows + merge
+- [x] gc-1 Context menu + pickers on the Kit popover path (done
+      2026-11-14: the models in core — context_menu's rows/labels and
+      font_list whole — the menu on the pane's right click through the
+      Kit popover with every pick in the keybinds' own funnel, the
+      pickers as Kit Select components with the libcosmic preview
+      fidelity, all suites green; walked green on the VM agent-run
+      (each row's pick line plus its downstream observable, the
+      reporting gate decoded from the child's X10 bytes; rig n-a, the
+      pointer class); profile folders deferred to a spawn path,
+      pickers' runtime rows ride gc-2/gc-3)
+- [x] gc-2 Settings drawer (write contract unchanged; control map
+      ported; config↔docs pin green) (done 2026-11-14: the drawer's
+      framework-free half in core with its 162 tests, the five pages
+      write-through over it — Profiles' transactional form, the keybind
+      editor over a core registry pinned chord-for-chord — and the
+      drawer on a shell-rendered overlay with the resize handle; the
+      walk's reentrancy find fixed in its own commit and re-walked
+      green (vm-evidence-gc2b; owner-ruled standing 2026-11-15); `just
+      check` green on the result 2026-11-15; the scheme picker's and
+      cadence rows ride gc-3)
+- [x] gc-3 Cadence row + chrome rows + merge (done 2026-11-15: walked
+      owner-run on COSMIC + sway per the manual ruling — the cadence
+      row (drawer + popover across the 80 ms reshape, never closing)
+      and all eight chrome clusters green, no deviations filed; the
+      owner's reported result is the record, no target/ artifacts;
+      merged with `just check` green on the result)
 
 **Checkpoint — full UI parity feature set.**
 

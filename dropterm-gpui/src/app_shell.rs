@@ -36,6 +36,7 @@ use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::menu::ContextMenuExt as _;
 use notify::Watcher as _;
 
 use crate::dbus::Verb;
@@ -47,7 +48,7 @@ use crate::terminal::view::{self, TerminalPane};
 // The close-confirm modal's Escape (bound in the `close-confirm`
 // key context; every other key the modal holds is swallowed — no
 // binds fire, nothing types).
-gpui::actions!(dropterm_gpui, [DismissCloseConfirm]);
+gpui::actions!(dropterm_gpui, [DismissCloseConfirm, DismissSettings]);
 
 /// The modal callback shape: the dismissal paths hand the shell both
 /// halves the strip's callbacks get.
@@ -215,7 +216,7 @@ pub(crate) struct Shell {
     panes: HashMap<TabId, Entity<TerminalPane>>,
     /// The live config snapshot (reloaded on every config echo): the
     /// strip's placement, border, and title mode read from it.
-    config: DropTermConfig,
+    pub(crate) config: DropTermConfig,
     /// The hide channel's sender half — every spawned pane shares it.
     signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
     /// The title mode the tab titles were last resolved under (the
@@ -245,6 +246,17 @@ pub(crate) struct Shell {
     /// The open inline rename, if any (double-click or the menu's
     /// Rename row).
     rename: Option<RenameEdit>,
+    /// The settings drawer's shell-owned state (gpui-chrome Task 2):
+    /// open flag, page, drafts buffer, and the echo-refresh guard in
+    /// one cohesive state; the Kit's stateful controls live on the
+    /// drawer entity built at open and held here (the capture's focus
+    /// hand-off needs the handle).
+    pub(crate) settings: crate::drawer::SettingsState,
+    pub(crate) settings_drawer: Option<gpui::Entity<crate::drawer::SettingsDrawer>>,
+    /// The drawer's capture-focus handle, owned here so an armed
+    /// capture's focus hand-off never reads the drawer entity from
+    /// inside a shell update (the gc2 walk's reentrancy class).
+    pub(crate) settings_capture_focus: gpui::FocusHandle,
     /// A departed rename input's focus handle: the render's repair
     /// hands the keyboard back to the active pane once the input's
     /// handle stops holding it (the modal's own handle repairs the
@@ -303,6 +315,7 @@ impl Shell {
         modal_focus: gpui::FocusHandle,
         exit_after: Option<Duration>,
         band_font: gpui::Font,
+        settings_focus: gpui::FocusHandle,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         Self {
@@ -332,6 +345,9 @@ impl Shell {
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
+            settings: crate::drawer::SettingsState::default(),
+            settings_drawer: None,
+            settings_capture_focus: settings_focus,
             rename_focus_repair: None,
             modal_focus,
             status: dropterm_core::status::StatusSegments::default(),
@@ -548,6 +564,7 @@ impl Shell {
         // mode read the live config at render/sync time, so the echo
         // lands the snapshot the next frame reads.
         self.config = config.clone();
+        self.settings.config_epoch += 1;
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
         // The identity compare absorbs echoes (an unchanged scheme is
@@ -1120,6 +1137,371 @@ impl Shell {
         }
     }
 
+    /// One terminal context-menu pick (gpui-chrome) — every row's
+    /// verb routed to the path its keybind uses: the clipboard and
+    /// scrollback cluster through the active pane's own action
+    /// funnel, the tab and settings verbs through the shell calls
+    /// the tab menu's rows already use (the click away from an open
+    /// rename commits first, exactly like a tab-menu pick).
+    fn context_menu_pick(
+        &mut self,
+        item: crate::context_menu::Item,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::context_menu::{PickRoute, ShellPick};
+        println!(
+            "dropterm-gpui: context menu pick {item:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.commit_open_rename(cx);
+        match crate::context_menu::route(item) {
+            PickRoute::Pane(action) => {
+                let Some(pane) = self.active_pane() else {
+                    return;
+                };
+                pane.update(cx, |pane, cx| pane.perform_term_action(action, cx));
+            }
+            PickRoute::Shell(ShellPick::NewTab) => self.new_tab(cx),
+            PickRoute::Shell(ShellPick::RenameTab) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.start_rename(id, window, cx);
+                }
+            }
+            PickRoute::Shell(ShellPick::DuplicateTab) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.duplicate_tab(id, cx);
+                }
+            }
+            // The Settings row never reaches the in-update arm: the
+            // drawer's build reads the shell (the gc2 finding), so
+            // the pick closure below routes it outside the update
+            // borrow — this arm is unreachable for it.
+            PickRoute::Shell(ShellPick::Settings) => {
+                println!("dropterm-gpui: context menu pick Settings (routed outside the update)");
+            }
+        }
+    }
+
+    /// The one path every profile write takes (`write_config`'s
+    /// discipline for the list-shaped key): persist through core,
+    /// the echo drives every apply.
+    pub(crate) fn write_profile(&mut self, write: &dropterm_core::settings::ProfileWrite) {
+        println!(
+            "dropterm-gpui: profile write at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+            eprintln!("dropterm-gpui: failed to persist profile write: {err}");
+        }
+    }
+
+    /// The Profiles page's gestures, each one landing in core's
+    /// model and (at most) one write — the libcosmic arms' rules
+    /// verbatim, the draft lock held by the disabled rendering (no
+    /// list gesture is reachable while a draft is open).
+    pub(crate) fn profile_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(profile) = self.config.profiles.get(index) {
+            self.settings.profile_selection = Some(index);
+            self.settings.profile_draft =
+                Some(dropterm_core::settings::ProfileDraft::edit(index, profile));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_add(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::add());
+        cx.notify();
+    }
+
+    pub(crate) fn profile_clone(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(source) = self.config.profiles.get(index) {
+            self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::clone_of(
+                source,
+                &self.config.profiles,
+            ));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_field(
+        &mut self,
+        field: dropterm_core::settings::ProfileField,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft.set_field_text(field, text);
+            cx.notify();
+        }
+    }
+
+    /// A scheme pick buffers into the draft (the recolor lands on
+    /// Save) and retires the scheme's stale error.
+    pub(crate) fn profile_draft_scheme(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(pick) = dropterm_core::settings::profile_scheme_write(row)
+            && let Some(draft) = self.settings.profile_draft.as_mut()
+        {
+            draft.scheme = pick.field_value();
+            draft
+                .errors
+                .retain(|(at, _)| *at != dropterm_core::settings::ProfileField::Scheme);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_env_add(&mut self, cx: &mut Context<Self>) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft
+                .env_rows
+                .push(dropterm_core::settings::ProfileEnvRow::default());
+            draft.errors.clear();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_env_remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft.env_rows.remove(index);
+            draft.errors.clear();
+            cx.notify();
+        }
+    }
+
+    /// The transactional commit: one plan, at most one whole-list
+    /// write plus the paired rename cascade, then the form closes on
+    /// the row it wrote; an invalid Save writes nothing and errors
+    /// every offending field at once.
+    pub(crate) fn profile_draft_save(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.settings.profile_draft.clone() else {
+            return;
+        };
+        let pre_append_len = self.config.profiles.len();
+        let plan = dropterm_core::settings::plan_profile_save(
+            &draft,
+            &self.config.profiles,
+            self.config.default_profile.as_deref(),
+        );
+        match plan {
+            dropterm_core::settings::ProfileSavePlan::Write {
+                profiles,
+                default_after_rename,
+            } => {
+                self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+                if let Some(new_default) = default_after_rename {
+                    self.write_profile(&dropterm_core::settings::ProfileWrite::DefaultProfile(
+                        Some(new_default),
+                    ));
+                }
+                self.settings.profile_selection = Some(
+                    dropterm_core::settings::selection_after_save(&draft.mode, pre_append_len),
+                );
+                self.settings.profile_draft = None;
+                println!(
+                    "dropterm-gpui: profile saved at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            dropterm_core::settings::ProfileSavePlan::Invalid { errors } => {
+                if let Some(open) = self.settings.profile_draft.as_mut() {
+                    open.errors = errors;
+                }
+                println!(
+                    "dropterm-gpui: profile save rejected (fields erroring) at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            // A stale edit or an unchanged draft closes clean — the
+            // list moved under the form, or Save had nothing to do.
+            _ => {
+                self.settings.profile_draft = None;
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn profile_draft_cancel(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_draft = None;
+        cx.notify();
+    }
+
+    /// The delete cluster: Arm swaps the armed row (single-row
+    /// arming), Confirm deletes through the plan (one whole-list
+    /// write plus the paired auto-clear), Keep disarms.
+    pub(crate) fn profile_delete_arm(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed =
+            (self.settings.profile_delete_armed != Some(index)).then_some(index);
+        cx.notify();
+    }
+
+    pub(crate) fn profile_delete_confirm(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed = None;
+        if let Some((profiles, paired)) = dropterm_core::settings::plan_profile_delete(
+            &self.config.profiles,
+            index,
+            self.config.default_profile.as_deref(),
+        ) {
+            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+            if let Some(write) = paired {
+                self.write_profile(&write);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn profile_delete_keep(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed = None;
+        cx.notify();
+    }
+
+    pub(crate) fn profile_reorder(
+        &mut self,
+        index: usize,
+        direction: dropterm_core::settings::ReorderDirection,
+        cx: &mut Context<Self>,
+    ) {
+        // A boundary press plans nothing (the model's own no-op).
+        if let Some(write) =
+            dropterm_core::settings::plan_profile_reorder(&self.config.profiles, index, direction)
+        {
+            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(write));
+        }
+        cx.notify();
+    }
+
+    /// The default-profile picker's pick: commit on change through
+    /// the module's planner (a stale index rejects inside).
+    pub(crate) fn profile_pick_default(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(write) =
+            dropterm_core::settings::default_picker_write(&self.config.profiles, row)
+        {
+            self.write_profile(&write);
+        }
+        cx.notify();
+    }
+
+    /// The one path every keybinds write takes: persist the whole
+    /// `custom_key_binds` map, the echo drives the apply.
+    fn write_keybinds(&mut self, write: &dropterm_core::settings::KeybindsWrite) {
+        println!(
+            "dropterm-gpui: keybinds write ({} custom entr{}) at +{}ms",
+            write.0.len(),
+            if write.0.len() == 1 { "y" } else { "ies" },
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir()) {
+            eprintln!("dropterm-gpui: failed to persist keybinds write: {err}");
+        }
+    }
+
+    /// The Keybindings page's gestures (the libcosmic arms' rules):
+    /// arm a row's capture (clearing any standing conflict), disarm,
+    /// revert a row's custom entry (its defaults come back on the
+    /// echo), and buffer the search box.
+    pub(crate) fn keybind_capture_start(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.keybind_capture = Some(id);
+        self.settings.keybind_conflict = None;
+        println!("dropterm-gpui: keybind capture armed for {id}");
+        // The drawer holds the keyboard while armed: its focus handle
+        // takes it, the pane's claim resumes when the capture ends.
+        self.settings_capture_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn keybind_capture_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.keybind_capture = None;
+        // The keyboard returns to the active pane (the modal repair's
+        // rule).
+        if let Some(pane) = self.active_pane() {
+            pane.read(cx).focus_handle().focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The armed capture's key gate — every press the drawer sees
+    /// while armed: Escape cancels, bare modifiers stay armed, any
+    /// other chord commits through the verdict (the conflict shown
+    /// inline, the write only on Commit).
+    pub(crate) fn keybind_capture_key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.settings.keybind_capture else {
+            return;
+        };
+        if keystroke.key == "escape" {
+            println!("dropterm-gpui: keybind capture canceled");
+            self.keybind_capture_end(window, cx);
+            return;
+        }
+        let Some(key) = dropterm_core::keybinds::capture_key_name(&keystroke.key) else {
+            return;
+        };
+        let mut modifiers = Vec::new();
+        if keystroke.modifiers.control {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Ctrl);
+        }
+        if keystroke.modifiers.shift {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Shift);
+        }
+        if keystroke.modifiers.alt {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Alt);
+        }
+        if keystroke.modifiers.platform {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Super);
+        }
+        let binding = dropterm_core::keybinds::Binding { modifiers, key };
+        match dropterm_core::keybinds::capture_verdict(id, &binding, &self.config.custom_key_binds)
+        {
+            dropterm_core::keybinds::CaptureVerdict::Commit => {
+                let write = dropterm_core::keybinds::with_custom_binding(
+                    &self.config.custom_key_binds,
+                    id,
+                    binding.clone(),
+                );
+                self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+                println!(
+                    "dropterm-gpui: keybind captured for {id}: {}",
+                    dropterm_core::keybinds::binding_display(&binding)
+                );
+                self.keybind_capture_end(window, cx);
+            }
+            // Already the row's own: a silent disarm.
+            dropterm_core::keybinds::CaptureVerdict::Own => {
+                self.keybind_capture_end(window, cx);
+            }
+            dropterm_core::keybinds::CaptureVerdict::Conflict(holder) => {
+                self.settings.keybind_conflict = Some((id, holder));
+                cx.notify();
+            }
+            dropterm_core::keybinds::CaptureVerdict::Unsupported => {
+                eprintln!("dropterm-gpui: captured chord cannot be stored; dropping capture");
+                self.keybind_capture_end(window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn keybind_revert(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.settings.keybind_conflict = None;
+        let write =
+            dropterm_core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
+        self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+        println!("dropterm-gpui: keybind reverted for {id}");
+        cx.notify();
+    }
+
+    pub(crate) fn keybind_search(&mut self, text: String, cx: &mut Context<Self>) {
+        self.settings.keybind_search = text;
+        cx.notify();
+    }
+
     /// Duplicates the tab with `source` (the menu's row): a fresh
     /// pane in its cwd carrying its rename pin, landing after the
     /// active tab and activated (the record through core; the pane
@@ -1145,17 +1527,69 @@ impl Shell {
         cx.notify();
     }
 
-    /// The gear affordance's press: the settings entry point arrives
-    /// with gpui-chrome; the row is the affordance's evidence until
-    /// then.
-    fn settings_requested(&mut self, cx: &mut Context<Self>) {
-        // The gear's press commits an open rename first, exactly like
-        // the reference bar's corner affordances.
-        self.commit_open_rename(cx);
+    /// The gear affordance's press and the menu's Settings… row: the
+    /// one settings trigger — a repeat press closes. A free function,
+    /// not a shell method, by necessity (the gc2 walk's structural
+    /// finding): the drawer's construction reads the shell, and a
+    /// read while the shell is being updated panics — so the build
+    /// happens outside the update borrow, the state flip inside it.
+    pub(crate) fn toggle_settings(shell: &Entity<Shell>, window: &mut Window, cx: &mut App) {
+        let open = shell.read(cx).settings.open;
+        if open {
+            shell.update(cx, |shell, cx| shell.close_settings(window, cx));
+            return;
+        }
+        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
+        shell.update(cx, |shell, cx| {
+            // The press commits an open rename first, exactly like
+            // the reference bar's corner affordances.
+            shell.commit_open_rename(cx);
+            shell.settings_drawer = Some(drawer);
+            shell.settings.open = true;
+            println!(
+                "dropterm-gpui: settings drawer opened at +{}ms (the surface stays live beneath)",
+                shell.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        });
+    }
+
+    /// Close the drawer: the explicit close clears the buffer (the
+    /// reopen-fresh rule; a focus-loss hide preserves — the shell
+    /// hides with the surface and this path never runs for a hide).
+    pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        self.settings.open = false;
+        self.settings_drawer = None;
+        self.settings
+            .buffer
+            .apply_drawer_transition(dropterm_core::settings::DrawerTransition::ExplicitClose);
         println!(
-            "dropterm-gpui: gear pressed (settings entry arrives with gpui-chrome) at +{}ms",
+            "dropterm-gpui: settings drawer closed at +{}ms",
             self.boot.elapsed().as_millis()
         );
+        cx.notify();
+    }
+
+    /// The one write path every drawer commit rides (the libcosmic
+    /// `write_config`'s discipline): clamp, persist through the
+    /// store, and let the watcher's echo drive every apply — the
+    /// drawer never applies anything itself, and drawer writes and
+    /// hand edits remain one event stream.
+    pub(crate) fn write_settings(&mut self, write: &dropterm_core::settings::PlannedWrite) {
+        let write = write.clamped();
+        let key = write.key();
+        println!(
+            "dropterm-gpui: settings write {} at +{}ms",
+            key.key_name(),
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+            eprintln!(
+                "dropterm-gpui: failed to persist settings write {}: {err}",
+                key.key_name()
+            );
+        }
     }
 
     /// One title sync (the tick's apply point): re-title every tab
@@ -1622,8 +2056,8 @@ impl Shell {
             })
             .on_settings({
                 let shell = shell.clone();
-                move |_window, cx: &mut App| {
-                    shell.update(cx, Shell::settings_requested);
+                move |window: &mut gpui::Window, cx: &mut App| {
+                    Self::toggle_settings(&shell, window, cx);
                 }
             })
             .when_some(
@@ -1655,12 +2089,29 @@ impl Shell {
         let Some(pane) = self.active_pane() else {
             return div().size_full();
         };
-        let pane_area = div()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .child(pane)
-            .into_any_element();
+        let pane_area = {
+            // The terminal context menu (gpui-chrome): the pane's
+            // default-mode right press bubbles to this wrap and opens
+            // core's rows through the Kit's popover path — the same
+            // route the per-tab menu rides. The profile folders stay
+            // honestly absent (the module's scope note): the empty
+            // list is the front's truth until a profile spawn path
+            // exists.
+            let shell = cx.entity();
+            let pick: crate::context_menu::PickFn =
+                std::rc::Rc::new(move |item, window: &mut Window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.context_menu_pick(item, window, cx));
+                });
+            div()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(pane)
+                .context_menu(move |menu, _window, _cx| {
+                    crate::context_menu::build_menu(menu, &[], &pick)
+                })
+                .into_any_element()
+        };
         let bar = bar.into_any_element();
 
         // The column through core's own stacking rule (gpui-status
@@ -1790,7 +2241,10 @@ impl gpui::Render for Shell {
             }
         }
         let pending = self.pending_close;
-        let band = self.sliding_band(cx).into_any_element();
+        let mut band = self.sliding_band(cx).into_any_element();
+        if self.settings.open {
+            band = self.settings_overlay(band, cx);
+        }
         let Some(pending) = pending else {
             return band;
         };
@@ -1920,6 +2374,130 @@ impl Shell {
 /// that grew past it), and the probe must never touch the shell from
 /// inside its render — queued entity updates flush inside the
 /// caller's borrow, so the report rides plain shared state instead.
+impl Shell {
+    /// The open drawer's overlay composition: a full-surface layer
+    /// holding every pointer event (the libcosmic `context_drawer`'s
+    /// capture rule — the band beneath never sees a press), the
+    /// right-anchored panel at core's width math over the live drag
+    /// (display-only until release), and the resize handle on the
+    /// pane's leading edge — drag tracks the pointer's window-absolute
+    /// x through `drawer_drag_px`, the release writes the width, a
+    /// double-click resets to the built-in default and clears the
+    /// stored value.
+    fn settings_overlay(
+        &mut self,
+        band: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let shell = cx.entity();
+        let drawer = self
+            .settings_drawer
+            .clone()
+            .expect("an open drawer holds its entity");
+        let surface = self
+            .last_bounds
+            .map_or(1280.0, |bounds| bounds.size.width.as_f32());
+        let live = self.settings.drawer_drag;
+        let width = dropterm_core::settings::drawer_width(
+            live.or(self.config.settings_drawer_width),
+            surface,
+        );
+
+        // The handle's press arms the drag (or resets on a
+        // double-click); the overlay's moves track it, its release
+        // commits.
+        let on_handle_down = {
+            let shell = shell.clone();
+            move |event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut gpui::App| {
+                shell.update(cx, |shell, cx| {
+                    if event.button == gpui::MouseButton::Left && event.click_count >= 2 {
+                        // The reset: the built-in default, the stored
+                        // value cleared.
+                        shell.write_settings(
+                            &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(None),
+                        );
+                        println!(
+                            "dropterm-gpui: drawer width reset at +{}ms",
+                            shell.boot.elapsed().as_millis()
+                        );
+                        cx.notify();
+                    } else if event.button == gpui::MouseButton::Left {
+                        shell.settings.drawer_drag = Some(dropterm_core::settings::drawer_drag_px(
+                            event.position.x.as_f32(),
+                            surface,
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        };
+        let on_move = {
+            let shell = shell.clone();
+            move |event: &gpui::MouseMoveEvent, _window: &mut Window, cx: &mut gpui::App| {
+                shell.update(cx, |shell, cx| {
+                    if shell.settings.drawer_drag.is_some() {
+                        shell.settings.drawer_drag = Some(dropterm_core::settings::drawer_drag_px(
+                            event.position.x.as_f32(),
+                            surface,
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        };
+        let on_release = {
+            let shell = shell.clone();
+            move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
+                shell.update(cx, |shell, cx| {
+                    if let Some(px) = shell.settings.drawer_drag.take() {
+                        shell.write_settings(
+                            &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
+                        );
+                        println!(
+                            "dropterm-gpui: drawer width released at {px}px (+{}ms)",
+                            shell.boot.elapsed().as_millis()
+                        );
+                        cx.notify();
+                    }
+                });
+            }
+        };
+
+        let panel = gpui::div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .w(px(width))
+            .flex()
+            .flex_row()
+            .bg(gpui::transparent_black())
+            // The handle leads the panel: a thin grab strip on the
+            // pane's leading edge.
+            .child(
+                gpui::div()
+                    .w(px(10.))
+                    .h_full()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .bg(cx.theme().border)
+                    .on_mouse_down(gpui::MouseButton::Left, on_handle_down),
+            )
+            .child(gpui::div().flex_1().min_w_0().child(drawer));
+
+        gpui::div()
+            .absolute()
+            .inset_0()
+            .on_mouse_move(on_move)
+            .on_mouse_up(gpui::MouseButton::Left, on_release)
+            .child(band)
+            .child(panel)
+            .into_any_element()
+    }
+}
+
 struct MeasureProbe {
     slot: Arc<Mutex<Option<(u32, u32)>>>,
     opened: Instant,
@@ -2059,6 +2637,13 @@ fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<T
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
 /// the libcosmic app; the first show verb runs the two-surface show.
+// One line over the lint's bar (the settings focus handle joined
+// the constructor's inputs — the modal-focus pattern); the pass to
+// re-bucket boot's inputs is its own refactor, not this fix's.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one param over; re-bucketing is its own refactor"
+)]
 pub(crate) fn boot(
     cx: &mut App,
     exit_after: Option<Duration>,
@@ -2092,6 +2677,7 @@ pub(crate) fn boot(
     // while the modal holds the keyboard and dies there otherwise.
     cx.bind_keys([
         gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
+        gpui::KeyBinding::new("escape", DismissSettings, Some("settings-drawer")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);
     let boot_theme = resolve_theme(&config);
@@ -2146,6 +2732,7 @@ pub(crate) fn boot(
             cx.focus_handle(),
             exit_after,
             band_font,
+            cx.focus_handle(),
         )
     });
     // The tick: 100 ms of verb drain + frame pump, holding the shell

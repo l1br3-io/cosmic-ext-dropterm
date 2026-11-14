@@ -191,7 +191,7 @@ pub(crate) fn grid_of(
 }
 
 /// An `Rgb` onto GPUI's color type.
-fn hsla(color: Rgb) -> Hsla {
+pub(crate) fn hsla(color: Rgb) -> Hsla {
     rgb(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)).into()
 }
 

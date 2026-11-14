@@ -136,6 +136,9 @@ The harness is `scripts/vm.sh` behind `just vm-*` recipes:
 
 - `just vm-status` — the preflight doctor (agent, session, disk
   headroom, snapshots). Run it first, always.
+- `just vm-list` — the libvirt domains on this host with their state
+  and guest users, i.e. the targets any recipe accepts and the
+  candidates for `VM_USER`.
 - `just vm-exec` / `just vm-exec-user` — run a command in the guest as
   root, or as the desktop user inside the session env (runtime dir +
   session bus + Wayland socket), which is how the CLI toggles behave
@@ -143,8 +146,24 @@ The harness is `scripts/vm.sh` behind `just vm-*` recipes:
 - `just vm-put` — transfer a file in, sha256 verified on both sides.
 - `just vm-screenshot` — capture the display for evidence.
 - `just vm-snapshot` / `just vm-restore` — clean points around each leg.
-- `just vm-push` — build both artifacts host-side and install them in
-  the guest exactly as the release tarball lays them down.
+- `just vm-push` — build both artifacts host-side, stage the `usr/`
+  tree as release CI does, and transfer the tarball into the guest
+  (left at `/root/dropterm-vm.tar.gz`; nothing the guest runs changes
+  yet).
+- `just vm-install` — unpack the last pushed tarball over `/`,
+  refresh the desktop database, and stop processes still running a
+  replaced binary (the guest-side half of `stop-stale-release`).
+  Re-running it needs no rebuild; `vm-push` again only for a new build.
+
+Every recipe targets the `PopOs24.04` domain by default (the value
+`VM_NAME` names, if set; `just vm-list` shows the choices). To target
+another libvirt domain, pass it as an optional argument — `just
+vm-push OtherVm`, `just vm-exec 'pgrep -a cosmic-comp' OtherVm` — or
+set the variable with `VM_NAME=OtherVm just vm-push` (or `just
+vm-name=OtherVm vm-push`; the assignment precedes the recipe).
+Recipes that use the guest user take it next — `just vm-status OtherVm
+alice` — or read `VM_USER` (`VM_USER=alice just vm-status`, `just
+vm-user=alice vm-status`).
 
 The walk, in order:
 
