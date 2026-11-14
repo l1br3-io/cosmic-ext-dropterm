@@ -555,7 +555,8 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       the ✓ flash and its return, the duration's live/frozen chain
       proven after the walk's structural find: the pane's starved
       engine-flag fix, its own commit; the scrolled rows ride the
-      wheel class; merged below)
+      wheel class; merged 35ea4cf with `just check` green on
+      the result)
 - [ ] gc-1 Context menu + pickers on the Kit popover path
 - [ ] gc-2 Settings drawer (write contract unchanged; control map
       ported; config↔docs pin green)

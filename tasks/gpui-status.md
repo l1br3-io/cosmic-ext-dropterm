@@ -112,7 +112,8 @@ M
       reaches the surface) — the chip and its jump verb are wired
       and headless-pinned, their live row belongs to parity's
       human-at-console class)*
-- [ ] `just check` green on the merge result
+- [x] `just check` green on the merge result
+      *(35ea4cf, green on main)*
 
 **Verification:**
 - [x] Manual: band rows, both compositors
