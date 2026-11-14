@@ -51,20 +51,14 @@
 //! as the serving process, so a clipboard walk's `wl-paste` marker
 //! check must run while the pane lives, never after the exit timer.
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alacritty_terminal::tty;
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{App, Bounds, Size, WindowBackgroundAppearance, WindowBounds, WindowKind, point, px};
-use tokio::sync::mpsc;
 
-use dropterm_core::config::DropTermConfig;
-use dropterm_core::tabs::TabId;
-use dropterm_core::terminal::Terminal;
-
-use crate::terminal::host::GpuiHost;
 use crate::terminal::view;
+use dropterm_core::config::DropTermConfig;
 
 /// The narrow grid the walk opens at (the acceptance's 8×20) and the
 /// widened column count it grows to, same rows.
@@ -119,37 +113,15 @@ fn pane_window_options(width: u32, height: u32) -> gpui::WindowOptions {
 /// once mid-run.
 pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
-    let colors = view::boot_colors(&config);
 
-    let host = GpuiHost::new(cx);
-    let font = host.font();
-
+    // The shared construction path (the shell wiring's own, Task 4):
+    // one boot_pane for the harness and the drawer alike. The walk
+    // seeds its PTY through `DROPTERM_TERM_CMD`'s shell line.
     let (shell, args) = walk_shell(std::env::var("DROPTERM_TERM_CMD").ok().as_deref());
-    println!("dropterm-gpui: CHECK terminal-grid spawning {shell:?} {args:?}");
-    let pty_options = tty::Options {
-        shell: Some(tty::Shell::new(shell, args)),
-        drain_on_exit: true,
-        ..tty::Options::default()
-    };
-    let options = dropterm_core::terminal::TerminalOptions {
-        font_size: config.font_size,
-        ..dropterm_core::terminal::TerminalOptions::default()
-    };
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let terminal = match Terminal::new(
-        Box::new(host),
-        TabId(0),
-        event_tx,
-        alacritty_terminal::term::Config::default(),
-        &pty_options,
-        &options,
-        &colors,
-    ) {
-        Ok(terminal) => Arc::new(Mutex::new(terminal)),
-        Err(err) => {
-            eprintln!("dropterm-gpui: terminal-grid pty spawn failed: {err:?}");
-            std::process::exit(1);
-        }
+    let Some((terminal, pane)) =
+        view::boot_pane(cx, &config, Some(tty::Shell::new(shell, args)), None)
+    else {
+        std::process::exit(1);
     };
 
     // The measured cell sizes the narrow grid: the acceptance's
@@ -176,16 +148,6 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         cell.cell_width, cell.cell_height
     );
 
-    let pane = view::pane_with_pump(
-        cx,
-        Arc::clone(&terminal),
-        &colors,
-        config.opacity,
-        font,
-        options,
-        &config.custom_key_binds,
-        event_rx,
-    );
     let window: gpui::AnyWindowHandle =
         match cx.open_window(pane_window_options(narrow.0, narrow.1), |_, _| pane) {
             Ok(window) => window.into(),

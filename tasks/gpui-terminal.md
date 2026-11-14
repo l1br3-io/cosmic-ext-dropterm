@@ -170,18 +170,54 @@ GPUI executor's windows (this task is why the slice lands after
 end to end. Terminal rows of the manual checklist walked; merge.
 
 **Acceptance criteria:**
-- [ ] The drawer opens into a focused, typed-in terminal on both
+- [x] The drawer opens into a focused, typed-in terminal on both
       compositors
-- [ ] `just check` green on the merge result
+- [x] `just check` green on the merge result
 
 **Verification:**
-- [ ] Manual: terminal rows, both compositors
-- [ ] Tests pass: `just check`
+- [x] Manual: terminal rows, both compositors — walked 2026-11-14:
+      the scaffold's clock band is gone, the pane is the drawer's
+      whole content under the same slide translation, built once at
+      boot through the one shared construction path (`boot_pane` —
+      the walk harness and the shell no longer duplicate a spawn),
+      the pane's Hide chord rides a channel the shell's tick drains
+      into the machine's hide funnel (window work never runs inside
+      a pane's event handler — sr-1's lesson), and
+      `Action::FocusTerminal` applies as the pane standing focused
+      (its handle grabs the keyboard on first render inside the
+      surface — the row is the decision landing). THE RIG
+      (rig-evidence-gt4-drawer.log): the whole walk inside one
+      `dbus-run-session` — the rig has no session bus, so a second
+      launch would become a second instance; the wrapper gives the
+      forwarded toggle a shared bus — and the drawer cycle ran:
+      forwarded toggle → Measure/Show/Focus (first frame 54ms),
+      the pane's rows rendering in the drawer (147-col grid across
+      the full-width surface), typing advancing the caret, a second
+      full cycle on the re-toggle; RIG FINDING, environment: sway
+      drops the drawer's keyboard activation the moment wtype
+      creates its per-invocation virtual keyboard, which ran the
+      focus-loss funnel (Hold → Destroy) correctly mid-walk — the
+      hide chord row itself moved to the VM where cosmic-comp
+      keeps activation. THE VM
+      (vm-evidence-gt4-{1,2,3,4}.png + -drawer.log): the pixel
+      proofs — the drawer band appears (102k sampled px vs the
+      hidden frame), the typed line renders inside it (VM-DRAWER-
+      TYPED echoed through 15 row updates), the band leaves on the
+      hide (Ctrl+Shift+Q → "pane hide action -> the hide funnel" →
+      Hold → Destroy at +15768ms), and the full cycle repeats
+      (re-show first frame 39ms, AFTER-RESHOW typed); SelectAll +
+      Copy took 32 bytes through the focused drawer's GPUI
+      clipboard (the offer-lifetime note applies there too — the
+      marker read must run while the pane lives).
+- [x] Tests pass: `just check` — green on the branch; the merge's
+      own gate runs on main.
 
 **Dependencies:** Tasks 1–3, and `gpui-surface` merged · **Files:** the
 app-shell wiring · **Scope:** S
 
 ## Checkpoint: a working terminal in the GPUI drawer
 
-- [ ] Type, select, scroll, resize, copy — the drawer is a terminal on
-      both compositors
+- [x] Type, select, scroll, resize, copy — the drawer is a terminal on
+      both compositors — 2026-11-14: Tasks 1–4 walked and merged; the
+      evidence index lives in the tasks above and under
+      `target/{rig,vm}-evidence-gt*`.

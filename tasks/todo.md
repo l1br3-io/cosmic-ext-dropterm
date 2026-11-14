@@ -446,8 +446,19 @@ name, answers the contract on both compositors.
       clipboard (323 bytes, pasted back whole), an external
       wl-copy's marker through the Paste chord, and an OSC 52 store
       serving over data-control while the pane lived)*
-- [ ] gt-4 Wire into the executor's windows; terminal rows both
+- [x] gt-4 Wire into the executor's windows; terminal rows both
       compositors; merge — after sr-4 or coordinated with it
+      *(done 2026-11-14 on port/gpui-terminal: the clock band is
+      gone, the pane is the drawer's content under the slide
+      translation, one shared boot_pane constructs it for the shell
+      and the walk harness alike, the pane's Hide chord drains
+      through the shell's tick into the machine's funnel, and the
+      drawer cycle walked both compositors — the rig inside a
+      dbus-run-session (forwarded toggle, pane rows rendering,
+      typing, the re-show; sway's wtype-induced activation loss ran
+      the focus-loss funnel correctly), the VM with pixels (the
+      band appearing, the typed line, the hide-by-chord destroy,
+      the re-show) and the hide chord + copy rows logged)*
 - [ ] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
       cleanup); four tests green
 - [ ] gm-2 Apply path: before first frame + live re-theme; C4-class

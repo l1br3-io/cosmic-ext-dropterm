@@ -111,6 +111,10 @@ pub(crate) struct TerminalPane {
     /// included — so a bypass that starts as a selection never hands
     /// the child a release it never saw).
     reporting_gesture: bool,
+    /// The pane's Hide action handed up to a shell that owns the
+    /// surface lifecycle (`None` in the standalone walk harness —
+    /// the action only logs there).
+    hide_request: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl TerminalPane {
@@ -155,6 +159,7 @@ impl TerminalPane {
             scroll_lines: 0.,
             reporter: MouseReporter::default(),
             reporting_gesture: false,
+            hide_request: None,
         }
     }
 
@@ -440,9 +445,15 @@ impl TerminalPane {
                 self.needs_update = true;
             }
             TermAction::Hide => {
-                println!(
-                    "dropterm-gpui: pane hide action (the shell wiring routes it with the integration task)"
-                );
+                // Handed to the shell that owns the surface lifecycle
+                // (its tick runs the machine's hide funnel); the
+                // standalone walk pane has no shell and only logs.
+                if let Some(hide) = &self.hide_request {
+                    println!("dropterm-gpui: pane hide action -> the shell's funnel");
+                    let _ = hide.send(());
+                } else {
+                    println!("dropterm-gpui: pane hide action (no shell in the walk harness)");
+                }
             }
         }
         cx.notify();
@@ -1284,4 +1295,64 @@ pub(crate) fn pane_with_pump(
         pane.spawn_pump(events, cx);
         pane
     })
+}
+
+/// The one construction path for a pane and its engine terminal —
+/// the walk harness and the app shell share it (gpui-terminal Task
+/// 4's integration): config → host → PTY → engine → the pane entity
+/// with its pump and the config's keybind overlay. `shell` overrides
+/// the PTY's program (the walk's seeding affordance); `None` is the
+/// tty default. The optional channel carries the pane's Hide action
+/// to a shell that owns the surface lifecycle (the walk's standalone
+/// pane passes `None` and only logs).
+pub(crate) fn boot_pane(
+    cx: &mut App,
+    config: &dropterm_core::config::DropTermConfig,
+    shell: Option<alacritty_terminal::tty::Shell>,
+    hide_request: Option<std::sync::mpsc::Sender<()>>,
+) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
+    let colors = boot_colors(config);
+    let host = crate::terminal::host::GpuiHost::new(cx);
+    let font = host.font();
+    println!(
+        "dropterm-gpui: pane pty spawning {}",
+        shell.as_ref().map_or_else(
+            || "the tty default shell".to_string(),
+            |sh| format!("{sh:?}")
+        )
+    );
+    let pty_options = alacritty_terminal::tty::Options {
+        shell,
+        drain_on_exit: true,
+        ..alacritty_terminal::tty::Options::default()
+    };
+    let options = TerminalOptions {
+        font_size: config.font_size,
+        ..TerminalOptions::default()
+    };
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let terminal = Terminal::new(
+        Box::new(host),
+        TabId(0),
+        event_tx,
+        alacritty_terminal::term::Config::default(),
+        &pty_options,
+        &options,
+        &colors,
+    )
+    .map_err(|err| eprintln!("dropterm-gpui: pane pty spawn failed: {err:?}"))
+    .ok()?;
+    let terminal = Arc::new(Mutex::new(terminal));
+    let pane = pane_with_pump(
+        cx,
+        Arc::clone(&terminal),
+        &colors,
+        config.opacity,
+        font,
+        options,
+        &config.custom_key_binds,
+        event_rx,
+    );
+    pane.update(cx, |pane, _| pane.hide_request = hide_request);
+    Some((terminal, pane))
 }
