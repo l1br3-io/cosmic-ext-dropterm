@@ -542,8 +542,11 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       rows' record is gb-2's walk on both compositors, `just check`
       green on the final tree; the module builds on main per the
       owner's ruling, no merge)*
-- [ ] gn-1 Band layout + clock + base segments · gn-2 OSC-fed segments ·
-      gn-3 rows + merge
+- [x] gn-1 Band layout + clock + base segments *(done 2026-11-14 —
+      the framework-free model moved to core first, unchanged, the
+      libcosmic suite green as the proof; the GPUI band renders it:
+      rig + VM walks green, the clock's boundary flip logged and
+      pixel-diffed)* · gn-2 OSC-fed segments · gn-3 rows + merge
 - [ ] gc-1 Context menu + pickers on the Kit popover path
 - [ ] gc-2 Settings drawer (write contract unchanged; control map
       ported; config↔docs pin green)

@@ -22,12 +22,29 @@ custom) from core's model. Headless tests pin segment state →
 presentation.
 
 **Acceptance criteria:**
-- [ ] Band renders per config (show/hide, segments) on both compositors;
+- [x] Band renders per config (show/hide, segments) on both compositors;
       clock ticks at the minute boundary
+      *(walked 2026-11-14 — rig target/rig-evidence-gn1/ runs a-e, VM
+      target/vm-evidence-gn1/ runs a-c: run A holds every base seat —
+      the filled disc with `sleep`'s comm (an interactive bash's
+      job-control child; the exec-class seed's hollow disc beside it
+      is the engine's own pgrp rule reading idle, the honest
+      fallback), the `~`-collapsed path, its git branch, the tab
+      position, the clock — and two shots straddling a minute
+      boundary: the log carries the flip at +25 864 ms (boot
+      18:39:34 → 18:40:00.2, the boundary itself) with 631 px
+      differing exactly at the clock's corner; run B
+      (`status_bar_enabled: false`) drops the band whole — the
+      1-tab strip's corner affordances alone at the free edge; run C
+      (`clock/path/branch: false`) takes the named seats and only
+      them, the grid honestly absent at its spawn default; the VM's
+      run A pixels carry the same set — • sleep · ⌂ ~/gn-walk ·
+      vm-main · ▤ 2/2 · ◷ 17:33 beside the logged arm — with B/C
+      gated silent in the logs)*
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: band render walk on rig + VM
+- [x] Tests pass: `just check`
+- [x] Manual: band render walk on rig + VM
 
 **Dependencies:** `gpui-terminal` merged · **Files:** the status-band
 module · **Scope:** M
