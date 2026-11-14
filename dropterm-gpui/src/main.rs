@@ -21,6 +21,20 @@ mod kit_check;
 mod startup;
 mod terminal;
 mod terminal_walk;
+// The carried C4 generator (gpui-theme planning ruling: verbatim-plus-
+// compile — the file stays byte-identical to the spike's apart from
+// the SPDX header). The allows below are the compile adaptation, not
+// mapping changes: the doc prose and closure shapes predate the
+// pedantic table, and `dropterm_dark` stays test-only by design (the
+// C4 fixture scheme; Task 2 wired the generator itself into the apply
+// path).
+#[allow(
+    clippy::doc_markdown,
+    unused_mut,
+    dead_code,
+    reason = "carried verbatim from the spike; only the test fixture stays unused"
+)]
+mod theme_gen;
 
 use std::fmt;
 use std::sync::Arc;

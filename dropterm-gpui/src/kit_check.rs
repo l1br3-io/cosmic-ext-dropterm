@@ -78,6 +78,17 @@ pub(crate) const KIT_HEIGHTS: [f32; 7] = [200., 240., 280., 320., 280., 240., 20
 /// owns the window, Root hosts the overlays).
 pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     gpui_component::init(cx);
+    // gpui-theme Task 2: the check's chrome renders through the real
+    // apply path — the drawer's resolved scheme, not the Kit's
+    // defaults — so every bump-time rerun also exercises the
+    // sanctioned theme route (and the popover shows the scheme, C4's
+    // evidence class).
+    crate::app_shell::apply_kit_theme(
+        cx,
+        &dropterm_core::config::DropTermConfig::load_from(
+            &dropterm_core::config::store::store_dir(),
+        ),
+    );
     let open = Instant::now();
     println!(
         "dropterm-gpui: CHECK-C2b Root + Kit overlays on the layer surface, {CADENCE_MS}ms cadence"

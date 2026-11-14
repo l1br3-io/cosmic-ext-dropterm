@@ -28,6 +28,7 @@ use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::slide::{self, SLIDE_DURATION_MS};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+use gpui_component::ActiveTheme as _;
 use notify::Watcher as _;
 
 use crate::dbus::Verb;
@@ -60,6 +61,74 @@ fn phase_of(state: &SurfaceState) -> SurfacePhase {
         SurfaceState::Shown(_) => SurfacePhase::Shown,
         SurfaceState::Hiding(_) => SurfacePhase::Hiding,
     }
+}
+
+/// One resolved scheme apply (gpui-theme Task 2): everything the
+/// generator and the pane read from a config — the glue chain's name,
+/// mode, and colors in one value, resolved at the echo so the tick's
+/// apply is pure application.
+struct ResolvedTheme {
+    name: String,
+    dark: bool,
+    colors: alacritty_terminal::term::color::Colors,
+}
+
+/// Resolve a config's theme (gpui-theme Task 2): the same glue chain
+/// the pane's [`view::boot_colors`] runs — `System` resolves dark
+/// until the live system-mode read lands (the drawer default) — plus
+/// the scheme name and mode [`crate::theme_gen`] wants.
+fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
+    let dark = dropterm_core::theme_glue::effective_is_dark(config.theme_preference, true);
+    ResolvedTheme {
+        name: dropterm_core::profile::effective_scheme_name(
+            None,
+            &config.color_scheme_dark,
+            &config.color_scheme_light,
+            dark,
+        )
+        .to_string(),
+        dark,
+        colors: dropterm_core::theme_glue::effective_colors(config, None, dark),
+    }
+}
+
+/// The applied-theme identity a config resolves to (gpui-theme Task
+/// 2's change detector): scheme name plus mode. A config echo whose
+/// identity matches the applied one re-themes nothing; geometry-only
+/// edits never touch the theme.
+fn theme_identity(theme: &ResolvedTheme) -> (String, bool) {
+    (theme.name.clone(), theme.dark)
+}
+
+/// Apply a resolved theme through C4's sanctioned route (gpui-theme
+/// Task 2): generated JSON → `from_value::<ThemeConfig>` →
+/// `Theme::update(apply_config)` — the `#[non_exhaustive]` struct's
+/// one sanctioned construction. Requires `gpui_component::init` (the
+/// theme global the Kit's surfaces read); logs the token read-back
+/// the walks evidence.
+fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
+    let json = crate::theme_gen::kit_theme_json(&theme.colors, &theme.name, theme.dark);
+    let config: gpui_component::ThemeConfig = serde_json::from_value(json)
+        .expect("the generated theme parses — pinned by theme_gen's own tests");
+    gpui_component::Theme::update(cx, |t| t.apply_config(&std::rc::Rc::new(config)));
+    let applied = cx.theme();
+    println!(
+        "dropterm-gpui: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
+         foreground {:?}",
+        theme.name,
+        if theme.dark { "dark" } else { "light" },
+        applied.background,
+        applied.primary,
+        applied.foreground,
+    );
+}
+
+/// The boot-time apply (gpui-theme Task 2): resolve the config's
+/// theme and apply it before any window opens — also the kill
+/// check's entry onto the same route, so its chrome evidences the
+/// real path.
+pub(crate) fn apply_kit_theme(cx: &mut App, config: &DropTermConfig) {
+    apply_resolved_theme(cx, &resolve_theme(config));
 }
 
 /// The shell view: the shaped window's root. Owns the decision layer,
@@ -111,6 +180,13 @@ pub(crate) struct Shell {
     /// through the machine's hide funnel on the tick — window work
     /// never runs inside a pane's event handler (sr-1's lesson).
     hide_requests: Receiver<()>,
+    /// The applied theme identity (gpui-theme Task 2): the config
+    /// echo's change detector — an edit whose identity matches the
+    /// applied one re-themes nothing.
+    theme: (String, bool),
+    /// A scheme edit awaiting the tick's apply point (the Kit's
+    /// tokens and the pane's colors re-apply before the next frame).
+    pending_theme: Option<ResolvedTheme>,
     /// The measuring probe's granted-bounds slot: the probe writes
     /// the configured output size (never from inside a render does it
     /// touch this shell — queued entity updates flush inside the
@@ -129,6 +205,7 @@ impl Shell {
         verbs: Receiver<Verb>,
         pane: Entity<TerminalPane>,
         hide_requests: Receiver<()>,
+        theme: (String, bool),
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
         exit_after: Option<Duration>,
@@ -143,6 +220,8 @@ impl Shell {
             inputs,
             pane,
             hide_requests,
+            theme,
+            pending_theme: None,
             drag_walk: drag_walk.unwrap_or_default().into(),
             drag_release_at: None,
             config_changes,
@@ -332,6 +411,22 @@ impl Shell {
             return;
         }
         let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+        // gpui-theme Task 2: a scheme edit re-themes — resolved here,
+        // applied at the tick's apply point before the next frame.
+        // The identity compare absorbs echoes (an unchanged scheme is
+        // not a re-theme) and keeps geometry-only edits off the theme
+        // path.
+        let resolved = resolve_theme(&config);
+        let identity = theme_identity(&resolved);
+        if identity != self.theme {
+            println!(
+                "dropterm-gpui: config changed -> theme: {} ({})",
+                resolved.name,
+                if resolved.dark { "dark" } else { "light" }
+            );
+            self.theme = identity;
+            self.pending_theme = Some(resolved);
+        }
         let new_inputs = SurfaceInputs::from_config(&config);
         let old_geometry = self.inputs.geometry;
         let drag_armed = self.machine.drag.is_some();
@@ -339,9 +434,10 @@ impl Shell {
             .machine
             .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
         if intents.is_empty() && old_geometry == new_inputs.geometry {
-            // The write (or its echo) changed nothing the surface
-            // reads: absorb silently, and open the quiet window so
-            // the rest of the write's event burst costs no rows.
+            // The write (or its echo) changed nothing the surface's
+            // geometry reads: absorb the rest of the burst quietly —
+            // a pending theme (a scheme-only edit) still rides the
+            // tick's apply.
             self.config_quiet_until = Some(Instant::now() + Duration::from_millis(300));
             return;
         }
@@ -360,6 +456,19 @@ impl Shell {
         );
         self.inputs = new_inputs;
         self.execute_into(intents, actions);
+    }
+
+    /// The tick's theme apply point (gpui-theme Task 2): the Kit's
+    /// tokens and the pane's colors from one resolution, applied here
+    /// where the App context lives — before the frame the tick's own
+    /// notify asks for, so a scheme edit lands without a restart.
+    fn apply_pending_theme(&mut self, cx: &mut Context<Self>) {
+        let Some(theme) = self.pending_theme.take() else {
+            return;
+        };
+        apply_resolved_theme(cx, &theme);
+        self.pane
+            .update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
     }
 
     /// One forwarded surface verb through the toggle funnel: the
@@ -739,6 +848,13 @@ pub(crate) fn boot(
     if drag_walk.is_some() {
         println!("dropterm-gpui: drag walk armed (positions fed once shown and at rest)");
     }
+    // gpui-theme Task 2: the Kit initialized and the resolved scheme
+    // applied before any window exists — every Kit surface and token
+    // reads the DropTerm scheme from its first frame (C4's route).
+    gpui_component::init(cx);
+    let boot_theme = resolve_theme(&config);
+    let boot_theme_identity = theme_identity(&boot_theme);
+    apply_resolved_theme(cx, &boot_theme);
     // The drawer's terminal pane (gpui-terminal Task 4): built once
     // at boot, before any surface exists — the pane renders into
     // whatever window the executor maps it into. The PTY program is
@@ -786,6 +902,7 @@ pub(crate) fn boot(
             verbs,
             pane,
             hide_requests,
+            boot_theme_identity,
             drag_walk,
             config_changes,
             exit_after,
@@ -801,6 +918,10 @@ pub(crate) fn boot(
                 .await;
             cx.update(|cx| {
                 let pumped = shell.update(cx, |shell, _| shell.pump());
+                // gpui-theme Task 2: a scheme edit re-themes before
+                // the next frame — the App context lives here, not in
+                // pump (the same split every window action takes).
+                shell.update(cx, Shell::apply_pending_theme);
                 for action in pumped.actions {
                     apply_action(cx, &shell, action);
                 }
@@ -875,5 +996,63 @@ mod tests {
             Some(vec![216., 240., 270., 305.])
         );
         assert_eq!(drag_walk_positions(Some("216,soon,270")), None);
+    }
+
+    #[test]
+    fn theme_identity_tracks_the_scheme_and_mode_not_geometry() {
+        use dropterm_core::config::ThemePreference;
+
+        let base = DropTermConfig::default();
+        let base_id = theme_identity(&resolve_theme(&base));
+        assert_eq!(theme_identity(&resolve_theme(&base)), base_id);
+
+        // A geometry-only edit never re-themes.
+        let geometry_only = DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        };
+        assert_eq!(theme_identity(&resolve_theme(&geometry_only)), base_id);
+
+        // A scheme-name edit does.
+        let scheme = DropTermConfig {
+            color_scheme_dark: "Dracula".to_string(),
+            ..DropTermConfig::default()
+        };
+        assert_ne!(theme_identity(&resolve_theme(&scheme)), base_id);
+
+        // A preference flip changes the mode (System resolves dark
+        // until the live system-mode read lands; Light resolves
+        // light).
+        let pref = DropTermConfig {
+            theme_preference: ThemePreference::Light,
+            ..DropTermConfig::default()
+        };
+        assert_ne!(theme_identity(&resolve_theme(&pref)), base_id);
+    }
+
+    #[test]
+    fn resolved_theme_colors_agree_with_the_panes_boot_colors() {
+        use alacritty_terminal::vte::ansi::NamedColor;
+
+        // One resolution chain: the theme the Kit applies and the
+        // colors the pane paints must come from the same glue
+        // decisions, or the chrome and the terminal drift apart on a
+        // live edit.
+        let config = DropTermConfig::default();
+        let resolved = resolve_theme(&config).colors;
+        let boot = view::boot_colors(&config);
+        for nc in [
+            NamedColor::Background,
+            NamedColor::Foreground,
+            NamedColor::BrightBlack,
+            NamedColor::Blue,
+            NamedColor::BrightBlue,
+            NamedColor::Red,
+            NamedColor::Green,
+            NamedColor::Yellow,
+            NamedColor::Cyan,
+        ] {
+            assert_eq!(resolved[nc], boot[nc], "{nc:?} must agree — one chain");
+        }
     }
 }

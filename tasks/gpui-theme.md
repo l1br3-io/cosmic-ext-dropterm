@@ -24,12 +24,12 @@ parallel with `gpui-surface`/`gpui-terminal`).
 (theme glue's output). The four tests run green in `just check`.
 
 **Acceptance criteria:**
-- [ ] The four carried tests green (core mapping, name/mode pass-through,
+- [x] The four carried tests green (core mapping, name/mode pass-through,
       absent-stays-absent, parses-as-`ThemeConfig`)
-- [ ] `just check` green
+- [x] `just check` green
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check`
 
 **Dependencies:** `gpui-scaffold` merged · **Files:** the theme module ·
 **Scope:** S
@@ -42,12 +42,12 @@ regenerates on live scheme edits. Token read-back and themed-chrome
 screenshots on the rig + VM (C4's evidence class).
 
 **Acceptance criteria:**
-- [ ] Tokens read back the scheme before first frame; chrome renders
+- [x] Tokens read back the scheme before first frame; chrome renders
       through them on both compositors
-- [ ] A live scheme edit re-themes without restart
+- [x] A live scheme edit re-themes without restart
 
 **Verification:**
-- [ ] Manual: the C4-class walk on rig + VM (screenshots held)
+- [x] Manual: the C4-class walk on rig + VM (screenshots held)
 
 **Dependencies:** Task 1 · **Files:** the apply path in the app shell ·
 **Scope:** S
