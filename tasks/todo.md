@@ -468,8 +468,26 @@ name, answers the contract on both compositors.
       the carried file stays auditable against the spike; serde_json =1
       the one new direct dep, already in the lock — the lockfile took
       only the dep edge)*
-- [ ] gm-2 Apply path: before first frame + live re-theme; C4-class
-      evidence — merge
+- [x] gm-2 Apply path: before first frame + live re-theme; C4-class
+      evidence — merge *(done 2026-11-14 on port/gpui-theme: the Kit
+      initialized and the scheme applied in boot() before any window
+      exists, the config echo resolves and compares a theme identity
+      (scheme name + mode — geometry-only edits never re-theme, live
+      on both compositors), and the tick's own apply point runs the
+      sanctioned route plus the pane's retheme (the zoom action's
+      set_config seam) before its notify; the kill check now themes
+      through the same route, doubling as the standing C4 chrome
+      harness; WALKED 2026-11-14 on rig + VM (evidence under
+      target/{rig,vm}-evidence-gm2-*): the boot row lands before
+      first frame with tokens reading the scheme (Dracula bg l=0.184
+      = #282A36, primary rides its Blue), the live Dracula→Nord edit
+      re-applies with Nord tokens (#2E3440) while shown and the
+      drawer band's pixels follow (rig 40,42,54→46,52,64; VM the
+      same), the height-only edit reshapes with the theme-applied
+      count staying 2, and the themed kill check holds its flush
+      edges (320→320) with overlays silent on both; 2 new unit pins:
+      the identity detector and the resolve/boot_colors one-chain
+      agreement)*
 
 **Checkpoint — a working, themed terminal drawer on GPUI** (sr ∥ gt ∥ gm
 after sf; gb ∥ gn after gt).

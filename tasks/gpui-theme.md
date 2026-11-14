@@ -42,12 +42,12 @@ regenerates on live scheme edits. Token read-back and themed-chrome
 screenshots on the rig + VM (C4's evidence class).
 
 **Acceptance criteria:**
-- [ ] Tokens read back the scheme before first frame; chrome renders
+- [x] Tokens read back the scheme before first frame; chrome renders
       through them on both compositors
-- [ ] A live scheme edit re-themes without restart
+- [x] A live scheme edit re-themes without restart
 
 **Verification:**
-- [ ] Manual: the C4-class walk on rig + VM (screenshots held)
+- [x] Manual: the C4-class walk on rig + VM (screenshots held)
 
 **Dependencies:** Task 1 · **Files:** the apply path in the app shell ·
 **Scope:** S

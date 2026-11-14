@@ -25,13 +25,14 @@ mod terminal_walk;
 // compile — the file stays byte-identical to the spike's apart from
 // the SPDX header). The allows below are the compile adaptation, not
 // mapping changes: the doc prose and closure shapes predate the
-// pedantic table, and the functions sit test-only until Task 2 wires
-// the apply path (dead_code leaves the list then).
+// pedantic table, and `dropterm_dark` stays test-only by design (the
+// C4 fixture scheme; Task 2 wired the generator itself into the apply
+// path).
 #[allow(
     clippy::doc_markdown,
     unused_mut,
     dead_code,
-    reason = "carried verbatim from the spike; Task 2 wires the apply path"
+    reason = "carried verbatim from the spike; only the test fixture stays unused"
 )]
 mod theme_gen;
 

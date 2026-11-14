@@ -341,6 +341,22 @@ impl TerminalPane {
 }
 
 impl TerminalPane {
+    /// Swap the pane's scheme (gpui-theme Task 2, called by the
+    /// shell's tick): the engine's config re-applies with the new
+    /// colors — the zoom action's `set_config` seam — and the skin
+    /// carries them to the next frame's paint, so a live scheme edit
+    /// re-themes the terminal with the chrome.
+    pub(crate) fn retheme(&mut self, colors: &Colors, cx: &mut Context<Self>) {
+        let options = self.options.clone();
+        self.terminal
+            .lock()
+            .expect("engine lock")
+            .set_config(&options, colors);
+        self.skin.colors = *colors;
+        self.needs_update = true;
+        cx.notify();
+    }
+
     /// One matched action through the pane — the terminal-view
     /// slice's execution (the libcosmic `perform_action` pared to
     /// the pane's own surface; clipboard lands with its task, the
