@@ -1276,8 +1276,9 @@ fn paint_row(
 
 /// The scheme the pane resolves for a config at boot — the effective
 /// colors chain with no profile (single pane, no tabs yet) and the
-/// preference's own dark/light; `System` resolves dark until the
-/// theme slice lands the live system-mode read (the drawer default).
+/// preference's own dark/light; `System` still resolves dark (the
+/// drawer default): gpui-theme shipped the config-pass re-theme, and
+/// a live system-mode watch rides a later slice.
 pub(crate) fn boot_colors(config: &dropterm_core::config::DropTermConfig) -> Colors {
     let is_dark = dropterm_core::theme_glue::effective_is_dark(
         config.theme_preference,
