@@ -206,9 +206,26 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
       the binary runs QuitMode::Explicit; the mid-slide reversal is
       wire-evidenced on the rig and rides parity's human-at-console
       row on the VM, as si-5 parked it for the libcosmic build)*
-- [ ] [gpui-terminal](gpui-terminal.md) Tasks 1–4: grid view + resize →
+- [x] [gpui-terminal](gpui-terminal.md) Tasks 1–4: grid view + resize →
       input/keybinds/selection/scrollback → mouse + clipboard →
       integration + merge
+      *(merged 761547d, 2026-11-14 — every task walked on the sway rig
+      and the validation VM under snapshot discipline, evidence under
+      `target/` (rig-evidence-gt{1,2,4}*, vm-evidence-gt{1,2,3,4}*);
+      core grew the framework-free mouse-tracking encodings (both
+      frontends consume one implementation now, the libcosmic
+      frontend an adapter with its 702 tests unchanged); structural
+      findings banked from the walks: the silent unheld-font
+      rasterization (candidate-list resolution), the rig's
+      never-presenting harness surface (keyboard reaches it, pixels
+      and pointer never — the drawer's own window presents), and the
+      environment classes (cosmic-comp drops wtype's modifiers;
+      uinput wheel synthesis reaches no app on the VM — the
+      physical-wheel row rides parity's human-at-console class); the
+      drawer is a terminal end to end: toggle → slide → live pane,
+      typed, selected, scrolled, copied, hidden by the pane's own
+      chord, re-shown — first frames 35–54 ms inside the 130 ms
+      budget on both compositors)*
 - [ ] [gpui-theme](gpui-theme.md) Tasks 1–2: carry the generator → the
       apply path (first frame + live)
 - **Checkpoint: a working, themed terminal drawer on GPUI**
