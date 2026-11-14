@@ -280,6 +280,9 @@ pub(crate) struct Shell {
     /// The last tick's hidden reading — the show transition's
     /// detector (every show clears the missed-activity latches).
     was_hidden: bool,
+    /// The command timer's last logged state (the boundary rows'
+    /// change detector).
+    status_timer_logged: (bool, Option<(String, std::time::Duration)>, Option<u32>),
 }
 
 impl Shell {
@@ -336,6 +339,7 @@ impl Shell {
             band_font,
             status_copied: None,
             was_hidden: true,
+            status_timer_logged: (false, None, None),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -1533,7 +1537,27 @@ impl Shell {
             attention_red,
             attention_bright_red,
         };
-        self.status = status::resolve_segments(&inputs, toggles);
+        let resolved = status::resolve_segments(&inputs, toggles);
+        // The command timer's boundary rows (the duration rows' walk
+        // evidence, the clock flip's own class): one row at each
+        // start (the live elapsed's first stand) and each finish
+        // (the frozen pair's landing), never per tick.
+        let timer_state = (
+            resolved.running_elapsed.is_some(),
+            resolved.frozen.clone(),
+            resolved.exit_code,
+        );
+        if timer_state != self.status_timer_logged {
+            println!(
+                "dropterm-gpui: status timer live={} frozen={:?} exit={:?} at +{}ms",
+                timer_state.0,
+                timer_state.1,
+                timer_state.2,
+                self.boot.elapsed().as_millis()
+            );
+            self.status_timer_logged = timer_state;
+        }
+        self.status = resolved;
     }
 
     /// The strip element with every interaction wired (the strip is

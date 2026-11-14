@@ -91,10 +91,30 @@ M
 **Description:** The status-band rows walked on COSMIC + sway; merge.
 
 **Acceptance criteria:**
-- [ ] Band rows pass on both compositors
+- [x] Band rows pass on both compositors
+      *(walked 2026-11-14 — VM target/vm-evidence-gn3/ (the
+      interaction rows, uinput-driven), rig target/rig-evidence-gn3/
+      (the timer rows beside gn-1/gn-2's pixels): the copy verb
+      end-to-end — the path's click logged (`status copy Path (20
+      bytes)`), the payload served by an external `wl-paste`
+      (`~/gn-osc-destination`, the full un-elided value), the ✓
+      flash re-laying the band in its window and the value
+      returning after; the duration rows — `live=true` at the
+      flood's first witness, the frozen pair `("yes", 4.11s)` at
+      the kill's finish edge, the chip reading `yes 0:04` in the
+      pixels; and the walk's structural finding, fixed with it: the
+      pane's own needs_update flag was consumed by nothing while
+      paint gated on the engine's — the observation pass (the
+      foreground witness, the timer, autosuggest) dead past frame
+      one, its own commit; the scrolled chip's rows ride the
+      platform's wheel class (gt-2's finding 3: uinput wheel
+      synthesis reaches no app on the VM, the rig's pointer never
+      reaches the surface) — the chip and its jump verb are wired
+      and headless-pinned, their live row belongs to parity's
+      human-at-console class)*
 - [ ] `just check` green on the merge result
 
 **Verification:**
-- [ ] Manual: band rows, both compositors
+- [x] Manual: band rows, both compositors
 
 **Dependencies:** Task 2 · **Files:** the branch's diff · **Scope:** S
