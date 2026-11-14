@@ -211,6 +211,10 @@ pub(crate) struct SettingsState {
     pub(crate) keybind_search: String,
     pub(crate) keybind_capture: Option<&'static str>,
     pub(crate) keybind_conflict: Option<(&'static str, &'static str)>,
+    /// The resize handle's live drag width, display-only until
+    /// release (core's `drawer_drag_px` math); `None` while the
+    /// handle is at rest.
+    pub(crate) drawer_drag: Option<u16>,
 }
 
 impl Default for SettingsState {
@@ -227,6 +231,7 @@ impl Default for SettingsState {
             keybind_search: String::new(),
             keybind_capture: None,
             keybind_conflict: None,
+            drawer_drag: None,
         }
     }
 }
@@ -1303,6 +1308,14 @@ impl Render for SettingsDrawer {
             .id("settings-drawer")
             .key_context("settings-drawer")
             .track_focus(&self.capture_focus)
+            .on_action({
+                let target = self.shell.clone();
+                move |_: &crate::app_shell::DismissSettings,
+                      window: &mut gpui::Window,
+                      cx: &mut gpui::App| {
+                    target.update(cx, |shell, cx| shell.close_settings(window, cx));
+                }
+            })
             .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 target.update(cx, |shell, cx| {
                     shell.keybind_capture_key(&event.keystroke, window, cx);
