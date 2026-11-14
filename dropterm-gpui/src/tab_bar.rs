@@ -19,8 +19,9 @@ use gpui::prelude::*;
 
 use dropterm_core::config::{Edge, TabPosition, TabTitleMode};
 use dropterm_core::tabs::{
-    Attention, CloseDecision, TabId, close_tab, insert_new_tab, next_default_title, resolve_title,
-    shell_title_from_report, title_prefix,
+    Attention, CloseDecision, CloseSweep, MoveDirection, TabId, close_tab, commit_rename,
+    insert_new_tab, move_target, next_default_title, reorder_tabs, resolve_title,
+    shell_title_from_report, sweep_targets, title_prefix,
 };
 
 /// The strip's height in logical pixels — the pane yields this much of
@@ -140,15 +141,19 @@ pub(crate) struct TabRecord {
     /// the same input the libcosmic retitle path caches) — the cwd
     /// title modes' input.
     pub(crate) cwd: Option<PathBuf>,
+    /// The tab's user rename (the inline rename's commit), which
+    /// resolution never lets a shell report clobber (core's override
+    /// rule).
+    pub(crate) title_override: Option<String>,
     pub(crate) pinned: bool,
     pub(crate) attention: Attention,
 }
 
 /// Resolves one record's display title through core — the one resolve
 /// call every apply point shares (a report landing or clearing, a cwd
-/// move, a mode flip, a fresh spawn). The profile and rename inputs
-/// stay `None` until the interactions land them (Task 2's profile
-/// launches and inline rename); core's own fallbacks cover both.
+/// move, a mode flip, a fresh spawn, a rename commit). The profile
+/// input stays `None` until a profile spawn path exists (the chrome
+/// slices); core's own fallback covers it.
 fn resolve_record_title(tab: &TabRecord, mode: TabTitleMode) -> String {
     resolve_title(
         mode,
@@ -156,7 +161,7 @@ fn resolve_record_title(tab: &TabRecord, mode: TabTitleMode) -> String {
         tab.cwd.as_deref(),
         None,
         tab.id,
-        None,
+        tab.title_override.as_deref(),
     )
 }
 
@@ -187,6 +192,7 @@ impl TabList {
             title: next_default_title(id),
             shell_title: None,
             cwd: None,
+            title_override: None,
             pinned: false,
             attention: Attention::None,
         };
@@ -278,28 +284,351 @@ impl TabList {
 
     /// Closes the tab with `id` through core's close decision — the
     /// successor activation and the never-empty respawn signal —
-    /// returning `None` for an unknown id. Task 1's use is the
-    /// spawn-failure rollback; Task 2's close flow layers the confirm
+    /// returning `None` for an unknown id. The successor's attention
+    /// marker retires through core's activation transition (the close
+    /// implies a switch, exactly like a click would). Task 1's use is
+    /// the spawn-failure rollback; the close flow layers the confirm
     /// gate and pane teardown around the same core call.
     pub(crate) fn close(&mut self, id: TabId) -> Option<CloseDecision> {
         let index = self.tabs.iter().position(|tab| tab.id == id)?;
         let decision = close_tab(&mut self.tabs, index, self.active)?;
         self.active = decision.next_active;
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.attention = tab.attention.on_activated();
+        }
         Some(decision)
     }
 
-    /// The records mutably — the interactions' apply point (Task 2's
-    /// rename/pin writes; the tests' state seeding).
+    /// Commits an inline rename of the tab with `id` through core —
+    /// a non-empty draft becomes the user rename (shown at once, safe
+    /// from every later shell report), an empty one is the explicit
+    /// clear that returns the live mode's title — returning whether
+    /// the tab exists.
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "Task 2's interactions' apply point; the tests seed through it meanwhile"
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn commit_rename(&mut self, id: TabId, new_title: &str, mode: TabTitleMode) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return false;
+        };
+        let mut title = std::mem::take(&mut tab.title);
+        commit_rename(
+            mode,
+            tab.shell_title.as_deref(),
+            tab.cwd.as_deref(),
+            None,
+            tab.id,
+            &mut title,
+            &mut tab.title_override,
+            new_title,
+        );
+        tab.title = title;
+        true
+    }
+
+    /// Applies a completed tab drag: the tab with `id` moves to `to`
+    /// through core's reorder, whose identity rule keeps whichever tab
+    /// was active active. A pinned tab refuses the move (it stays
+    /// put, the reference bar's ruling 4), and a no-op drop — unknown
+    /// id, the tab's own slot, an out-of-range target — reports no
+    /// change.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn move_to(&mut self, id: TabId, to: usize) -> bool {
+        let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return false;
+        };
+        if self.tabs[from].pinned || from == to || to >= self.tabs.len() {
+            return false;
+        }
+        self.active = reorder_tabs(&mut self.tabs, self.active, from, to);
+        true
+    }
+
+    /// Nudges the tab with `id` one slot toward `direction` — the
+    /// per-tab menu's Move rows — clamping at the edge through core's
+    /// own `move_target`, with the same pinned refusal and active
+    /// identity rule as a drag.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn move_by(&mut self, id: TabId, direction: MoveDirection) -> bool {
+        let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return false;
+        };
+        if self.tabs[from].pinned {
+            return false;
+        }
+        let Some(to) = move_target(from, self.tabs.len(), direction) else {
+            return false;
+        };
+        self.active = reorder_tabs(&mut self.tabs, self.active, from, to);
+        true
+    }
+
+    /// Flips the pin of the tab with `id` — the per-tab menu's
+    /// Pin/Unpin row, the one surface that arms a pin — returning
+    /// whether the tab exists.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn toggle_pin(&mut self, id: TabId) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return false;
+        };
+        tab.pinned = !tab.pinned;
+        true
+    }
+
+    /// Spawns a duplicate of the tab with `source` — a fresh record
+    /// (never the running terminal) in the source's cwd carrying its
+    /// rename pin, landing after the *active* tab and activated, the
+    /// reference `duplicate-tab` semantics. A missing source spawns
+    /// the plain default record (the keybind's empty-list behavior).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn spawn_duplicate(&mut self, source: TabId, mode: TabTitleMode) -> TabId {
+        let (cwd, title_override) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == source)
+            .map_or((None, None), |tab| {
+                (tab.cwd.clone(), tab.title_override.clone())
+            });
+        let id = TabId(self.next_id);
+        self.next_id += 1;
+        let mut tab = TabRecord {
+            id,
+            title: next_default_title(id),
+            shell_title: None,
+            cwd,
+            title_override,
+            pinned: false,
+            attention: Attention::None,
+        };
+        tab.title = resolve_record_title(&tab, mode);
+        self.active = insert_new_tab(&mut self.tabs, self.active, true, tab);
+        id
+    }
+
+    /// Resolves a close sweep's targets through core — pinned
+    /// neighbors skipped — as ids in descending strip order, so the
+    /// shell's closes never shift a later target's index. An unknown
+    /// anchor sweeps nothing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn close_sweep(&self, id: TabId, sweep: CloseSweep) -> Vec<TabId> {
+        let Some(anchor) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return Vec::new();
+        };
+        sweep_targets(&self.tabs, anchor, sweep, |tab| tab.pinned)
+            .into_iter()
+            .rev()
+            .map(|index| self.tabs[index].id)
+            .collect()
+    }
+
+    /// Lands the pane's polled attention signals on the tab with `id`
+    /// through core's transitions — but only while the tab is
+    /// inactive: the active tab is the one the user is already
+    /// looking at and never accrues a marker.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pinned by its test; the interaction wiring slice consumes it"
+        )
+    )]
+    pub(crate) fn note_attention(&mut self, id: TabId, bell: bool, output: bool) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        if index == self.active {
+            return;
+        }
+        let tab = &mut self.tabs[index];
+        if output {
+            tab.attention = tab.attention.on_activity();
+        }
+        if bell {
+            tab.attention = tab.attention.on_bell();
+        }
+    }
+
+    /// The records mutably — the tests' state seeding (pinned flags,
+    /// attention markers); every runtime write goes through a named
+    /// core-routed method above.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the tests seed tab state through it; runtime writes are named methods"
         )
     )]
     pub(crate) fn tabs_mut(&mut self) -> &mut Vec<TabRecord> {
         &mut self.tabs
     }
+}
+
+// -- the per-tab menu (Task 2's interactions) -------------------------
+
+/// One pick the per-tab context menu can publish, carried with the
+/// right-pressed tab's id. Every variant routes to a core call
+/// through the shell (the reference bar's `TabMenuPick`, the profile
+/// folder excepted — it rides a profile spawn path no GPUI slice
+/// carries yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned by its test; the interaction wiring slice consumes it"
+    )
+)]
+pub(crate) enum TabMenuPick {
+    /// The default spawn — the `+`'s funnel.
+    NewTab,
+    /// Inline rename of the clicked tab (no activation side effect).
+    Rename,
+    /// Duplicate the clicked tab — cwd and rename pin read from it,
+    /// after-active landing, the duplicate activated.
+    Duplicate,
+    /// Flip the clicked tab's pin.
+    Pin,
+    /// Nudge the clicked tab one slot toward the direction, clamping
+    /// at the edge.
+    Move(MoveDirection),
+    /// Close the clicked tab through the gated front door.
+    Close,
+    /// Close every tab but the clicked one, through the same gate.
+    CloseOthers,
+    /// Close every tab right of the clicked one, through the same
+    /// gate.
+    CloseRight,
+}
+
+/// One rendered row of the per-tab context menu: its label, the pick
+/// a press publishes, whether it renders active (edge-clamped moves
+/// and refusals render muted — the GNOME disabled-row rule), and
+/// whether a separator line renders above it. Plain data, composed
+/// headless.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned by its test; the interaction wiring slice consumes it"
+    )
+)]
+pub(crate) struct TabMenuRow {
+    pub(crate) label: String,
+    pub(crate) pick: TabMenuPick,
+    pub(crate) enabled: bool,
+    pub(crate) separated: bool,
+}
+
+/// The per-tab context menu's rows for the tab at `tab_index` of
+/// `tab_count`, `pinned` naming that tab's pin state — the reference
+/// bar's composition ported (the Switch Profile section excepted, see
+/// [`TabMenuPick`]): New Tab leads, the clicked-tab cluster follows
+/// with Pin/Unpin labeled by the flip in store, moves mute at the
+/// edges they clamp at and — a pinned tab staying put — for a pinned
+/// target, whose own Close Tab row mutes with them (the close front
+/// door's refusal, rendered), and Close Tabs to the Right is omitted
+/// at the rightmost tab (the row would always no-op there).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned by its test; the interaction wiring slice consumes it"
+    )
+)]
+pub(crate) fn tab_menu_rows(tab_count: usize, tab_index: usize, pinned: bool) -> Vec<TabMenuRow> {
+    let row = |label: &str, pick: TabMenuPick, enabled: bool, separated: bool| TabMenuRow {
+        label: label.to_string(),
+        pick,
+        enabled,
+        separated,
+    };
+    vec![
+        row("New Tab", TabMenuPick::NewTab, true, false),
+        row("Rename Tab", TabMenuPick::Rename, true, true),
+        row("Duplicate Tab", TabMenuPick::Duplicate, true, false),
+        row(
+            if pinned { "Unpin Tab" } else { "Pin Tab" },
+            TabMenuPick::Pin,
+            true,
+            false,
+        ),
+        row(
+            "Move Tab Left",
+            TabMenuPick::Move(MoveDirection::Left),
+            !pinned && tab_index > 0,
+            true,
+        ),
+        row(
+            "Move Tab Right",
+            TabMenuPick::Move(MoveDirection::Right),
+            !pinned && tab_index + 1 < tab_count,
+            false,
+        ),
+        row("Close Tab", TabMenuPick::Close, !pinned, true),
+        row("Close Other Tabs", TabMenuPick::CloseOthers, true, false),
+    ]
+    .into_iter()
+    // The rightmost tab's Close-Right row would always no-op: hidden,
+    // not muted (the reference bar's Firefox hide rule).
+    .chain((tab_index + 1 < tab_count).then(|| {
+        row(
+            "Close Tabs to the Right",
+            TabMenuPick::CloseRight,
+            true,
+            false,
+        )
+    }))
+    .collect()
+}
+
+/// The close gate's decision (the reference bar's criterion 3): the
+/// in-surface confirmation waits only when the toggle is on AND a
+/// foreground child is running — either input false closes
+/// immediately, today's behavior. Pure so the truth table stays
+/// headless-testable.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "pinned by its test; the interaction wiring slice consumes it"
+    )
+)]
+pub(crate) fn confirm_needed(enabled: bool, foreground_running: bool) -> bool {
+    enabled && foreground_running
 }
 
 // -- the strip element ------------------------------------------------
@@ -508,255 +837,4 @@ impl gpui::RenderOnce for TabBarView {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use dropterm_core::config::{Edge, TabTitleMode};
-
-    #[test]
-    fn auto_places_the_strip_opposite_the_anchor_and_pins_override() {
-        // Auto: opposite the anchored edge — a top-anchored drawer
-        // carries the strip at its bottom, a bottom-anchored one at
-        // its top.
-        assert!(bar_at_bottom(Edge::Top, TabPosition::Auto));
-        assert!(!bar_at_bottom(Edge::Bottom, TabPosition::Auto));
-        // Top/Bottom pin regardless of anchor.
-        assert!(!bar_at_bottom(Edge::Top, TabPosition::Top));
-        assert!(!bar_at_bottom(Edge::Bottom, TabPosition::Top));
-        assert!(bar_at_bottom(Edge::Top, TabPosition::Bottom));
-        assert!(bar_at_bottom(Edge::Bottom, TabPosition::Bottom));
-    }
-
-    #[test]
-    fn tab_rows_render_from_two_tabs_on() {
-        assert!(!shows_tab_buttons(1));
-        assert!(shows_tab_buttons(2));
-        assert!(shows_tab_buttons(7));
-    }
-
-    #[test]
-    fn strip_pair_darkens_the_pane_background_and_picks_readable_foreground() {
-        use alacritty_terminal::vte::ansi::Rgb;
-        // A dark pane background (Nord's #282A36-ish): the strip
-        // darkens a step further and the foreground reads near-white.
-        let (strip, fg) = strip_pair(Some(Rgb {
-            r: 40,
-            g: 42,
-            b: 54,
-        }));
-        assert_eq!(strip, rgb_hsla(37, 39, 50));
-        assert_eq!(fg, rgb_hsla(0xF5, 0xF5, 0xFF));
-        // A light background flips the foreground near-black.
-        let (_, fg) = strip_pair(Some(Rgb {
-            r: 235,
-            g: 235,
-            b: 245,
-        }));
-        assert_eq!(fg, rgb_hsla(0x1B, 0x1B, 0x22));
-        // No scheme background: the fallback pair.
-        let (strip, fg) = strip_pair(None);
-        assert_eq!((strip, fg), (rgb_hsla(0, 0, 0), rgb_hsla(0xF5, 0xF5, 0xFF)));
-    }
-
-    #[test]
-    fn row_labels_compose_cores_prefix_ahead_of_the_resolved_title() {
-        // The no-duplication pin (the chunk's planning ruling): for
-        // every pinned × attention combination the row's label is
-        // exactly core's title_prefix output ahead of the stored
-        // resolved title — the view composes, never re-derives.
-        for pinned in [false, true] {
-            for attention in [Attention::None, Attention::Activity, Attention::Bell] {
-                let mut list = TabList::default();
-                list.spawn(false);
-                let tabs = list.tabs_mut();
-                tabs[0].pinned = pinned;
-                tabs[0].attention = attention;
-                tabs[0].title = "My Title".to_string();
-                let [row] = list.rows().try_into().expect("one row");
-                assert_eq!(
-                    row.label,
-                    format!("{}My Title", title_prefix(pinned, attention))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn rows_flag_the_active_tab_and_carry_state() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-        let second = list.spawn(false);
-        let rows = list.rows();
-        assert_eq!(rows.len(), 2);
-        assert!(!rows[0].is_active);
-        assert!(rows[1].is_active);
-        assert_eq!(rows[0].id, first);
-        assert_eq!(rows[1].id, second);
-
-        assert!(list.select(first));
-        let rows = list.rows();
-        assert!(rows[0].is_active);
-        assert!(!rows[1].is_active);
-    }
-
-    #[test]
-    fn spawns_insert_through_cores_positions_and_activate() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-        assert_eq!(list.active_id(), Some(first));
-
-        // after_current: right of the active tab, and active.
-        let second = list.spawn(true);
-        assert_eq!(
-            list.records().iter().map(|tab| tab.id).collect::<Vec<_>>(),
-            vec![first, second]
-        );
-        assert_eq!(list.active_id(), Some(second));
-
-        // append: at the end regardless of the active tab.
-        let third = list.spawn(false);
-        assert_eq!(
-            list.records().iter().map(|tab| tab.id).collect::<Vec<_>>(),
-            vec![first, second, third]
-        );
-        assert_eq!(list.active_id(), Some(third));
-
-        // Fresh spawns title through the id-numbered default.
-        assert_eq!(list.records()[0].title, "Terminal 1");
-        assert_eq!(list.records()[2].title, "Terminal 3");
-
-        // The empty list's first after_current spawn clamps to append.
-        let mut fresh = TabList::default();
-        let only = fresh.spawn(true);
-        assert_eq!(
-            fresh.records().iter().map(|tab| tab.id).collect::<Vec<_>>(),
-            vec![only]
-        );
-    }
-
-    #[test]
-    fn select_clears_attention_through_cores_transition_and_ignores_unknowns() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-        list.spawn(false);
-
-        // An inactive tab wearing the bell marker.
-        list.tabs_mut()[0].attention = Attention::Bell;
-        assert!(list.select(first));
-        assert_eq!(list.rows()[0].attention, Attention::None);
-
-        // Re-selecting the active tab changes nothing (and reports
-        // no change).
-        assert!(!list.select(first));
-        // An unknown id is a no-op.
-        assert!(!list.select(TabId(99)));
-        assert_eq!(list.active_id(), Some(first));
-    }
-
-    #[test]
-    fn titles_follow_the_configured_mode_through_cores_resolution() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-
-        // Shell mode: the report shows, a cleared report falls back
-        // to the id-numbered default (core's own storage rule — an
-        // empty report is a clear, stored as no-report).
-        assert!(list.sync_title(
-            first,
-            Some("jpt@rig:~".to_string()),
-            None,
-            TabTitleMode::Shell
-        ));
-        assert_eq!(list.records()[0].title, "jpt@rig:~");
-        assert!(list.sync_title(first, Some(String::new()), None, TabTitleMode::Shell));
-        assert_eq!(list.records()[0].title, "Terminal 1");
-
-        // Numbered: reports never land — the title parks at the
-        // default whatever the report says.
-        list.sync_title(
-            first,
-            Some("never shown".to_string()),
-            None,
-            TabTitleMode::Numbered,
-        );
-        assert_eq!(list.records()[0].title, "Terminal 1");
-
-        // LastSegment: the cwd's final component, with the report as
-        // core's documented fallback while no cwd is readable.
-        list.sync_title(
-            first,
-            Some("fallback".to_string()),
-            None,
-            TabTitleMode::LastSegment,
-        );
-        assert_eq!(list.records()[0].title, "fallback");
-        list.sync_title(
-            first,
-            Some("fallback".to_string()),
-            Some(PathBuf::from("/home/jpt/src")),
-            TabTitleMode::LastSegment,
-        );
-        assert_eq!(list.records()[0].title, "src");
-
-        // A live mode flip re-titles from the stored inputs: the
-        // stored report shows again under Shell.
-        list.refresh_titles(TabTitleMode::Shell);
-        assert_eq!(list.records()[0].title, "fallback");
-    }
-
-    #[test]
-    fn close_runs_through_cores_close_decision() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-        let second = list.spawn(false);
-        let third = list.spawn(false);
-
-        // Closing the active middle tab: its successor activates.
-        let decision = list.close(second).expect("a decision");
-        assert_eq!(decision.next_active, 1);
-        assert!(!decision.respawn);
-        assert_eq!(list.active_id(), Some(third));
-
-        // Closing the last tab standing signals the never-empty
-        // respawn.
-        list.close(first);
-        let decision = list.close(third).expect("a decision");
-        assert!(decision.respawn);
-        assert_eq!(list.active_id(), None);
-
-        // An unknown id decides nothing.
-        assert!(list.close(TabId(99)).is_none());
-    }
-
-    #[test]
-    fn sync_title_reports_no_change_for_standing_inputs() {
-        let mut list = TabList::default();
-        let first = list.spawn(false);
-        assert!(list.sync_title(
-            first,
-            Some("standing".to_string()),
-            Some(PathBuf::from("/tmp")),
-            TabTitleMode::Shell
-        ));
-        // The same inputs again: nothing moves.
-        assert!(!list.sync_title(
-            first,
-            Some("standing".to_string()),
-            Some(PathBuf::from("/tmp")),
-            TabTitleMode::Shell
-        ));
-        // An unknown tab is a no-op.
-        assert!(!list.sync_title(TabId(99), Some("x".to_string()), None, TabTitleMode::Shell));
-    }
-
-    // -- helpers ------------------------------------------------------
-
-    fn rgb_hsla(r: u8, g: u8, b: u8) -> gpui::Hsla {
-        gpui::Rgba {
-            r: f32::from(r) / 255.,
-            g: f32::from(g) / 255.,
-            b: f32::from(b) / 255.,
-            a: 1.,
-        }
-        .into()
-    }
-}
+mod tests;
