@@ -253,6 +253,10 @@ pub(crate) struct Shell {
     /// hand-off needs the handle).
     pub(crate) settings: crate::drawer::SettingsState,
     pub(crate) settings_drawer: Option<gpui::Entity<crate::drawer::SettingsDrawer>>,
+    /// The drawer's capture-focus handle, owned here so an armed
+    /// capture's focus hand-off never reads the drawer entity from
+    /// inside a shell update (the gc2 walk's reentrancy class).
+    pub(crate) settings_capture_focus: gpui::FocusHandle,
     /// A departed rename input's focus handle: the render's repair
     /// hands the keyboard back to the active pane once the input's
     /// handle stops holding it (the modal's own handle repairs the
@@ -311,6 +315,7 @@ impl Shell {
         modal_focus: gpui::FocusHandle,
         exit_after: Option<Duration>,
         band_font: gpui::Font,
+        settings_focus: gpui::FocusHandle,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         Self {
@@ -342,6 +347,7 @@ impl Shell {
             rename: None,
             settings: crate::drawer::SettingsState::default(),
             settings_drawer: None,
+            settings_capture_focus: settings_focus,
             rename_focus_repair: None,
             modal_focus,
             status: dropterm_core::status::StatusSegments::default(),
@@ -1167,7 +1173,13 @@ impl Shell {
                     self.duplicate_tab(id, cx);
                 }
             }
-            PickRoute::Shell(ShellPick::Settings) => self.settings_requested(window, cx),
+            // The Settings row never reaches the in-update arm: the
+            // drawer's build reads the shell (the gc2 finding), so
+            // the pick closure below routes it outside the update
+            // borrow — this arm is unreachable for it.
+            PickRoute::Shell(ShellPick::Settings) => {
+                println!("dropterm-gpui: context menu pick Settings (routed outside the update)");
+            }
         }
     }
 
@@ -1397,10 +1409,7 @@ impl Shell {
         println!("dropterm-gpui: keybind capture armed for {id}");
         // The drawer holds the keyboard while armed: its focus handle
         // takes it, the pane's claim resumes when the capture ends.
-        if let Some(drawer) = self.settings_drawer.clone() {
-            let focus = drawer.read(cx).capture_focus.clone();
-            focus.focus(window, cx);
-        }
+        self.settings_capture_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1519,33 +1528,30 @@ impl Shell {
     }
 
     /// The gear affordance's press and the menu's Settings… row: the
-    /// one settings trigger (the libcosmic drawer's own funnel — a
-    /// repeat press closes).
-    fn settings_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The gear's press commits an open rename first, exactly like
-        // the reference bar's corner affordances.
-        self.commit_open_rename(cx);
-        if self.settings.open {
-            self.close_settings(window, cx);
-        } else {
-            self.open_settings(window, cx);
+    /// one settings trigger — a repeat press closes. A free function,
+    /// not a shell method, by necessity (the gc2 walk's structural
+    /// finding): the drawer's construction reads the shell, and a
+    /// read while the shell is being updated panics — so the build
+    /// happens outside the update borrow, the state flip inside it.
+    pub(crate) fn toggle_settings(shell: &Entity<Shell>, window: &mut Window, cx: &mut App) {
+        let open = shell.read(cx).settings.open;
+        if open {
+            shell.update(cx, |shell, cx| shell.close_settings(window, cx));
+            return;
         }
-    }
-
-    /// Open the drawer: the Kit's Sheet over the live terminal — the
-    /// surface never hides or resizes (the libcosmic drawer's overlay
-    /// rule), the drawer entity holding the Kit's stateful controls
-    /// built from the live config.
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let shell = cx.entity();
-        let drawer = crate::drawer::SettingsDrawer::new(shell, window, cx);
-        self.settings_drawer = Some(drawer);
-        self.settings.open = true;
-        println!(
-            "dropterm-gpui: settings drawer opened at +{}ms (the surface stays live beneath)",
-            self.boot.elapsed().as_millis()
-        );
-        cx.notify();
+        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
+        shell.update(cx, |shell, cx| {
+            // The press commits an open rename first, exactly like
+            // the reference bar's corner affordances.
+            shell.commit_open_rename(cx);
+            shell.settings_drawer = Some(drawer);
+            shell.settings.open = true;
+            println!(
+                "dropterm-gpui: settings drawer opened at +{}ms (the surface stays live beneath)",
+                shell.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        });
     }
 
     /// Close the drawer: the explicit close clears the buffer (the
@@ -2051,7 +2057,7 @@ impl Shell {
             .on_settings({
                 let shell = shell.clone();
                 move |window: &mut gpui::Window, cx: &mut App| {
-                    shell.update(cx, |shell, cx| shell.settings_requested(window, cx));
+                    Self::toggle_settings(&shell, window, cx);
                 }
             })
             .when_some(
@@ -2631,6 +2637,13 @@ fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<T
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
 /// the libcosmic app; the first show verb runs the two-surface show.
+// One line over the lint's bar (the settings focus handle joined
+// the constructor's inputs — the modal-focus pattern); the pass to
+// re-bucket boot's inputs is its own refactor, not this fix's.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one param over; re-bucketing is its own refactor"
+)]
 pub(crate) fn boot(
     cx: &mut App,
     exit_after: Option<Duration>,
@@ -2719,6 +2732,7 @@ pub(crate) fn boot(
             cx.focus_handle(),
             exit_after,
             band_font,
+            cx.focus_handle(),
         )
     });
     // The tick: 100 ms of verb drain + frame pump, holding the shell

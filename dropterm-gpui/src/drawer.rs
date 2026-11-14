@@ -271,9 +271,6 @@ pub(crate) struct SettingsDrawer {
     /// The epoch the Kit states were last seeded from; a change
     /// triggers the echo-refresh pass in render.
     seen_epoch: u64,
-    /// The capture's focus handle: while a keybind capture is armed,
-    /// the drawer holds the keyboard through it (the modal's rule).
-    pub(crate) capture_focus: gpui::FocusHandle,
     /// The Keybindings page's search box.
     keybind_search: Entity<InputState>,
     /// The profile form's inputs, with the draft identity they were
@@ -373,7 +370,6 @@ impl SettingsDrawer {
                 scheme_dark,
                 scheme_light,
                 shell_control,
-                capture_focus: cx.focus_handle(),
                 keybind_search,
                 seen_epoch: 0,
                 form: (None, None),
@@ -1307,7 +1303,7 @@ impl Render for SettingsDrawer {
         v_flex()
             .id("settings-drawer")
             .key_context("settings-drawer")
-            .track_focus(&self.capture_focus)
+            .track_focus(&self.shell.read(cx).settings_capture_focus)
             .on_action({
                 let target = self.shell.clone();
                 move |_: &crate::app_shell::DismissSettings,
