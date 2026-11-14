@@ -419,12 +419,46 @@ name, answers the contract on both compositors.
       compositors with evidence, the reversal VM-window note recorded
       (debounce vs tick — rides parity's human row as si-5 parked
       it); the merge's own gate runs on main)*
-- [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
-- [ ] gt-2 Input + keybinds; selection; scrollback
-- [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;
-      data-control for not-focused)
-- [ ] gt-4 Wire into the executor's windows; terminal rows both
+- [x] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
+      *(done 2026-11-13 on port/gpui-terminal, committed 81ad238:
+      walked rig + VM — VM pixels vm-evidence-gt1-*, rig logs
+      rig-evidence-gt1-*, 8×20→100×20 through Term::resize with the
+      pty's stty confirming; two findings made structural — the font
+      candidate resolution and the rig's harness-window silence)*
+- [x] gt-2 Input + keybinds; selection; scrollback *(done 2026-11-14
+      on port/gpui-terminal: every default chord fired live on the
+      rig's logs plus the custom overlay both ways; the VM holds the
+      pixels — SelectAll's full-grid overlay and its Escape clear, a
+      uinput hold-drag selecting 80 bytes with the overlay band;
+      three environment findings recorded in the harness docs — the
+      rig surface holds keyboard though it never presents, cosmic-comp
+      drops wtype's modifiers, and uinput wheel synthesis reaches no
+      app on the VM, parking the physical-wheel row on parity's
+      human-at-console class)*
+- [x] gt-3 Mouse reporting; clipboard (focus+serial by construction;
+      data-control for not-focused) *(done 2026-11-14 on
+      port/gpui-terminal: the protocol encodings moved to core
+      framework-free with the libcosmic frontend consuming them
+      through an adapter, both frontends one implementation now; the
+      VM's walk echoes the pane's own bytes through `cat -v` — the
+      SGR press/motion/release triple and the legacy X10 forms — and
+      the clipboard rows landed: copy-after-keystroke through GPUI's
+      clipboard (323 bytes, pasted back whole), an external
+      wl-copy's marker through the Paste chord, and an OSC 52 store
+      serving over data-control while the pane lived)*
+- [x] gt-4 Wire into the executor's windows; terminal rows both
       compositors; merge — after sr-4 or coordinated with it
+      *(done 2026-11-14 on port/gpui-terminal: the clock band is
+      gone, the pane is the drawer's content under the slide
+      translation, one shared boot_pane constructs it for the shell
+      and the walk harness alike, the pane's Hide chord drains
+      through the shell's tick into the machine's funnel, and the
+      drawer cycle walked both compositors — the rig inside a
+      dbus-run-session (forwarded toggle, pane rows rendering,
+      typing, the re-show; sway's wtype-induced activation loss ran
+      the focus-loss funnel correctly), the VM with pixels (the
+      band appearing, the typed line, the hide-by-chord destroy,
+      the re-show) and the hide chord + copy rows logged)*
 - [ ] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
       cleanup); four tests green
 - [ ] gm-2 Apply path: before first frame + live re-theme; C4-class

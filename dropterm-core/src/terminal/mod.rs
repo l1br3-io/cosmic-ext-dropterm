@@ -20,6 +20,11 @@ mod engine;
 // itself never reads files.
 pub mod suggest;
 
+// The xterm mouse-tracking encodings, framework-free: both frontends
+// consume this one implementation, each translating its own pointer
+// events into the neutral shape (gpui-terminal Task 3's move).
+pub mod mouse_reporter;
+
 mod host;
 
 pub use engine::{

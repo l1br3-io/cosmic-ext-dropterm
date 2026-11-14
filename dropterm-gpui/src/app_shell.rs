@@ -16,11 +16,10 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, px,
-    rems, rgba, white,
 };
 
 use dropterm_core::config::DropTermConfig;
@@ -33,6 +32,7 @@ use notify::Watcher as _;
 
 use crate::dbus::Verb;
 use crate::executor::{Action, GpuiExecutor};
+use crate::terminal::view::{self, TerminalPane};
 
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
@@ -43,30 +43,6 @@ use crate::executor::{Action, GpuiExecutor};
 pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
     let ms: u64 = raw?.trim().parse().ok()?;
     (ms > 0).then(|| Duration::from_millis(ms))
-}
-
-/// The clock band the shaped surface renders while shown — the
-/// scaffold's stand-in content, proving the render loop stays alive
-/// until the terminal slice replaces it.
-fn band() -> impl IntoElement {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(rems(4.5))
-        .text_color(white())
-        .bg(rgba(0x0000_0044))
-        .child(format!(
-            "{:02}:{:02}:{:02}",
-            (now / 3600) % 24,
-            (now / 60) % 60,
-            now % 60
-        ))
 }
 
 /// Whether the drag handlers may act: the decision layer's
@@ -86,9 +62,11 @@ fn phase_of(state: &SurfaceState) -> SurfacePhase {
     }
 }
 
-/// The shell view: the shaped window's root. Owns the decision layer
-/// and the executor, renders the band, and logs the mapped-bounds
-/// evidence rows (first frame, every change) the walks read.
+/// The shell view: the shaped window's root. Owns the decision layer,
+/// the executor, and the live terminal pane (gpui-terminal Task 4:
+/// the pane replaced the scaffold's stand-in band — the drawer's
+/// whole content is a terminal), and logs the mapped-bounds evidence
+/// rows (first frame, every change) the walks read.
 pub(crate) struct Shell {
     pub(crate) boot: Instant,
     /// When the current surface's shaped window opened (the
@@ -124,6 +102,15 @@ pub(crate) struct Shell {
     phase: Arc<Mutex<SurfacePhase>>,
     /// The forwarded verbs, drained on the tick.
     verbs: Receiver<Verb>,
+    /// The drawer's live terminal pane — the shaped window's content
+    /// (Task 4's integration; the entity renders into whatever
+    /// surface the executor maps it into, resizes itself to the
+    /// granted bounds, and holds the keyboard by construction).
+    pane: Entity<TerminalPane>,
+    /// The pane's Hide action, handed up through the channel and run
+    /// through the machine's hide funnel on the tick — window work
+    /// never runs inside a pane's event handler (sr-1's lesson).
+    hide_requests: Receiver<()>,
     /// The measuring probe's granted-bounds slot: the probe writes
     /// the configured output size (never from inside a render does it
     /// touch this shell — queued entity updates flush inside the
@@ -140,6 +127,8 @@ impl Shell {
         inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         verbs: Receiver<Verb>,
+        pane: Entity<TerminalPane>,
+        hide_requests: Receiver<()>,
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
         exit_after: Option<Duration>,
@@ -152,6 +141,8 @@ impl Shell {
             machine: SurfaceMachine::default(),
             executor: GpuiExecutor::new(),
             inputs,
+            pane,
+            hide_requests,
             drag_walk: drag_walk.unwrap_or_default().into(),
             drag_release_at: None,
             config_changes,
@@ -192,6 +183,17 @@ impl Shell {
         let mut actions = Vec::new();
         while let Ok(verb) = self.verbs.try_recv() {
             self.verb(verb, &mut actions);
+        }
+        // The pane's Hide action: one drain (repeat sends coalesce —
+        // a second hide on a hidden surface decides nothing), run
+        // through the machine's hide funnel exactly like the verb's.
+        while self.hide_requests.try_recv().is_ok() {
+            println!(
+                "dropterm-gpui: pane hide action -> the hide funnel at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            let intents = self.machine.decide_hide(self.inputs);
+            self.execute_into(intents, &mut actions);
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -534,12 +536,13 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
             );
         }
         Action::FocusTerminal { handle } => {
-            // The terminal input arrives with the gpui-terminal slice;
-            // the intent's presence stays a logged row so the walks see
-            // the focus decision land.
+            // The pane holds the keyboard by construction (its focus
+            // handle grabs on first render inside the surface), so the
+            // intent applies as the pane already standing; the row is
+            // the focus decision landing.
             println!(
-                "dropterm-gpui: terminal focus for {handle:?} (input arrives with \
-                 gpui-terminal) at +{}ms",
+                "dropterm-gpui: terminal focus for {handle:?} (the pane holds the \
+                 keyboard by construction) at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
         }
@@ -555,8 +558,12 @@ impl Shell {
     /// recreate) remounts the frame driver but the translation stays
     /// continuous off the machine's `started`.
     fn sliding_band(&mut self) -> impl IntoElement {
+        // The pane IS the band now (Task 4): the scaffold's clock
+        // stand-in is gone, the terminal fills the shaped surface,
+        // and the same slide translation carries it.
+        let pane = self.pane.clone();
         let Some(playing) = self.machine.slide else {
-            return div().size_full().child(band());
+            return div().size_full().child(pane);
         };
         let (active, started) = (playing.active, playing.started);
         let edge = self.inputs.geometry.edge;
@@ -583,7 +590,7 @@ impl Shell {
                         }
                     },
                 )
-                .child(band()),
+                .child(pane),
         )
     }
 }
@@ -732,6 +739,26 @@ pub(crate) fn boot(
     if drag_walk.is_some() {
         println!("dropterm-gpui: drag walk armed (positions fed once shown and at rest)");
     }
+    // The drawer's terminal pane (gpui-terminal Task 4): built once
+    // at boot, before any surface exists — the pane renders into
+    // whatever window the executor maps it into. The PTY program is
+    // `DROPTERM_TERM_CMD`'s shell line when a walk sets it, the tty
+    // default otherwise; its Hide action rides the channel the tick
+    // drains into the machine's hide funnel.
+    let pty_shell = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
+        let raw = raw.trim().to_string();
+        if raw.is_empty() {
+            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), Vec::new())
+        } else {
+            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), vec!["-c".to_string(), raw])
+        }
+    });
+    let (hide_tx, hide_requests) = std::sync::mpsc::channel::<()>();
+    let Some((_terminal, pane)) = view::boot_pane(cx, &config, pty_shell, Some(hide_tx)) else {
+        eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
+        cx.quit();
+        return;
+    };
     let (config_tx, config_changes) = std::sync::mpsc::channel::<()>();
     let watch_dir = config_dir.clone();
     std::thread::spawn(move || {
@@ -757,6 +784,8 @@ pub(crate) fn boot(
             inputs,
             Arc::clone(phase),
             verbs,
+            pane,
+            hide_requests,
             drag_walk,
             config_changes,
             exit_after,

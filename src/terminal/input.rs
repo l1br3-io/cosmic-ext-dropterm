@@ -1,286 +1,76 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2023 System76 <info@system76.com>
 //
-// Adapted, unmodified except for this header, from cosmic-term
+// Adapted from cosmic-term
 // (<https://github.com/pop-os/cosmic-term>) src/mouse_reporter.rs at
-// commit 9129277.
-
-use alacritty_terminal::term::TermMode;
+// commit 9129277; the protocol logic itself now lives in
+// dropterm-core's `mouse_reporter` (gpui-terminal Task 3's move —
+// both frontends consume one implementation), and this file is the
+// libcosmic half's translation: iced's pointer events onto core's
+// toolkit-neutral shape.
 
 use cosmic::{
     iced::mouse::{Event as MouseEvent, ScrollDelta},
     iced::{Event, keyboard::Modifiers, mouse::Button},
 };
 
+pub use dropterm_core::terminal::mouse_reporter::MouseReporter;
+use dropterm_core::terminal::mouse_reporter::{
+    PointerButton, PointerEvent, PointerModifiers, PointerScrollDelta,
+    report_mouse as core_report_mouse, scroll_as_arrows as core_scroll_as_arrows,
+    scroll_mouse as core_scroll_mouse,
+};
+
 use super::Terminal;
 
-/// Builds xterm mouse-tracking escape sequences from iced mouse
-/// events, in the legacy/UTF-8 and SGR encodings.
-#[derive(Default)]
-pub struct MouseReporter {
-    last_movment_x: Option<u32>,
-    last_movment_y: Option<u32>,
-    accumulated_scroll_x: f32,
-    accumulated_scroll_y: f32,
-    button: Option<Button>,
-}
-
-impl MouseReporter {
-    /// Accumulates a scroll delta into whole cell lines (x, y),
-    /// keeping the fractional remainder for the next event.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "trunc splits accumulated cell lines from the fractional remainder; line counts < 2^24"
-    )]
-    pub fn accumulate_scroll(
-        &mut self,
-        delta: ScrollDelta,
-        cell_width: f32,
-        cell_height: f32,
-    ) -> (i32, i32) {
-        match delta {
-            ScrollDelta::Lines { x, y } => {
-                self.accumulated_scroll_x += x;
-                self.accumulated_scroll_y += y;
-            }
-            ScrollDelta::Pixels { x, y } => {
-                self.accumulated_scroll_x += x / cell_width;
-                self.accumulated_scroll_y += y / cell_height;
-            }
-        }
-
-        let lines_x = self.accumulated_scroll_x as i32;
-        let lines_y = self.accumulated_scroll_y as i32;
-        self.accumulated_scroll_x -= lines_x as f32;
-        self.accumulated_scroll_y -= lines_y as f32;
-        (lines_x, lines_y)
-    }
-
-    fn button_number(button: Button) -> Option<u8> {
-        match button {
-            Button::Left => Some(0),
-            Button::Middle => Some(1),
-            Button::Right => Some(2),
-            _ => None,
-        }
-    }
-
-    //Implemented according to
-    //<https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking>
-    /// The legacy (X10) mouse encoding, UTF-8-extended when `is_utf8`;
-    /// `None` when the event cannot be encoded (no button, or a
-    /// position beyond the encoding's range).
-    pub fn normal_mouse_code(
-        &mut self,
-        event: &Event,
-        modifiers: Modifiers,
-        is_utf8: bool,
-        x: u32,
-        y: u32,
-    ) -> Option<Vec<u8>> {
-        //Buttons are handle slightly different between normal and sgr
-        //for normal/utf8 the button release is always reported as button 3
-        let mut button = (match event {
-            Event::Mouse(MouseEvent::ButtonPressed(b)) => {
-                self.button = Some(*b);
-                Self::button_number(*b)
-            }
-            Event::Mouse(MouseEvent::ButtonReleased(_b)) => {
-                self.button = None;
-                Some(3)
-            }
-            Event::Mouse(MouseEvent::CursorMoved { .. }) => {
-                //Button pressed is reported as button 32 + 0,1,2 and event code M
-                //And only reported if a button is previously pressed
-                if (self.last_movment_x, self.last_movment_y) == (Some(x), Some(y)) {
-                    return None;
-                }
-                self.last_movment_x = Some(x);
-                self.last_movment_y = Some(y);
-                //It seems that we should add 32 to signal movement even for normal mode
-                //On button-motion events, xterm adds 32 to the event code (the third
-                //character, Cb).
-                //For example, motion into cell x,y with button 1 down is reported as
-                //CSI M @ CxCy ( @  = 32 + 0 (button 1) + 32 (motion indicator) ).
-                self.button.and_then(Self::button_number).map(|b| b + 32)
-            }
-            _ => None,
-        })?;
-
-        if modifiers.shift() {
-            button += 4;
-        }
-        if modifiers.alt() {
-            button += 8;
-        }
-        if modifiers.control() {
-            button += 16;
-        }
-
-        //Normal mode have a max of 223 (255 - 32), while utf8 extend this to 2015
-        let max_point: usize = if is_utf8 { 2015 } else { 223 };
-        if x as usize >= max_point || y as usize >= max_point {
-            return None;
-        }
-
-        let utf8_encode_and_append = |mut pos: u32, dest: &mut Vec<u8>| {
-            pos += 1 + 32;
-            let mut utf8 = [0; 2]; //This is large enough since we have a max of 2015
-            dest.extend_from_slice(
-                (char::from_u32(pos).unwrap()) //This unwrap and encode_utf8 is safe due to our
-                    //specific range, pos will max be 2047
-                    .encode_utf8(&mut utf8)
-                    .as_bytes(),
-            );
-        };
-
-        //xterm ctlseqs: Likewise, Cb will be UTF-8 encoded, to reduce confusion with wheel mouse events.
-        //Always, or only when the the cooardinates is used? No other terminal seems to do this a
-        //all? Doing what they are doing for now.
-        let mut buf: Vec<u8> = vec![b'\x1b', b'[', b'M', 32 + button];
-        //Should we remove 32+button from previous line, and use this instead? Or only on >= 95
-        //utf8_encode_and_append(32 + button, &mut buf);
-
-        //For utf8, xterm ctlseqs say: For positions less than 95, the resulting output is identical under both modes.
-        //But also: Under normal mouse mode, positions outside (160,94) result in byte pairs which can be interpreted as a single UTF-8
-        if is_utf8 && x >= 95 {
-            utf8_encode_and_append(x, &mut buf);
-        } else {
-            //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "one-byte xterm encoding: x < 95 here, or < 223 in legacy mode; 33 + x fits u8 exactly"
-            )]
-            buf.push(32 + 1 + x as u8);
-        }
-
-        if is_utf8 && y >= 95 {
-            utf8_encode_and_append(y, &mut buf);
-        } else {
-            //xterm ctlseqs: For positions less than 95, the resulting output is identical under both modes.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "one-byte xterm encoding: y < 95 here, or < 223 in legacy mode; 33 + y fits u8 exactly"
-            )]
-            buf.push(32 + 1 + y as u8);
-        }
-        Some(buf)
-    }
-
-    /// The SGR (mode 1006) mouse encoding for press/release/motion
-    /// events.
-    pub fn sgr_mouse_code(
-        &mut self,
-        event: &Event,
-        modifiers: Modifiers,
-        x: u32,
-        y: u32,
-    ) -> Option<Vec<u8>> {
-        let (button_no, event_code) = (match event {
-            Event::Mouse(MouseEvent::ButtonPressed(button)) => {
-                //Button pressed is reported as button 0,1,2 and event code M
-                self.button = Some(*button);
-                Some((Self::button_number(*button), "M"))
-            }
-            Event::Mouse(MouseEvent::ButtonReleased(button)) => {
-                //Button pressed is reported as button 0,1,2 and event code m
-                self.button = None;
-                Some((Self::button_number(*button), "m"))
-            }
-            Event::Mouse(MouseEvent::CursorMoved { .. }) => {
-                //Button pressed is reported as button 32 + 0,1,2 and event code M
-                //And only reported if a button is previously pressed
-                if (self.last_movment_x, self.last_movment_y) == (Some(x), Some(y)) {
-                    return None;
-                }
-                self.last_movment_x = Some(x);
-                self.last_movment_y = Some(y);
-                self.button
-                    .map(|button| (Self::button_number(button).map(|b| b + 32), "M"))
-            }
-            _ => None,
-        })?;
-
-        if let Some(mut button_no) = button_no {
-            if modifiers.shift() {
-                button_no += 4;
-            }
-            if modifiers.alt() {
-                button_no += 8;
-            }
-            if modifiers.control() {
-                button_no += 16;
-            }
-            let term_code = format!("\x1b[<{};{};{}{}", button_no, x + 1, y + 1, event_code);
-            Some(term_code.as_bytes().to_vec())
-        } else {
-            None
-        }
-    }
-
-    /// SGR wheel-scroll events, one per accumulated cell line.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the xterm SGR encoding needs all six inputs; a param struct would obscure the upstream shape"
-    )]
-    pub fn sgr_mouse_wheel_scroll(
-        &mut self,
-        term_cell_width: f32,
-        term_cell_height: f32,
-        delta: ScrollDelta,
-        modifiers: &Modifiers,
-        x: u32,
-        y: u32,
-    ) -> impl Iterator<Item = Vec<u8>> {
-        let (lines_x, lines_y) = self.accumulate_scroll(delta, term_cell_width, term_cell_height);
-
-        //Resolve modifier flags
-        let mut modifier_flags = 0;
-
-        if modifiers.shift() {
-            modifier_flags += 4;
-        }
-        if modifiers.alt() {
-            modifier_flags += 8;
-        }
-        if modifiers.control() {
-            modifier_flags += 16;
-        }
-
-        //Resolve base inputs
-        let button_no_y = match lines_y.cmp(&0) {
-            std::cmp::Ordering::Less => 65,    //Wheel Down
-            std::cmp::Ordering::Greater => 64, //Wheel Up
-            std::cmp::Ordering::Equal => 0,    //Unused
-        };
-
-        let button_no_x = match lines_x.cmp(&0) {
-            std::cmp::Ordering::Less => 66,    //Wheel Left
-            std::cmp::Ordering::Greater => 67, //Wheel Right
-            std::cmp::Ordering::Equal => 0,    //Unused
-        };
-
-        //Generate term codes
-        let x_iter = std::iter::repeat_n(button_no_x, lines_x.unsigned_abs() as _);
-        let y_iter = std::iter::repeat_n(button_no_y, lines_y.unsigned_abs() as _);
-
-        x_iter
-            .chain(y_iter)
-            .map(move |button_no| button_no + modifier_flags)
-            .map(move |button_no| {
-                let term_code = format!("\x1b[<{};{};{}M", button_no, x + 1, y + 1);
-                term_code.as_bytes().to_vec()
-            })
+/// One iced mouse button onto the neutral button the encodings
+/// number; `None` for the buttons xterm does not encode (back,
+/// forward, …).
+fn neutral_button(button: Button) -> Option<PointerButton> {
+    match button {
+        Button::Left => Some(PointerButton::Left),
+        Button::Middle => Some(PointerButton::Middle),
+        Button::Right => Some(PointerButton::Right),
+        _ => None,
     }
 }
 
-// --- the iced input translation (moved off `Terminal` by the
-// shared-core split: these take toolkit events, so they live with the
-// toolkit; the engine takes bytes) ---
+/// One iced event onto the neutral pointer shape; `None` for every
+/// non-pointer event and the unencodable buttons (the encoder's own
+/// answer for them was always nothing).
+fn neutral_event(event: &Event) -> Option<PointerEvent> {
+    match event {
+        Event::Mouse(MouseEvent::ButtonPressed(button)) => {
+            neutral_button(*button).map(PointerEvent::Pressed)
+        }
+        Event::Mouse(MouseEvent::ButtonReleased(button)) => {
+            neutral_button(*button).map(PointerEvent::Released)
+        }
+        Event::Mouse(MouseEvent::CursorMoved { .. }) => Some(PointerEvent::Moved),
+        _ => None,
+    }
+}
+
+/// iced's modifier set onto the three the encodings fold into the
+/// button number.
+fn neutral_modifiers(modifiers: Modifiers) -> PointerModifiers {
+    PointerModifiers {
+        shift: modifiers.shift(),
+        alt: modifiers.alt(),
+        control: modifiers.control(),
+    }
+}
+
+/// One iced wheel delta onto the neutral shape.
+fn neutral_delta(delta: ScrollDelta) -> PointerScrollDelta {
+    match delta {
+        ScrollDelta::Lines { x, y } => PointerScrollDelta::Lines { x, y },
+        ScrollDelta::Pixels { x, y } => PointerScrollDelta::Pixels { x, y },
+    }
+}
 
 /// Forward one iced mouse event to the pty as xterm tracking bytes
-/// when the program asked for them (the moved `Terminal::report_mouse`).
+/// when the program asked for them.
 pub fn report_mouse(
     terminal: &Terminal,
     reporter: &mut MouseReporter,
@@ -289,28 +79,20 @@ pub fn report_mouse(
     x: u32,
     y: u32,
 ) {
-    let term_lock = terminal.term.lock();
-    let mode = term_lock.mode();
-
-    #[expect(
-        clippy::collapsible_else_if,
-        reason = "the SGR/normal split stays parallel if/else blocks, mirroring upstream's shape"
-    )]
-    if mode.contains(TermMode::SGR_MOUSE) {
-        if let Some(code) = reporter.sgr_mouse_code(event, modifiers, x, y) {
-            terminal.input_no_scroll(code);
-        }
-    } else {
-        if let Some(code) =
-            reporter.normal_mouse_code(event, modifiers, mode.contains(TermMode::UTF8_MOUSE), x, y)
-        {
-            terminal.input_no_scroll(code);
-        }
+    if let Some(pointer) = neutral_event(event) {
+        core_report_mouse(
+            terminal,
+            reporter,
+            &pointer,
+            neutral_modifiers(modifiers),
+            x,
+            y,
+        );
     }
 }
 
-/// Forward one wheel delta to the program when it tracks the mouse
-/// (the moved `Terminal::scroll_mouse`).
+/// Forward one iced wheel delta to the program when it tracks the
+/// mouse.
 pub fn scroll_mouse(
     terminal: &Terminal,
     reporter: &mut MouseReporter,
@@ -319,44 +101,17 @@ pub fn scroll_mouse(
     x: u32,
     y: u32,
 ) {
-    let is_sgr = terminal.term.lock().mode().contains(TermMode::SGR_MOUSE);
-
-    if is_sgr {
-        let codes = reporter.sgr_mouse_wheel_scroll(
-            terminal.size().cell_width,
-            terminal.size().cell_height,
-            delta,
-            &modifiers,
-            x,
-            y,
-        );
-
-        for code in codes {
-            terminal.input_no_scroll(code);
-        }
-    } else {
-        scroll_as_arrows(terminal, reporter, delta);
-    }
+    core_scroll_mouse(
+        terminal,
+        reporter,
+        neutral_delta(delta),
+        neutral_modifiers(modifiers),
+        x,
+        y,
+    );
 }
 
-/// Scroll by arrow-key bytes — the shell's own scrollback (the moved
-/// `Terminal::scroll_as_arrows`).
+/// Scroll by arrow-key bytes — the shell's own scrollback.
 pub fn scroll_as_arrows(terminal: &Terminal, reporter: &mut MouseReporter, delta: ScrollDelta) {
-    const SCROLL_SPEED: u32 = 3;
-    let cell_width = terminal.size().cell_width;
-    let cell_height = terminal.size().cell_height;
-    let (_, lines_y) = reporter.accumulate_scroll(delta, cell_width, cell_height);
-    let is_app_cursor = terminal.term.lock().mode().contains(TermMode::APP_CURSOR);
-    let (up, down) = if is_app_cursor {
-        (&b"\x1BOA"[..], &b"\x1BOB"[..])
-    } else {
-        (&b"\x1B[A"[..], &b"\x1B[B"[..])
-    };
-    for _ in 0..(lines_y.unsigned_abs() * SCROLL_SPEED) {
-        if lines_y > 0 {
-            terminal.input_no_scroll(up);
-        } else if lines_y < 0 {
-            terminal.input_no_scroll(down);
-        }
-    }
+    core_scroll_as_arrows(terminal, reporter, neutral_delta(delta));
 }
