@@ -250,8 +250,10 @@ pub(crate) struct Shell {
     /// The settings drawer's shell-owned state (gpui-chrome Task 2):
     /// open flag, page, drafts buffer, and the echo-refresh guard in
     /// one cohesive state; the Kit's stateful controls live on the
-    /// drawer entity built at open.
+    /// drawer entity built at open and held here (the capture's focus
+    /// hand-off needs the handle).
     pub(crate) settings: crate::drawer::SettingsState,
+    pub(crate) settings_drawer: Option<gpui::Entity<crate::drawer::SettingsDrawer>>,
     /// A departed rename input's focus handle: the render's repair
     /// hands the keyboard back to the active pane once the input's
     /// handle stops holding it (the modal's own handle repairs the
@@ -340,6 +342,7 @@ impl Shell {
             pending_close: None,
             rename: None,
             settings: crate::drawer::SettingsState::default(),
+            settings_drawer: None,
             rename_focus_repair: None,
             modal_focus,
             status: dropterm_core::status::StatusSegments::default(),
@@ -1366,6 +1369,131 @@ impl Shell {
         cx.notify();
     }
 
+    /// The one path every keybinds write takes: persist the whole
+    /// `custom_key_binds` map, the echo drives the apply.
+    fn write_keybinds(&mut self, write: &dropterm_core::settings::KeybindsWrite) {
+        println!(
+            "dropterm-gpui: keybinds write ({} custom entr{}) at +{}ms",
+            write.0.len(),
+            if write.0.len() == 1 { "y" } else { "ies" },
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir()) {
+            eprintln!("dropterm-gpui: failed to persist keybinds write: {err}");
+        }
+    }
+
+    /// The Keybindings page's gestures (the libcosmic arms' rules):
+    /// arm a row's capture (clearing any standing conflict), disarm,
+    /// revert a row's custom entry (its defaults come back on the
+    /// echo), and buffer the search box.
+    pub(crate) fn keybind_capture_start(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.keybind_capture = Some(id);
+        self.settings.keybind_conflict = None;
+        println!("dropterm-gpui: keybind capture armed for {id}");
+        // The drawer holds the keyboard while armed: its focus handle
+        // takes it, the pane's claim resumes when the capture ends.
+        if let Some(drawer) = self.settings_drawer.clone() {
+            let focus = drawer.read(cx).capture_focus.clone();
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn keybind_capture_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.keybind_capture = None;
+        // The keyboard returns to the active pane (the modal repair's
+        // rule).
+        if let Some(pane) = self.active_pane() {
+            pane.read(cx).focus_handle().focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The armed capture's key gate — every press the drawer sees
+    /// while armed: Escape cancels, bare modifiers stay armed, any
+    /// other chord commits through the verdict (the conflict shown
+    /// inline, the write only on Commit).
+    pub(crate) fn keybind_capture_key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.settings.keybind_capture else {
+            return;
+        };
+        if keystroke.key == "escape" {
+            println!("dropterm-gpui: keybind capture canceled");
+            self.keybind_capture_end(window, cx);
+            return;
+        }
+        let Some(key) = dropterm_core::keybinds::capture_key_name(&keystroke.key) else {
+            return;
+        };
+        let mut modifiers = Vec::new();
+        if keystroke.modifiers.control {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Ctrl);
+        }
+        if keystroke.modifiers.shift {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Shift);
+        }
+        if keystroke.modifiers.alt {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Alt);
+        }
+        if keystroke.modifiers.platform {
+            modifiers.push(dropterm_core::keybinds::ModifierName::Super);
+        }
+        let binding = dropterm_core::keybinds::Binding { modifiers, key };
+        match dropterm_core::keybinds::capture_verdict(id, &binding, &self.config.custom_key_binds)
+        {
+            dropterm_core::keybinds::CaptureVerdict::Commit => {
+                let write = dropterm_core::keybinds::with_custom_binding(
+                    &self.config.custom_key_binds,
+                    id,
+                    binding.clone(),
+                );
+                self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+                println!(
+                    "dropterm-gpui: keybind captured for {id}: {}",
+                    dropterm_core::keybinds::binding_display(&binding)
+                );
+                self.keybind_capture_end(window, cx);
+            }
+            // Already the row's own: a silent disarm.
+            dropterm_core::keybinds::CaptureVerdict::Own => {
+                self.keybind_capture_end(window, cx);
+            }
+            dropterm_core::keybinds::CaptureVerdict::Conflict(holder) => {
+                self.settings.keybind_conflict = Some((id, holder));
+                cx.notify();
+            }
+            dropterm_core::keybinds::CaptureVerdict::Unsupported => {
+                eprintln!("dropterm-gpui: captured chord cannot be stored; dropping capture");
+                self.keybind_capture_end(window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn keybind_revert(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.settings.keybind_conflict = None;
+        let write =
+            dropterm_core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
+        self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+        println!("dropterm-gpui: keybind reverted for {id}");
+        cx.notify();
+    }
+
+    pub(crate) fn keybind_search(&mut self, text: String, cx: &mut Context<Self>) {
+        self.settings.keybind_search = text;
+        cx.notify();
+    }
+
     /// Duplicates the tab with `source` (the menu's row): a fresh
     /// pane in its cwd carrying its rename pin, landing after the
     /// active tab and activated (the record through core; the pane
@@ -1412,6 +1540,7 @@ impl Shell {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shell = cx.entity();
         let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
+        self.settings_drawer = Some(drawer.clone());
         let open = self.boot.elapsed().as_millis();
         let shell_for_close = shell.clone();
         window.open_sheet(cx, move |sheet, _window, _cx| {
@@ -1436,6 +1565,7 @@ impl Shell {
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.close_sheet(cx);
         self.settings.open = false;
+        self.settings_drawer = None;
         self.settings
             .buffer
             .apply_drawer_transition(dropterm_core::settings::DrawerTransition::ExplicitClose);

@@ -205,6 +205,12 @@ pub(crate) struct SettingsState {
     pub(crate) profile_selection: Option<usize>,
     pub(crate) profile_draft: Option<dropterm_core::settings::ProfileDraft>,
     pub(crate) profile_delete_armed: Option<usize>,
+    /// The Keybindings page's search (display-only; the page
+    /// re-filters its rows), the armed capture's row id, and the
+    /// standing conflict (the arming row and the holder).
+    pub(crate) keybind_search: String,
+    pub(crate) keybind_capture: Option<&'static str>,
+    pub(crate) keybind_conflict: Option<(&'static str, &'static str)>,
 }
 
 impl Default for SettingsState {
@@ -218,6 +224,9 @@ impl Default for SettingsState {
             profile_selection: None,
             profile_draft: None,
             profile_delete_armed: None,
+            keybind_search: String::new(),
+            keybind_capture: None,
+            keybind_conflict: None,
         }
     }
 }
@@ -257,6 +266,11 @@ pub(crate) struct SettingsDrawer {
     /// The epoch the Kit states were last seeded from; a change
     /// triggers the echo-refresh pass in render.
     seen_epoch: u64,
+    /// The capture's focus handle: while a keybind capture is armed,
+    /// the drawer holds the keyboard through it (the modal's rule).
+    pub(crate) capture_focus: gpui::FocusHandle,
+    /// The Keybindings page's search box.
+    keybind_search: Entity<InputState>,
     /// The profile form's inputs, with the draft identity they were
     /// built for (mode/index hash and env-row count).
     form: (FormIdentity, Option<FormInputs>),
@@ -307,6 +321,23 @@ impl SettingsDrawer {
                 cx,
             )
         });
+        let keybind_search = {
+            let target = shell.clone();
+            let state = cx.new(|cx| InputState::new(window, cx));
+            cx.subscribe(
+                &state,
+                move |emitter: Entity<InputState>,
+                      event: &gpui_component::input::InputEvent,
+                      cx| {
+                    if matches!(event, gpui_component::input::InputEvent::Change) {
+                        let value = emitter.read(cx).value().to_string();
+                        target.update(cx, |shell, cx| shell.keybind_search(value, cx));
+                    }
+                },
+            )
+            .detach();
+            state
+        };
         let default_target = shell.clone();
         let default_subscription = cx.subscribe(
             &default_picker,
@@ -337,6 +368,8 @@ impl SettingsDrawer {
                 scheme_dark,
                 scheme_light,
                 shell_control,
+                capture_focus: cx.focus_handle(),
+                keybind_search,
                 seen_epoch: 0,
                 form: (None, None),
                 default_picker,
@@ -670,9 +703,7 @@ impl SettingsDrawer {
                 content = content.child(self.profiles_page(window, cx));
             }
             SettingsTab::Keybindings => {
-                content = content.child(placeholder_page(
-                    "The keybind editor arrives with this task's next increment.",
-                ));
+                content = content.child(self.keybindings_page(cx));
             }
             _ => {
                 for section in tab_sections(page) {
@@ -817,10 +848,6 @@ fn field_row(label: &str, control: impl IntoElement, error: Option<String>) -> i
 
 fn placeholder_row(key: ConfigKey) -> impl IntoElement {
     h_flex().child(key.label())
-}
-
-fn placeholder_page(note: &str) -> impl IntoElement {
-    v_flex().p_4().child(note.to_string())
 }
 
 impl SettingsDrawer {
@@ -1108,6 +1135,90 @@ impl SettingsDrawer {
         card.into_any_element()
     }
 
+    /// The Keybindings page: the search box, the grouped rows (a
+    /// row's binding text is the arm affordance; the revert rides
+    /// beside it while a custom entry exists), the armed hint, and
+    /// the conflict's inline error — core's registry rendering,
+    /// core's verdicts writing.
+    fn keybindings_page(&self, cx: &App) -> gpui::AnyElement {
+        let shell = self.shell.read(cx);
+        let custom = shell.config.custom_key_binds.clone();
+        let search = shell.settings.keybind_search.clone();
+        let armed = shell.settings.keybind_capture;
+        let conflict = shell.settings.keybind_conflict;
+        let mut page = v_flex().gap_3().p_2();
+        page = page.child(Input::new(&self.keybind_search));
+        if armed.is_some() {
+            page = page.child(
+                h_flex()
+                    .gap_2()
+                    .child("Press the chord to bind — Escape cancels")
+                    .child({
+                        let target = self.shell.clone();
+                        small_button_static("Cancel", cx, move |_, window, cx| {
+                            target.update(cx, |shell, cx| shell.keybind_capture_end(window, cx));
+                        })
+                    }),
+            );
+        }
+        if let Some((id, holder)) = conflict {
+            let holder_label = dropterm_core::keybinds::binding_rows()
+                .iter()
+                .find(|row| row.id == holder)
+                .map_or(holder, |row| row.label);
+            page = page.child(format!("That chord is held by {holder_label} ({id})"));
+        }
+        let mut rows = dropterm_core::keybinds::binding_rows().iter().peekable();
+        while let Some(row) = rows.next() {
+            let _ = rows.peek();
+            if !dropterm_core::keybinds::row_matches_search(row, &search) {
+                continue;
+            }
+            let is_armed = armed == Some(row.id);
+            let customized = custom.contains_key(row.id);
+            let target = self.shell.clone();
+            let id = row.id;
+            let mut element = h_flex()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .bg(cx.theme().popover)
+                .child(row.label)
+                .child(
+                    gpui::div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(cx.theme().accent)
+                        .text_color(cx.theme().accent_foreground)
+                        .child(dropterm_core::keybinds::effective_binding_display(
+                            row.id, &custom,
+                        ))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                                target.update(cx, |shell, cx| {
+                                    shell.keybind_capture_start(id, window, cx);
+                                });
+                            },
+                        ),
+                );
+            if customized {
+                let target = self.shell.clone();
+                let id = row.id;
+                element = element.child(small_button_static("Revert", cx, move |_, _, cx| {
+                    target.update(cx, |shell, cx| shell.keybind_revert(id, cx));
+                }));
+            }
+            if is_armed {
+                element = element.child("capturing…");
+            }
+            page = page.child(element);
+        }
+        page.into_any_element()
+    }
+
     /// The echo-refresh pass: after a config reload (a write's echo
     /// or a hand edit), re-seed every Kit state that has no draft
     /// buffered for it — the drawer's un-drafted controls always
@@ -1186,7 +1297,18 @@ impl Render for SettingsDrawer {
                     }),
             );
         }
+        let armed = self.shell.read(cx).settings.keybind_capture.is_some();
+        let target = self.shell.clone();
         v_flex()
+            .id("settings-drawer")
+            .key_context("settings-drawer")
+            .track_focus(&self.capture_focus)
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                target.update(cx, |shell, cx| {
+                    shell.keybind_capture_key(&event.keystroke, window, cx);
+                });
+            })
+            .when(armed, gpui::Styled::border_1)
             .size_full()
             .child(strip)
             .child(self.page_element(window, cx))

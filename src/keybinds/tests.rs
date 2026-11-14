@@ -1189,3 +1189,78 @@ fn revert_removes_only_its_own_entry() {
     // Unkeybindable actions never had an entry either.
     assert_eq!(without_custom_binding(&map, Action::NewProfileTab(0)), map);
 }
+
+/// The id-keyed registry in core (gpui-chrome) is this frontend's
+/// own tables transcribed — this pin holds the two together: every
+/// default chord, every label, and the group/row order agree, so the
+/// GPUI editor can never drift from the firing map.
+#[test]
+fn cores_id_registry_matches_this_frontends_tables() {
+    let rows = dropterm_core::keybinds::binding_rows();
+
+    // The registry's row sequence ≡ action_groups' order, labels and
+    // all.
+    let expected: Vec<&str> = action_groups()
+        .flat_map(|group| group.actions.into_iter().map(|action| action_label(action)))
+        .collect();
+    let got: Vec<&str> = rows.iter().map(|row| row.label).collect();
+    assert_eq!(
+        got, expected,
+        "the registry's rows must be the groups' rows"
+    );
+
+    // Every default chord in the firing map appears in its id's row,
+    // and every row chord appears in the firing map — in both
+    // directions, key names through the persisted form.
+    let defaults = default_key_binds();
+    for (key_bind, action) in &defaults {
+        let id = action_id(*action).expect("every default bind is keybindable");
+        let row = rows.iter().find(|row| row.id == id).expect("a row per id");
+        let key = key_to_string(&key_bind.key).expect("default keys parse");
+        assert!(
+            row.defaults.iter().any(|(row_modifiers, row_key)| {
+                *row_key == key && modifier_names(key_bind) == *row_modifiers
+            }),
+            "chord for {id} ({key:?}) missing from the registry row"
+        );
+    }
+    for row in rows {
+        for (modifiers, key) in row.defaults {
+            let action = action_from_id(row.id).expect("registry ids resolve");
+            assert!(
+                defaults.iter().any(|(key_bind, bound)| {
+                    *bound == action
+                        && key_to_string(&key_bind.key).as_deref() == Some(key)
+                        && modifier_names(key_bind) == *modifiers
+                }),
+                "registry chord {key:?} for {} is not in the firing map",
+                row.id
+            );
+        }
+    }
+
+    // And the ids themselves: action_id over the groups' actions is
+    // the registry's id set.
+    for group in action_groups() {
+        for action in group.actions {
+            let id = action_id(action).expect("grouped actions are keybindable");
+            assert!(rows.iter().any(|row| row.id == id), "{id} missing a row");
+        }
+    }
+}
+
+/// A runtime bind's modifiers in the persisted order.
+fn modifier_names(key_bind: &KeyBind) -> Vec<ModifierName> {
+    let mut names = Vec::new();
+    for (modifier, name) in [
+        (Modifier::Ctrl, ModifierName::Ctrl),
+        (Modifier::Shift, ModifierName::Shift),
+        (Modifier::Alt, ModifierName::Alt),
+        (Modifier::Super, ModifierName::Super),
+    ] {
+        if key_bind.modifiers.contains(&modifier) {
+            names.push(name);
+        }
+    }
+    names
+}
