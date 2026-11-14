@@ -36,8 +36,11 @@ use tokio::sync::mpsc;
 use dropterm_core::tabs::TabId;
 use dropterm_core::terminal::{Terminal, TerminalOptions};
 
+use alacritty_terminal::index::Column;
+
 use super::grid::{self, StyledRun};
 use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
+use super::selection::{self, ClickKind};
 
 /// The walk evidence rows' dedup state (the last logged grid and
 /// caret cells — one row per change, not per frame).
@@ -88,6 +91,12 @@ pub(crate) struct TerminalPane {
     options: TerminalOptions,
     /// The pane's focus handle — the keyboard routes here.
     focus: gpui::FocusHandle,
+    /// The click-kind state machine's last click.
+    click: Option<(ClickKind, std::time::Instant)>,
+    /// Whether a left drag is extending the selection.
+    dragging: bool,
+    /// The wheel accumulator (fractional notches carry over).
+    scroll_lines: f32,
 }
 
 impl TerminalPane {
@@ -127,6 +136,9 @@ impl TerminalPane {
             binds,
             options,
             focus,
+            click: None,
+            dragging: false,
+            scroll_lines: 0.,
         }
     }
 
@@ -269,10 +281,12 @@ impl TerminalPane {
                 );
             }
             TermAction::SelectAll => {
+                println!("dropterm-gpui: pane action SelectAll (every row selected)");
                 self.terminal.lock().expect("engine lock").select_all();
                 self.needs_update = true;
             }
             TermAction::ClearScrollback => {
+                println!("dropterm-gpui: pane action ClearScrollback (history dropped)");
                 self.terminal
                     .lock()
                     .expect("engine lock")
@@ -289,6 +303,7 @@ impl TerminalPane {
                     TermAction::ZoomOut => terminal.zoom_adj().saturating_sub(1),
                     _ => 0,
                 };
+                println!("dropterm-gpui: pane action {action:?} (zoom_adj {adj})");
                 // The metrics reapply *is* the zoom: `set_config`
                 // recomputes metrics from the live `zoom_adj` and
                 // re-fires the cell resize from there.
@@ -310,6 +325,20 @@ impl TerminalPane {
 
     /// One key press through the translation and its outcome.
     fn on_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        // The walk affordance: the exact keystroke shape the platform
+        // delivered (key, modifiers, key_char) — rig/VM input walks
+        // set `DROPTERM_TRACE_KEYS=1` to see what actually arrives.
+        if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+            println!(
+                "dropterm-gpui: key {:?} modifiers ctrl={} shift={} alt={} super={} key_char={:?}",
+                keystroke.key,
+                keystroke.modifiers.control,
+                keystroke.modifiers.shift,
+                keystroke.modifiers.alt,
+                keystroke.modifiers.platform,
+                keystroke.key_char
+            );
+        }
         let modes = {
             let terminal = self.terminal.lock().expect("engine lock");
             let term = terminal.term.lock();
@@ -342,6 +371,7 @@ impl TerminalPane {
             }
             KeyInput::Action(action) => self.perform_action(action, cx),
             KeyInput::Scroll(scroll) => {
+                println!("dropterm-gpui: pane scroll {scroll:?} (Shift+PageUp/Down/Home/End)");
                 self.terminal.lock().expect("engine lock").scroll(scroll);
                 self.needs_update = true;
                 cx.notify();
@@ -363,6 +393,194 @@ impl TerminalPane {
     }
 }
 
+impl TerminalPane {
+    /// A left press into the grid: the click-kind cycle, the
+    /// selection anchor (or a Shift-press extending the standing
+    /// one), and the drag arm.
+    fn on_left_press(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        let (cell, geometry) = {
+            let terminal = self.terminal.lock().expect("engine lock");
+            let size = terminal.size();
+            let (col, row) = selection::cell_at(
+                position.x.as_f32(),
+                position.y.as_f32(),
+                size.cell_width,
+                size.cell_height,
+            );
+            (col, (size.cell_width, size.cell_height, row))
+        };
+        let (_, _, row) = geometry;
+        if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+            println!(
+                "dropterm-gpui: left press at ({:.0},{:.0}) -> cell ({cell},{row}) shift={}",
+                position.x.as_f32(),
+                position.y.as_f32(),
+                modifiers.shift
+            );
+        }
+        let within_window = self
+            .click
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_millis(500));
+        let kind = selection::next_click_kind(self.click.map(|(kind, _)| kind), within_window);
+        self.click = Some((kind, std::time::Instant::now()));
+        self.dragging = true;
+        {
+            let mut terminal = self.terminal.lock().expect("engine lock");
+            let location = terminal
+                .viewport_to_point(alacritty_terminal::index::Point::new(row, Column(cell)));
+            let side = selection::side_of(position.x.as_f32(), geometry.0);
+            {
+                let mut term = terminal.term.lock();
+                if modifiers.shift
+                    && let Some(ref mut standing) = term.selection
+                {
+                    standing.update(location, side);
+                } else {
+                    term.selection = Some(alacritty_terminal::selection::Selection::new(
+                        selection::selection_kind_of(kind),
+                        location,
+                        side,
+                    ));
+                }
+            }
+            terminal.needs_update = true;
+        }
+        cx.notify();
+    }
+
+    /// A drag motion while the left button holds: extend the
+    /// selection to the pointer's cell.
+    fn on_left_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        if !self.dragging {
+            return;
+        }
+        {
+            let mut terminal = self.terminal.lock().expect("engine lock");
+            let size = terminal.size();
+            let (col, row) = selection::cell_at(
+                position.x.as_f32(),
+                position.y.as_f32(),
+                size.cell_width,
+                size.cell_height,
+            );
+            let location =
+                terminal.viewport_to_point(alacritty_terminal::index::Point::new(row, Column(col)));
+            let edge = selection::side_of(position.x.as_f32(), size.cell_width);
+            {
+                let mut term = terminal.term.lock();
+                if let Some(ref mut standing) = term.selection {
+                    standing.update(location, edge);
+                }
+            }
+            terminal.needs_update = true;
+        }
+        cx.notify();
+    }
+
+    /// The left release: finalize the selection, and the
+    /// copy-on-select decision rides the clipboard task's seam (the
+    /// write itself arrives with it).
+    fn on_left_release(&mut self, cx: &mut Context<Self>) {
+        self.dragging = false;
+        let selected = {
+            let mut terminal = self.terminal.lock().expect("engine lock");
+            let text = {
+                let term = terminal.term.lock();
+                term.selection_to_string()
+            };
+            if let Some(text) = &text {
+                println!(
+                    "dropterm-gpui: selection finalized ({} bytes; the copy-on-select write                      arrives with the clipboard task)",
+                    text.len()
+                );
+            }
+            terminal.needs_update = text.is_some();
+            text.is_some()
+        };
+        if selected {
+            cx.notify();
+        }
+    }
+
+    /// One wheel scroll: mouse-mode programs receive their bytes
+    /// with the mouse task; otherwise the wheel drives the
+    /// scrollback by whole lines (the alt screen's arrow fallback
+    /// included).
+    fn on_wheel(&mut self, delta: gpui::ScrollDelta, cx: &mut Context<Self>) {
+        if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+            let (kind, y) = match delta {
+                gpui::ScrollDelta::Lines(lines) => ("lines", lines.y),
+                gpui::ScrollDelta::Pixels(pixels) => ("pixels", pixels.y.as_f32()),
+            };
+            println!("dropterm-gpui: wheel delta {kind} y={y}");
+        }
+        let y = match delta {
+            gpui::ScrollDelta::Lines(lines) => lines.y,
+            gpui::ScrollDelta::Pixels(pixels) => {
+                let terminal = self.terminal.lock().expect("engine lock");
+                pixels.y.as_f32() / terminal.size().cell_height
+            }
+        };
+        self.scroll_lines += y;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "whole accumulated wheel lines: a notch count far below i32::MAX"
+        )]
+        let lines = self.scroll_lines as i32;
+        if lines == 0 {
+            return;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "whole wheel lines: exact in f32"
+        )]
+        let consumed = lines as f32;
+        self.scroll_lines -= consumed;
+        {
+            let terminal = self.terminal.lock().expect("engine lock");
+            let term = terminal.term.lock();
+            let mode = term.mode();
+            if mode.contains(alacritty_terminal::term::TermMode::MOUSE_MODE) {
+                println!(
+                    "dropterm-gpui: wheel under mouse mode (the bytes arrive with the mouse task)"
+                );
+            } else if mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
+                drop(term);
+                // The alt screen has no scrollback: arrow keys, three
+                // per line, the app-cursor forms respected.
+                let app_cursor = {
+                    let terminal = self.terminal.lock().expect("engine lock");
+                    let term = terminal.term.lock();
+                    term.mode()
+                        .contains(alacritty_terminal::term::TermMode::APP_CURSOR)
+                };
+                let (up, down) = if app_cursor {
+                    (&b"\x1bOA"[..], &b"\x1bOB"[..])
+                } else {
+                    (&b"\x1b[A"[..], &b"\x1b[B"[..])
+                };
+                for _ in 0..lines.unsigned_abs().saturating_mul(3) {
+                    let terminal = self.terminal.lock().expect("engine lock");
+                    terminal.input_no_scroll(if lines > 0 { up } else { down });
+                }
+                return;
+            } else {
+                drop(term);
+                let scroll = dropterm_core::terminal::TerminalScroll::Delta(-lines);
+                let terminal = self.terminal.lock().expect("engine lock");
+                terminal.scroll(scroll);
+            }
+        }
+        cx.notify();
+    }
+}
+
 impl gpui::Render for TerminalPane {
     fn render(
         &mut self,
@@ -377,12 +595,41 @@ impl gpui::Render for TerminalPane {
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
         let pane = cx.entity();
-        // The focusable frame: keys route to the pane, the canvas
+        // The focusable frame: keys and the pointer route to the
+        // pane, the canvas
         // paints inside it (carrying its own `size_full` — a
         // default-styled child collapses; the first walk's lesson).
         div()
             .size_full()
             .track_focus(&self.focus)
+            .on_mouse_down(gpui::MouseButton::Left, {
+                let pane = pane.clone();
+                move |event: &gpui::MouseDownEvent, _window, cx| {
+                    pane.update(cx, |pane, cx| {
+                        pane.on_left_press(event.position, event.modifiers, cx);
+                    });
+                }
+            })
+            .on_mouse_move({
+                let pane = pane.clone();
+                move |event: &gpui::MouseMoveEvent, _window, cx| {
+                    if event.pressed_button == Some(gpui::MouseButton::Left) {
+                        pane.update(cx, |pane, cx| pane.on_left_drag(event.position, cx));
+                    }
+                }
+            })
+            .on_mouse_up(gpui::MouseButton::Left, {
+                let pane = pane.clone();
+                move |_event: &gpui::MouseUpEvent, _window, cx| {
+                    pane.update(cx, TerminalPane::on_left_release);
+                }
+            })
+            .on_scroll({
+                let pane = pane.clone();
+                move |event: &gpui::ScrollEvent, _window, cx| {
+                    pane.update(cx, |pane, cx| pane.on_wheel(event.delta, cx));
+                }
+            })
             .on_key_down({
                 let pane = pane.clone();
                 move |event: &gpui::KeyDownEvent, _window, cx| {
@@ -403,7 +650,14 @@ impl gpui::Render for TerminalPane {
 
 /// One pane's paint: resize to the granted bounds, drain the update
 /// flag, then walk the visible grid through the projection and the
-/// shaper.
+/// shaper. One function reads the whole frame together — the grid
+/// walk, the selection overlay, and the evidence rows share the one
+/// lock and the one geometry; splitting them re-derives the lock
+/// order per piece.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the frame reads one lock and one geometry end to end; the walk, the overlay, and the evidence rows are one pass"
+)]
 fn paint_pane(
     terminal: &Arc<Mutex<Terminal>>,
     skin: &PaneSkin,
@@ -516,6 +770,39 @@ fn paint_pane(
         );
     }
 
+    // The selection overlay: the range projected onto row spans,
+    // the pane foreground at quarter alpha (the repo's text-selection
+    // convention). Absolute line L sits at display row L + offset.
+    if let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(&term)) {
+        let fg = hsla_fg(&skin.colors);
+        let mut overlay = gpui::hsla(fg.h, fg.s, fg.l, 0.25);
+        for span in selection::spans(&range, cols) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                clippy::cast_sign_loss,
+                reason = "a selected line's absolute index plus the offset is a display row: bounded by the grid's own sizes"
+            )]
+            let row = (span.line + display_offset as i32) as usize;
+            if row >= display_rows.len() {
+                continue;
+            }
+            overlay.a = 0.25;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "grid columns and rows are far below 2^24: exact in f32"
+            )]
+            let (x, y, w) = (
+                geometry.cell_width * span.start as f32,
+                geometry.cell_height * row as f32,
+                geometry.cell_width * (span.end - span.start) as f32,
+            );
+            let origin = point(bounds.origin.x + x, bounds.origin.y + y);
+            let size = gpui::Size::new(w, geometry.cell_height);
+            window.paint_quad(fill(gpui::Bounds { origin, size }, overlay));
+        }
+    }
+
     // The walk's caret evidence row: the caret cell, once per move.
     if let Some(row) = caret_row {
         let cell_at = (cursor.column.0, row);
@@ -528,6 +815,18 @@ fn paint_pane(
             log.caret = Some(cell_at);
         }
     }
+}
+
+/// The scheme's foreground as GPUI color (the selection overlay's
+/// tint).
+fn hsla_fg(colors: &Colors) -> gpui::Hsla {
+    let fg = grid::resolve_color(
+        colors,
+        alacritty_terminal::vte::ansi::Color::Named(
+            alacritty_terminal::vte::ansi::NamedColor::Foreground,
+        ),
+    );
+    gpui::rgb(u32::from(fg.r) << 16 | u32::from(fg.g) << 8 | u32::from(fg.b)).into()
 }
 
 /// Resize the engine to the pane's granted bounds — this frame

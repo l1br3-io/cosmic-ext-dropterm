@@ -419,8 +419,22 @@ name, answers the contract on both compositors.
       compositors with evidence, the reversal VM-window note recorded
       (debounce vs tick — rides parity's human row as si-5 parked
       it); the merge's own gate runs on main)*
-- [ ] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
-- [ ] gt-2 Input + keybinds; selection; scrollback
+- [x] gt-1 Grid view + damage redraw + resize→SIGWINCH (check-9 path)
+      *(done 2026-11-13 on port/gpui-terminal, committed 81ad238:
+      walked rig + VM — VM pixels vm-evidence-gt1-*, rig logs
+      rig-evidence-gt1-*, 8×20→100×20 through Term::resize with the
+      pty's stty confirming; two findings made structural — the font
+      candidate resolution and the rig's harness-window silence)*
+- [x] gt-2 Input + keybinds; selection; scrollback *(done 2026-11-14
+      on port/gpui-terminal: every default chord fired live on the
+      rig's logs plus the custom overlay both ways; the VM holds the
+      pixels — SelectAll's full-grid overlay and its Escape clear, a
+      uinput hold-drag selecting 80 bytes with the overlay band;
+      three environment findings recorded in the harness docs — the
+      rig surface holds keyboard though it never presents, cosmic-comp
+      drops wtype's modifiers, and uinput wheel synthesis reaches no
+      app on the VM, parking the physical-wheel row on parity's
+      human-at-console class)*
 - [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;
       data-control for not-focused)
 - [ ] gt-4 Wire into the executor's windows; terminal rows both

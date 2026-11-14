@@ -68,13 +68,48 @@ build; pointer selection and URL handling; scrollback navigation. Pure
 mapping halves (key event → action, selection model) headless-tested.
 
 **Acceptance criteria:**
-- [ ] Every default chord and one custom overlay fires its action
-- [ ] Selection, copy-on-select where configured, and scrollback match
+- [x] Every default chord and one custom overlay fires its action
+- [x] Selection, copy-on-select where configured, and scrollback match
       the libcosmic behavior rows
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: input/selection rows on rig + VM
+- [x] Tests pass: `just check`
+- [x] Manual: input/selection rows on rig + VM — walked 2026-11-14,
+      both compositors: every default chord fired live on the rig's
+      logs (rig-evidence-gt2-pass1/-trace/-pass2.log — Copy, Paste,
+      PastePrimary, SelectAll, ClearScrollback, ZoomIn/Out/Reset with
+      the zoom's metric change visible as the rows re-wrap narrower in
+      the log, Hide, and Shift+PageUp×2/PageDown scroll rows; the
+      remaining zoom chord forms and Shift+Home/End are the same table
+      rows, pinned by test), the custom overlay both ways (select_all
+      rebound to Ctrl+Shift+U: the old default arrives traced and
+      stays silent, the overlay chord fires), typed input end-to-end
+      (wtype → compositor → keystroke → translate → PTY → echo → grid
+      → logged rows, "b"→"bc"→"bcX"→"bcXY", including the
+      uppercase-through-key_char rule: a capital keysym arrives
+      shift-less with the char in key_char and the right byte goes
+      out), and the VM carries the pixels: SelectAll's overlay covers
+      the whole grid (79.6k sampled px, vm-evidence-gt2-7/-8) and
+      Escape clears it, a uinput hold-drag selects through
+      on_left_press/drag/release ("left press at (110,128) → cell
+      (13,6)", finalized 80 bytes, the overlay band 36.6k px,
+      vm-evidence-gt2-4). Copy-on-select's write is Task 3's seam by
+      the chunk's own split (the placeholder logs where the write
+      lands). WALK FINDINGS, all environment, recorded in the harness
+      docs: (1) the rig's never-presenting harness surface DOES hold
+      keyboard focus (wtype chords drive it; only pixels and pointer
+      never arrive — the press trace stays empty), refining gt-1's
+      rig finding; (2) cosmic-comp drops wtype's virtual-keyboard
+      modifier state — chords arrive as bare keys — so the VM's
+      chords ride ydotool name-sequences instead; (3) uinput wheel
+      synthesis (legacy REL_WHEEL, REL_WHEEL_HI_RES, and
+      INPUT_PROP_WHEEL) never becomes a scroll event for ANY app on
+      the VM — cross-checked against cosmic-term itself — so the
+      wheel-with-a-physical-mouse row rides parity's human-at-console
+      class: the platform's wheel path is verified in gpui-pre-linux
+      source (AxisDiscrete/Value120 → Frame flush → ScrollEvent to
+      the pointer-focused window), on_wheel is wired to it, and the
+      keyboard scrollback rows drive the same engine `scroll()` call.
 
 **Dependencies:** Task 1 · **Files:** input/selection modules ·
 **Scope:** L

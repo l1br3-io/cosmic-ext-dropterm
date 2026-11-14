@@ -8,8 +8,12 @@
 //!
 //! Armed with `DROPTERM_CHECK=terminal-grid` beside
 //! `DROPTERM_EXIT_AFTER_MS`; the pane's program is `DROPTERM_TERM_CMD`
-//! (a shell command line — the walk seeds colored runs and a
-//! `stty size` watcher through it), defaulting to `/bin/sh`.
+//! (a shell command line — the walk seeds colored runs, scrollback
+//! rows, and a trailing `cat` whose echo proves typed input
+//! end-to-end), defaulting to `/bin/sh`. `DROPTERM_TRACE_KEYS=1`
+//! prints every keystroke's platform shape (key, modifiers,
+//! `key_char`), each pointer press's cell, and each wheel delta — the
+//! input walk's instrumentation.
 //!
 //! Walk finding (2026-11-13, Task 1): the sway rig presents the
 //! drawer's own windows (the band, pixel-proven) but never presents
@@ -19,6 +23,26 @@
 //! (grid, caret, projected row text through the shaper) and by the
 //! validation VM's pixels; the harness window's rig silence is the
 //! environment's, recorded here rather than chased further.
+//!
+//! Walk findings (2026-11-14, Task 2's input rows — all
+//! environment, refined against the finding above): (1) the rig's
+//! never-presenting surface DOES hold keyboard focus — wtype's
+//! chords drive the pane's actions and typed echo on sway — so the
+//! Task-1 finding narrows to pixels and pointer: the left-press
+//! trace never fires there, and the drag/selection rows are the
+//! VM's; (2) cosmic-comp drops wtype's virtual-keyboard modifier
+//! state — every chord arrives as its bare key — so the VM's chords
+//! ride ydotool name-sequences (`ydotool key ctrl+shift+a`) instead;
+//! (3) uinput wheel synthesis never becomes a scroll event for ANY
+//! app on the validation VM — legacy `REL_WHEEL`, `REL_WHEEL_HI_RES`,
+//! and `INPUT_PROP_WHEEL` were all tried, motion and buttons land,
+//! and cosmic-term (an independent app) scrolls none of it — so the
+//! physical-wheel row rides parity's human-at-console class: the
+//! platform's wheel path is verified in gpui-pre-linux source
+//! (AxisDiscrete/Value120 → frame flush → `ScrollEvent` to the
+//! pointer-focused window), the pane's `on_wheel` is wired to it,
+//! and the keyboard scrollback rows drive the same engine
+//! `scroll()` call.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -151,6 +175,8 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         &colors,
         config.opacity,
         font,
+        options,
+        &config.custom_key_binds,
         event_rx,
     );
     let window: gpui::AnyWindowHandle =
