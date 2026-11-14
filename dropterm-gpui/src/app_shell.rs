@@ -35,6 +35,7 @@ use dropterm_core::tabs::TabId;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
+use gpui_component::WindowExt as _;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use notify::Watcher as _;
@@ -216,7 +217,7 @@ pub(crate) struct Shell {
     panes: HashMap<TabId, Entity<TerminalPane>>,
     /// The live config snapshot (reloaded on every config echo): the
     /// strip's placement, border, and title mode read from it.
-    config: DropTermConfig,
+    pub(crate) config: DropTermConfig,
     /// The hide channel's sender half — every spawned pane shares it.
     signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
     /// The title mode the tab titles were last resolved under (the
@@ -246,6 +247,11 @@ pub(crate) struct Shell {
     /// The open inline rename, if any (double-click or the menu's
     /// Rename row).
     rename: Option<RenameEdit>,
+    /// The settings drawer's shell-owned state (gpui-chrome Task 2):
+    /// open flag, page, drafts buffer, and the echo-refresh guard in
+    /// one cohesive state; the Kit's stateful controls live on the
+    /// drawer entity built at open.
+    pub(crate) settings: crate::drawer::SettingsState,
     /// A departed rename input's focus handle: the render's repair
     /// hands the keyboard back to the active pane once the input's
     /// handle stops holding it (the modal's own handle repairs the
@@ -333,6 +339,7 @@ impl Shell {
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
+            settings: crate::drawer::SettingsState::default(),
             rename_focus_repair: None,
             modal_focus,
             status: dropterm_core::status::StatusSegments::default(),
@@ -549,6 +556,7 @@ impl Shell {
         // mode read the live config at render/sync time, so the echo
         // lands the snapshot the next frame reads.
         self.config = config.clone();
+        self.settings.config_epoch += 1;
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
         // The identity compare absorbs echoes (an unchanged scheme is
@@ -1157,7 +1165,7 @@ impl Shell {
                     self.duplicate_tab(id, cx);
                 }
             }
-            PickRoute::Shell(ShellPick::Settings) => self.settings_requested(cx),
+            PickRoute::Shell(ShellPick::Settings) => self.settings_requested(window, cx),
         }
     }
 
@@ -1186,17 +1194,80 @@ impl Shell {
         cx.notify();
     }
 
-    /// The gear affordance's press: the settings entry point arrives
-    /// with gpui-chrome; the row is the affordance's evidence until
-    /// then.
-    fn settings_requested(&mut self, cx: &mut Context<Self>) {
+    /// The gear affordance's press and the menu's Settings… row: the
+    /// one settings trigger (the libcosmic drawer's own funnel — a
+    /// repeat press closes).
+    fn settings_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The gear's press commits an open rename first, exactly like
         // the reference bar's corner affordances.
         self.commit_open_rename(cx);
+        if self.settings.open {
+            self.close_settings(window, cx);
+        } else {
+            self.open_settings(window, cx);
+        }
+    }
+
+    /// Open the drawer: the Kit's Sheet over the live terminal — the
+    /// surface never hides or resizes (the libcosmic drawer's overlay
+    /// rule), the drawer entity holding the Kit's stateful controls
+    /// built from the live config.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = cx.entity();
+        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
+        let open = self.boot.elapsed().as_millis();
+        let shell_for_close = shell.clone();
+        window.open_sheet(cx, move |sheet, _window, _cx| {
+            let shell_for_close = shell_for_close.clone();
+            sheet
+                .title("Settings")
+                .on_close(move |_event, window, cx| {
+                    shell_for_close.update(cx, |shell, cx| shell.close_settings(window, cx));
+                })
+                .child(drawer.clone())
+        });
+        self.settings.open = true;
         println!(
-            "dropterm-gpui: gear pressed (settings entry arrives with gpui-chrome) at +{}ms",
+            "dropterm-gpui: settings drawer opened at +{open}ms (the surface stays live beneath)"
+        );
+        cx.notify();
+    }
+
+    /// Close the drawer: the explicit close clears the buffer (the
+    /// reopen-fresh rule; a focus-loss hide preserves — the shell
+    /// hides with the surface and this path never runs for a hide).
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.close_sheet(cx);
+        self.settings.open = false;
+        self.settings
+            .buffer
+            .apply_drawer_transition(dropterm_core::settings::DrawerTransition::ExplicitClose);
+        println!(
+            "dropterm-gpui: settings drawer closed at +{}ms",
             self.boot.elapsed().as_millis()
         );
+        cx.notify();
+    }
+
+    /// The one write path every drawer commit rides (the libcosmic
+    /// `write_config`'s discipline): clamp, persist through the
+    /// store, and let the watcher's echo drive every apply — the
+    /// drawer never applies anything itself, and drawer writes and
+    /// hand edits remain one event stream.
+    pub(crate) fn write_settings(&mut self, write: &dropterm_core::settings::PlannedWrite) {
+        let write = write.clamped();
+        let key = write.key();
+        println!(
+            "dropterm-gpui: settings write {} at +{}ms",
+            key.key_name(),
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+            eprintln!(
+                "dropterm-gpui: failed to persist settings write {}: {err}",
+                key.key_name()
+            );
+        }
     }
 
     /// One title sync (the tick's apply point): re-title every tab
@@ -1663,8 +1734,8 @@ impl Shell {
             })
             .on_settings({
                 let shell = shell.clone();
-                move |_window, cx: &mut App| {
-                    shell.update(cx, Shell::settings_requested);
+                move |window: &mut gpui::Window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.settings_requested(window, cx));
                 }
             })
             .when_some(
