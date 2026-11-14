@@ -62,7 +62,9 @@ pub const APP_ID: &str = "io.github.l1br3_io.dropterm";
 pub const APP_ID: &str = "io.github.l1br3_io.dropterm.Dev";
 
 pub mod config;
+pub mod context_menu;
 pub mod dbus_state;
+pub mod font_list;
 pub mod geometry;
 pub mod intent;
 pub mod keybinds;
