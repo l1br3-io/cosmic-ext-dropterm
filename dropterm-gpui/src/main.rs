@@ -6,6 +6,7 @@
 // where it fires, for the same reason as the root crate's table.
 #![warn(clippy::pedantic)]
 #![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
+#![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty
 
 //! `dropterm-gpui` — `DropTerm`'s GPUI frontend (gpui-scaffold spec).
 //!
@@ -19,6 +20,7 @@ mod dbus;
 mod executor;
 mod kit_check;
 mod startup;
+mod status_bar;
 mod tab_bar;
 mod terminal;
 mod terminal_walk;

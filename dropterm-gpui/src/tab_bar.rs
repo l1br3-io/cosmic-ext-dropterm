@@ -240,6 +240,12 @@ impl TabList {
         self.tabs.get(self.active).map(|tab| tab.id)
     }
 
+    /// The active tab's position — `(index, total)`, the status
+    /// band's tab segment input; `None` while the list is empty.
+    pub(crate) fn position(&self) -> Option<(usize, usize)> {
+        Some((self.active, self.tabs.len())).filter(|&(_, total)| total > 0)
+    }
+
     /// Activates the tab with `id` — clearing its attention marker
     /// through core's transition — returning whether the active tab
     /// changed. An unknown id, or the already-active tab, changes

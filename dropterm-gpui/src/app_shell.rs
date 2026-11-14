@@ -29,6 +29,7 @@ use dropterm_core::config::TabTitleMode;
 use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::slide::{self, SLIDE_DURATION_MS};
+use dropterm_core::status::{self, StatusInputs, StatusSegments, Strip};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
 use dropterm_core::tabs::TabId;
 use gpui::Focusable as _;
@@ -39,6 +40,7 @@ use notify::Watcher as _;
 
 use crate::dbus::Verb;
 use crate::executor::{Action, GpuiExecutor};
+use crate::status_bar;
 use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
 
@@ -249,6 +251,19 @@ pub(crate) struct Shell {
     /// handed back to the active pane when the decision resolves.
     modal_focus: gpui::FocusHandle,
     exit_at: Option<Instant>,
+    /// The status band's resolved segments (gpui-status Task 1):
+    /// assembled on the tick from the active pane's engine and the
+    /// config — the render path performs zero filesystem reads by
+    /// construction (the reference band's own pin).
+    status: dropterm_core::status::StatusSegments,
+    /// The stored wall-clock string — the tick recomputes it under
+    /// the clock gate (the band never formats time at render; the
+    /// text flips exactly at the minute boundary).
+    status_clock: Option<String>,
+    /// The band's font: the terminal's own resolved family (the
+    /// reference band's rule — the band is the terminal speaking
+    /// about itself).
+    band_font: gpui::Font,
 }
 
 impl Shell {
@@ -268,6 +283,7 @@ impl Shell {
         config_changes: Receiver<()>,
         modal_focus: gpui::FocusHandle,
         exit_after: Option<Duration>,
+        band_font: gpui::Font,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         Self {
@@ -299,6 +315,9 @@ impl Shell {
             rename: None,
             rename_focus_repair: None,
             modal_focus,
+            status: dropterm_core::status::StatusSegments::default(),
+            status_clock: None,
+            band_font,
             exit_at: exit_after.map(|after| boot + after),
         }
     }
@@ -1169,6 +1188,123 @@ impl Shell {
         self.prune_rename(cx);
     }
 
+    /// The status band element: the stored segments through the
+    /// view, in the strip's own pane-derived colors — derived, not
+    /// decorated (the reference band's rule). The border hairline
+    /// faces the terminal: the band's top edge when it sits at the
+    /// column's bottom (a top-anchored drawer), its bottom edge
+    /// otherwise.
+    fn status_band(
+        &self,
+        pane_background: Option<alacritty_terminal::vte::ansi::Rgb>,
+    ) -> status_bar::StatusBandView {
+        let (strip, fg) = tab_bar::strip_pair(pane_background);
+        let width = self
+            .last_bounds
+            .map_or(0.0, |bounds| bounds.size.width.as_f32());
+        status_bar::StatusBandView::new(self.status.clone(), strip, fg)
+            .font(self.band_font.clone())
+            .show_border(self.config.status_bar_border)
+            .at_bottom(self.inputs.geometry.edge == Edge::Top)
+            .width(width)
+    }
+
+    /// The status band's refresh (gpui-status Task 1): the clock's
+    /// text under its gate, then the active tab's segments assembled
+    /// from the engine's own reads plus the config — one snapshot
+    /// per tick, so the render path performs zero filesystem reads
+    /// by construction (the reference band's own pin). The OSC-fed
+    /// seats (the reported cwd, the command timer's verdicts,
+    /// progress, program status) ride Task 2's wiring; every seat
+    /// the plain state feeds resolves today, and the profile seat
+    /// stays honestly absent until a profile spawn path exists.
+    fn refresh_status_band(&mut self, cx: &mut Context<Self>) {
+        let toggles = self.config.status_toggles();
+        // The clock's gate: band and segment keys both hold — the
+        // stored text recomputes each tick and flips exactly at the
+        // minute boundary (a pure format of now, never a timer of
+        // this shell's own; the tick is the wake).
+        self.status_clock = if status::clock_due(
+            self.config.status_bar_enabled,
+            self.config.status_bar_show_clock,
+        ) {
+            Some(status::clock_text(&jiff::Zoned::now()))
+        } else {
+            None
+        };
+        let Some(pane) = self.active_pane() else {
+            self.status = StatusSegments::default();
+            return;
+        };
+        // Every engine read the inputs need, under one guard — then
+        // the two filesystem reads outside it (the reference's own
+        // split: the comm read and the `.git` walk are the band's
+        // lone syscalls, refreshed at event points, never per
+        // frame).
+        let engine = pane.read(cx).terminal.clone();
+        let (foreground, cwd, zoom_adj, grid, spawn_grid, scrolled_back) = {
+            let engine = engine.lock().expect("engine lock");
+            (
+                engine.foreground_process_name(),
+                engine.working_directory(),
+                engine.zoom_adj(),
+                engine.grid(),
+                engine.spawn_grid(),
+                engine.scrolled_back_lines(),
+            )
+        };
+        // Hidden means never gathered: the `.git` walk stops at the
+        // gate, before the filesystem.
+        let branch = (self.config.status_bar_enabled && self.config.status_bar_show_branch)
+            .then(|| status::git_branch(cwd.as_deref()))
+            .flatten();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let shell = self.config.resolved_shell();
+        let inputs = StatusInputs {
+            home: home.as_deref(),
+            cwd: cwd.as_deref(),
+            // Task 2's seats, honestly absent this slice: the OSC 7
+            // report and its host qualifier.
+            reported_cwd: None,
+            hostname: None,
+            // No GPUI profile spawn path yet (the chrome slices' own
+            // scope note): the seat resolves absent, never a stale
+            // name.
+            shell: &shell,
+            profile_name: None,
+            zoom_adj,
+            // The zoom step every spawn builds from — core's own
+            // default, the same leg the libcosmic assembly reads.
+            zoom_step_mul_100: dropterm_core::terminal::TerminalOptions::default()
+                .font_size_zoom_step_mul_100,
+            foreground: foreground.as_deref(),
+            branch: branch.as_deref(),
+            grid: Some(grid),
+            spawn_grid: Some(spawn_grid),
+            tab_position: self.tabs.position().map(|(index, total)| {
+                (
+                    u16::try_from(index + 1).unwrap_or(u16::MAX),
+                    u16::try_from(total).unwrap_or(u16::MAX),
+                )
+            }),
+            clock: self.status_clock.as_deref(),
+            running_elapsed: None,
+            frozen: None,
+            exit_status: None,
+            scrolled_back: Some(scrolled_back),
+            // No GPUI images panel yet: the chip's visibility is its
+            // conditionality, and zero pastes reads the same.
+            pasted: None,
+            progress: None,
+            program_status: None,
+            ssh_destination: None,
+            missed_activity: false,
+            attention_red: None,
+            attention_bright_red: None,
+        };
+        self.status = status::resolve_segments(&inputs, toggles);
+    }
+
     /// The strip element with every interaction wired (the strip is
     /// view-only: each callback routes one shell call, itself routed
     /// through core).
@@ -1264,22 +1400,34 @@ impl Shell {
         let Some(pane) = self.active_pane() else {
             return div().size_full();
         };
-        let pane_area = div().flex_1().min_h_0().overflow_hidden().child(pane);
-        let column = if at_bottom {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(pane_area)
-                .child(bar)
-        } else {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(bar)
-                .child(pane_area)
-        };
+        let pane_area = div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(pane)
+            .into_any_element();
+        let bar = bar.into_any_element();
+
+        // The column through core's own stacking rule (gpui-status
+        // Task 1): the status band always takes the slot adjacent to
+        // the grab bar — the free-edge-most band, whatever the tab
+        // strip's own pinning. This drawer has no grab bar element
+        // (the layer surface's edges are its own), so the band takes
+        // that slot directly; the master key drops the band whole.
+        let mut bar = Some(bar);
+        let mut pane_area = Some(pane_area);
+        let mut status_band = (self.config.status_bar_enabled)
+            .then(|| self.status_band(pane_background).into_any_element());
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+        for strip in status::column_stacking(self.inputs.geometry.edge, self.config.tab_position) {
+            match strip {
+                Strip::Tabs => children.extend(bar.take()),
+                Strip::Terminal => children.extend(pane_area.take()),
+                Strip::StatusBand => children.extend(status_band.take()),
+                Strip::GrabBar => {}
+            }
+        }
+        let column = div().size_full().flex().flex_col().children(children);
         let Some(playing) = self.machine.slide else {
             return column;
         };
@@ -1717,6 +1865,14 @@ pub(crate) fn boot(
         );
         std::thread::park();
     });
+    // The band's font (gpui-status Task 1): the terminal's own
+    // resolved family — the same candidate resolution every pane's
+    // host performs, resolved once here (the band is the terminal
+    // speaking about itself, in its own voice).
+    let band_font = gpui::Font {
+        family: crate::terminal::host::resolve_monospace_family(cx.text_system()).into(),
+        ..gpui::Font::default()
+    };
     let shell = cx.new(|cx| {
         Shell::new(
             boot,
@@ -1733,6 +1889,7 @@ pub(crate) fn boot(
             config_changes,
             cx.focus_handle(),
             exit_after,
+            band_font,
         )
     });
     // The tick: 100 ms of verb drain + frame pump, holding the shell
@@ -1756,6 +1913,10 @@ pub(crate) fn boot(
                 // gpui-tabs Task 2: each pane's latched attention
                 // signals land on the same apply point.
                 shell.update(cx, Shell::poll_tab_attention);
+                // gpui-status Task 1: the band's snapshot (clock
+                // and segments) lands on the same apply point — the
+                // render reads the stored state only.
+                shell.update(cx, Shell::refresh_status_band);
                 // A shell exit closes its tab ungated — pane teardown
                 // and the never-empty respawn apply here, where the
                 // App context lives.
