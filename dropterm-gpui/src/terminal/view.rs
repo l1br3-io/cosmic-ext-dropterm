@@ -118,6 +118,23 @@ pub(crate) struct TerminalPane {
 }
 
 impl TerminalPane {
+    /// The shell's current OSC 0/2 report (`None` until the first,
+    /// cleared by a reset) — the tab list's title input, polled by
+    /// the shell's tick (the tracker the chrome slices consume).
+    pub(crate) fn shell_title(&self) -> Option<String> {
+        self.title.clone()
+    }
+
+    /// The engine's own working-directory read (the `/proc` cwd —
+    /// the same input the libcosmic retitle path caches): the cwd
+    /// title modes' input, polled by the shell's tick.
+    pub(crate) fn working_directory(&self) -> Option<std::path::PathBuf> {
+        self.terminal
+            .lock()
+            .expect("engine lock")
+            .working_directory()
+    }
+
     /// Build the pane around a live engine terminal. The caller
     /// owns the terminal's construction (PTY spawn included) and
     /// hands over the receiver half of the engine's event channel —
@@ -1326,6 +1343,7 @@ pub(crate) fn boot_pane(
     cx: &mut App,
     config: &dropterm_core::config::DropTermConfig,
     shell: Option<alacritty_terminal::tty::Shell>,
+    id: TabId,
     hide_request: Option<std::sync::mpsc::Sender<()>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
     let colors = boot_colors(config);
@@ -1350,7 +1368,7 @@ pub(crate) fn boot_pane(
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
         Box::new(host),
-        TabId(0),
+        id,
         event_tx,
         alacritty_terminal::term::Config::default(),
         &pty_options,

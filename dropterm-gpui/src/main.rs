@@ -19,6 +19,7 @@ mod dbus;
 mod executor;
 mod kit_check;
 mod startup;
+mod tab_bar;
 mod terminal;
 mod terminal_walk;
 // The carried C4 generator (gpui-theme planning ruling: verbatim-plus-

@@ -13,6 +13,7 @@
 //! (the drainer cannot touch this context), and the shell publishes
 //! its machine phase for the drainer's served-state mirror.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -24,15 +25,18 @@ use gpui::{
 
 use dropterm_core::config::DropTermConfig;
 use dropterm_core::config::Edge;
+use dropterm_core::config::TabTitleMode;
 use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::slide::{self, SLIDE_DURATION_MS};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+use dropterm_core::tabs::TabId;
 use gpui_component::ActiveTheme as _;
 use notify::Watcher as _;
 
 use crate::dbus::Verb;
 use crate::executor::{Action, GpuiExecutor};
+use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
 
 /// The evidence walks' deterministic exit (a scaffold affordance, not
@@ -171,11 +175,24 @@ pub(crate) struct Shell {
     phase: Arc<Mutex<SurfacePhase>>,
     /// The forwarded verbs, drained on the tick.
     verbs: Receiver<Verb>,
-    /// The drawer's live terminal pane — the shaped window's content
-    /// (Task 4's integration; the entity renders into whatever
-    /// surface the executor maps it into, resizes itself to the
-    /// granted bounds, and holds the keyboard by construction).
-    pane: Entity<TerminalPane>,
+    /// The drawer's tabs (gpui-tabs Task 1): plain records through
+    /// core's model — the strip renders from this list.
+    tabs: tab_bar::TabList,
+    /// The panes by tab id: one live terminal per record; the active
+    /// pane is the shaped window's content, mounted beside the strip
+    /// (each pane renders into whatever surface the executor maps it
+    /// into, resizes itself to the granted bounds, and holds the
+    /// keyboard by construction — so a tab switch moves the keyboard
+    /// with the mounted pane).
+    panes: HashMap<TabId, Entity<TerminalPane>>,
+    /// The live config snapshot (reloaded on every config echo): the
+    /// strip's placement, border, and title mode read from it.
+    config: DropTermConfig,
+    /// The hide channel's sender half — every spawned pane shares it.
+    hide_tx: std::sync::mpsc::Sender<()>,
+    /// The title mode the tab titles were last resolved under (the
+    /// live mode-flip detector).
+    applied_title_mode: TabTitleMode,
     /// The pane's Hide action, handed up through the channel and run
     /// through the machine's hide funnel on the tick — window work
     /// never runs inside a pane's event handler (sr-1's lesson).
@@ -203,13 +220,17 @@ impl Shell {
         inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         verbs: Receiver<Verb>,
-        pane: Entity<TerminalPane>,
+        tabs: tab_bar::TabList,
+        panes: HashMap<TabId, Entity<TerminalPane>>,
+        config: DropTermConfig,
+        hide_tx: std::sync::mpsc::Sender<()>,
         hide_requests: Receiver<()>,
         theme: (String, bool),
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
         exit_after: Option<Duration>,
     ) -> Self {
+        let applied_title_mode = config.tab_title_mode;
         Self {
             boot,
             show_open: boot,
@@ -218,7 +239,11 @@ impl Shell {
             machine: SurfaceMachine::default(),
             executor: GpuiExecutor::new(),
             inputs,
-            pane,
+            tabs,
+            panes,
+            config,
+            hide_tx,
+            applied_title_mode,
             hide_requests,
             theme,
             pending_theme: None,
@@ -411,6 +436,10 @@ impl Shell {
             return;
         }
         let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+        // gpui-tabs Task 1: the strip's placement, border, and title
+        // mode read the live config at render/sync time, so the echo
+        // lands the snapshot the next frame reads.
+        self.config = config.clone();
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
         // The identity compare absorbs echoes (an unchanged scheme is
@@ -467,8 +496,11 @@ impl Shell {
             return;
         };
         apply_resolved_theme(cx, &theme);
-        self.pane
-            .update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
+        // Every pane re-themes on the same resolution (gpui-tabs: the
+        // panes are a fleet now).
+        for pane in self.panes.values() {
+            pane.update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
+        }
     }
 
     /// One forwarded surface verb through the toggle funnel: the
@@ -659,6 +691,92 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
 }
 
 impl Shell {
+    /// The active tab's pane, if the list holds one.
+    fn active_pane(&self) -> Option<Entity<TerminalPane>> {
+        self.tabs
+            .active_id()
+            .and_then(|id| self.panes.get(&id).cloned())
+    }
+
+    /// A tab row's press: activate through the list (which clears the
+    /// tab's attention marker through core's transition) — the
+    /// newly active pane mounts on the next frame and takes the
+    /// keyboard by construction.
+    fn select_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if self.tabs.select(id) {
+            let title = self
+                .tabs
+                .records()
+                .iter()
+                .find(|tab| tab.id == id)
+                .map(|tab| tab.title.clone());
+            println!(
+                "dropterm-gpui: tab select -> {id:?} ({}) at +{}ms",
+                title.as_deref().unwrap_or("?"),
+                self.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        }
+    }
+
+    /// The `+` affordance's press: spawn the pane, record it through
+    /// core's insert, and activate — the drawer's never-empty rule
+    /// keeps at least this tab alive whatever closes later.
+    fn new_tab(&mut self, cx: &mut Context<Self>) {
+        let id = self.tabs.spawn(self.config.new_tab_after_current);
+        let Some((_terminal, pane)) =
+            view::boot_pane(cx, &self.config, None, id, Some(self.hide_tx.clone()))
+        else {
+            eprintln!("dropterm-gpui: new tab's terminal failed to spawn; closing its record");
+            self.tabs.close(id);
+            return;
+        };
+        self.panes.insert(id, pane);
+        println!(
+            "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
+            self.tabs.records().len(),
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
+    /// The gear affordance's press: the settings entry point arrives
+    /// with gpui-chrome; the row is the affordance's evidence until
+    /// then.
+    fn settings_requested(&mut self) {
+        println!(
+            "dropterm-gpui: gear pressed (settings entry arrives with gpui-chrome) at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+    }
+
+    /// One title sync (the tick's apply point): re-title every tab
+    /// through core under the live mode — the mode-flip detector
+    /// first, then each pane's polled OSC 0/2 report and cwd read.
+    fn sync_tab_titles(&mut self, cx: &mut Context<Self>) {
+        let mode = self.config.tab_title_mode;
+        if mode != self.applied_title_mode {
+            println!("dropterm-gpui: tab title mode -> {mode} (re-titling live tabs)");
+            self.tabs.refresh_titles(mode);
+            self.applied_title_mode = mode;
+        }
+        let ids: Vec<TabId> = self.tabs.records().iter().map(|tab| tab.id).collect();
+        for id in ids {
+            let Some(pane) = self.panes.get(&id) else {
+                continue;
+            };
+            let (report, cwd) = {
+                let pane = pane.read(cx);
+                (pane.shell_title(), pane.working_directory())
+            };
+            if self.tabs.sync_title(id, report, cwd, mode)
+                && let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id)
+            {
+                println!("dropterm-gpui: tab {id:?} retitled -> {}", tab.title);
+            }
+        }
+    }
+
     /// The band, translated by the live slide: GPUI's animation
     /// element drives the frames (the chunk's ruling — GPUI's
     /// animation replaces the libcosmic draw-time translation), while
@@ -666,13 +784,58 @@ impl Shell {
     /// and wire alike — a mid-slide window swap (the keyboard-hold
     /// recreate) remounts the frame driver but the translation stays
     /// continuous off the machine's `started`.
-    fn sliding_band(&mut self) -> impl IntoElement {
-        // The pane IS the band now (Task 4): the scaffold's clock
-        // stand-in is gone, the terminal fills the shaped surface,
-        // and the same slide translation carries it.
-        let pane = self.pane.clone();
+    fn sliding_band(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // The drawer's content is the strip plus the active pane
+        // (gpui-tabs Task 1): the strip at the config's side of the
+        // surface, the pane yielding the strip's height — and the
+        // same slide translation carries the whole column.
+        let at_bottom = tab_bar::bar_at_bottom(self.inputs.geometry.edge, self.config.tab_position);
+        let pane_background = resolve_theme(&self.config).colors
+            [alacritty_terminal::vte::ansi::NamedColor::Background];
+        let (strip, fg) = tab_bar::strip_pair(pane_background);
+        let shell = cx.entity();
+        let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
+            .show_border(self.config.tab_bar_border)
+            .at_bottom(at_bottom)
+            .on_select({
+                let shell = shell.clone();
+                move |id, _window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.select_tab(id, cx));
+                }
+            })
+            .on_new_tab({
+                let shell = shell.clone();
+                move |_window, cx: &mut App| {
+                    shell.update(cx, Shell::new_tab);
+                }
+            })
+            .on_settings({
+                let shell = shell.clone();
+                move |_window, cx: &mut App| {
+                    shell.update(cx, |shell, _| shell.settings_requested());
+                }
+            });
+        let Some(pane) = self.active_pane() else {
+            return div().size_full();
+        };
+        let pane_area = div().flex_1().min_h_0().overflow_hidden().child(pane);
+        let column = if at_bottom {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(pane_area)
+                .child(bar)
+        } else {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(bar)
+                .child(pane_area)
+        };
         let Some(playing) = self.machine.slide else {
-            return div().size_full().child(pane);
+            return column;
         };
         let (active, started) = (playing.active, playing.started);
         let edge = self.inputs.geometry.edge;
@@ -699,13 +862,13 @@ impl Shell {
                         }
                     },
                 )
-                .child(pane),
+                .child(column),
         )
     }
 }
 
 impl gpui::Render for Shell {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frames += 1;
         let b = window.bounds();
         if self.last_bounds.as_ref() != Some(&b) {
@@ -748,7 +911,7 @@ impl gpui::Render for Shell {
             }
             self.last_active = Some(active);
         }
-        self.sliding_band()
+        self.sliding_band(cx)
     }
 }
 
@@ -820,6 +983,82 @@ pub(crate) fn drag_walk_positions(raw: Option<&str>) -> Option<Vec<f32>> {
     Some(parsed)
 }
 
+/// `DROPTERM_TABS`' parse (gpui-tabs Task 1's walk arm): how many
+/// tabs the drawer boots with. Unset, empty, non-numeric, or
+/// non-positive means the real app's single tab; a runaway count
+/// clamps at sixteen (enough rows for a render walk, never a
+/// PTY-storm).
+pub(crate) fn tab_walk_count(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16)
+}
+
+/// The booted tab fleet ([`boot_tab_fleet`]'s product): the list, the
+/// panes by id, and the shared hide channel's halves.
+struct TabFleet {
+    tabs: tab_bar::TabList,
+    panes: HashMap<TabId, Entity<TerminalPane>>,
+    hide_tx: std::sync::mpsc::Sender<()>,
+    hide_requests: Receiver<()>,
+}
+
+/// The drawer's tab fleet (gpui-tabs Task 1's boot half): N panes —
+/// the walk's `DROPTERM_TABS` arm, the real app's one — one record
+/// per pane through core's model, every pane's Hide action on the one
+/// shared channel. The PTY program is `DROPTERM_TERM_CMD`'s shell
+/// line when a walk sets it (seeding every tab alike), the tty
+/// default otherwise. `None` when any pane's PTY fails to spawn — the
+/// drawer is never left half-fleeted.
+fn boot_tab_fleet(cx: &mut App, config: &DropTermConfig, edge: Edge) -> Option<TabFleet> {
+    let tab_count = tab_walk_count(std::env::var("DROPTERM_TABS").ok().as_deref());
+    let pty_shell = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
+        let raw = raw.trim().to_string();
+        if raw.is_empty() {
+            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), Vec::new())
+        } else {
+            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), vec!["-c".to_string(), raw])
+        }
+    });
+    let (hide_tx, hide_requests) = std::sync::mpsc::channel::<()>();
+    let mut tabs = tab_bar::TabList::default();
+    let mut panes = HashMap::new();
+    for _ in 0..tab_count {
+        let id = tabs.spawn(false);
+        let Some((_terminal, pane)) =
+            view::boot_pane(cx, config, pty_shell.clone(), id, Some(hide_tx.clone()))
+        else {
+            eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
+            return None;
+        };
+        panes.insert(id, pane);
+    }
+    println!(
+        "dropterm-gpui: tab bar: {} tab(s) ([{}]), strip at {} (tab_position {}, edge {:?}), \
+         border {}",
+        tabs.records().len(),
+        tabs.records()
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        if tab_bar::bar_at_bottom(edge, config.tab_position) {
+            "bottom"
+        } else {
+            "top"
+        },
+        config.tab_position,
+        edge,
+        if config.tab_bar_border { "on" } else { "off" },
+    );
+    Some(TabFleet {
+        tabs,
+        panes,
+        hide_tx,
+        hide_requests,
+    })
+}
+
 /// Boot the shell: load the config, create the shell entity, and run
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
@@ -855,23 +1094,8 @@ pub(crate) fn boot(
     let boot_theme = resolve_theme(&config);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
-    // The drawer's terminal pane (gpui-terminal Task 4): built once
-    // at boot, before any surface exists — the pane renders into
-    // whatever window the executor maps it into. The PTY program is
-    // `DROPTERM_TERM_CMD`'s shell line when a walk sets it, the tty
-    // default otherwise; its Hide action rides the channel the tick
-    // drains into the machine's hide funnel.
-    let pty_shell = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
-        let raw = raw.trim().to_string();
-        if raw.is_empty() {
-            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), Vec::new())
-        } else {
-            alacritty_terminal::tty::Shell::new("/bin/sh".to_string(), vec!["-c".to_string(), raw])
-        }
-    });
-    let (hide_tx, hide_requests) = std::sync::mpsc::channel::<()>();
-    let Some((_terminal, pane)) = view::boot_pane(cx, &config, pty_shell, Some(hide_tx)) else {
-        eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
+    // The drawer's tab fleet (gpui-tabs Task 1).
+    let Some(fleet) = boot_tab_fleet(cx, &config, inputs.geometry.edge) else {
         cx.quit();
         return;
     };
@@ -900,8 +1124,11 @@ pub(crate) fn boot(
             inputs,
             Arc::clone(phase),
             verbs,
-            pane,
-            hide_requests,
+            fleet.tabs,
+            fleet.panes,
+            config,
+            fleet.hide_tx,
+            fleet.hide_requests,
             boot_theme_identity,
             drag_walk,
             config_changes,
@@ -922,6 +1149,10 @@ pub(crate) fn boot(
                 // the next frame — the App context lives here, not in
                 // pump (the same split every window action takes).
                 shell.update(cx, Shell::apply_pending_theme);
+                // gpui-tabs Task 1: the tab titles sync on the same
+                // apply point — each pane's report and cwd polled,
+                // re-resolved through core only on a move.
+                shell.update(cx, Shell::sync_tab_titles);
                 for action in pumped.actions {
                     apply_action(cx, &shell, action);
                 }
@@ -996,6 +1227,19 @@ mod tests {
             Some(vec![216., 240., 270., 305.])
         );
         assert_eq!(drag_walk_positions(Some("216,soon,270")), None);
+    }
+
+    #[test]
+    fn tab_walk_count_defaults_to_one_and_clamps() {
+        // The real app's drawer boots one tab; the walk arm adds rows
+        // only when it parses, and a runaway count clamps.
+        assert_eq!(tab_walk_count(None), 1);
+        assert_eq!(tab_walk_count(Some("")), 1);
+        assert_eq!(tab_walk_count(Some("soon")), 1);
+        assert_eq!(tab_walk_count(Some("0")), 1);
+        assert_eq!(tab_walk_count(Some("-3")), 1);
+        assert_eq!(tab_walk_count(Some(" 4 ")), 4);
+        assert_eq!(tab_walk_count(Some("99")), 16);
     }
 
     #[test]

@@ -21,11 +21,16 @@ borders, `TabPosition` layout, the `+` and gear affordances, title modes
 (`TabTitleMode`). Headless tests pin state → presentation.
 
 **Acceptance criteria:**
-- [ ] Rows render per state on both compositors; title modes honored
+- [x] Rows render per state on both compositors; title modes honored
+      *(walked 2026-11-14 — rig target/rig-evidence-gtabs1/ and VM
+      pixels target/vm-evidence-gtabs1/: Shell titles live from seeded
+      OSC 2 reports, Numbered parks at `Terminal N`, the strip at
+      bottom/top per `TabPosition`, border on/off, the 1-tab strip
+      carrying the corner affordances alone)*
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: render walk on rig + VM
+- [x] Tests pass: `just check`
+- [x] Manual: render walk on rig + VM
 
 **Dependencies:** `gpui-terminal` merged · **Files:** the tab-bar module ·
 **Scope:** M

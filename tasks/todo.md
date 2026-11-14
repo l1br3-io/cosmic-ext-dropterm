@@ -494,8 +494,22 @@ name, answers the contract on both compositors.
 after sf; gb ∥ gn after gt). *(Held 2026-11-14: all three parallel
 slices merged — 05ac2ba · 761547d · 36648c1.)*
 
-- [ ] gb-1 Tab bar view model + rendering · gb-2 reorder/rename/menu/
-      close · gb-3 rows + merge
+- [x] gb-1 Tab bar view model + rendering *(done 2026-11-14 on main,
+      owner ruling — the pair builds here, worktrees parked: the strip
+      is view-only over core's model, labels composing core's
+      title_prefix ahead of resolve_title's output pinned over every
+      pinned×attention combination, rows rendering from two tabs on
+      (the 1-tab strip carries `+` and gear alone), the strip paint
+      deriving from the pane background (×0.92, luminance-readable
+      fg), the TabPosition auto/top/bottom rule and the
+      terminal-facing border hairline ported — nine headless pins,
+      walked on rig + VM: rig target/rig-evidence-gtabs1/ (three
+      seeded Shell titles retitle live; Numbered parks at Terminal N
+      with the strip pinned top and border off), VM pixels target/
+      vm-evidence-gtabs1/ (three labeled rows with × glyphs and the
+      active pill, `+`/⚙ at the right corner; the 1-tab strip bare
+      but the corner pair))* · gb-2 reorder/rename/menu/close · gb-3
+      rows + merge
 - [ ] gn-1 Band layout + clock + base segments · gn-2 OSC-fed segments ·
       gn-3 rows + merge
 - [ ] gc-1 Context menu + pickers on the Kit popover path

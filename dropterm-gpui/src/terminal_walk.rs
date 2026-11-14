@@ -118,9 +118,13 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     // one boot_pane for the harness and the drawer alike. The walk
     // seeds its PTY through `DROPTERM_TERM_CMD`'s shell line.
     let (shell, args) = walk_shell(std::env::var("DROPTERM_TERM_CMD").ok().as_deref());
-    let Some((terminal, pane)) =
-        view::boot_pane(cx, &config, Some(tty::Shell::new(shell, args)), None)
-    else {
+    let Some((terminal, pane)) = view::boot_pane(
+        cx,
+        &config,
+        Some(tty::Shell::new(shell, args)),
+        dropterm_core::tabs::TabId(0),
+        None,
+    ) else {
         std::process::exit(1);
     };
 
