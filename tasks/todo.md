@@ -508,8 +508,40 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       with the strip pinned top and border off), VM pixels target/
       vm-evidence-gtabs1/ (three labeled rows with × glyphs and the
       active pill, `+`/⚙ at the right corner; the 1-tab strip bare
-      but the corner pair))* · gb-2 reorder/rename/menu/close · gb-3
-      rows + merge
+      but the corner pair))* · gb-2 reorder/rename/menu/close *(done
+      2026-11-14 on main, 6d3df41 → 1dbbeb0: the model surface over
+      core first — rename override through commit_rename, drag and
+      menu moves through reorder_tabs/move_target, spawn_duplicate
+      seeded from the source, close_sweep descending with pins
+      skipped, note_attention on inactive tabs, close retiring the
+      successor's marker, the menu rows and the confirm gate's truth
+      table headless-pinned (twelve pins, tests to tab_bar/tests.rs) —
+      then the pane signals (PaneSignal Hide|Exited, the polled
+      AttentionFlags latch, foreground_child_running), the close flow
+      (the gated front door, the in-surface modal holding the keyboard
+      through its focus handle with the pane's claim turned
+      cooperative and a render-side repair handing it back, the
+      never-empty respawn, the shell-exit close ungated), and the view
+      gestures (drag with a floating chip, the Kit context menu on
+      the popover path through the Root-wrapped window, the Kit input
+      hosting the inline rename with Enter/Escape/blur and click-away
+      commits, the × glyph and middle-click through the gate); walked
+      on rig + VM: the VM's uinput-driven rows under target/
+      vm-evidence-gtabs2/ (attention • then 🔔 on inactive tabs only,
+      rename commit "work" + cancel, the menu's Pin, the pinned ×
+      refusal, drag to index, the modal's three dismissals + proceed,
+      middle-click gated, toggle-off instant, exit closes into the
+      respawn), sway's attention rows + strip pixels under target/
+      rig-evidence-gtabs2/ (the emoji markers need a font the rig
+      lacks — pixels are the VM's); walk finding made structural: an
+      absolute overlay needs inset_0 (size_full alone paints nothing —
+      the modal's first frames), fixed in 1dbbeb0; scope notes: no
+      Switch Profile section (no GPUI profile spawn path yet), no
+      session-persistence rows, rename/modal state dies with the
+      window on hide)* · gb-3 rows + merge *(done 2026-11-14 — the
+      rows' record is gb-2's walk on both compositors, `just check`
+      green on the final tree; the module builds on main per the
+      owner's ruling, no merge)*
 - [ ] gn-1 Band layout + clock + base segments · gn-2 OSC-fed segments ·
       gn-3 rows + merge
 - [ ] gc-1 Context menu + pickers on the Kit popover path

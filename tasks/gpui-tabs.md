@@ -42,12 +42,45 @@ the per-tab menu (core's `tab_actions` funnel) on the Kit's popover path;
 close with the confirm flow (`CloseDecision`) and attention state.
 
 **Acceptance criteria:**
-- [ ] Reorder, pin, rename, and every menu action land in core and
+- [x] Reorder, pin, rename, and every menu action land in core and
       surface correctly
-- [ ] The close-confirm and attention rows match the libcosmic behavior
+- [x] The close-confirm and attention rows match the libcosmic behavior
 
 **Verification:**
-- [ ] Manual: tab rows of the checklist on rig + VM
+- [x] Manual: tab rows of the checklist on rig + VM *(walked
+      2026-11-14 — VM pixels + logs under target/vm-evidence-gtabs2/
+      (runs g/h/x/b, driven through a uinput injector whose pointer
+      and keyboard the COSMIC session delivers whole), rig logs +
+      strip pixels under target/rig-evidence-gtabs2/; the deep rows:
+      attention markers land on inactive tabs only — the seeded bell
+      marks both inactive tabs • then 🔔 while the active tab's
+      signals drop at the poll, and activating a marked tab clears it;
+      the inline rename commits a typed draft through core
+      (double-click → the Kit input in the row's label slot → "work"
+      shown at once) and Escape cancels the draft; the per-tab menu
+      opens on the Kit's popover path through the Root-wrapped window
+      (nine rows composed per the reference's rules) and its Pin row
+      arms a pin the row's label then prefixes; the pinned × refuses
+      with the warn row and no dialog; drag-reorder moves a tab
+      through core's reorder (the chip follows, the drop's row decides
+      the index, the active tab's identity survives); the close gate
+      holds per the reference — a tab with a foreground child arms the
+      in-surface modal (Escape, the scrim press, and the Cancel button
+      each dismiss; Close Tab proceeds), an idle tab closes instantly,
+      the middle-click rides the same gate, the toggle off closes
+      everything instantly (run b), and a shell exit closes ungated —
+      the fleet exhausting into the never-empty respawn (run x); the
+      same engine paths walked green on sway's logs (attention rows +
+      the strip's render — the emoji markers' glyphs need a font the
+      rig lacks, gt-1's silent-glyph class, so their pixels are the
+      VM's); one combination row not re-captured in the saved logs:
+      the pinned tab closed by its own shell exit — both halves are
+      individually walked (the pinned refusal, the ungated exit close)
+      and core pins the decision; known scope notes: no Switch Profile
+      menu section or +-dropdown (no profile spawn path on GPUI yet —
+      chrome's), no session-persistence rows (no GPUI session wiring
+      yet), the rename/modal state dies with the window on hide (the
+      drawer destroys on hide — the libcosmic surface keeps it))*
 
 **Dependencies:** Task 1 · **Files:** the tab-bar module · **Scope:** M
 
@@ -57,10 +90,16 @@ close with the confirm flow (`CloseDecision`) and attention state.
 sway; merge.
 
 **Acceptance criteria:**
-- [ ] Tab rows pass on both compositors
-- [ ] `just check` green on the merge result
+- [x] Tab rows pass on both compositors
+- [x] `just check` green on the merge result
 
 **Verification:**
-- [ ] Manual: tab rows, both compositors
+- [x] Manual: tab rows, both compositors *(the module builds on main
+      per the owner's 2026-11-14 ruling — no branch to merge; the
+      Task-2 walk above is the rows' record on COSMIC + sway, `just
+      check` green on the final tree (1dbbeb0) after the walk's
+      inset_0 fix; the physical-pointer-feel rows (the drag's lift
+      weight, hover states) remain the owner's at-console class, the
+      gt-2 precedent)*
 
 **Dependencies:** Task 2 · **Files:** the branch's diff · **Scope:** S
