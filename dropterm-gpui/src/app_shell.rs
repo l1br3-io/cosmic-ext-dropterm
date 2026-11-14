@@ -1478,7 +1478,7 @@ impl Shell {
         div().size_full().relative().child(band).child(
             div()
                 .absolute()
-                .size_full()
+                .inset_0()
                 .bg(gpui::rgba(0x0000_0080))
                 .flex()
                 .items_center()
