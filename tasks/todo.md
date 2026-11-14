@@ -459,8 +459,15 @@ name, answers the contract on both compositors.
       the focus-loss funnel correctly), the VM with pixels (the
       band appearing, the typed line, the hide-by-chord destroy,
       the re-show) and the hide chord + copy rows logged)*
-- [ ] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
-      cleanup); four tests green
+- [x] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
+      cleanup); four tests green *(done 2026-11-14 on port/gpui-theme:
+      byte-identical to the spike's cd06740 apart from the SPDX header —
+      the verbatim-plus-compile ruling holds, diff-checked; the pedantic
+      adaptation (doc-markdown + unused-mut allows, dead_code until
+      Task 2 wires the apply path) sits on main.rs's mod declaration so
+      the carried file stays auditable against the spike; serde_json =1
+      the one new direct dep, already in the lock — the lockfile took
+      only the dep edge)*
 - [ ] gm-2 Apply path: before first frame + live re-theme; C4-class
       evidence — merge
 

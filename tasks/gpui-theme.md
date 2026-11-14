@@ -24,12 +24,12 @@ parallel with `gpui-surface`/`gpui-terminal`).
 (theme glue's output). The four tests run green in `just check`.
 
 **Acceptance criteria:**
-- [ ] The four carried tests green (core mapping, name/mode pass-through,
+- [x] The four carried tests green (core mapping, name/mode pass-through,
       absent-stays-absent, parses-as-`ThemeConfig`)
-- [ ] `just check` green
+- [x] `just check` green
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check`
 
 **Dependencies:** `gpui-scaffold` merged · **Files:** the theme module ·
 **Scope:** S

@@ -2111,6 +2111,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "notify",
+ "serde_json",
  "tokio",
  "wayland-client",
  "wl-clipboard-rs",

@@ -90,6 +90,13 @@ cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-c
 # frontend, so no new code enters the build.
 wl-clipboard-rs = "0.9"
 
+# The generator's output medium (gpui-theme spec): the carried kit-pass
+# C4 module emits the scheme → theme mapping as a `serde_json::Value`
+# for `from_value::<ThemeConfig>` — the sanctioned JSON path (the
+# `#[non_exhaustive]` struct is never constructed in code). Same 1.x
+# line the lock already carries, so no new code enters the build.
+serde_json = "1"
+
 [features]
 # Re-identifies the frontend as `io.github.l1br3_io.dropterm.Dev` —
 # its own single-instance slot, bus name, and namespace — riding the
