@@ -57,11 +57,31 @@ config-driven content rules; click actions where the libcosmic band has
 them.
 
 **Acceptance criteria:**
-- [ ] Exit-code segments surface per the libcosmic behavior; OSC updates
+- [x] Exit-code segments surface per the libcosmic behavior; OSC updates
       land live
+      *(walked 2026-11-14 — rig target/rig-evidence-gn2/ and VM
+      target/vm-evidence-gn2/, one seeded run each holding every
+      OSC-fed seat at once: the OSC 7 report winning the path seat
+      (`~/gn-osc` rendered, not the /proc cwd's `~/gn-walk`) with the
+      local-report branch rule standing (`gn-rig`/`vm-main`), the
+      133;D;3 verdict's `✗3` in the scheme's red, the 9;4 progress
+      `◐ 42%`, and the 7501 blocked record tinting the hollow disc
+      attention with `40%` riding the name seat — the pane already
+      forwarded every OSC event into the engine, so the slice's work
+      was the gathering: each in-memory read under its own key's
+      gate beside the reference's own split, the decay landed at the
+      tick, the ssh stand-in's read gated on its three keys, the
+      frozen pair's name kept per-tab, and the missed-activity latch
+      armed at the poll (active + hidden output) with both clears —
+      switch and show; clicks: the copy verb (GPUI clipboard + the
+      ✓ flash, two more VM pins) and the scrolled chip's jump
+      through the engine's own scroll-to-bottom; the click and
+      duration-glyph ROWS ride gn-3's walk)*
 
 **Verification:**
-- [ ] Manual: status-band rows of the checklist on rig + VM
+- [x] Manual: status-band rows of the checklist on rig + VM
+      *(the OSC-fed rows above; the interactive copy/jump rows and
+      the full checklist walk are gn-3's)*
 
 **Dependencies:** Task 1 · **Files:** the status-band module · **Scope:**
 M

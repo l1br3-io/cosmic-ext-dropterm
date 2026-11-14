@@ -20,8 +20,9 @@
 
 use dropterm_core::status::{
     BAND_HEIGHT, LEFT_CLUSTER, PathFit, PathMeasure, RIGHT_CLUSTER, SEGMENT_GAP, SegmentId,
-    StatusSegments, band_fit, duration_display, elide_path_left, exit_display, pasted_display,
-    prefixed_display, process_display, program_needs_attention, progress_display, scrolled_display,
+    StatusSegments, band_fit, click_jumps, copy_text, duration_display, elide_path_left,
+    exit_display, pasted_display, prefixed_display, process_display, program_needs_attention,
+    progress_display, scrolled_display,
 };
 use dropterm_core::terminal::ProgressState;
 
@@ -110,36 +111,79 @@ pub(crate) fn band_vm(
     segments: &StatusSegments,
     width: f32,
     measure: &dyn Fn(&str) -> f32,
+    copied: Option<SegmentId>,
 ) -> BandVm {
+    // The copy flash's swap (the reference's own rule): the ✓ takes
+    // the copied segment's display seat alone — measured like any
+    // text, so the row re-lays for its flash — while the path's own
+    // fit measure below keeps the steady value (the flash never
+    // re-fits the path).
+    let display = |id: SegmentId, text: String| {
+        if copied == Some(id) {
+            "\u{2713}".to_string()
+        } else {
+            text
+        }
+    };
     // The display texts, glyphs riding (the copy payloads stay bare
     // values in core's copy_text — never these).
-    let process_text = process_display(&segments.process, segments.program_status);
-    let duration_text = prefixed_display(SegmentId::Duration, &duration_display(segments));
-    let exit_text = segments.exit_code.map(exit_display);
-    let progress_text = segments
-        .progress
-        .map(|progress| prefixed_display(SegmentId::Progress, &progress_display(progress)));
-    let path_display_text =
-        prefixed_display(SegmentId::Path, segments.path.as_deref().unwrap_or(""));
-    let branch = prefixed_display(SegmentId::Branch, segments.branch.as_deref().unwrap_or(""));
+    let process_text = display(
+        SegmentId::Process,
+        process_display(&segments.process, segments.program_status),
+    );
+    let duration_text = display(
+        SegmentId::Duration,
+        prefixed_display(SegmentId::Duration, &duration_display(segments)),
+    );
+    let exit_text = segments
+        .exit_code
+        .map(|code| display(SegmentId::Exit, exit_display(code)));
+    let progress_text = segments.progress.map(|progress| {
+        display(
+            SegmentId::Progress,
+            prefixed_display(SegmentId::Progress, &progress_display(progress)),
+        )
+    });
+    let path_value = prefixed_display(SegmentId::Path, segments.path.as_deref().unwrap_or(""));
+    let branch = display(
+        SegmentId::Branch,
+        prefixed_display(SegmentId::Branch, segments.branch.as_deref().unwrap_or("")),
+    );
     let profile = prefixed_display(
         SegmentId::Profile,
         segments.profile.as_deref().unwrap_or(""),
     );
-    let grid = segments
-        .grid
-        .map(|(cols, rows)| prefixed_display(SegmentId::Grid, &format!("{cols}×{rows}")));
-    let tab = segments
-        .tab_position
-        .map(|(index, total)| prefixed_display(SegmentId::Tab, &format!("{index}/{total}")));
-    let zoom = segments
-        .zoom_percent
-        .map(|percent| prefixed_display(SegmentId::Zoom, &format!("{percent:+}%")));
-    let scrolled = segments.scrolled.map(scrolled_display);
-    let pasted = segments
-        .pasted
-        .map(|count| prefixed_display(SegmentId::Pasted, &pasted_display(count)));
-    let clock = prefixed_display(SegmentId::Clock, segments.clock.as_deref().unwrap_or(""));
+    let grid = segments.grid.map(|(cols, rows)| {
+        display(
+            SegmentId::Grid,
+            prefixed_display(SegmentId::Grid, &format!("{cols}×{rows}")),
+        )
+    });
+    let tab = segments.tab_position.map(|(index, total)| {
+        display(
+            SegmentId::Tab,
+            prefixed_display(SegmentId::Tab, &format!("{index}/{total}")),
+        )
+    });
+    let zoom = segments.zoom_percent.map(|percent| {
+        display(
+            SegmentId::Zoom,
+            prefixed_display(SegmentId::Zoom, &format!("{percent:+}%")),
+        )
+    });
+    let scrolled = segments
+        .scrolled
+        .map(|lines| display(SegmentId::Scrolled, scrolled_display(lines)));
+    let pasted = segments.pasted.map(|count| {
+        display(
+            SegmentId::Pasted,
+            prefixed_display(SegmentId::Pasted, &pasted_display(count)),
+        )
+    });
+    let clock = display(
+        SegmentId::Clock,
+        prefixed_display(SegmentId::Clock, segments.clock.as_deref().unwrap_or("")),
+    );
 
     // The fit's accounting seats: the branch plus the right
     // cluster, measured — the process cluster and the command
@@ -175,18 +219,14 @@ pub(crate) fn band_vm(
         fixed,
         &widths,
         PathMeasure {
-            chars: path_display_text.chars().count(),
-            full_width: measure(&path_display_text),
+            // The steady value measures the fit (the reference's
+            // rule: the flash's swap never re-fits the path).
+            chars: path_value.chars().count(),
+            full_width: measure(&path_value),
         },
     );
-    // The fit's verdicts: dropped seats compose no row; the path's
-    // display takes its elision (the glyph eaten first by the `…`).
+    // The fit's verdicts: dropped seats compose no row.
     let dropped = |id: SegmentId| fit.dropped.contains(&id);
-    let path_text = match fit.path {
-        PathFit::Full => path_display_text,
-        PathFit::Elided(max_chars) => elide_path_left(&path_display_text, max_chars),
-        PathFit::Gone => String::new(),
-    };
 
     // The laid rows — the reference's rect walk: the process
     // cluster from the left padding, the narration seats after it,
@@ -212,6 +252,12 @@ pub(crate) fn band_vm(
         });
         x += DISC_SIZE + DISC_GAP + process_width + SEGMENT_GAP;
     }
+    let path_text = match fit.path {
+        PathFit::Full => path_value.clone(),
+        PathFit::Elided(max_chars) => elide_path_left(&path_value, max_chars),
+        PathFit::Gone => String::new(),
+    };
+    let path_text = display(SegmentId::Path, path_text);
     let narration = [
         (SegmentId::Duration, duration_text),
         (SegmentId::Exit, exit_text.unwrap_or_default()),
@@ -291,6 +337,35 @@ pub(crate) fn band_vm(
     }
 }
 
+/// The copy verb's callback shape: the segment, its full value,
+/// and the App context the write needs.
+type CopyFn = std::rc::Rc<dyn Fn(SegmentId, String, &mut gpui::App)>;
+
+/// The scrolled chip's jump-verb shape.
+type JumpFn = std::rc::Rc<dyn Fn(&mut gpui::App)>;
+
+/// The attention token's GPUI resolution (the reference band's own
+/// rule): the live terminal scheme's red — the bright variant on
+/// dark strips, the plain on light, the same luminance flip the
+/// band's foreground performs over its strip. A chosen variant the
+/// scheme leaves unset falls back to its sibling, and a scheme with
+/// no red at all degrades to the pane foreground — monochrome,
+/// never an invented hue.
+pub(crate) fn attention_color(
+    scheme_red: Option<gpui::Hsla>,
+    scheme_bright_red: Option<gpui::Hsla>,
+    pane_fg: gpui::Hsla,
+    strip: gpui::Hsla,
+) -> gpui::Hsla {
+    let rgba = gpui::Rgba::from(strip);
+    let (chosen, sibling) = if tab_bar::relative_luminance(rgba.r, rgba.g, rgba.b) > 0.5 {
+        (scheme_red, scheme_bright_red)
+    } else {
+        (scheme_bright_red, scheme_red)
+    };
+    chosen.or(sibling).unwrap_or(pane_fg)
+}
+
 /// The band view: resolved segments plus the strip pair, rendered
 /// through one [`band_vm`] pass over GPUI-shaped widths.
 #[derive(IntoElement)]
@@ -315,6 +390,18 @@ pub(crate) struct StatusBandView {
     /// The laid row width the fit decides against — the window's
     /// current width (the band spans it).
     width: f32,
+    /// The segment flashing its `✓` (the copy verb's confirm); the
+    /// shell owns the timing and hands the fresh value per frame.
+    copied: Option<SegmentId>,
+    /// The copy verb: `(segment, full value)` — the shell writes the
+    /// clipboard and arms the flash (the App context rides the
+    /// callback, the strip's own pattern).
+    on_copy: CopyFn,
+    /// The scrolled chip's jump verb — the shell routes it to the
+    /// engine's scroll-to-bottom, the one deliberate action chip
+    /// this frontend carries (the pasted chip's panel arrives with
+    /// the chrome slices; its seat resolves absent until then).
+    on_scroll_bottom: JumpFn,
 }
 
 impl StatusBandView {
@@ -328,6 +415,9 @@ impl StatusBandView {
             border: false,
             at_bottom: true,
             width: 0.0,
+            copied: None,
+            on_copy: std::rc::Rc::new(|_, _, _: &mut gpui::App| {}),
+            on_scroll_bottom: std::rc::Rc::new(|_: &mut gpui::App| {}),
         }
     }
 
@@ -348,6 +438,29 @@ impl StatusBandView {
 
     pub(crate) fn width(mut self, width: f32) -> Self {
         self.width = width;
+        self
+    }
+
+    pub(crate) fn copied(mut self, copied: Option<SegmentId>) -> Self {
+        self.copied = copied;
+        self
+    }
+
+    pub(crate) fn attention(mut self, red: Option<gpui::Hsla>) -> Self {
+        self.attention = red;
+        self
+    }
+
+    pub(crate) fn on_copy(
+        mut self,
+        on_copy: impl Fn(SegmentId, String, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_copy = std::rc::Rc::new(on_copy);
+        self
+    }
+
+    pub(crate) fn on_scroll_bottom(mut self, on_jump: impl Fn(&mut gpui::App) + 'static) -> Self {
+        self.on_scroll_bottom = std::rc::Rc::new(on_jump);
         self
     }
 }
@@ -379,7 +492,7 @@ impl gpui::RenderOnce for StatusBandView {
                 .width
                 .as_f32()
         };
-        let vm = band_vm(&self.segments, self.width, &measure);
+        let vm = band_vm(&self.segments, self.width, &measure, self.copied);
 
         let mut band = gpui::div()
             .relative()
@@ -406,6 +519,13 @@ impl gpui::RenderOnce for StatusBandView {
         // VM's own x math, one element per seat (each its own hit
         // target for the coming click verbs).
         for row in &vm.rows {
+            // The click verbs (Task 2): the two action chips jump,
+            // every other rendered seat copies its full un-elided
+            // value — resolved against the live segments here, at
+            // frame-build time (the reference's own pick-time rule).
+            let (id, payload) = (row.id, copy_text(row.id, &self.segments));
+            let on_copy = std::rc::Rc::clone(&self.on_copy);
+            let on_jump = std::rc::Rc::clone(&self.on_scroll_bottom);
             let mut text = gpui::div()
                 .absolute()
                 .left(gpui::px(row.text_x))
@@ -414,8 +534,21 @@ impl gpui::RenderOnce for StatusBandView {
                 .w(gpui::px(row.width))
                 .flex()
                 .items_center()
-                .font(self.font.clone())
-                .child(row.text.clone());
+                .font(self.font.clone());
+            text = if click_jumps(id) {
+                text.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    move |_, _: &mut gpui::Window, cx: &mut gpui::App| on_jump(cx),
+                )
+            } else {
+                text.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    move |_, _: &mut gpui::Window, cx: &mut gpui::App| {
+                        on_copy(id, payload.clone(), cx);
+                    },
+                )
+            };
+            let mut text = text.child(row.text.clone());
             let color = if row.attention {
                 attention
             } else if row.dimmed {

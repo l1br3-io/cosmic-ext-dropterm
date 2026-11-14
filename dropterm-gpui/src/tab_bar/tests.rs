@@ -575,3 +575,27 @@ fn rgb_hsla(r: u8, g: u8, b: u8) -> gpui::Hsla {
     }
     .into()
 }
+
+#[test]
+fn running_comm_records_per_tab_and_reads_back_the_last() {
+    // The frozen duration's pairing name (command-lifecycle OQ-1):
+    // the comm sampled running lands on its own tab alone, so a
+    // switch can never pair one tab's name with another's duration.
+    let mut tabs = TabList::default();
+    let a = tabs.spawn(true);
+    let b = tabs.spawn(true);
+    assert_eq!(tabs.running_comm(a), None);
+    tabs.note_running_comm(a, "cargo".to_string());
+    tabs.note_running_comm(b, "vim".to_string());
+    assert_eq!(tabs.running_comm(a).as_deref(), Some("cargo"));
+    assert_eq!(tabs.running_comm(b).as_deref(), Some("vim"));
+    // A re-sample replaces; an unknown id records nothing.
+    tabs.note_running_comm(a, "make".to_string());
+    assert_eq!(tabs.running_comm(a).as_deref(), Some("make"));
+    tabs.note_running_comm(TabId(9999), "ghost".to_string());
+    assert_eq!(tabs.running_comm(TabId(9999)), None);
+    // A fresh spawn carries no name (a fresh shell runs no command
+    // yet) — the pairing never inherits.
+    let fresh = tabs.spawn(true);
+    assert_eq!(tabs.running_comm(fresh), None);
+}

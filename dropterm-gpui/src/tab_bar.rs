@@ -88,7 +88,7 @@ pub(crate) fn shows_tab_buttons(tab_count: usize) -> bool {
 /// A color's relative luminance (the WCAG definition) — the reference
 /// bar's own one flip formula, ported: the strip's foreground picks by
 /// it over the pane background.
-fn relative_luminance(r: f32, g: f32, b: f32) -> f32 {
+pub(crate) fn relative_luminance(r: f32, g: f32, b: f32) -> f32 {
     fn channel(c: f32) -> f32 {
         if c <= 0.03928 {
             c / 12.92
@@ -100,7 +100,7 @@ fn relative_luminance(r: f32, g: f32, b: f32) -> f32 {
 }
 
 /// An 8-bit channel triple as GPUI's color.
-fn hsla(r: u8, g: u8, b: u8) -> gpui::Hsla {
+pub(crate) fn hsla(r: u8, g: u8, b: u8) -> gpui::Hsla {
     gpui::Rgba {
         r: f32::from(r) / 255.,
         g: f32::from(g) / 255.,
@@ -182,6 +182,11 @@ pub(crate) struct TabRecord {
     pub(crate) title_override: Option<String>,
     pub(crate) pinned: bool,
     pub(crate) attention: Attention,
+    /// The last comm sampled running on this tab (gn-2, the frozen
+    /// duration's pairing name — command-lifecycle OQ-1): per-tab,
+    /// so a switch can never pair one tab's name with another's
+    /// duration; an empty name is the honest floor.
+    pub(crate) last_running_comm: Option<String>,
 }
 
 /// Resolves one record's display title through core — the one resolve
@@ -230,6 +235,7 @@ impl TabList {
             title_override: None,
             pinned: false,
             attention: Attention::None,
+            last_running_comm: None,
         };
         self.active = insert_new_tab(&mut self.tabs, self.active, after_current, tab);
         id
@@ -244,6 +250,23 @@ impl TabList {
     /// band's tab segment input; `None` while the list is empty.
     pub(crate) fn position(&self) -> Option<(usize, usize)> {
         Some((self.active, self.tabs.len())).filter(|&(_, total)| total > 0)
+    }
+
+    /// Records the comm sampled running on `id` (the band's frozen
+    /// pairing input); an unknown id records nothing.
+    pub(crate) fn note_running_comm(&mut self, id: TabId, comm: String) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.last_running_comm = Some(comm);
+        }
+    }
+
+    /// The comm last sampled running on `id`, the frozen duration's
+    /// pairing name.
+    pub(crate) fn running_comm(&self, id: TabId) -> Option<String> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.last_running_comm.clone())
     }
 
     /// Activates the tab with `id` — clearing its attention marker
@@ -430,6 +453,7 @@ impl TabList {
             title: next_default_title(id),
             shell_title: None,
             cwd,
+            last_running_comm: None,
             title_override,
             pinned: false,
             attention: Attention::None,

@@ -546,7 +546,11 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       the framework-free model moved to core first, unchanged, the
       libcosmic suite green as the proof; the GPUI band renders it:
       rig + VM walks green, the clock's boundary flip logged and
-      pixel-diffed)* · gn-2 OSC-fed segments · gn-3 rows + merge
+      pixel-diffed)* · gn-2 OSC-fed segments *(done 2026-11-14 —
+      every OSC seat walked on both compositors: the report winning
+      the path, the red ✗ verdict, progress, the tinted disc; the
+      gated gathering + the copy/jump verbs landed with two more
+      pins)* · gn-3 rows + merge
 - [ ] gc-1 Context menu + pickers on the Kit popover path
 - [ ] gc-2 Settings drawer (write contract unchanged; control map
       ported; config↔docs pin green)
