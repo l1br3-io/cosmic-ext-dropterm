@@ -134,19 +134,35 @@ picker's runtime row and the popover-through-cadence row.
 
 **Dependencies:** Task 1 · **Files:** the drawer modules · **Scope:** L
 
-## Task 3: Cadence row, checklist rows, merge
+## Task 3: Cadence row, checklist rows, merge — done 2026-11-15
 
 **Description:** One explicit popover-through-cadence row for the drawer
 (the Kit's close regression guard); the settings/context-menu/picker rows
 walked on COSMIC + sway; merge.
 
 **Acceptance criteria:**
-- [ ] The cadence row passes (drawer open + popover through the 80 ms
+- [x] The cadence row passes (drawer open + popover through the 80 ms
       cadence, never closing)
-- [ ] Chrome rows pass on both compositors; `just check` green on the
+- [x] Chrome rows pass on both compositors; `just check` green on the
       merge result
 
 **Verification:**
-- [ ] Manual: chrome rows, both compositors
+- [x] Manual: chrome rows, both compositors
+
+**Done record:** walked owner-run 2026-11-15 — the first module walk
+under the 2026-11-14 manual ruling, the owner at the console for every
+row. The handed-over instruction named the eight clusters: the cadence
+row (the drawer held open with a picker popover across the 80 ms
+reshape cadence, the popover staying and the drawer never closing), the
+drawer surface/strip rows, the write contract with per-write config
+dumps (drawer edit ↔ hand edit one stream), the keybind editor rows,
+the scheme and font pickers (gc-2's carried rows), the context-menu
+cluster with the profile folders' honestly-flat zero-profile shape, the
+profile-manager rows minus the two already-green env rows, and the gear
+cluster — walked on COSMIC then sway. Owner verdict: all clusters green
+on both compositors, no deviations filed. No evidence artifacts were
+placed under target/ — the owner's reported result is the record, per
+the ruling. Merged and closed with `just check` green on the merge
+result (see the SPEC status line for the sha).
 
 **Dependencies:** Task 2 · **Files:** the branch's diff · **Scope:** S

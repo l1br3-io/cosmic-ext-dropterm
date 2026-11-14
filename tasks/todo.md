@@ -577,7 +577,12 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       green (vm-evidence-gc2b; owner-ruled standing 2026-11-15); `just
       check` green on the result 2026-11-15; the scheme picker's and
       cadence rows ride gc-3)
-- [ ] gc-3 Cadence row + chrome rows + merge
+- [x] gc-3 Cadence row + chrome rows + merge (done 2026-11-15: walked
+      owner-run on COSMIC + sway per the manual ruling — the cadence
+      row (drawer + popover across the 80 ms reshape, never closing)
+      and all eight chrome clusters green, no deviations filed; the
+      owner's reported result is the record, no target/ artifacts;
+      merged with `just check` green on the result)
 
 **Checkpoint — full UI parity feature set.**
 
