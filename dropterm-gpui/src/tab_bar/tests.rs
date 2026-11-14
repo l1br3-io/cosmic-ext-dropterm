@@ -639,3 +639,22 @@ fn a_pasted_image_records_its_ledger_row_on_the_pasting_tab() {
             .is_empty()
     );
 }
+
+#[test]
+fn the_bell_latch_arms_per_tab_and_clears_on_show() {
+    // One notification per tab per hide period (gpui-parity Task 3):
+    // the latch arms on its own tab alone — a neighboring bell never
+    // silences it — and every latch clears together on the show
+    // transition, so the next hide period notifies again.
+    let mut tabs = TabList::default();
+    let a = tabs.spawn(true);
+    let b = tabs.spawn(true);
+    assert!(!tabs.bell_latched(a), "a fresh tab is unlatched");
+    tabs.note_bell_notified(a);
+    assert!(tabs.bell_latched(a));
+    assert!(!tabs.bell_latched(b), "the neighbor stays unlatched");
+    tabs.note_bell_notified(TabId(9999));
+    assert!(!tabs.bell_latched(TabId(9999)), "a ghost never latches");
+    tabs.clear_bell_latches();
+    assert!(!tabs.bell_latched(a), "the show cleared every latch");
+}

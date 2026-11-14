@@ -129,6 +129,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         Some(view::PaneSpawn {
             program: shell,
             args,
+            cwd: None,
         }),
         None,
         dropterm_core::tabs::TabId(0),

@@ -192,6 +192,12 @@ pub(crate) struct TabRecord {
     /// backed and deliberately not serialized (the rows die with the
     /// tab while the files outlive them in the paste cache).
     pub(crate) pasted_images: Vec<dropterm_core::tabs::PastedImage>,
+    /// Whether this tab already posted a bell notification during the
+    /// current hide period (gpui-parity Task 3): armed when a
+    /// notification is posted, cleared for every tab when the surface
+    /// is shown — so a bell storm yields one notification per tab per
+    /// hide, and the next bell after a show notifies again.
+    pub(crate) bell_notified: bool,
 }
 
 /// Resolves one record's display title through core — the one resolve
@@ -242,6 +248,7 @@ impl TabList {
             attention: Attention::None,
             last_running_comm: None,
             pasted_images: Vec::new(),
+            bell_notified: false,
         };
         self.active = insert_new_tab(&mut self.tabs, self.active, after_current, tab);
         id
@@ -461,6 +468,7 @@ impl TabList {
             cwd,
             last_running_comm: None,
             pasted_images: Vec::new(),
+            bell_notified: false,
             title_override,
             pinned: false,
             attention: Attention::None,
@@ -502,6 +510,73 @@ impl TabList {
         }
         if bell {
             tab.attention = tab.attention.on_bell();
+        }
+    }
+
+    /// Spawns one restored tab (gpui-parity Task 3, the session
+    /// restore's record): appended at the list's end in the plan's
+    /// order, carrying the saved chrome verbatim — the resolved
+    /// title, the rename pin, the saved pin.
+    pub(crate) fn spawn_restored(
+        &mut self,
+        title: String,
+        title_override: Option<String>,
+        pinned: bool,
+        cwd: Option<PathBuf>,
+    ) -> TabId {
+        let id = TabId(self.next_id);
+        self.next_id += 1;
+        self.tabs.push(TabRecord {
+            id,
+            title,
+            shell_title: None,
+            cwd,
+            title_override,
+            pinned,
+            attention: Attention::None,
+            last_running_comm: None,
+            pasted_images: Vec::new(),
+            bell_notified: false,
+        });
+        id
+    }
+
+    /// Activates the index (the restore plan's clamped active seat):
+    /// out of range changes nothing.
+    pub(crate) fn activate_index(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = index;
+        }
+    }
+
+    /// The active tab's index — the session capture's `active` input.
+    pub(crate) fn active_index(&self) -> usize {
+        self.active
+    }
+
+    /// Whether the tab with `id` holds its bell-notification latch —
+    /// `false` for an unknown id (never a notification for a ghost).
+    pub(crate) fn bell_latched(&self, id: TabId) -> bool {
+        self.tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| tab.bell_notified)
+    }
+
+    /// Arms the bell-notification latch on the tab with `id` (one
+    /// notification per tab per hide period); an unknown id arms
+    /// nothing.
+    pub(crate) fn note_bell_notified(&mut self, id: TabId) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.bell_notified = true;
+        }
+    }
+
+    /// Clears every tab's bell-notification latch — the show
+    /// transition's arm (a re-hidden surface notifies again).
+    pub(crate) fn clear_bell_latches(&mut self) {
+        for tab in &mut self.tabs {
+            tab.bell_notified = false;
         }
     }
 

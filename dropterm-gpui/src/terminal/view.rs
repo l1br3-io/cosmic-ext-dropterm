@@ -198,6 +198,13 @@ impl TerminalPane {
         self.title.clone()
     }
 
+    /// The program word this pane was spawned as (spawn truth, the
+    /// session snapshot's `shell` input — read once at construction,
+    /// never rewritten by `set_config`).
+    pub(crate) fn spawn_program(&self) -> &str {
+        &self.options.spawned_program
+    }
+
     /// The engine's own working-directory read (the `/proc` cwd —
     /// the same input the libcosmic retitle path caches): the cwd
     /// title modes' input, polled by the shell's tick.
@@ -2059,6 +2066,9 @@ pub(crate) fn pane_with_pump(
 pub(crate) struct PaneSpawn {
     pub program: String,
     pub args: Vec<String>,
+    /// The directory the PTY execs in (`None` inherits this
+    /// process's — the session restore's validated cwd rides here).
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// The one construction path for a pane and its engine terminal —
@@ -2093,8 +2103,9 @@ pub(crate) fn boot_pane(
             .map(|PaneSpawn { program, .. }| program.as_str()),
         config,
     );
-    let pty_shell =
-        spawn.map(|PaneSpawn { program, args }| alacritty_terminal::tty::Shell::new(program, args));
+    let spawn_cwd = spawn.as_ref().and_then(|PaneSpawn { cwd, .. }| cwd.clone());
+    let pty_shell = spawn
+        .map(|PaneSpawn { program, args, .. }| alacritty_terminal::tty::Shell::new(program, args));
     println!(
         "dropterm-gpui: pane pty spawning {}",
         pty_shell.as_ref().map_or_else(
@@ -2110,6 +2121,7 @@ pub(crate) fn boot_pane(
             let resolved = config.resolved_shell();
             Some(alacritty_terminal::tty::Shell::new(resolved, Vec::new()))
         }),
+        working_directory: spawn_cwd,
         drain_on_exit: true,
         ..alacritty_terminal::tty::Options::default()
     };

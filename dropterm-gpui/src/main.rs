@@ -21,6 +21,7 @@ mod dbus;
 mod drawer;
 mod executor;
 mod kit_check;
+mod notify;
 mod pickers;
 mod startup;
 mod status_bar;

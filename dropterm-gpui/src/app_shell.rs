@@ -299,6 +299,57 @@ pub(crate) struct Shell {
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
     specs: SpecsWatch,
+    /// The debounced session save's machine (gpui-parity Task 3,
+    /// core's own clock-free state).
+    session_save: dropterm_core::session::SessionSave,
+    /// The armed debounce window — its generation and the instant its
+    /// write is due (the tick is the wake; the `drag_release_at`
+    /// pattern).
+    session_due: Option<(u32, Instant)>,
+    /// The last written session shape (the change detector's
+    /// baseline, seeded at boot so a restored fleet writes nothing
+    /// until it truly changes).
+    session_written: Option<SessionShape>,
+}
+
+/// The fleet's structural truth the session save detects changes
+/// against: ids in strip order with each tab's pin, rename override,
+/// and cwd, plus the active index. Shell-title churn stays out (the
+/// libcosmic cwd gate's Guake cadence — a vim statusline is not a
+/// save trigger), and so does everything the write recomputes fresh.
+type SessionShape = (
+    Vec<(TabId, bool, Option<String>, Option<std::path::PathBuf>)>,
+    usize,
+);
+
+/// One tab's session-write inputs, collected before the snapshots
+/// borrow them (the libcosmic `write_session` shape): the resolved
+/// title, the rename pin, the pin, the fresh cwd readlink, and the
+/// spawn truth's program word.
+type SessionRow<'a> = (
+    &'a str,
+    Option<&'a str>,
+    bool,
+    Option<std::path::PathBuf>,
+    String,
+);
+
+/// The shape of the fleet as it stands.
+fn session_shape(tabs: &tab_bar::TabList) -> SessionShape {
+    (
+        tabs.records()
+            .iter()
+            .map(|tab| {
+                (
+                    tab.id,
+                    tab.pinned,
+                    tab.title_override.clone(),
+                    tab.cwd.clone(),
+                )
+            })
+            .collect(),
+        tabs.active_index(),
+    )
 }
 
 /// The specs provider's table (the app-owned completions load):
@@ -386,6 +437,9 @@ impl Shell {
         specs: SpecsWatch,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
+        // The booted fleet is the session baseline (computed before
+        // the struct literal moves the list).
+        let session_written = session_shape(&tabs);
         Self {
             boot,
             show_open: boot,
@@ -429,6 +483,11 @@ impl Shell {
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
             specs,
+            session_save: dropterm_core::session::SessionSave::default(),
+            session_due: None,
+            // The booted fleet is the baseline: a restored session
+            // writes nothing until it truly changes.
+            session_written: Some(session_written),
         }
     }
 
@@ -713,6 +772,95 @@ impl Shell {
         // panes are a fleet now).
         for pane in self.panes.values() {
             pane.update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
+        }
+    }
+
+    /// The tick's session save point (gpui-parity Task 3): the
+    /// fleet's structural shape against the last written baseline
+    /// detects every save trigger — opens, closes, reorders, renames,
+    /// pins, switches, cwd moves (the record the title sync
+    /// maintains) — and the debounce coalesces bursts into at most
+    /// one write per interval (core's own [`SessionSave`] machine,
+    /// the tick the wake the libcosmic sleep task is). The toggle
+    /// gates the whole path: disabled, nothing marks and a pending
+    /// window's write stops, the file on disk waiting untouched.
+    fn pump_session_save(&mut self, cx: &mut Context<Self>) {
+        let shape = session_shape(&self.tabs);
+        let enabled = self.config.session_persistence_enabled;
+        if let Some((generation, due_at)) = self.session_due
+            && Instant::now() >= due_at
+        {
+            self.session_due = None;
+            if self.session_save.due_writes(generation, enabled) {
+                self.write_session(cx);
+                self.session_written = Some(shape.clone());
+            }
+        }
+        if self.session_written.as_ref() != Some(&shape)
+            && let Some(generation) = self.session_save.mark_gated(enabled)
+        {
+            self.session_due = Some((
+                generation,
+                Instant::now() + dropterm_core::session::SESSION_WRITE_INTERVAL,
+            ));
+        }
+    }
+
+    /// Captures the live fleet and writes the session file atomically
+    /// (the libcosmic `write_session` port): the cwd readlinks happen
+    /// here — at write time, not schedule time — so saved cwds are as
+    /// fresh as the debounce allows, `capture` staleness-filtering
+    /// each one. A failed write logs and leaves the old file in
+    /// place: the next dirty window retries.
+    fn write_session(&self, cx: &Context<Self>) {
+        // Collected first (the libcosmic shape): the snapshots borrow
+        // these locals, and capture's staleness filter reads them
+        // whole.
+        let collected: Vec<SessionRow<'_>> = self
+            .tabs
+            .records()
+            .iter()
+            .filter_map(|tab| {
+                let pane = self.panes.get(&tab.id)?;
+                let pane = pane.read(cx);
+                Some((
+                    tab.title.as_str(),
+                    tab.title_override.as_deref(),
+                    tab.pinned,
+                    pane.working_directory(),
+                    pane.spawn_program().to_string(),
+                ))
+            })
+            .collect();
+        let snapshots: Vec<dropterm_core::session::TabSnapshot<'_>> = collected
+            .iter()
+            .map(|(title, title_override, pinned, cwd, shell)| {
+                dropterm_core::session::TabSnapshot {
+                    title,
+                    title_override: *title_override,
+                    shell,
+                    cwd: cwd.as_deref(),
+                    // The GPUI fleet's every tab is a plain spawn
+                    // today — no `--cmd` ephemeral, no profile spawn
+                    // path (the gpui-tabs scope note) — so neither
+                    // ever records.
+                    ephemeral: false,
+                    profile: None,
+                    pinned: *pinned,
+                }
+            })
+            .collect();
+        let state = dropterm_core::session::capture(&snapshots, self.tabs.active_index());
+        println!(
+            "dropterm-gpui: session write ({} tab(s), active {}) -> {}",
+            state.tabs.len(),
+            self.tabs.active_index(),
+            dropterm_core::session::state_file_path().display()
+        );
+        if let Err(err) =
+            dropterm_core::session::save_atomic(&dropterm_core::session::state_file_path(), &state)
+        {
+            println!("dropterm-gpui: failed to write session file: {err}");
         }
     }
 
@@ -1751,6 +1899,29 @@ impl Shell {
             if !bell && !output {
                 continue;
             }
+            // A bell while the surface is hidden posts one desktop
+            // notification per tab per hide period (gpui-parity Task
+            // 3; the libcosmic event arm's port — any tab, the active
+            // one included, because a hidden surface shows no marker
+            // the user can see). While visible the marker alone
+            // carries the signal.
+            if bell
+                && crate::notify::should_notify(
+                    matches!(self.machine.state, SurfaceState::Hidden),
+                    self.config.bell_notification_enabled,
+                    self.tabs.bell_latched(id),
+                )
+            {
+                self.tabs.note_bell_notified(id);
+                let title = self
+                    .tabs
+                    .records()
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map_or_else(|| "Terminal".to_string(), |tab| tab.title.clone());
+                println!("dropterm-gpui: bell in {title:?} while hidden -> one notification");
+                crate::notify::post_bell_notification(title);
+            }
             let active = self.tabs.active_id() == Some(id);
             self.tabs.note_attention(id, bell, output);
             if active {
@@ -1834,6 +2005,10 @@ impl Shell {
                 let engine = pane.read(cx).terminal.clone();
                 engine.lock().expect("engine lock").clear_missed_activity();
             }
+            // The show re-arms the bell-notification latches: the next
+            // hide period starts clean, a bell after the next hide
+            // notifying again.
+            self.tabs.clear_bell_latches();
         }
         self.was_hidden = hidden;
     }
@@ -2700,12 +2875,90 @@ struct TabFleet {
 /// line when a walk sets it (seeding every tab alike), the tty
 /// default otherwise. `None` when any pane's PTY fails to spawn — the
 /// drawer is never left half-fleeted.
+/// The restore arm of [`boot_tab_fleet`] (gpui-parity Task 3): one
+/// pane per saved tab in plan order, each in its re-validated cwd
+/// with its chrome replayed (the resolved title, the rename pin, the
+/// pin), the saved active seat activated when any tab survived. A
+/// failed PTY closes its record (the rollback); the count returns
+/// for the fallback decision.
+fn restore_fleet(
+    cx: &mut App,
+    config: &DropTermConfig,
+    specs_table: Option<&SpecsTable>,
+    plan: Option<&dropterm_core::session::RestorePlan>,
+    signals_tx: &std::sync::mpsc::Sender<view::PaneSignal>,
+    tabs: &mut tab_bar::TabList,
+    panes: &mut HashMap<TabId, Entity<TerminalPane>>,
+) -> usize {
+    let Some(plan) = plan else {
+        return 0;
+    };
+    let mut restored = 0usize;
+    for spec in &plan.tabs {
+        let id = tabs.spawn_restored(
+            spec.title.clone(),
+            spec.title_override.clone(),
+            spec.pinned,
+            spec.cwd.clone(),
+        );
+        let program = if dropterm_core::config::program_is_runnable(&spec.shell) {
+            spec.shell.clone()
+        } else {
+            config.resolved_shell()
+        };
+        let spawn = view::PaneSpawn {
+            program,
+            args: Vec::new(),
+            cwd: spec.cwd.clone(),
+        };
+        let Some((_terminal, pane)) = view::boot_pane(
+            cx,
+            config,
+            Some(spawn),
+            specs_table,
+            id,
+            Some(signals_tx.clone()),
+        ) else {
+            eprintln!("dropterm-gpui: restored tab's terminal failed to spawn; closing its record");
+            tabs.close(id);
+            continue;
+        };
+        panes.insert(id, pane);
+        restored += 1;
+    }
+    if let dropterm_core::session::RestoreOutcome::Restored { active } =
+        dropterm_core::session::restore_outcome(plan.active, restored)
+    {
+        tabs.activate_index(active);
+        println!(
+            "dropterm-gpui: session restored — {restored} tab(s) live, active {active} ({} saved)",
+            plan.tabs.len()
+        );
+    }
+    restored
+}
+
 fn boot_tab_fleet(
     cx: &mut App,
     config: &DropTermConfig,
     specs_table: Option<&SpecsTable>,
+    restore: &mut dropterm_core::session::RestoreStash,
     edge: Edge,
 ) -> Option<TabFleet> {
+    // The session restore (gpui-parity Task 3): the plan wins unless
+    // a walk owns the fleet through `DROPTERM_TABS` — one pane per
+    // saved tab, in order, each in its re-validated cwd, the saved
+    // chrome replayed onto the record (the resolved title, the rename
+    // pin, the pin) and the saved active seat activated. A saved
+    // shell the system no longer carries degrades onto the configured
+    // resolution (the libcosmic row); a saved profile spawns the
+    // plain shell — the GPUI build has no profile spawn path (the
+    // gpui-tabs scope note), the cwd still honored.
+    let plan = if std::env::var_os("DROPTERM_TABS").is_none() {
+        restore.take_for_run(true)
+    } else {
+        None
+    };
     let tab_count = tab_walk_count(std::env::var("DROPTERM_TABS").ok().as_deref());
     let pty_spawn = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
         let raw = raw.trim().to_string();
@@ -2713,31 +2966,44 @@ fn boot_tab_fleet(
             view::PaneSpawn {
                 program: "/bin/sh".to_string(),
                 args: Vec::new(),
+                cwd: None,
             }
         } else {
             view::PaneSpawn {
                 program: "/bin/sh".to_string(),
                 args: vec!["-c".to_string(), raw],
+                cwd: None,
             }
         }
     });
     let (signals_tx, pane_signals) = std::sync::mpsc::channel::<view::PaneSignal>();
     let mut tabs = tab_bar::TabList::default();
     let mut panes = HashMap::new();
-    for _ in 0..tab_count {
-        let id = tabs.spawn(false);
-        let Some((_terminal, pane)) = view::boot_pane(
-            cx,
-            config,
-            pty_spawn.clone(),
-            specs_table,
-            id,
-            Some(signals_tx.clone()),
-        ) else {
-            eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
-            return None;
-        };
-        panes.insert(id, pane);
+    let restored = restore_fleet(
+        cx,
+        config,
+        specs_table,
+        plan.as_ref(),
+        &signals_tx,
+        &mut tabs,
+        &mut panes,
+    );
+    if restored == 0 {
+        for _ in 0..tab_count {
+            let id = tabs.spawn(false);
+            let Some((_terminal, pane)) = view::boot_pane(
+                cx,
+                config,
+                pty_spawn.clone(),
+                specs_table,
+                id,
+                Some(signals_tx.clone()),
+            ) else {
+                eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
+                return None;
+            };
+            panes.insert(id, pane);
+        }
     }
     println!(
         "dropterm-gpui: tab bar: {} tab(s) ([{}]), strip at {} (tab_position {}, edge {:?}), \
@@ -2820,8 +3086,29 @@ pub(crate) fn boot(
     // carry the loading placeholder, and the tick's drain pushes the
     // landed table the moment the thread finishes.
     let specs = SpecsWatch::spawn_initial(&config);
-    let Some(fleet) = boot_tab_fleet(cx, &config, specs.table.as_ref(), inputs.geometry.edge)
-    else {
+    // The session's one small synchronous read (gpui-parity Task 3):
+    // stashed here — before the fleet spawns — so restore structurally
+    // precedes the first tab, exactly as the libcosmic init. A missing
+    // or invalid file stashes nothing (already quarantined with a
+    // warning inside `load`), keeping first-run startup silent; the
+    // toggle gates the whole entry — disabled, the file is not even
+    // read, and what is on disk waits untouched for a future launch.
+    let mut restore = {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        dropterm_core::session::restore_entry(
+            &dropterm_core::session::state_file_path(),
+            home.as_deref(),
+            config.session_persistence_enabled,
+            &config.profiles,
+        )
+    };
+    let Some(fleet) = boot_tab_fleet(
+        cx,
+        &config,
+        specs.table.as_ref(),
+        &mut restore,
+        inputs.geometry.edge,
+    ) else {
         cx.quit();
         return;
     };
@@ -2890,6 +3177,8 @@ pub(crate) fn boot(
                 // gpui-parity Task 1: a landed completions load
                 // stores the table and pushes it to the panes.
                 shell.update(cx, Shell::drain_completions);
+                // gpui-parity Task 3: the debounced session save.
+                shell.update(cx, Shell::pump_session_save);
                 // gpui-tabs Task 1: the tab titles sync on the same
                 // apply point — each pane's report and cwd polled,
                 // re-resolved through core only on a move.
@@ -2929,6 +3218,64 @@ pub(crate) fn boot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_shape_detects_every_structural_change() {
+        // The change detector's coverage (gpui-parity Task 3): every
+        // structural truth the save triggers on moves the shape — a
+        // reorder, a pin, a rename pin, an active switch, a cwd move
+        // — while shell-title churn stays quiet. Ids are deterministic
+        // from a default list, so a fresh two-tab pair is the shared
+        // baseline each mutation compares against.
+        use dropterm_core::config::TabTitleMode;
+        use dropterm_core::tabs::MoveDirection;
+
+        fn two_tabs() -> tab_bar::TabList {
+            let mut tabs = tab_bar::TabList::default();
+            let first = tabs.spawn(false);
+            let _ = tabs.spawn(false);
+            // The spawns leave the second active; the baseline holds
+            // the first so the switch arm has a direction.
+            tabs.select(first);
+            tabs
+        }
+        let baseline = session_shape(&two_tabs());
+
+        let mut moved = two_tabs();
+        let second = moved.records()[1].id;
+        moved.move_by(second, MoveDirection::Left);
+        assert_ne!(session_shape(&moved), baseline, "a reorder marks");
+
+        let mut pinned = two_tabs();
+        let first = pinned.records()[0].id;
+        pinned.toggle_pin(first);
+        assert_ne!(session_shape(&pinned), baseline, "a pin marks");
+
+        let mut renamed = two_tabs();
+        renamed.commit_rename(first, "work", TabTitleMode::Shell);
+        assert_ne!(session_shape(&renamed), baseline, "a rename pin marks");
+
+        let mut switched = two_tabs();
+        switched.select(second);
+        assert_ne!(session_shape(&switched), baseline, "a switch marks");
+
+        let mut retitled = two_tabs();
+        retitled.sync_title(first, Some("churn".to_string()), None, TabTitleMode::Shell);
+        assert_eq!(
+            session_shape(&retitled),
+            baseline,
+            "a shell title without a cwd move stays quiet (the Guake cadence)"
+        );
+
+        let mut cd = two_tabs();
+        cd.sync_title(
+            first,
+            Some("elsewhere".to_string()),
+            Some(std::path::PathBuf::from("/elsewhere")),
+            TabTitleMode::Shell,
+        );
+        assert_ne!(session_shape(&cd), baseline, "a cwd move marks");
+    }
 
     #[test]
     fn exit_after_parses_positive_milliseconds_only() {

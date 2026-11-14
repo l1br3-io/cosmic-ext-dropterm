@@ -88,6 +88,11 @@ image = { version = "0.25", default-features = false }
 # path). Same 0.19 line the lock already carries for core.
 cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-cache"] }
 
+# The bell's desktop notification (gpui-parity Task 3): the same
+# direct-D-Bus notify-rust transport the libcosmic build rides — 4.18,
+# the line the lock already carries.
+notify-rust = "4.18"
+
 # The pane's focus-free clipboard half (gpui-terminal Task 3): the
 # data-control protocol serves copies made while unfocused (OSC 52
 # stores) and the primary selection, which GPUI's clipboard does not
