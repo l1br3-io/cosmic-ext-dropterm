@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 
 use dropterm_core::config::{Edge, TabPosition, TabTitleMode};
 use dropterm_core::tabs::{
@@ -23,6 +24,40 @@ use dropterm_core::tabs::{
     insert_new_tab, move_target, next_default_title, reorder_tabs, resolve_title,
     shell_title_from_report, sweep_targets, title_prefix,
 };
+
+// The inline rename's Escape (bound in the strip's key context; the
+// Kit's input propagates an Escape it does not consume, so the
+// binding reaches the cancellation from the focused input).
+gpui::actions!(dropterm_gpui, [CancelTabRename]);
+
+/// A tab row's drag payload (drag-reorder): the dragged tab's id —
+/// the drop target's own row decides the landing index.
+#[derive(Clone, Copy)]
+pub(crate) struct TabDrag(pub(crate) TabId);
+
+/// The drag's floating chip: the lifted row's label following the
+/// cursor while it is held.
+struct TabDragChip {
+    label: String,
+    fg: gpui::Hsla,
+}
+
+impl gpui::Render for TabDragChip {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+            .px(gpui::px(BUTTON_PADDING_X))
+            .py(gpui::px(4.))
+            .rounded_sm()
+            .bg(gpui::Hsla { a: 0.18, ..self.fg })
+            .text_color(self.fg)
+            .text_size(gpui::px(TITLE_FONT_SIZE))
+            .child(self.label.clone())
+    }
+}
 
 /// The strip's height in logical pixels — the pane yields this much of
 /// the surface to the bar (the surface itself never grows for it; the
@@ -304,13 +339,6 @@ impl TabList {
     /// from every later shell report), an empty one is the explicit
     /// clear that returns the live mode's title — returning whether
     /// the tab exists.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn commit_rename(&mut self, id: TabId, new_title: &str, mode: TabTitleMode) -> bool {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return false;
@@ -336,13 +364,6 @@ impl TabList {
     /// put, the reference bar's ruling 4), and a no-op drop — unknown
     /// id, the tab's own slot, an out-of-range target — reports no
     /// change.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn move_to(&mut self, id: TabId, to: usize) -> bool {
         let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
             return false;
@@ -358,13 +379,6 @@ impl TabList {
     /// per-tab menu's Move rows — clamping at the edge through core's
     /// own `move_target`, with the same pinned refusal and active
     /// identity rule as a drag.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn move_by(&mut self, id: TabId, direction: MoveDirection) -> bool {
         let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
             return false;
@@ -382,13 +396,6 @@ impl TabList {
     /// Flips the pin of the tab with `id` — the per-tab menu's
     /// Pin/Unpin row, the one surface that arms a pin — returning
     /// whether the tab exists.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn toggle_pin(&mut self, id: TabId) -> bool {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return false;
@@ -402,13 +409,6 @@ impl TabList {
     /// rename pin, landing after the *active* tab and activated, the
     /// reference `duplicate-tab` semantics. A missing source spawns
     /// the plain default record (the keybind's empty-list behavior).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn spawn_duplicate(&mut self, source: TabId, mode: TabTitleMode) -> TabId {
         let (cwd, title_override) = self
             .tabs
@@ -437,13 +437,6 @@ impl TabList {
     /// neighbors skipped — as ids in descending strip order, so the
     /// shell's closes never shift a later target's index. An unknown
     /// anchor sweeps nothing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pinned by its test; the interaction wiring slice consumes it"
-        )
-    )]
     pub(crate) fn close_sweep(&self, id: TabId, sweep: CloseSweep) -> Vec<TabId> {
         let Some(anchor) = self.tabs.iter().position(|tab| tab.id == id) else {
             return Vec::new();
@@ -498,13 +491,6 @@ impl TabList {
 /// folder excepted — it rides a profile spawn path no GPUI slice
 /// carries yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned by its test; the interaction wiring slice consumes it"
-    )
-)]
 pub(crate) enum TabMenuPick {
     /// The default spawn — the `+`'s funnel.
     NewTab,
@@ -532,13 +518,6 @@ pub(crate) enum TabMenuPick {
 /// and refusals render muted — the GNOME disabled-row rule), and
 /// whether a separator line renders above it. Plain data, composed
 /// headless.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned by its test; the interaction wiring slice consumes it"
-    )
-)]
 pub(crate) struct TabMenuRow {
     pub(crate) label: String,
     pub(crate) pick: TabMenuPick,
@@ -555,13 +534,6 @@ pub(crate) struct TabMenuRow {
 /// target, whose own Close Tab row mutes with them (the close front
 /// door's refusal, rendered), and Close Tabs to the Right is omitted
 /// at the rightmost tab (the row would always no-op there).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "pinned by its test; the interaction wiring slice consumes it"
-    )
-)]
 pub(crate) fn tab_menu_rows(tab_count: usize, tab_index: usize, pinned: bool) -> Vec<TabMenuRow> {
     let row = |label: &str, pick: TabMenuPick, enabled: bool, separated: bool| TabMenuRow {
         label: label.to_string(),
@@ -650,6 +622,16 @@ type SelectFn = std::rc::Rc<dyn Fn(TabId, &mut gpui::Window, &mut gpui::App)>;
 type CloseFn = std::rc::Rc<dyn Fn(TabId, &mut gpui::Window, &mut gpui::App)>;
 /// The strip's corner-affordance callbacks (`+`, gear).
 type CornerFn = std::rc::Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
+/// The strip's rename trigger: one tab id (a double-click on the row).
+type RenameFn = std::rc::Rc<dyn Fn(TabId, &mut gpui::Window, &mut gpui::App)>;
+/// The strip's completed-drag callback: the dragged tab id and the
+/// drop target's row index.
+type MoveFn = std::rc::Rc<dyn Fn(TabId, usize, &mut gpui::Window, &mut gpui::App)>;
+/// The strip's per-tab menu pick: the right-pressed tab id and the
+/// picked row.
+type MenuPickFn = std::rc::Rc<dyn Fn(TabId, TabMenuPick, &mut gpui::Window, &mut gpui::App)>;
+/// The strip's rename cancellation (the focused input's Escape).
+type CancelRenameFn = std::rc::Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
 
 /// The tab strip element (Task 1's render half): one bar-height row —
 /// tab buttons while two or more tabs exist, the `+` and gear
@@ -665,8 +647,15 @@ pub(crate) struct TabBarView {
     at_bottom: bool,
     on_select: SelectFn,
     on_close: CloseFn,
+    on_rename: RenameFn,
+    on_move: MoveFn,
+    on_menu_pick: MenuPickFn,
+    on_cancel_rename: CancelRenameFn,
     on_new_tab: CornerFn,
     on_settings: CornerFn,
+    /// The open inline rename, if any: the renamed tab and the Kit
+    /// input state it edits through (hosted in the row's label slot).
+    rename: Option<(TabId, gpui::Entity<gpui_component::input::InputState>)>,
 }
 
 impl TabBarView {
@@ -679,8 +668,13 @@ impl TabBarView {
             at_bottom: false,
             on_select: std::rc::Rc::new(|_, _, _| {}),
             on_close: std::rc::Rc::new(|_, _, _| {}),
+            on_rename: std::rc::Rc::new(|_, _, _| {}),
+            on_move: std::rc::Rc::new(|_, _, _, _| {}),
+            on_menu_pick: std::rc::Rc::new(|_, _, _, _| {}),
+            on_cancel_rename: std::rc::Rc::new(|_, _| {}),
             on_new_tab: std::rc::Rc::new(|_, _| {}),
             on_settings: std::rc::Rc::new(|_, _| {}),
+            rename: None,
         }
     }
 
@@ -716,6 +710,56 @@ impl TabBarView {
         self
     }
 
+    /// The strip's rename trigger — a double-click on a row's body.
+    pub(crate) fn on_rename(
+        mut self,
+        on_rename: impl Fn(TabId, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_rename = std::rc::Rc::new(on_rename);
+        self
+    }
+
+    /// The strip's completed-drag callback (reorder): the dragged tab
+    /// id and the row index it was dropped on.
+    pub(crate) fn on_move(
+        mut self,
+        on_move: impl Fn(TabId, usize, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_move = std::rc::Rc::new(on_move);
+        self
+    }
+
+    /// The strip's per-tab menu pick callback (the context menu's
+    /// rows ride it).
+    pub(crate) fn on_menu_pick(
+        mut self,
+        on_menu_pick: impl Fn(TabId, TabMenuPick, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_menu_pick = std::rc::Rc::new(on_menu_pick);
+        self
+    }
+
+    /// The strip's rename cancellation (the focused input's Escape —
+    /// the Kit's input propagates an Escape it does not consume).
+    pub(crate) fn on_cancel_rename(
+        mut self,
+        on_cancel_rename: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_cancel_rename = std::rc::Rc::new(on_cancel_rename);
+        self
+    }
+
+    /// The open inline rename: the Kit input state takes the renamed
+    /// row's label slot while the rename runs.
+    pub(crate) fn renaming(
+        mut self,
+        tab: TabId,
+        state: gpui::Entity<gpui_component::input::InputState>,
+    ) -> Self {
+        self.rename = Some((tab, state));
+        self
+    }
+
     pub(crate) fn on_new_tab(
         mut self,
         on_new_tab: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
@@ -733,16 +777,34 @@ impl TabBarView {
     }
 
     /// One tab button: pill background and brighter text when active,
-    /// the composed label, and the close glyph — whose press rides the
-    /// shell's gated front door (the confirm flow lives there), never
-    /// selecting the row beneath it; a middle-click on the row closes
-    /// the same way.
+    /// the composed label (or the Kit input, while its inline rename
+    /// runs), and the close glyph — whose press rides the shell's
+    /// gated front door, never selecting the row beneath it; a
+    /// middle-click on the row closes the same way, a double-click on
+    /// the body starts the rename, a drag lands on the row it is
+    /// dropped on (pinned rows never arm one — they stay put), and a
+    /// right-press opens the per-tab menu through the Kit's popover
+    /// path.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the row's whole gesture surface beside its view model: one element, one wiring block, uniform per row"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row, one wiring block — the pill, the close glyph, the press/double-press/middle press trio, the drag/drop pair, and the menu"
+    )]
     fn row_element(
         row: &RowVm,
+        index: usize,
+        count: usize,
         fg: gpui::Hsla,
         on_select: SelectFn,
         on_close: CloseFn,
-    ) -> gpui::Div {
+        on_rename: RenameFn,
+        on_move: MoveFn,
+        on_menu_pick: &MenuPickFn,
+        rename: Option<&gpui::Entity<gpui_component::input::InputState>>,
+    ) -> impl gpui::IntoElement {
         let active_pill = gpui::Hsla { a: 0.18, ..fg };
         let text = if row.is_active {
             fg
@@ -750,10 +812,33 @@ impl TabBarView {
             gpui::Hsla { a: 0.65, ..fg }
         };
         let id = row.id;
-        // The row's middle-click keeps its own share beside the
-        // glyph's move.
         let on_close_middle = std::rc::Rc::clone(&on_close);
+        let row_label = row.label.clone();
+        // The pill: the plain row keeps its composed label while the
+        // renamed row hosts the Kit input in the same slot.
+        let label_slot = match rename {
+            Some(state) => gpui::div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .child(gpui_component::input::Input::new(state).appearance(false))
+                .into_any_element(),
+            None => gpui::div()
+                .flex_shrink(1.)
+                .overflow_hidden()
+                .child(row.label.clone())
+                .into_any_element(),
+        };
+        // The per-tab menu's rows, composed at open time from the
+        // clicked row's own state (the muted rows a pick would refuse
+        // render disabled — the GNOME rule).
+        let menu_tab = id;
+        let menu_index = index;
+        let menu_count = count;
+        let menu_pinned = row.is_pinned;
+        let menu_pick = std::rc::Rc::clone(on_menu_pick);
         gpui::div()
+            .id(gpui::ElementId::Name(format!("tab-{}", id.0).into()))
             .h_full()
             .min_w(gpui::px(MIN_BUTTON_WIDTH))
             .max_w(gpui::px(MAX_BUTTON_WIDTH))
@@ -765,12 +850,7 @@ impl TabBarView {
             .when(row.is_active, |button| button.bg(active_pill))
             .text_color(text)
             .overflow_hidden()
-            .child(
-                gpui::div()
-                    .flex_shrink(1.)
-                    .overflow_hidden()
-                    .child(row.label.clone()),
-            )
+            .child(label_slot)
             .child(
                 gpui::div()
                     .size(gpui::px(GLYPH_SIZE))
@@ -793,7 +873,18 @@ impl TabBarView {
             )
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                move |_, window: &mut gpui::Window, cx: &mut gpui::App| on_select(id, window, cx),
+                move |event: &gpui::MouseDownEvent,
+                      window: &mut gpui::Window,
+                      cx: &mut gpui::App| {
+                    // A double-click on the body starts the inline
+                    // rename (the first press already selected); a
+                    // single press selects.
+                    if event.click_count >= 2 {
+                        on_rename(id, window, cx);
+                    } else {
+                        on_select(id, window, cx);
+                    }
+                },
             )
             // A middle-click on the row closes whichever part of the
             // button it lands on (the reference bar's rule).
@@ -803,6 +894,52 @@ impl TabBarView {
                     on_close_middle(id, window, cx);
                 },
             )
+            // The drag: unpinned rows arm one whose floating chip
+            // follows the cursor; every row is a drop target, so the
+            // drop lands on the row it is released over (a drop on
+            // the dragged row's own slot is a no-op at the model).
+            .when(!row.is_pinned, |button| {
+                button
+                    .on_drag(
+                        TabDrag(id),
+                        move |_drag: &TabDrag,
+                              _offset: gpui::Point<gpui::Pixels>,
+                              _window: &mut gpui::Window,
+                              cx: &mut gpui::App| {
+                            cx.new(|_| TabDragChip {
+                                label: row_label.clone(),
+                                fg,
+                            })
+                        },
+                    )
+                    .on_drop(
+                        move |dragged: &TabDrag, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            on_move(dragged.0, index, window, cx);
+                        },
+                    )
+            })
+            // The per-tab menu, on the Kit's popover path: rows
+            // composed at open time from the clicked row's own state
+            // (the muted rows a pick would refuse render disabled —
+            // the GNOME rule).
+            .context_menu(move |menu, _window, _cx| {
+                let mut menu = menu;
+                for entry in tab_menu_rows(menu_count, menu_index, menu_pinned) {
+                    if entry.separated {
+                        menu = menu.separator();
+                    }
+                    let pick = entry.pick;
+                    let menu_pick = std::rc::Rc::clone(&menu_pick);
+                    menu = menu.item(
+                        PopupMenuItem::new(entry.label)
+                            .disabled(!entry.enabled)
+                            .on_click(move |_event, window, cx| {
+                                menu_pick(menu_tab, pick, window, cx);
+                            }),
+                    );
+                }
+                menu
+            })
     }
 
     /// One corner affordance — the `+` or the gear — a square glyph
@@ -826,6 +963,8 @@ impl TabBarView {
 impl gpui::RenderOnce for TabBarView {
     fn render(self, _window: &mut gpui::Window, _cx: &mut gpui::App) -> impl gpui::IntoElement {
         let fg = self.fg;
+        let count = self.rows.len();
+        let on_cancel_rename = std::rc::Rc::clone(&self.on_cancel_rename);
         let mut bar = gpui::div()
             .w_full()
             .h(gpui::px(BAR_HEIGHT))
@@ -851,19 +990,40 @@ impl gpui::RenderOnce for TabBarView {
                 bar.border_b(gpui::px(1.)).border_color(hairline)
             };
         }
-        if shows_tab_buttons(self.rows.len()) {
+        if shows_tab_buttons(count) {
             let on_select = std::rc::Rc::clone(&self.on_select);
             let on_close = std::rc::Rc::clone(&self.on_close);
-            bar = bar.children(self.rows.iter().map(|row| {
+            let on_rename = std::rc::Rc::clone(&self.on_rename);
+            let on_move = std::rc::Rc::clone(&self.on_move);
+            bar = bar.children(self.rows.iter().enumerate().map(|(index, row)| {
                 Self::row_element(
                     row,
+                    index,
+                    count,
                     fg,
                     std::rc::Rc::clone(&on_select),
                     std::rc::Rc::clone(&on_close),
+                    std::rc::Rc::clone(&on_rename),
+                    std::rc::Rc::clone(&on_move),
+                    &self.on_menu_pick,
+                    self.rename
+                        .as_ref()
+                        .filter(|(tab, _)| *tab == row.id)
+                        .map(|(_, state)| state),
                 )
             }));
         }
-        bar.child(gpui::div().flex_1())
+        // The rename's Escape: the focused input propagates an Escape
+        // it does not consume, and this context — on the input's own
+        // ancestor — catches it (the context only ever matches while
+        // a rename's input holds the keyboard inside the strip).
+        bar.key_context("tab-rename")
+            .on_action(
+                move |_: &CancelTabRename, window: &mut gpui::Window, cx: &mut gpui::App| {
+                    on_cancel_rename(window, cx);
+                },
+            )
+            .child(gpui::div().flex_1())
             .child(Self::glyph_button("+", fg, self.on_new_tab))
             .child(Self::glyph_button("⚙", fg, self.on_settings))
     }

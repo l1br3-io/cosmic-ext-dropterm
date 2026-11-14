@@ -31,7 +31,10 @@ use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::slide::{self, SLIDE_DURATION_MS};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
 use dropterm_core::tabs::TabId;
+use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
+use gpui_component::Root as KitRoot;
+use gpui_component::input::{InputEvent, InputState};
 use notify::Watcher as _;
 
 use crate::dbus::Verb;
@@ -74,6 +77,16 @@ fn phase_of(state: &SurfaceState) -> SurfacePhase {
         SurfaceState::Shown(_) => SurfacePhase::Shown,
         SurfaceState::Hiding(_) => SurfacePhase::Hiding,
     }
+}
+
+/// An open inline tab rename: the tab being renamed and the Kit
+/// input state editing its draft (the input hosts in the row's label
+/// slot). The subscription that routes its events lives as long as
+/// the edit.
+struct RenameEdit {
+    tab: TabId,
+    state: Entity<InputState>,
+    _events: gpui::Subscription,
 }
 
 /// One resolved scheme apply (gpui-theme Task 2): everything the
@@ -223,6 +236,14 @@ pub(crate) struct Shell {
     /// in-surface modal names while it waits for a human decision; a
     /// new request replaces whatever the slot held.
     pending_close: Option<TabId>,
+    /// The open inline rename, if any (double-click or the menu's
+    /// Rename row).
+    rename: Option<RenameEdit>,
+    /// A departed rename input's focus handle: the render's repair
+    /// hands the keyboard back to the active pane once the input's
+    /// handle stops holding it (the modal's own handle repairs the
+    /// same way through `modal_focus`).
+    rename_focus_repair: Option<gpui::FocusHandle>,
     /// The confirm modal's keyboard handle — holds the keyboard while
     /// the modal waits (the pane's render-time claim defers to it),
     /// handed back to the active pane when the decision resolves.
@@ -275,6 +296,8 @@ impl Shell {
             verbs,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
+            rename: None,
+            rename_focus_repair: None,
             modal_focus,
             exit_at: exit_after.map(|after| boot + after),
         }
@@ -674,7 +697,12 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 shell.frames = 0;
                 shell.last_bounds = None;
             });
-            match cx.open_window(options, |_, _| shell.clone()) {
+            match cx.open_window(options, |window, cx| {
+                // The Kit's Root hosts its overlays (the per-tab
+                // menu's popover path) — the manual wrap the kit-pass
+                // C3 ruling names, the kill check's own shape.
+                cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
+            }) {
                 Ok(window) => {
                     shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
                     println!(
@@ -747,6 +775,9 @@ impl Shell {
     /// newly active pane mounts on the next frame and takes the
     /// keyboard by construction.
     fn select_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
+        // A press away from an open rename commits it (the reference
+        // bar's rule), then lands on the pressed row.
+        self.commit_open_rename(cx);
         if self.tabs.select(id) {
             let title = self
                 .tabs
@@ -767,6 +798,7 @@ impl Shell {
     /// core's insert, and activate — the drawer's never-empty rule
     /// keeps at least this tab alive whatever closes later.
     fn new_tab(&mut self, cx: &mut Context<Self>) {
+        self.commit_open_rename(cx);
         if let Some(id) = self.spawn_tab(cx) {
             println!(
                 "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
@@ -804,6 +836,7 @@ impl Shell {
     /// the pane at request time, so a mid-session toggle flip applies
     /// to the very next close.
     fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_open_rename(cx);
         let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
             return;
         };
@@ -875,10 +908,195 @@ impl Shell {
         }
     }
 
+    /// Starts an inline rename of the tab with `id` — the row's
+    /// double-click and the menu's Rename row meet here: the Kit
+    /// input seeds from the tab's current title, selects its value,
+    /// and takes the keyboard (the pane's cooperative claim defers);
+    /// Enter commits, Escape cancels, a blur cancels (the reference
+    /// bar's own routing). Below two tabs there is no row to host
+    /// the input: a swallowed no-op (the reference rule).
+    fn start_rename(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        if !tab_bar::shows_tab_buttons(self.tabs.records().len()) {
+            return;
+        }
+        let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        let title = tab.title.clone();
+        let state = cx.new(|cx| InputState::new(window, cx).default_value(title));
+        state.update(cx, |state, cx| state.select_all(window, cx));
+        state.read(cx).focus_handle(cx).focus(window, cx);
+        let events = cx.subscribe(
+            &state,
+            |shell, _state, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => shell.commit_open_rename(cx),
+                InputEvent::Blur => shell.cancel_open_rename(cx),
+                _ => {}
+            },
+        );
+        self.rename = Some(RenameEdit {
+            tab: id,
+            state,
+            _events: events,
+        });
+        println!(
+            "dropterm-gpui: tab {id:?} rename started at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
+    /// Commits the open rename, if any — the input's Enter and every
+    /// click-away path (a press on another row, a corner affordance,
+    /// a menu pick, a drop): the draft becomes the tab's user rename
+    /// through core, shown at once.
+    fn commit_open_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.rename.take() else {
+            return;
+        };
+        self.rename_focus_repair = Some(edit.state.read(cx).focus_handle(cx));
+        let draft = edit.state.read(cx).value().to_string();
+        if self
+            .tabs
+            .commit_rename(edit.tab, &draft, self.config.tab_title_mode)
+        {
+            println!(
+                "dropterm-gpui: tab {:?} renamed -> {draft:?} at +{}ms",
+                edit.tab,
+                self.boot.elapsed().as_millis()
+            );
+        }
+        cx.notify();
+    }
+
+    /// Cancels the open rename, if any — the input's Escape (through
+    /// the strip's key context) and its blur: the draft is discarded,
+    /// it must not commit over a title arriving from outside.
+    fn cancel_open_rename(&mut self, cx: &mut Context<Self>) {
+        if let Some(edit) = self.rename.take() {
+            self.rename_focus_repair = Some(edit.state.read(cx).focus_handle(cx));
+            println!(
+                "dropterm-gpui: tab {:?} rename canceled at +{}ms",
+                edit.tab,
+                self.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        }
+    }
+
+    /// Ends the open rename when its input can no longer be shown
+    /// (the reference bar's prune rule): the renamed tab is gone, or
+    /// the row vanished with a single tab left. Runs on the tick's
+    /// tab-state pass.
+    fn prune_rename(&mut self, cx: &mut Context<Self>) {
+        let hosted = self.rename.as_ref().is_some_and(|edit| {
+            tab_bar::shows_tab_buttons(self.tabs.records().len())
+                && self.tabs.records().iter().any(|tab| tab.id == edit.tab)
+        });
+        if !hosted {
+            self.cancel_open_rename(cx);
+        }
+    }
+
+    /// A completed tab drag's drop (reorder): the dragged tab moves
+    /// to the dropped row's index through core's reorder (the click
+    /// away from an open rename commits first — the reference bar's
+    /// rule).
+    fn tab_moved(&mut self, dragged: TabId, to: usize, cx: &mut Context<Self>) {
+        self.commit_open_rename(cx);
+        if self.tabs.move_to(dragged, to) {
+            println!(
+                "dropterm-gpui: tab {dragged:?} dragged to index {to} at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        }
+    }
+
+    /// One per-tab menu pick — every row's verb routed to its shell
+    /// call, scoped to the clicked tab (the click away from an open
+    /// rename commits first).
+    fn tab_menu_pick(
+        &mut self,
+        id: TabId,
+        pick: tab_bar::TabMenuPick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use dropterm_core::tabs::CloseSweep;
+        use tab_bar::TabMenuPick;
+        self.commit_open_rename(cx);
+        match pick {
+            TabMenuPick::NewTab => self.new_tab(cx),
+            TabMenuPick::Rename => self.start_rename(id, window, cx),
+            TabMenuPick::Duplicate => self.duplicate_tab(id, cx),
+            TabMenuPick::Pin => {
+                if self.tabs.toggle_pin(id) {
+                    println!(
+                        "dropterm-gpui: tab {id:?} pin toggled at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    cx.notify();
+                }
+            }
+            TabMenuPick::Move(direction) => {
+                if self.tabs.move_by(id, direction) {
+                    println!(
+                        "dropterm-gpui: tab {id:?} moved {direction:?} at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    cx.notify();
+                }
+            }
+            TabMenuPick::Close => self.request_close(id, window, cx),
+            TabMenuPick::CloseOthers | TabMenuPick::CloseRight => {
+                // Every sweep target rides the gated front door, one
+                // at a time (the running ones prompt — the single-slot
+                // confirmation ends armed on the leftmost of them).
+                let sweep = if pick == TabMenuPick::CloseOthers {
+                    CloseSweep::Others
+                } else {
+                    CloseSweep::Right
+                };
+                for target in self.tabs.close_sweep(id, sweep) {
+                    self.request_close(target, window, cx);
+                }
+            }
+        }
+    }
+
+    /// Duplicates the tab with `source` (the menu's row): a fresh
+    /// pane in its cwd carrying its rename pin, landing after the
+    /// active tab and activated (the record through core; the pane
+    /// through the one spawning body).
+    fn duplicate_tab(&mut self, source: TabId, cx: &mut Context<Self>) {
+        let id = self
+            .tabs
+            .spawn_duplicate(source, self.config.tab_title_mode);
+        let Some((_terminal, pane)) =
+            view::boot_pane(cx, &self.config, None, id, Some(self.signals_tx.clone()))
+        else {
+            eprintln!(
+                "dropterm-gpui: duplicate tab's terminal failed to spawn; closing its record"
+            );
+            self.tabs.close(id);
+            return;
+        };
+        self.panes.insert(id, pane);
+        println!(
+            "dropterm-gpui: tab {source:?} duplicated -> {id:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
     /// The gear affordance's press: the settings entry point arrives
     /// with gpui-chrome; the row is the affordance's evidence until
     /// then.
-    fn settings_requested(&mut self) {
+    fn settings_requested(&mut self, cx: &mut Context<Self>) {
+        // The gear's press commits an open rename first, exactly like
+        // the reference bar's corner affordances.
+        self.commit_open_rename(cx);
         println!(
             "dropterm-gpui: gear pressed (settings entry arrives with gpui-chrome) at +{}ms",
             self.boot.elapsed().as_millis()
@@ -946,6 +1164,84 @@ impl Shell {
                 self.boot.elapsed().as_millis(),
             );
         }
+        // An open rename whose host vanished ends here (the close
+        // paths' orphan rule).
+        self.prune_rename(cx);
+    }
+
+    /// The strip element with every interaction wired (the strip is
+    /// view-only: each callback routes one shell call, itself routed
+    /// through core).
+    #[expect(
+        clippy::let_and_return,
+        reason = "the one binding names the built element between the long builder chain and the return"
+    )]
+    fn tab_strip(
+        &self,
+        cx: &mut Context<Self>,
+        at_bottom: bool,
+        strip: gpui::Hsla,
+        fg: gpui::Hsla,
+    ) -> tab_bar::TabBarView {
+        let shell = cx.entity();
+        let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
+            .show_border(self.config.tab_bar_border)
+            .at_bottom(at_bottom)
+            .on_select({
+                let shell = shell.clone();
+                move |id, _window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.select_tab(id, cx));
+                }
+            })
+            .on_close({
+                let shell = shell.clone();
+                move |id, window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.request_close(id, window, cx));
+                }
+            })
+            .on_rename({
+                let shell = shell.clone();
+                move |id, window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.start_rename(id, window, cx));
+                }
+            })
+            .on_move({
+                let shell = shell.clone();
+                move |dragged, to, _window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.tab_moved(dragged, to, cx));
+                }
+            })
+            .on_menu_pick({
+                let shell = shell.clone();
+                move |id, pick, window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.tab_menu_pick(id, pick, window, cx));
+                }
+            })
+            .on_cancel_rename({
+                let shell = shell.clone();
+                move |_window, cx: &mut App| {
+                    shell.update(cx, Shell::cancel_open_rename);
+                }
+            })
+            .on_new_tab({
+                let shell = shell.clone();
+                move |_window, cx: &mut App| {
+                    shell.update(cx, Shell::new_tab);
+                }
+            })
+            .on_settings({
+                let shell = shell.clone();
+                move |_window, cx: &mut App| {
+                    shell.update(cx, Shell::settings_requested);
+                }
+            })
+            .when_some(
+                self.rename
+                    .as_ref()
+                    .map(|edit| (edit.tab, edit.state.clone())),
+                |bar, (tab, state)| bar.renaming(tab, state),
+            );
+        bar
     }
 
     /// The band, translated by the live slide: GPUI's animation
@@ -964,34 +1260,7 @@ impl Shell {
         let pane_background = resolve_theme(&self.config).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let (strip, fg) = tab_bar::strip_pair(pane_background);
-        let shell = cx.entity();
-        let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
-            .show_border(self.config.tab_bar_border)
-            .at_bottom(at_bottom)
-            .on_select({
-                let shell = shell.clone();
-                move |id, _window, cx: &mut App| {
-                    shell.update(cx, |shell, cx| shell.select_tab(id, cx));
-                }
-            })
-            .on_close({
-                let shell = shell.clone();
-                move |id, window, cx: &mut App| {
-                    shell.update(cx, |shell, cx| shell.request_close(id, window, cx));
-                }
-            })
-            .on_new_tab({
-                let shell = shell.clone();
-                move |_window, cx: &mut App| {
-                    shell.update(cx, Shell::new_tab);
-                }
-            })
-            .on_settings({
-                let shell = shell.clone();
-                move |_window, cx: &mut App| {
-                    shell.update(cx, |shell, _| shell.settings_requested());
-                }
-            });
+        let bar = self.tab_strip(cx, at_bottom, strip, fg);
         let Some(pane) = self.active_pane() else {
             return div().size_full();
         };
@@ -1100,6 +1369,21 @@ impl gpui::Render for Shell {
             && let Some(pane) = self.active_pane()
         {
             pane.read(cx).focus_handle().focus(window, cx);
+        }
+        // The rename's own repair: a departed input's handle hands
+        // the keyboard to the active pane the same way, and the slot
+        // drops once anything else holds the keyboard.
+        if let Some(departed) = self.rename_focus_repair.take()
+            && departed.is_focused(window)
+        {
+            if let Some(pane) = self.active_pane() {
+                pane.read(cx).focus_handle().focus(window, cx);
+            }
+            // Keep watching until the repair lands (anything else
+            // holding the keyboard needs no repair).
+            if departed.is_focused(window) {
+                self.rename_focus_repair = Some(departed);
+            }
         }
         let pending = self.pending_close;
         let band = self.sliding_band(cx).into_any_element();
@@ -1402,11 +1686,10 @@ pub(crate) fn boot(
     // The close-confirm modal's Escape (gpui-tabs Task 2): bound in
     // the modal's own key context, so the key reaches the dismissal
     // while the modal holds the keyboard and dies there otherwise.
-    cx.bind_keys([gpui::KeyBinding::new(
-        "escape",
-        DismissCloseConfirm,
-        Some("close-confirm"),
-    )]);
+    cx.bind_keys([
+        gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
+        gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
+    ]);
     let boot_theme = resolve_theme(&config);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
