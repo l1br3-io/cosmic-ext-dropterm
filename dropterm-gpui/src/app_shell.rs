@@ -1169,6 +1169,203 @@ impl Shell {
         }
     }
 
+    /// The one path every profile write takes (`write_config`'s
+    /// discipline for the list-shaped key): persist through core,
+    /// the echo drives every apply.
+    pub(crate) fn write_profile(&mut self, write: &dropterm_core::settings::ProfileWrite) {
+        println!(
+            "dropterm-gpui: profile write at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+            eprintln!("dropterm-gpui: failed to persist profile write: {err}");
+        }
+    }
+
+    /// The Profiles page's gestures, each one landing in core's
+    /// model and (at most) one write — the libcosmic arms' rules
+    /// verbatim, the draft lock held by the disabled rendering (no
+    /// list gesture is reachable while a draft is open).
+    pub(crate) fn profile_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(profile) = self.config.profiles.get(index) {
+            self.settings.profile_selection = Some(index);
+            self.settings.profile_draft =
+                Some(dropterm_core::settings::ProfileDraft::edit(index, profile));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_add(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::add());
+        cx.notify();
+    }
+
+    pub(crate) fn profile_clone(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(source) = self.config.profiles.get(index) {
+            self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::clone_of(
+                source,
+                &self.config.profiles,
+            ));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_field(
+        &mut self,
+        field: dropterm_core::settings::ProfileField,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft.set_field_text(field, text);
+            cx.notify();
+        }
+    }
+
+    /// A scheme pick buffers into the draft (the recolor lands on
+    /// Save) and retires the scheme's stale error.
+    pub(crate) fn profile_draft_scheme(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(pick) = dropterm_core::settings::profile_scheme_write(row)
+            && let Some(draft) = self.settings.profile_draft.as_mut()
+        {
+            draft.scheme = pick.field_value();
+            draft
+                .errors
+                .retain(|(at, _)| *at != dropterm_core::settings::ProfileField::Scheme);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_env_add(&mut self, cx: &mut Context<Self>) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft
+                .env_rows
+                .push(dropterm_core::settings::ProfileEnvRow::default());
+            draft.errors.clear();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn profile_draft_env_remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(draft) = self.settings.profile_draft.as_mut() {
+            draft.env_rows.remove(index);
+            draft.errors.clear();
+            cx.notify();
+        }
+    }
+
+    /// The transactional commit: one plan, at most one whole-list
+    /// write plus the paired rename cascade, then the form closes on
+    /// the row it wrote; an invalid Save writes nothing and errors
+    /// every offending field at once.
+    pub(crate) fn profile_draft_save(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.settings.profile_draft.clone() else {
+            return;
+        };
+        let pre_append_len = self.config.profiles.len();
+        let plan = dropterm_core::settings::plan_profile_save(
+            &draft,
+            &self.config.profiles,
+            self.config.default_profile.as_deref(),
+        );
+        match plan {
+            dropterm_core::settings::ProfileSavePlan::Write {
+                profiles,
+                default_after_rename,
+            } => {
+                self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+                if let Some(new_default) = default_after_rename {
+                    self.write_profile(&dropterm_core::settings::ProfileWrite::DefaultProfile(
+                        Some(new_default),
+                    ));
+                }
+                self.settings.profile_selection = Some(
+                    dropterm_core::settings::selection_after_save(&draft.mode, pre_append_len),
+                );
+                self.settings.profile_draft = None;
+                println!(
+                    "dropterm-gpui: profile saved at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            dropterm_core::settings::ProfileSavePlan::Invalid { errors } => {
+                if let Some(open) = self.settings.profile_draft.as_mut() {
+                    open.errors = errors;
+                }
+                println!(
+                    "dropterm-gpui: profile save rejected (fields erroring) at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+            }
+            // A stale edit or an unchanged draft closes clean — the
+            // list moved under the form, or Save had nothing to do.
+            _ => {
+                self.settings.profile_draft = None;
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn profile_draft_cancel(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_draft = None;
+        cx.notify();
+    }
+
+    /// The delete cluster: Arm swaps the armed row (single-row
+    /// arming), Confirm deletes through the plan (one whole-list
+    /// write plus the paired auto-clear), Keep disarms.
+    pub(crate) fn profile_delete_arm(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed =
+            (self.settings.profile_delete_armed != Some(index)).then_some(index);
+        cx.notify();
+    }
+
+    pub(crate) fn profile_delete_confirm(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed = None;
+        if let Some((profiles, paired)) = dropterm_core::settings::plan_profile_delete(
+            &self.config.profiles,
+            index,
+            self.config.default_profile.as_deref(),
+        ) {
+            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+            if let Some(write) = paired {
+                self.write_profile(&write);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn profile_delete_keep(&mut self, cx: &mut Context<Self>) {
+        self.settings.profile_delete_armed = None;
+        cx.notify();
+    }
+
+    pub(crate) fn profile_reorder(
+        &mut self,
+        index: usize,
+        direction: dropterm_core::settings::ReorderDirection,
+        cx: &mut Context<Self>,
+    ) {
+        // A boundary press plans nothing (the model's own no-op).
+        if let Some(write) =
+            dropterm_core::settings::plan_profile_reorder(&self.config.profiles, index, direction)
+        {
+            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(write));
+        }
+        cx.notify();
+    }
+
+    /// The default-profile picker's pick: commit on change through
+    /// the module's planner (a stale index rejects inside).
+    pub(crate) fn profile_pick_default(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(write) =
+            dropterm_core::settings::default_picker_write(&self.config.profiles, row)
+        {
+            self.write_profile(&write);
+        }
+        cx.notify();
+    }
+
     /// Duplicates the tab with `source` (the menu's row): a fresh
     /// pane in its cwd carrying its rename pin, landing after the
     /// active tab and activated (the record through core; the pane

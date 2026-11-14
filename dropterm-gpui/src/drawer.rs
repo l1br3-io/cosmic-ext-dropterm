@@ -21,18 +21,21 @@
 //! later increments; their tabs ride [`SettingsTab::ALL`] in the
 //! strip with an honest placeholder page until then.
 
+use std::iter::once;
 use std::rc::Rc;
 
 use dropterm_core::config::{
     DropTermConfig, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT,
 };
 use dropterm_core::font_list;
+use dropterm_core::profile::Profile;
 use dropterm_core::settings::{
     self, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
-    KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, SettingsBuffer, SettingsTab,
-    TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField,
-    drawer_description, dropdown_selected, etc_shells_content, shell_dropdown_selected,
-    shell_label, shell_picker_options, tab_header, tab_sections, toggle_write,
+    KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer,
+    SettingsTab, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField,
+    drawer_description, dropdown_selected, etc_shells_content, profile_scheme_selected,
+    shell_dropdown_selected, shell_label, shell_picker_options, tab_header, tab_sections,
+    toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -196,6 +199,12 @@ pub(crate) struct SettingsState {
     /// cue to re-seed its un-drafted Kit states from the new file —
     /// a hand edit mid-open reaches the controls the next frame.
     pub(crate) config_epoch: u64,
+    /// The Profiles page's selection (the row the edit form seeds
+    /// from), the open transactional draft, and the armed delete row
+    /// (`armed_profile_delete_row`'s state machine over presses).
+    pub(crate) profile_selection: Option<usize>,
+    pub(crate) profile_draft: Option<dropterm_core::settings::ProfileDraft>,
+    pub(crate) profile_delete_armed: Option<usize>,
 }
 
 impl Default for SettingsState {
@@ -206,9 +215,32 @@ impl Default for SettingsState {
             buffer: SettingsBuffer::default(),
             refreshing: false,
             config_epoch: 0,
+            profile_selection: None,
+            profile_draft: None,
+            profile_delete_armed: None,
         }
     }
 }
+
+/// The profile form's Kit states, rebuilt whenever the draft's
+/// identity changes (a fresh Add/Clone/Edit, or an env-row count
+/// change): every field input seeded from the draft, the scheme
+/// picker with its leading Inherit row.
+struct FormInputs {
+    name: Entity<InputState>,
+    command: Entity<InputState>,
+    cwd: Entity<InputState>,
+    font_size: Entity<InputState>,
+    scrollback: Entity<InputState>,
+    env: Vec<(Entity<InputState>, Entity<InputState>)>,
+    scheme: Entity<SelectState<Vec<SharedString>>>,
+    _scheme_subscription: gpui::Subscription,
+}
+
+/// Which draft the form's inputs were built for — the mode/index
+/// discriminator plus the env-row count (a row edit rebuilds); `None`
+/// while no draft is open.
+type FormIdentity = Option<(String, usize)>;
 
 /// The drawer's Kit halves: the stateful controls, built once per
 /// open from the live config, seeded on the file's values (drafts
@@ -225,6 +257,12 @@ pub(crate) struct SettingsDrawer {
     /// The epoch the Kit states were last seeded from; a change
     /// triggers the echo-refresh pass in render.
     seen_epoch: u64,
+    /// The profile form's inputs, with the draft identity they were
+    /// built for (mode/index hash and env-row count).
+    form: (FormIdentity, Option<FormInputs>),
+    /// The default-profile picker.
+    default_picker: Entity<SelectState<Vec<SharedString>>>,
+    _default_subscription: gpui::Subscription,
     _observe: gpui::Subscription,
 }
 
@@ -255,6 +293,39 @@ impl SettingsDrawer {
             cx,
         );
         let shell_control = Self::build_shell_control(&shell, &config, &inputs, window, cx);
+        let default_options: Vec<SharedString> = settings::default_picker_options(&config.profiles)
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        let default_selected =
+            settings::default_picker_selected(&config.profiles, config.default_profile.as_deref());
+        let default_picker = cx.new(|cx| {
+            SelectState::new(
+                default_options,
+                Some(gpui_component::IndexPath::default().row(default_selected)),
+                window,
+                cx,
+            )
+        });
+        let default_target = shell.clone();
+        let default_subscription = cx.subscribe(
+            &default_picker,
+            move |_emitter: Entity<SelectState<Vec<SharedString>>>,
+                  event: &SelectEvent<Vec<SharedString>>,
+                  cx| {
+                if let SelectEvent::Confirm(Some(label)) = event {
+                    // The row resolves against the authoritative
+                    // options list, never the popover's snapshot.
+                    let options =
+                        settings::default_picker_options(&default_target.read(cx).config.profiles);
+                    if let Some(row) = options.iter().position(|option| option == label.as_ref()) {
+                        default_target.update(cx, |shell, cx| {
+                            shell.profile_pick_default(row, cx);
+                        });
+                    }
+                }
+            },
+        );
         cx.new(|cx| {
             let observe = cx.observe(&shell, |_, _, cx| cx.notify());
             Self {
@@ -267,6 +338,9 @@ impl SettingsDrawer {
                 scheme_light,
                 shell_control,
                 seen_epoch: 0,
+                form: (None, None),
+                default_picker,
+                _default_subscription: default_subscription,
                 _observe: observe,
             }
         })
@@ -581,7 +655,7 @@ impl SettingsDrawer {
 
     /// The open page: the section cards (the Profiles and
     /// Keybindings pages carry their own bodies — their increments).
-    fn page_element(&self, window: &mut Window, cx: &App) -> gpui::AnyElement {
+    fn page_element(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let config = self.shell.read(cx).config.clone();
         let page = self.shell.read(cx).settings.page;
         let mut content = v_flex()
@@ -593,9 +667,7 @@ impl SettingsDrawer {
             .overflow_y_scroll();
         match page {
             SettingsTab::Profiles => {
-                content = content.child(placeholder_page(
-                    "The profile manager arrives with this task's next increment.",
-                ));
+                content = content.child(self.profiles_page(window, cx));
             }
             SettingsTab::Keybindings => {
                 content = content.child(placeholder_page(
@@ -703,6 +775,46 @@ fn row_card(label: &str, description: String, control: gpui::AnyElement) -> impl
         .child(description)
 }
 
+/// One small affordance button carrying a shell-routed verb.
+fn small_button(
+    label: &str,
+    cx: &App,
+    on_press: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    gpui::div()
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .text_color(cx.theme().accent_foreground)
+        .bg(cx.theme().accent)
+        .child(label.to_string())
+        .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+            on_press(event, window, cx);
+        })
+}
+
+/// `small_button` for render-only sites (no live rebuild between
+/// press and re-render — the shell's notify covers it).
+fn small_button_static(
+    label: &str,
+    cx: &App,
+    on_press: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    small_button(label, cx, on_press)
+}
+
+/// One labeled field row with its control and, when a Save rejected
+/// it, the inline error under the control.
+fn field_row(label: &str, control: impl IntoElement, error: Option<String>) -> impl IntoElement {
+    let mut row = v_flex()
+        .gap_1()
+        .child(h_flex().gap_2().child(label.to_string()).child(control));
+    if let Some(error) = error {
+        row = row.child(error);
+    }
+    row
+}
+
 fn placeholder_row(key: ConfigKey) -> impl IntoElement {
     h_flex().child(key.label())
 }
@@ -712,6 +824,290 @@ fn placeholder_page(note: &str) -> impl IntoElement {
 }
 
 impl SettingsDrawer {
+    /// The Profiles page: the default-profile picker and Add button
+    /// (disabled while the draft lock holds), one row per profile
+    /// (name, prompt line, the edit-select/clone/delete/reorder
+    /// affordances), and the open draft's form below — every gesture
+    /// landing in the shell's methods over core's model.
+    fn profiles_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (locked, profiles, selection, armed, draft) = {
+            let shell = self.shell.read(cx);
+            (
+                shell.settings.profile_draft.is_some(),
+                shell.config.profiles.clone(),
+                shell.settings.profile_selection,
+                shell.settings.profile_delete_armed,
+                shell.settings.profile_draft.clone(),
+            )
+        };
+
+        let mut page = v_flex().gap_3().p_2();
+        page = page.child(
+            h_flex()
+                .gap_3()
+                .child(Select::new(&self.default_picker))
+                .child(
+                    gpui::div()
+                        .px_3()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(cx.theme().accent)
+                        .text_color(cx.theme().accent_foreground)
+                        .when(locked, |el| el.opacity(0.5))
+                        .child("Add profile")
+                        .when(!locked, |el| {
+                            let target = self.shell.clone();
+                            el.on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
+                                target.update(cx, Shell::profile_add);
+                            })
+                        }),
+                ),
+        );
+        for (index, profile) in profiles.iter().enumerate() {
+            page = page.child(self.profile_row(
+                index,
+                profile,
+                selection == Some(index),
+                armed == Some(index),
+                locked,
+                cx,
+            ));
+        }
+        if let Some(draft) = draft {
+            self.ensure_form(&draft, window, cx);
+            let form = self.form_inputs_element(&draft, cx);
+            page = page.child(form);
+        }
+        page.into_any_element()
+    }
+
+    /// One profile row: the name and prompt line, the select (a
+    /// press opens the edit draft), Clone, the delete cluster
+    /// (Arm → Confirm/Keep), and the reorder pair.
+    fn profile_row(
+        &self,
+        index: usize,
+        profile: &Profile,
+        selected: bool,
+        armed: bool,
+        locked: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let target = self.shell.clone();
+        let mut row = h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(cx.theme().popover)
+            .when(selected, gpui::Styled::border_1)
+            .child(
+                v_flex()
+                    .child(profile.name.clone())
+                    .child(settings::shell_label(&profile.command)),
+            )
+            .when(!locked, |el| {
+                let t = target.clone();
+                el.on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
+                    t.update(cx, |shell, cx| shell.profile_select(index, cx));
+                })
+            });
+        if !locked {
+            let t = target.clone();
+            row = row.child(small_button("Clone", cx, move |_, _, cx| {
+                t.update(cx, |shell, cx| shell.profile_clone(index, cx));
+            }));
+            if armed {
+                let confirm = target.clone();
+                let keep = target.clone();
+                row = row
+                    .child(small_button("Confirm delete", cx, move |_, _, cx| {
+                        confirm.update(cx, |shell, cx| shell.profile_delete_confirm(index, cx));
+                    }))
+                    .child(small_button("Keep", cx, move |_, _, cx| {
+                        keep.update(cx, Shell::profile_delete_keep);
+                    }));
+            } else {
+                let arm = target.clone();
+                row = row.child(small_button("Delete", cx, move |_, _, cx| {
+                    arm.update(cx, |shell, cx| shell.profile_delete_arm(index, cx));
+                }));
+            }
+            for (label, direction) in [
+                ("Up", settings::ReorderDirection::Up),
+                ("Down", settings::ReorderDirection::Down),
+            ] {
+                let t = target.clone();
+                row = row.child(small_button(label, cx, move |_, _, cx| {
+                    t.update(cx, |shell, cx| shell.profile_reorder(index, direction, cx));
+                }));
+            }
+        }
+        row
+    }
+
+    /// Build the form's Kit inputs when the draft identity changed.
+    fn ensure_form(
+        &mut self,
+        draft: &settings::ProfileDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use settings::ProfileDraftMode;
+        let identity = match &draft.mode {
+            ProfileDraftMode::Add => "add".to_string(),
+            ProfileDraftMode::Clone { .. } => "clone".to_string(),
+            ProfileDraftMode::Edit { index } => format!("edit-{index}"),
+        };
+        let wanted = Some((identity, draft.env_rows.len()));
+        if self.form.0 == wanted && self.form.1.is_some() {
+            return;
+        }
+        let shell = self.shell.clone();
+        let input = |seed: &str, field: ProfileField, window: &mut Window, cx: &mut App| {
+            let state = cx.new(|cx| InputState::new(window, cx).default_value(seed.to_string()));
+            let target = shell.clone();
+            cx.subscribe(
+                &state,
+                move |emitter: Entity<InputState>,
+                      event: &gpui_component::input::InputEvent,
+                      cx| {
+                    if matches!(
+                        event,
+                        gpui_component::input::InputEvent::Change
+                            | gpui_component::input::InputEvent::PressEnter { .. }
+                    ) {
+                        let value = emitter.read(cx).value().to_string();
+                        target.update(cx, |shell, cx| {
+                            shell.profile_draft_field(field, value, cx);
+                        });
+                    }
+                },
+            )
+            .detach();
+            state
+        };
+        let mut env = Vec::new();
+        for row in &draft.env_rows {
+            let key = input(&row.key, ProfileField::EnvKey(env.len()), window, cx);
+            let value = input(&row.value, ProfileField::EnvValue(env.len()), window, cx);
+            env.push((key, value));
+        }
+        let scheme_options: Vec<SharedString> = once("Inherit")
+            .chain(dropterm_core::theme_source::scheme_names())
+            .map(SharedString::from)
+            .collect();
+        let scheme_selected = gpui_component::IndexPath::default()
+            .row(profile_scheme_selected(draft.scheme.as_deref()));
+        let scheme =
+            cx.new(|cx| SelectState::new(scheme_options, Some(scheme_selected), window, cx));
+        let scheme_target = shell.clone();
+        let scheme_subscription = cx.subscribe(
+            &scheme,
+            move |_this: &mut SettingsDrawer,
+                  _emitter: Entity<SelectState<Vec<SharedString>>>,
+                  event: &SelectEvent<Vec<SharedString>>,
+                  cx: &mut Context<Self>| {
+                if let SelectEvent::Confirm(Some(label)) = event {
+                    // Row 0 is Inherit; the registry rows offset by
+                    // one — the model's own row space, resolved
+                    // against the registry (never the popover's
+                    // snapshot).
+                    let names = dropterm_core::theme_source::scheme_names();
+                    let row = if label.as_ref() == "Inherit" {
+                        Some(0)
+                    } else {
+                        names
+                            .iter()
+                            .position(|name| *name == label.as_ref())
+                            .map(|row| row + 1)
+                    };
+                    if let Some(row) = row {
+                        scheme_target.update(cx, |shell, cx| {
+                            shell.profile_draft_scheme(row, cx);
+                        });
+                    }
+                }
+            },
+        );
+        self.form = (
+            wanted,
+            Some(FormInputs {
+                name: input(&draft.name, ProfileField::Name, window, cx),
+                command: input(&draft.command, ProfileField::Command, window, cx),
+                cwd: input(&draft.cwd, ProfileField::Cwd, window, cx),
+                font_size: input(&draft.font_size, ProfileField::FontSize, window, cx),
+                scrollback: input(&draft.scrollback, ProfileField::Scrollback, window, cx),
+                env,
+                scheme,
+                _scheme_subscription: scheme_subscription,
+            }),
+        );
+    }
+
+    /// Render the form from the draft (the inputs are the built Kit
+    /// states; the errors render under their fields).
+    fn form_inputs_element(&self, draft: &settings::ProfileDraft, cx: &App) -> gpui::AnyElement {
+        let Some(form) = &self.form.1 else {
+            return v_flex().into_any_element();
+        };
+        let error_for = |field: ProfileField| {
+            draft
+                .errors
+                .iter()
+                .find(|(at, _)| *at == field)
+                .map(|(_, error)| error.message().to_string())
+        };
+        let mut card = v_flex().gap_2().p_4().rounded_lg().bg(cx.theme().popover);
+        for (label, state, field) in [
+            ("Name", &form.name, ProfileField::Name),
+            ("Command", &form.command, ProfileField::Command),
+            ("Working directory", &form.cwd, ProfileField::Cwd),
+            ("Font size", &form.font_size, ProfileField::FontSize),
+            ("Scrollback", &form.scrollback, ProfileField::Scrollback),
+        ] {
+            card = card.child(field_row(label, Input::new(state), error_for(field)));
+        }
+        card = card.child(field_row(
+            "Color scheme",
+            Select::new(&form.scheme),
+            error_for(ProfileField::Scheme),
+        ));
+        // The env rows editor: one key/value pair per row, the add
+        // and remove affordances, the row errors under their keys.
+        for (index, (key, value)) in form.env.iter().enumerate() {
+            let target = self.shell.clone();
+            let mut row = h_flex()
+                .gap_2()
+                .child(Input::new(key))
+                .child(Input::new(value))
+                .child(small_button_static("-", cx, move |_, _, cx| {
+                    target.update(cx, |shell, cx| shell.profile_draft_env_remove(index, cx));
+                }));
+            if let Some(error) = error_for(ProfileField::EnvKey(index)) {
+                row = row.child(error);
+            }
+            card = card.child(row);
+        }
+        let target = self.shell.clone();
+        card = card.child(small_button_static("+ env row", cx, move |_, _, cx| {
+            target.update(cx, Shell::profile_draft_env_add);
+        }));
+        let target = self.shell.clone();
+        card = card.child(h_flex().gap_2().child(small_button_static(
+            "Cancel",
+            cx,
+            move |_, _, cx| {
+                target.update(cx, Shell::profile_draft_cancel);
+            },
+        )));
+        let target = self.shell.clone();
+        card = card.child(small_button_static("Save", cx, move |_, _, cx| {
+            target.update(cx, Shell::profile_draft_save);
+        }));
+        card.into_any_element()
+    }
+
     /// The echo-refresh pass: after a config reload (a write's echo
     /// or a hand edit), re-seed every Kit state that has no draft
     /// buffered for it — the drawer's un-drafted controls always
