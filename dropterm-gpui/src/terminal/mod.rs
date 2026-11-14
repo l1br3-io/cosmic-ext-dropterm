@@ -13,8 +13,11 @@
 //!
 //! Module map: [`grid`] is the pure row projection (headless-tested),
 //! [`host`] is the engine's `TextHost` seam implemented against
-//! GPUI's font system, and [`view`] is the render entity.
+//! GPUI's font system, [`clipboard`] is the pane's copy/paste seam
+//! (GPUI's clipboard while focused, data-control otherwise), and
+//! [`view`] is the render entity.
 
+pub(crate) mod clipboard;
 pub(crate) mod grid;
 pub(crate) mod host;
 pub(crate) mod input;

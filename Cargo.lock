@@ -2113,6 +2113,7 @@ dependencies = [
  "notify",
  "tokio",
  "wayland-client",
+ "wl-clipboard-rs",
  "zbus",
 ]
 

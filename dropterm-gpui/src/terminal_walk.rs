@@ -43,6 +43,13 @@
 //! pointer-focused window), the pane's `on_wheel` is wired to it,
 //! and the keyboard scrollback rows drive the same engine
 //! `scroll()` call.
+//!
+//! Walk procedure (2026-11-14, Task 3): the mouse rows seed a
+//! `cat -v` program under DECSET 1000(+1006) so the pane's own
+//! tracking bytes echo back visibly — the walk reads the encodings
+//! off the grid itself; and a data-control offer lives only as long
+//! as the serving process, so a clipboard walk's `wl-paste` marker
+//! check must run while the pane lives, never after the exit timer.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

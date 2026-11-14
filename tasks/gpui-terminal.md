@@ -122,14 +122,42 @@ GPUI's clipboard on the focused surface; wl-clipboard-rs's data-control
 path wired for copy-while-not-focused (today's behavior).
 
 **Acceptance criteria:**
-- [ ] Mouse-reporting apps (`htop`-class) receive events per mode
-- [ ] Copy lands after a real keystroke on the focused terminal
+- [x] Mouse-reporting apps (`htop`-class) receive events per mode
+- [x] Copy lands after a real keystroke on the focused terminal
       (focus+serial); paste works; a copy made while unfocused still
       serves
 
 **Verification:**
-- [ ] Manual: the check-8-class walk (`wl-paste` marker) + mouse rows on
-      rig + VM
+- [x] Manual: the check-8-class walk (`wl-paste` marker) + mouse rows on
+      rig + VM — walked 2026-11-14 on the VM (the rig's pointer never
+      reaches the surface, gt-2's finding, so the mouse rows are the
+      VM's): the protocol logic moved to core framework-free
+      (`dropterm-core/src/terminal/mouse_reporter.rs`, 6 tests pinning
+      the X10/UTF-8 and SGR encodings — press, release-as-3, held
+      motion +32 with cell dedup, the ≥95 UTF-8 coordinate extension,
+      modifier folds, wheel 64/65 + modifier flags, pixel/line
+      accumulation) with the libcosmic frontend's `input.rs` now a
+      thin iced→neutral adapter (its public surface and 702 tests
+      unchanged) and the pane consuming core directly; the walk
+      drives a `cat -v` program under DECSET 1000+1006 — the pane's
+      own bytes echoed back: the full SGR triple
+      `^[[<0;14;7M` press, `^[[<32;18;7M`…`^[[<32;86;15M` held
+      motion, `^[[<0;86;15m` release (vm-evidence-gt3-1), and the
+      legacy run without 1006 shows `^[[M@…` motion ending
+      `^[[M#v/` — release as button 3 (vm-evidence-gt3-3); the
+      clipboard rows: after a real keystroke, SelectAll+Copy took
+      323 bytes through GPUI's clipboard and Paste read all 323 back
+      through the engine's paste (bracketed-paste aware), an
+      external `wl-copy EXTERNAL-PASTE-MARKER` landed in the grid
+      through the Paste chord, and a timed OSC 52 store — the
+      copy-while-unfocused class, riding the new data-control seam —
+      served an offer `wl-paste` read as OSC52-UNFOCUSED-MARKER
+      while the pane lived; the wheel-under-mouse-mode row rides
+      gt-2's parked physical-wheel class (the encoder half is the
+      unit-tested `sgr_mouse_wheel_scroll`, the driver is wired);
+      walk-procedure note recorded in the harness docs: a
+      data-control offer lives only as long as the serving process —
+      the marker check must run while the pane lives.
 
 **Dependencies:** Task 2 · **Files:** mouse/clipboard modules ·
 **Scope:** M

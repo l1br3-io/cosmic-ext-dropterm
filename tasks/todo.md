@@ -435,8 +435,17 @@ name, answers the contract on both compositors.
       drops wtype's modifiers, and uinput wheel synthesis reaches no
       app on the VM, parking the physical-wheel row on parity's
       human-at-console class)*
-- [ ] gt-3 Mouse reporting; clipboard (focus+serial by construction;
-      data-control for not-focused)
+- [x] gt-3 Mouse reporting; clipboard (focus+serial by construction;
+      data-control for not-focused) *(done 2026-11-14 on
+      port/gpui-terminal: the protocol encodings moved to core
+      framework-free with the libcosmic frontend consuming them
+      through an adapter, both frontends one implementation now; the
+      VM's walk echoes the pane's own bytes through `cat -v` — the
+      SGR press/motion/release triple and the legacy X10 forms — and
+      the clipboard rows landed: copy-after-keystroke through GPUI's
+      clipboard (323 bytes, pasted back whole), an external
+      wl-copy's marker through the Paste chord, and an OSC 52 store
+      serving over data-control while the pane lived)*
 - [ ] gt-4 Wire into the executor's windows; terminal rows both
       compositors; merge — after sr-4 or coordinated with it
 - [ ] gm-1 Carry `theme_gen.rs` from the spike (before any scratch-repo
