@@ -17,9 +17,13 @@ mod input;
 mod widget;
 
 pub use dropterm_core::terminal::{
-    Metadata, ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress, Terminal,
-    TerminalOptions, TerminalScroll, TextHost, WINDOW_BG_COLOR,
+    Metadata, ProgressState, Terminal, TerminalOptions, TerminalScroll, TextHost, WINDOW_BG_COLOR,
 };
+// The status model's engine types: core's status module owns the
+// paths now, and only the tests still name them through
+// `crate::terminal` (their historical import path).
+#[cfg(test)]
+pub use dropterm_core::terminal::{ProgramState, ProgramStatus, ReportedCwd, ReportedProgress};
 
 // The app layer loads the spec table's data file (suggest-specs-data
 // spec) and hands it down through `TerminalOptions` — the model

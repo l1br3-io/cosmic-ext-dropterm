@@ -48,6 +48,11 @@ serde = { version = "1", features = ["derive"] }
 # executor, and the `p2p` feature exists for the headless
 # peer-to-peer wire tests only, mirroring their declarations.
 zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
+# The status band's clock arithmetic (`status`, moved by the
+# gpui-status spec): the wall clock's text and the minute-boundary
+# tick delay. Version-matched to the root crate's 0.2 line, so no
+# new code enters the build.
+jiff = "0.2"
 
 [dev-dependencies]
 # The config-key ↔ docs sync test enumerates `DropTermConfig`'s
