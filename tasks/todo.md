@@ -14,7 +14,11 @@ chunk's verification passing.
       un-park by running the session; a headless-docker attempt may
       still carry it the way sway's session went)*
 - [ ] rc-4 Session 3: KDE Plasma (Wayland) *(parked 2026-11-13, owner
-      ruling — un-park by running the session)*
+      ruling — un-park by running the session; smoke 2026-11-15 owner-run
+      on a Fedora KDE VM against the GPUI frontend: layer-shell works,
+      hidden mode clean with no frame; with dock mode on, a KWin rounded
+      frame drew around the drawer — dock-on/off correlation, mechanism
+      unconfirmed; an informal smoke, not a session fill)*
 - [ ] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
       *(parked 2026-11-13, owner ruling — expected-fail and
       confirmatory; the guard already has weston-headless evidence)*

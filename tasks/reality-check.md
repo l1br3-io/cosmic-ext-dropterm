@@ -70,7 +70,11 @@ Same shape, slot "Session 2b: Hyprland"; check 3 uses `bind`.
 Same shape, slot "Session 3: KDE Plasma (Wayland)". First data point for
 KDE's layer-shell quirks (its own focus and zone behavior) — record what
 differs from cosmic-comp, especially checks 1, 2, and 16.
-**Dependencies:** None · **Scope:** S (manual, hardware)
+**Dependencies:** None · **Scope:** S (manual, hardware) — *smoke
+2026-11-15, owner-run on a Fedora KDE VM against the GPUI frontend:
+layer-shell up, hidden mode clean; with dock mode on, a KWin rounded
+frame drew around the drawer (dock-on/off correlation, mechanism
+unconfirmed) — an informal smoke, not a session fill*
 
 ## Task 5: Session 4 — GNOME (Wayland), expected to fail
 
