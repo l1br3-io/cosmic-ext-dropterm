@@ -450,6 +450,14 @@ fn showing(obs: &Observation<'_>, suggest: &Suggest) -> Outcome {
     if !obs.enabled || !obs.focused || obs.foreground_child || obs.display_offset != 0 {
         return Outcome::Silent;
     }
+    // The cursor-at-line-end geometry: with text after the cursor the
+    // ghost would draw at cursor+1 straight over it, and bare Right
+    // would accept the suffix into the middle of the line — the
+    // history-recall walk's overlap and duplication. Fish's rule: a
+    // suggestion exists only at line end.
+    if !obs.after_cursor_blank {
+        return Outcome::Silent;
+    }
     let Some(anchor) = suggest.anchor.as_ref() else {
         return Outcome::Silent;
     };

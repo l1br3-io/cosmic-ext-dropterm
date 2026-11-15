@@ -104,6 +104,23 @@ fn guard_scrolled_back_yields_none() {
 }
 
 #[test]
+fn guard_text_after_the_cursor_yields_none() {
+    // The history-recall walk: Up brings a command back with the
+    // cursor at line end, Left moves into the line. Fish's rule (and
+    // this chain's documented geometry) is that a suggestion exists
+    // only at line end; with text after the cursor the ghost would
+    // draw at cursor+1 straight over it, and bare Right would accept
+    // the suffix into the middle of the recalled line, duplicating
+    // it. Nothing shows mid-line.
+    let mut suggest = adopted();
+    let o = Observation {
+        after_cursor_blank: false,
+        ..obs()
+    };
+    assert_eq!(step(&o, &mut suggest), None);
+}
+
+#[test]
 fn a_prompt_above_the_bottom_row_still_suggests() {
     // The fresh-terminal ruling (hardware trace, 2026-10-24): a new
     // tab's first prompt sits near the TOP of an empty grid — the
