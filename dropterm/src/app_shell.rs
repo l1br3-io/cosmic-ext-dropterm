@@ -152,7 +152,7 @@ fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
     gpui_component::Theme::update(cx, |t| t.apply_config(&std::rc::Rc::new(config)));
     let applied = cx.theme();
     println!(
-        "dropterm-gpui: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
+        "dropterm: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
          foreground {:?}",
         theme.name,
         if theme.dark { "dark" } else { "light" },
@@ -638,7 +638,7 @@ impl Shell {
         // first-launch row).
         if let Some(startup) = self.pending_startup.take() {
             println!(
-                "dropterm-gpui: startup action {startup} at +{}ms",
+                "dropterm: startup action {startup} at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             self.dispatch(startup, &mut actions, &mut tab_verbs);
@@ -654,7 +654,7 @@ impl Shell {
             match signal {
                 view::PaneSignal::Hide => {
                     println!(
-                        "dropterm-gpui: pane hide action -> the hide funnel at +{}ms",
+                        "dropterm: pane hide action -> the hide funnel at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
                     let intents = self.machine.decide_hide(self.inputs);
@@ -666,7 +666,7 @@ impl Shell {
                     // respawn, so it applies at the tick's App-level
                     // point like every window-adjacent action.
                     println!(
-                        "dropterm-gpui: pane {id:?} exited -> closing its tab at +{}ms",
+                        "dropterm: pane {id:?} exited -> closing its tab at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
                     exited.push(id);
@@ -678,7 +678,7 @@ impl Shell {
                     // tab — the pasted-images chip's input. The panel
                     // that lists the rows rides the chrome slices.
                     println!(
-                        "dropterm-gpui: pane {id:?} pasted {} ({} bytes) -> the tab's ledger",
+                        "dropterm: pane {id:?} pasted {} ({} bytes) -> the tab's ledger",
                         path.display(),
                         bytes.len()
                     );
@@ -692,7 +692,7 @@ impl Shell {
                     // flash channel narrates the refusal for its 3 s
                     // window; the log warn already fired at the read.
                     println!(
-                        "dropterm-gpui: paste refused ({refusal:?}) -> the band's verdict chip"
+                        "dropterm: paste refused ({refusal:?}) -> the band's verdict chip"
                     );
                     self.status_paste_refusal =
                         Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
@@ -717,7 +717,7 @@ impl Shell {
             {
                 let (report_unfocus, hide) = self.machine.decide_focus_loss(self.inputs);
                 println!(
-                    "dropterm-gpui: activation lost while shown -> focus-loss decision \
+                    "dropterm: activation lost while shown -> focus-loss decision \
                      (report_unfocus={report_unfocus}, hide={hide}) at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
@@ -746,7 +746,7 @@ impl Shell {
         let quit = match self.exit_at {
             Some(deadline) if Instant::now() >= deadline => {
                 println!(
-                    "dropterm-gpui: exit timer fired at +{}ms",
+                    "dropterm: exit timer fired at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
                 true
@@ -776,7 +776,7 @@ impl Shell {
             let trailing = self.machine.drag_trailing(Instant::now(), self.inputs);
             if let Some(applied) = trailing.applied {
                 println!(
-                    "dropterm-gpui: drag walk trailing apply landed target={applied}px at +{}ms",
+                    "dropterm: drag walk trailing apply landed target={applied}px at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
             }
@@ -785,7 +785,7 @@ impl Shell {
         let at_rest = grab_bar_at_rest(&self.machine);
         if at_rest && let Some(pointer_y) = self.drag_walk.pop_front() {
             println!(
-                "dropterm-gpui: drag walk move pointer_y={pointer_y:.0} at +{}ms",
+                "dropterm: drag walk move pointer_y={pointer_y:.0} at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             let outcome = self
@@ -793,7 +793,7 @@ impl Shell {
                 .drag_move(pointer_y, Instant::now(), self.inputs);
             if let Some(target) = outcome.applied {
                 println!(
-                    "dropterm-gpui: drag walk cadence applied target={target}px at +{}ms",
+                    "dropterm: drag walk cadence applied target={target}px at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
             }
@@ -809,7 +809,7 @@ impl Shell {
             self.drag_release_at = None;
             let (intents, settled, write) = self.machine.drag_release(self.inputs);
             println!(
-                "dropterm-gpui: drag walk release settled at {}% at +{}ms",
+                "dropterm: drag walk release settled at {}% at +{}ms",
                 settled.height_percent,
                 self.boot.elapsed().as_millis()
             );
@@ -818,7 +818,7 @@ impl Shell {
                 // the walk logs the decision the libcosmic app would
                 // write.
                 println!(
-                    "dropterm-gpui: drag settle would persist height_percent={percent} \
+                    "dropterm: drag settle would persist height_percent={percent} \
                      (persistence arrives with the config-write slice)"
                 );
             }
@@ -867,7 +867,7 @@ impl Shell {
         let identity = theme_identity(&resolved);
         if identity != self.theme {
             println!(
-                "dropterm-gpui: config changed -> theme: {} ({})",
+                "dropterm: config changed -> theme: {} ({})",
                 resolved.name,
                 if resolved.dark { "dark" } else { "light" }
             );
@@ -889,7 +889,7 @@ impl Shell {
             return;
         }
         println!(
-            "dropterm-gpui: config changed -> reshape decision: {} intent(s) \
+            "dropterm: config changed -> reshape decision: {} intent(s) \
              (geometry {}%/{}% {:?} {:?} -> {}%/{}% {:?} {:?})",
             intents.len(),
             old_geometry.height_percent,
@@ -1003,7 +1003,7 @@ impl Shell {
             .collect();
         let state = dropterm_core::session::capture(&snapshots, self.tabs.active_index());
         println!(
-            "dropterm-gpui: session write ({} tab(s), active {}) -> {}",
+            "dropterm: session write ({} tab(s), active {}) -> {}",
             state.tabs.len(),
             self.tabs.active_index(),
             dropterm_core::session::state_file_path().display()
@@ -1011,7 +1011,7 @@ impl Shell {
         if let Err(err) =
             dropterm_core::session::save_atomic(&dropterm_core::session::state_file_path(), &state)
         {
-            println!("dropterm-gpui: failed to write session file: {err}");
+            println!("dropterm: failed to write session file: {err}");
         }
     }
 
@@ -1028,17 +1028,17 @@ impl Shell {
             AnchorAction::Open => {
                 match cx.open_window(anchor_window_options(), |_, cx| cx.new(|_| DockAnchor)) {
                     Ok(handle) => {
-                        println!("dropterm-gpui: dock presence opened (the 1x1 toplevel stands)");
+                        println!("dropterm: dock presence opened (the 1x1 toplevel stands)");
                         self.dock_anchor = Some(handle);
                     }
                     Err(err) => {
-                        println!("dropterm-gpui: dock presence open failed: {err:?}");
+                        println!("dropterm: dock presence open failed: {err:?}");
                     }
                 }
             }
             AnchorAction::Close => {
                 if let Some(handle) = self.dock_anchor.take() {
-                    println!("dropterm-gpui: dock presence closed (hidden mode)");
+                    println!("dropterm: dock presence closed (hidden mode)");
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
                 }
             }
@@ -1054,7 +1054,7 @@ impl Shell {
     fn drain_completions(&mut self, cx: &mut Context<Self>) {
         if let Some(table) = self.specs.drain() {
             println!(
-                "dropterm-gpui: completions table loaded ({} command(s)) -> every pane",
+                "dropterm: completions table loaded ({} command(s)) -> every pane",
                 table.len()
             );
             for pane in self.panes.values() {
@@ -1083,7 +1083,7 @@ impl Shell {
     ) {
         if !self.machine.toggle_accepted(Instant::now()) {
             println!(
-                "dropterm-gpui: action {action} dropped by the toggle debounce at +{}ms",
+                "dropterm: action {action} dropped by the toggle debounce at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             return;
@@ -1091,7 +1091,7 @@ impl Shell {
         match action {
             cli::Action::Toggle => {
                 println!(
-                    "dropterm-gpui: action toggle accepted at +{}ms",
+                    "dropterm: action toggle accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
                 match self.machine.state {
@@ -1112,14 +1112,14 @@ impl Shell {
             }
             cli::Action::Show => {
                 println!(
-                    "dropterm-gpui: action show accepted at +{}ms",
+                    "dropterm: action show accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
                 self.show_intent(actions);
             }
             cli::Action::Hide => {
                 println!(
-                    "dropterm-gpui: action hide accepted at +{}ms",
+                    "dropterm: action hide accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
                 if matches!(
@@ -1133,7 +1133,7 @@ impl Shell {
             }
             tab => {
                 println!(
-                    "dropterm-gpui: action {tab} accepted at +{}ms",
+                    "dropterm: action {tab} accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
                 tab_verbs.push(tab);
@@ -1171,7 +1171,7 @@ impl Shell {
     /// the first-configure decision and lands the shaped window.
     fn measured(&mut self, output: (u32, u32), actions: &mut Vec<Action>) {
         println!(
-            "dropterm-gpui: measuring window granted {}x{} at +{}ms — pass 1 complete",
+            "dropterm: measuring window granted {}x{} at +{}ms — pass 1 complete",
             output.0,
             output.1,
             self.boot.elapsed().as_millis()
@@ -1191,7 +1191,7 @@ impl Shell {
     ) {
         for intent in intents {
             println!(
-                "dropterm-gpui: surface intent {intent:?} at +{}ms",
+                "dropterm: surface intent {intent:?} at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             actions.extend(self.executor.execute(intent));
@@ -1230,13 +1230,13 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 Ok(window) => {
                     shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
                     println!(
-                        "dropterm-gpui: two-surface show pass 1: measuring window opened at \
+                        "dropterm: two-surface show pass 1: measuring window opened at \
                          +{}ms",
                         shell.read(cx).boot.elapsed().as_millis()
                     );
                 }
                 Err(err) => {
-                    eprintln!("dropterm-gpui: measuring window open failed: {err:?}");
+                    eprintln!("dropterm: measuring window open failed: {err:?}");
                     cx.quit();
                 }
             }
@@ -1262,12 +1262,12 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 Ok(window) => {
                     shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
                     println!(
-                        "dropterm-gpui: window swap ({reason}) opened at +{}ms",
+                        "dropterm: window swap ({reason}) opened at +{}ms",
                         shell.read(cx).boot.elapsed().as_millis()
                     );
                 }
                 Err(err) => {
-                    eprintln!("dropterm-gpui: swapped window open failed: {err:?}");
+                    eprintln!("dropterm: swapped window open failed: {err:?}");
                     cx.quit();
                 }
             }
@@ -1290,7 +1290,7 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 window.resize(gpui::Size::new(w, gpui::px(height as f32)));
             });
             println!(
-                "dropterm-gpui: resized to {}x{height} at +{}ms",
+                "dropterm: resized to {}x{height} at +{}ms",
                 width.map_or_else(|| "fill".to_string(), |w| w.to_string()),
                 shell.read(cx).boot.elapsed().as_millis()
             );
@@ -1300,7 +1300,7 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
             let _ = window.update(cx, |_, window, _| window.remove_window());
             shell.update(cx, |shell, _| shell.executor.retire(handle));
             println!(
-                "dropterm-gpui: surface destroyed at +{}ms",
+                "dropterm: surface destroyed at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
         }
@@ -1310,7 +1310,7 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
             // intent applies as the pane already standing; the row is
             // the focus decision landing.
             println!(
-                "dropterm-gpui: terminal focus for {handle:?} (the pane holds the \
+                "dropterm: terminal focus for {handle:?} (the pane holds the \
                  keyboard by construction) at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
@@ -1343,7 +1343,7 @@ impl Shell {
                 .find(|tab| tab.id == id)
                 .map(|tab| tab.title.clone());
             println!(
-                "dropterm-gpui: tab select -> {id:?} ({}) at +{}ms",
+                "dropterm: tab select -> {id:?} ({}) at +{}ms",
                 title.as_deref().unwrap_or("?"),
                 self.boot.elapsed().as_millis()
             );
@@ -1368,7 +1368,7 @@ impl Shell {
         self.commit_open_rename(cx);
         if let Some(id) = self.open_new_tab(cx) {
             println!(
-                "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
+                "dropterm: tab + -> {id:?} ({} tabs) at +{}ms",
                 self.tabs.records().len(),
                 self.boot.elapsed().as_millis()
             );
@@ -1440,7 +1440,7 @@ impl Shell {
             id,
             Some(self.signals_tx.clone()),
         ) else {
-            eprintln!("dropterm-gpui: new tab's terminal failed to spawn; closing its record");
+            eprintln!("dropterm: new tab's terminal failed to spawn; closing its record");
             self.tabs.close(id);
             return None;
         };
@@ -1466,7 +1466,7 @@ impl Shell {
         };
         if tab.pinned {
             println!(
-                "dropterm-gpui: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
+                "dropterm: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             return;
@@ -1479,7 +1479,7 @@ impl Shell {
             self.pending_close = Some(id);
             self.modal_focus.focus(window, cx);
             println!(
-                "dropterm-gpui: close {id:?} gated -> the confirm modal armed at +{}ms",
+                "dropterm: close {id:?} gated -> the confirm modal armed at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             cx.notify();
@@ -1503,14 +1503,14 @@ impl Shell {
         };
         self.panes.remove(&id);
         println!(
-            "dropterm-gpui: tab {id:?} closed -> {} left, active {:?} at +{}ms",
+            "dropterm: tab {id:?} closed -> {} left, active {:?} at +{}ms",
             self.tabs.records().len(),
             self.tabs.active_id(),
             self.boot.elapsed().as_millis()
         );
         if decision.respawn {
             println!(
-                "dropterm-gpui: last tab closed -> the never-empty respawn at +{}ms",
+                "dropterm: last tab closed -> the never-empty respawn at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             // The respawn is a no-user-context plain spawn: the
@@ -1531,7 +1531,7 @@ impl Shell {
     fn cancel_pending_close(&mut self) {
         if let Some(id) = self.pending_close.take() {
             println!(
-                "dropterm-gpui: close {id:?} canceled (modal dismissed) at +{}ms",
+                "dropterm: close {id:?} canceled (modal dismissed) at +{}ms",
                 self.boot.elapsed().as_millis()
             );
         }
@@ -1569,7 +1569,7 @@ impl Shell {
             _events: events,
         });
         println!(
-            "dropterm-gpui: tab {id:?} rename started at +{}ms",
+            "dropterm: tab {id:?} rename started at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -1590,7 +1590,7 @@ impl Shell {
             .commit_rename(edit.tab, &draft, self.config.tab_title_mode)
         {
             println!(
-                "dropterm-gpui: tab {:?} renamed -> {draft:?} at +{}ms",
+                "dropterm: tab {:?} renamed -> {draft:?} at +{}ms",
                 edit.tab,
                 self.boot.elapsed().as_millis()
             );
@@ -1605,7 +1605,7 @@ impl Shell {
         if let Some(edit) = self.rename.take() {
             self.rename_focus_repair = Some(edit.state.read(cx).focus_handle(cx));
             println!(
-                "dropterm-gpui: tab {:?} rename canceled at +{}ms",
+                "dropterm: tab {:?} rename canceled at +{}ms",
                 edit.tab,
                 self.boot.elapsed().as_millis()
             );
@@ -1635,7 +1635,7 @@ impl Shell {
         self.commit_open_rename(cx);
         if self.tabs.move_to(dragged, to) {
             println!(
-                "dropterm-gpui: tab {dragged:?} dragged to index {to} at +{}ms",
+                "dropterm: tab {dragged:?} dragged to index {to} at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             cx.notify();
@@ -1662,7 +1662,7 @@ impl Shell {
             TabMenuPick::Pin => {
                 if self.tabs.toggle_pin(id) {
                     println!(
-                        "dropterm-gpui: tab {id:?} pin toggled at +{}ms",
+                        "dropterm: tab {id:?} pin toggled at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
                     cx.notify();
@@ -1671,7 +1671,7 @@ impl Shell {
             TabMenuPick::Move(direction) => {
                 if self.tabs.move_by(id, direction) {
                     println!(
-                        "dropterm-gpui: tab {id:?} moved {direction:?} at +{}ms",
+                        "dropterm: tab {id:?} moved {direction:?} at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
                     cx.notify();
@@ -1709,7 +1709,7 @@ impl Shell {
         self.commit_open_rename(cx);
         let Some(command) = spawn::profile_pick(&self.config, profile_index) else {
             println!(
-                "dropterm-gpui: profile launch: no profile at index {profile_index} \
+                "dropterm: profile launch: no profile at index {profile_index} \
                  ({} configured)",
                 self.config.profiles.len()
             );
@@ -1725,7 +1725,7 @@ impl Shell {
         };
         if let Some(id) = self.spawn_command_tab(cx, &command, cwd) {
             println!(
-                "dropterm-gpui: profile tab -> {id:?} ({} tabs) at +{}ms",
+                "dropterm: profile tab -> {id:?} ({} tabs) at +{}ms",
                 self.tabs.records().len(),
                 self.boot.elapsed().as_millis()
             );
@@ -1748,7 +1748,7 @@ impl Shell {
     ) {
         use crate::context_menu::{PickRoute, ShellPick};
         println!(
-            "dropterm-gpui: context menu pick {pick:?} at +{}ms",
+            "dropterm: context menu pick {pick:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
         self.commit_open_rename(cx);
@@ -1777,7 +1777,7 @@ impl Shell {
                 // borrow — this arm is unreachable for it.
                 PickRoute::Shell(ShellPick::Settings) => {
                     println!(
-                        "dropterm-gpui: context menu pick Settings (routed outside the update)"
+                        "dropterm: context menu pick Settings (routed outside the update)"
                     );
                 }
             },
@@ -1797,11 +1797,11 @@ impl Shell {
     /// the echo drives every apply.
     pub(crate) fn write_profile(&mut self, write: &dropterm_core::settings::ProfileWrite) {
         println!(
-            "dropterm-gpui: profile write at +{}ms",
+            "dropterm: profile write at +{}ms",
             self.boot.elapsed().as_millis()
         );
         if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
-            eprintln!("dropterm-gpui: failed to persist profile write: {err}");
+            eprintln!("dropterm: failed to persist profile write: {err}");
         }
     }
 
@@ -1907,7 +1907,7 @@ impl Shell {
                 );
                 self.settings.profile_draft = None;
                 println!(
-                    "dropterm-gpui: profile saved at +{}ms",
+                    "dropterm: profile saved at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
             }
@@ -1916,7 +1916,7 @@ impl Shell {
                     open.errors = errors;
                 }
                 println!(
-                    "dropterm-gpui: profile save rejected (fields erroring) at +{}ms",
+                    "dropterm: profile save rejected (fields erroring) at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
             }
@@ -1993,13 +1993,13 @@ impl Shell {
     /// `custom_key_binds` map, the echo drives the apply.
     fn write_keybinds(&mut self, write: &dropterm_core::settings::KeybindsWrite) {
         println!(
-            "dropterm-gpui: keybinds write ({} custom entr{}) at +{}ms",
+            "dropterm: keybinds write ({} custom entr{}) at +{}ms",
             write.0.len(),
             if write.0.len() == 1 { "y" } else { "ies" },
             self.boot.elapsed().as_millis()
         );
         if let Err(err) = write.persist(&dropterm_core::config::store::store_dir()) {
-            eprintln!("dropterm-gpui: failed to persist keybinds write: {err}");
+            eprintln!("dropterm: failed to persist keybinds write: {err}");
         }
     }
 
@@ -2015,7 +2015,7 @@ impl Shell {
     ) {
         self.settings.keybind_capture = Some(id);
         self.settings.keybind_conflict = None;
-        println!("dropterm-gpui: keybind capture armed for {id}");
+        println!("dropterm: keybind capture armed for {id}");
         // The drawer holds the keyboard while armed: its focus handle
         // takes it, the pane's claim resumes when the capture ends.
         self.settings_capture_focus.focus(window, cx);
@@ -2046,7 +2046,7 @@ impl Shell {
             return;
         };
         if keystroke.key == "escape" {
-            println!("dropterm-gpui: keybind capture canceled");
+            println!("dropterm: keybind capture canceled");
             self.keybind_capture_end(window, cx);
             return;
         }
@@ -2077,7 +2077,7 @@ impl Shell {
                 );
                 self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
                 println!(
-                    "dropterm-gpui: keybind captured for {id}: {}",
+                    "dropterm: keybind captured for {id}: {}",
                     dropterm_core::keybinds::binding_display(&binding)
                 );
                 self.keybind_capture_end(window, cx);
@@ -2091,7 +2091,7 @@ impl Shell {
                 cx.notify();
             }
             dropterm_core::keybinds::CaptureVerdict::Unsupported => {
-                eprintln!("dropterm-gpui: captured chord cannot be stored; dropping capture");
+                eprintln!("dropterm: captured chord cannot be stored; dropping capture");
                 self.keybind_capture_end(window, cx);
             }
         }
@@ -2102,7 +2102,7 @@ impl Shell {
         let write =
             dropterm_core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
         self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
-        println!("dropterm-gpui: keybind reverted for {id}");
+        println!("dropterm: keybind reverted for {id}");
         cx.notify();
     }
 
@@ -2134,7 +2134,7 @@ impl Shell {
             Some(self.signals_tx.clone()),
         ) else {
             eprintln!(
-                "dropterm-gpui: duplicate tab's terminal failed to spawn; closing its record"
+                "dropterm: duplicate tab's terminal failed to spawn; closing its record"
             );
             self.tabs.close(id);
             return;
@@ -2142,7 +2142,7 @@ impl Shell {
         self.panes.insert(id, pane);
         self.tabs.note_spawn_facts(id, None, false);
         println!(
-            "dropterm-gpui: tab {source:?} duplicated -> {id:?} at +{}ms",
+            "dropterm: tab {source:?} duplicated -> {id:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -2211,7 +2211,7 @@ impl Shell {
                 .map_or_else(
                     || {
                         println!(
-                            "dropterm-gpui: no profile named {name}; spawning the shell instead"
+                            "dropterm: no profile named {name}; spawning the shell instead"
                         );
                         spawn::SpawnCommand::Shell(self.config.resolved_shell())
                     },
@@ -2243,7 +2243,7 @@ impl Shell {
         };
         if let Some(id) = self.spawn_command_tab(cx, &command, spawn_cwd) {
             println!(
-                "dropterm-gpui: remote new-tab -> {id:?} ({} tabs) at +{}ms",
+                "dropterm: remote new-tab -> {id:?} ({} tabs) at +{}ms",
                 self.tabs.records().len(),
                 self.boot.elapsed().as_millis()
             );
@@ -2266,7 +2266,7 @@ impl Shell {
                 self.request_close_windowless(id, cx);
             }
             None => println!(
-                "dropterm-gpui: close-tab: no tab at --tab-index {tab_index:?} ({len} open)"
+                "dropterm: close-tab: no tab at --tab-index {tab_index:?} ({len} open)"
             ),
         }
     }
@@ -2283,7 +2283,7 @@ impl Shell {
         };
         if tab.pinned {
             println!(
-                "dropterm-gpui: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
+                "dropterm: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             return;
@@ -2295,7 +2295,7 @@ impl Shell {
         if tab_bar::confirm_needed(self.config.close_confirmation_enabled, running) {
             self.pending_close = Some(id);
             println!(
-                "dropterm-gpui: close {id:?} gated -> the confirm modal armed (windowless) \
+                "dropterm: close {id:?} gated -> the confirm modal armed (windowless) \
                  at +{}ms",
                 self.boot.elapsed().as_millis()
             );
@@ -2317,14 +2317,14 @@ impl Shell {
                 let id = self.tabs.records()[index].id;
                 if self.tabs.select(id) {
                     println!(
-                        "dropterm-gpui: select-tab {one_based} -> {id:?} at +{}ms",
+                        "dropterm: select-tab {one_based} -> {id:?} at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
                 }
                 self.show_intent(actions);
             }
             None => println!(
-                "dropterm-gpui: select-tab: no tab at index {one_based} ({} open)",
+                "dropterm: select-tab: no tab at index {one_based} ({} open)",
                 self.tabs.records().len()
             ),
         }
@@ -2346,14 +2346,14 @@ impl Shell {
                 self.tabs
                     .commit_rename(id, title, self.config.tab_title_mode);
                 println!(
-                    "dropterm-gpui: rename-tab -> {id:?} {:?} at +{}ms",
+                    "dropterm: rename-tab -> {id:?} {:?} at +{}ms",
                     title,
                     self.boot.elapsed().as_millis()
                 );
                 cx.notify();
             }
             None => println!(
-                "dropterm-gpui: rename-tab: no tab at --tab-index {tab_index:?} ({len} open)"
+                "dropterm: rename-tab: no tab at --tab-index {tab_index:?} ({len} open)"
             ),
         }
     }
@@ -2375,7 +2375,7 @@ impl Shell {
             dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index());
         if target.is_none() && tab_index.is_some() {
             println!(
-                "dropterm-gpui: duplicate-tab: no tab at --tab-index {tab_index:?} ({len} open); \
+                "dropterm: duplicate-tab: no tab at --tab-index {tab_index:?} ({len} open); \
                  duplicating the active tab instead"
             );
         }
@@ -2408,7 +2408,7 @@ impl Shell {
             .iter()
             .position(|candidate| candidate.name == profile)
         else {
-            println!("dropterm-gpui: switch-profile-tab: no profile named {profile}");
+            println!("dropterm: switch-profile-tab: no profile named {profile}");
             self.show_intent(actions);
             return;
         };
@@ -2417,7 +2417,7 @@ impl Shell {
             dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index())
         else {
             println!(
-                "dropterm-gpui: switch-profile-tab: no tab at --tab-index {tab_index:?} \
+                "dropterm: switch-profile-tab: no tab at --tab-index {tab_index:?} \
                  ({len} open)"
             );
             self.show_intent(actions);
@@ -2466,7 +2466,7 @@ impl Shell {
             Some(self.signals_tx.clone()),
         ) else {
             eprintln!(
-                "dropterm-gpui: profile respawn's terminal failed to spawn; keeping the live tab"
+                "dropterm: profile respawn's terminal failed to spawn; keeping the live tab"
             );
             return;
         };
@@ -2484,7 +2484,7 @@ impl Shell {
         );
         self.tabs.apply_respawn(id, fields);
         println!(
-            "dropterm-gpui: tab {id:?} respawned under profile {name:?} at +{}ms",
+            "dropterm: tab {id:?} respawned under profile {name:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -2510,7 +2510,7 @@ impl Shell {
             shell.settings_drawer = Some(drawer);
             shell.settings.open = true;
             println!(
-                "dropterm-gpui: settings drawer opened at +{}ms (the surface stays live beneath)",
+                "dropterm: settings drawer opened at +{}ms (the surface stays live beneath)",
                 shell.boot.elapsed().as_millis()
             );
             cx.notify();
@@ -2528,7 +2528,7 @@ impl Shell {
             .buffer
             .apply_drawer_transition(dropterm_core::settings::DrawerTransition::ExplicitClose);
         println!(
-            "dropterm-gpui: settings drawer closed at +{}ms",
+            "dropterm: settings drawer closed at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -2543,13 +2543,13 @@ impl Shell {
         let write = write.clamped();
         let key = write.key();
         println!(
-            "dropterm-gpui: settings write {} at +{}ms",
+            "dropterm: settings write {} at +{}ms",
             key.key_name(),
             self.boot.elapsed().as_millis()
         );
         if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
             eprintln!(
-                "dropterm-gpui: failed to persist settings write {}: {err}",
+                "dropterm: failed to persist settings write {}: {err}",
                 key.key_name()
             );
         }
@@ -2561,7 +2561,7 @@ impl Shell {
     fn sync_tab_titles(&mut self, cx: &mut Context<Self>) {
         let mode = self.config.tab_title_mode;
         if mode != self.applied_title_mode {
-            println!("dropterm-gpui: tab title mode -> {mode} (re-titling live tabs)");
+            println!("dropterm: tab title mode -> {mode} (re-titling live tabs)");
             self.tabs.refresh_titles(mode);
             self.applied_title_mode = mode;
         }
@@ -2577,7 +2577,7 @@ impl Shell {
             if self.tabs.sync_title(id, report, cwd, mode)
                 && let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id)
             {
-                println!("dropterm-gpui: tab {id:?} retitled -> {}", tab.title);
+                println!("dropterm: tab {id:?} retitled -> {}", tab.title);
             }
         }
     }
@@ -2618,7 +2618,7 @@ impl Shell {
                     .iter()
                     .find(|tab| tab.id == id)
                     .map_or_else(|| "Terminal".to_string(), |tab| tab.title.clone());
-                println!("dropterm-gpui: bell in {title:?} while hidden -> one notification");
+                println!("dropterm: bell in {title:?} while hidden -> one notification");
                 crate::notify::post_bell_notification(title);
             }
             let active = self.tabs.active_id() == Some(id);
@@ -2643,7 +2643,7 @@ impl Shell {
                 .find(|tab| tab.id == id)
                 .map(|tab| tab.attention);
             println!(
-                "dropterm-gpui: tab {id:?} attention -> {} ({}) at +{}ms",
+                "dropterm: tab {id:?} attention -> {} ({}) at +{}ms",
                 marker.map_or("none", |state| state.marker().unwrap_or("none")),
                 if bell { "bell" } else { "output" },
                 self.boot.elapsed().as_millis(),
@@ -2665,7 +2665,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         println!(
-            "dropterm-gpui: status copy {id:?} ({} bytes) at +{}ms",
+            "dropterm: status copy {id:?} ({} bytes) at +{}ms",
             payload.len(),
             self.boot.elapsed().as_millis()
         );
@@ -2688,7 +2688,7 @@ impl Shell {
             .expect("engine lock")
             .scroll(dropterm_core::terminal::TerminalScroll::Bottom);
         println!(
-            "dropterm-gpui: status scrolled-chip jump -> bottom at +{}ms",
+            "dropterm: status scrolled-chip jump -> bottom at +{}ms",
             self.boot.elapsed().as_millis()
         );
     }
@@ -2699,7 +2699,7 @@ impl Shell {
     fn open_images_panel(&mut self, cx: &mut Context<Self>) {
         self.images_open = true;
         println!(
-            "dropterm-gpui: images panel open at +{}ms",
+            "dropterm: images panel open at +{}ms",
             self.boot.elapsed().as_millis()
         );
         let Some(id) = self.tabs.active_id() else {
@@ -2727,7 +2727,7 @@ impl Shell {
                         .iter()
                         .filter_map(|path| {
                             crate::images_panel::decode_thumb(path).map(|handle| {
-                                println!("dropterm-gpui: panel thumb decoded {}", path.display());
+                                println!("dropterm: panel thumb decoded {}", path.display());
                                 (path.clone(), handle)
                             })
                         })
@@ -2738,7 +2738,7 @@ impl Shell {
                 shell.images_thumbs.extend(thumbs);
                 cx.notify();
             }) {
-                println!("dropterm-gpui: panel thumb store dropped ({err})");
+                println!("dropterm: panel thumb store dropped ({err})");
             }
         })
         .detach();
@@ -2751,7 +2751,7 @@ impl Shell {
         self.images_open = false;
         self.images_armed = None;
         println!(
-            "dropterm-gpui: images panel closed at +{}ms",
+            "dropterm: images panel closed at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -2773,13 +2773,13 @@ impl Shell {
                 // The OpenHyperlink precedent: hand it to the system
                 // viewer, one warn on refusal.
                 if let Err(err) = open::that_detached(&path) {
-                    println!("dropterm-gpui: failed to open {}: {err}", path.display());
+                    println!("dropterm: failed to open {}: {err}", path.display());
                 }
             }
             PanelVerb::CopyPath(path) => {
                 let text = path.to_string_lossy().into_owned();
                 println!(
-                    "dropterm-gpui: panel copy path {} at +{}ms",
+                    "dropterm: panel copy path {} at +{}ms",
                     path.display(),
                     self.boot.elapsed().as_millis()
                 );
@@ -2797,7 +2797,7 @@ impl Shell {
                     }
                     Err(err) => {
                         println!(
-                            "dropterm-gpui: panel image read failed for {}: {err}",
+                            "dropterm: panel image read failed for {}: {err}",
                             path.display()
                         );
                     }
@@ -2811,7 +2811,7 @@ impl Shell {
                     let text = path.to_string_lossy();
                     engine.lock().expect("engine lock").paste(&text);
                     println!(
-                        "dropterm-gpui: panel re-paste {} at +{}ms",
+                        "dropterm: panel re-paste {} at +{}ms",
                         path.display(),
                         self.boot.elapsed().as_millis()
                     );
@@ -2835,7 +2835,7 @@ impl Shell {
                 self.images_thumbs.remove(&path);
                 if dropped {
                     println!(
-                        "dropterm-gpui: panel deleted {} at +{}ms",
+                        "dropterm: panel deleted {} at +{}ms",
                         path.display(),
                         self.boot.elapsed().as_millis()
                     );
@@ -2845,7 +2845,7 @@ impl Shell {
                     std::thread::spawn(move || {
                         if let Err(err) = std::fs::remove_file(&path) {
                             println!(
-                                "dropterm-gpui: panel file removal failed for {}: {err}",
+                                "dropterm: panel file removal failed for {}: {err}",
                                 path.display()
                             );
                         }
@@ -2860,11 +2860,11 @@ impl Shell {
                 match dropterm_core::paste_cache::paste_cache_dir() {
                     Some(dir) => {
                         if let Err(err) = open::that_detached(&dir) {
-                            println!("dropterm-gpui: failed to open {}: {err}", dir.display());
+                            println!("dropterm: failed to open {}: {err}", dir.display());
                         }
                     }
                     None => println!(
-                        "dropterm-gpui: paste cache unavailable: no XDG cache directory resolves"
+                        "dropterm: paste cache unavailable: no XDG cache directory resolves"
                     ),
                 }
             }
@@ -2997,7 +2997,7 @@ impl Shell {
                 // text flips only at a boundary, so each logged flip
                 // names the tick the band keeps time on.
                 println!(
-                    "dropterm-gpui: status clock flipped to {text} at +{}ms",
+                    "dropterm: status clock flipped to {text} at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
             }
@@ -3179,7 +3179,7 @@ impl Shell {
         );
         if timer_state != self.status_timer_logged {
             println!(
-                "dropterm-gpui: status timer live={} frozen={:?} exit={:?} at +{}ms",
+                "dropterm: status timer live={} frozen={:?} exit={:?} at +{}ms",
                 timer_state.0,
                 timer_state.1,
                 timer_state.2,
@@ -3388,7 +3388,7 @@ impl gpui::Render for Shell {
         let b = window.bounds();
         if self.last_bounds.as_ref() != Some(&b) {
             println!(
-                "dropterm-gpui: frame {} mapped origin=({},{}) size={:.0}x{:.0} at +{}ms",
+                "dropterm: frame {} mapped origin=({},{}) size={:.0}x{:.0} at +{}ms",
                 self.frames,
                 b.origin.x.as_f32(),
                 b.origin.y.as_f32(),
@@ -3400,14 +3400,14 @@ impl gpui::Render for Shell {
         }
         if self.frames == 1 {
             println!(
-                "dropterm-gpui: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
+                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
                 self.show_open.elapsed().as_millis()
             );
         }
         let active = window.is_window_active();
         if self.last_active != Some(active) {
             println!(
-                "dropterm-gpui: activation {} at +{}ms (frame {}) — the keyboard re-grab \
+                "dropterm: activation {} at +{}ms (frame {}) — the keyboard re-grab \
                  evidence",
                 if active { "GAINED" } else { "LOST" },
                 self.boot.elapsed().as_millis(),
@@ -3640,7 +3640,7 @@ impl Shell {
                             &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(None),
                         );
                         println!(
-                            "dropterm-gpui: drawer width reset at +{}ms",
+                            "dropterm: drawer width reset at +{}ms",
                             shell.boot.elapsed().as_millis()
                         );
                         cx.notify();
@@ -3677,7 +3677,7 @@ impl Shell {
                             &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
                         );
                         println!(
-                            "dropterm-gpui: drawer width released at {px}px (+{}ms)",
+                            "dropterm: drawer width released at {px}px (+{}ms)",
                             shell.boot.elapsed().as_millis()
                         );
                         cx.notify();
@@ -3778,7 +3778,7 @@ impl gpui::Render for MeasureProbe {
                 b.height.as_f32().round().max(1.) as u32,
             );
             println!(
-                "dropterm-gpui: measure pass granted {}x{} at +{}ms",
+                "dropterm: measure pass granted {}x{} at +{}ms",
                 output.0,
                 output.1,
                 self.opened.elapsed().as_millis()
@@ -3889,7 +3889,7 @@ fn restore_fleet(
             id,
             Some(signals_tx.clone()),
         ) else {
-            eprintln!("dropterm-gpui: restored tab's terminal failed to spawn; closing its record");
+            eprintln!("dropterm: restored tab's terminal failed to spawn; closing its record");
             tabs.close(id);
             continue;
         };
@@ -3901,7 +3901,7 @@ fn restore_fleet(
     {
         tabs.activate_index(active);
         println!(
-            "dropterm-gpui: session restored — {restored} tab(s) live, active {active} ({} saved)",
+            "dropterm: session restored — {restored} tab(s) live, active {active} ({} saved)",
             plan.tabs.len()
         );
     }
@@ -3975,7 +3975,7 @@ fn boot_tab_fleet(
                 id,
                 Some(signals_tx.clone()),
             ) else {
-                eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
+                eprintln!("dropterm: the drawer's terminal failed to spawn; exiting");
                 return None;
             };
             tabs.note_spawn_facts(id, profile_id, ephemeral);
@@ -3983,7 +3983,7 @@ fn boot_tab_fleet(
         }
     }
     println!(
-        "dropterm-gpui: tab bar: {} tab(s) ([{}]), strip at {} (tab_position {}, edge {:?}), \
+        "dropterm: tab bar: {} tab(s) ([{}]), strip at {} (tab_position {}, edge {:?}), \
          border {}",
         tabs.records().len(),
         tabs.records()
@@ -4032,7 +4032,7 @@ pub(crate) fn boot(
     let config = DropTermConfig::load_from(&config_dir);
     let inputs = SurfaceInputs::from_config(&config);
     println!(
-        "dropterm-gpui: surface shell booted hidden (edge {:?}, {}% height, {}% width, align \
+        "dropterm: surface shell booted hidden (edge {:?}, {}% height, {}% width, align \
          {:?}, layer {:?}, kb {:?})",
         inputs.geometry.edge,
         inputs.geometry.height_percent,
@@ -4043,7 +4043,7 @@ pub(crate) fn boot(
     );
     let drag_walk = drag_walk_positions(std::env::var("DROPTERM_DRAG_WALK").ok().as_deref());
     if drag_walk.is_some() {
-        println!("dropterm-gpui: drag walk armed (positions fed once shown and at rest)");
+        println!("dropterm: drag walk armed (positions fed once shown and at rest)");
     }
     // gpui-theme Task 2: the Kit initialized and the resolved scheme
     // applied before any window exists — every Kit surface and token
@@ -4099,13 +4099,13 @@ pub(crate) fn boot(
             let _ = config_tx.send(());
         }) {
             Ok(watcher) => watcher,
-            Err(err) => return eprintln!("dropterm-gpui: config watcher failed: {err:?}"),
+            Err(err) => return eprintln!("dropterm: config watcher failed: {err:?}"),
         };
         if let Err(err) = watcher.watch(&watch_dir, notify::RecursiveMode::NonRecursive) {
-            return eprintln!("dropterm-gpui: config watch failed: {err:?}");
+            return eprintln!("dropterm: config watch failed: {err:?}");
         }
         println!(
-            "dropterm-gpui: config watcher armed on {}",
+            "dropterm: config watcher armed on {}",
             watch_dir.display()
         );
         std::thread::park();

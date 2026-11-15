@@ -39,7 +39,7 @@ fn decode(forwarded: &Forwarded) -> Option<Action> {
             cli::parse_forwarded_action(&words).map_or_else(
                 || {
                     eprintln!(
-                        "dropterm-gpui: malformed forwarded action {action:?} {args:?}; \
+                        "dropterm: malformed forwarded action {action:?} {args:?}; \
                          answering with the plain toggle"
                     );
                     Some(Action::Toggle)
@@ -86,7 +86,7 @@ impl Served {
 
 /// Serve the contract on a thread of this process's own, and hold the
 /// connection for the process lifetime. Evidence rows are
-/// `dropterm-gpui:` prefixed like the shell's: the service-up line
+/// `dropterm:` prefixed like the shell's: the service-up line
 /// carries the unique name and the `NameHasOwner` self-check, the
 /// drainer logs every action it answers while the render loop renders.
 pub(crate) fn spawn_service() -> Served {
@@ -99,7 +99,7 @@ pub(crate) fn spawn_service() -> Served {
             .build()
         {
             Ok(runtime) => runtime,
-            Err(err) => return eprintln!("dropterm-gpui: tokio rt failed: {err:?}"),
+            Err(err) => return eprintln!("dropterm: tokio rt failed: {err:?}"),
         };
         runtime.block_on(serve(state, verbs_tx, phase, tabs));
     });
@@ -135,7 +135,7 @@ async fn serve(
             )
         }) {
         Ok(builder) => builder,
-        Err(err) => return eprintln!("dropterm-gpui: dbus builder failed: {err}"),
+        Err(err) => return eprintln!("dropterm: dbus builder failed: {err}"),
     };
     // The connection must be bound to a variable that outlives this
     // match — binding it inside an arm (the spike's dropped-`_conn`
@@ -143,7 +143,7 @@ async fn serve(
     // prints.
     let conn = match builder.build().await {
         Ok(conn) => conn,
-        Err(err) => return eprintln!("dropterm-gpui: dbus connection failed: {err}"),
+        Err(err) => return eprintln!("dropterm: dbus connection failed: {err}"),
     };
     match conn
         .request_name_with_flags(
@@ -160,12 +160,12 @@ async fn serve(
         // here — this is the race backstop).
         Ok(reply) => {
             eprintln!(
-                "dropterm-gpui: another instance owns the bus name ({reply}); control bus off this run"
+                "dropterm: another instance owns the bus name ({reply}); control bus off this run"
             );
             std::future::pending::<()>().await;
         }
         Err(err) => {
-            eprintln!("dropterm-gpui: failed to own the bus name: {err}");
+            eprintln!("dropterm: failed to own the bus name: {err}");
             std::process::exit(1);
         }
     }
@@ -184,7 +184,7 @@ async fn serve(
         .map(ToString::to_string)
         .unwrap_or_default();
     println!(
-        "dropterm-gpui: dbus service up: {} (unique {unique}, name_has_owner={owned})",
+        "dropterm: dbus service up: {} (unique {unique}, name_has_owner={owned})",
         dbus_state::BUS_NAME
     );
     // The served state mirrors the machine's published phase and the
@@ -197,10 +197,10 @@ async fn serve(
     tokio::spawn(mirror(conn, state, phase, tabs));
     while let Some(forwarded) = rx.recv().await {
         let Some(action) = decode(&forwarded) else {
-            eprintln!("dropterm-gpui: forwarded Open ignored: {forwarded:?}");
+            eprintln!("dropterm: forwarded Open ignored: {forwarded:?}");
             continue;
         };
-        println!("dropterm-gpui: dbus action {action} forwarded to the surface loop");
+        println!("dropterm: dbus action {action} forwarded to the surface loop");
         // The queue is unbounded and this send never blocks; a closed
         // receiver means the render loop is gone and the forward is
         // moot either way.
@@ -242,7 +242,7 @@ async fn mirror(
         mirrored = snapshot;
         if diff.visible {
             println!(
-                "dropterm-gpui: surface phase mirrored -> visible={}",
+                "dropterm: surface phase mirrored -> visible={}",
                 snapshot.visible
             );
         }
@@ -259,7 +259,7 @@ async fn mirror(
                     .visible_changed(iface_ref.signal_emitter())
                     .await
                     .inspect_err(|err| {
-                        eprintln!("dropterm-gpui: Visible change emit failed: {err}");
+                        eprintln!("dropterm: Visible change emit failed: {err}");
                     });
             }
             if diff.tab_count {
@@ -267,7 +267,7 @@ async fn mirror(
                     .tab_count_changed(iface_ref.signal_emitter())
                     .await
                     .inspect_err(|err| {
-                        eprintln!("dropterm-gpui: TabCount change emit failed: {err}");
+                        eprintln!("dropterm: TabCount change emit failed: {err}");
                     });
             }
         }

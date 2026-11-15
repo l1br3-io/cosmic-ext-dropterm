@@ -4,7 +4,7 @@ How the DropTerm codebase is laid out: three crates, one module inventory, a han
 
 ## Three crates, one workspace
 
-- **`dropterm`** (`dropterm-gpui/`) - the terminal itself, a GPUI bin: the surface, the terminal pane, the chrome (tab strip, status band, settings drawer, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
+- **`dropterm`** (`dropterm/`) - the terminal itself, a GPUI bin: the surface, the terminal pane, the chrome (tab strip, status band, settings drawer, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
 - **`dropterm-core`** (`dropterm-core/`) - the toolkit-neutral core: the config store, session, profiles, the engine, the pure models (spawn resolution, tabs, geometry, keybinds, status segments, context-menu rows), and `dbus_state` — the state the terminal and the applet consume. No toolkit dependency, pinned by test.
 - **`dropterm-applet`** (`applet/`) - the COSMIC panel applet (libcosmic). A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
 

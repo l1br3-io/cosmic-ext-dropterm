@@ -160,7 +160,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     )]
     let wide = ((WIDE_COLS * cell.cell_width).ceil() as u32, narrow.1);
     println!(
-        "dropterm-gpui: CHECK terminal-grid opening at {narrow:?} (target 8x20), widening to \
+        "dropterm: CHECK terminal-grid opening at {narrow:?} (target 8x20), widening to \
          {wide:?} mid-run (cell {:.2}x{:.2})",
         cell.cell_width, cell.cell_height
     );
@@ -169,7 +169,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         match cx.open_window(pane_window_options(narrow.0, narrow.1), |_, _| pane) {
             Ok(window) => window.into(),
             Err(err) => {
-                eprintln!("dropterm-gpui: terminal-grid window open failed: {err:?}");
+                eprintln!("dropterm: terminal-grid window open failed: {err:?}");
                 std::process::exit(1);
             }
         };
@@ -190,7 +190,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
                 window.resize(Size::new(px(w), px(h)));
             });
         });
-        println!("dropterm-gpui: CHECK terminal-grid widened to {wide:?}");
+        println!("dropterm: CHECK terminal-grid widened to {wide:?}");
     })
     .detach();
 

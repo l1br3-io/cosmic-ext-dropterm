@@ -350,7 +350,7 @@ impl TerminalPane {
                 // needs neither focus nor serial.
                 let primary = kind == alacritty_terminal::term::ClipboardType::Selection;
                 println!(
-                    "dropterm-gpui: osc52 store {} bytes (primary={primary})",
+                    "dropterm: osc52 store {} bytes (primary={primary})",
                     text.len()
                 );
                 clipboard::write_data_control(text, primary);
@@ -362,7 +362,7 @@ impl TerminalPane {
                 // empty clipboard still answers, formatted, never
                 // silence (the clipboard-ownership spec's row).
                 let primary = kind == alacritty_terminal::term::ClipboardType::Selection;
-                println!("dropterm-gpui: osc52 load (primary={primary})");
+                println!("dropterm: osc52 load (primary={primary})");
                 self.load_clipboard_reply(primary, format, cx);
             }
             TermEvent::ColorRequest(index, format) => {
@@ -426,7 +426,7 @@ impl TerminalPane {
             TermEvent::ChildExit(code) => {
                 // Tab lifecycle (respawn-on-close) is the tabs
                 // slice's; the exit is an evidence row until then.
-                println!("dropterm-gpui: pane child exited ({code})");
+                println!("dropterm: pane child exited ({code})");
             }
             // The pane owns no window-icon or mouse-cursor surface
             // yet, and blinking is off (the libcosmic build's rule —
@@ -448,7 +448,7 @@ impl TerminalPane {
                 let _ = signals.send(PaneSignal::Exited(self.id));
             }
             None => {
-                println!("dropterm-gpui: pane exit request (no shell in the walk harness)");
+                println!("dropterm: pane exit request (no shell in the walk harness)");
             }
         }
     }
@@ -666,7 +666,7 @@ impl TerminalPane {
     )]
     fn paste_clipboard_image(&mut self, primary: bool, cx: &mut Context<Self>) {
         println!(
-            "dropterm-gpui: pane action Paste{} — no text offer; trying the image road",
+            "dropterm: pane action Paste{} — no text offer; trying the image road",
             if primary { "Primary" } else { "" }
         );
         cx.spawn(async move |this, cx| {
@@ -677,11 +677,11 @@ impl TerminalPane {
             let bytes = match read {
                 clipboard::ImageRead::Bytes(bytes) => bytes,
                 clipboard::ImageRead::None => {
-                    println!("dropterm-gpui: paste image — no image offer either; nothing pasted");
+                    println!("dropterm: paste image — no image offer either; nothing pasted");
                     return;
                 }
                 clipboard::ImageRead::Refused(refusal) => {
-                    println!("dropterm-gpui: paste image refused — {refusal:?}");
+                    println!("dropterm: paste image refused — {refusal:?}");
                     let _ = this.update(cx, |pane, _| {
                         if let Some(signals) = &pane.shell_signals {
                             let _ = signals.send(PaneSignal::PasteRefused(refusal));
@@ -700,7 +700,7 @@ impl TerminalPane {
                 // The cache's own refusals (unresolvable cache dir, a
                 // failed write) reach the same verdict the read-side
                 // cap refusal does — the paste's one visible failure.
-                println!("dropterm-gpui: paste image — the paste cache refused; nothing pasted");
+                println!("dropterm: paste image — the paste cache refused; nothing pasted");
                 let _ = this.update(cx, |pane, _| {
                     if let Some(signals) = &pane.shell_signals {
                         let _ = signals.send(PaneSignal::PasteRefused(
@@ -712,7 +712,7 @@ impl TerminalPane {
             };
             let _ = this.update(cx, |pane, cx| {
                 println!(
-                    "dropterm-gpui: paste image — {} pastes at the prompt ({} bytes cached)",
+                    "dropterm: paste image — {} pastes at the prompt ({} bytes cached)",
                     path,
                     bytes.len()
                 );
@@ -747,7 +747,7 @@ impl TerminalPane {
         match text {
             Some(text) => {
                 println!(
-                    "dropterm-gpui: pane action Copy{} — {} bytes",
+                    "dropterm: pane action Copy{} — {} bytes",
                     if primary { "Primary" } else { "" },
                     text.len()
                 );
@@ -755,7 +755,7 @@ impl TerminalPane {
             }
             None => {
                 println!(
-                    "dropterm-gpui: pane action Copy{} — nothing selected",
+                    "dropterm: pane action Copy{} — nothing selected",
                     if primary { "Primary" } else { "" }
                 );
             }
@@ -774,7 +774,7 @@ impl TerminalPane {
             TermAction::Paste => match clipboard::read(cx) {
                 Some(text) => {
                     println!(
-                        "dropterm-gpui: pane action Paste — {} bytes through the engine's paste",
+                        "dropterm: pane action Paste — {} bytes through the engine's paste",
                         text.len()
                     );
                     let mut engine = self.terminal.lock().expect("engine lock");
@@ -787,7 +787,7 @@ impl TerminalPane {
                 // The primary selection has no GPUI API: one
                 // data-control read off the UI thread, then the same
                 // engine paste.
-                println!("dropterm-gpui: pane action PastePrimary — data-control read");
+                println!("dropterm: pane action PastePrimary — data-control read");
                 let terminal = Arc::clone(&self.terminal);
                 cx.spawn(async move |this, cx| {
                     let text = cx
@@ -798,7 +798,7 @@ impl TerminalPane {
                         Some(text) => {
                             let _ = this.update(cx, |_pane, cx| {
                                 println!(
-                                    "dropterm-gpui: paste primary — {} bytes through the engine's paste",
+                                    "dropterm: paste primary — {} bytes through the engine's paste",
                                     text.len()
                                 );
                                 let mut engine = terminal.lock().expect("engine lock");
@@ -815,19 +815,19 @@ impl TerminalPane {
                 .detach();
             }
             TermAction::SelectAll => {
-                println!("dropterm-gpui: pane action SelectAll (every row selected)");
+                println!("dropterm: pane action SelectAll (every row selected)");
                 let mut engine = self.terminal.lock().expect("engine lock");
                 engine.select_all();
                 engine.needs_update = true;
             }
             TermAction::ClearScrollback => {
-                println!("dropterm-gpui: pane action ClearScrollback (history dropped)");
+                println!("dropterm: pane action ClearScrollback (history dropped)");
                 let mut engine = self.terminal.lock().expect("engine lock");
                 engine.term.lock().grid_mut().clear_history();
                 engine.needs_update = true;
             }
             TermAction::ScrollToBottom => {
-                println!("dropterm-gpui: pane action ScrollToBottom (viewport at the bottom)");
+                println!("dropterm: pane action ScrollToBottom (viewport at the bottom)");
                 let mut engine = self.terminal.lock().expect("engine lock");
                 engine.scroll(dropterm_core::terminal::TerminalScroll::Bottom);
                 engine.needs_update = true;
@@ -839,7 +839,7 @@ impl TerminalPane {
                     TermAction::ZoomOut => terminal.zoom_adj().saturating_sub(1),
                     _ => 0,
                 };
-                println!("dropterm-gpui: pane action {action:?} (zoom_adj {adj})");
+                println!("dropterm: pane action {action:?} (zoom_adj {adj})");
                 // The metrics reapply *is* the zoom: `set_config`
                 // recomputes metrics from the live `zoom_adj` and
                 // re-fires the cell resize from there.
@@ -856,11 +856,11 @@ impl TerminalPane {
                 // standalone walk pane has no shell and only logs.
                 match &self.shell_signals {
                     Some(signals) => {
-                        println!("dropterm-gpui: pane hide action -> the shell's funnel");
+                        println!("dropterm: pane hide action -> the shell's funnel");
                         let _ = signals.send(PaneSignal::Hide);
                     }
                     None => {
-                        println!("dropterm-gpui: pane hide action (no shell in the walk harness)");
+                        println!("dropterm: pane hide action (no shell in the walk harness)");
                     }
                 }
             }
@@ -871,7 +871,7 @@ impl TerminalPane {
             // swallow sees the chord unmolested — a declined open
             // that fell through translate, nothing to do.
             TermAction::ShowCompletions => {
-                println!("dropterm-gpui: pane show-completions action (the routing owns it)");
+                println!("dropterm: pane show-completions action (the routing owns it)");
             }
         }
         cx.notify();
@@ -884,7 +884,7 @@ impl TerminalPane {
         // set `DROPTERM_TRACE_KEYS=1` to see what actually arrives.
         if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
             println!(
-                "dropterm-gpui: key {:?} modifiers ctrl={} shift={} alt={} super={} key_char={:?}",
+                "dropterm: key {:?} modifiers ctrl={} shift={} alt={} super={} key_char={:?}",
                 keystroke.key,
                 keystroke.modifiers.control,
                 keystroke.modifiers.shift,
@@ -953,7 +953,7 @@ impl TerminalPane {
                         .suggestion()
                         .is_some()
                 {
-                    println!("dropterm-gpui: pane accept {kind:?} — the showing suffix lands");
+                    println!("dropterm: pane accept {kind:?} — the showing suffix lands");
                     let mut engine = self.terminal.lock().expect("engine lock");
                     engine.accept_suggestion(kind);
                     engine.needs_update = true;
@@ -968,7 +968,7 @@ impl TerminalPane {
             }
             KeyInput::Action(action) => self.perform_action(action, cx),
             KeyInput::Scroll(scroll) => {
-                println!("dropterm-gpui: pane scroll {scroll:?} (Shift+PageUp/Down/Home/End)");
+                println!("dropterm: pane scroll {scroll:?} (Shift+PageUp/Down/Home/End)");
                 let mut engine = self.terminal.lock().expect("engine lock");
                 engine.scroll(scroll);
                 engine.needs_update = true;
@@ -1063,7 +1063,7 @@ impl TerminalPane {
         };
         if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
             println!(
-                "dropterm-gpui: press {neutral:?} at ({:.0},{:.0}) shift={}",
+                "dropterm: press {neutral:?} at ({:.0},{:.0}) shift={}",
                 position.x.as_f32(),
                 position.y.as_f32(),
                 modifiers.shift
@@ -1207,7 +1207,7 @@ impl TerminalPane {
             };
             if let Some(text) = &text {
                 println!(
-                    "dropterm-gpui: selection finalized ({} bytes; Copy takes them)",
+                    "dropterm: selection finalized ({} bytes; Copy takes them)",
                     text.len()
                 );
             }
@@ -1236,7 +1236,7 @@ impl TerminalPane {
                 gpui::ScrollDelta::Lines(lines) => ("lines", lines.y),
                 gpui::ScrollDelta::Pixels(pixels) => ("pixels", pixels.y.as_f32()),
             };
-            println!("dropterm-gpui: wheel delta {kind} y={y}");
+            println!("dropterm: wheel delta {kind} y={y}");
         }
         let neutral_delta = match delta {
             gpui::ScrollDelta::Lines(lines) => PointerScrollDelta::Lines {
@@ -1515,7 +1515,7 @@ fn paint_pane(
         let mut log = walk_log.lock().expect("walk log");
         if log.grid != Some((cols, rows)) {
             println!(
-                "dropterm-gpui: pane grid {cols}x{rows} at scroll offset {display_offset} \
+                "dropterm: pane grid {cols}x{rows} at scroll offset {display_offset} \
                  (cell {:.2}x{:.2}, font {:.1}px)",
                 cell.cell_width,
                 cell.cell_height,
@@ -1619,7 +1619,7 @@ fn paint_pane(
                 if !log.placed_images.contains(&sub.image) {
                     log.placed_images.push(sub.image);
                     println!(
-                        "dropterm-gpui: pane image {} placed (first covered cell col {col} row {row}, {} layer)",
+                        "dropterm: pane image {} placed (first covered cell col {col} row {row}, {} layer)",
                         sub.image,
                         if store.layer_of(sub.image) < 0 {
                             "beneath"
@@ -1662,7 +1662,7 @@ fn paint_pane(
             if changed {
                 log.rows.resize(row + 1, String::new());
                 log.rows[row].clone_from(&text);
-                println!("dropterm-gpui: pane row{row} now {text:?}");
+                println!("dropterm: pane row{row} now {text:?}");
             }
         }
         paint_row(
@@ -1727,7 +1727,7 @@ fn paint_pane(
         let mut log = walk_log.lock().expect("walk log");
         if log.caret != Some(cell_at) {
             println!(
-                "dropterm-gpui: caret at col {} row {} (block, first-frame rule)",
+                "dropterm: caret at col {} row {} (block, first-frame rule)",
                 cell_at.0, cell_at.1
             );
             log.caret = Some(cell_at);
@@ -1768,7 +1768,7 @@ fn paint_pane(
         let mut log = walk_log.lock().expect("walk log");
         if log.ghost.as_deref() != Some(visible.as_str()) {
             println!(
-                "dropterm-gpui: pane ghost now {:?} ({} cells past the caret)",
+                "dropterm: pane ghost now {:?} ({} cells past the caret)",
                 visible,
                 visible.chars().count()
             );
@@ -1779,7 +1779,7 @@ fn paint_pane(
         // (another keystroke, a resize, a focus loss) name it.
         let mut log = walk_log.lock().expect("walk log");
         if log.ghost.take().is_some() {
-            println!("dropterm-gpui: pane ghost cleared");
+            println!("dropterm: pane ghost cleared");
         }
     }
 
@@ -1896,7 +1896,7 @@ fn paint_pane(
             let shape = (all_rows.len(), selected);
             if log.menu != Some(shape) {
                 println!(
-                    "dropterm-gpui: pane menu now {} rows (selected {}) — {:?}",
+                    "dropterm: pane menu now {} rows (selected {}) — {:?}",
                     all_rows.len(),
                     selected,
                     visible.iter().map(|r| r.label.clone()).collect::<Vec<_>>()
@@ -1982,7 +1982,7 @@ fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
         let (w, h) = (px_size.0 as f32, px_size.1 as f32);
         let grid = grid::grid_of(w, h, size.cell_width, size.cell_height);
         println!(
-            "dropterm-gpui: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)"
+            "dropterm: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)"
         );
     }
 }
@@ -2203,7 +2203,7 @@ pub(crate) fn boot_pane(
     let host = crate::terminal::host::GpuiHost::new(cx);
     let font = host.font();
     println!(
-        "dropterm-gpui: pane pty spawning {} {:?} (spawned as {})",
+        "dropterm: pane pty spawning {} {:?} (spawned as {})",
         request.program, request.args, request.spawned_as
     );
     let pty_options = alacritty_terminal::tty::Options {
@@ -2232,7 +2232,7 @@ pub(crate) fn boot_pane(
         &options,
         &colors,
     )
-    .map_err(|err| eprintln!("dropterm-gpui: pane pty spawn failed: {err:?}"))
+    .map_err(|err| eprintln!("dropterm: pane pty spawn failed: {err:?}"))
     .ok()?;
     let terminal = Arc::new(Mutex::new(terminal));
     let pane = pane_with_pump(

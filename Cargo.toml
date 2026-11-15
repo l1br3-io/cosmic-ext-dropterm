@@ -1,11 +1,11 @@
 # The cutover's root (gpui-cutover Task 1): a virtual workspace —
 # the libcosmic frontend crate that used to be the root package is
 # deleted, not parked (the chunk's ruling), and the terminal crate is
-# `dropterm` (the renamed GPUI frontend, `dropterm-gpui/`), with
+# `dropterm` (the renamed GPUI frontend, `dropterm/`), with
 # `dropterm-core` and the applet beside it. Git history keeps the
 # deleted frontend.
 [workspace]
-members = ["applet", "dropterm-core", "dropterm-gpui"]
+members = ["applet", "dropterm-core", "dropterm"]
 resolver = "3"
 
 [workspace.dependencies]

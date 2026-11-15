@@ -91,7 +91,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     );
     let open = Instant::now();
     println!(
-        "dropterm-gpui: CHECK-C2b Root + Kit overlays on the layer surface, {CADENCE_MS}ms cadence"
+        "dropterm: CHECK-C2b Root + Kit overlays on the layer surface, {CADENCE_MS}ms cadence"
     );
     match cx.open_window(
         drawer_options(px(KIT_HEIGHTS[0]), KeyboardInteractivity::None),
@@ -112,9 +112,9 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
             cx.new(|cx| KitRoot::new(chrome, window, cx))
         },
     ) {
-        Ok(_) => println!("dropterm-gpui: kill-check window opened"),
+        Ok(_) => println!("dropterm: kill-check window opened"),
         Err(err) => {
-            eprintln!("dropterm-gpui: kill-check open failed: {err:?}");
+            eprintln!("dropterm: kill-check open failed: {err:?}");
             std::process::exit(1);
         }
     }
@@ -141,7 +141,7 @@ impl Render for KitChrome {
         let b = window.bounds();
         if self.last_bounds.as_ref() != Some(&b) {
             println!(
-                "dropterm-gpui: kit frame {} drew size={:.0}x{:.0} at +{}ms",
+                "dropterm: kit frame {} drew size={:.0}x{:.0} at +{}ms",
                 self.frames,
                 b.size.width.as_f32(),
                 b.size.height.as_f32(),
@@ -166,7 +166,7 @@ impl Render for KitChrome {
                 let h = KIT_HEIGHTS[self.resize_index];
                 window.resize(Size::new(w, px(h)));
                 println!(
-                    "dropterm-gpui: kit resize #{} requested {:.0}x{h:.0} at +{}ms (overlay open)",
+                    "dropterm: kit resize #{} requested {:.0}x{h:.0} at +{}ms (overlay open)",
                     self.resize_index,
                     w.as_f32(),
                     self.open.elapsed().as_millis()
@@ -176,7 +176,7 @@ impl Render for KitChrome {
             }
         } else if self.last_resize.is_some() {
             self.last_resize = None;
-            println!("dropterm-gpui: kit cadence complete — overlays survived, holding for quit");
+            println!("dropterm: kit cadence complete — overlays survived, holding for quit");
         }
         // Redraw ticks so render keeps firing at the cadence's
         // granularity instead of waiting on configures.
@@ -211,7 +211,7 @@ impl Render for KitChrome {
                     })
                     .default_open(true)
                     .on_open_change(|open, _, _| {
-                        println!("dropterm-gpui: kit popover open_changed -> {open}");
+                        println!("dropterm: kit popover open_changed -> {open}");
                     }),
             )
             .children(self.tooltip.clone())

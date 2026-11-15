@@ -67,7 +67,7 @@ impl GpuiHost {
     pub(crate) fn new(cx: &App) -> Self {
         let text_system = cx.text_system().clone();
         let family = resolve_monospace_family(&text_system);
-        println!("dropterm-gpui: pane font family resolved to {family:?}");
+        println!("dropterm: pane font family resolved to {family:?}");
         Self {
             buffer: Arc::new(Buffer::new_empty(Metrics::new(16.0, 8.0))),
             font: gpui::Font {

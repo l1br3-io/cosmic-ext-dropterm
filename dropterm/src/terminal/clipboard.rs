@@ -37,7 +37,7 @@ pub(crate) fn write_data_control(text: String, primary: bool) {
             wl_clipboard_rs::copy::MimeType::Text,
         );
         if let Err(err) = result {
-            println!("dropterm-gpui: data-control write failed ({err})");
+            println!("dropterm: data-control write failed ({err})");
         }
     });
 }
@@ -56,7 +56,7 @@ pub(crate) fn write_image_data_control(bytes: Vec<u8>, mime: &'static str) {
             wl_clipboard_rs::copy::MimeType::Specific(mime.to_string()),
         );
         if let Err(err) = result {
-            println!("dropterm-gpui: data-control image write failed ({err})");
+            println!("dropterm: data-control image write failed ({err})");
         }
     });
 }
@@ -96,11 +96,11 @@ pub(crate) fn read_primary_blocking() -> Option<String> {
         wl_clipboard_rs::paste::Seat::Unspecified,
         wl_clipboard_rs::paste::MimeType::Text,
     )
-    .inspect_err(|err| println!("dropterm-gpui: data-control primary read failed ({err})"))
+    .inspect_err(|err| println!("dropterm: data-control primary read failed ({err})"))
     .ok()?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut pipe, &mut text)
-        .inspect_err(|err| println!("dropterm-gpui: data-control primary read failed ({err})"))
+        .inspect_err(|err| println!("dropterm: data-control primary read failed ({err})"))
         .ok()?;
     Some(text)
 }
@@ -146,19 +146,19 @@ pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
     ) {
         Ok(pair) => pair,
         Err(err) => {
-            println!("dropterm-gpui: data-control image read — no offer ({err})");
+            println!("dropterm: data-control image read — no offer ({err})");
             return ImageRead::None;
         }
     };
     let mut bytes = Vec::new();
     let mut offer = pipe.take(cap);
     if let Err(err) = std::io::Read::read_to_end(&mut offer, &mut bytes) {
-        println!("dropterm-gpui: data-control image read failed ({err})");
+        println!("dropterm: data-control image read failed ({err})");
         return ImageRead::Refused(dropterm_core::status::PasteRefusal::Failed);
     }
     if let Some(refusal) = classify_read(bytes.len()) {
         println!(
-            "dropterm-gpui: image offer refused — over the {}-byte paste cap",
+            "dropterm: image offer refused — over the {}-byte paste cap",
             dropterm_core::paste_cache::PASTE_PAYLOAD_CAP
         );
         return ImageRead::Refused(refusal);

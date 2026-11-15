@@ -14,7 +14,7 @@ use clap::Parser;
 /// at parse (the libcosmic frontend's rule verbatim).
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "dropterm-gpui",
+    name = "dropterm",
     version,
     about,
     args_conflicts_with_subcommands = true
@@ -220,7 +220,7 @@ pub(crate) fn startup_action(action: &Action) -> Action {
 /// the clap definitions above as the single source of truth for the
 /// surface. `None` when the words do not form a valid action.
 pub(crate) fn parse_forwarded_action(words: &[String]) -> Option<Action> {
-    let argv: Vec<String> = std::iter::once("dropterm-gpui".to_string())
+    let argv: Vec<String> = std::iter::once("dropterm".to_string())
         .chain(words.iter().cloned())
         .collect();
     Args::try_parse_from(argv).ok()?.action
@@ -232,26 +232,26 @@ mod tests {
 
     #[test]
     fn the_surface_verbs_parse_and_default_to_toggle() {
-        let bare = Args::parse_from(["dropterm-gpui"]);
+        let bare = Args::parse_from(["dropterm"]);
         assert_eq!(bare.action, None);
         assert_eq!(bare.action.unwrap_or_default(), Action::Toggle);
         assert_eq!(
-            Args::parse_from(["dropterm-gpui", "show"]).action,
+            Args::parse_from(["dropterm", "show"]).action,
             Some(Action::Show)
         );
         assert_eq!(
-            Args::parse_from(["dropterm-gpui", "hide"]).action,
+            Args::parse_from(["dropterm", "hide"]).action,
             Some(Action::Hide)
         );
     }
 
     #[test]
     fn is_visible_parses_alone_and_conflicts_with_subcommands() {
-        let alone = Args::try_parse_from(["dropterm-gpui", "--is-visible"]).expect("parses alone");
+        let alone = Args::try_parse_from(["dropterm", "--is-visible"]).expect("parses alone");
         assert!(alone.is_visible);
         assert_eq!(alone.action, None);
-        assert!(Args::try_parse_from(["dropterm-gpui", "--is-visible", "show"]).is_err());
-        assert!(Args::try_parse_from(["dropterm-gpui", "show", "--is-visible"]).is_err());
+        assert!(Args::try_parse_from(["dropterm", "--is-visible", "show"]).is_err());
+        assert!(Args::try_parse_from(["dropterm", "show", "--is-visible"]).is_err());
     }
 
     #[test]

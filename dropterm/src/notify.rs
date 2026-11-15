@@ -43,7 +43,7 @@ pub(crate) fn post_bell_notification(tab_title: String) {
             .body("A bell rang while the terminal was hidden.")
             .show();
         if let Err(err) = result {
-            println!("dropterm-gpui: failed to post bell notification: {err}");
+            println!("dropterm: failed to post bell notification: {err}");
         }
     });
 }

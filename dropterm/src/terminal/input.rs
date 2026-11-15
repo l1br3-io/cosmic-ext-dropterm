@@ -208,7 +208,7 @@ pub(crate) fn effective_key_binds(
             if let (Some(action), Some(pressed)) = (action_from_id(id), to_chord(binding)) {
                 Some((action, pressed))
             } else {
-                println!("dropterm-gpui: ignoring custom key bind {id:?}: {binding:?}");
+                println!("dropterm: ignoring custom key bind {id:?}: {binding:?}");
                 None
             }
         })

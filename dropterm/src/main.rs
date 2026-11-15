@@ -8,7 +8,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
 #![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty
 
-//! `dropterm-gpui` — `DropTerm`'s GPUI frontend (gpui-scaffold spec).
+//! `dropterm` — `DropTerm`'s GPUI frontend (gpui-scaffold spec).
 //!
 //! Phase 3's second binary beside the libcosmic one: it owns the same
 //! runtime identity ([`dropterm_core::APP_ID`]) and serves the same
@@ -79,7 +79,7 @@ fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
 }
 
 fn main() {
-    println!("dropterm-gpui: booting on the gpui-pre 0.3.12 pin (wayland)");
+    println!("dropterm: booting on the gpui-pre 0.3.12 pin (wayland)");
     let args = cli::Args::parse();
     // The query path exits before any bus-name attempt and before the
     // guard's probe: it creates no surfaces, and its not-running answer
@@ -142,7 +142,7 @@ fn main() {
     // `new-tab` keep startup application — the boot applies them.
     let startup = cli::startup_action(&action);
     if startup != action {
-        println!("dropterm-gpui: {action} with no running instance: starting plain");
+        println!("dropterm: {action} with no running instance: starting plain");
     }
     let phase = Arc::clone(&served.phase);
     let tabs = Arc::clone(&served.tabs);
@@ -161,7 +161,7 @@ fn main() {
             Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
             None => app_shell::boot(cx, exit_after, &phase, &tabs, verbs, startup),
         });
-    println!("dropterm-gpui: event loop exited cleanly");
+    println!("dropterm: event loop exited cleanly");
 }
 
 #[cfg(test)]
