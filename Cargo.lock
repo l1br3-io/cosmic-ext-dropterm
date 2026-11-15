@@ -2183,29 +2183,19 @@ name = "dropterm"
 version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
- "base64",
  "clap",
  "cosmic-text",
- "dirs 6.0.0",
  "dropterm-core",
- "enumflags2",
- "env_logger",
- "flate2",
- "fontdb",
+ "gpui-component",
+ "gpui-pre",
+ "gpui-pre-platform",
  "image",
- "indexmap",
  "jiff",
- "libc",
- "libcosmic",
- "log",
  "notify",
  "notify-rust",
  "open",
- "ron",
- "serde",
  "serde_json",
  "tokio",
- "toml 0.5.11",
  "wayland-client",
  "wl-clipboard-rs",
  "zbus",
@@ -2244,29 +2234,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml 0.5.11",
- "zbus",
-]
-
-[[package]]
-name = "dropterm-gpui"
-version = "0.5.0"
-dependencies = [
- "alacritty_terminal",
- "clap",
- "cosmic-text",
- "dropterm-core",
- "gpui-component",
- "gpui-pre",
- "gpui-pre-platform",
- "image",
- "jiff",
- "notify",
- "notify-rust",
- "open",
- "serde_json",
- "tokio",
- "wayland-client",
- "wl-clipboard-rs",
  "zbus",
 ]
 

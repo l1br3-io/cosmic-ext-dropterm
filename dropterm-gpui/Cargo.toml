@@ -1,15 +1,19 @@
+# The terminal crate since cutover (the gpui-cutover ruling): one
+# obvious terminal package, one obvious bin — the GPUI frontend that
+# gpui-scaffold built and every later slice grew, renamed whole (the
+# libcosmic frontend it leaves behind is deleted, not parked).
 [package]
-name = "dropterm-gpui"
+name = "dropterm"
 version = "0.5.0"
 authors = ["l1br3-io"]
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.93"
-description = "DropTerm's GPUI frontend (Phase 3 portability: the second binary beside the libcosmic one; ships nothing until cutover)"
+description = "A native, Yakuake/Guake-style drop-down terminal for the COSMIC desktop"
 repository = "https://github.com/l1br3-io/dropterm"
 
 [[bin]]
-name = "dropterm-gpui"
+name = "dropterm"
 path = "src/main.rs"
 
 [dependencies]
