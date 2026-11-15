@@ -19,10 +19,10 @@
 //! timer's verdicts, progress, program status) ride Task 2's wiring.
 
 use dropterm_core::status::{
-    BAND_HEIGHT, LEFT_CLUSTER, PathFit, PathMeasure, RIGHT_CLUSTER, SEGMENT_GAP, SegmentId,
-    StatusSegments, band_fit, click_jumps, copy_text, duration_display, elide_path_left,
+    BAND_HEIGHT, LEFT_CLUSTER, PasteRefusal, PathFit, PathMeasure, RIGHT_CLUSTER, SEGMENT_GAP,
+    SegmentId, StatusSegments, band_fit, click_jumps, copy_text, duration_display, elide_path_left,
     exit_display, pasted_display, prefixed_display, process_display, program_needs_attention,
-    progress_display, scrolled_display,
+    progress_display, refusal_display, refusal_seat, scrolled_display,
 };
 use dropterm_core::terminal::ProgressState;
 
@@ -112,15 +112,22 @@ pub(crate) fn band_vm(
     width: f32,
     measure: &dyn Fn(&str) -> f32,
     copied: Option<SegmentId>,
+    paste_refusal: Option<PasteRefusal>,
 ) -> BandVm {
     // The copy flash's swap (the reference's own rule): the ✓ takes
     // the copied segment's display seat alone — measured like any
     // text, so the row re-lays for its flash — while the path's own
     // fit measure below keeps the steady value (the flash never
-    // re-fits the path).
+    // re-fits the path). The refusal verdict (the audit's F7) is
+    // the same rule's second tenant: while fresh it takes the
+    // pasted chip's seat, or the clock's when no pastes stand —
+    // measured like text, the row re-lays, the fit follows.
+    let refusal_swap = paste_refusal.map(|r| (refusal_seat(segments), refusal_display(r)));
     let display = |id: SegmentId, text: String| {
         if copied == Some(id) {
             "\u{2713}".to_string()
+        } else if let Some((_, verdict)) = refusal_swap.as_ref().filter(|(seat, _)| *seat == id) {
+            verdict.clone()
         } else {
             text
         }
@@ -280,7 +287,9 @@ pub(crate) fn band_vm(
             width: w,
             text_x: x,
             dimmed: id == SegmentId::Duration,
-            attention: id == SegmentId::Exit || (id == SegmentId::Progress && progress_is_error),
+            attention: id == SegmentId::Exit
+                || (id == SegmentId::Progress && progress_is_error)
+                || refusal_swap.as_ref().is_some_and(|(seat, _)| *seat == id),
         });
         x += w + SEGMENT_GAP;
     }
@@ -298,7 +307,10 @@ pub(crate) fn band_vm(
             width: w,
             text_x: right,
             dimmed: true,
-            attention: false,
+            // The refusal verdict's seat wears the attention red
+            // (the exit chip's rule) even though the cluster dims —
+            // the verdict outranks the cluster's quiet styling.
+            attention: refusal_swap.as_ref().is_some_and(|(seat, _)| *seat == *id),
         });
         right -= SEGMENT_GAP;
     }
@@ -393,6 +405,9 @@ pub(crate) struct StatusBandView {
     /// The segment flashing its `✓` (the copy verb's confirm); the
     /// shell owns the timing and hands the fresh value per frame.
     copied: Option<SegmentId>,
+    /// The standing paste-refusal verdict (the audit's F7); the
+    /// shell owns the timing and hands the fresh value per frame.
+    paste_refusal: Option<dropterm_core::status::PasteRefusal>,
     /// The copy verb: `(segment, full value)` — the shell writes the
     /// clipboard and arms the flash (the App context rides the
     /// callback, the strip's own pattern).
@@ -416,6 +431,7 @@ impl StatusBandView {
             at_bottom: true,
             width: 0.0,
             copied: None,
+            paste_refusal: None,
             on_copy: std::rc::Rc::new(|_, _, _: &mut gpui::App| {}),
             on_scroll_bottom: std::rc::Rc::new(|_: &mut gpui::App| {}),
         }
@@ -443,6 +459,14 @@ impl StatusBandView {
 
     pub(crate) fn copied(mut self, copied: Option<SegmentId>) -> Self {
         self.copied = copied;
+        self
+    }
+
+    pub(crate) fn paste_refusal(
+        mut self,
+        paste_refusal: Option<dropterm_core::status::PasteRefusal>,
+    ) -> Self {
+        self.paste_refusal = paste_refusal;
         self
     }
 
@@ -492,7 +516,13 @@ impl gpui::RenderOnce for StatusBandView {
                 .width
                 .as_f32()
         };
-        let vm = band_vm(&self.segments, self.width, &measure, self.copied);
+        let vm = band_vm(
+            &self.segments,
+            self.width,
+            &measure,
+            self.copied,
+            self.paste_refusal,
+        );
 
         let mut band = gpui::div()
             .relative()

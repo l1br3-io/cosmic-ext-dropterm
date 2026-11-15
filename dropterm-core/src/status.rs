@@ -704,6 +704,51 @@ pub fn exit_display(code: u32) -> String {
     format!("✗{code}")
 }
 
+/// Why an image paste refused (the audit's F7): the paste road's
+/// visible verdict, riding the band's flash channel the way the ✓
+/// copy flash does — a refusal is a paste *action's* verdict, so it
+/// is no segment's fact: no toggle owns it, no copy payload exists,
+/// and its click does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteRefusal {
+    /// The image's bytes passed the paste cap; nothing cached,
+    /// nothing pasted — never a fallback that pastes a URI where
+    /// the user expected their image.
+    OverCap,
+    /// The image road failed before any bytes could land — an
+    /// unreadable offer, a failed read, a paste-cache write
+    /// failure. The honest umbrella: the band names the failure,
+    /// never guesses its cause.
+    Failed,
+}
+
+/// The refusal verdict's display — the seat's swap text (the ✓
+/// flash's rule generalized: the verdict takes a seat, measured
+/// like any text, the row re-lays). The cap renders as MiB —
+/// [`crate::paste_cache::PASTE_PAYLOAD_CAP`] is whole MiB by
+/// construction.
+pub fn refusal_display(refusal: PasteRefusal) -> String {
+    match refusal {
+        PasteRefusal::OverCap => format!(
+            "✗ image over {} MiB cap",
+            crate::paste_cache::PASTE_PAYLOAD_CAP / (1024 * 1024)
+        ),
+        PasteRefusal::Failed => "✗ paste failed".to_owned(),
+    }
+}
+
+/// The seat the verdict chip takes while fresh — the pasted chip
+/// when one stands (its position is where the user's paste news
+/// lives), the clock otherwise, the right cluster's tail that a
+/// rendered band always carries.
+pub fn refusal_seat(segments: &StatusSegments) -> SegmentId {
+    if segments.pasted.is_some() {
+        SegmentId::Pasted
+    } else {
+        SegmentId::Clock
+    }
+}
+
 /// The progress chip's display (osc94-progress spec): the percent
 /// the reporter gave — `42%`; `…` when indeterminate owns the chip
 /// or no value ever stood; the value when the reporter says error

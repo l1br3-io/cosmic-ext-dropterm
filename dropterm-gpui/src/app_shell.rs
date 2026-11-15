@@ -72,6 +72,11 @@ pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
 /// 800 ms, owned here like the libcosmic app owns it.
 const STATUS_COPY_FLASH: Duration = Duration::from_millis(800);
 
+/// The paste-refusal verdict's window (the audit's F7) — readable,
+/// unlike the copy flash: a verdict the user must read to learn
+/// their paste failed.
+const STATUS_REFUSAL_FLASH: Duration = Duration::from_millis(3000);
+
 fn grab_bar_at_rest(machine: &SurfaceMachine) -> bool {
     dropterm_core::surface_lifecycle::grab_bar_acts_on(&machine.state, machine.slide.is_some())
 }
@@ -285,6 +290,11 @@ pub(crate) struct Shell {
     /// (the reference band's own `COPY_FLASH` timing, owned here
     /// like the libcosmic app owns it).
     status_copied: Option<(dropterm_core::status::SegmentId, Instant)>,
+    /// The paste road's standing refusal verdict (the audit's F7):
+    /// the cause and its deadline — the tick clears the chip when
+    /// the 3 s window passes, a successful paste clears it early
+    /// with its row.
+    status_paste_refusal: Option<(dropterm_core::status::PasteRefusal, Instant)>,
     /// Our own hostname, read once at construction — the OSC 7
     /// report's host-qualification base (a reported host renders
     /// only when it differs from this).
@@ -541,6 +551,7 @@ impl Shell {
             status_clock: None,
             band_font,
             status_copied: None,
+            status_paste_refusal: None,
             was_hidden: true,
             status_timer_logged: (false, None, None),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -623,6 +634,19 @@ impl Shell {
                         bytes.len()
                     );
                     self.tabs.note_pasted_image(id, path, &bytes);
+                    // A paste succeeded: any standing refusal verdict
+                    // is stale news — its chip yields early.
+                    self.status_paste_refusal = None;
+                }
+                view::PaneSignal::PasteRefused(refusal) => {
+                    // The paste verdict (the audit's F7): the band's
+                    // flash channel narrates the refusal for its 3 s
+                    // window; the log warn already fired at the read.
+                    println!(
+                        "dropterm-gpui: paste refused ({refusal:?}) -> the band's verdict chip"
+                    );
+                    self.status_paste_refusal =
+                        Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
                 }
             }
         }
@@ -2156,6 +2180,7 @@ impl Shell {
             .at_bottom(self.inputs.geometry.edge == Edge::Top)
             .width(width)
             .copied(self.status_copied.map(|(id, _)| id))
+            .paste_refusal(self.status_paste_refusal.map(|(r, _)| r))
             .attention(Some(attention))
             .on_copy(on_copy)
             .on_scroll_bottom(on_scroll_bottom)
@@ -2182,6 +2207,14 @@ impl Shell {
             && Instant::now() >= until
         {
             self.status_copied = None;
+            cx.notify();
+        }
+        // The refusal verdict's expiry (the audit's F7): the tick
+        // clears the chip when its 3 s window passes.
+        if let Some((_, until)) = self.status_paste_refusal
+            && Instant::now() >= until
+        {
+            self.status_paste_refusal = None;
             cx.notify();
         }
         let toggles = self.config.status_toggles();

@@ -86,17 +86,37 @@ pub(crate) fn read_primary_blocking() -> Option<String> {
     Some(text)
 }
 
+/// What one image read resolved to — the paste road's outcome (the
+/// audit's F7): the bytes, the honest silence (no image offer stood:
+/// an empty clipboard, no PNG offer, a transport failure — a normal
+/// paste state, no verdict owed), or the refusal the band's verdict
+/// chip narrates.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ImageRead {
+    Bytes(Vec<u8>),
+    None,
+    Refused(dropterm_core::status::PasteRefusal),
+}
+
+/// The read's verdict split — the pure half the test pins: payload
+/// bytes under the cap, the over-cap refusal at it.
+fn classify_read(len: usize) -> Option<dropterm_core::status::PasteRefusal> {
+    (len > dropterm_core::paste_cache::PASTE_PAYLOAD_CAP)
+        .then_some(dropterm_core::status::PasteRefusal::OverCap)
+}
+
 /// One data-control read of the clipboard's image offer — the paste
 /// path's image road (paste-image spec, PI-1; the libcosmic
 /// `load_image` port): PNG, the one interchange format every
 /// compositor converts clipboard images to, read under the paste
-/// cap. `None` is every no-image state — an empty clipboard, no
-/// PNG offer, a transport failure, an over-cap offer — each the
-/// paste's honest silence (warned once where owed).
-pub(crate) fn read_image_blocking(primary: bool) -> Option<Vec<u8>> {
+/// cap. [`ImageRead::None`] is every no-image state — an empty
+/// clipboard, no PNG offer, a transport failure — each the paste's
+/// honest silence (warned once where owed); the refusals name
+/// themselves for the band's verdict chip.
+pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
     let cap = u64::try_from(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP + 1)
         .expect("the paste cap is a constant far below u64::MAX");
-    let (pipe, _mime) = wl_clipboard_rs::paste::get_contents(
+    let (pipe, _mime) = match wl_clipboard_rs::paste::get_contents(
         if primary {
             wl_clipboard_rs::paste::ClipboardType::Primary
         } else {
@@ -104,32 +124,53 @@ pub(crate) fn read_image_blocking(primary: bool) -> Option<Vec<u8>> {
         },
         wl_clipboard_rs::paste::Seat::Unspecified,
         wl_clipboard_rs::paste::MimeType::Specific("image/png"),
-    )
-    .inspect_err(|err| println!("dropterm-gpui: data-control image read — no offer ({err})"))
-    .ok()?;
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            println!("dropterm-gpui: data-control image read — no offer ({err})");
+            return ImageRead::None;
+        }
+    };
     let mut bytes = Vec::new();
     let mut offer = pipe.take(cap);
-    std::io::Read::read_to_end(&mut offer, &mut bytes)
-        .inspect_err(|err| println!("dropterm-gpui: data-control image read failed ({err})"))
-        .ok()?;
-    if bytes.len() > dropterm_core::paste_cache::PASTE_PAYLOAD_CAP {
+    if let Err(err) = std::io::Read::read_to_end(&mut offer, &mut bytes) {
+        println!("dropterm-gpui: data-control image read failed ({err})");
+        return ImageRead::Refused(dropterm_core::status::PasteRefusal::Failed);
+    }
+    if let Some(refusal) = classify_read(bytes.len()) {
         println!(
             "dropterm-gpui: image offer refused — over the {}-byte paste cap",
             dropterm_core::paste_cache::PASTE_PAYLOAD_CAP
         );
-        return None;
+        return ImageRead::Refused(refusal);
     }
-    Some(bytes)
+    ImageRead::Bytes(bytes)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// The seam's policy is the split itself — which write rides
     /// which transport — and the split is decided by a pure
     /// predicate over (focused, primary) the test pins. The two
     /// transports' own behavior is compositor-evidenced (the walk).
     fn rides_gpui(focused: bool, primary: bool) -> bool {
         focused && !primary
+    }
+
+    #[test]
+    fn the_read_verdict_split_is_the_cap() {
+        // At the cap the bytes are the paste's payload; past it the
+        // refusal is the band verdict's input.
+        assert_eq!(
+            classify_read(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP),
+            None
+        );
+        assert_eq!(
+            classify_read(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP + 1),
+            Some(dropterm_core::status::PasteRefusal::OverCap)
+        );
     }
 
     #[test]

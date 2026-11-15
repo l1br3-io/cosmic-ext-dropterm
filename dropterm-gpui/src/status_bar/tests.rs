@@ -41,7 +41,7 @@ fn rich() -> StatusSegments {
 
 #[test]
 fn rows_compose_in_cluster_order_with_the_disc_leftmost_and_clock_rightmost() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None);
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None);
     let ids: Vec<SegmentId> = vm.rows.iter().map(|row| row.id).collect();
     assert_eq!(
         ids,
@@ -89,7 +89,7 @@ fn rows_compose_in_cluster_order_with_the_disc_leftmost_and_clock_rightmost() {
 
 #[test]
 fn row_texts_carry_their_glyphs_and_owned_marks() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None);
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None);
     let text = |id: SegmentId| {
         vm.rows
             .iter()
@@ -112,7 +112,7 @@ fn row_texts_carry_their_glyphs_and_owned_marks() {
 
 #[test]
 fn the_disc_fills_with_the_foreground_and_tints_on_attention() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None);
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None);
     let disc = vm.disc.expect("a running foreground paints the disc");
     assert!(disc.filled);
     assert!(!disc.attention);
@@ -121,7 +121,7 @@ fn the_disc_fills_with_the_foreground_and_tints_on_attention() {
 
     let mut idle = rich();
     idle.running = false;
-    let disc = band_vm(&idle, 2000.0, &fake_measure, None)
+    let disc = band_vm(&idle, 2000.0, &fake_measure, None, None)
         .disc
         .expect("idle disc");
     assert!(!disc.filled);
@@ -134,7 +134,7 @@ fn absent_seats_never_compose_rows_or_hairlines() {
         path: Some("~/src".to_string()),
         ..StatusSegments::default()
     };
-    let vm = band_vm(&sparse, 2000.0, &fake_measure, None);
+    let vm = band_vm(&sparse, 2000.0, &fake_measure, None, None);
     let ids: Vec<SegmentId> = vm.rows.iter().map(|row| row.id).collect();
     assert_eq!(ids, vec![SegmentId::Process, SegmentId::Path]);
     // Two left rows → exactly one separator, between them; none
@@ -147,13 +147,13 @@ fn absent_seats_never_compose_rows_or_hairlines() {
 
 #[test]
 fn the_fit_drops_lowest_value_seats_first_under_width_pressure() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None);
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None);
     assert!(vm.rows.iter().any(|row| row.id == SegmentId::Pasted));
     // Tight: at 8 px/char the rich band consumes well over 300 px —
     // squeezing to 340 drops the paste chip (and only it if the
     // elided path absorbs the rest), the reference DROP_ORDER's
     // first present seat.
-    let tight = band_vm(&rich(), 340.0, &fake_measure, None);
+    let tight = band_vm(&rich(), 340.0, &fake_measure, None, None);
     assert!(
         !tight.rows.iter().any(|row| row.id == SegmentId::Pasted),
         "the paste chip yields first"
@@ -175,7 +175,7 @@ fn the_fit_drops_lowest_value_seats_first_under_width_pressure() {
 fn the_path_elides_from_the_left_under_squeeze() {
     let mut long = rich();
     long.path = Some("~/a-very-long-directory-name/src".to_string());
-    let roomy = band_vm(&long, 2000.0, &fake_measure, None);
+    let roomy = band_vm(&long, 2000.0, &fake_measure, None, None);
     let path = roomy
         .rows
         .iter()
@@ -183,7 +183,7 @@ fn the_path_elides_from_the_left_under_squeeze() {
         .expect("path row");
     assert_eq!(path.text, "⌂ ~/a-very-long-directory-name/src");
 
-    let squeezed = band_vm(&long, 300.0, &fake_measure, None);
+    let squeezed = band_vm(&long, 300.0, &fake_measure, None, None);
     let path = squeezed
         .rows
         .iter()
@@ -200,7 +200,7 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
     let mut failed = rich();
     failed.running_elapsed = None;
     failed.exit_code = Some(3);
-    let vm = band_vm(&failed, 2000.0, &fake_measure, None);
+    let vm = band_vm(&failed, 2000.0, &fake_measure, None, None);
     let exit = vm
         .rows
         .iter()
@@ -221,7 +221,7 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
         value: None,
         refreshed_at: std::time::Instant::now(),
     });
-    let vm = band_vm(&errored, 2000.0, &fake_measure, None);
+    let vm = band_vm(&errored, 2000.0, &fake_measure, None, None);
     let progress = vm
         .rows
         .iter()
@@ -235,7 +235,7 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
 fn the_halo_rings_the_disc_or_stands_alone_at_the_edge() {
     let mut marked = rich();
     marked.missed_activity = true;
-    let vm = band_vm(&marked, 2000.0, &fake_measure, None);
+    let vm = band_vm(&marked, 2000.0, &fake_measure, None, None);
     let disc = vm.disc.expect("disc present");
     assert_eq!(vm.halo_center_x, Some(disc.x + DISC_SIZE / 2.0));
 
@@ -244,20 +244,26 @@ fn the_halo_rings_the_disc_or_stands_alone_at_the_edge() {
     let mut alone = marked;
     alone.process = String::new();
     alone.running = false;
-    let vm = band_vm(&alone, 2000.0, &fake_measure, None);
+    let vm = band_vm(&alone, 2000.0, &fake_measure, None, None);
     assert!(vm.disc.is_none());
     assert_eq!(vm.halo_center_x, Some(PAD_X / 2.0));
 
     // No news: no halo.
     assert_eq!(
-        band_vm(&rich(), 2000.0, &fake_measure, None).halo_center_x,
+        band_vm(&rich(), 2000.0, &fake_measure, None, None).halo_center_x,
         None
     );
 }
 
 #[test]
 fn an_empty_band_composes_nothing() {
-    let vm = band_vm(&StatusSegments::default(), 1280.0, &fake_measure, None);
+    let vm = band_vm(
+        &StatusSegments::default(),
+        1280.0,
+        &fake_measure,
+        None,
+        None,
+    );
     assert!(vm.rows.is_empty());
     assert!(vm.separators.is_empty());
     assert!(vm.disc.is_none());
@@ -270,7 +276,7 @@ fn the_flash_swaps_only_the_copied_rows_display() {
     // (settled at the click) stays the full value; the path's own
     // fit measure keeps the steady text (the reference's rule: the
     // flash never re-fits the path).
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, Some(SegmentId::Path));
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, Some(SegmentId::Path), None);
     let path = vm
         .rows
         .iter()
@@ -333,4 +339,54 @@ fn attention_red_picks_by_strip_luminance_and_degrades_honestly() {
     // A scheme with no red at all degrades to the pane foreground —
     // monochrome, never an invented hue.
     assert_eq!(attention_color(None, None, fg, dark_strip), fg);
+}
+
+#[test]
+fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
+    // With pastes standing, the verdict swaps the pasted chip's
+    // display for its 3 s window — measured like text, the row
+    // re-lays, and the seat wears the attention red (the exit
+    // chip's own rule).
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        Some(PasteRefusal::OverCap),
+    );
+    let row = vm
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Pasted)
+        .expect("the pasted seat stands in the rich band");
+    assert_eq!(row.text, "✗ image over 32 MiB cap");
+    assert!(row.attention);
+
+    // Without pastes the verdict takes the clock's seat.
+    let mut sparse = rich();
+    sparse.pasted = None;
+    let vm = band_vm(
+        &sparse,
+        2000.0,
+        &fake_measure,
+        None,
+        Some(PasteRefusal::Failed),
+    );
+    let row = vm
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Clock)
+        .expect("the clock is the right cluster's tail");
+    assert_eq!(row.text, "✗ paste failed");
+    assert!(row.attention);
+
+    // The steady values return once the verdict expires.
+    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None);
+    let row = vm
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Pasted)
+        .expect("the pasted seat stands in the rich band");
+    assert_eq!(row.text, "▦ 3 images");
+    assert!(!row.attention);
 }

@@ -416,6 +416,34 @@ fn copy_payloads_stay_bare_values() {
 }
 
 #[test]
+fn the_refusal_verdict_takes_the_pasted_seat_then_the_clock() {
+    // With pastes standing the verdict takes their chip's seat —
+    // the position where the user's paste news lives.
+    let with_pastes = StatusSegments {
+        clock: Some("14:32".to_owned()),
+        pasted: Some(3),
+        ..Default::default()
+    };
+    assert_eq!(refusal_seat(&with_pastes), SegmentId::Pasted);
+    // Without one, the clock — the right cluster's tail a rendered
+    // band always carries.
+    let without = StatusSegments {
+        pasted: None,
+        ..with_pastes
+    };
+    assert_eq!(refusal_seat(&without), SegmentId::Clock);
+}
+
+#[test]
+fn the_refusal_display_names_the_cap_in_whole_mib() {
+    assert_eq!(
+        refusal_display(PasteRefusal::OverCap),
+        "✗ image over 32 MiB cap"
+    );
+    assert_eq!(refusal_display(PasteRefusal::Failed), "✗ paste failed");
+}
+
+#[test]
 fn program_attention_is_only_blocked_and_error() {
     for state in [
         ProgramState::Idle,

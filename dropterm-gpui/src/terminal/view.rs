@@ -83,6 +83,10 @@ pub(crate) enum PaneSignal {
     /// (the pasted-images chip's input — the panel itself rides the
     /// chrome slices).
     ImagePasted(TabId, std::path::PathBuf, Vec<u8>),
+    /// The pane's image paste refused (the audit's F7): the cause
+    /// rides to the shell, whose band narrates the verdict — the
+    /// paste action's visible failure, never a silent one.
+    PasteRefused(dropterm_core::status::PasteRefusal),
 }
 
 /// The pane's polled attention latch (the tab markers' input): bell
@@ -666,13 +670,25 @@ impl TerminalPane {
             if primary { "Primary" } else { "" }
         );
         cx.spawn(async move |this, cx| {
-            let bytes = cx
+            let read = cx
                 .background_executor()
                 .spawn(async move { clipboard::read_image_blocking(primary) })
                 .await;
-            let Some(bytes) = bytes else {
-                println!("dropterm-gpui: paste image — no image offer either; nothing pasted");
-                return;
+            let bytes = match read {
+                clipboard::ImageRead::Bytes(bytes) => bytes,
+                clipboard::ImageRead::None => {
+                    println!("dropterm-gpui: paste image — no image offer either; nothing pasted");
+                    return;
+                }
+                clipboard::ImageRead::Refused(refusal) => {
+                    println!("dropterm-gpui: paste image refused — {refusal:?}");
+                    let _ = this.update(cx, |pane, _| {
+                        if let Some(signals) = &pane.shell_signals {
+                            let _ = signals.send(PaneSignal::PasteRefused(refusal));
+                        }
+                    });
+                    return;
+                }
             };
             let cached = cx
                 .background_executor()
@@ -681,6 +697,17 @@ impl TerminalPane {
                 })
                 .await;
             let Some((path, bytes)) = cached else {
+                // The cache's own refusals (unresolvable cache dir, a
+                // failed write) reach the same verdict the read-side
+                // cap refusal does — the paste's one visible failure.
+                println!("dropterm-gpui: paste image — the paste cache refused; nothing pasted");
+                let _ = this.update(cx, |pane, _| {
+                    if let Some(signals) = &pane.shell_signals {
+                        let _ = signals.send(PaneSignal::PasteRefused(
+                            dropterm_core::status::PasteRefusal::Failed,
+                        ));
+                    }
+                });
                 return;
             };
             let _ = this.update(cx, |pane, cx| {
