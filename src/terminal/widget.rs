@@ -1281,8 +1281,9 @@ where
                         panel_fill,
                     );
 
-                    // The selected row's highlight (the scrollbar's own
-                    // pressed-state recipe, theme-derived).
+                    // The selected row's highlight: the panel surface
+                    // tinted with the container's own `on` color
+                    // ([`menu_selection_style`]).
                     if window.contains(&selected) {
                         #[expect(
                             clippy::cast_precision_loss,
@@ -1304,14 +1305,7 @@ where
                                 snap: true,
                                 ..Default::default()
                             },
-                            Color::from(
-                                cosmic_theme
-                                    .background(theme.transparent)
-                                    .component
-                                    .pressed
-                                    .without_alpha()
-                                    .with_alpha(0.5),
-                            ),
+                            menu_selection_style(cosmic_theme, theme.transparent),
                         );
                     }
 
@@ -3030,6 +3024,24 @@ fn menu_panel_style(
     )
 }
 
+/// The completion menu's selected-row fill (suggest-menu spec): the
+/// panel surface tinted with its container's own `on` color — the
+/// theme's text color for that surface — at 20%, opaque. `on` is the
+/// one palette entry derived to contrast the surface by design, so
+/// the band always moves the right way (darkens a light panel,
+/// lightens a dark one) whatever the theme or its accent. The first
+/// cut copied the scrollbar's pressed-state recipe (a 0.5-alpha
+/// tint): under the stock light palette that left a ~10% step against
+/// the elevated near-white panel — the light-theme report's invisible
+/// highlight — and the transparent light palette's own pressed state
+/// is only ~4% off its base, so no pressed-based fill could carry the
+/// highlight there. Pure theme math, headless-testable.
+fn menu_selection_style(cosmic_theme: &cosmic::cosmic_theme::Theme, transparent: bool) -> Color {
+    let container = cosmic_theme.background(transparent);
+    let fill = container.component.base.without_alpha().with_alpha(1.0);
+    Color::from(container.on.with_alpha(0.2).over(fill))
+}
+
 /// The shell bytes a no-Ctrl character arm delivers for a press whose
 /// `text` carries `character`: the character's UTF-8, `\x1B`-prefixed
 /// under Alt. `None` — a press with no text, a dead key
@@ -3154,7 +3166,7 @@ mod tests {
     use super::{
         DisabledFlow, EdgeScrollDirection, MenuRouting, accumulate_wheel_lines, context_menu_press,
         disabled_forwards, edge_scroll_adjustment, image_draw_rect, menu_key, menu_panel_bounds,
-        menu_panel_style, menu_visible_window,
+        menu_panel_style, menu_selection_style, menu_visible_window,
     };
     use alacritty_terminal::term::cell::ImageCell;
     use cosmic::cosmic_theme::palette::WithAlpha;
@@ -3730,5 +3742,51 @@ mod tests {
         );
         assert_eq!(delta, 1);
         assert!((remainder - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_selected_menu_row_reads_over_the_panel_in_both_themes() {
+        // The light-theme report: the highlight was a pressed tint at
+        // half alpha, ~10% against the elevated near-white panel, so
+        // the selected row did not read; the transparent light
+        // palette's pressed state is itself only ~4% off its base.
+        // The band is now the container's `on` tint at 20%,
+        // composited opaque; pin a contrast floor in both stock modes
+        // and both surface variants.
+        fn luminance(color: Color) -> f32 {
+            fn channel(c: f32) -> f32 {
+                if c <= 0.039_28 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        for theme in [cosmic::Theme::dark(), cosmic::Theme::light()] {
+            for transparent in [false, true] {
+                let (fill, _) = menu_panel_style(theme.cosmic(), transparent);
+                let selected = menu_selection_style(theme.cosmic(), transparent);
+                assert_eq!(selected.a, 1.0, "the band fully covers the panel fill");
+                let (lighter, darker) = {
+                    let (a, b) = (luminance(fill), luminance(selected));
+                    (a.max(b), a.min(b))
+                };
+                let contrast = (lighter + 0.05) / (darker + 0.05);
+                assert!(
+                    contrast >= 1.5,
+                    "{:?} (transparent: {transparent}) highlight contrast {contrast:.2}:1 \
+                     is too faint against the panel (fill {:?} selected {:?})",
+                    theme.theme_type,
+                    (fill.r * 255.0, fill.g * 255.0, fill.b * 255.0, fill.a),
+                    (
+                        selected.r * 255.0,
+                        selected.g * 255.0,
+                        selected.b * 255.0,
+                        selected.a
+                    )
+                );
+            }
+        }
     }
 }
