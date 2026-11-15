@@ -628,14 +628,19 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
 
 **Checkpoint — parity:** Phase 3's exit line holds on both compositors.
 
-- [ ] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
+- [x] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
       deleted; applet canary — the code swap proceeds under the
-      2026-11-15 walk-skip ruling (the canary row itself parks with
-      py-4)
-- [ ] cu-2 Docs true (architecture rewrite incl. diagrams;
-      known-issues fractional row)
+      2026-11-15 walk-skip ruling *(done 2026-11-15, a2cd89f: package
+      and bin renamed, the frontend deleted, the root a virtual
+      workspace, the workflow's version read re-pointed; `just check`
+      and `just build-all` green — the canary row parks with py-4)*
+- [x] cu-2 Docs true (architecture rewrite incl. diagrams;
+      known-issues fractional row) *(done 2026-11-15, 7d98912)*
 - [ ] cu-3 The deferred release, `/release` ritual, walk gate — owner
-      fires it
+      fires it *(owner-gated: the release stays the owner's to cut;
+      nothing here pushes or tags)*
 
 **Checkpoint — Phase 3 exits:** parity proven, one binary, the release
-cut; Phase 4 may open.
+cut; Phase 4 may open. *(The code is one binary; parity's proof is
+py-4's parked walk and the release is cu-3's owner gate — the
+checkpoint rides both.)*

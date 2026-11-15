@@ -32,13 +32,19 @@ is deleted; workspace, justfile, and release workflow carry one terminal
 binary; `dropterm-core` and the applet build clean.
 
 **Acceptance criteria:**
-- [ ] Exactly one terminal binary, `dropterm`, GPUI-backed; `just check`
-      and `just build-all` green
+- [x] Exactly one terminal binary, `dropterm`, GPUI-backed; `just check`
+      and `just build-all` green *(a2cd89f: the GPUI crate renamed
+      `dropterm`, the libcosmic frontend deleted — 31,672 lines — the
+      root a virtual workspace, the release workflow's version read
+      re-pointed; `just check` and `just build-all` green on the
+      result, `target/release/dropterm` the GPUI binary)*
 - [ ] The applet canary: toggle, state watch, and the icon row answer
+      *(parked with py-4, owner ruling 2026-11-15 — un-park by the
+      owner running the canary row)*
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: applet canary on the validation VM
+- [x] Tests pass: `just check`
+- [ ] Manual: applet canary on the validation VM *(parked with py-4)*
 
 **Dependencies:** `gpui-parity` merged · **Files:** the crate moves and
 deletions, workflow, justfile · **Scope:** M
@@ -52,11 +58,16 @@ integer-rounded display-metadata note; README and configuration checked
 for anything the swap invalidates.
 
 **Acceptance criteria:**
-- [ ] Every doc states the GPUI build's truth; docs-check green; no doc
-      describes deleted code
+- [x] Every doc states the GPUI build's truth; docs-check green; no doc
+      describes deleted code *(7d98912: architecture rewritten to the
+      one-core-one-bin map, known-issues gains the two carried rows
+      and restates the mechanism rows on the GPUI truth, README's
+      tagline/risks/attribution re-truthed, images.md ships the
+      labeled pair and names the chip as the one wired door, the stale
+      `src/` paths re-pointed)*
 
 **Verification:**
-- [ ] Tests pass: `just check` (docs-check included)
+- [x] Tests pass: `just check` (docs-check included)
 
 **Dependencies:** Task 1 · **Files:** the docs pages · **Scope:** S
 
