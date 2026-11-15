@@ -97,3 +97,26 @@ artifacts; core fixes if rows demand them · **Scope:** L
 
 - [ ] Phase 3's exit line holds: parity with the libcosmic build on COSMIC
       and sway, evidenced row by row
+
+## Walk note: the UX-audit parity divergences (2026-11-15, owner-approved scope)
+
+The UX-audit fix pass ([tasks/ux-audit-fixes.md](ux-audit-fixes.md)) lands
+its fixes in core + the GPUI frontend only, by scope ruling. Two deliberate
+divergences stand until cutover deletes the libcosmic frontend:
+
+- **Images panel, delete-confirm pair.** The libcosmic panel's Confirm/Keep
+  pair is the ✓/✕ icon pair with tooltips (the row-width reason recorded in
+  [docs/images.md](../docs/images.md)); the drawer's profile delete shows
+  the labeled shape (`Confirm delete` / `Keep`). Ruling: **no code change
+  on the libcosmic side** — when the GPUI images panel is built (its
+  chrome slice), its confirm pair ships labeled, matching the drawer's
+  shape. The parity walk's images-panel rows read against the libcosmic
+  pair until then.
+- **Paste-refusal verdict chip.** A refused image paste narrates a
+  transient verdict chip in the GPUI band (3 s, attention red, the
+  pasted-images seat — or the clock's); the libcosmic band keeps the
+  log-only behavior. The checklist's paste rows walk the verdict on GPUI
+  and the silence on libcosmic.
+
+The `scroll_to_bottom` keybind is **not** a divergence: it landed in the
+shared core registry and both frontends' funnels.
