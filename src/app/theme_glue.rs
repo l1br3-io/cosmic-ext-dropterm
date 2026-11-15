@@ -5,23 +5,17 @@ use cosmic::app::Task;
 
 use super::{DropTerm, Message, resolved_profile};
 use crate::terminal;
-// The pure decisions moved to core (shared-core spec); this file
-// keeps the impure shell — the palette reader and the runtime task.
+// Only the impure shell lives here; the pure decisions sit in
+// crate::theme_glue so they stay headless-testable.
 pub(crate) use crate::theme_glue::{
     ThemeOverrideKind, effective_colors, effective_is_dark, theme_override, window_bg_color,
 };
 
-/// The user's own system palette for the effective mode — the source
-/// of the window-background fallback derivation
-/// ([`Self::refresh_window_bg_color`]). Reads the palette files via
-/// cosmic-config, with the built-in fallback on failure, exactly like
-/// [`theme_override_task`] does. Deliberately NOT
-/// [`cosmic::theme::active`]: the process global can sit on the
-/// opposite mode's palette while the preference pin is still "set"
-/// (see [`Self::refresh_window_bg_color`]'s race note), so the
-/// fallback follows the mode the caller decided, the same way
-/// [`effective_colors`] does. Free-standing so the mode→palette
-/// mapping is headless-pinnable.
+/// The system palette for `is_dark`: the palette source for the
+/// window-background fallback in [`Self::refresh_window_bg_color`].
+/// Deliberately not [`cosmic::theme::active`]; that fn's race note is
+/// why the caller's mode decision, never the process global, picks
+/// the palette. Free-standing so the mapping is headless-testable.
 pub(super) fn system_palette_for_mode(is_dark: bool) -> cosmic::Theme {
     if is_dark {
         cosmic::theme::system_dark()
@@ -30,32 +24,21 @@ pub(super) fn system_palette_for_mode(is_dark: bool) -> cosmic::Theme {
     }
 }
 
-/// The impure shell over [`theme_override`]: builds the override
-/// theme from the user's own system palettes — never libcosmic's
-/// built-in constants — marks it through `ThemeType::prefer_dark`
-/// (which only writes through on `System`, the only theme type these
-/// constructors produce), and hands it to the runtime's global.
-/// Everything decidable is decided in the pure fns above; the
-/// chained [`Message::ReapplyColors`] re-runs the color apply once
-/// the global has landed, so the window-background derivation — the
-/// one consumer that must read the global — sees the new mode.
-///
-/// The follow-up rides [`Task::chain`], never [`Task::then`]: `then`
-/// CONSUMES the first task's output and replaces it with the
-/// continuation's, so `set_theme(...).then(...)` would silently drop
-/// the `Action::AppThemeChange` message — the pin would never reach
-/// the runtime and the theme would stay whatever it was (the
-/// "dark mode does nothing" bug). `chain` forwards every output of
-/// the first task and only then runs the second, preserving both
-/// messages and their order. Pinned by
-/// `theme_override_task_delivers_set_theme_then_reapply`.
+/// The impure shell over [`theme_override`]: hands the runtime the
+/// user's own system palette (never libcosmic's built-in constants),
+/// marked through `ThemeType::prefer_dark` (which only writes
+/// through on the `System` themes these constructors produce), then
+/// chains a [`Message::ReapplyColors`] echo so the window-background
+/// derivation, the one consumer that reads the global, sees the new
+/// mode. The follow-up rides [`Task::chain`], never [`Task::then`]:
+/// `then` consumes the first task's output, so the
+/// `Action::AppThemeChange` message would never reach the runtime;
+/// `chain` forwards every output, preserving both messages and their
+/// order.
 pub(super) fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
     let (mut theme, prefer_dark) = match kind {
         ThemeOverrideKind::PinDark => (cosmic::theme::system_dark(), Some(true)),
         ThemeOverrideKind::PinLight => (cosmic::theme::system_light(), Some(false)),
-        // Restore: re-read the system mode from cosmic-config fresh
-        // and clear the marker, so system flips resume driving the
-        // app.
         ThemeOverrideKind::FollowSystem => (cosmic::theme::system_preference(), None),
     };
     theme.theme_type.prefer_dark(prefer_dark);
@@ -63,52 +46,36 @@ pub(super) fn theme_override_task(kind: ThemeOverrideKind) -> Task<Message> {
 }
 
 impl DropTerm {
-    /// Applies the current config and theme to every tab's terminal.
-    /// Colors and font resolve per tab through the
-    /// [`resolved_profile`]/[`effective_colors`] chain — a profile
-    /// tab runs its profile's scheme and font, every other tab the
-    /// global picks — so one pass can paint a mixed pair differently;
-    /// the window background then follows the active tab's
-    /// resolution, keeping chrome and unset-bg cells in step with
-    /// whichever tab is on screen.
+    /// Applies the current config and theme to every tab's terminal:
+    /// each tab resolves its own colors and font (a profile tab its
+    /// profile's picks, every other tab the global ones), so one pass
+    /// can paint a mixed pair differently; the window background
+    /// follows the active tab's resolution.
     pub(super) fn apply_config_to_tabs(&mut self) {
-        // The window background must move BEFORE any tab's rewalk:
-        // `set_config`'s rebuild snapshots the window-bg fallback per
-        // cell (`convert_color` reads the process-global live), so the
-        // refresh-then-rewalk order inside [`Self::refresh_active_window_bg`]
-        // is what makes a theme flip land in one frame. The old
-        // refresh-after order left every default-background cell — and
-        // the full-surface default quad — wearing the previous theme's
-        // background, healed only where later grid damage rewalked a
-        // line: the grayish cover over the editor on an Application
-        // theme flip, receding on focus and leaving one-line fragments
-        // (hardware walk 2026-10-08).
+        // The window background must refresh BEFORE any tab's rewalk:
+        // `set_config`'s rebuild snapshots the fallback background per
+        // cell (`convert_color` reads the process global live), so a
+        // stale global at rewalk time bakes previous-theme cells that
+        // only later grid damage heals.
         self.refresh_active_window_bg();
     }
 
     /// Refreshes the process-global window background from the
-    /// ACTIVE tab's resolved colors (the profile-appearance ruling):
-    /// the fallback background is one value, so it must belong to the
-    /// tab actually on screen — every `active_tab` assignment
-    /// and every config pass funnels through here. No tabs
-    /// (startup, or momentarily mid-close) resolves the global
-    /// pick, the pre-initiative behavior.
+    /// ACTIVE tab's resolved colors: the fallback is one value, so it
+    /// belongs to the tab on screen; every active-tab change and
+    /// every config pass funnels through here. No tabs (startup, or
+    /// momentarily mid-close) resolves the global pick.
     ///
-    /// A moved window background also invalidates every tab whose
-    /// scheme defers it (the COSMIC pair), whose cell snapshots and
-    /// default quad resolved the old value at their last rewalk — so
-    /// the store is followed by one `set_config` pass over all tabs.
-    /// The engine's `update_default_colors` reads the global live and
-    /// only rewalks when a tab's default metadata actually moved:
-    /// scheme-owning tabs compare equal and update nothing, and the
-    /// pass is what heals a plain tab switched in under a different
-    /// window background (the tab-switch door into the same stale
-    /// snapshot as the theme flip).
+    /// A moved background invalidates every tab whose scheme defers
+    /// it, so the store is followed by one `set_config` pass over all
+    /// tabs; the engine's `update_default_colors` rewalks only a tab
+    /// whose default metadata actually moved, which is what heals a
+    /// plain tab switched in under a different window background.
     pub(super) fn refresh_active_window_bg(&self) {
-        // The config preference is the source of truth:
-        // `effective_is_dark`, not a direct global read, decides the
-        // mode, so a pick applies colors in this same pass — before
-        // the async `set_theme` task lands and moves the global.
+        // The config preference decides the mode here, not a global
+        // read: a pick must apply its colors in this same pass,
+        // before the async `set_theme` task lands and moves the
+        // global.
         let is_dark = effective_is_dark(self.config.theme_preference, cosmic::theme::is_dark());
         let active_profile = resolved_profile(
             &self.config,
@@ -126,28 +93,23 @@ impl DropTerm {
         }
     }
 
-    /// Mirrors cosmic-term's own `update_config`: the effective window
-    /// background color is a process-global (`terminal::WINDOW_BG_COLOR`)
-    /// used as a fallback wherever a color scheme leaves "background"
-    /// unset, so it must be refreshed whenever the active tab's
+    /// Stores the effective window background into the process global
+    /// (`terminal::WINDOW_BG_COLOR`), the fallback for cells whose
+    /// color scheme leaves background unset (mirrors cosmic-term's
+    /// `update_config`); refresh it whenever the active tab's
     /// resolution, the global scheme, or the COSMIC theme changes.
     ///
-    /// The fallback is derived from the palette matching `is_dark` — the
-    /// caller's `effective_is_dark` decision — via
-    /// [`cosmic::theme::system_dark`]/[`cosmic::theme::system_light`],
-    /// the same palettes [`theme_override_task`] pins. It must NOT read
-    /// [`cosmic::theme::active`]: when the preference pins a mode, a
-    /// startup race in libcosmic's theme watcher can deliver the other
-    /// mode's `SystemThemeChange` (the watcher is built before the pin
-    /// lands), and its handler writes the delivered palette into the
-    /// process global while preserving only the `prefer_dark` marker —
-    /// `active()` then reports the wrong mode with the pin still "set",
-    /// and every later refresh re-derives the opposite-mode background
-    /// under cells that correctly resolve the pinned scheme (the
-    /// white-background-in-dark-mode bug, hardware walk 2026-10-12).
-    /// Deriving from the mode the same way `effective_colors` does
-    /// keeps the fallback and the cells in step whatever the global
-    /// says.
+    /// The fallback derives from the palette matching `is_dark`, the
+    /// caller's `effective_is_dark` decision, never from
+    /// [`cosmic::theme::active`]: with a pinned mode, libcosmic's
+    /// theme watcher (built before the pin lands) can deliver the
+    /// opposite mode's palette, and its handler writes that palette
+    /// into the process global while keeping the `prefer_dark`
+    /// marker, so `active()` reports the wrong mode with the pin
+    /// still set and later refreshes would derive the opposite-mode
+    /// background under cells that correctly resolve the pinned
+    /// scheme. Following the caller's decision keeps the fallback
+    /// and the cells in step whatever the global says.
     pub(super) fn refresh_window_bg_color(colors: &aterm::color::Colors, is_dark: bool) {
         let theme = system_palette_for_mode(is_dark);
         let color = cosmic::iced::Color::from(theme.cosmic().background(theme.transparent).base);
@@ -173,12 +135,10 @@ impl DropTerm {
 mod tests {
     use super::*;
 
-    /// Drives a [`Task`](cosmic::app::Task)'s stream to completion on
-    /// the current thread, collecting every runtime
-    /// [`Action::Output`] message in delivery order. `Task::then`
-    /// consumes the first task's output and replaces it with the
-    /// continuation's, so only a stream-level check can prove a
-    /// message actually ships.
+    /// Drives a task's stream to completion, collecting every output
+    /// in delivery order: `Task::then` consumes the first task's
+    /// output, so only a stream-level check can prove a message
+    /// actually ships.
     fn delivered_outputs<T: Send + 'static>(task: cosmic::app::Task<T>) -> Vec<cosmic::Action<T>> {
         use cosmic::iced::futures::StreamExt;
         use cosmic::iced::futures::executor::block_on;
@@ -198,17 +158,15 @@ mod tests {
 
     #[test]
     fn theme_override_task_delivers_set_theme_then_reapply() {
-        // `Task::then` would CONSUME the `set_theme` output — the
-        // pin message would never reach the runtime, the process
-        // theme would never flip, and pinning Dark would leave a
-        // light, frosted terminal. The task must deliver BOTH
-        // messages: the theme override first, the `ReapplyColors`
-        // echo second — `Task::chain`'s contract.
+        // `Task::then` would consume the `set_theme` output: the pin
+        // never reaches the runtime, and pinning Dark leaves a light,
+        // frosted terminal. The task must deliver both messages,
+        // override first, echo second.
         for (kind, expected_prefer) in [
             (ThemeOverrideKind::PinDark, Some(true)),
             (ThemeOverrideKind::PinLight, Some(false)),
-            // FollowSystem's palette is whatever the system prefers —
-            // only the cleared marker is environment-independent.
+            // FollowSystem's palette follows the host; only the
+            // cleared marker is environment-independent.
             (ThemeOverrideKind::FollowSystem, None),
         ] {
             let outputs = delivered_outputs(theme_override_task(kind));
@@ -222,11 +180,10 @@ mod tests {
                 panic!("first delivered message must be the theme override for {kind:?}");
             };
             // The pins construct their System theme outright, so they
-            // must always be System-typed with the exact marker.
-            // FollowSystem re-reads the system mode, and on a host
-            // with no theme-mode source (headless CI)
-            // `system_preference()` falls back to a plain
-            // `Theme::dark()` — no System typing, no marker to clear.
+            // must be System-typed with the exact marker;
+            // FollowSystem on a host with no theme-mode source
+            // (headless CI) falls back to a plain `Theme::dark()`,
+            // with no System typing and no marker to clear.
             match (&theme.theme_type, expected_prefer) {
                 (cosmic::theme::ThemeType::System { prefer_dark, .. }, _) => {
                     assert_eq!(*prefer_dark, expected_prefer, "marker for {kind:?}");
