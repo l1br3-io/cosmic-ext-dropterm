@@ -165,18 +165,10 @@ pub(crate) fn pane_options(
     }
 }
 
-/// The program word the pane is *spawned as* (the libcosmic
-/// `spawned_as_program`, pared to the GPUI build's spawn shapes):
-/// the explicit program when it is runnable, else the config's
-/// resolved shell — spawn truth resolved at construction, never a
-/// process-name heuristic, so the path provider's allowlist gates
-/// on the program the PTY actually execs.
-pub(crate) fn spawned_as_program(explicit: Option<&str>, config: &DropTermConfig) -> String {
-    match explicit {
-        Some(program) if dropterm_core::config::program_is_runnable(program) => program.to_string(),
-        _ => config.resolved_shell(),
-    }
-}
+// The spawn truth lives in core now (py-5): `dropterm_core::spawn::
+// spawned_as_program` resolves the command's program — wrapper-free —
+// through the one resolution both frontends share, superseding this
+// module's explicit-or-default shape.
 
 #[cfg(test)]
 mod tests {
@@ -405,27 +397,5 @@ mod tests {
             options.autosuggestions_specs_table.as_ptr(),
             table.as_ptr()
         ));
-    }
-
-    #[test]
-    fn the_spawn_truth_resolves_the_explicit_shell_or_the_config_default() {
-        // The fallback truth is the config's own resolution
-        // (machine-dependent below the config pick — $SHELL or
-        // /bin/sh — so the test pins against the same call).
-        let config = DropTermConfig {
-            shell: Some("/bin/definitely-not-here".to_string()),
-            ..DropTermConfig::default()
-        };
-        let resolved = config.resolved_shell();
-        assert_eq!(spawned_as_program(None, &config), resolved);
-        // An explicit runnable program is its own truth (/bin/sh
-        // exists everywhere this suite runs).
-        assert_eq!(spawned_as_program(Some("/bin/sh"), &config), "/bin/sh");
-        // An explicit program that is gone degrades to the resolved
-        // default (the pty's own fallback truth).
-        assert_eq!(
-            spawned_as_program(Some("/bin/not-a-shell"), &config),
-            resolved
-        );
     }
 }

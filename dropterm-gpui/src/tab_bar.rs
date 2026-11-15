@@ -192,6 +192,15 @@ pub(crate) struct TabRecord {
     /// backed and deliberately not serialized (the rows die with the
     /// tab while the files outlive them in the paste cache).
     pub(crate) pasted_images: Vec<dropterm_core::tabs::PastedImage>,
+    /// The profile id this tab launched under, if any (py-5): set at
+    /// spawn — never on a plain or degraded arm — saved by the
+    /// session and re-resolved by id at restore, exactly core's
+    /// `Tab::profile` semantics on this frontend's record.
+    pub(crate) profile: Option<String>,
+    /// The session-ephemeral flag a `--cmd` spawn carries (py-5): the
+    /// session saves the profile id and never this, the two facts
+    /// being each other's opposite.
+    pub(crate) ephemeral: bool,
     /// Whether this tab already posted a bell notification during the
     /// current hide period (gpui-parity Task 3): armed when a
     /// notification is posted, cleared for every tab when the surface
@@ -249,9 +258,34 @@ impl TabList {
             last_running_comm: None,
             pasted_images: Vec::new(),
             bell_notified: false,
+            profile: None,
+            ephemeral: false,
         };
         self.active = insert_new_tab(&mut self.tabs, self.active, after_current, tab);
         id
+    }
+
+    /// Records the spawn facts on the tab with `id` (py-5): the
+    /// profile id the spawn ran under — `None` on every plain and
+    /// degraded arm — and the session-ephemeral flag a `--cmd` spawn
+    /// carries. Called by the one spawning body right after the pane
+    /// boots; an unknown id records nothing.
+    pub(crate) fn note_spawn_facts(&mut self, id: TabId, profile: Option<String>, ephemeral: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.profile = profile;
+            tab.ephemeral = ephemeral;
+        }
+    }
+
+    /// The profile id the tab with `id` launched under, `None` for an
+    /// unknown id or a plain spawn — the session capture's and the
+    /// band's profile-seat input (the caller resolves the id against
+    /// the live config, never a stale name).
+    pub(crate) fn profile_id_of(&self, id: TabId) -> Option<&str> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.profile.as_deref())
     }
 
     /// The active tab's id, `None` while the list is empty.
@@ -472,6 +506,8 @@ impl TabList {
             title_override,
             pinned: false,
             attention: Attention::None,
+            profile: None,
+            ephemeral: false,
         };
         tab.title = resolve_record_title(&tab, mode);
         self.active = insert_new_tab(&mut self.tabs, self.active, true, tab);
@@ -514,15 +550,18 @@ impl TabList {
     }
 
     /// Spawns one restored tab (gpui-parity Task 3, the session
-    /// restore's record): appended at the list's end in the plan's
-    /// order, carrying the saved chrome verbatim — the resolved
-    /// title, the rename pin, the saved pin.
+    /// restore's record; py-5 added the profile seat): appended at
+    /// the list's end in the plan's order, carrying the saved chrome
+    /// verbatim — the resolved title, the rename pin, the saved pin —
+    /// and the profile id the plan re-resolved (a saved id the config
+    /// no longer carries restores plain, the plan's own rule).
     pub(crate) fn spawn_restored(
         &mut self,
         title: String,
         title_override: Option<String>,
         pinned: bool,
         cwd: Option<PathBuf>,
+        profile: Option<String>,
     ) -> TabId {
         let id = TabId(self.next_id);
         self.next_id += 1;
@@ -537,6 +576,8 @@ impl TabList {
             last_running_comm: None,
             pasted_images: Vec::new(),
             bell_notified: false,
+            profile,
+            ephemeral: false,
         });
         id
     }

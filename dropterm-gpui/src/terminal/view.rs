@@ -2090,28 +2090,100 @@ pub(crate) fn pane_with_pump(
     })
 }
 
-/// The pane's spawn: the program word beside the PTY shape —
-/// `tty::Shell` keeps its fields private, and the program is spawn
-/// truth the suggest gate reads, so it stays readable where the
-/// `Shell` is constructed (the walk's seeding line, the shell's
-/// tab spawn).
+/// The per-tab appearance a spawn resolves — the profile seams'
+/// `profile.override ?? global` per field (scheme, font, scrollback),
+/// resolved once here so the pane's boot and the suggest options read
+/// one shape.
 #[derive(Clone)]
-pub(crate) struct PaneSpawn {
+pub(crate) struct PaneAppearance {
+    pub colors: Colors,
+    pub font_size: u16,
+    pub scrollback: u32,
+}
+
+/// The pane's spawn request (py-5): everything `boot_pane` needs
+/// beyond the config, resolved from a [`SpawnCommand`] through core's
+/// one spawn resolution — the PTY shape (the command-then-shell wrap,
+/// the degradations, the env merge), the suggest gate's spawn truth
+/// (the command's program, never the wrapper), the profile id the
+/// spawn ran under (recorded on the tab, saved by the session), and
+/// the per-tab appearance the id resolves.
+#[derive(Clone)]
+pub(crate) struct PaneRequest {
     pub program: String,
     pub args: Vec<String>,
     /// The directory the PTY execs in (`None` inherits this
     /// process's — the session restore's validated cwd rides here).
     pub cwd: Option<std::path::PathBuf>,
+    /// The env map merged over the inherited environment at exec
+    /// (empty = inherit untouched).
+    pub env: std::collections::HashMap<String, String>,
+    /// The program word the tab is *spawned as* — the path provider's
+    /// allowlist gates on the command's program, never the wrap.
+    pub spawned_as: String,
+    /// The profile id this spawn runs under, `None` on every plain
+    /// and degraded arm.
+    pub profile_id: Option<String>,
+    pub appearance: PaneAppearance,
+}
+
+impl PaneRequest {
+    /// Resolves a [`SpawnCommand`] against the config into the pane's
+    /// boot shape: core's `spawn_parts` (the one resolution both
+    /// frontends share) plus the appearance seams re-resolving the
+    /// profile id (the libcosmic `spawn_terminal`'s own chain — the
+    /// preset's overrides, else the global picks; the plain arm is
+    /// literally [`boot_colors`], the gm-2 one-chain pin).
+    pub(crate) fn for_command(
+        command: &dropterm_core::spawn::SpawnCommand,
+        cwd: Option<std::path::PathBuf>,
+        config: &dropterm_core::config::DropTermConfig,
+    ) -> Self {
+        let parts = dropterm_core::spawn::spawn_parts(command, config);
+        let profile = parts
+            .profile_id
+            .as_deref()
+            .and_then(|id| dropterm_core::profile::find(&config.profiles, id));
+        let colors = match profile {
+            // The boot-time mode resolution mirrors `boot_colors`'s
+            // (the one-chain pin): `System` resolves dark until the
+            // live system-mode watch ships.
+            Some(profile) => {
+                let is_dark =
+                    dropterm_core::theme_glue::effective_is_dark(config.theme_preference, true);
+                dropterm_core::theme_glue::effective_colors(config, Some(profile), is_dark)
+            }
+            None => boot_colors(config),
+        };
+        let appearance = PaneAppearance {
+            colors,
+            font_size: dropterm_core::profile::effective_font_size(profile, config.font_size),
+            scrollback: dropterm_core::profile::effective_scrollback(
+                profile,
+                config.scrollback_lines,
+            ),
+        };
+        Self {
+            program: parts.program,
+            args: parts.trailing,
+            cwd,
+            env: parts.env,
+            spawned_as: dropterm_core::spawn::spawned_as_program(command, config),
+            profile_id: parts.profile_id,
+            appearance,
+        }
+    }
 }
 
 /// The one construction path for a pane and its engine terminal —
 /// the walk harness and the app shell share it (gpui-terminal Task
-/// 4's integration): config → host → PTY → engine → the pane entity
-/// with its pump and the config's keybind overlay. `spawn` overrides
-/// the PTY's program (the walk's seeding affordance); `None` spawns
-/// the config's resolved shell (the libcosmic default's own
-/// resolution — `config.shell` honored, `$SHELL` then `/bin/sh`
-/// beneath it). The completions table is the app's shared load
+/// 4's integration): request → host → PTY → engine → the pane entity
+/// with its pump and the config's keybind overlay. The request is
+/// core's spawn resolution applied ([`PaneRequest::for_command`] —
+/// the wrap, the degradations, the env merge, the per-profile
+/// appearance); the plain default spawns ride `default_spawn_command`
+/// so a configured `default_profile` owns them exactly as on
+/// libcosmic. The completions table is the app's shared load
 /// (async-completions): `None` means the background load has not
 /// landed yet, and the pane carries the empty placeholder plus the
 /// loading flag until the load's `set_config` pass swaps the real
@@ -2122,50 +2194,40 @@ pub(crate) struct PaneSpawn {
 pub(crate) fn boot_pane(
     cx: &mut App,
     config: &dropterm_core::config::DropTermConfig,
-    spawn: Option<PaneSpawn>,
+    request: PaneRequest,
     specs_table: Option<&Arc<[dropterm_core::terminal::suggest::SpecCommand]>>,
     id: TabId,
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
-    let colors = boot_colors(config);
+    let colors = request.appearance.colors;
     let host = crate::terminal::host::GpuiHost::new(cx);
     let font = host.font();
-    let spawned_program = suggest::spawned_as_program(
-        spawn
-            .as_ref()
-            .map(|PaneSpawn { program, .. }| program.as_str()),
-        config,
-    );
-    let spawn_cwd = spawn.as_ref().and_then(|PaneSpawn { cwd, .. }| cwd.clone());
-    let pty_shell = spawn
-        .map(|PaneSpawn { program, args, .. }| alacritty_terminal::tty::Shell::new(program, args));
     println!(
-        "dropterm-gpui: pane pty spawning {}",
-        pty_shell.as_ref().map_or_else(
-            || "the config's resolved shell".to_string(),
-            |sh| format!("{sh:?}")
-        )
+        "dropterm-gpui: pane pty spawning {} {:?} (spawned as {})",
+        request.program, request.args, request.spawned_as
     );
     let pty_options = alacritty_terminal::tty::Options {
-        shell: pty_shell.or_else(|| {
-            // The plain spawn rides the configured default — the
-            // libcosmic default's own resolution, so `config.shell`
-            // owns the GPUI pty exactly as it owns the libcosmic one.
-            let resolved = config.resolved_shell();
-            Some(alacritty_terminal::tty::Shell::new(resolved, Vec::new()))
-        }),
-        working_directory: spawn_cwd,
+        shell: Some(alacritty_terminal::tty::Shell::new(
+            request.program,
+            request.args,
+        )),
+        working_directory: request.cwd,
         drain_on_exit: true,
-        ..alacritty_terminal::tty::Options::default()
+        env: request.env,
     };
     let mut options = suggest::pane_options(config, specs_table);
-    options.spawned_program = spawned_program;
+    options.spawned_program = request.spawned_as;
+    options.font_size = request.appearance.font_size;
+    let term_config = alacritty_terminal::term::Config {
+        scrolling_history: request.appearance.scrollback as usize,
+        ..alacritty_terminal::term::Config::default()
+    };
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let terminal = Terminal::new(
         Box::new(host),
         id,
         event_tx,
-        alacritty_terminal::term::Config::default(),
+        term_config,
         &pty_options,
         &options,
         &colors,
@@ -2191,6 +2253,119 @@ pub(crate) fn boot_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the pane request over core's spawn resolution (py-5) ---
+
+    fn request_config() -> dropterm_core::config::DropTermConfig {
+        dropterm_core::config::DropTermConfig {
+            shell: Some("/bin/sh".to_string()),
+            ..dropterm_core::config::DropTermConfig::default()
+        }
+    }
+
+    fn profile_command(name: &str, command: &str) -> dropterm_core::spawn::SpawnCommand {
+        dropterm_core::spawn::SpawnCommand::Profile {
+            name: name.to_string(),
+            command: command.to_string(),
+            cwd: None,
+            env: None,
+        }
+    }
+
+    #[test]
+    fn a_profile_request_carries_the_wrap_the_identity_and_the_overrides() {
+        // The one GPUI-side composition pin: core's parts (the
+        // command-then-shell wrap, the env merge), the spawn truth
+        // (the command's program, never the wrapper), the recorded
+        // id, and the appearance seams' `profile.override ?? global`
+        // per field. The env map rides the command (spawn applies a
+        // profile, never looks one up) — the way every resolver
+        // builds the arm.
+        let mut config = request_config();
+        config.font_size = 14;
+        config.scrollback_lines = 10_000;
+        let env =
+            std::collections::BTreeMap::from([("DROPTERM_PROFILE".to_string(), "top".to_string())]);
+        config.profiles = vec![dropterm_core::profile::Profile {
+            name: "top".to_string(),
+            command: "htop".to_string(),
+            cwd: None,
+            color_scheme: None,
+            env: Some(env.clone()),
+            font_size: Some(11),
+            scrollback_lines: Some(500),
+        }];
+        let request = PaneRequest::for_command(
+            &dropterm_core::spawn::SpawnCommand::Profile {
+                name: "top".to_string(),
+                command: "htop".to_string(),
+                cwd: None,
+                env: Some(env),
+            },
+            None,
+            &config,
+        );
+        assert_eq!(request.program, "/bin/sh");
+        assert_eq!(request.args, vec!["-c", "htop; exec /bin/sh"]);
+        assert_eq!(
+            request.env.get("DROPTERM_PROFILE").map(String::as_str),
+            Some("top")
+        );
+        assert_eq!(request.spawned_as, "htop");
+        assert_eq!(request.profile_id.as_deref(), Some("top"));
+        assert_eq!(request.appearance.font_size, 11);
+        assert_eq!(request.appearance.scrollback, 500);
+    }
+
+    #[test]
+    fn a_plain_shell_request_resolves_global_appearance_and_no_identity() {
+        // The plain arm: no env merge (the pty inherits untouched),
+        // no recorded id, and every appearance field global.
+        let mut config = request_config();
+        config.font_size = 15;
+        config.scrollback_lines = 4_000;
+        config.profiles = vec![dropterm_core::profile::Profile {
+            name: "top".to_string(),
+            command: "htop".to_string(),
+            cwd: None,
+            color_scheme: None,
+            env: None,
+            font_size: Some(11),
+            scrollback_lines: Some(500),
+        }];
+        let request = PaneRequest::for_command(
+            &dropterm_core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+            None,
+            &config,
+        );
+        assert!(request.env.is_empty());
+        assert_eq!(request.profile_id, None);
+        assert_eq!(request.spawned_as, "/bin/sh");
+        assert_eq!(request.appearance.font_size, 15);
+        assert_eq!(request.appearance.scrollback, 4_000);
+    }
+
+    #[test]
+    fn the_blank_line_profile_degrades_with_no_identity() {
+        // The one degradation left (a hand-edited blank command line):
+        // the plain shell, no id, no env — never half a profile's
+        // identity — and the global appearance.
+        let mut config = request_config();
+        config.profiles = vec![dropterm_core::profile::Profile {
+            name: "broken".to_string(),
+            command: "   ".to_string(),
+            cwd: None,
+            color_scheme: None,
+            env: None,
+            font_size: Some(9),
+            scrollback_lines: Some(100),
+        }];
+        let request = PaneRequest::for_command(&profile_command("broken", "   "), None, &config);
+        assert_eq!(request.program, "/bin/sh");
+        assert!(request.env.is_empty());
+        assert_eq!(request.profile_id, None);
+        assert_eq!(request.appearance.font_size, config.font_size);
+    }
 
     #[test]
     fn attention_flags_latch_signals_and_clear_on_take() {

@@ -29,6 +29,7 @@ use dropterm_core::config::TabTitleMode;
 use dropterm_core::dbus_state::SurfacePhase;
 use dropterm_core::intent::SurfaceExecutor;
 use dropterm_core::slide::{self, SLIDE_DURATION_MS};
+use dropterm_core::spawn;
 use dropterm_core::status::{self, StatusInputs, StatusSegments, Strip};
 use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
 use dropterm_core::tabs::TabId;
@@ -330,24 +331,34 @@ pub(crate) struct Shell {
 
 /// The fleet's structural truth the session save detects changes
 /// against: ids in strip order with each tab's pin, rename override,
-/// and cwd, plus the active index. Shell-title churn stays out (the
-/// libcosmic cwd gate's Guake cadence — a vim statusline is not a
-/// save trigger), and so does everything the write recomputes fresh.
+/// cwd, and profile id, plus the active index. Shell-title churn
+/// stays out (the libcosmic cwd gate's Guake cadence — a vim
+/// statusline is not a save trigger), and so does everything the
+/// write recomputes fresh.
 type SessionShape = (
-    Vec<(TabId, bool, Option<String>, Option<std::path::PathBuf>)>,
+    Vec<(
+        TabId,
+        bool,
+        Option<String>,
+        Option<std::path::PathBuf>,
+        Option<String>,
+    )>,
     usize,
 );
 
 /// One tab's session-write inputs, collected before the snapshots
 /// borrow them (the libcosmic `write_session` shape): the resolved
-/// title, the rename pin, the pin, the fresh cwd readlink, and the
-/// spawn truth's program word.
+/// title, the rename pin, the pin, the fresh cwd readlink, the
+/// spawn truth's program word, and the spawn facts (the profile id,
+/// the `--cmd` ephemeral flag).
 type SessionRow<'a> = (
     &'a str,
     Option<&'a str>,
     bool,
     Option<std::path::PathBuf>,
     String,
+    Option<&'a str>,
+    bool,
 );
 
 /// The shape of the fleet as it stands.
@@ -361,6 +372,7 @@ fn session_shape(tabs: &tab_bar::TabList) -> SessionShape {
                     tab.pinned,
                     tab.title_override.clone(),
                     tab.cwd.clone(),
+                    tab.profile.clone(),
                 )
             })
             .collect(),
@@ -919,26 +931,31 @@ impl Shell {
                     tab.pinned,
                     pane.working_directory(),
                     pane.spawn_program().to_string(),
+                    tab.profile.as_deref(),
+                    tab.ephemeral,
                 ))
             })
             .collect();
         let snapshots: Vec<dropterm_core::session::TabSnapshot<'_>> = collected
             .iter()
-            .map(|(title, title_override, pinned, cwd, shell)| {
-                dropterm_core::session::TabSnapshot {
-                    title,
-                    title_override: *title_override,
-                    shell,
-                    cwd: cwd.as_deref(),
-                    // The GPUI fleet's every tab is a plain spawn
-                    // today — no `--cmd` ephemeral, no profile spawn
-                    // path (the gpui-tabs scope note) — so neither
-                    // ever records.
-                    ephemeral: false,
-                    profile: None,
-                    pinned: *pinned,
-                }
-            })
+            .map(
+                |(title, title_override, pinned, cwd, shell, profile, ephemeral)| {
+                    dropterm_core::session::TabSnapshot {
+                        title,
+                        title_override: *title_override,
+                        shell,
+                        cwd: cwd.as_deref(),
+                        // The spawn facts (py-5): the profile id the tab
+                        // launched under — never on a plain or degraded
+                        // arm — and the `--cmd` ephemeral flag, the one
+                        // fact the session saves and the other it never
+                        // does.
+                        profile: *profile,
+                        ephemeral: *ephemeral,
+                        pinned: *pinned,
+                    }
+                },
+            )
             .collect();
         let state = dropterm_core::session::capture(&snapshots, self.tabs.active_index());
         println!(
@@ -1246,7 +1263,7 @@ impl Shell {
     /// keeps at least this tab alive whatever closes later.
     fn new_tab(&mut self, cx: &mut Context<Self>) {
         self.commit_open_rename(cx);
-        if let Some(id) = self.spawn_tab(cx) {
+        if let Some(id) = self.open_new_tab(cx) {
             println!(
                 "dropterm-gpui: tab + -> {id:?} ({} tabs) at +{}ms",
                 self.tabs.records().len(),
@@ -1255,16 +1272,67 @@ impl Shell {
         }
     }
 
-    /// The one pane-spawning body every new tab rides — the `+`, the
-    /// menu's rows, the never-empty respawn: the record through
-    /// core's insert (the config's placement) plus its pane, a
+    /// The shared tail of every plain new-tab press — the `+`, the
+    /// menu's New Tab row, the keybind (py-5): the configured default
+    /// owns the spawn (a set, existing `default_profile` runs its
+    /// preset), and the cwd composes the libcosmic `open_new_tab`
+    /// way — the preset's live cwd over the active tab's cwd for a
+    /// profile, the mode-threaded plain composition otherwise.
+    fn open_new_tab(&mut self, cx: &mut Context<Self>) -> Option<TabId> {
+        let inherited = self.active_cwd(cx);
+        let command = spawn::default_spawn_command(&self.config);
+        let cwd = self.default_cwd_for(&command, inherited);
+        self.spawn_command_tab(cx, &command, cwd)
+    }
+
+    /// The active tab's working directory (the pane's own read), the
+    /// inheritance leg of every new-tab composition.
+    fn active_cwd(&self, cx: &Context<Self>) -> Option<std::path::PathBuf> {
+        self.tabs
+            .active_id()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|pane| pane.read(cx).working_directory())
+    }
+
+    /// The cwd a plain default spawn opens in — the libcosmic
+    /// `ensure_tabs`/`open_new_tab` chain (py-5): the preset's live
+    /// cwd when the default resolved to a profile, else the
+    /// mode-threaded plain composition over `inherited`.
+    fn default_cwd_for(
+        &self,
+        command: &spawn::SpawnCommand,
+        inherited: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf> {
+        match command {
+            spawn::SpawnCommand::Profile {
+                name, cwd: preset, ..
+            } => spawn::live_preset_cwd(name, preset.as_ref()).or(inherited),
+            _ => spawn::plain_spawn_cwd(&self.config, None, inherited),
+        }
+    }
+
+    /// The one pane-spawning body every command spawn rides (py-5) —
+    /// the `+`/menu/keybind's default composition, the remote
+    /// `new-tab`'s explicit one, the never-empty respawn: the record
+    /// through core's insert (the config's placement), the pane
+    /// booted from core's spawn resolution (the wrap, the env merge,
+    /// the per-profile appearance), the spawn facts recorded on the
+    /// tab — the profile id, the `--cmd` ephemeral flag — and a
     /// failed PTY closing the record back (the rollback).
-    fn spawn_tab(&mut self, cx: &mut Context<Self>) -> Option<TabId> {
+    fn spawn_command_tab(
+        &mut self,
+        cx: &mut Context<Self>,
+        command: &spawn::SpawnCommand,
+        cwd: Option<std::path::PathBuf>,
+    ) -> Option<TabId> {
         let id = self.tabs.spawn(self.config.new_tab_after_current);
+        let request = view::PaneRequest::for_command(command, cwd, &self.config);
+        let profile_id = request.profile_id.clone();
+        let ephemeral = matches!(command, spawn::SpawnCommand::CommandLine(_));
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             &self.config,
-            None,
+            request,
             self.specs.table.as_ref(),
             id,
             Some(self.signals_tx.clone()),
@@ -1274,6 +1342,7 @@ impl Shell {
             return None;
         };
         self.panes.insert(id, pane);
+        self.tabs.note_spawn_facts(id, profile_id, ephemeral);
         cx.notify();
         Some(id)
     }
@@ -1341,7 +1410,12 @@ impl Shell {
                 "dropterm-gpui: last tab closed -> the never-empty respawn at +{}ms",
                 self.boot.elapsed().as_millis()
             );
-            self.spawn_tab(cx);
+            // The respawn is a no-user-context plain spawn: the
+            // configured default owns it (a `default_profile` preset
+            // included), exactly the libcosmic `ensure_tabs` chain.
+            let command = spawn::default_spawn_command(&self.config);
+            let cwd = self.default_cwd_for(&command, None);
+            self.spawn_command_tab(cx, &command, cwd);
         }
         cx.notify();
     }
@@ -1883,17 +1957,23 @@ impl Shell {
     }
 
     /// Duplicates the tab with `source` (the menu's row): a fresh
-    /// pane in its cwd carrying its rename pin, landing after the
-    /// active tab and activated (the record through core; the pane
-    /// through the one spawning body).
+    /// plain-shell pane in its cwd carrying its rename pin, landing
+    /// after the active tab and activated (the record through core;
+    /// the pane through the one spawning body — always a plain shell,
+    /// never the default profile, ruling 1's duplicate leg).
     fn duplicate_tab(&mut self, source: TabId, cx: &mut Context<Self>) {
+        let cwd = self
+            .panes
+            .get(&source)
+            .and_then(|pane| pane.read(cx).working_directory());
         let id = self
             .tabs
             .spawn_duplicate(source, self.config.tab_title_mode);
+        let command = spawn::SpawnCommand::Shell(self.config.resolved_shell());
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             &self.config,
-            None,
+            view::PaneRequest::for_command(&command, cwd, &self.config),
             self.specs.table.as_ref(),
             id,
             Some(self.signals_tx.clone()),
@@ -1905,6 +1985,7 @@ impl Shell {
             return;
         };
         self.panes.insert(id, pane);
+        self.tabs.note_spawn_facts(id, None, false);
         println!(
             "dropterm-gpui: tab {source:?} duplicated -> {id:?} at +{}ms",
             self.boot.elapsed().as_millis()
@@ -2355,11 +2436,16 @@ impl Shell {
             cwd: cwd.as_deref(),
             reported_cwd,
             hostname: self.hostname.as_deref(),
-            // No GPUI profile spawn path yet (the chrome slices' own
-            // scope note): the seat resolves absent, never a stale
-            // name.
             shell: &shell,
-            profile_name: None,
+            // The profile seat (py-5): the active tab's id resolved
+            // against the live config — a deleted or renamed profile
+            // reads absent, never a stale name.
+            profile_name: self
+                .tabs
+                .active_id()
+                .and_then(|id| self.tabs.profile_id_of(id))
+                .and_then(|id| dropterm_core::profile::find(&self.config.profiles, id))
+                .map(|profile| profile.name.as_str()),
             zoom_adj,
             // The zoom step every spawn builds from — core's own
             // default, the same leg the libcosmic assembly reads.
@@ -2998,19 +3084,16 @@ struct TabFleet {
     pane_signals: Receiver<view::PaneSignal>,
 }
 
-/// The drawer's tab fleet (gpui-tabs Task 1's boot half): N panes —
-/// the walk's `DROPTERM_TABS` arm, the real app's one — one record
-/// per pane through core's model, every pane's Hide action on the one
-/// shared channel. The PTY program is `DROPTERM_TERM_CMD`'s shell
-/// line when a walk sets it (seeding every tab alike), the tty
-/// default otherwise. `None` when any pane's PTY fails to spawn — the
-/// drawer is never left half-fleeted.
-/// The restore arm of [`boot_tab_fleet`] (gpui-parity Task 3): one
-/// pane per saved tab in plan order, each in its re-validated cwd
-/// with its chrome replayed (the resolved title, the rename pin, the
-/// pin), the saved active seat activated when any tab survived. A
-/// failed PTY closes its record (the rollback); the count returns
-/// for the fallback decision.
+/// The restore arm of [`boot_tab_fleet`] (gpui-parity Task 3; py-5
+/// added the profile re-resolution): one pane per saved tab in plan
+/// order, each in its re-validated cwd with its chrome replayed (the
+/// resolved title, the rename pin, the pin) — a saved profile id
+/// that still resolves spawns the current definition's preset (the
+/// command-then-shell wrap, env, and per-tab appearance through the
+/// one request resolution), a plain spec its recorded shell — the
+/// saved active seat activated when any tab survived. A failed PTY
+/// closes its record (the rollback); the count returns for the
+/// fallback decision.
 fn restore_fleet(
     cx: &mut App,
     config: &DropTermConfig,
@@ -3030,21 +3113,27 @@ fn restore_fleet(
             spec.title_override.clone(),
             spec.pinned,
             spec.cwd.clone(),
+            spec.profile.as_ref().map(|profile| profile.name.clone()),
         );
-        let program = if dropterm_core::config::program_is_runnable(&spec.shell) {
-            spec.shell.clone()
+        // The libcosmic `spawn_tab(Some(spec))` shape: the plan's
+        // re-resolved profile runs the current definition with
+        // `spec.cwd` (already the ruled chain result), a plain spec
+        // its recorded shell — the degradations core's own.
+        let command = if let Some(profile) = &spec.profile {
+            dropterm_core::spawn::SpawnCommand::Profile {
+                name: profile.name.clone(),
+                command: profile.command.clone(),
+                cwd: spec.cwd.clone(),
+                env: profile.env.clone(),
+            }
         } else {
-            config.resolved_shell()
+            dropterm_core::spawn::SpawnCommand::Shell(spec.shell.clone())
         };
-        let spawn = view::PaneSpawn {
-            program,
-            args: Vec::new(),
-            cwd: spec.cwd.clone(),
-        };
+        let request = view::PaneRequest::for_command(&command, spec.cwd.clone(), config);
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             config,
-            Some(spawn),
+            request,
             specs_table,
             id,
             Some(signals_tx.clone()),
@@ -3090,21 +3179,21 @@ fn boot_tab_fleet(
         None
     };
     let tab_count = tab_walk_count(std::env::var("DROPTERM_TABS").ok().as_deref());
-    let pty_spawn = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
+    // The walk's seeding arm keeps its exact pty shape (`sh -c
+    // <line>`); the real app's fresh tabs ride the configured default
+    // through the one request resolution (a `default_profile` preset
+    // included, py-5).
+    let walk_request = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
         let raw = raw.trim().to_string();
-        if raw.is_empty() {
-            view::PaneSpawn {
-                program: "/bin/sh".to_string(),
-                args: Vec::new(),
-                cwd: None,
-            }
-        } else {
-            view::PaneSpawn {
-                program: "/bin/sh".to_string(),
-                args: vec!["-c".to_string(), raw],
-                cwd: None,
-            }
+        let mut request = view::PaneRequest::for_command(
+            &dropterm_core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+            None,
+            config,
+        );
+        if !raw.is_empty() {
+            request.args = vec!["-c".to_string(), raw];
         }
+        request
     });
     let (signals_tx, pane_signals) = std::sync::mpsc::channel::<view::PaneSignal>();
     let mut tabs = tab_bar::TabList::default();
@@ -3121,10 +3210,16 @@ fn boot_tab_fleet(
     if restored == 0 {
         for _ in 0..tab_count {
             let id = tabs.spawn(false);
+            let command = spawn::default_spawn_command(config);
+            let request = walk_request
+                .clone()
+                .unwrap_or_else(|| view::PaneRequest::for_command(&command, None, config));
+            let profile_id = request.profile_id.clone();
+            let ephemeral = matches!(command, spawn::SpawnCommand::CommandLine(_));
             let Some((_terminal, pane)) = view::boot_pane(
                 cx,
                 config,
-                pty_spawn.clone(),
+                request,
                 specs_table,
                 id,
                 Some(signals_tx.clone()),
@@ -3132,6 +3227,7 @@ fn boot_tab_fleet(
                 eprintln!("dropterm-gpui: the drawer's terminal failed to spawn; exiting");
                 return None;
             };
+            tabs.note_spawn_facts(id, profile_id, ephemeral);
             panes.insert(id, pane);
         }
     }

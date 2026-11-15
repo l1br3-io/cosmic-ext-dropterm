@@ -658,3 +658,45 @@ fn the_bell_latch_arms_per_tab_and_clears_on_show() {
     tabs.clear_bell_latches();
     assert!(!tabs.bell_latched(a), "the show cleared every latch");
 }
+
+// --- the spawn facts (py-5) ---
+
+#[test]
+fn note_spawn_facts_records_the_pair_on_the_own_tab_alone() {
+    // The one spawning body records the profile id and the ephemeral
+    // flag on the tab it just spawned — never a neighbor's — and an
+    // unknown id (a rollback race) records nothing.
+    let mut tabs = TabList::default();
+    let a = tabs.spawn(true);
+    let b = tabs.spawn(true);
+    tabs.note_spawn_facts(a, Some("top".to_string()), false);
+    assert_eq!(tabs.profile_id_of(a), Some("top"));
+    assert_eq!(tabs.profile_id_of(b), None, "the neighbor stays plain");
+    // A `--cmd` tab records the opposite pair.
+    tabs.note_spawn_facts(b, None, true);
+    assert_eq!(tabs.profile_id_of(b), None);
+    let _ = b;
+    // A ghost id is a no-op, never a panic.
+    tabs.note_spawn_facts(TabId(9999), Some("x".to_string()), true);
+}
+
+#[test]
+fn a_restored_tab_carries_its_plan_resolved_profile_seat() {
+    // The restore record carries the profile id the plan re-resolved
+    // (a saved id the config still carries), and restores are never
+    // ephemeral — the session saved one and never the other.
+    let mut tabs = TabList::default();
+    tabs.spawn_restored(
+        "ssh".to_string(),
+        None,
+        false,
+        Some(Path::new("/srv").to_path_buf()),
+        Some("ssh".to_string()),
+    );
+    assert_eq!(
+        tabs.profile_id_of(tabs.active_id().expect("restored active")),
+        Some("ssh")
+    );
+    let record = tabs.records().last().expect("the restored record");
+    assert!(!record.ephemeral, "a restored tab is never ephemeral");
+}

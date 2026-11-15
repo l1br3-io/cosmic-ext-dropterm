@@ -121,16 +121,19 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
 
     // The shared construction path (the shell wiring's own, Task 4):
     // one boot_pane for the harness and the drawer alike. The walk
-    // seeds its PTY through `DROPTERM_TERM_CMD`'s shell line.
+    // seeds its PTY through `DROPTERM_TERM_CMD`'s shell line — the
+    // exact `sh -c <line>` shape, a raw request over the resolution.
     let (shell, args) = walk_shell(std::env::var("DROPTERM_TERM_CMD").ok().as_deref());
+    let mut request = view::PaneRequest::for_command(
+        &dropterm_core::spawn::SpawnCommand::Shell(shell),
+        None,
+        &config,
+    );
+    request.args = args;
     let Some((terminal, pane)) = view::boot_pane(
         cx,
         &config,
-        Some(view::PaneSpawn {
-            program: shell,
-            args,
-            cwd: None,
-        }),
+        request,
         None,
         dropterm_core::tabs::TabId(0),
         None,
