@@ -1,6 +1,123 @@
 # Testing
 
-How DropTerm is verified: headless unit tests for everything that needs no compositor, and this manual checklist for everything that does - runtime behavior is only testable on real COSMIC hardware. After building, check:
+How DropTerm is verified: headless unit tests for everything that needs no compositor, and this manual checklist for everything that does - runtime behavior is only testable on real COSMIC hardware.
+
+Two routes through the manual side:
+
+- **The quick pass** below: one row per walk area, in the order the full
+  checklist walks them. Good for a smoke after a build.
+- **The full checklist**: every clause, at the bottom of this page. A
+  parity pass walks it. When a quick row fails, find its clause below
+  before filing anything - the quick row is a pointer, not a replacement.
+
+## Quick pass
+
+### Show/hide and the slide
+
+- [ ] First launch shows the overlay at the configured edge, focused and ready; the bound shortcut hides and re-shows it; rapid toggles neither crash nor duplicate the surface; it stacks above a fullscreen window
+- [ ] Caret on show: the block cursor paints at the prompt in the first shown frame, every route there (plain toggle, focus-loss hide re-toggle, tab switch)
+- [ ] Slide: ~130 ms in from the anchored edge, size/position/opacity steady through it; focus grabbed on show, released the instant a hide starts; mid-slide toggles reverse visibly and spam always ends in the last toggle's state
+- [ ] Background jobs and shell history survive a hide/show cycle; empty-desktop focus lands without a click; focus-reporting programs (fish, vim) repaint only on a real focus loss
+
+### Shell presence and clipboard
+
+- [ ] Hidden mode: the switcher and dock list no DropTerm entry ever, and the shortcut, applet, and CLI each summon it
+- [ ] Dock mode: exactly one named, iconed DropTerm entry, and selecting it disturbs neither surface nor clipboard
+- [ ] Copies survive a hide and a mid-session mode flip; the anchor rebuilds after an output vanishes (one warn, copies keep landing)
+
+### The terminal surface
+
+- [ ] `Ctrl+Shift+C`/`V` copy/paste, middle-click and `Shift+Insert` paste the primary selection, `Shift+PageUp`/`Down` scroll
+- [ ] Shift wholly escapes a mouse-grabbing program: plain drag/wheel stay the program's, Shift+drag is ours, Shift+right-click opens our menu, releasing Shift mid-gesture keeps it whole
+
+### Tabs and keybinds
+
+- [ ] Numbered switching (1/2/3, 9 = last, 5 = nothing), `Ctrl+Shift+PageUp`/`Down` moves clamp, zoom chords follow the premise-then-pairs row
+- [ ] Attention markers (`🔔`/`•`) mark inactive tabs only, clear on activation, follow reorder and closes; hidden bells notify exactly once per tab per hide and the latch re-arms
+
+### New tabs and profiles on the fly
+
+- [ ] Every spawn surface lands where its rule says: placement (`new_tab_after_current`), cwd modes (`new_tab_cwd` + `default_cwd`), `--cwd`, `--cmd`, profile submenu, command-then-shell wrap, `default_profile`, session save/restore semantics, unrunnable-program degradation
+- [ ] Tab bar `+`: visible in every tab state, plain click = `Ctrl+Shift+T`, right-click dropdown lists profiles, dismissal and squeeze geometry stay honest
+
+### The status band
+
+- [ ] Disc names the running process, path shows/elides with `~`, all four `edge`×`tab_position` stackings hold, a scheme flip recolors, toggles and `Ctrl+Shift+B` flip it, per-segment toggles hide exactly their segment
+- [ ] Every segment click-copies its full value with the `✓` flash; drag-select is WYSIWYG; double-click selects the display; middle-click pastes; hover tints one segment
+- [ ] Squeeze is deterministic: path elides first, segments drop in order (grid, tab, zoom, profile, branch, clock), disc last; inline reveal on hover; fresh-on-landing reads exits and the clock
+- [ ] Context menu: right composition, full-value copies, keybind-equivalent actions, press-dismissal, closed on hide/show
+- [ ] Bar borders: one 1 px hairline on each bar's terminal-facing edge through the four stackings, no doubled seam
+- [ ] Command duration ticks live, freezes as `name time` at finish, honest across hide/show and respawns
+- [ ] Scrolled chip counts and jump-clicks to the bottom with no clipboard write; ssh shows the host token stand-in and restores on exit
+- [ ] Activity halo arms on output that landed hidden, clears on any touch; exit chip (fish 4), OSC 7 path, OSC 9;4 progress, OSC 7501 program status: every state renders, and a shell without the integration renders silence
+
+### Inline images and paste images
+
+- [ ] `imgcat` both forms and `chafa -f iterm` render; `kitten icat` detects and renders; scroll/resize/select bookkeeping holds; the kill switch silences the next image live
+- [ ] Paste lands a path plus a panel row: thumbnail, readable stamp, Open/Copy path/Copy image/Re-paste, two-step Delete; the chip and `Ctrl+Shift+P` doors stay open when the chip squeezes out; hand-deleted files reflect; uri pastes carry the cascade and its refusals
+
+### Notifications
+
+- [ ] Hidden command finishes ≥5 s notify once per tab per hide, naming the tab; visible finishes stay silent; the toggle and threshold persist
+
+### Autosuggestions and completions
+
+- [ ] Ghost tracks the prefix; Right accepts whole, Alt+Right one shell-word; history seeds fresh tabs; path escapes and legibility hold; honest silence in TUIs and scrolled-back views; dismissal on any other keystroke/resize/focus loss; the kill switch clears it live
+- [ ] Curated seats (subcommands, any-seat flags), the spec walker (per-subcommand flags, argument seats, nesting, sudo, unknown-flag tolerance), aliases re-target, clip-to-fit ghost, the delay key, the one-char and bare-`--` floors
+- [ ] Completions menu: provider-ordered contents, Tab still reaches the shell byte-for-byte, lifecycle closes on resize/focus/scroll, auto-popup off by default; git generators answer at ref seats and stay silent outside repos; `completions.toml` extends and degrades silently; tiers and the user-override rule hold
+
+### Per-tab menu and pinned tabs
+
+- [ ] Right-click menu acts on the clicked tab (rename in place, duplicate, Switch Profile, moves, close sweeps with the confirm gate), dismisses without side effects
+- [ ] Pin: 📌 prefix, every close path refuses, drag never arms, move rows mute, pin survives restart and profile switches
+
+### Profiles page
+
+- [ ] Form transaction: nothing writes until Save, one write, inline errors per field, Cancel/Escape drop the draft; override fields, inherit scheme picker, draft lock, armed two-step delete, the full lifecycle walk
+- [ ] CRUD end-to-end without hand-editing RON; default-profile cascade; propagation to the `+` dropdown and menus without restart; drafts survive a focus-loss hide
+- [ ] Appearance overrides render from first paint and re-resolve on config passes; env applies every launch way and the editor validates; page legibility at the drawer's floor
+
+### Remote verbs
+
+- [ ] `toggle`/`show`/`hide` round-trip through a second launch; `new-tab`, `close-tab`, `select-tab`, `rename-tab`, `duplicate-tab`, `switch-profile-tab` each behave per their row; a verb arriving mid-slide reverses it; first launch starts plain
+
+### Geometry and the grab bar
+
+- [ ] `height_percent`/`width_percent`/`h_align`/`edge` edits reshape in place; the grab bar drags height only, within 10-100 %, writes once ~400 ms after release; only the grab bar differs from the previous build at default config
+
+### Tab strip, gear, and titles
+
+- [ ] Gear renders in every tab state, 1↔2 tab crossing resizes nothing, squeeze never underlaps the gear, tooltips stay legible and unclipped
+- [ ] Title modes (Shell/Abbreviated/Last segment/Profile/Terminal number) apply live, at spawn, and across restores; empty reports never blank a tab
+
+### The settings drawer
+
+- [ ] Opens/closes from keybind, gear, and menu; layout, backdrop veil, five-tab strip, scheme and font pickers (live apply, Escape layering), page turns keep drafts, input never reaches the shell beneath it
+- [ ] Drag-resize: live both ways, clamped, one write on release, double-click resets; focus-loss hide preserves tab and drafts; width floor and stale-config safety hold
+- [ ] Keybindings editor: live search, rebind round-trip and undo, conflict errors, capture consumption, multi-chord defaults; config ranges respected; the apply-timing table honored; session persistence, slide-off, and the race check behave
+
+### Appearance and themes
+
+- [ ] Twelve schemes listed/applied/persisted, fidelity against canonical palettes, chrome coherence, per-mode pairing and system flips
+- [ ] Application theme: pin wins, frosted glass never restyles the chrome, a theme flip repaints whole with no stale wash, bogus names fall back silently
+
+### Close confirmation
+
+- [ ] Every close path asks on a running child (modal names the tab by title, surface inert while it waits); Cancel restores exactly, Proceed closes, idle tabs and shell exits never ask, Escape precedence, the modal survives hide/show, the toggle round-trips
+
+### Session and config store
+
+- [ ] Restore returns the same tabs/cwds/rename/focus; missing, corrupt, and newer-version session files quarantine; saves coalesce; `kill -9` mid-write keeps the previous file
+- [ ] Config files: drawer writes land in their own file, external edits apply live, broken files quarantine to `.bak`, the shell pick and completions edits apply live, the dev identity keeps its own directory
+
+### Splits, release, and the guard
+
+- [ ] Dev and installed builds coexist: separate launchers, keybinds, config and session dirs, dev applet
+- [ ] The release tarball installs and toggles; the layer-shell guard exits 1 naming the protocol on a compositor without it and passes on COSMIC/sway; unfocused copies land (clipboard ownership without the focus token)
+
+## The full checklist
+
+After building, check:
 - [ ] First launch shows the overlay at the configured edge, focused and ready for input
 - [ ] The bound shortcut hides and re-shows it
 - [ ] Caret on show: every toggle-show paints the block cursor at the prompt in the first shown frame - before any keystroke; the same after a focus-loss hide (click another app with `hide_on_focus_loss` on, then re-toggle) and in a bash tab (no focus reporting - nothing else repaints the caret), and switching tabs paints the newly active tab's caret the same way
@@ -50,7 +167,7 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] Status band - text selection (user-ruled 2026-10-11): press and drag across the band - the covered characters highlight (pane foreground at quarter alpha, following the cursor both directions) and the release copies exactly the selected display text (WYSIWYG: the elided path's `…` included; segments joined by single spaces; Ctrl+Shift+V into the terminal or middle-click paste both serve it - drag-selection also claims the primary selection); the highlight persists after release and clears on the next press; a drag held within 4 px stays a click (the full-value verb above); a drag confined to the gaps selects nothing
 - [ ] Status band - per-segment toggles: each Behavior "Show ..." row hides exactly its segment on the next render (flip every one in turn); hiding the branch stops the `.git` reads and hiding the clock stops its tick (toggle the clock off mid-minute - the segment vanishes immediately and no further ticks land; on again it returns within a minute); a restart restores every persisted row; a config directory from before the keys loads with the full band
 - [ ] Bar borders - placement through the four stackings: with both toggles on (the default), each bar shows exactly one 1 px hairline on its terminal-facing edge - walk every `edge` × `tab_position` combination: the strip's line follows the terminal (below a top strip, above a bottom strip), the band's stays on its side away from the grab bar; where the strip and the band adjoin (e.g. edge Top with tabs *Follow edge*, edge Bottom with tabs Top) the seam carries only the band's line - never a doubled line; the drag-reorder's lifted button may ride over the strip's line mid-drag (transient, verdict it here)
-- [ ] Bar borders - live toggles and derived color: the Behavior page's "Show the tab bar border" (Tabs card) and "Show the status band border" (Status bar card) each flip their line on the very next frame - nothing resizes, the terminal's pixel height never changes; both lines read as subtle contrast lines on light *and* dark schemes (the 0.3-alpha verdict: retune `BORDER_ALPHA` in `dropterm-gpui/src/tab_bar.rs` if either scheme reads too faint or too harsh) and a scheme flip recolors them on the next render; at `opacity` below 100 the lines still render; a fresh config directory loads with both on, and a config directory from before the keys gains both lines
+- [ ] Bar borders - live toggles and derived color: the Behavior page's "Show the tab bar border" (Tabs card) and "Show the status band border" (Status bar card) each flip their line on the very next frame - nothing resizes, the terminal's pixel height never changes; both lines read as subtle contrast lines on light *and* dark schemes (the 0.3-alpha verdict: retune `BORDER_ALPHA` in `dropterm/src/tab_bar.rs` if either scheme reads too faint or too harsh) and a scheme flip recolors them on the next render; at `opacity` below 100 the lines still render; a fresh config directory loads with both on, and a config directory from before the keys gains both lines
 - [ ] Status band - squeeze with the branch: at narrow widths the path elides first (tail kept); keep narrowing until the branch drops entirely - the priority is deterministic, path over branch, and the band never wraps or overflows
 - [ ] Status band - grid on resize: at spawn dimensions the grid segment is absent (silent when default); drag the surface's height or narrow it and the segment appears showing the live `cols×rows`; resize back to the spawn dimensions and it vanishes; respawn the tab (Switch Profile on it) and it vanishes again - a fresh process starts default
 - [ ] Status band - narrow-surface drop order: squeeze `width_percent` down and watch the band fit as one pass - the path elides first (tail kept), then segments drop one at a time in order (grid, tab position, zoom, profile, branch, clock), each drop buying the path back room (it re-expands between drops); the disc and process name are last standing, survivors keep their seats, and nothing wraps or overflows however narrow
@@ -66,7 +183,7 @@ How DropTerm is verified: headless unit tests for everything that needs no compo
 - [ ] Status band (status-scrolled) - the chip appears and counts: in a busy terminal (output still flowing) scroll up with the wheel - the dim `↑N` chip appears in the right cluster between the zoom and the clock and its count tracks the distance scrolled; scroll back down and the count shrinks, reaching nothing at the bottom
 - [ ] Status band (status-scrolled) - the jump click: click the chip - the viewport lands at the bottom and the chip vanishes the same frame; no clipboard write lands for it (paste elsewhere: the previous clipboard stands) and no `✓` flash - the jump is the whole verb; the context menu opened over the chip shows its Copy row muted (no value to copy) and carries no chip row of its own
 - [ ] Status band - hover tips on every segment: hover each segment in turn - a tip pops to the terminal's side of the band naming the segment and its verb (`Working directory. Click to copy the full path.`, `Terminal size: 120×30 cells. Click to copy.`, `Tab 1 of 3. Click to copy.`, the tab strip's own pane-inverted bubble look, instantly, no dwell) and vanishes when the cursor leaves; the scrolled chip's tip names the jump (`Scrolled back 12 lines. Click to jump to bottom.`) and the pasted chip's the panel (`1 pasted image. Click to open the images panel.`), clicking still doing those verbs; hovering a gap tips nothing, and the tips stay suppressed while the band's context menu is open
-- [ ] Status band - separators and leading glyphs: thin low-alpha vertical hairlines render between adjacent segments within each cluster (never between the clusters, never beside an absent segment - hide segments and confirm no orphan hairline stands) on light and dark schemes alike; each hairline sits centered in a full 12 px gap on both clusters - the right cluster long rendered flush, its segments touching seam to seam, so confirm profile, grid, tab, zoom, the chips, and the clock all breathe the left cluster's own spacing; every segment carries its leading mark - the ten text glyphs (branch `⎇ main`, grid `⊞ 80×24`, tab position `▤ 2/5`, profile `◉ dev`, duration `⧗ 2:41`, progress `◐ 42%`, path `⌂ ~/src`, zoom `⇕ +120%`, pasted `▦ 3 images`, clock `◷ 14:32`) riding their displays' measured widths so the gaps and hairlines stay exactly the twelve-px rhythm, beside the three owned marks that never double (the process disc, the exit `✗`, the scrolled `↑`) - monochrome text shapes in the terminal's own font, the text system's fallback answering a family that lacks one (a mismatched style is the worst case; retune the constants in `dropterm-gpui/src/status_bar.rs` if any glyph reads wrong); under squeeze the path's glyph is eaten first by the eliding `…` - a fully-shown path carries `⌂`, a heavily elided one does not, and both are correct; the click copy stays the bare value (paste `80×24`, never `⊞ 80×24`) and the `✓` flash replaces glyph and value together
+- [ ] Status band - separators and leading glyphs: thin low-alpha vertical hairlines render between adjacent segments within each cluster (never between the clusters, never beside an absent segment - hide segments and confirm no orphan hairline stands) on light and dark schemes alike; each hairline sits centered in a full 12 px gap on both clusters - the right cluster long rendered flush, its segments touching seam to seam, so confirm profile, grid, tab, zoom, the chips, and the clock all breathe the left cluster's own spacing; every segment carries its leading mark - the ten text glyphs (branch `⎇ main`, grid `⊞ 80×24`, tab position `▤ 2/5`, profile `◉ dev`, duration `⧗ 2:41`, progress `◐ 42%`, path `⌂ ~/src`, zoom `⇕ +120%`, pasted `▦ 3 images`, clock `◷ 14:32`) riding their displays' measured widths so the gaps and hairlines stay exactly the twelve-px rhythm, beside the three owned marks that never double (the process disc, the exit `✗`, the scrolled `↑`) - monochrome text shapes in the terminal's own font, the text system's fallback answering a family that lacks one (a mismatched style is the worst case; retune the constants in `dropterm/src/status_bar.rs` if any glyph reads wrong); under squeeze the path's glyph is eaten first by the eliding `…` - a fully-shown path carries `⌂`, a heavily elided one does not, and both are correct; the click copy stays the bare value (paste `80×24`, never `⊞ 80×24`) and the `✓` flash replaces glyph and value together
 - [ ] Status band (status-scrolled) - absent at bottom and under pressure: an at-bottom terminal shows nothing (a fresh terminal, a respawned tab, and the moment after a jump); squeeze `width_percent` down - the chip drops after the command duration and before the clock
 - [ ] Status band (status-scrolled) - the toggle: the Behavior page's "Show the scrolled-back lines" row hides the chip outright (scroll up: nothing appears; on again it returns at the next event) and persists across a restart; a config directory from before the key loads with the chip on
 - [ ] Status band (status-remote) - the stand-in shows: `ssh` to a real host from a tab inside a git repo - the path's seat shows the command's destination token exactly as typed (`user@host`, a bare alias), the branch disappears (both stale the moment ssh started), and the process segment keeps its honest `● ssh`
