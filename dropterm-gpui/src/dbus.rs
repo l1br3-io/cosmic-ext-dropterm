@@ -21,53 +21,61 @@ use std::time::Duration;
 
 use dropterm_core::dbus_state::{self, Forwarded, SurfacePhase};
 
-/// A decoded surface verb — the vocabulary the scaffold serves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Verb {
-    Toggle,
-    Show,
-    Hide,
-}
+use crate::cli::{self, Action};
 
-/// The verb a forwarded action carries: `Activate` is the bare summon
-/// (the app's default, Toggle); `ActivateAction` decodes by the
-/// action's name — exactly the Display names both CLIs forward, with
-/// no words for the surface verbs. Everything else (the tab verbs the
-/// terminal slices will own, `Open`) decodes to `None` so the drainer
-/// warns instead of guessing.
-pub(crate) fn verb_of(forwarded: &Forwarded) -> Option<Verb> {
+/// The action a forwarded activation carries: `Activate` is the bare
+/// summon (the app's default, Toggle); `ActivateAction` carries the
+/// Display name plus any words, reconstructed through the CLI's own
+/// clap definitions (the libcosmic receiver's `parse_forwarded_action`
+/// shape, so either frontend's sender decodes here) — a malformed
+/// payload degrades to the plain Toggle, never an error surface.
+/// `Open` is served for contract completeness and ignored.
+fn decode(forwarded: &Forwarded) -> Option<Action> {
     match forwarded {
-        Forwarded::Activate => Some(Verb::Toggle),
-        Forwarded::ActivateAction { action, .. } => match action.as_str() {
-            "toggle" => Some(Verb::Toggle),
-            "show" => Some(Verb::Show),
-            "hide" => Some(Verb::Hide),
-            _ => None,
-        },
+        Forwarded::Activate => Some(Action::Toggle),
+        Forwarded::ActivateAction { action, args } => {
+            let mut words = vec![action.clone()];
+            words.extend(args.iter().cloned());
+            cli::parse_forwarded_action(&words).map_or_else(
+                || {
+                    eprintln!(
+                        "dropterm-gpui: malformed forwarded action {action:?} {args:?}; \
+                         answering with the plain toggle"
+                    );
+                    Some(Action::Toggle)
+                },
+                Some,
+            )
+        }
         Forwarded::Open { .. } => None,
     }
 }
 
 /// What the served loop shares with the render loop: the machine
-/// phase the shell publishes (the served state's one truth, mirrored
-/// under the same write) and the verb queue the shell drains. The
-/// shell boots hidden, so the served state does too.
+/// phase and the tab count the shell publishes (the served state's
+/// one truth, mirrored under the same write) and the action queue the
+/// shell drains. The shell boots hidden, so the served state does
+/// too.
 pub(crate) struct Served {
     pub(crate) phase: Arc<Mutex<SurfacePhase>>,
-    pub(crate) verbs: Receiver<Verb>,
+    /// The fleet's size, written by the shell at every change and
+    /// mirrored into the served `TabCount`.
+    pub(crate) tabs: Arc<Mutex<u32>>,
+    pub(crate) verbs: Receiver<Action>,
 }
 
 impl Served {
-    fn new() -> (Self, Arc<Mutex<dbus_state::State>>, Sender<Verb>) {
+    fn new() -> (Self, Arc<Mutex<dbus_state::State>>, Sender<Action>) {
         let phase = Arc::new(Mutex::new(SurfacePhase::Hidden));
         let state = Arc::new(Mutex::new(dbus_state::derive(
             SurfacePhase::Hidden,
-            0, // no tabs until the terminal slices exist
+            0, // no tabs until the fleet boots
         )));
         let (verbs_tx, verbs) = mpsc::channel();
         (
             Self {
                 phase: Arc::clone(&phase),
+                tabs: Arc::new(Mutex::new(0)),
                 verbs,
             },
             state,
@@ -80,10 +88,11 @@ impl Served {
 /// connection for the process lifetime. Evidence rows are
 /// `dropterm-gpui:` prefixed like the shell's: the service-up line
 /// carries the unique name and the `NameHasOwner` self-check, the
-/// drainer logs every verb it answers while the render loop renders.
+/// drainer logs every action it answers while the render loop renders.
 pub(crate) fn spawn_service() -> Served {
     let (served, state, verbs_tx) = Served::new();
     let phase = Arc::clone(&served.phase);
+    let tabs = Arc::clone(&served.tabs);
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -92,7 +101,7 @@ pub(crate) fn spawn_service() -> Served {
             Ok(runtime) => runtime,
             Err(err) => return eprintln!("dropterm-gpui: tokio rt failed: {err:?}"),
         };
-        runtime.block_on(serve(state, verbs_tx, phase));
+        runtime.block_on(serve(state, verbs_tx, phase, tabs));
     });
     served
 }
@@ -110,8 +119,9 @@ fn visible_phase(phase: &Mutex<SurfacePhase>) -> SurfacePhase {
 /// frontend's own runtime.
 async fn serve(
     state: Arc<Mutex<dbus_state::State>>,
-    verbs: Sender<Verb>,
+    verbs: Sender<Action>,
     phase: Arc<Mutex<SurfacePhase>>,
+    tabs: Arc<Mutex<u32>>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(dbus_state::FORWARD_CAPACITY);
     let builder = match zbus::connection::Builder::session()
@@ -177,40 +187,74 @@ async fn serve(
         "dropterm-gpui: dbus service up: {} (unique {unique}, name_has_owner={owned})",
         dbus_state::BUS_NAME
     );
-    // The served state mirrors the machine's published phase: the
-    // verb queue carries the decisions to the render loop, and this
-    // poller carries the answers back — `Visible` flips when the
-    // machine's phase actually flipped, never on a local guess. It
-    // rides its own task on this runtime, beside the drainer below.
-    let mirror_conn = conn.clone();
-    let mirror_state = Arc::clone(&state);
-    let mirror_phase = Arc::clone(&phase);
-    tokio::spawn(async move {
-        // The first snapshot mirrors whatever phase the shell has
-        // published — hidden at boot — before any comparison runs.
-        let mut mirrored = dbus_state::derive(visible_phase(&mirror_phase), 0);
-        loop {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let snapshot = dbus_state::derive(visible_phase(&mirror_phase), mirrored.tab_count);
-            if !dbus_state::changed(mirrored, snapshot).visible {
-                continue;
-            }
-            *mirror_state
+    // The served state mirrors the machine's published phase and the
+    // fleet's published size: the action queue carries the decisions
+    // to the render loop, and this poller carries the answers back —
+    // `Visible` flips when the machine's phase actually flipped,
+    // `TabCount` when the fleet's size actually changed, never on a
+    // local guess. It rides its own task on this runtime, beside the
+    // drainer below.
+    tokio::spawn(mirror(conn, state, phase, tabs));
+    while let Some(forwarded) = rx.recv().await {
+        let Some(action) = decode(&forwarded) else {
+            eprintln!("dropterm-gpui: forwarded Open ignored: {forwarded:?}");
+            continue;
+        };
+        println!("dropterm-gpui: dbus action {action} forwarded to the surface loop");
+        // The queue is unbounded and this send never blocks; a closed
+        // receiver means the render loop is gone and the forward is
+        // moot either way.
+        let _ = verbs.send(action);
+    }
+}
+
+/// The served-state mirror's poll loop (py-5 grew it the `TabCount`
+/// half): the shell's published phase and fleet size derive the
+/// served snapshot, a real flip writes it and emits the flipped
+/// property's changed signal — never a local guess.
+async fn mirror(
+    conn: zbus::Connection,
+    state: Arc<Mutex<dbus_state::State>>,
+    phase: Arc<Mutex<SurfacePhase>>,
+    tabs: Arc<Mutex<u32>>,
+) {
+    // The first snapshot mirrors whatever phase the shell has
+    // published — hidden at boot — before any comparison runs.
+    let mut mirrored = dbus_state::derive(visible_phase(&phase), 0);
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Scoped: the guard never crosses an await (the future must
+        // stay Send).
+        let tab_count = {
+            let guard = tabs
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
-            mirrored = snapshot;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+        };
+        let snapshot = dbus_state::derive(visible_phase(&phase), tab_count);
+        let diff = dbus_state::changed(mirrored, snapshot);
+        if !diff.visible && !diff.tab_count {
+            continue;
+        }
+        *state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+        mirrored = snapshot;
+        if diff.visible {
             println!(
                 "dropterm-gpui: surface phase mirrored -> visible={}",
                 snapshot.visible
             );
-            // The changed-helper emission mirrors the app's
-            // sync_dbus_state: only a real flip emits.
-            if let Ok(iface_ref) = mirror_conn
-                .object_server()
-                .interface::<_, dbus_state::V1>(dbus_state::OBJECT_PATH)
-                .await
-            {
-                let iface = iface_ref.get().await;
+        }
+        // The changed-helper emissions mirror the app's
+        // sync_dbus_state: only a real flip emits.
+        if let Ok(iface_ref) = conn
+            .object_server()
+            .interface::<_, dbus_state::V1>(dbus_state::OBJECT_PATH)
+            .await
+        {
+            let iface = iface_ref.get().await;
+            if diff.visible {
                 let _ = iface
                     .visible_changed(iface_ref.signal_emitter())
                     .await
@@ -218,20 +262,15 @@ async fn serve(
                         eprintln!("dropterm-gpui: Visible change emit failed: {err}");
                     });
             }
+            if diff.tab_count {
+                let _ = iface
+                    .tab_count_changed(iface_ref.signal_emitter())
+                    .await
+                    .inspect_err(|err| {
+                        eprintln!("dropterm-gpui: TabCount change emit failed: {err}");
+                    });
+            }
         }
-    });
-    while let Some(forwarded) = rx.recv().await {
-        let Some(verb) = verb_of(&forwarded) else {
-            eprintln!(
-                "dropterm-gpui: forwarded action not served by this slice yet: {forwarded:?}"
-            );
-            continue;
-        };
-        println!("dropterm-gpui: dbus verb {verb:?} forwarded to the surface loop");
-        // The queue is unbounded and this send never blocks; a closed
-        // receiver means the render loop is gone and the forward is
-        // moot either way.
-        let _ = verbs.send(verb);
     }
 }
 
@@ -244,50 +283,85 @@ mod tests {
     fn the_bare_summon_forwards_as_toggle() {
         // `Activate` is a summon with no verb; the app's default is
         // Toggle (the libcosmic receiver's rule, kept).
-        assert_eq!(verb_of(&Forwarded::Activate), Some(Verb::Toggle));
+        assert_eq!(decode(&Forwarded::Activate), Some(Action::Toggle));
     }
 
     #[test]
     fn the_surface_verbs_decode_by_their_display_names() {
-        // Exactly the words the libcosmic CLI forwards (CosmicFlags
-        // serializes the verb's Display name with no words for the
-        // surface verbs) and this CLI forwards the same way — the
-        // cross-frontend wire.
+        // Exactly the words both CLIs forward — the cross-frontend
+        // wire.
         assert_eq!(
-            verb_of(&Forwarded::ActivateAction {
+            decode(&Forwarded::ActivateAction {
                 action: "toggle".into(),
                 args: vec![]
             }),
-            Some(Verb::Toggle)
+            Some(Action::Toggle)
         );
         assert_eq!(
-            verb_of(&Forwarded::ActivateAction {
+            decode(&Forwarded::ActivateAction {
                 action: "show".into(),
                 args: vec![]
             }),
-            Some(Verb::Show)
+            Some(Action::Show)
         );
         assert_eq!(
-            verb_of(&Forwarded::ActivateAction {
+            decode(&Forwarded::ActivateAction {
                 action: "hide".into(),
                 args: vec![]
             }),
-            Some(Verb::Hide)
+            Some(Action::Hide)
         );
     }
 
     #[test]
-    fn terminal_verbs_and_open_do_not_decode_yet() {
-        // The tab verbs belong to the terminal slices; `Open` is
-        // served for contract completeness and ignored. Both decode to
-        // None so the drainer can warn instead of guessing.
+    fn a_tab_verb_decodes_with_its_payload_words() {
+        // The tab verbs ride the same reconstruction the CLI's own
+        // round-trip pins — Display name plus the payload words the
+        // forwarding launch sent.
         assert_eq!(
-            verb_of(&Forwarded::ActivateAction {
+            decode(&Forwarded::ActivateAction {
                 action: "new-tab".into(),
                 args: vec!["--cwd".into(), "/tmp".into()]
             }),
-            None
+            Some(Action::NewTab {
+                cwd: Some("/tmp".into()),
+                cmd: None,
+                profile: None
+            })
         );
-        assert_eq!(verb_of(&Forwarded::Open { uris: vec![] }), None);
+        assert_eq!(
+            decode(&Forwarded::ActivateAction {
+                action: "switch-profile-tab".into(),
+                args: vec![
+                    "--profile".into(),
+                    "web-prod".into(),
+                    "--tab-index".into(),
+                    "2".into()
+                ]
+            }),
+            Some(Action::SwitchProfileTab {
+                profile: "web-prod".to_string(),
+                tab_index: Some(2)
+            })
+        );
+    }
+
+    #[test]
+    fn a_malformed_payload_degrades_to_the_plain_toggle() {
+        // The libcosmic receiver's rule (a bad --tab-index): never an
+        // error surface — the plain Toggle answers.
+        assert_eq!(
+            decode(&Forwarded::ActivateAction {
+                action: "close-tab".into(),
+                args: vec!["--tab-index".into(), "0".into()]
+            }),
+            Some(Action::Toggle)
+        );
+    }
+
+    #[test]
+    fn open_stays_ignored() {
+        // `Open` is served for contract completeness and ignored.
+        assert_eq!(decode(&Forwarded::Open { uris: vec![] }), None);
     }
 }

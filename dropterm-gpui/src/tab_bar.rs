@@ -288,6 +288,24 @@ impl TabList {
             .and_then(|tab| tab.profile.as_deref())
     }
 
+    /// Applies an in-place respawn's field half (py-5, core's
+    /// `plan_respawn` product): the resolved title through the
+    /// profile name, the cleared shell-title cache, the kept rename
+    /// pin, the cleared attention and bell latch, and the persistent
+    /// profile seat. An unknown id applies nothing (the caller keeps
+    /// the live tab).
+    pub(crate) fn apply_respawn(&mut self, id: TabId, fields: dropterm_core::tabs::RespawnFields) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.title = fields.title;
+            tab.shell_title = None;
+            tab.title_override = fields.title_override;
+            tab.attention = Attention::None;
+            tab.bell_notified = false;
+            tab.profile = fields.profile;
+            tab.ephemeral = fields.ephemeral;
+        }
+    }
+
     /// The active tab's id, `None` while the list is empty.
     pub(crate) fn active_id(&self) -> Option<TabId> {
         self.tabs.get(self.active).map(|tab| tab.id)

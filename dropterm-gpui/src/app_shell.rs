@@ -40,7 +40,7 @@ use gpui_component::input::{InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use notify::Watcher as _;
 
-use crate::dbus::Verb;
+use crate::cli;
 use crate::executor::{Action, GpuiExecutor};
 use crate::status_bar;
 use crate::tab_bar;
@@ -208,8 +208,18 @@ pub(crate) struct Shell {
     focus_lost: bool,
     /// The machine phase this shell publishes for the dbus mirror.
     phase: Arc<Mutex<SurfacePhase>>,
-    /// The forwarded verbs, drained on the tick.
-    verbs: Receiver<Verb>,
+    /// The fleet's size, published for the dbus mirror's `TabCount`
+    /// (py-5): written at every fleet change, mirrored by the served
+    /// loop's poller.
+    tab_count: Arc<Mutex<u32>>,
+    /// The forwarded actions, drained on the tick (py-5: the surface
+    /// verbs and the tab verbs one queue).
+    verbs: Receiver<cli::Action>,
+    /// The first launch's startup action (py-5), applied by the
+    /// boot's first pump and never again: the surface verbs and a
+    /// `new-tab` keep startup application (the degraded tab verbs
+    /// never reach here — `startup_action` already collapsed them).
+    pending_startup: Option<cli::Action>,
     /// The drawer's tabs (gpui-tabs Task 1): plain records through
     /// core's model — the strip renders from this list.
     tabs: tab_bar::TabList,
@@ -508,7 +518,9 @@ impl Shell {
         boot: Instant,
         inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
-        verbs: Receiver<Verb>,
+        tab_count: Arc<Mutex<u32>>,
+        verbs: Receiver<cli::Action>,
+        startup: cli::Action,
         tabs: tab_bar::TabList,
         panes: HashMap<TabId, Entity<TerminalPane>>,
         config: DropTermConfig,
@@ -550,7 +562,9 @@ impl Shell {
             last_active: None,
             focus_lost: false,
             phase,
+            tab_count,
             verbs,
+            pending_startup: Some(startup),
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
@@ -606,8 +620,22 @@ impl Shell {
     fn pump(&mut self) -> Pumped {
         let mut actions = Vec::new();
         let mut exited = Vec::new();
-        while let Ok(verb) = self.verbs.try_recv() {
-            self.verb(verb, &mut actions);
+        let mut tab_verbs = Vec::new();
+        // The startup action applies once, on the first pump — the
+        // fleet stands by then (restore included), so a first-launch
+        // `new-tab` opens beside restored tabs, and the bare launch's
+        // default Toggle shows the overlay, exactly the libcosmic
+        // init's `debounced_toggle(startup)` (the checklist's
+        // first-launch row).
+        if let Some(startup) = self.pending_startup.take() {
+            println!(
+                "dropterm-gpui: startup action {startup} at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            self.dispatch(startup, &mut actions, &mut tab_verbs);
+        }
+        while let Ok(action) = self.verbs.try_recv() {
+            self.dispatch(action, &mut actions, &mut tab_verbs);
         }
         // The panes' handed-up signals: one drain (repeat Hide sends
         // coalesce — a second hide on a hidden surface decides
@@ -716,9 +744,16 @@ impl Shell {
             }
             _ => false,
         };
+        // The fleet's size, published for the dbus mirror's
+        // `TabCount` (py-5): one write per pump, the mirror's poller
+        // derives and emits on the real flip.
+        if let Ok(mut count) = self.tab_count.lock() {
+            *count = u32::try_from(self.tabs.records().len()).unwrap_or(u32::MAX);
+        }
         Pumped {
             actions,
             exited,
+            tab_verbs,
             quit,
         }
     }
@@ -1025,42 +1060,98 @@ impl Shell {
     /// hidden (the two-surface show), reversal from mid-slide, hide
     /// from measuring or shown (the slide-out wire, or destroy-now
     /// for a measuring surface).
-    fn verb(&mut self, verb: Verb, actions: &mut Vec<Action>) {
+    /// One forwarded action's dispatch (py-5): the toggle debounce
+    /// guards every verb — surface and tab alike, a compositor
+    /// double-delivery must neither toggle twice nor spawn two tabs
+    /// (the libcosmic `debounced_toggle` rule) — then the surface
+    /// verbs run the machine funnel and the tab verbs queue for the
+    /// tick's App-level apply point.
+    fn dispatch(
+        &mut self,
+        action: cli::Action,
+        actions: &mut Vec<Action>,
+        tab_verbs: &mut Vec<cli::Action>,
+    ) {
         if !self.machine.toggle_accepted(Instant::now()) {
             println!(
-                "dropterm-gpui: verb {verb:?} dropped by the toggle debounce at +{}ms",
+                "dropterm-gpui: action {action} dropped by the toggle debounce at +{}ms",
                 self.boot.elapsed().as_millis()
             );
             return;
         }
-        println!(
-            "dropterm-gpui: verb {verb:?} accepted at +{}ms",
-            self.boot.elapsed().as_millis()
-        );
-        match (verb, &self.machine.state) {
-            (Verb::Show | Verb::Toggle, SurfaceState::Hidden) => {
+        match action {
+            cli::Action::Toggle => {
+                println!(
+                    "dropterm-gpui: action toggle accepted at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                match self.machine.state {
+                    SurfaceState::Hidden => {
+                        let intents = self.machine.decide_show(self.inputs);
+                        self.execute_into(intents, actions);
+                    }
+                    SurfaceState::Hiding(handle) => {
+                        let intents = self.machine.decide_reverse_show(handle, self.inputs);
+                        self.execute_into(intents, actions);
+                    }
+                    SurfaceState::Measuring(_) | SurfaceState::Shown(_) => {
+                        let intents = self.machine.decide_hide(self.inputs);
+                        self.execute_into(intents, actions);
+                    }
+                }
+                self.publish_phase();
+            }
+            cli::Action::Show => {
+                println!(
+                    "dropterm-gpui: action show accepted at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.show_intent(actions);
+            }
+            cli::Action::Hide => {
+                println!(
+                    "dropterm-gpui: action hide accepted at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                if matches!(
+                    self.machine.state,
+                    SurfaceState::Measuring(_) | SurfaceState::Shown(_)
+                ) {
+                    let intents = self.machine.decide_hide(self.inputs);
+                    self.execute_into(intents, actions);
+                }
+                self.publish_phase();
+            }
+            tab => {
+                println!(
+                    "dropterm-gpui: action {tab} accepted at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                tab_verbs.push(tab);
+            }
+        }
+    }
+
+    /// The show half every tab-facing verb rides (the libcosmic
+    /// `show_intent_surface`): show-from-hidden, a mid-slide-out
+    /// reversal on the live surface, and nothing while already on its
+    /// way — the machine's own guards decide.
+    fn show_intent(&mut self, actions: &mut Vec<Action>) {
+        match self.machine.state {
+            SurfaceState::Hidden => {
                 let intents = self.machine.decide_show(self.inputs);
                 self.execute_into(intents, actions);
             }
             // A mid-slide reversal: the live surface is reused, the
             // slide re-targets `In`, and the keyboard re-holds at the
             // resolved mode — task 3's wire, served.
-            (Verb::Show | Verb::Toggle, SurfaceState::Hiding(handle)) => {
-                let handle = *handle;
+            SurfaceState::Hiding(handle) => {
                 let intents = self.machine.decide_reverse_show(handle, self.inputs);
                 self.execute_into(intents, actions);
             }
-            // The hide: a measuring surface has no reshaped content
-            // to animate (destroy-now); a shown one slides out —
-            // keyboard released at slide-out start, destroyed at the
-            // slide clock's completion tick.
-            (Verb::Hide | Verb::Toggle, SurfaceState::Measuring(_) | SurfaceState::Shown(_)) => {
-                let intents = self.machine.decide_hide(self.inputs);
-                self.execute_into(intents, actions);
-            }
-            // Show while already on its way, hide while hidden: the
-            // decision layer's own guards leave these with nothing.
-            _ => {}
+            // Already shown or on its way: the decision layer's own
+            // guards leave these with nothing.
+            SurfaceState::Measuring(_) | SurfaceState::Shown(_) => {}
         }
         self.publish_phase();
     }
@@ -1106,6 +1197,9 @@ struct Pumped {
     /// Tabs whose shells exited this pump — closed ungated at the
     /// tick's apply point.
     exited: Vec<TabId>,
+    /// The forwarded tab verbs (py-5) — applied at the tick's apply
+    /// point, where pane spawning's App context lives.
+    tab_verbs: Vec<cli::Action>,
     quit: bool,
 }
 
@@ -1993,6 +2087,348 @@ impl Shell {
         cx.notify();
     }
 
+    /// One forwarded tab verb's application (py-5), at the tick's
+    /// apply point where pane spawning's App context lives — the
+    /// libcosmic dispatch's semantics verbatim: close and rename are
+    /// quiet state edits (nothing re-shows), while new-tab, select,
+    /// duplicate, and switch-profile show the surface through the
+    /// same show path a `new-tab` takes (mid-slide-out included).
+    fn apply_tab_verb(
+        &mut self,
+        action: cli::Action,
+        actions: &mut Vec<Action>,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            cli::Action::NewTab { cwd, cmd, profile } => {
+                self.open_remote_tab(cwd.as_ref(), cmd, profile, actions, cx);
+            }
+            cli::Action::CloseTab { tab_index } => self.close_remote_tab(tab_index, cx),
+            cli::Action::SelectTab { index } => self.select_remote_tab(index, actions),
+            cli::Action::RenameTab { title, tab_index } => {
+                self.rename_remote_tab(&title, tab_index, cx);
+            }
+            cli::Action::DuplicateTab { tab_index } => {
+                self.duplicate_remote_tab(tab_index, actions, cx);
+            }
+            cli::Action::SwitchProfileTab { profile, tab_index } => {
+                self.switch_remote_profile_tab(&profile, tab_index, actions, cx);
+            }
+            // The surface verbs never queue here.
+            _ => {}
+        }
+    }
+
+    /// The remote `new-tab`'s spawn (the libcosmic `spawn_remote_tab`
+    /// port): `--cmd` wins its arm outright, `--profile` resolves
+    /// against the live config (a gone name warns and spawns the
+    /// plain shell), an explicit `--cwd` keeps the spawn a plain
+    /// shell even under a default profile (the user overrode the
+    /// preset wholesale), and the bare remainder is the one branch
+    /// the configured default owns. The cwd composes per arm — the
+    /// explicit live directory over the preset's over the active
+    /// tab's — and the spawn rides the one spawning body.
+    fn open_remote_tab(
+        &mut self,
+        cwd: Option<&std::path::PathBuf>,
+        cmd: Option<String>,
+        profile: Option<String>,
+        actions: &mut Vec<Action>,
+        cx: &mut Context<Self>,
+    ) {
+        // Flag presence, not live-ness: an explicit --cwd guards the
+        // plain-shell branch even when the directory turns out dead
+        // (the user asked for an override; a dead one warns and
+        // degrades within that override, never back to the default
+        // profile).
+        let explicit_cwd = cwd.is_some();
+        let explicit = spawn::live_dir("--cwd", cwd);
+        let inherited = self.active_cwd(cx);
+        let command = match (cmd, profile) {
+            (Some(line), _) => spawn::SpawnCommand::CommandLine(line),
+            (None, Some(name)) => dropterm_core::profile::find(&self.config.profiles, &name)
+                .map_or_else(
+                    || {
+                        println!(
+                            "dropterm-gpui: no profile named {name}; spawning the shell instead"
+                        );
+                        spawn::SpawnCommand::Shell(self.config.resolved_shell())
+                    },
+                    |profile| spawn::SpawnCommand::Profile {
+                        name: profile.name.clone(),
+                        command: profile.command.clone(),
+                        cwd: profile.cwd.clone(),
+                        env: profile.env.clone(),
+                    },
+                ),
+            (None, None) if explicit_cwd => {
+                spawn::SpawnCommand::Shell(self.config.resolved_shell())
+            }
+            (None, None) => spawn::default_spawn_command(&self.config),
+        };
+        let spawn_cwd = match &command {
+            spawn::SpawnCommand::Profile {
+                name, cwd: preset, ..
+            } => explicit
+                .clone()
+                .or_else(|| spawn::live_preset_cwd(name, preset.as_ref()))
+                .or(inherited.clone()),
+            spawn::SpawnCommand::CommandLine(_) => {
+                dropterm_core::tabs::resolve_new_tab_cwd(explicit, inherited)
+            }
+            spawn::SpawnCommand::Shell(_) => {
+                spawn::plain_spawn_cwd(&self.config, explicit, inherited)
+            }
+        };
+        if let Some(id) = self.spawn_command_tab(cx, &command, spawn_cwd) {
+            println!(
+                "dropterm-gpui: remote new-tab -> {id:?} ({} tabs) at +{}ms",
+                self.tabs.records().len(),
+                self.boot.elapsed().as_millis()
+            );
+        }
+        self.show_intent(actions);
+    }
+
+    /// The remote `close-tab` (the libcosmic `close_remote_tab`
+    /// port): the 1-based `--tab-index` resolves through core —
+    /// absent means the active tab — and the close rides the same
+    /// gated decision the front door runs, windowless (the modal's
+    /// render arm-completion takes the keyboard when it paints). An
+    /// unresolvable target warns and no-ops: the fire-and-forget call
+    /// has no reply to carry the failure.
+    fn close_remote_tab(&mut self, tab_index: Option<usize>, cx: &mut Context<Self>) {
+        let len = self.tabs.records().len();
+        match dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
+            Some(index) => {
+                let id = self.tabs.records()[index].id;
+                self.request_close_windowless(id, cx);
+            }
+            None => println!(
+                "dropterm-gpui: close-tab: no tab at --tab-index {tab_index:?} ({len} open)"
+            ),
+        }
+    }
+
+    /// The gated close's windowless arm (py-5): the same decision the
+    /// front door runs — a pinned tab refuses (warn, no-op), a
+    /// running foreground child under the confirm toggle arms the
+    /// modal, everything else closes now — but with no window on the
+    /// stack the modal's focus claim cannot run here; the render's
+    /// arm-completion takes the keyboard when the modal first paints.
+    fn request_close_windowless(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        if tab.pinned {
+            println!(
+                "dropterm-gpui: refusing to close pinned tab {id:?}; unpin it first at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            return;
+        }
+        let running = self
+            .panes
+            .get(&id)
+            .is_some_and(|pane| pane.read(cx).foreground_child_running());
+        if tab_bar::confirm_needed(self.config.close_confirmation_enabled, running) {
+            self.pending_close = Some(id);
+            println!(
+                "dropterm-gpui: close {id:?} gated -> the confirm modal armed (windowless) \
+                 at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        } else {
+            self.close_now(id, cx);
+        }
+    }
+
+    /// The remote `select-tab`: the strict 1-based `N` resolves
+    /// through core, the activation rides the list's own select
+    /// (attention retirement included), and the surface shows — an
+    /// unresolvable target is a quiet no-op (nothing re-shows; a
+    /// script's failed select must not disturb what the user is
+    /// looking at).
+    fn select_remote_tab(&mut self, one_based: usize, actions: &mut Vec<Action>) {
+        match dropterm_core::tabs::select_tab_target(self.tabs.records().len(), one_based) {
+            Some(index) => {
+                let id = self.tabs.records()[index].id;
+                if self.tabs.select(id) {
+                    println!(
+                        "dropterm-gpui: select-tab {one_based} -> {id:?} at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                }
+                self.show_intent(actions);
+            }
+            None => println!(
+                "dropterm-gpui: select-tab: no tab at index {one_based} ({} open)",
+                self.tabs.records().len()
+            ),
+        }
+    }
+
+    /// The remote `rename-tab`: the target resolves like close-tab's,
+    /// any inline rename open on that tab is discarded first (a
+    /// pending draft must not commit over the remote title), then
+    /// core's `commit_rename` applies the payload — a non-empty TITLE
+    /// pins the override, the empty TITLE clears it. Quiet.
+    fn rename_remote_tab(&mut self, title: &str, tab_index: Option<usize>, cx: &mut Context<Self>) {
+        let len = self.tabs.records().len();
+        match dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
+            Some(index) => {
+                let id = self.tabs.records()[index].id;
+                if self.rename.as_ref().is_some_and(|edit| edit.tab == id) {
+                    self.rename = None;
+                }
+                self.tabs
+                    .commit_rename(id, title, self.config.tab_title_mode);
+                println!(
+                    "dropterm-gpui: rename-tab -> {id:?} {:?} at +{}ms",
+                    title,
+                    self.boot.elapsed().as_millis()
+                );
+                cx.notify();
+            }
+            None => println!(
+                "dropterm-gpui: rename-tab: no tab at --tab-index {tab_index:?} ({len} open)"
+            ),
+        }
+    }
+
+    /// The remote `duplicate-tab`: the target — absent means the
+    /// active tab — resolves through core; an explicit but
+    /// unresolvable index warns and degrades to the active tab (the
+    /// same source the warning names). The spawn rides the menu's own
+    /// `duplicate_tab` body (after-active landing, activation, the
+    /// fresh-shell-in-cwd rule), and the surface shows.
+    fn duplicate_remote_tab(
+        &mut self,
+        tab_index: Option<usize>,
+        actions: &mut Vec<Action>,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.tabs.records().len();
+        let target =
+            dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index());
+        if target.is_none() && tab_index.is_some() {
+            println!(
+                "dropterm-gpui: duplicate-tab: no tab at --tab-index {tab_index:?} ({len} open); \
+                 duplicating the active tab instead"
+            );
+        }
+        let source = target
+            .or(Some(self.tabs.active_index()))
+            .and_then(|index| self.tabs.records().get(index))
+            .map(|tab| tab.id);
+        if let Some(source) = source {
+            self.duplicate_tab(source, cx);
+        }
+        self.show_intent(actions);
+    }
+
+    /// The remote `switch-profile-tab`: the name resolves exactly and
+    /// case-sensitively against the live config, the target like
+    /// every remote tab verb's; the respawn rides the shared in-place
+    /// body. Unresolvable inputs warn and edit nothing — unlike
+    /// duplicate-tab there is no sensible bare fallback — while the
+    /// surface half still shows.
+    fn switch_remote_profile_tab(
+        &mut self,
+        profile: &str,
+        tab_index: Option<usize>,
+        actions: &mut Vec<Action>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile_index) = self
+            .config
+            .profiles
+            .iter()
+            .position(|candidate| candidate.name == profile)
+        else {
+            println!("dropterm-gpui: switch-profile-tab: no profile named {profile}");
+            self.show_intent(actions);
+            return;
+        };
+        let len = self.tabs.records().len();
+        let Some(target) =
+            dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index())
+        else {
+            println!(
+                "dropterm-gpui: switch-profile-tab: no tab at --tab-index {tab_index:?} \
+                 ({len} open)"
+            );
+            self.show_intent(actions);
+            return;
+        };
+        let id = self.tabs.records()[target].id;
+        self.switch_tab_profile(id, profile_index, cx);
+        self.show_intent(actions);
+    }
+
+    /// The in-place profile respawn (py-5, the libcosmic
+    /// `switch_tab_profile` port): the tab keeps its slot, activation
+    /// state, and sticky user rename while its pane is replaced by a
+    /// fresh PTY running the preset — the respawn cwd is the preset's
+    /// live directory when it has one, else the tab's own — and the
+    /// field half lands through core's `plan_respawn`. A failed PTY
+    /// keeps the live tab untouched.
+    fn switch_tab_profile(&mut self, id: TabId, profile_index: usize, cx: &mut Context<Self>) {
+        let Some(command) = spawn::profile_pick(&self.config, profile_index) else {
+            return;
+        };
+        let spawn::SpawnCommand::Profile {
+            name, cwd: preset, ..
+        } = &command
+        else {
+            return;
+        };
+        let respawn_cwd = spawn::live_preset_cwd(name, preset.as_ref()).or_else(|| {
+            self.panes
+                .get(&id)
+                .and_then(|pane| pane.read(cx).working_directory())
+        });
+        let old_override = self
+            .tabs
+            .records()
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.title_override.clone());
+        let request = view::PaneRequest::for_command(&command, respawn_cwd.clone(), &self.config);
+        let Some((_terminal, pane)) = view::boot_pane(
+            cx,
+            &self.config,
+            request,
+            self.specs.table.as_ref(),
+            id,
+            Some(self.signals_tx.clone()),
+        ) else {
+            eprintln!(
+                "dropterm-gpui: profile respawn's terminal failed to spawn; keeping the live tab"
+            );
+            return;
+        };
+        // The swap: the old pane drops with its entry (the child dies
+        // the close path's own way), and the respawn's field half —
+        // the resolved title, the kept pin, the persistent profile
+        // seat — lands through core's plan.
+        drop(self.panes.insert(id, pane));
+        let fields = dropterm_core::tabs::plan_respawn(
+            self.config.tab_title_mode,
+            id,
+            respawn_cwd.as_deref(),
+            old_override.as_deref(),
+            name,
+        );
+        self.tabs.apply_respawn(id, fields);
+        println!(
+            "dropterm-gpui: tab {id:?} respawned under profile {name:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
     /// The gear affordance's press and the menu's Settings… row: the
     /// one settings trigger — a repeat press closes. A free function,
     /// not a shell method, by necessity (the gc2 walk's structural
@@ -2732,6 +3168,13 @@ impl gpui::Render for Shell {
         {
             pane.read(cx).focus_handle().focus(window, cx);
         }
+        // The windowless arm's completion (py-5): a remote close
+        // armed the modal with no window on the stack to focus it on;
+        // the first paint that carries it takes the keyboard, exactly
+        // the front door's arm.
+        if self.pending_close.is_some() && !self.modal_focus.is_focused(window) {
+            self.modal_focus.focus(window, cx);
+        }
         // The rename's own repair: a departed input's handle hands
         // the keyboard to the active pane the same way, and the slot
         // drops once anything else holds the keyboard.
@@ -3272,7 +3715,9 @@ pub(crate) fn boot(
     cx: &mut App,
     exit_after: Option<Duration>,
     phase: &Arc<Mutex<SurfacePhase>>,
-    verbs: Receiver<Verb>,
+    tab_count: &Arc<Mutex<u32>>,
+    verbs: Receiver<cli::Action>,
+    startup: cli::Action,
 ) {
     let boot = Instant::now();
     let config_dir = dropterm_core::config::store::store_dir();
@@ -3370,7 +3815,9 @@ pub(crate) fn boot(
             boot,
             inputs,
             Arc::clone(phase),
+            Arc::clone(tab_count),
             verbs,
+            startup,
             fleet.tabs,
             fleet.panes,
             config,
@@ -3431,6 +3878,17 @@ pub(crate) fn boot(
                 // App context lives.
                 for id in pumped.exited {
                     shell.update(cx, |shell, cx| shell.close_now(id, cx));
+                }
+                // The forwarded tab verbs (py-5) apply at the same
+                // point — pane spawning needs the App context, and the
+                // verbs' own show halves ride the window actions the
+                // same funnel produces.
+                for verb in pumped.tab_verbs {
+                    let mut actions = Vec::new();
+                    shell.update(cx, |shell, cx| shell.apply_tab_verb(verb, &mut actions, cx));
+                    for action in actions {
+                        apply_action(cx, &shell, action);
+                    }
                 }
                 for action in pumped.actions {
                     apply_action(cx, &shell, action);

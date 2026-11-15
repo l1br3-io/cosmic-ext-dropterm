@@ -43,7 +43,6 @@ mod terminal_walk;
 )]
 mod theme_gen;
 
-use std::fmt;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -51,59 +50,10 @@ use clap::Parser;
 use dropterm_core::dbus_state;
 use dropterm_core::transport::{self, BusName, ForwardOutcome};
 
-/// The scaffold's CLI surface — the libcosmic binary's verbs, minus
-/// the tab verbs the terminal slices will own: a bare launch toggles,
-/// `toggle`/`show`/`hide` name the surface verbs, and `--is-visible`
-/// asks the running instance without ever summoning it.
-#[derive(Parser, Debug, Clone)]
-// `--is-visible` is a query; pairing it with an action subcommand is
-// a contradiction, rejected at parse (the frontend's rule verbatim).
-#[command(
-    name = "dropterm-gpui",
-    version,
-    about,
-    args_conflicts_with_subcommands = true
-)]
-struct Args {
-    /// Print whether the running terminal's surface is visible
-    /// (true/false) and exit with a matching code (0 visible, 1
-    /// hidden or not running). Never summons the terminal.
-    #[arg(long)]
-    is_visible: bool,
-
-    #[command(subcommand)]
-    action: Option<Action>,
-}
-
-/// The surface verbs — the words both CLIs forward as
-/// `ActivateAction`'s action name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::Subcommand)]
-enum Action {
-    #[default]
-    Toggle,
-    Show,
-    Hide,
-}
-
-impl fmt::Display for Action {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Toggle => "toggle",
-            Self::Show => "show",
-            Self::Hide => "hide",
-        };
-        f.write_str(name)
-    }
-}
-
-/// The words a second launch forwards alongside the verb's Display
-/// name — none for every surface verb, exactly the libcosmic encoder's
-/// no-payload rule (`forward_words`: "actions without payloads forward
-/// nothing"), so both CLIs put the same shape on the wire and either
-/// receiver decodes either sender.
-fn forward_words(_action: Action) -> Vec<&'static str> {
-    Vec::new()
-}
+// The CLI surface — surface verbs and tab verbs alike — lives in
+// `cli` (py-5): one clap truth the launch, the forward encoder, and
+// the dbus decode all share.
+mod cli;
 
 /// The env-selected scenario the scaffold can boot besides the shell —
 /// the carried patch's verification harness (`DROPTERM_CHECK`).
@@ -129,7 +79,7 @@ fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
 
 fn main() {
     println!("dropterm-gpui: booting on the gpui-pre 0.3.12 pin (wayland)");
-    let args = Args::parse();
+    let args = cli::Args::parse();
     // The query path exits before any bus-name attempt and before the
     // guard's probe: it creates no surfaces, and its not-running answer
     // is truthful because the guard keeps an unsupported session from
@@ -153,9 +103,14 @@ fn main() {
         match transport::bus_name_status() {
             BusName::Unowned | BusName::NoBus => {}
             BusName::OwnedByAnother => {
+                // The payload words are owned here (a `--cwd` path, a
+                // `--cmd` line, a profile name): borrowed for the one
+                // forward, then dropped with the launch.
+                let words = cli::forward_words(&action);
+                let word_refs: Vec<&str> = words.iter().map(String::as_str).collect();
                 match transport::forward_outcome(&transport::forward_to_running(
                     &action.to_string(),
-                    forward_words(action),
+                    word_refs,
                 )) {
                     // The running instance applied the verb; a second
                     // surface must never appear. Today's contract: the
@@ -180,7 +135,16 @@ fn main() {
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
     let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
+    // First launch has no running state to act on remotely: the tab
+    // verbs degrade to a plain start through `startup_action` (the
+    // degradation logged the libcosmic way); the surface verbs and a
+    // `new-tab` keep startup application — the boot applies them.
+    let startup = cli::startup_action(&action);
+    if startup != action {
+        println!("dropterm-gpui: {action} with no running instance: starting plain");
+    }
     let phase = Arc::clone(&served.phase);
+    let tabs = Arc::clone(&served.tabs);
     let verbs = served.verbs;
     // Explicit quit only: the app's lifetime is its own, never the
     // windows'. GPUI's default mode on Linux quits when the last
@@ -194,7 +158,7 @@ fn main() {
         .run(move |cx: &mut gpui::App| match check {
             Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
             Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
-            None => app_shell::boot(cx, exit_after, &phase, verbs),
+            None => app_shell::boot(cx, exit_after, &phase, &tabs, verbs, startup),
         });
     println!("dropterm-gpui: event loop exited cleanly");
 }
@@ -256,54 +220,6 @@ mod tests {
         // Phase 4–5 own those.
         for line in text.lines().filter(|l| l.contains("gpui-pre")) {
             assert!(!line.contains("x11"), "no x11 feature: {line}");
-        }
-    }
-
-    #[test]
-    fn the_surface_verbs_parse_and_default_to_toggle() {
-        use super::Action;
-        use super::Args;
-        use clap::Parser as _;
-        let bare = Args::parse_from(["dropterm-gpui"]);
-        assert_eq!(bare.action, None);
-        assert_eq!(bare.action.unwrap_or_default(), Action::Toggle);
-        assert_eq!(
-            Args::parse_from(["dropterm-gpui", "show"]).action,
-            Some(Action::Show)
-        );
-        assert_eq!(
-            Args::parse_from(["dropterm-gpui", "hide"]).action,
-            Some(Action::Hide)
-        );
-        assert_eq!(
-            Args::parse_from(["dropterm-gpui", "toggle"]).action,
-            Some(Action::Toggle)
-        );
-    }
-
-    #[test]
-    fn is_visible_parses_alone_and_conflicts_with_subcommands() {
-        use super::Args;
-        use clap::Parser as _;
-        let alone = Args::try_parse_from(["dropterm-gpui", "--is-visible"]).expect("parses alone");
-        assert!(alone.is_visible);
-        assert_eq!(alone.action, None);
-        assert!(Args::try_parse_from(["dropterm-gpui", "--is-visible", "show"]).is_err());
-        assert!(Args::try_parse_from(["dropterm-gpui", "show", "--is-visible"]).is_err());
-    }
-
-    #[test]
-    fn surface_verbs_forward_no_words_like_the_libcosmic_encoder() {
-        // The cross-frontend wire pin: the libcosmic CLI's forward
-        // encoder sends the verb's Display name with no words for the
-        // surface verbs; this CLI must put the identical shape on the
-        // wire or the other side's decode drifts.
-        use super::{Action, forward_words};
-        for action in [Action::Toggle, Action::Show, Action::Hide] {
-            assert!(
-                forward_words(action).is_empty(),
-                "{action} forwards no words"
-            );
         }
     }
 
