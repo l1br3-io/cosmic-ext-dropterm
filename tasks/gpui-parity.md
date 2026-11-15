@@ -145,11 +145,11 @@ the 2026-11-15 scope ruling, recorded in the walk note below), over
 core's paste cache and ledger.
 
 **Acceptance criteria:**
-- [ ] The panel opens from the chip, lists the ledger, deletes with
+- [x] The panel opens from the chip, lists the ledger, deletes with
       the labeled pair; the paste-image rows carry it
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check` *(green 2026-11-15, b33cf05)*
 - [ ] Manual: images-panel rows *(parked with py-4, owner ruling
       2026-11-15)*
 

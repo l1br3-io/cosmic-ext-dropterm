@@ -622,8 +622,9 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       Profile, session profile ids, the band's profile seat *(done
       2026-11-15: 986e765 · 113566b · 847b99c · 2028c7f, `just check`
       green across the four; the manual rows park with py-4)*
-- [ ] py-6 The GPUI images panel over core's paste cache and ledger,
-      with the labeled confirm pair *(opened 2026-11-15 with py-5)*
+- [x] py-6 The GPUI images panel over core's paste cache and ledger,
+      with the labeled confirm pair *(done 2026-11-15, b33cf05, `just
+      check` green — the manual rows park with py-4)*
 
 **Checkpoint — parity:** Phase 3's exit line holds on both compositors.
 
