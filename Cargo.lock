@@ -2262,6 +2262,7 @@ dependencies = [
  "jiff",
  "notify",
  "notify-rust",
+ "open",
  "serde_json",
  "tokio",
  "wayland-client",

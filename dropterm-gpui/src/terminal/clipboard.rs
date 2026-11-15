@@ -42,6 +42,25 @@ pub(crate) fn write_data_control(text: String, primary: bool) {
     });
 }
 
+/// Serve one data-control image copy on its own thread (the images
+/// panel's Copy-image verb, py-6): the row's bytes in their sniffed
+/// format — GPUI's clipboard carries no image seat, so the
+/// data-control protocol is the write's only road, serving unfocused
+/// exactly like the text half above.
+pub(crate) fn write_image_data_control(bytes: Vec<u8>, mime: &'static str) {
+    std::thread::spawn(move || {
+        let options = wl_clipboard_rs::copy::Options::new();
+        let result = wl_clipboard_rs::copy::copy(
+            options,
+            wl_clipboard_rs::copy::Source::Bytes(bytes.into_boxed_slice()),
+            wl_clipboard_rs::copy::MimeType::Specific(mime.to_string()),
+        );
+        if let Err(err) = result {
+            println!("dropterm-gpui: data-control image write failed ({err})");
+        }
+    });
+}
+
 /// One copy out of the pane: the focused, non-primary write rides
 /// GPUI's clipboard (the wayland `wl_data_device` set-selection —
 /// focus and serial are the pane's by construction); every other

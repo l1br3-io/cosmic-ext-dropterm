@@ -353,8 +353,10 @@ pub(crate) fn band_vm(
 /// and the App context the write needs.
 type CopyFn = std::rc::Rc<dyn Fn(SegmentId, String, &mut gpui::App)>;
 
-/// The scrolled chip's jump-verb shape.
-type JumpFn = std::rc::Rc<dyn Fn(&mut gpui::App)>;
+/// The action chips' verb shape: the chip's segment (the two
+/// deliberate action chips route their own verbs — the scrolled
+/// chip's jump, the pasted chip's panel door).
+type JumpFn = std::rc::Rc<dyn Fn(dropterm_core::status::SegmentId, &mut gpui::App)>;
 
 /// The attention token's GPUI resolution (the reference band's own
 /// rule): the live terminal scheme's red — the bright variant on
@@ -412,10 +414,9 @@ pub(crate) struct StatusBandView {
     /// clipboard and arms the flash (the App context rides the
     /// callback, the strip's own pattern).
     on_copy: CopyFn,
-    /// The scrolled chip's jump verb — the shell routes it to the
-    /// engine's scroll-to-bottom, the one deliberate action chip
-    /// this frontend carries (the pasted chip's panel arrives with
-    /// the chrome slices; its seat resolves absent until then).
+    /// The action chips' verb (py-6 grew it to the pair): the
+    /// scrolled chip's jump to the engine's scroll-to-bottom, the
+    /// pasted chip's images-panel door — routed by segment.
     on_scroll_bottom: JumpFn,
 }
 
@@ -433,7 +434,7 @@ impl StatusBandView {
             copied: None,
             paste_refusal: None,
             on_copy: std::rc::Rc::new(|_, _, _: &mut gpui::App| {}),
-            on_scroll_bottom: std::rc::Rc::new(|_: &mut gpui::App| {}),
+            on_scroll_bottom: std::rc::Rc::new(|_: SegmentId, _: &mut gpui::App| {}),
         }
     }
 
@@ -483,7 +484,10 @@ impl StatusBandView {
         self
     }
 
-    pub(crate) fn on_scroll_bottom(mut self, on_jump: impl Fn(&mut gpui::App) + 'static) -> Self {
+    pub(crate) fn on_scroll_bottom(
+        mut self,
+        on_jump: impl Fn(SegmentId, &mut gpui::App) + 'static,
+    ) -> Self {
         self.on_scroll_bottom = std::rc::Rc::new(on_jump);
         self
     }
@@ -568,7 +572,7 @@ impl gpui::RenderOnce for StatusBandView {
             text = if click_jumps(id) {
                 text.on_mouse_down(
                     gpui::MouseButton::Left,
-                    move |_, _: &mut gpui::Window, cx: &mut gpui::App| on_jump(cx),
+                    move |_, _: &mut gpui::Window, cx: &mut gpui::App| on_jump(id, cx),
                 )
             } else {
                 text.on_mouse_down(

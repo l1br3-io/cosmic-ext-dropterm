@@ -88,6 +88,11 @@ image = { version = "0.25", default-features = false }
 # path). Same 0.19 line the lock already carries for core.
 cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-cache"] }
 
+# The images panel's Open verbs (gpui-parity py-6): the system viewer
+# and the file manager through the `open` crate — same 5.3.2 line the
+# libcosmic frontend and the lock already carry.
+open = "5.3.2"
+
 # The bell's desktop notification (gpui-parity Task 3): the same
 # direct-D-Bus notify-rust transport the libcosmic build rides — 4.18,
 # the line the lock already carries.

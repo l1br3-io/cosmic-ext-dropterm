@@ -652,6 +652,29 @@ impl TabList {
             .push(dropterm_core::tabs::PastedImage::new(path, bytes));
     }
 
+    /// The tab with `id`'s pasted-image ledger (the panel's rows and
+    /// the band chip's count), `None` for an unknown id.
+    pub(crate) fn pasted_images(&self, id: TabId) -> Option<&[dropterm_core::tabs::PastedImage]> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .map(|tab| tab.pasted_images.as_slice())
+    }
+
+    /// Drops the pasted-image row owning `path` from the tab with
+    /// `id` (the panel's Delete verb's model half, the reference
+    /// `forget_pasted_image`'s record side): the row and nothing else
+    /// — the cache file is the caller's best-effort concern. Returns
+    /// whether a row dropped; an unknown id or path owns nothing.
+    pub(crate) fn forget_pasted_image(&mut self, id: TabId, path: &std::path::Path) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return false;
+        };
+        let before = tab.pasted_images.len();
+        tab.pasted_images.retain(|row| row.path != path);
+        before != tab.pasted_images.len()
+    }
+
     /// The records mutably — the tests' state seeding (pinned flags,
     /// attention markers); every runtime write goes through a named
     /// core-routed method above.

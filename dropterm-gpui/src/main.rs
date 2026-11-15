@@ -20,6 +20,7 @@ mod context_menu;
 mod dbus;
 mod drawer;
 mod executor;
+mod images_panel;
 mod kit_check;
 mod notify;
 mod pickers;

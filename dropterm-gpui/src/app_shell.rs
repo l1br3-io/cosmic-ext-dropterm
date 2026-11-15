@@ -208,6 +208,12 @@ pub(crate) struct Shell {
     focus_lost: bool,
     /// The machine phase this shell publishes for the dbus mirror.
     phase: Arc<Mutex<SurfacePhase>>,
+    /// The pasted-images panel (py-6): the open door, the armed
+    /// delete row (the single-arm seat), and the decoded thumbnails
+    /// by path — the drawer's own state shape.
+    images_open: bool,
+    images_armed: Option<std::path::PathBuf>,
+    images_thumbs: HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
     /// The fleet's size, published for the dbus mirror's `TabCount`
     /// (py-5): written at every fleet change, mirrored by the served
     /// loop's poller.
@@ -562,6 +568,9 @@ impl Shell {
             last_active: None,
             focus_lost: false,
             phase,
+            images_open: false,
+            images_armed: None,
+            images_thumbs: HashMap::new(),
             tab_count,
             verbs,
             pending_startup: Some(startup),
@@ -2684,6 +2693,185 @@ impl Shell {
         );
     }
 
+    /// The pasted chip's door (py-6): the panel opens over the active
+    /// tab's ledger, its missing thumbnails decoding off the UI
+    /// thread's clock — the reference panel's batch-open arm.
+    fn open_images_panel(&mut self, cx: &mut Context<Self>) {
+        self.images_open = true;
+        println!(
+            "dropterm-gpui: images panel open at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        let Some(id) = self.tabs.active_id() else {
+            cx.notify();
+            return;
+        };
+        let missing: Vec<std::path::PathBuf> = self
+            .tabs
+            .pasted_images(id)
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.path.clone())
+                    .filter(|path| !self.images_thumbs.contains_key(path))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if missing.is_empty() {
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |shell, cx| {
+            let thumbs = cx
+                .background_spawn(async move {
+                    missing
+                        .iter()
+                        .filter_map(|path| {
+                            crate::images_panel::decode_thumb(path).map(|handle| {
+                                println!("dropterm-gpui: panel thumb decoded {}", path.display());
+                                (path.clone(), handle)
+                            })
+                        })
+                        .collect::<HashMap<_, _>>()
+                })
+                .await;
+            if let Err(err) = shell.update(cx, |shell, cx| {
+                shell.images_thumbs.extend(thumbs);
+                cx.notify();
+            }) {
+                println!("dropterm-gpui: panel thumb store dropped ({err})");
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The panel's close door: the open drops with the armed pair
+    /// (an armed pair never survives the close).
+    fn close_images_panel(&mut self, cx: &mut Context<Self>) {
+        self.images_open = false;
+        self.images_armed = None;
+        println!(
+            "dropterm-gpui: images panel closed at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
+    /// One images-panel verb (py-6, the reference handlers' port):
+    /// the row verbs through the paths the reference rides, the
+    /// cluster's arm/disarm through the single-arm seat, and the
+    /// doors.
+    fn images_verb(
+        &mut self,
+        verb: crate::images_panel::PanelVerb,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::images_panel::PanelVerb;
+        match verb {
+            PanelVerb::Open(path) => {
+                // The OpenHyperlink precedent: hand it to the system
+                // viewer, one warn on refusal.
+                if let Err(err) = open::that_detached(&path) {
+                    println!("dropterm-gpui: failed to open {}: {err}", path.display());
+                }
+            }
+            PanelVerb::CopyPath(path) => {
+                let text = path.to_string_lossy().into_owned();
+                println!(
+                    "dropterm-gpui: panel copy path {} at +{}ms",
+                    path.display(),
+                    self.boot.elapsed().as_millis()
+                );
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            PanelVerb::CopyImage(path) => {
+                // The read runs off-thread (the cache file can be
+                // megabytes); only a real read reaches the write, in
+                // the sniffed format.
+                std::thread::spawn(move || match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let mime = dropterm_core::paste_cache::sniff_image_format(&bytes)
+                            .map_or("application/octet-stream", |format| format.mime());
+                        crate::terminal::clipboard::write_image_data_control(bytes, mime);
+                    }
+                    Err(err) => {
+                        println!(
+                            "dropterm-gpui: panel image read failed for {}: {err}",
+                            path.display()
+                        );
+                    }
+                });
+            }
+            PanelVerb::Repaste(path) => {
+                // The same channel a text paste uses — bracketed
+                // paste rides it unchanged.
+                if let Some(pane) = self.active_pane() {
+                    let engine = pane.read(cx).terminal.clone();
+                    let text = path.to_string_lossy();
+                    engine.lock().expect("engine lock").paste(&text);
+                    println!(
+                        "dropterm-gpui: panel re-paste {} at +{}ms",
+                        path.display(),
+                        self.boot.elapsed().as_millis()
+                    );
+                }
+            }
+            PanelVerb::ArmDelete(path) => {
+                // The pair swaps to the pressed row: the single-arm
+                // seat both disarms any other armed row and never
+                // leaves two pairs standing.
+                self.images_armed = Some(path);
+                cx.notify();
+            }
+            PanelVerb::KeepDelete => {
+                self.images_armed = None;
+                cx.notify();
+            }
+            PanelVerb::ConfirmDelete(path) => {
+                let id = self.tabs.active_id();
+                let dropped = id.is_some_and(|id| self.tabs.forget_pasted_image(id, &path));
+                self.images_armed = None;
+                self.images_thumbs.remove(&path);
+                if dropped {
+                    println!(
+                        "dropterm-gpui: panel deleted {} at +{}ms",
+                        path.display(),
+                        self.boot.elapsed().as_millis()
+                    );
+                    // The row's file, best-effort off-thread — the
+                    // cache file is the paste's only durable copy, so
+                    // the delete owns it too.
+                    std::thread::spawn(move || {
+                        if let Err(err) = std::fs::remove_file(&path) {
+                            println!(
+                                "dropterm-gpui: panel file removal failed for {}: {err}",
+                                path.display()
+                            );
+                        }
+                    });
+                }
+                cx.notify();
+            }
+            PanelVerb::OpenCache => {
+                // The OpenHyperlink precedent for the folder: the file
+                // manager, one warn on refusal — including the no-XDG
+                // case.
+                match dropterm_core::paste_cache::paste_cache_dir() {
+                    Some(dir) => {
+                        if let Err(err) = open::that_detached(&dir) {
+                            println!("dropterm-gpui: failed to open {}: {err}", dir.display());
+                        }
+                    }
+                    None => println!(
+                        "dropterm-gpui: paste cache unavailable: no XDG cache directory resolves"
+                    ),
+                }
+            }
+            PanelVerb::Close => self.close_images_panel(cx),
+        }
+    }
+
     /// Every show clears the missed-activity latches
     /// (status-activity spec): showing is a touch verb — the user is
     /// looking at the surface again, and the halo's news is spent.
@@ -2739,8 +2927,16 @@ impl Shell {
         };
         let on_scroll_bottom = {
             let shell = shell.clone();
-            move |cx: &mut gpui::App| {
-                shell.update(cx, Shell::scroll_active_to_bottom);
+            move |id: dropterm_core::status::SegmentId, cx: &mut gpui::App| {
+                // The two action chips' own verbs (py-6 grew the
+                // pair): the scrolled chip's jump, the pasted chip's
+                // panel door.
+                shell.update(cx, |shell, cx| match id {
+                    dropterm_core::status::SegmentId::Pasted => {
+                        shell.open_images_panel(cx);
+                    }
+                    _ => Shell::scroll_active_to_bottom(shell, cx),
+                });
             }
         };
         status_bar::StatusBandView::new(self.status.clone(), strip, fg)
@@ -2956,9 +3152,14 @@ impl Shell {
                 .map(|(name, duration)| (name.as_str(), *duration)),
             exit_status,
             scrolled_back: Some(scrolled_back),
-            // No GPUI images panel yet: the chip's visibility is its
-            // conditionality, and zero pastes reads the same.
-            pasted: None,
+            // The pasted chip (py-6): the active tab's ledger count —
+            // the chip's visibility is its conditionality, zero
+            // pastes reads the same as absent.
+            pasted: self
+                .tabs
+                .active_id()
+                .and_then(|id| self.tabs.pasted_images(id))
+                .map(<[dropterm_core::tabs::PastedImage]>::len),
             progress,
             program_status,
             ssh_destination: ssh_destination.as_deref(),
@@ -3264,6 +3465,8 @@ impl gpui::Render for Shell {
         let mut band = self.sliding_band(cx).into_any_element();
         if self.settings.open {
             band = self.settings_overlay(band, cx);
+        } else if self.images_open {
+            band = self.images_overlay(band, cx);
         }
         let Some(pending) = pending else {
             return band;
@@ -3515,6 +3718,41 @@ impl Shell {
             .child(band)
             .child(panel)
             .into_any_element()
+    }
+
+    /// The pasted-images panel's overlay mount (py-6): the live band
+    /// beneath the module's own composition — the rows over the
+    /// active tab's ledger with the armed cluster per row, the verb
+    /// routed through the shell handler — at the drawer's width rule.
+    fn images_overlay(
+        &mut self,
+        band: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let shell = cx.entity();
+        let verb: crate::images_panel::VerbFn =
+            std::rc::Rc::new(move |verb, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |shell, cx| shell.images_verb(verb, window, cx));
+            });
+        let armed = self.images_armed.clone();
+        let rows: Vec<crate::images_panel::PanelRow<'_>> = self
+            .tabs
+            .active_id()
+            .and_then(|id| self.tabs.pasted_images(id))
+            .map(|ledger| {
+                crate::images_panel::panel_rows(ledger)
+                    .into_iter()
+                    .map(|row| crate::images_panel::PanelRow {
+                        cluster: crate::images_panel::delete_cluster(armed.as_deref(), &row.path),
+                        row,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let surface = self
+            .last_bounds
+            .map_or(1280.0, |bounds| bounds.size.width.as_f32());
+        crate::images_panel::overlay(band, rows, &self.images_thumbs, &verb, surface, cx)
     }
 }
 
