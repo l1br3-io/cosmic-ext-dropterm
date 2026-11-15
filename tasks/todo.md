@@ -612,13 +612,25 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       baseline; bell + sessions rows walked owner-run 2026-11-15 —
       reported done, no deviations filed)
 - [ ] py-4 The parity walk: the whole manual checklist, COSMIC + sway,
-      row-named evidence; deviations filed — gate: open question item 9
-      ruled (dock mode)
+      row-named evidence; deviations filed *(parked, owner ruling
+      2026-11-15 — the walks no longer gate building; un-park by the
+      owner running the walk; the feature tasks below land first)*
+- [ ] py-5 The tab-verb and profile spawn surface: core spawn
+      resolution + GPUI profile launches (env/cwd/per-tab appearance),
+      default_profile, --cmd, the remote tab verbs (CLI + dbus + the
+      shell funnel), the menu folders, the `+` dropdown, Switch
+      Profile, session profile ids, the band's profile seat *(opened
+      2026-11-15 by the same ruling — the parity gaps the walk would
+      have caught)*
+- [ ] py-6 The GPUI images panel over core's paste cache and ledger,
+      with the labeled confirm pair *(opened 2026-11-15 with py-5)*
 
 **Checkpoint — parity:** Phase 3's exit line holds on both compositors.
 
 - [ ] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
-      deleted; applet canary — owner-gated
+      deleted; applet canary — the code swap proceeds under the
+      2026-11-15 walk-skip ruling (the canary row itself parks with
+      py-4)
 - [ ] cu-2 Docs true (architecture rewrite incl. diagrams;
       known-issues fractional row)
 - [ ] cu-3 The deferred release, `/release` ritual, walk gate — owner
