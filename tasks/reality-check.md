@@ -63,18 +63,22 @@ slot filled and committed (1deed62)*
 ## Task 3: Session 2b — Hyprland
 
 Same shape, slot "Session 2b: Hyprland"; check 3 uses `bind`.
-**Dependencies:** None · **Scope:** S (manual, hardware)
+**Dependencies:** None · **Scope:** S (manual, hardware) — *waived,
+owner ruling 2026-11-15 closing Phase 0 with the session unrun; a
+headless-docker rig (the sway session's pattern) can still fill it if
+Hyprland is ever questioned*
 
 ## Task 4: Session 3 — KDE Plasma (Wayland)
 
 Same shape, slot "Session 3: KDE Plasma (Wayland)". First data point for
 KDE's layer-shell quirks (its own focus and zone behavior) — record what
 differs from cosmic-comp, especially checks 1, 2, and 16.
-**Dependencies:** None · **Scope:** S (manual, hardware) — *smoke
-2026-11-15, owner-run on a Fedora KDE VM against the GPUI frontend:
-layer-shell up, hidden mode clean; with dock mode on, a KWin rounded
-frame drew around the drawer (dock-on/off correlation, mechanism
-unconfirmed) — an informal smoke, not a session fill*
+**Dependencies:** None · **Scope:** S (manual, hardware) — *waived with
+the phase, owner ruling 2026-11-15, session unrun; smoke 2026-11-15,
+owner-run on a Fedora KDE VM against the GPUI frontend: layer-shell up,
+hidden mode clean; with dock mode on, a KWin rounded frame drew around
+the drawer (dock-on/off correlation, mechanism unconfirmed) — an
+informal smoke, not a session fill, and still the only KDE evidence*
 
 ## Task 5: Session 4 — GNOME (Wayland), expected to fail
 
@@ -84,7 +88,10 @@ what `--is-visible` reports (check 12), logs. The known mode: the
 2026-11-08 sandbox walk without `zwlr_layer_shell_v1` never surfaced
 while `--is-visible` reported true — confirm or correct it here; this
 session's record is `layer-shell-guard`'s baseline.
-**Dependencies:** None · **Scope:** S (manual, hardware)
+**Dependencies:** None · **Scope:** S (manual, hardware) — *waived with
+the phase, owner ruling 2026-11-15, session unrun; it was
+expected-fail/confirmatory and the guard's weston-headless evidence
+stands as the no-layer-shell record*
 
 ## Task 6: Session 5 — one X11 session, expected to fail
 
@@ -120,11 +127,16 @@ green on the core checks collapses the distro axis into packaging and
 docs; every failure became a Phase 1 item.
 
 **Acceptance criteria:**
-- [ ] All seven slots filled per the template
-- [ ] Every failure filed and named; no unexplained `fail`
+- [x] All seven slots filled per the template *(four filled; three
+      waived by the owner ruling 2026-11-15 closing Phase 0 — the slots
+      carry the ruling instead of a fill)*
+- [x] Every failure filed and named; no unexplained `fail` *(the filled
+      slots' fails are named — X11's expected no-layer-shell class, sway
+      headless's in-rig bell row; the waived sessions filed nothing)*
 
 **Verification:**
-- [ ] Manual review of the results section against the checklist
+- [x] Manual review of the results section against the checklist *(done
+      at the close-out under the 2026-11-15 ruling, waiver-caveated)*
 
 **Dependencies:** Tasks 1–7 · **Files:** plan record (slots), the filed
 bug packages/commits · **Scope:** S

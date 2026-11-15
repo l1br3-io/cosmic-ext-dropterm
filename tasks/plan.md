@@ -114,8 +114,14 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
 ## Task list (index into the chunks)
 
 ### Phase 0 — hardware, no code ([reality-check](reality-check.md))
-- [ ] Tasks 1–7: the seven sessions, one slot each in the plan record
-- [ ] Task 8: close-out — every failure filed
+- [x] Tasks 1–7: the seven sessions, one slot each in the plan record
+      *(rc-1/2/6/7 ran and their slots are filled; 2b/Hyprland, 3/KDE,
+      and 4/GNOME waived — owner ruling 2026-11-15 closing Phase 0 with
+      the sessions unrun; the plan record's slots carry the ruling)*
+- [x] Task 8: close-out — every failure filed *(closed with the phase by
+      the same ruling: the waived sessions filed nothing; the filled
+      slots' failures are named, the no-layer-shell class carried the
+      layer-shell-guard fix)*
 
 ### Phase 1 — flag day ([app-identity](app-identity.md))
 - [ ] Task 1: the three owner rulings

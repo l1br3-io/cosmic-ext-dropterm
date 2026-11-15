@@ -10,18 +10,21 @@ chunk's verification passing.
 - [x] rc-1 Session 1: COSMIC baseline (16 checks, slot filled) *(agent-run 2026-11-11 in the validation VM, 9091b19: 1/4/8/12/13/15 pass, input rows n-a — owner's eyes-on, parked 2026-11-13)*
 - [x] rc-2 Session 2a: sway (shared with the spike) *(agent-run headless, 1deed62: green where exercisable — maps/renders/lifecycle/handoff; input rows + bell row want one hardware sway session — parked
       2026-11-13)*
-- [ ] rc-3 Session 2b: Hyprland *(parked 2026-11-13, owner ruling —
-      un-park by running the session; a headless-docker attempt may
-      still carry it the way sway's session went)*
-- [ ] rc-4 Session 3: KDE Plasma (Wayland) *(parked 2026-11-13, owner
-      ruling — un-park by running the session; smoke 2026-11-15 owner-run
-      on a Fedora KDE VM against the GPUI frontend: layer-shell works,
-      hidden mode clean with no frame; with dock mode on, a KWin rounded
-      frame drew around the drawer — dock-on/off correlation, mechanism
-      unconfirmed; an informal smoke, not a session fill)*
-- [ ] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
-      *(parked 2026-11-13, owner ruling — expected-fail and
-      confirmatory; the guard already has weston-headless evidence)*
+- [x] rc-3 Session 2b: Hyprland *(waived — owner ruling 2026-11-15
+      closing Phase 0 with the sessions unrun; the parked note stands: a
+      headless-docker attempt may still carry it the way sway's session
+      went if Hyprland is ever questioned)*
+- [x] rc-4 Session 3: KDE Plasma (Wayland) *(waived with the phase,
+      owner ruling 2026-11-15 — the smoke 2026-11-15 owner-run on a
+      Fedora KDE VM against the GPUI frontend remains the only KDE
+      evidence: layer-shell works, hidden mode clean with no frame; with
+      dock mode on, a KWin rounded frame drew around the drawer —
+      dock-on/off correlation, mechanism unconfirmed; an informal smoke,
+      not a session fill, and still not one)*
+- [x] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
+      *(waived with the phase, owner ruling 2026-11-15 — expected-fail
+      and confirmatory; the guard's weston-headless evidence stands as
+      the no-layer-shell record)*
 - [x] rc-6 Session 5: one X11 session (record which) *(i3 over Xvfb, 482a37d: zombie + degenerate 32px DOCK band first launch, truthful --is-visible, libXi-less panic variant; expected-fail recorded)*
 - [x] rc-7 Session 6: non-Pop distro — floor, ldd, fonts (feeds
       distro-reach) *(run 2026-11-11 on archlinux:latest, slot filled
@@ -29,9 +32,11 @@ chunk's verification passing.
       green, ldd under-reports through winit's dlopen, fontless base;
       this box only catches todo up — the chunk and plan record
       already carried it)*
-- [ ] rc-8 Close-out: every failure filed and named in its slot
+- [x] rc-8 Close-out: every failure filed and named in its slot
       *(parked 2026-11-13 with the three open sessions — it sweeps
-      what they fill)*
+      what they fill — closed by the same 2026-11-15 ruling: the waived
+      sessions filed nothing to sweep; the filled slots' failures are
+      named and the known class carries the layer-shell-guard fix)*
 
 ## Phase 1 — app-identity (flag day; merges first)
 
