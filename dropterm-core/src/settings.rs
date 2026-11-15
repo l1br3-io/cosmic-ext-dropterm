@@ -897,6 +897,35 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
     }
 }
 
+/// What focus leaving a text field does with its typed edit (the
+/// audit's F1): the display never shows a value the app doesn't
+/// hold. Pure, so the drawer's subscriber and the tests share it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlurDecision {
+    /// The field already reads the stored value — no write, no
+    /// revert.
+    Noop,
+    /// A valid edit: write it (already clamped), the write's echo
+    /// re-seeds the field from the file.
+    Commit(PlannedWrite),
+    /// An invalid edit: no write is coming, so the display reverts
+    /// to the stored text.
+    Revert,
+}
+
+/// The blur-commit decision for one field's typed text against the
+/// stored text: equal is the no-op, a valid edit commits through
+/// [`submit_write`]'s own path, an invalid one reverts.
+pub fn blur_decision(field: TextField, raw: &str, stored: &str) -> BlurDecision {
+    if raw == stored {
+        return BlurDecision::Noop;
+    }
+    match submit_write(field, raw).map(|w| w.clamped()) {
+        Some(write) => BlurDecision::Commit(write),
+        None => BlurDecision::Revert,
+    }
+}
+
 /// When a field's edit takes effect — the copy the view states next
 /// to every control so instant-apply never misleads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

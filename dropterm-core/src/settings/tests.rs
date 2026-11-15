@@ -3121,3 +3121,29 @@ fn draft_seeding_round_trips_the_override_fields() {
     assert_eq!(inheritor.font_size, "");
     assert_eq!(inheritor.scrollback, "");
 }
+
+#[test]
+fn the_blur_decision_commits_valid_and_reverts_invalid() {
+    // Text equal to the stored value is the no-op — no write, no
+    // revert.
+    assert_eq!(
+        blur_decision(TextField::Shell, "/usr/bin/fish", "/usr/bin/fish"),
+        BlurDecision::Noop
+    );
+    // A valid edit commits through submit_write's own path,
+    // clamped like the Enter path applies it.
+    assert_eq!(
+        blur_decision(TextField::Shell, " /usr/bin/zsh ", "/usr/bin/fish"),
+        BlurDecision::Commit(PlannedWrite::Shell("/usr/bin/zsh".to_string()))
+    );
+    assert_eq!(
+        blur_decision(TextField::ScrollbackLines, "-3", "5000"),
+        BlurDecision::Commit(PlannedWrite::ScrollbackLines(0))
+    );
+    // An invalid edit reverts: no write is coming, the display
+    // returns to the stored text.
+    assert_eq!(
+        blur_decision(TextField::ScrollbackLines, "lots", "5000"),
+        BlurDecision::Revert
+    );
+}

@@ -30,12 +30,12 @@ use dropterm_core::config::{
 use dropterm_core::font_list;
 use dropterm_core::profile::Profile;
 use dropterm_core::settings::{
-    self, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
+    self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
     KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer,
     SettingsTab, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField,
-    drawer_description, dropdown_selected, etc_shells_content, profile_scheme_selected,
-    shell_dropdown_selected, shell_label, shell_picker_options, tab_header, tab_sections,
-    toggle_write,
+    blur_decision, drawer_description, dropdown_selected, etc_shells_content,
+    profile_scheme_selected, shell_dropdown_selected, shell_label, shell_picker_options,
+    tab_header, tab_sections, toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -195,6 +195,11 @@ pub(crate) struct SettingsState {
     pub(crate) page: SettingsTab,
     pub(crate) buffer: SettingsBuffer,
     pub(crate) refreshing: bool,
+    /// Fields awaiting a blur-revert (the audit's F1): an invalid
+    /// blur'd edit's stored text. The input subscriber has no
+    /// `Window`, so the reseed rides the render path's echo pass —
+    /// the one place that already reseeds Kit states.
+    pub(crate) pending_reverts: Vec<(TextField, String)>,
     /// Bumped on every config reload the shell drains: the drawer's
     /// cue to re-seed its un-drafted Kit states from the new file —
     /// a hand edit mid-open reaches the controls the next frame.
@@ -224,6 +229,7 @@ impl Default for SettingsState {
             page: SettingsTab::Appearance,
             buffer: SettingsBuffer::default(),
             refreshing: false,
+            pending_reverts: Vec::new(),
             config_epoch: 0,
             profile_selection: None,
             profile_draft: None,
@@ -426,7 +432,41 @@ impl SettingsDrawer {
                                 shell.settings.buffer.clear_text(field);
                             });
                         }
-                        _ => {}
+                        // The blur commit (the audit's F1): focus
+                        // leaving the field commits a valid edit
+                        // through Enter's own path; an invalid edit
+                        // parks its revert — the field must never
+                        // show a value the app doesn't hold.
+                        gpui_component::input::InputEvent::Blur => {
+                            let raw = emitter.read(cx).value().to_string();
+                            let revert = target.update(cx, |shell, _| {
+                                if shell.settings.refreshing {
+                                    return None;
+                                }
+                                let stored = SettingsBuffer::default().text(field, &shell.config);
+                                match blur_decision(field, &raw, &stored) {
+                                    BlurDecision::Noop => {
+                                        shell.settings.buffer.clear_text(field);
+                                        None
+                                    }
+                                    BlurDecision::Commit(write) => {
+                                        shell.write_settings(&write);
+                                        shell.settings.buffer.clear_text(field);
+                                        None
+                                    }
+                                    BlurDecision::Revert => {
+                                        shell.settings.buffer.clear_text(field);
+                                        Some(stored)
+                                    }
+                                }
+                            });
+                            if let Some(live) = revert {
+                                target.update(cx, |shell, _| {
+                                    shell.settings.pending_reverts.push((field, live));
+                                });
+                            }
+                        }
+                        gpui_component::input::InputEvent::Focus => {}
                     }
                 },
             )
@@ -1226,6 +1266,23 @@ impl SettingsDrawer {
     /// read the file, exactly the per-frame re-render the libcosmic
     /// drawer's stateless controls get by construction.
     fn refresh_from_echo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The blur-revert pass (the audit's F1): the subscriber has
+        // no `Window`, so an invalid blur'd edit's stored text rides
+        // this pass — the same guarded reseed the echo uses.
+        let reverts = self.shell.update(cx, |shell, _| {
+            std::mem::take(&mut shell.settings.pending_reverts)
+        });
+        if !reverts.is_empty() {
+            self.shell
+                .update(cx, |shell, _| shell.settings.refreshing = true);
+            for (field, live) in &reverts {
+                if let Some((_, state)) = self.inputs.iter().find(|(f, _)| f == field) {
+                    state.update(cx, |state, cx| state.set_value(live.clone(), window, cx));
+                }
+            }
+            self.shell
+                .update(cx, |shell, _| shell.settings.refreshing = false);
+        }
         let epoch = self.shell.read(cx).settings.config_epoch;
         if epoch == self.seen_epoch {
             return;
