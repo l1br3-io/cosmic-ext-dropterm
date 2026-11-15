@@ -39,6 +39,10 @@ pub(crate) enum TermAction {
     /// action arm itself is a documented no-op (the engine's menu
     /// state is the action).
     ShowCompletions,
+    /// Scroll the viewport to the bottom (`Ctrl+Shift+End`) — the
+    /// status band's scrolled chip's jump verb as a chord, the same
+    /// engine call the chip's click routes.
+    ScrollToBottom,
 }
 
 /// The stable string id of an action — the `custom_key_binds` key,
@@ -61,6 +65,7 @@ pub(crate) fn action_id(action: TermAction) -> &'static str {
         TermAction::ZoomReset => "zoom_reset",
         TermAction::Hide => "hide",
         TermAction::ShowCompletions => "show_completions",
+        TermAction::ScrollToBottom => "scroll_to_bottom",
     }
 }
 
@@ -80,6 +85,7 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "zoom_reset" => Some(TermAction::ZoomReset),
         "hide" => Some(TermAction::Hide),
         "show_completions" => Some(TermAction::ShowCompletions),
+        "scroll_to_bottom" => Some(TermAction::ScrollToBottom),
         _ => None,
     }
 }
@@ -136,6 +142,7 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     map.insert(chord(cs, "-"), TermAction::ZoomOut);
     map.insert(chord(&[ModifierName::Ctrl], "0"), TermAction::ZoomReset);
     map.insert(chord(cs, "q"), TermAction::Hide);
+    map.insert(chord(cs, "end"), TermAction::ScrollToBottom);
     // The completion menu's soft trigger (suggest-menu spec): the
     // pane's key routing owns the open/toggle before this map's
     // swallow sees the chord; the map entry carries a custom
@@ -588,6 +595,7 @@ mod tests {
             TermAction::ZoomReset,
             TermAction::Hide,
             TermAction::ShowCompletions,
+            TermAction::ScrollToBottom,
         ] {
             assert_eq!(action_from_id(action_id(action)), Some(action));
         }
@@ -607,9 +615,10 @@ mod tests {
             );
         }
         // And the counts stay honest: the clipboard pair, the
-        // primary paste, select-all, clear-scrollback, the zoom
-        // cluster's six, the hide, and the completion trigger.
-        assert_eq!(default_key_binds().len(), 14);
+        // primary paste, select-all, clear-scrollback, the
+        // scroll-to-bottom jump, the zoom cluster's six, the hide,
+        // and the completion trigger.
+        assert_eq!(default_key_binds().len(), 15);
     }
 
     #[test]

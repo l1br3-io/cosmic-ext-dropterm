@@ -799,6 +799,12 @@ impl TerminalPane {
                 engine.term.lock().grid_mut().clear_history();
                 engine.needs_update = true;
             }
+            TermAction::ScrollToBottom => {
+                println!("dropterm-gpui: pane action ScrollToBottom (viewport at the bottom)");
+                let mut engine = self.terminal.lock().expect("engine lock");
+                engine.scroll(dropterm_core::terminal::TerminalScroll::Bottom);
+                engine.needs_update = true;
+            }
             TermAction::ZoomIn | TermAction::ZoomOut | TermAction::ZoomReset => {
                 let mut terminal = self.terminal.lock().expect("engine lock");
                 let adj = match action {

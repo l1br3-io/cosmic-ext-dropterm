@@ -96,6 +96,11 @@ pub enum Action {
     PastePrimary,
     SelectAll,
     ClearScrollback,
+    /// Scroll the viewport to the bottom (`Ctrl+Shift+End`) — the
+    /// status band's scrolled chip's jump verb as a chord; the
+    /// widget-layer `Shift+End` scroll in the key translation stays
+    /// untouched beside it.
+    ScrollToBottom,
     ZoomIn,
     ZoomOut,
     ZoomReset,

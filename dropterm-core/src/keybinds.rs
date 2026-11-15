@@ -121,6 +121,12 @@ const BINDING_ROWS: &[BindingRow] = &[
     // Other
     BindingRow { id: "clear_scrollback", label: "Clear scrollback", group: "Other",
         defaults: &[(CS, "K")] },
+    // The scrolled chip's jump verb (the band's one deliberate
+    // action chip) as a chord: the click has a keyboard sibling.
+    // Ctrl+Shift+End stays clear of the widget-layer Shift+End
+    // scroll the key translation already owns.
+    BindingRow { id: "scroll_to_bottom", label: "Scroll to bottom", group: "Other",
+        defaults: &[(CS, "End")] },
     BindingRow { id: "hide", label: "Hide the overlay", group: "Other",
         defaults: &[(CS, "Q")] },
     BindingRow { id: "settings", label: "Open settings", group: "Other",
@@ -336,6 +342,19 @@ mod registry_tests {
         assert_eq!(
             effective_binding_display("copy_primary", &std::collections::BTreeMap::default()),
             "None"
+        );
+    }
+
+    #[test]
+    fn the_scroll_to_bottom_row_defaults_to_ctrl_shift_end() {
+        let row = binding_rows()
+            .iter()
+            .find(|row| row.id == "scroll_to_bottom")
+            .unwrap();
+        assert_eq!(row.group, "Other");
+        assert_eq!(
+            effective_binding_display("scroll_to_bottom", &std::collections::BTreeMap::default()),
+            "Ctrl + Shift + End"
         );
     }
 

@@ -26,6 +26,7 @@ Every app-level shortcut and its default chords, in the same groups the settings
 | Zoom out | `Ctrl+-` / `Ctrl+Shift+-` | `zoom_out` |
 | Zoom reset | `Ctrl+0` | `zoom_reset` |
 | Clear scrollback | `Ctrl+Shift+K` | `clear_scrollback` |
+| Scroll to bottom | `Ctrl+Shift+End` | `scroll_to_bottom` |
 | Hide the overlay | `Ctrl+Shift+Q` | `hide` |
 | Open settings | `Ctrl+Shift+I` | `settings` |
 | Open the images panel | `Ctrl+Shift+P` | `images_panel` |

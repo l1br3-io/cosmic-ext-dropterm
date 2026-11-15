@@ -804,6 +804,11 @@ fn ids_are_the_pinned_file_format_literals() {
         action_from_id("show_completions"),
         Some(Action::ShowCompletions)
     );
+    assert_eq!(action_id(Action::ScrollToBottom), Some("scroll_to_bottom"));
+    assert_eq!(
+        action_from_id("scroll_to_bottom"),
+        Some(Action::ScrollToBottom)
+    );
     assert_eq!(action_id(Action::ActivateTab(0)), Some("activate_tab_1"));
     assert_eq!(action_id(Action::ActivateTab(7)), Some("activate_tab_8"));
     assert_eq!(
@@ -828,9 +833,9 @@ fn groups_cover_every_bindable_action_exactly_once() {
         "the section titles are part of the tab's shape"
     );
     let rows: Vec<Action> = groups.into_iter().flat_map(|group| group.actions).collect();
-    // 24 payload-free variants plus the eight numbered activate
+    // 25 payload-free variants plus the eight numbered activate
     // rows — NewProfileTab is the one deliberate exclusion.
-    assert_eq!(rows.len(), 32);
+    assert_eq!(rows.len(), 33);
     let unique: std::collections::HashSet<Action> = rows.iter().copied().collect();
     assert_eq!(unique.len(), rows.len(), "no action appears twice");
     assert!(rows.iter().all(|action| action_id(*action).is_some()));

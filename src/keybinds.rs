@@ -63,6 +63,10 @@ pub fn default_key_binds() -> HashMap<KeyBind, Action> {
         bind(&[Modifier::Ctrl, Modifier::Shift], "k"),
         Action::ClearScrollback,
     );
+    map.insert(
+        bind_named(&[Modifier::Ctrl, Modifier::Shift], Named::End),
+        Action::ScrollToBottom,
+    );
     map.insert(bind(&[Modifier::Ctrl], "="), Action::ZoomIn);
     map.insert(bind(&[Modifier::Ctrl], "+"), Action::ZoomIn);
     // The Shift-held plus chords: matching is exact on modifiers,
@@ -269,6 +273,7 @@ pub fn action_id(action: Action) -> Option<&'static str> {
         Action::PastePrimary => "paste_primary",
         Action::SelectAll => "select_all",
         Action::ClearScrollback => "clear_scrollback",
+        Action::ScrollToBottom => "scroll_to_bottom",
         Action::ZoomIn => "zoom_in",
         Action::ZoomOut => "zoom_out",
         Action::ZoomReset => "zoom_reset",
@@ -316,6 +321,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "paste_primary" => Action::PastePrimary,
         "select_all" => Action::SelectAll,
         "clear_scrollback" => Action::ClearScrollback,
+        "scroll_to_bottom" => Action::ScrollToBottom,
         "zoom_in" => Action::ZoomIn,
         "zoom_out" => Action::ZoomOut,
         "zoom_reset" => Action::ZoomReset,
@@ -419,6 +425,7 @@ pub fn action_groups() -> impl Iterator<Item = ActionGroup> {
             title: "Other",
             actions: vec![
                 Action::ClearScrollback,
+                Action::ScrollToBottom,
                 Action::Hide,
                 Action::Settings,
                 Action::ImagesPanel,
@@ -453,6 +460,7 @@ pub fn action_label(action: Action) -> &'static str {
         Action::PastePrimary => "Paste primary selection",
         Action::SelectAll => "Select all",
         Action::ClearScrollback => "Clear scrollback",
+        Action::ScrollToBottom => "Scroll to bottom",
         Action::ZoomIn => "Zoom in",
         Action::ZoomOut => "Zoom out",
         Action::ZoomReset => "Zoom reset",

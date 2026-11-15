@@ -379,6 +379,12 @@ impl DropTerm {
                     .grid_mut()
                     .clear_history();
             }
+            Action::ScrollToBottom => {
+                tab.terminal
+                    .lock()
+                    .unwrap()
+                    .scroll(crate::terminal::TerminalScroll::Bottom);
+            }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 {
                     let mut terminal = tab.terminal.lock().unwrap();
