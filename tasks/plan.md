@@ -352,7 +352,15 @@ evidence record, not a chunk.
    degradation (dock mode rides hidden-mode behavior) and amend the
    rows. The config key keeps parsing either way. Default
    recommendation: replicate — the feature is behavior parity, and a
-   hidden toplevel is cheap; the ruling is the owner's.
+   hidden toplevel is cheap; the ruling is the owner's. — DECIDED
+   2026-11-15 (owner, at the py-4 gate): replicate. The GPUI side
+   carries a mapped 1×1 toplevel (undecorated, immovable,
+   never-steals-focus, the app id, the libcosmic dock body's own
+   shape) opened at boot and swapped live at every config echo while
+   `show_in_dock` holds; the hidden mode needs no body — the drawer's
+   layer surfaces are invisible to the toplevel listings by protocol,
+   and GPUI's clipboard needs no anchor (check 8's ruling: unfocused
+   copies ride data-control).
 
 ## Phase 3 planning rulings (made at /planning 2026-11-13; veto at
 review)
