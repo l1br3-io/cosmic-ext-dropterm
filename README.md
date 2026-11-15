@@ -1,6 +1,6 @@
 # DropTerm
 
-A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust with [libcosmic](https://github.com/pop-os/libcosmic).
+A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust on [GPUI](https://github.com/zed-industries/gpui) (the [panel applet](docs/applet.md) rides [libcosmic](https://github.com/pop-os/libcosmic)).
 
 The terminal slides down from the top (or bottom) edge of the screen and is toggled with a global keyboard shortcut. It is a true layer-shell overlay - not a minimize/restore window trick - so it stays above other windows, is hidden from Alt-Tab and the dock, and keeps your shell session alive while hidden.
 
@@ -108,7 +108,7 @@ The details live in the `docs/` directory:
 
 ## Known risks
 
-A few known rough edges — the clipboard's invisible anchor window, the surface recreate-on-hide workaround, Shift-modified custom shortcuts failing to fire, no GlobalShortcuts portal (the toggle must be a COSMIC custom shortcut), and no main-app Flatpak — each detailed in [Known issues](docs/known-issues.md).
+A few known rough edges — the surface recreate-on-hide workaround, Shift-modified custom shortcuts failing to fire, no GlobalShortcuts portal (the toggle must be a COSMIC custom shortcut), and no main-app Flatpak — each detailed in [Known issues](docs/known-issues.md).
 
 ## Non-goals
 
@@ -123,4 +123,4 @@ The dev loop, the verification bar, and the module map: [Development](docs/devel
 
 ## Credits
 
-DropTerm's terminal engine and widget are adapted from [cosmic-term](https://github.com/pop-os/cosmic-term) (Copyright System76, GPL-3.0-only), reused under the same license per the file-level attributions in `src/terminal/`. The single-instance/toggle pattern was cross-checked against [cosmic-ext-quake-terminal](https://github.com/M0Rf30/cosmic-ext-quake-terminal).
+DropTerm's terminal engine is adapted from [cosmic-term](https://github.com/pop-os/cosmic-term) (Copyright System76, GPL-3.0-only), reused under the same license per the file-level attributions in `dropterm-core/src/terminal/`. The single-instance/toggle pattern was cross-checked against [cosmic-ext-quake-terminal](https://github.com/M0Rf30/cosmic-ext-quake-terminal).
