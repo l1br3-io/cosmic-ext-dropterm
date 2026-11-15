@@ -42,7 +42,7 @@ mod terminal;
 // the bin's modules keeps resolving unchanged — the move is a
 // re-home, not a rewrite.
 use dropterm_core::{
-    config, dbus_state, intent, profile, session, tabs, theme_glue, theme_source, transport,
+    config, dbus_state, intent, profile, session, spawn, tabs, theme_glue, theme_source, transport,
 };
 
 use clap::Parser;

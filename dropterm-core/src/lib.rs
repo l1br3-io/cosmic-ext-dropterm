@@ -81,6 +81,7 @@ pub mod profile;
 pub mod session;
 pub mod settings;
 pub mod slide;
+pub mod spawn;
 pub mod status;
 pub mod surface_lifecycle;
 pub mod tabs;
