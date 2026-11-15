@@ -638,9 +638,20 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       2026-11-15 walk-skip ruling *(done 2026-11-15, a2cd89f: package
       and bin renamed, the frontend deleted, the root a virtual
       workspace, the workflow's version read re-pointed; `just check`
-      and `just build-all` green — the canary row parks with py-4)*
+      and `just build-all` green — the canary row died with the
+      applet, cu-4)*
 - [x] cu-2 Docs true (architecture rewrite incl. diagrams;
       known-issues fractional row) *(done 2026-11-15, 7d98912)*
+- [x] cu-4 The collapse: one package `dropterm` (bin + the `core`
+      lib half), one CLI, the applet and `dropterm-core` gone
+      *(owner ruling 2026-11-15 — "one cli command and crate; drop
+      it"; done the same day: the gpui directory renamed `dropterm/`,
+      the core dissolved into the package's lib target with the
+      toolkit pin re-homed as a source-walking test, the applet
+      package + res + justfile + workflow legs deleted, docs and
+      testing.md re-truthed, Cargo.lock −2.3k lines with libcosmic
+      out of the graph; `just check` and `just build-all` green,
+      clippy clean, 1225 tests green both identities)*
 - [ ] cu-3 The deferred release, `/release` ritual, walk gate — owner
       fires it *(owner-gated: the release stays the owner's to cut;
       nothing here pushes or tags)*

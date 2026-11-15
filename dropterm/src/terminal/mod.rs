@@ -3,7 +3,7 @@
 //! The terminal view (gpui-terminal spec): the alacritty grid
 //! rendered through GPUI's text stack — the view and input halves
 //! `src/terminal/widget.rs` is for the libcosmic frontend. The
-//! engine is [`dropterm_core::terminal::Terminal`], consumed
+//! engine is [`dropterm::core::terminal::Terminal`], consumed
 //! unchanged: the view reads the grid under its lock, drives
 //! `resize`/`update`/`input` on the engine's own paths, and renders
 //! rows shaped through GPUI's shaper with the row's width forced to

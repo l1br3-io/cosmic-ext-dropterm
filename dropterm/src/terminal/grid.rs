@@ -16,7 +16,7 @@ use gpui::{Hsla, rgb};
 
 /// The engine's unset-background fallback, re-declared for the view's
 /// own window-background derivation (the same opaque black
-/// [`dropterm_core::terminal::WINDOW_BG_COLOR`] serves).
+/// [`dropterm::core::terminal::engine::WINDOW_BG_COLOR`] serves).
 const WINDOW_BG_FALLBACK: Rgb = Rgb {
     r: 0x00,
     g: 0x00,

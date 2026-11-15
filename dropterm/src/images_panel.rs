@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use dropterm_core::tabs::PastedImage;
+use dropterm::core::tabs::PastedImage;
 use gpui::prelude::*;
 use gpui::{App, Context, Styled, Window, px};
 use gpui_component::ActiveTheme as _;
@@ -96,7 +96,7 @@ pub(crate) struct PanelRow<'a> {
 /// the honest floor, never an error surface).
 pub(crate) fn decode_thumb(path: &Path) -> Option<Arc<gpui::RenderImage>> {
     let bytes = std::fs::read(path).ok()?;
-    let rgba = dropterm_core::terminal::decode_image(&bytes)?;
+    let rgba = dropterm::core::terminal::decode_image(&bytes)?;
     let frame = image::Frame::new(rgba);
     Some(Arc::new(gpui::RenderImage::new([frame])))
 }
@@ -157,7 +157,7 @@ pub(crate) fn panel_content(
         // standard verb.
         let mut text = v_flex()
             .gap_1()
-            .child(gpui::div().child(dropterm_core::tabs::stamp_display(&row.stamp)));
+            .child(gpui::div().child(dropterm::core::tabs::stamp_display(&row.stamp)));
         if let Some((width, height)) = row.dims {
             text = text.child(
                 gpui::div()
@@ -248,7 +248,7 @@ pub(crate) fn overlay(
     surface_width: f32,
     cx: &mut Context<Shell>,
 ) -> gpui::AnyElement {
-    let width = dropterm_core::settings::drawer_width(None, surface_width);
+    let width = dropterm::core::settings::drawer_width(None, surface_width);
     let verb_header = Rc::clone(verb);
     let verb_backdrop = Rc::clone(verb);
     let verb_close = Rc::clone(verb);

@@ -1,12 +1,11 @@
 # Architecture
 
-How the DropTerm codebase is laid out: three crates, one module inventory, a handful of load-bearing seams, and where the reasoning behind each lives. Since the GPUI cutover there is one terminal binary — the libcosmic frontend it replaced is deleted, with its reasoning preserved in the [research records](research/README.md) and the [portability plan](research/portability-plan.md) that carried the rewrite.
+How the DropTerm codebase is laid out: one package with two halves, one module inventory, a handful of load-bearing seams, and where the reasoning behind each lives. Since the GPUI cutover there is one terminal binary — the libcosmic frontend it replaced is deleted, with its reasoning preserved in the [research records](research/README.md) and the [portability plan](research/portability-plan.md) that carried the rewrite — and the 2026-11-15 collapse (cu-4) dissolved the crate split into one package, the panel applet leaving the tree with it (its record lives in the [research archive](research/archive/v3-panel-applet.md)).
 
-## Three crates, one workspace
+## One package, two halves
 
-- **`dropterm`** (`dropterm/`) - the terminal itself, a GPUI bin: the surface, the terminal pane, the chrome (tab strip, status band, settings drawer, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
-- **`dropterm-core`** (`dropterm-core/`) - the toolkit-neutral core: the config store, session, profiles, the engine, the pure models (spawn resolution, tabs, geometry, keybinds, status segments, context-menu rows), and `dbus_state` — the state the terminal and the applet consume. No toolkit dependency, pinned by test.
-- **`dropterm-applet`** (`applet/`) - the COSMIC panel applet (libcosmic). A separate process by design: one binary carrying both would unify wgpu features and break panel rendering (the reasoning is in the [research record](research/archive/v3-panel-applet.md)).
+- **The bin** (`dropterm/src/main.rs` + the bin's modules) - the terminal itself, a GPUI program: the surface, the terminal pane, the chrome (tab strip, status band, settings drawer, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
+- **The lib** (`dropterm/src/lib.rs` + the `core` module) - the toolkit-neutral core: the config store, session, profiles, the engine, the pure models (spawn resolution, tabs, geometry, keybinds, status segments, context-menu rows), and `dbus_state`. No toolkit dependency, pinned by test; the bin consumes it by name.
 
 ## How it connects
 
@@ -16,7 +15,6 @@ One process, one bus name, one surface - and every external touch goes through a
 flowchart LR
     subgraph clients["Session-bus clients"]
         CLI["dropterm CLI (second launch)"]
-        APPLET["dropterm-applet (panel button)"]
     end
     subgraph process["dropterm bin (GPUI frontend on dropterm-core)"]
         MAIN["main.rs: clap verbs, single-instance handoff"]
@@ -36,7 +34,6 @@ flowchart LR
         STATE[("XDG_STATE_HOME session file")]
     end
     CLI -->|forward verb| BUS
-    APPLET -->|toggle + watches| BUS
     BUS --> DBUS
     MAIN -->|owns name or forwards| BUS
     MAIN --> SHELL
@@ -94,14 +91,13 @@ The recurring split is *pure model* vs *wiring*, and the shared-core split made 
 | core | `terminal/` | The engine adapted from cosmic-term: `engine.rs` (PTY + `alacritty_terminal` grid behind the `TextHost` seam, the image store, the paste cache), `suggest/` (the autosuggestion model and walker), `host.rs` (the `TextHost` trait - shaping without a toolkit) |
 | core | `theme_glue.rs` | The pure theme decisions: `window_bg_color`, `effective_colors`, `effective_is_dark`, `theme_override` |
 | core | `theme_source.rs` | The 12-scheme registry with per-scheme license provenance |
-| — | `applet/` | The applet crate: the panel button (state-driven opacity, tooltip), the D-Bus watches, the click decision - consumes `dropterm-core` for the contract |
 
-`main.rs` (and the core crate's `lib.rs`) also carry the pedantic-lint table `just clippy` enforces - `standing:` owner-approved exceptions and `transient:` worklist entries that self-clean as their lint class is cleared.
+`main.rs` and the lib's `lib.rs` also carry the pedantic-lint table `just clippy` enforces - `standing:` owner-approved exceptions and `transient:` worklist entries that self-clean as their lint class is cleared.
 
 ## The load-bearing seams
 
 - **Single-instance D-Bus.** A second launch of the binary never starts a second app: `dropterm` owns its bus name itself (the control transport, `dbus_state`'s activation interface served beside the render loop), and a second launch forwards its verb — surface or tab, payload words included — through `org.freedesktop.DBus` to the running instance (`cli.rs`'s one encoder/decoder pair keeps the wire identical either direction). The applet's toggle uses the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)). The trust boundary is the session bus: any process in the same session can drive the verbs, including `--cmd`'s shell execution.
-- **Config as the source of truth.** Every setting lives in plain RON under `$XDG_CONFIG_HOME` (the config store, `dropterm-core/src/config/store.rs`): one file per writer - settings, profiles, keybinds - plus `completions.toml`, all watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
+- **Config as the source of truth.** Every setting lives in plain RON under `$XDG_CONFIG_HOME` (the config store, `dropterm/src/core/config/store.rs`): one file per writer - settings, profiles, keybinds - plus `completions.toml`, all watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
 - **One surface-intent path.** The surface lifecycle decides in the headless `SurfaceMachine` (core's `surface_lifecycle.rs`) and emits declarative intents (`intent.rs`, also core); the GPUI executor (`executor.rs`, frontend) translates each into the layer-shell window sequence. Every reshape still lands through one geometry triple, so no path can leave a stale anchor, margin, or size.
 - **One spawn funnel.** Core's `spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface; the frontend's one spawning body (`PaneRequest::for_command` over `boot_pane`) applies it, per-profile appearance included.
 - **Theme by name.** Schemes are registry names resolved in core's `theme_source.rs`; the profile appearance rule is `profile ?? global` per field, re-resolved on every config pass so live tabs follow edits; the Kit tokens come from the carried `theme_gen.rs` generator applied at boot and at every scheme echo.
@@ -155,7 +151,7 @@ classDiagram
 | Backend surface | Contract | Implementations |
 |---|---|---|
 | Surface lifecycle | `SurfaceExecutor` over `SurfaceIntent` (core's `intent.rs`) | `GpuiExecutor` (`executor.rs`, frontend); `RecordingExecutor` (core tests) |
-| Control transport | V1 interface + `DbusActivation` at the owned bus name (core's `dbus_state.rs`, zbus) | the terminal binary serves; CLI verbs (`cli.rs`) and the applet are clients |
+| Control transport | V1 interface + `DbusActivation` at the owned bus name (core's `dbus_state.rs`, zbus) | the terminal binary serves; the CLI (`cli.rs`) is the client |
 | Config backend | section files, one per writer (core's `config/store.rs`) | plain RON + `notify` watcher; settings drawer is just another writer |
 | Session backend | versioned RON state file (core's `session.rs`) | capture / restore planning / quarantine / atomic save |
 | Theme | scheme registry names resolving to `alacritty` `Colors` (core's `theme_source.rs`) | the 12-scheme registry; `profile ?? global` re-resolved per config pass |

@@ -19,7 +19,7 @@
 //! dropdown's selected/write) with the planned-write layer left to
 //! its owning task.
 //!
-//! [`scheme_previews`]: dropterm_core::theme_source::scheme_previews
+//! [`scheme_previews`]: dropterm::core::theme_source::scheme_previews
 
 // The components await their host (the settings drawer, Task 2) —
 // the same holding pattern `input.rs`'s `action_id` sat in: the
@@ -29,7 +29,7 @@
 
 use std::rc::Rc;
 
-use dropterm_core::theme_source::{SchemePreview, scheme_names, scheme_previews};
+use dropterm::core::theme_source::{SchemePreview, scheme_names, scheme_previews};
 use gpui::prelude::*;
 use gpui::{App, Entity, SharedString, px};
 use gpui_component::IndexPath;

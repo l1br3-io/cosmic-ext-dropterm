@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The inline-image view half (gpui-parity Task 2): the pixels the
-//! engine's [`ImageStore`] decodes become GPUI [`RenderImage`] frames
+//! engine's [`dropterm::core::terminal::engine::ImageStore`] decodes become GPUI [`RenderImage`] frames
 //! exactly once per id, and each covered grid cell draws its
 //! normalized sub-rect of the shared image — the libcosmic widget's
 //! two-pass rule (beneath-layer images under the glyphs, above-layer

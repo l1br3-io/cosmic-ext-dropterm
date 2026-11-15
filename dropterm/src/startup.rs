@@ -13,7 +13,7 @@ use wayland_client::globals::{self, GlobalListContents};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
-use dropterm_core::transport::{self, Verdict};
+use dropterm::core::transport::{self, Verdict};
 
 /// The registry probe's dispatch state. `registry_queue_init` records
 /// the globals itself in the registry's object data; this state sees

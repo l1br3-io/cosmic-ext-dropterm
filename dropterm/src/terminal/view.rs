@@ -34,10 +34,10 @@ use gpui::{
 use gpui_component::ActiveTheme as _;
 use tokio::sync::mpsc;
 
-use dropterm_core::tabs::TabId;
-use dropterm_core::terminal::Terminal;
-use dropterm_core::terminal::TerminalOptions;
-use dropterm_core::terminal::mouse_reporter::{
+use dropterm::core::tabs::TabId;
+use dropterm::core::terminal::Terminal;
+use dropterm::core::terminal::TerminalOptions;
+use dropterm::core::terminal::mouse_reporter::{
     self, MouseReporter, PointerButton, PointerEvent, PointerModifiers, PointerScrollDelta,
 };
 
@@ -86,7 +86,7 @@ pub(crate) enum PaneSignal {
     /// The pane's image paste refused (the audit's F7): the cause
     /// rides to the shell, whose band narrates the verdict — the
     /// paste action's visible failure, never a silent one.
-    PasteRefused(dropterm_core::status::PasteRefusal),
+    PasteRefused(dropterm::core::status::PasteRefusal),
 }
 
 /// The pane's polled attention latch (the tab markers' input): bell
@@ -693,7 +693,7 @@ impl TerminalPane {
             let cached = cx
                 .background_executor()
                 .spawn(async move {
-                    dropterm_core::paste_cache::write_paste_image(&bytes).map(|path| (path, bytes))
+                    dropterm::core::paste_cache::write_paste_image(&bytes).map(|path| (path, bytes))
                 })
                 .await;
             let Some((path, bytes)) = cached else {
@@ -704,7 +704,7 @@ impl TerminalPane {
                 let _ = this.update(cx, |pane, _| {
                     if let Some(signals) = &pane.shell_signals {
                         let _ = signals.send(PaneSignal::PasteRefused(
-                            dropterm_core::status::PasteRefusal::Failed,
+                            dropterm::core::status::PasteRefusal::Failed,
                         ));
                     }
                 });
@@ -808,7 +808,8 @@ impl TerminalPane {
                             });
                         }
                         None => {
-                            let _ = this.update(cx, |pane, cx| pane.paste_clipboard_image(true, cx));
+                            let _ =
+                                this.update(cx, |pane, cx| pane.paste_clipboard_image(true, cx));
                         }
                     }
                 })
@@ -829,7 +830,7 @@ impl TerminalPane {
             TermAction::ScrollToBottom => {
                 println!("dropterm: pane action ScrollToBottom (viewport at the bottom)");
                 let mut engine = self.terminal.lock().expect("engine lock");
-                engine.scroll(dropterm_core::terminal::TerminalScroll::Bottom);
+                engine.scroll(dropterm::core::terminal::TerminalScroll::Bottom);
                 engine.needs_update = true;
             }
             TermAction::ZoomIn | TermAction::ZoomOut | TermAction::ZoomReset => {
@@ -1311,7 +1312,7 @@ impl TerminalPane {
         )]
         let consumed = lines as f32;
         self.scroll_lines -= consumed;
-        let scroll = dropterm_core::terminal::TerminalScroll::Delta(-lines);
+        let scroll = dropterm::core::terminal::TerminalScroll::Delta(-lines);
         let terminal = self.terminal.lock().expect("engine lock");
         terminal.scroll(scroll);
         cx.notify();
@@ -1981,9 +1982,7 @@ fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
         )]
         let (w, h) = (px_size.0 as f32, px_size.1 as f32);
         let grid = grid::grid_of(w, h, size.cell_width, size.cell_height);
-        println!(
-            "dropterm: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)"
-        );
+        println!("dropterm: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)");
     }
 }
 
@@ -2053,14 +2052,14 @@ fn paint_row(
 /// preference's own dark/light; `System` still resolves dark (the
 /// drawer default): gpui-theme shipped the config-pass re-theme, and
 /// a live system-mode watch rides a later slice.
-pub(crate) fn boot_colors(config: &dropterm_core::config::DropTermConfig) -> Colors {
-    let is_dark = dropterm_core::theme_glue::effective_is_dark(
+pub(crate) fn boot_colors(config: &dropterm::core::config::DropTermConfig) -> Colors {
+    let is_dark = dropterm::core::theme_glue::effective_is_dark(
         config.theme_preference,
         // System → dark: the live system-mode read arrives with the
         // gpui-theme slice.
         true,
     );
-    dropterm_core::theme_glue::effective_colors(config, None, is_dark)
+    dropterm::core::theme_glue::effective_colors(config, None, is_dark)
 }
 
 /// The pane factory the walk harness and the shell wiring share:
@@ -2077,7 +2076,7 @@ pub(crate) fn pane_with_pump(
     opacity: u8,
     font: gpui::Font,
     options: TerminalOptions,
-    custom_binds: &std::collections::BTreeMap<String, dropterm_core::keybinds::Binding>,
+    custom_binds: &std::collections::BTreeMap<String, dropterm::core::keybinds::Binding>,
     events: mpsc::UnboundedReceiver<(TabId, TermEvent)>,
 ) -> Entity<TerminalPane> {
     let binds = input::effective_key_binds(custom_binds);
@@ -2135,30 +2134,30 @@ impl PaneRequest {
     /// preset's overrides, else the global picks; the plain arm is
     /// literally [`boot_colors`], the gm-2 one-chain pin).
     pub(crate) fn for_command(
-        command: &dropterm_core::spawn::SpawnCommand,
+        command: &dropterm::core::spawn::SpawnCommand,
         cwd: Option<std::path::PathBuf>,
-        config: &dropterm_core::config::DropTermConfig,
+        config: &dropterm::core::config::DropTermConfig,
     ) -> Self {
-        let parts = dropterm_core::spawn::spawn_parts(command, config);
+        let parts = dropterm::core::spawn::spawn_parts(command, config);
         let profile = parts
             .profile_id
             .as_deref()
-            .and_then(|id| dropterm_core::profile::find(&config.profiles, id));
+            .and_then(|id| dropterm::core::profile::find(&config.profiles, id));
         let colors = match profile {
             // The boot-time mode resolution mirrors `boot_colors`'s
             // (the one-chain pin): `System` resolves dark until the
             // live system-mode watch ships.
             Some(profile) => {
                 let is_dark =
-                    dropterm_core::theme_glue::effective_is_dark(config.theme_preference, true);
-                dropterm_core::theme_glue::effective_colors(config, Some(profile), is_dark)
+                    dropterm::core::theme_glue::effective_is_dark(config.theme_preference, true);
+                dropterm::core::theme_glue::effective_colors(config, Some(profile), is_dark)
             }
             None => boot_colors(config),
         };
         let appearance = PaneAppearance {
             colors,
-            font_size: dropterm_core::profile::effective_font_size(profile, config.font_size),
-            scrollback: dropterm_core::profile::effective_scrollback(
+            font_size: dropterm::core::profile::effective_font_size(profile, config.font_size),
+            scrollback: dropterm::core::profile::effective_scrollback(
                 profile,
                 config.scrollback_lines,
             ),
@@ -2168,7 +2167,7 @@ impl PaneRequest {
             args: parts.trailing,
             cwd,
             env: parts.env,
-            spawned_as: dropterm_core::spawn::spawned_as_program(command, config),
+            spawned_as: dropterm::core::spawn::spawned_as_program(command, config),
             profile_id: parts.profile_id,
             appearance,
         }
@@ -2193,9 +2192,9 @@ impl PaneRequest {
 /// and only logs).
 pub(crate) fn boot_pane(
     cx: &mut App,
-    config: &dropterm_core::config::DropTermConfig,
+    config: &dropterm::core::config::DropTermConfig,
     request: PaneRequest,
-    specs_table: Option<&Arc<[dropterm_core::terminal::suggest::SpecCommand]>>,
+    specs_table: Option<&Arc<[dropterm::core::terminal::suggest::SpecCommand]>>,
     id: TabId,
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
@@ -2256,15 +2255,15 @@ mod tests {
 
     // --- the pane request over core's spawn resolution (py-5) ---
 
-    fn request_config() -> dropterm_core::config::DropTermConfig {
-        dropterm_core::config::DropTermConfig {
+    fn request_config() -> dropterm::core::config::DropTermConfig {
+        dropterm::core::config::DropTermConfig {
             shell: Some("/bin/sh".to_string()),
-            ..dropterm_core::config::DropTermConfig::default()
+            ..dropterm::core::config::DropTermConfig::default()
         }
     }
 
-    fn profile_command(name: &str, command: &str) -> dropterm_core::spawn::SpawnCommand {
-        dropterm_core::spawn::SpawnCommand::Profile {
+    fn profile_command(name: &str, command: &str) -> dropterm::core::spawn::SpawnCommand {
+        dropterm::core::spawn::SpawnCommand::Profile {
             name: name.to_string(),
             command: command.to_string(),
             cwd: None,
@@ -2286,7 +2285,7 @@ mod tests {
         config.scrollback_lines = 10_000;
         let env =
             std::collections::BTreeMap::from([("DROPTERM_PROFILE".to_string(), "top".to_string())]);
-        config.profiles = vec![dropterm_core::profile::Profile {
+        config.profiles = vec![dropterm::core::profile::Profile {
             name: "top".to_string(),
             command: "htop".to_string(),
             cwd: None,
@@ -2296,7 +2295,7 @@ mod tests {
             scrollback_lines: Some(500),
         }];
         let request = PaneRequest::for_command(
-            &dropterm_core::spawn::SpawnCommand::Profile {
+            &dropterm::core::spawn::SpawnCommand::Profile {
                 name: "top".to_string(),
                 command: "htop".to_string(),
                 cwd: None,
@@ -2324,7 +2323,7 @@ mod tests {
         let mut config = request_config();
         config.font_size = 15;
         config.scrollback_lines = 4_000;
-        config.profiles = vec![dropterm_core::profile::Profile {
+        config.profiles = vec![dropterm::core::profile::Profile {
             name: "top".to_string(),
             command: "htop".to_string(),
             cwd: None,
@@ -2334,7 +2333,7 @@ mod tests {
             scrollback_lines: Some(500),
         }];
         let request = PaneRequest::for_command(
-            &dropterm_core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+            &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
             None,
             &config,
         );
@@ -2351,7 +2350,7 @@ mod tests {
         // the plain shell, no id, no env — never half a profile's
         // identity — and the global appearance.
         let mut config = request_config();
-        config.profiles = vec![dropterm_core::profile::Profile {
+        config.profiles = vec![dropterm::core::profile::Profile {
             name: "broken".to_string(),
             command: "   ".to_string(),
             cwd: None,

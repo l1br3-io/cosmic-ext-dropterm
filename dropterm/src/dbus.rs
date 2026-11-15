@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dropterm_core::dbus_state::{self, Forwarded, SurfacePhase};
+use dropterm::core::dbus_state::{self, Forwarded, SurfacePhase};
 
 use crate::cli::{self, Action};
 
@@ -277,7 +277,7 @@ async fn mirror(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dropterm_core::dbus_state::Forwarded;
+    use dropterm::core::dbus_state::Forwarded;
 
     #[test]
     fn the_bare_summon_forwards_as_toggle() {

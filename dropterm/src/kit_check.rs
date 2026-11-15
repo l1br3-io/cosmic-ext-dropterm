@@ -39,10 +39,10 @@ fn drawer_options(height: Pixels, kb: KeyboardInteractivity) -> gpui::WindowOpti
             origin: point(px(0.), px(0.)),
             size: Size::new(px(0.), height), // width compositor-controlled: L|R anchored
         })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
         window_background: WindowBackgroundAppearance::Transparent,
         kind: WindowKind::LayerShell(LayerShellOptions {
-            namespace: dropterm_core::APP_ID.to_string(),
+            namespace: dropterm::core::APP_ID.to_string(),
             layer: Layer::Top,
             anchor: Anchor::LEFT | Anchor::RIGHT | Anchor::BOTTOM,
             exclusive_zone: Some(px(-1.)),
@@ -85,8 +85,8 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     // evidence class).
     crate::app_shell::apply_kit_theme(
         cx,
-        &dropterm_core::config::DropTermConfig::load_from(
-            &dropterm_core::config::store::store_dir(),
+        &dropterm::core::config::DropTermConfig::load_from(
+            &dropterm::core::config::store::store_dir(),
         ),
     );
     let open = Instant::now();

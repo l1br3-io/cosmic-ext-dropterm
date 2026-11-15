@@ -5,7 +5,7 @@
 //! the two-surface show (measure, destroy, create shaped), in-place
 //! resize where GPUI allows it, recreate where it does not.
 //!
-//! The decision layer runs unchanged from [`dropterm_core`]: this
+//! The decision layer runs unchanged from [`crate::core`]: this
 //! executor reconciles each intent against the surfaces it holds.
 //! GPUI's layer surfaces fix anchor, margins, layer, zone, and
 //! keyboard mode at creation (there is no runtime
@@ -25,9 +25,9 @@ use gpui::{
     WindowOptions, point, px,
 };
 
-use dropterm_core::config::{Edge, HAlign, KeyboardMode, Layer, MAX_WIDTH_PERCENT};
-use dropterm_core::geometry::{self, Geometry, Margins};
-use dropterm_core::intent::{
+use dropterm::core::config::{Edge, HAlign, KeyboardMode, Layer, MAX_WIDTH_PERCENT};
+use dropterm::core::geometry::{self, Geometry, Margins};
+use dropterm::core::intent::{
     ExclusiveZone, KeyboardHold, ShapeHeight, SurfaceExecutor, SurfaceHandle, SurfaceIntent,
 };
 
@@ -198,10 +198,10 @@ pub(crate) fn measuring_options(keyboard: KeyboardMode) -> WindowOptions {
             origin: point(px(0.), px(0.)),
             size: Size::new(px(0.), px(0.)), // both axes compositor-controlled
         })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
         window_background: WindowBackgroundAppearance::Transparent,
         kind: WindowKind::LayerShell(layer_shell::LayerShellOptions {
-            namespace: dropterm_core::APP_ID.to_string(),
+            namespace: dropterm::core::APP_ID.to_string(),
             layer: GpuiLayer::Overlay,
             anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
             exclusive_zone: Some(px(-1.)),
@@ -238,10 +238,10 @@ pub(crate) fn shaped_options(
             origin: point(px(0.), px(0.)),
             size: Size::new(px(width.map_or(0., |w| w as f32)), px(height_px as f32)),
         })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
         window_background: WindowBackgroundAppearance::Transparent,
         kind: WindowKind::LayerShell(layer_shell::LayerShellOptions {
-            namespace: dropterm_core::APP_ID.to_string(),
+            namespace: dropterm::core::APP_ID.to_string(),
             layer: gpui_layer(layer),
             anchor,
             exclusive_zone: Some(gpui_zone(zone)),
@@ -595,7 +595,7 @@ impl SurfaceExecutor for GpuiExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dropterm_core::config::Edge;
+    use dropterm::core::config::Edge;
 
     /// A headless window identity: GPUI's `WindowId` converts from a
     /// u64 and `WindowHandle::new` wraps one without a live window,
@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(ls.layer, GpuiLayer::Overlay);
         assert_eq!(ls.exclusive_zone, Some(px(-1.)));
         assert_eq!(ls.keyboard_interactivity, KeyboardInteractivity::Exclusive);
-        assert_eq!(ls.namespace, dropterm_core::APP_ID);
+        assert_eq!(ls.namespace, dropterm::core::APP_ID);
         let Some(WindowBounds::Windowed(bounds)) = options.window_bounds else {
             panic!("the probe carries windowed bounds");
         };

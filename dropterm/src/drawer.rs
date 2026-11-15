@@ -24,12 +24,12 @@
 use std::iter::once;
 use std::rc::Rc;
 
-use dropterm_core::config::{
+use dropterm::core::config::{
     DropTermConfig, MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT,
 };
-use dropterm_core::font_list;
-use dropterm_core::profile::Profile;
-use dropterm_core::settings::{
+use dropterm::core::font_list;
+use dropterm::core::profile::Profile;
+use dropterm::core::settings::{
     self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
     KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer,
     SettingsTab, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField,
@@ -208,7 +208,7 @@ pub(crate) struct SettingsState {
     /// from), the open transactional draft, and the armed delete row
     /// (`armed_profile_delete_row`'s state machine over presses).
     pub(crate) profile_selection: Option<usize>,
-    pub(crate) profile_draft: Option<dropterm_core::settings::ProfileDraft>,
+    pub(crate) profile_draft: Option<dropterm::core::settings::ProfileDraft>,
     pub(crate) profile_delete_armed: Option<usize>,
     /// The Keybindings page's search (display-only; the page
     /// re-filters its rows), the armed capture's row id, and the
@@ -1062,7 +1062,7 @@ impl SettingsDrawer {
             env.push((key, value));
         }
         let scheme_options: Vec<SharedString> = once("Inherit")
-            .chain(dropterm_core::theme_source::scheme_names())
+            .chain(dropterm::core::theme_source::scheme_names())
             .map(SharedString::from)
             .collect();
         let scheme_selected = gpui_component::IndexPath::default()
@@ -1081,7 +1081,7 @@ impl SettingsDrawer {
                     // one — the model's own row space, resolved
                     // against the registry (never the popover's
                     // snapshot).
-                    let names = dropterm_core::theme_source::scheme_names();
+                    let names = dropterm::core::theme_source::scheme_names();
                     let row = if label.as_ref() == "Inherit" {
                         Some(0)
                     } else {
@@ -1203,16 +1203,16 @@ impl SettingsDrawer {
             );
         }
         if let Some((id, holder)) = conflict {
-            let holder_label = dropterm_core::keybinds::binding_rows()
+            let holder_label = dropterm::core::keybinds::binding_rows()
                 .iter()
                 .find(|row| row.id == holder)
                 .map_or(holder, |row| row.label);
             page = page.child(format!("That chord is held by {holder_label} ({id})"));
         }
-        let mut rows = dropterm_core::keybinds::binding_rows().iter().peekable();
+        let mut rows = dropterm::core::keybinds::binding_rows().iter().peekable();
         while let Some(row) = rows.next() {
             let _ = rows.peek();
-            if !dropterm_core::keybinds::row_matches_search(row, &search) {
+            if !dropterm::core::keybinds::row_matches_search(row, &search) {
                 continue;
             }
             let is_armed = armed == Some(row.id);
@@ -1233,7 +1233,7 @@ impl SettingsDrawer {
                         .rounded_sm()
                         .bg(cx.theme().accent)
                         .text_color(cx.theme().accent_foreground)
-                        .child(dropterm_core::keybinds::effective_binding_display(
+                        .child(dropterm::core::keybinds::effective_binding_display(
                             row.id, &custom,
                         ))
                         .on_mouse_down(

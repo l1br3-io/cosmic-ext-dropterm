@@ -2,7 +2,7 @@
 
 //! The app shell (gpui-scaffold Task 1, grown by gpui-surface): the
 //! surface lifecycle's app-side glue — the decision layer
-//! ([`dropterm_core::surface_lifecycle::SurfaceMachine`]) runs
+//! ([`dropterm::core::surface_lifecycle::SurfaceMachine`]) runs
 //! unchanged from core, and this shell drives it with the dbus
 //! verbs, feeds it the measuring window's granted bounds, and applies
 //! the [`GpuiExecutor`](crate::executor::GpuiExecutor)'s actions
@@ -23,16 +23,16 @@ use gpui::{
     Animation, AnimationExt, App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, px,
 };
 
-use dropterm_core::config::DropTermConfig;
-use dropterm_core::config::Edge;
-use dropterm_core::config::TabTitleMode;
-use dropterm_core::dbus_state::SurfacePhase;
-use dropterm_core::intent::SurfaceExecutor;
-use dropterm_core::slide::{self, SLIDE_DURATION_MS};
-use dropterm_core::spawn;
-use dropterm_core::status::{self, StatusInputs, StatusSegments, Strip};
-use dropterm_core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
-use dropterm_core::tabs::TabId;
+use dropterm::core::config::DropTermConfig;
+use dropterm::core::config::Edge;
+use dropterm::core::config::TabTitleMode;
+use dropterm::core::dbus_state::SurfacePhase;
+use dropterm::core::intent::SurfaceExecutor;
+use dropterm::core::slide::{self, SLIDE_DURATION_MS};
+use dropterm::core::spawn;
+use dropterm::core::status::{self, StatusInputs, StatusSegments, Strip};
+use dropterm::core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+use dropterm::core::tabs::TabId;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
@@ -67,7 +67,7 @@ pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
 }
 
 /// Whether the drag handlers may act: the decision layer's
-/// [`dropterm_core::surface_lifecycle::grab_bar_acts_on`] guard, read
+/// [`dropterm::core::surface_lifecycle::grab_bar_acts_on`] guard, read
 /// through (shown and at rest — no drag arms while a slide animates).
 /// The copied segment's `✓` window — the reference band's own
 /// 800 ms, owned here like the libcosmic app owns it.
@@ -79,7 +79,7 @@ const STATUS_COPY_FLASH: Duration = Duration::from_millis(800);
 const STATUS_REFUSAL_FLASH: Duration = Duration::from_millis(3000);
 
 fn grab_bar_at_rest(machine: &SurfaceMachine) -> bool {
-    dropterm_core::surface_lifecycle::grab_bar_acts_on(&machine.state, machine.slide.is_some())
+    dropterm::core::surface_lifecycle::grab_bar_acts_on(&machine.state, machine.slide.is_some())
 }
 
 /// The machine state as the served contract's phase vocabulary.
@@ -117,9 +117,9 @@ struct ResolvedTheme {
 /// until the live system-mode read lands (the drawer default) — plus
 /// the scheme name and mode [`crate::theme_gen`] wants.
 fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
-    let dark = dropterm_core::theme_glue::effective_is_dark(config.theme_preference, true);
+    let dark = dropterm::core::theme_glue::effective_is_dark(config.theme_preference, true);
     ResolvedTheme {
-        name: dropterm_core::profile::effective_scheme_name(
+        name: dropterm::core::profile::effective_scheme_name(
             None,
             &config.color_scheme_dark,
             &config.color_scheme_light,
@@ -127,7 +127,7 @@ fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
         )
         .to_string(),
         dark,
-        colors: dropterm_core::theme_glue::effective_colors(config, None, dark),
+        colors: dropterm::core::theme_glue::effective_colors(config, None, dark),
     }
 }
 
@@ -293,7 +293,7 @@ pub(crate) struct Shell {
     /// assembled on the tick from the active pane's engine and the
     /// config — the render path performs zero filesystem reads by
     /// construction (the reference band's own pin).
-    status: dropterm_core::status::StatusSegments,
+    status: dropterm::core::status::StatusSegments,
     /// The stored wall-clock string — the tick recomputes it under
     /// the clock gate (the band never formats time at render; the
     /// text flips exactly at the minute boundary).
@@ -306,12 +306,12 @@ pub(crate) struct Shell {
     /// deadline — the tick clears it when the 800 ms window passes
     /// (the reference band's own `COPY_FLASH` timing, owned here
     /// like the libcosmic app owns it).
-    status_copied: Option<(dropterm_core::status::SegmentId, Instant)>,
+    status_copied: Option<(dropterm::core::status::SegmentId, Instant)>,
     /// The paste road's standing refusal verdict (the audit's F7):
     /// the cause and its deadline — the tick clears the chip when
     /// the 3 s window passes, a successful paste clears it early
     /// with its row.
-    status_paste_refusal: Option<(dropterm_core::status::PasteRefusal, Instant)>,
+    status_paste_refusal: Option<(dropterm::core::status::PasteRefusal, Instant)>,
     /// Our own hostname, read once at construction — the OSC 7
     /// report's host-qualification base (a reported host renders
     /// only when it differs from this).
@@ -328,7 +328,7 @@ pub(crate) struct Shell {
     specs: SpecsWatch,
     /// The debounced session save's machine (gpui-parity Task 3,
     /// core's own clock-free state).
-    session_save: dropterm_core::session::SessionSave,
+    session_save: dropterm::core::session::SessionSave,
     /// The armed debounce window — its generation and the instant its
     /// write is due (the tick is the wake; the `drag_release_at`
     /// pattern).
@@ -445,7 +445,7 @@ fn anchor_window_options() -> gpui::WindowOptions {
             origin: gpui::point(px(0.), px(0.)),
             size: gpui::Size::new(px(1.), px(1.)),
         })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
         focus: false,
         show: true,
         kind: gpui::WindowKind::Normal,
@@ -458,7 +458,7 @@ fn anchor_window_options() -> gpui::WindowOptions {
 /// The specs provider's table (the app-owned completions load):
 /// built-in floor overlaid by `completions.toml` and the extended
 /// tier, as one shared slice every pane renders from.
-type SpecsTable = Arc<[dropterm_core::terminal::suggest::SpecCommand]>;
+type SpecsTable = Arc<[dropterm::core::terminal::suggest::SpecCommand]>;
 
 /// The completions table's shared load (gpui-parity Task 1; the
 /// libcosmic `completions_reload_task` port): the CPU-bound read +
@@ -492,8 +492,8 @@ impl SpecsWatch {
     fn arm_load(tx: &std::sync::mpsc::Sender<SpecsTable>, extended: bool) {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            let dir = dropterm_core::config::store::store_dir();
-            let table = dropterm_core::terminal::suggest::load_completions(Some(&dir), extended);
+            let dir = dropterm::core::config::store::store_dir();
+            let table = dropterm::core::terminal::suggest::load_completions(Some(&dir), extended);
             let _ = tx.send(table);
         });
     }
@@ -582,7 +582,7 @@ impl Shell {
             settings_capture_focus: settings_focus,
             rename_focus_repair: None,
             modal_focus,
-            status: dropterm_core::status::StatusSegments::default(),
+            status: dropterm::core::status::StatusSegments::default(),
             status_clock: None,
             band_font,
             status_copied: None,
@@ -594,7 +594,7 @@ impl Shell {
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
             specs,
-            session_save: dropterm_core::session::SessionSave::default(),
+            session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
             dock_anchor: None,
             // The booted fleet is the baseline: a restored session
@@ -691,9 +691,7 @@ impl Shell {
                     // The paste verdict (the audit's F7): the band's
                     // flash channel narrates the refusal for its 3 s
                     // window; the log warn already fired at the read.
-                    println!(
-                        "dropterm: paste refused ({refusal:?}) -> the band's verdict chip"
-                    );
+                    println!("dropterm: paste refused ({refusal:?}) -> the band's verdict chip");
                     self.status_paste_refusal =
                         Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
                 }
@@ -710,7 +708,7 @@ impl Shell {
         if self.focus_lost {
             self.focus_lost = false;
             if let SurfaceState::Shown(handle) = self.machine.state
-                && dropterm_core::surface_lifecycle::layer_unfocused_acts_on(
+                && dropterm::core::surface_lifecycle::layer_unfocused_acts_on(
                     &self.machine.state,
                     handle,
                 )
@@ -846,7 +844,7 @@ impl Shell {
             // window: nothing to reload, nothing to log.
             return;
         }
-        let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+        let config = DropTermConfig::load_from(&dropterm::core::config::store::store_dir());
         // gpui-tabs Task 1: the strip's placement, border, and title
         // mode read the live config at render/sync time, so the echo
         // lands the snapshot the next frame reads.
@@ -947,7 +945,7 @@ impl Shell {
         {
             self.session_due = Some((
                 generation,
-                Instant::now() + dropterm_core::session::SESSION_WRITE_INTERVAL,
+                Instant::now() + dropterm::core::session::SESSION_WRITE_INTERVAL,
             ));
         }
     }
@@ -980,11 +978,11 @@ impl Shell {
                 ))
             })
             .collect();
-        let snapshots: Vec<dropterm_core::session::TabSnapshot<'_>> = collected
+        let snapshots: Vec<dropterm::core::session::TabSnapshot<'_>> = collected
             .iter()
             .map(
                 |(title, title_override, pinned, cwd, shell, profile, ephemeral)| {
-                    dropterm_core::session::TabSnapshot {
+                    dropterm::core::session::TabSnapshot {
                         title,
                         title_override: *title_override,
                         shell,
@@ -1001,16 +999,17 @@ impl Shell {
                 },
             )
             .collect();
-        let state = dropterm_core::session::capture(&snapshots, self.tabs.active_index());
+        let state = dropterm::core::session::capture(&snapshots, self.tabs.active_index());
         println!(
             "dropterm: session write ({} tab(s), active {}) -> {}",
             state.tabs.len(),
             self.tabs.active_index(),
-            dropterm_core::session::state_file_path().display()
+            dropterm::core::session::state_file_path().display()
         );
-        if let Err(err) =
-            dropterm_core::session::save_atomic(&dropterm_core::session::state_file_path(), &state)
-        {
+        if let Err(err) = dropterm::core::session::save_atomic(
+            &dropterm::core::session::state_file_path(),
+            &state,
+        ) {
             println!("dropterm: failed to write session file: {err}");
         }
     }
@@ -1186,7 +1185,7 @@ impl Shell {
     /// actions for the tick to apply.
     fn execute_into(
         &mut self,
-        intents: Vec<dropterm_core::intent::SurfaceIntent>,
+        intents: Vec<dropterm::core::intent::SurfaceIntent>,
         actions: &mut Vec<Action>,
     ) {
         for intent in intents {
@@ -1652,7 +1651,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use dropterm_core::tabs::CloseSweep;
+        use dropterm::core::tabs::CloseSweep;
         use tab_bar::TabMenuPick;
         self.commit_open_rename(cx);
         match pick {
@@ -1776,9 +1775,7 @@ impl Shell {
                 // the pick closure below routes it outside the update
                 // borrow — this arm is unreachable for it.
                 PickRoute::Shell(ShellPick::Settings) => {
-                    println!(
-                        "dropterm: context menu pick Settings (routed outside the update)"
-                    );
+                    println!("dropterm: context menu pick Settings (routed outside the update)");
                 }
             },
             crate::context_menu::Pick::NewProfileTab(profile_index) => {
@@ -1795,12 +1792,12 @@ impl Shell {
     /// The one path every profile write takes (`write_config`'s
     /// discipline for the list-shaped key): persist through core,
     /// the echo drives every apply.
-    pub(crate) fn write_profile(&mut self, write: &dropterm_core::settings::ProfileWrite) {
+    pub(crate) fn write_profile(&mut self, write: &dropterm::core::settings::ProfileWrite) {
         println!(
             "dropterm: profile write at +{}ms",
             self.boot.elapsed().as_millis()
         );
-        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+        if let Err(err) = write.persist(&dropterm::core::config::store::store_dir(), &self.config) {
             eprintln!("dropterm: failed to persist profile write: {err}");
         }
     }
@@ -1813,19 +1810,19 @@ impl Shell {
         if let Some(profile) = self.config.profiles.get(index) {
             self.settings.profile_selection = Some(index);
             self.settings.profile_draft =
-                Some(dropterm_core::settings::ProfileDraft::edit(index, profile));
+                Some(dropterm::core::settings::ProfileDraft::edit(index, profile));
             cx.notify();
         }
     }
 
     pub(crate) fn profile_add(&mut self, cx: &mut Context<Self>) {
-        self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::add());
+        self.settings.profile_draft = Some(dropterm::core::settings::ProfileDraft::add());
         cx.notify();
     }
 
     pub(crate) fn profile_clone(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(source) = self.config.profiles.get(index) {
-            self.settings.profile_draft = Some(dropterm_core::settings::ProfileDraft::clone_of(
+            self.settings.profile_draft = Some(dropterm::core::settings::ProfileDraft::clone_of(
                 source,
                 &self.config.profiles,
             ));
@@ -1835,7 +1832,7 @@ impl Shell {
 
     pub(crate) fn profile_draft_field(
         &mut self,
-        field: dropterm_core::settings::ProfileField,
+        field: dropterm::core::settings::ProfileField,
         text: String,
         cx: &mut Context<Self>,
     ) {
@@ -1848,13 +1845,13 @@ impl Shell {
     /// A scheme pick buffers into the draft (the recolor lands on
     /// Save) and retires the scheme's stale error.
     pub(crate) fn profile_draft_scheme(&mut self, row: usize, cx: &mut Context<Self>) {
-        if let Some(pick) = dropterm_core::settings::profile_scheme_write(row)
+        if let Some(pick) = dropterm::core::settings::profile_scheme_write(row)
             && let Some(draft) = self.settings.profile_draft.as_mut()
         {
             draft.scheme = pick.field_value();
             draft
                 .errors
-                .retain(|(at, _)| *at != dropterm_core::settings::ProfileField::Scheme);
+                .retain(|(at, _)| *at != dropterm::core::settings::ProfileField::Scheme);
             cx.notify();
         }
     }
@@ -1863,7 +1860,7 @@ impl Shell {
         if let Some(draft) = self.settings.profile_draft.as_mut() {
             draft
                 .env_rows
-                .push(dropterm_core::settings::ProfileEnvRow::default());
+                .push(dropterm::core::settings::ProfileEnvRow::default());
             draft.errors.clear();
             cx.notify();
         }
@@ -1886,24 +1883,24 @@ impl Shell {
             return;
         };
         let pre_append_len = self.config.profiles.len();
-        let plan = dropterm_core::settings::plan_profile_save(
+        let plan = dropterm::core::settings::plan_profile_save(
             &draft,
             &self.config.profiles,
             self.config.default_profile.as_deref(),
         );
         match plan {
-            dropterm_core::settings::ProfileSavePlan::Write {
+            dropterm::core::settings::ProfileSavePlan::Write {
                 profiles,
                 default_after_rename,
             } => {
-                self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+                self.write_profile(&dropterm::core::settings::ProfileWrite::Profiles(profiles));
                 if let Some(new_default) = default_after_rename {
-                    self.write_profile(&dropterm_core::settings::ProfileWrite::DefaultProfile(
+                    self.write_profile(&dropterm::core::settings::ProfileWrite::DefaultProfile(
                         Some(new_default),
                     ));
                 }
                 self.settings.profile_selection = Some(
-                    dropterm_core::settings::selection_after_save(&draft.mode, pre_append_len),
+                    dropterm::core::settings::selection_after_save(&draft.mode, pre_append_len),
                 );
                 self.settings.profile_draft = None;
                 println!(
@@ -1911,7 +1908,7 @@ impl Shell {
                     self.boot.elapsed().as_millis()
                 );
             }
-            dropterm_core::settings::ProfileSavePlan::Invalid { errors } => {
+            dropterm::core::settings::ProfileSavePlan::Invalid { errors } => {
                 if let Some(open) = self.settings.profile_draft.as_mut() {
                     open.errors = errors;
                 }
@@ -1945,12 +1942,12 @@ impl Shell {
 
     pub(crate) fn profile_delete_confirm(&mut self, index: usize, cx: &mut Context<Self>) {
         self.settings.profile_delete_armed = None;
-        if let Some((profiles, paired)) = dropterm_core::settings::plan_profile_delete(
+        if let Some((profiles, paired)) = dropterm::core::settings::plan_profile_delete(
             &self.config.profiles,
             index,
             self.config.default_profile.as_deref(),
         ) {
-            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(profiles));
+            self.write_profile(&dropterm::core::settings::ProfileWrite::Profiles(profiles));
             if let Some(write) = paired {
                 self.write_profile(&write);
             }
@@ -1966,14 +1963,14 @@ impl Shell {
     pub(crate) fn profile_reorder(
         &mut self,
         index: usize,
-        direction: dropterm_core::settings::ReorderDirection,
+        direction: dropterm::core::settings::ReorderDirection,
         cx: &mut Context<Self>,
     ) {
         // A boundary press plans nothing (the model's own no-op).
         if let Some(write) =
-            dropterm_core::settings::plan_profile_reorder(&self.config.profiles, index, direction)
+            dropterm::core::settings::plan_profile_reorder(&self.config.profiles, index, direction)
         {
-            self.write_profile(&dropterm_core::settings::ProfileWrite::Profiles(write));
+            self.write_profile(&dropterm::core::settings::ProfileWrite::Profiles(write));
         }
         cx.notify();
     }
@@ -1982,7 +1979,7 @@ impl Shell {
     /// the module's planner (a stale index rejects inside).
     pub(crate) fn profile_pick_default(&mut self, row: usize, cx: &mut Context<Self>) {
         if let Some(write) =
-            dropterm_core::settings::default_picker_write(&self.config.profiles, row)
+            dropterm::core::settings::default_picker_write(&self.config.profiles, row)
         {
             self.write_profile(&write);
         }
@@ -1991,14 +1988,14 @@ impl Shell {
 
     /// The one path every keybinds write takes: persist the whole
     /// `custom_key_binds` map, the echo drives the apply.
-    fn write_keybinds(&mut self, write: &dropterm_core::settings::KeybindsWrite) {
+    fn write_keybinds(&mut self, write: &dropterm::core::settings::KeybindsWrite) {
         println!(
             "dropterm: keybinds write ({} custom entr{}) at +{}ms",
             write.0.len(),
             if write.0.len() == 1 { "y" } else { "ies" },
             self.boot.elapsed().as_millis()
         );
-        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir()) {
+        if let Err(err) = write.persist(&dropterm::core::config::store::store_dir()) {
             eprintln!("dropterm: failed to persist keybinds write: {err}");
         }
     }
@@ -2050,47 +2047,47 @@ impl Shell {
             self.keybind_capture_end(window, cx);
             return;
         }
-        let Some(key) = dropterm_core::keybinds::capture_key_name(&keystroke.key) else {
+        let Some(key) = dropterm::core::keybinds::capture_key_name(&keystroke.key) else {
             return;
         };
         let mut modifiers = Vec::new();
         if keystroke.modifiers.control {
-            modifiers.push(dropterm_core::keybinds::ModifierName::Ctrl);
+            modifiers.push(dropterm::core::keybinds::ModifierName::Ctrl);
         }
         if keystroke.modifiers.shift {
-            modifiers.push(dropterm_core::keybinds::ModifierName::Shift);
+            modifiers.push(dropterm::core::keybinds::ModifierName::Shift);
         }
         if keystroke.modifiers.alt {
-            modifiers.push(dropterm_core::keybinds::ModifierName::Alt);
+            modifiers.push(dropterm::core::keybinds::ModifierName::Alt);
         }
         if keystroke.modifiers.platform {
-            modifiers.push(dropterm_core::keybinds::ModifierName::Super);
+            modifiers.push(dropterm::core::keybinds::ModifierName::Super);
         }
-        let binding = dropterm_core::keybinds::Binding { modifiers, key };
-        match dropterm_core::keybinds::capture_verdict(id, &binding, &self.config.custom_key_binds)
+        let binding = dropterm::core::keybinds::Binding { modifiers, key };
+        match dropterm::core::keybinds::capture_verdict(id, &binding, &self.config.custom_key_binds)
         {
-            dropterm_core::keybinds::CaptureVerdict::Commit => {
-                let write = dropterm_core::keybinds::with_custom_binding(
+            dropterm::core::keybinds::CaptureVerdict::Commit => {
+                let write = dropterm::core::keybinds::with_custom_binding(
                     &self.config.custom_key_binds,
                     id,
                     binding.clone(),
                 );
-                self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+                self.write_keybinds(&dropterm::core::settings::KeybindsWrite(write));
                 println!(
                     "dropterm: keybind captured for {id}: {}",
-                    dropterm_core::keybinds::binding_display(&binding)
+                    dropterm::core::keybinds::binding_display(&binding)
                 );
                 self.keybind_capture_end(window, cx);
             }
             // Already the row's own: a silent disarm.
-            dropterm_core::keybinds::CaptureVerdict::Own => {
+            dropterm::core::keybinds::CaptureVerdict::Own => {
                 self.keybind_capture_end(window, cx);
             }
-            dropterm_core::keybinds::CaptureVerdict::Conflict(holder) => {
+            dropterm::core::keybinds::CaptureVerdict::Conflict(holder) => {
                 self.settings.keybind_conflict = Some((id, holder));
                 cx.notify();
             }
-            dropterm_core::keybinds::CaptureVerdict::Unsupported => {
+            dropterm::core::keybinds::CaptureVerdict::Unsupported => {
                 eprintln!("dropterm: captured chord cannot be stored; dropping capture");
                 self.keybind_capture_end(window, cx);
             }
@@ -2100,8 +2097,8 @@ impl Shell {
     pub(crate) fn keybind_revert(&mut self, id: &'static str, cx: &mut Context<Self>) {
         self.settings.keybind_conflict = None;
         let write =
-            dropterm_core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
-        self.write_keybinds(&dropterm_core::settings::KeybindsWrite(write));
+            dropterm::core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
+        self.write_keybinds(&dropterm::core::settings::KeybindsWrite(write));
         println!("dropterm: keybind reverted for {id}");
         cx.notify();
     }
@@ -2133,9 +2130,7 @@ impl Shell {
             id,
             Some(self.signals_tx.clone()),
         ) else {
-            eprintln!(
-                "dropterm: duplicate tab's terminal failed to spawn; closing its record"
-            );
+            eprintln!("dropterm: duplicate tab's terminal failed to spawn; closing its record");
             self.tabs.close(id);
             return;
         };
@@ -2207,12 +2202,10 @@ impl Shell {
         let inherited = self.active_cwd(cx);
         let command = match (cmd, profile) {
             (Some(line), _) => spawn::SpawnCommand::CommandLine(line),
-            (None, Some(name)) => dropterm_core::profile::find(&self.config.profiles, &name)
+            (None, Some(name)) => dropterm::core::profile::find(&self.config.profiles, &name)
                 .map_or_else(
                     || {
-                        println!(
-                            "dropterm: no profile named {name}; spawning the shell instead"
-                        );
+                        println!("dropterm: no profile named {name}; spawning the shell instead");
                         spawn::SpawnCommand::Shell(self.config.resolved_shell())
                     },
                     |profile| spawn::SpawnCommand::Profile {
@@ -2235,7 +2228,7 @@ impl Shell {
                 .or_else(|| spawn::live_preset_cwd(name, preset.as_ref()))
                 .or(inherited.clone()),
             spawn::SpawnCommand::CommandLine(_) => {
-                dropterm_core::tabs::resolve_new_tab_cwd(explicit, inherited)
+                dropterm::core::tabs::resolve_new_tab_cwd(explicit, inherited)
             }
             spawn::SpawnCommand::Shell(_) => {
                 spawn::plain_spawn_cwd(&self.config, explicit, inherited)
@@ -2260,14 +2253,14 @@ impl Shell {
     /// has no reply to carry the failure.
     fn close_remote_tab(&mut self, tab_index: Option<usize>, cx: &mut Context<Self>) {
         let len = self.tabs.records().len();
-        match dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
+        match dropterm::core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
             Some(index) => {
                 let id = self.tabs.records()[index].id;
                 self.request_close_windowless(id, cx);
             }
-            None => println!(
-                "dropterm: close-tab: no tab at --tab-index {tab_index:?} ({len} open)"
-            ),
+            None => {
+                println!("dropterm: close-tab: no tab at --tab-index {tab_index:?} ({len} open)");
+            }
         }
     }
 
@@ -2312,7 +2305,7 @@ impl Shell {
     /// script's failed select must not disturb what the user is
     /// looking at).
     fn select_remote_tab(&mut self, one_based: usize, actions: &mut Vec<Action>) {
-        match dropterm_core::tabs::select_tab_target(self.tabs.records().len(), one_based) {
+        match dropterm::core::tabs::select_tab_target(self.tabs.records().len(), one_based) {
             Some(index) => {
                 let id = self.tabs.records()[index].id;
                 if self.tabs.select(id) {
@@ -2337,7 +2330,7 @@ impl Shell {
     /// pins the override, the empty TITLE clears it. Quiet.
     fn rename_remote_tab(&mut self, title: &str, tab_index: Option<usize>, cx: &mut Context<Self>) {
         let len = self.tabs.records().len();
-        match dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
+        match dropterm::core::tabs::remote_target_index(len, tab_index, self.tabs.active_index()) {
             Some(index) => {
                 let id = self.tabs.records()[index].id;
                 if self.rename.as_ref().is_some_and(|edit| edit.tab == id) {
@@ -2352,9 +2345,9 @@ impl Shell {
                 );
                 cx.notify();
             }
-            None => println!(
-                "dropterm: rename-tab: no tab at --tab-index {tab_index:?} ({len} open)"
-            ),
+            None => {
+                println!("dropterm: rename-tab: no tab at --tab-index {tab_index:?} ({len} open)");
+            }
         }
     }
 
@@ -2372,7 +2365,7 @@ impl Shell {
     ) {
         let len = self.tabs.records().len();
         let target =
-            dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index());
+            dropterm::core::tabs::remote_target_index(len, tab_index, self.tabs.active_index());
         if target.is_none() && tab_index.is_some() {
             println!(
                 "dropterm: duplicate-tab: no tab at --tab-index {tab_index:?} ({len} open); \
@@ -2414,7 +2407,7 @@ impl Shell {
         };
         let len = self.tabs.records().len();
         let Some(target) =
-            dropterm_core::tabs::remote_target_index(len, tab_index, self.tabs.active_index())
+            dropterm::core::tabs::remote_target_index(len, tab_index, self.tabs.active_index())
         else {
             println!(
                 "dropterm: switch-profile-tab: no tab at --tab-index {tab_index:?} \
@@ -2465,9 +2458,7 @@ impl Shell {
             id,
             Some(self.signals_tx.clone()),
         ) else {
-            eprintln!(
-                "dropterm: profile respawn's terminal failed to spawn; keeping the live tab"
-            );
+            eprintln!("dropterm: profile respawn's terminal failed to spawn; keeping the live tab");
             return;
         };
         // The swap: the old pane drops with its entry (the child dies
@@ -2475,7 +2466,7 @@ impl Shell {
         // the resolved title, the kept pin, the persistent profile
         // seat — lands through core's plan.
         drop(self.panes.insert(id, pane));
-        let fields = dropterm_core::tabs::plan_respawn(
+        let fields = dropterm::core::tabs::plan_respawn(
             self.config.tab_title_mode,
             id,
             respawn_cwd.as_deref(),
@@ -2526,7 +2517,7 @@ impl Shell {
         self.settings_drawer = None;
         self.settings
             .buffer
-            .apply_drawer_transition(dropterm_core::settings::DrawerTransition::ExplicitClose);
+            .apply_drawer_transition(dropterm::core::settings::DrawerTransition::ExplicitClose);
         println!(
             "dropterm: settings drawer closed at +{}ms",
             self.boot.elapsed().as_millis()
@@ -2539,7 +2530,7 @@ impl Shell {
     /// store, and let the watcher's echo drive every apply — the
     /// drawer never applies anything itself, and drawer writes and
     /// hand edits remain one event stream.
-    pub(crate) fn write_settings(&mut self, write: &dropterm_core::settings::PlannedWrite) {
+    pub(crate) fn write_settings(&mut self, write: &dropterm::core::settings::PlannedWrite) {
         let write = write.clamped();
         let key = write.key();
         println!(
@@ -2547,7 +2538,7 @@ impl Shell {
             key.key_name(),
             self.boot.elapsed().as_millis()
         );
-        if let Err(err) = write.persist(&dropterm_core::config::store::store_dir(), &self.config) {
+        if let Err(err) = write.persist(&dropterm::core::config::store::store_dir(), &self.config) {
             eprintln!(
                 "dropterm: failed to persist settings write {}: {err}",
                 key.key_name()
@@ -2660,7 +2651,7 @@ impl Shell {
     /// so GPUI's own clipboard path carries it.
     fn status_copy(
         &mut self,
-        id: dropterm_core::status::SegmentId,
+        id: dropterm::core::status::SegmentId,
         payload: String,
         cx: &mut Context<Self>,
     ) {
@@ -2686,7 +2677,7 @@ impl Shell {
         engine
             .lock()
             .expect("engine lock")
-            .scroll(dropterm_core::terminal::TerminalScroll::Bottom);
+            .scroll(dropterm::core::terminal::TerminalScroll::Bottom);
         println!(
             "dropterm: status scrolled-chip jump -> bottom at +{}ms",
             self.boot.elapsed().as_millis()
@@ -2791,7 +2782,7 @@ impl Shell {
                 // the sniffed format.
                 std::thread::spawn(move || match std::fs::read(&path) {
                     Ok(bytes) => {
-                        let mime = dropterm_core::paste_cache::sniff_image_format(&bytes)
+                        let mime = dropterm::core::paste_cache::sniff_image_format(&bytes)
                             .map_or("application/octet-stream", |format| format.mime());
                         crate::terminal::clipboard::write_image_data_control(bytes, mime);
                     }
@@ -2857,7 +2848,7 @@ impl Shell {
                 // The OpenHyperlink precedent for the folder: the file
                 // manager, one warn on refusal — including the no-XDG
                 // case.
-                match dropterm_core::paste_cache::paste_cache_dir() {
+                match dropterm::core::paste_cache::paste_cache_dir() {
                     Some(dir) => {
                         if let Err(err) = open::that_detached(&dir) {
                             println!("dropterm: failed to open {}: {err}", dir.display());
@@ -2927,12 +2918,12 @@ impl Shell {
         };
         let on_scroll_bottom = {
             let shell = shell.clone();
-            move |id: dropterm_core::status::SegmentId, cx: &mut gpui::App| {
+            move |id: dropterm::core::status::SegmentId, cx: &mut gpui::App| {
                 // The two action chips' own verbs (py-6 grew the
                 // pair): the scrolled chip's jump, the pasted chip's
                 // panel door.
                 shell.update(cx, |shell, cx| match id {
-                    dropterm_core::status::SegmentId::Pasted => {
+                    dropterm::core::status::SegmentId::Pasted => {
                         shell.open_images_panel(cx);
                     }
                     _ => Shell::scroll_active_to_bottom(shell, cx),
@@ -3128,12 +3119,12 @@ impl Shell {
                 .tabs
                 .active_id()
                 .and_then(|id| self.tabs.profile_id_of(id))
-                .and_then(|id| dropterm_core::profile::find(&self.config.profiles, id))
+                .and_then(|id| dropterm::core::profile::find(&self.config.profiles, id))
                 .map(|profile| profile.name.as_str()),
             zoom_adj,
             // The zoom step every spawn builds from — core's own
             // default, the same leg the libcosmic assembly reads.
-            zoom_step_mul_100: dropterm_core::terminal::TerminalOptions::default()
+            zoom_step_mul_100: dropterm::core::terminal::TerminalOptions::default()
                 .font_size_zoom_step_mul_100,
             foreground: foreground.as_deref(),
             branch: branch.as_deref(),
@@ -3159,7 +3150,7 @@ impl Shell {
                 .tabs
                 .active_id()
                 .and_then(|id| self.tabs.pasted_images(id))
-                .map(<[dropterm_core::tabs::PastedImage]>::len),
+                .map(<[dropterm::core::tabs::PastedImage]>::len),
             progress,
             program_status,
             ssh_destination: ssh_destination.as_deref(),
@@ -3621,7 +3612,7 @@ impl Shell {
             .last_bounds
             .map_or(1280.0, |bounds| bounds.size.width.as_f32());
         let live = self.settings.drawer_drag;
-        let width = dropterm_core::settings::drawer_width(
+        let width = dropterm::core::settings::drawer_width(
             live.or(self.config.settings_drawer_width),
             surface,
         );
@@ -3637,7 +3628,7 @@ impl Shell {
                         // The reset: the built-in default, the stored
                         // value cleared.
                         shell.write_settings(
-                            &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(None),
+                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(None),
                         );
                         println!(
                             "dropterm: drawer width reset at +{}ms",
@@ -3645,10 +3636,11 @@ impl Shell {
                         );
                         cx.notify();
                     } else if event.button == gpui::MouseButton::Left {
-                        shell.settings.drawer_drag = Some(dropterm_core::settings::drawer_drag_px(
-                            event.position.x.as_f32(),
-                            surface,
-                        ));
+                        shell.settings.drawer_drag =
+                            Some(dropterm::core::settings::drawer_drag_px(
+                                event.position.x.as_f32(),
+                                surface,
+                            ));
                         cx.notify();
                     }
                 });
@@ -3659,10 +3651,11 @@ impl Shell {
             move |event: &gpui::MouseMoveEvent, _window: &mut Window, cx: &mut gpui::App| {
                 shell.update(cx, |shell, cx| {
                     if shell.settings.drawer_drag.is_some() {
-                        shell.settings.drawer_drag = Some(dropterm_core::settings::drawer_drag_px(
-                            event.position.x.as_f32(),
-                            surface,
-                        ));
+                        shell.settings.drawer_drag =
+                            Some(dropterm::core::settings::drawer_drag_px(
+                                event.position.x.as_f32(),
+                                surface,
+                            ));
                         cx.notify();
                     }
                 });
@@ -3674,7 +3667,7 @@ impl Shell {
                 shell.update(cx, |shell, cx| {
                     if let Some(px) = shell.settings.drawer_drag.take() {
                         shell.write_settings(
-                            &dropterm_core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
+                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
                         );
                         println!(
                             "dropterm: drawer width released at {px}px (+{}ms)",
@@ -3849,7 +3842,7 @@ fn restore_fleet(
     cx: &mut App,
     config: &DropTermConfig,
     specs_table: Option<&SpecsTable>,
-    plan: Option<&dropterm_core::session::RestorePlan>,
+    plan: Option<&dropterm::core::session::RestorePlan>,
     signals_tx: &std::sync::mpsc::Sender<view::PaneSignal>,
     tabs: &mut tab_bar::TabList,
     panes: &mut HashMap<TabId, Entity<TerminalPane>>,
@@ -3871,14 +3864,14 @@ fn restore_fleet(
         // `spec.cwd` (already the ruled chain result), a plain spec
         // its recorded shell — the degradations core's own.
         let command = if let Some(profile) = &spec.profile {
-            dropterm_core::spawn::SpawnCommand::Profile {
+            dropterm::core::spawn::SpawnCommand::Profile {
                 name: profile.name.clone(),
                 command: profile.command.clone(),
                 cwd: spec.cwd.clone(),
                 env: profile.env.clone(),
             }
         } else {
-            dropterm_core::spawn::SpawnCommand::Shell(spec.shell.clone())
+            dropterm::core::spawn::SpawnCommand::Shell(spec.shell.clone())
         };
         let request = view::PaneRequest::for_command(&command, spec.cwd.clone(), config);
         let Some((_terminal, pane)) = view::boot_pane(
@@ -3896,8 +3889,8 @@ fn restore_fleet(
         panes.insert(id, pane);
         restored += 1;
     }
-    if let dropterm_core::session::RestoreOutcome::Restored { active } =
-        dropterm_core::session::restore_outcome(plan.active, restored)
+    if let dropterm::core::session::RestoreOutcome::Restored { active } =
+        dropterm::core::session::restore_outcome(plan.active, restored)
     {
         tabs.activate_index(active);
         println!(
@@ -3912,7 +3905,7 @@ fn boot_tab_fleet(
     cx: &mut App,
     config: &DropTermConfig,
     specs_table: Option<&SpecsTable>,
-    restore: &mut dropterm_core::session::RestoreStash,
+    restore: &mut dropterm::core::session::RestoreStash,
     edge: Edge,
 ) -> Option<TabFleet> {
     // The session restore (gpui-parity Task 3): the plan wins unless
@@ -3937,7 +3930,7 @@ fn boot_tab_fleet(
     let walk_request = std::env::var("DROPTERM_TERM_CMD").ok().map(|raw| {
         let raw = raw.trim().to_string();
         let mut request = view::PaneRequest::for_command(
-            &dropterm_core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+            &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
             None,
             config,
         );
@@ -4028,7 +4021,7 @@ pub(crate) fn boot(
     startup: cli::Action,
 ) {
     let boot = Instant::now();
-    let config_dir = dropterm_core::config::store::store_dir();
+    let config_dir = dropterm::core::config::store::store_dir();
     let config = DropTermConfig::load_from(&config_dir);
     let inputs = SurfaceInputs::from_config(&config);
     println!(
@@ -4074,8 +4067,8 @@ pub(crate) fn boot(
     // read, and what is on disk waits untouched for a future launch.
     let mut restore = {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        dropterm_core::session::restore_entry(
-            &dropterm_core::session::state_file_path(),
+        dropterm::core::session::restore_entry(
+            &dropterm::core::session::state_file_path(),
             home.as_deref(),
             config.session_persistence_enabled,
             &config.profiles,
@@ -4104,10 +4097,7 @@ pub(crate) fn boot(
         if let Err(err) = watcher.watch(&watch_dir, notify::RecursiveMode::NonRecursive) {
             return eprintln!("dropterm: config watch failed: {err:?}");
         }
-        println!(
-            "dropterm: config watcher armed on {}",
-            watch_dir.display()
-        );
+        println!("dropterm: config watcher armed on {}", watch_dir.display());
         std::thread::park();
     });
     // The band's font (gpui-status Task 1): the terminal's own
@@ -4237,8 +4227,8 @@ mod tests {
         // — while shell-title churn stays quiet. Ids are deterministic
         // from a default list, so a fresh two-tab pair is the shared
         // baseline each mutation compares against.
-        use dropterm_core::config::TabTitleMode;
-        use dropterm_core::tabs::MoveDirection;
+        use dropterm::core::config::TabTitleMode;
+        use dropterm::core::tabs::MoveDirection;
 
         fn two_tabs() -> tab_bar::TabList {
             let mut tabs = tab_bar::TabList::default();
@@ -4310,7 +4300,7 @@ mod tests {
 
     #[test]
     fn the_machine_states_map_onto_the_served_phases() {
-        use dropterm_core::intent::SurfaceHandle;
+        use dropterm::core::intent::SurfaceHandle;
         assert_eq!(phase_of(&SurfaceState::Hidden), SurfacePhase::Hidden);
         assert_eq!(
             phase_of(&SurfaceState::Measuring(SurfaceHandle::next())),
@@ -4358,7 +4348,7 @@ mod tests {
 
     #[test]
     fn theme_identity_tracks_the_scheme_and_mode_not_geometry() {
-        use dropterm_core::config::ThemePreference;
+        use dropterm::core::config::ThemePreference;
 
         let base = DropTermConfig::default();
         let base_id = theme_identity(&resolve_theme(&base));

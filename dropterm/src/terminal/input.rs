@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dropterm_core::keybinds::{Binding, ModifierName};
+use dropterm::core::keybinds::{Binding, ModifierName};
 use gpui::{Keystroke, Modifiers};
 
 /// The pane's actions — the terminal-view slice of the libcosmic
@@ -263,7 +263,7 @@ pub(crate) enum KeyInput {
     Swallowed,
     /// A scroll the keys themselves ask for (Shift+PageUp/Down,
     /// Shift+Home/End — the libcosmic widget's own special cases).
-    Scroll(dropterm_core::terminal::TerminalScroll),
+    Scroll(dropterm::core::terminal::TerminalScroll),
 }
 
 /// The terminal mode flags the translation consults.
@@ -307,19 +307,19 @@ pub(crate) fn translate(
         "delete" => Some(csi("3", "~", mod_no)),
         "pageup" => {
             if modifiers.shift {
-                return KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::PageUp);
+                return KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::PageUp);
             }
             Some(csi("5", "~", mod_no))
         }
         "pagedown" => {
             if modifiers.shift {
-                return KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::PageDown);
+                return KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::PageDown);
             }
             Some(csi("6", "~", mod_no))
         }
         "end" => {
             if modifiers.shift {
-                return KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::Bottom);
+                return KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::Bottom);
             }
             Some(if modes.app_cursor {
                 ss3("F", mod_no)
@@ -329,7 +329,7 @@ pub(crate) fn translate(
         }
         "home" => {
             if modifiers.shift {
-                return KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::Top);
+                return KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::Top);
             }
             Some(if modes.app_cursor {
                 ss3("H", mod_no)
@@ -509,7 +509,7 @@ impl PartialEq for KeyInput {
             (Self::Action(a), Self::Action(b)) => a == b,
             (Self::Swallowed, Self::Swallowed) => true,
             (Self::Scroll(a), Self::Scroll(b)) => {
-                use dropterm_core::terminal::TerminalScroll;
+                use dropterm::core::terminal::TerminalScroll;
                 matches!(
                     (a, b),
                     (TerminalScroll::PageUp, TerminalScroll::PageUp)
@@ -879,7 +879,7 @@ mod tests {
                 &default_key_binds(),
                 plain_modes()
             ),
-            KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::PageUp)
+            KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::PageUp)
         ));
         assert!(matches!(
             translate(
@@ -887,7 +887,7 @@ mod tests {
                 &default_key_binds(),
                 plain_modes()
             ),
-            KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::PageDown)
+            KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::PageDown)
         ));
         assert!(matches!(
             translate(
@@ -895,7 +895,7 @@ mod tests {
                 &default_key_binds(),
                 plain_modes()
             ),
-            KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::Top)
+            KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::Top)
         ));
         assert!(matches!(
             translate(
@@ -903,7 +903,7 @@ mod tests {
                 &default_key_binds(),
                 plain_modes()
             ),
-            KeyInput::Scroll(dropterm_core::terminal::TerminalScroll::Bottom)
+            KeyInput::Scroll(dropterm::core::terminal::TerminalScroll::Bottom)
         ));
         // Unshifted they are the shell's own sequences.
         assert_eq!(

@@ -1,7 +1,7 @@
 use super::*;
 use std::path::Path;
 
-use dropterm_core::config::{Edge, TabTitleMode};
+use dropterm::core::config::{Edge, TabTitleMode};
 
 #[test]
 fn auto_places_the_strip_opposite_the_anchor_and_pins_override() {

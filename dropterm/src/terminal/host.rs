@@ -19,7 +19,7 @@ use std::sync::Arc;
 use cosmic_text::{Attrs, Buffer, Metrics};
 use gpui::{App, FontStyle, FontWeight, Pixels, px};
 
-use dropterm_core::terminal::TextHost;
+use dropterm::core::terminal::TextHost;
 
 /// The monospace families the pane tries, in order: cosmic-text's
 /// own hard-wired `Family::Monospace` default first (the family the

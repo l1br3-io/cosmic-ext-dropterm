@@ -1,6 +1,6 @@
 # DropTerm
 
-A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust on [GPUI](https://github.com/zed-industries/gpui) (the [panel applet](docs/applet.md) rides [libcosmic](https://github.com/pop-os/libcosmic)).
+A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust on [GPUI](https://github.com/zed-industries/gpui).
 
 The terminal slides down from the top (or bottom) edge of the screen and is toggled with a global keyboard shortcut. It is a true layer-shell overlay - not a minimize/restore window trick - so it stays above other windows, is hidden from Alt-Tab and the dock, and keeps your shell session alive while hidden.
 
@@ -12,7 +12,7 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 ### From a release
 
 Grab the tarball for your architecture from the
-[v0.5.0 release](https://github.com/l1br3-io/dropterm/releases/tag/v0.5.0) — it carries both binaries (terminal and [panel applet](docs/applet.md)) plus the desktop files, icons, and metainfo as a `usr/` tree — then verify and copy it into place:
+[v0.5.0 release](https://github.com/l1br3-io/dropterm/releases/tag/v0.5.0) — it carries the binary plus the desktop file, icon, and metainfo as a `usr/` tree — then verify and copy it into place:
 
 ```sh
 curl -LO https://github.com/l1br3-io/dropterm/releases/download/v0.5.0/dropterm-0.5.0-x86_64.tar.gz
@@ -47,7 +47,7 @@ sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libf
 ### Build and install
 
 ```sh
-just build-all        # both release binaries: terminal + applet
+just build-all        # the release binary
 sudo just install
 ```
 
@@ -83,7 +83,6 @@ The details live in the `docs/` directory:
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
-- [Panel applet](docs/applet.md) - toggling DropTerm and reading its state from the COSMIC panel
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
 - [Theming](docs/theming.md) - the Application theme pin and the 12 built-in color schemes
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
@@ -104,7 +103,7 @@ The details live in the `docs/` directory:
 - **Tabs and sessions** - open/close, duplicate, inline rename, drag reorder, cycle and jump chords ([keybindings](docs/keybindings.md)), and title modes including by-profile ([configuration](docs/configuration.md#tab-titles)); attention markers for bells and background output; sessions save and restore across shutdowns ([sessions](docs/sessions.md)); drag-to-resize with remembered geometry; the 130 ms slide ([animation](docs/animation.md)); and the in-app [settings drawer](docs/settings.md) with its five tabs.
 - **Profiles** - named presets like `ssh web-prod` as a first-class tab: each carries its own command, working directory, color scheme, font size, scrollback, and environment variables, and the context menu's Switch Profile respawns any tab under another profile in place ([configuration](docs/configuration.md#profiles)). New tabs inherit the active tab's working directory, with a configurable default directory and editable spawn defaults.
 - **The status band** - a 28 px strip beside the grab bar narrating the active terminal: foreground process, working directory with git branch, profile, cell dimensions, tab position, zoom delta, and clock - every segment click-to-copy, each one individually toggleable ([status bar](docs/status-bar.md)).
-- **Desktop integration** - the per-tab context menu with pin/unpin; a close-confirmation guardrail for tabs running foreground processes; desktop notifications when the bell rings while hidden ([bell](docs/bell.md)); remote control from the CLI - `new-tab` and the tab verbs over the single-instance D-Bus seam ([CLI reference](docs/cli.md)); and a COSMIC [panel applet](docs/applet.md) that toggles the drop-down and shows its running state from the panel.
+- **Desktop integration** - the per-tab context menu with pin/unpin; a close-confirmation guardrail for tabs running foreground processes; desktop notifications when the bell rings while hidden ([bell](docs/bell.md)); remote control from the CLI - `new-tab` and the tab verbs over the single-instance D-Bus seam ([CLI reference](docs/cli.md)); and desktop integration end to end.
 
 ## Known risks
 
@@ -123,4 +122,4 @@ The dev loop, the verification bar, and the module map: [Development](docs/devel
 
 ## Credits
 
-DropTerm's terminal engine is adapted from [cosmic-term](https://github.com/pop-os/cosmic-term) (Copyright System76, GPL-3.0-only), reused under the same license per the file-level attributions in `dropterm-core/src/terminal/`. The single-instance/toggle pattern was cross-checked against [cosmic-ext-quake-terminal](https://github.com/M0Rf30/cosmic-ext-quake-terminal).
+DropTerm's terminal engine is adapted from [cosmic-term](https://github.com/pop-os/cosmic-term) (Copyright System76, GPL-3.0-only), reused under the same license per the file-level attributions in `dropterm/src/core/terminal/`. The single-instance/toggle pattern was cross-checked against [cosmic-ext-quake-terminal](https://github.com/M0Rf30/cosmic-ext-quake-terminal).

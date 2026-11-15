@@ -25,14 +25,14 @@ The pasted-images release: an image on the clipboard - a screenshot tool's copy,
 - The pasted-images chip - `▦ 3 images` in the band while the tab has pastes, pluralized at two, yielding first under width pressure ([status bar](status-bar.md#the-segments))
 - The status band's dress - ten leading glyphs (branch `⎇`, grid `⊞`, tab `▤`, profile `◉`, duration `⧗`, progress `◐`, path `⌂`, zoom `⇕`, pasted `▦`, clock `◷`) beside the three owned marks, a hairline between each pair of adjacent segments of a cluster, and a hover tip on every segment; a click still copies the bare value ([status bar](status-bar.md#the-segments))
 - Autosuggestions - the git generators are always on (the `autosuggestions_generators_enabled` toggle is gone, 51 keys), and the spec table loads on a background thread with a loading row instead of blocking startup ([autosuggestions](autosuggestions.md))
-- Packaging - the cosmic-flatpak submission plan is withdrawn: cosmic-comp filters layer-shell from sandboxed clients, so a store install could never carry the drop-down itself; the native release stays the install ([applet](applet.md), [FAQ](faq.md))
+- Packaging - the cosmic-flatpak submission plan is withdrawn: cosmic-comp filters layer-shell from sandboxed clients, so a store install could never carry the drop-down itself; the native release stays the install ([FAQ](faq.md))
 - Fixes - copies land while the terminal is unfocused or hidden (the clipboard I/O moves to the data-control protocol), the clipboard anchor reopens when the compositor closes it with its output, a stay-open surface shares the keyboard instead of holding it hostage, the pasted chip's press reaches the panel, and the panel's thumbnails and the paste cache take the ceilings the render path already had
 
 ## v0.3.1 (2026-11-07)
 
 The store-listing release: the applet and the terminal both ship their AppStream `<categories>`, clearing the one blocker between DropTerm and the COSMIC Flatpak source — its CI's `appstreamcli compose` drops a category-less component and aborts the export, the 2026-11-04 validation walk's recorded find, now fixed in the shipped bytes (the applet `System`, the terminal `System` + `TerminalEmulator`) so the catalog branch recuts from this tree with no patched manifest. Alongside, the kitty image z-layers tighten under review: eviction keeps the layer with its pixels, re-placing honors an explicit z, and the above-glyph pass composites by z — kitty's own overlap rule.
 
-- The store listing unblocked - both metainfo files carry their categories, the manifest pinning this release's bytes, the catalog submission cleared to file ([applet](applet.md))
+- The store listing unblocked - both metainfo files carried their categories, the manifest pinning this release's bytes, the catalog submission cleared to file
 - Kitty images, review pass - eviction takes the layer with the pixels, an explicit z moves an existing placement's seat on the wire's ask (an absent z keeps what the seat holds), and the above-glyph pass composites by z ([images](images.md))
 
 ## v0.3.0 (2026-10-24)
@@ -57,7 +57,7 @@ The status band release: a 28 px glance strip beside the grab bar narrating the 
 - Bar border hairlines - `tab_bar_border`, `status_bar_border` ([configuration](configuration.md#bar-borders))
 - The docs site and its gates - this Jekyll tree, the config-key test, the link gate ([development](development.md))
 - Dev/installed split - the `-dev` launcher identity and its own config and state ([development](development.md#development-launcher))
-- The applet's packaging - metainfo and a local Flatpak build path ([applet](applet.md))
+- The applet's packaging - metainfo and a local Flatpak build path
 - Fixes - profile commands wrap into their shell with an interactive tail (a finishing `ls` no longer flash-kills the tab), the window background follows the effective theme mode, every surface names its app so the shell never shows "unknown"
 
 ## v0.1.0 (2026-10-10)
@@ -70,4 +70,4 @@ First release: the drop-down core and parity with Yakuake (the KDE drop-down ter
 - Profiles - command, directory, scheme, font size, scrollback, environment per profile ([profiles](configuration.md#profiles))
 - Settings drawer, theming, the twelve schemes ([settings](settings.md), [theming](theming.md))
 - CLI remote control and `--is-visible` ([CLI reference](cli.md))
-- The panel applet ([applet](applet.md))
+- The panel applet

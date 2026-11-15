@@ -87,6 +87,44 @@ owner-pass halves and the post-publish tarball walk before the tag moves.
 **Dependencies:** Task 2, owner go · **Files:** version, notes, tag ·
 **Scope:** M
 
+## Task 4: The collapse — one package, no applet
+
+**Description:** The owner's ruling (2026-11-15, after cu-1 left three
+packages): one crate `dropterm`, one CLI, the COSMIC applet gone. The
+`dropterm-core` package dissolves into the terminal package as a lib
+target (the `core` module, its toolkit-freedom re-pinned by a
+source-walking test now that the manifest is shared with the bin), the
+`applet/` package and its res/ files delete, the justfile and the
+release workflow lose every applet leg, and the docs tell the truth.
+
+**Acceptance criteria:**
+- [x] One package `dropterm` — the bin plus the `core` lib half — one
+      CLI; libcosmic out of the dependency graph entirely; `just check`
+      and `just build-all` green *(the same day's commits: the rename
+      05072a4, the merge + applet deletion + docs pass together;
+      clippy clean across both targets, 1225 tests green under
+      `dev-identity` too; Cargo.lock −2.3k lines with the libcosmic
+      tree gone)*
+- [x] No doc describes the deleted crates or applet *(architecture
+      rewritten to the one-package-two-halves map, README/dbus/howto/
+      FAQ/configuration/index/theming/ROADMAP re-truthed, the release
+      notes' history sections keep their past tense, testing.md's
+      applet rows and summon clauses removed, the site nav drops the
+      applet page; docs-check green)*
+
+**Verification:**
+- [x] Tests pass: `just check`
+- [x] Release build: `just build-all` *(target/release/dropterm, no
+      second artifact)*
+
+**Dependencies:** Task 2 · **Files:** the whole tree — the crate merge,
+the applet deletion, justfile, workflow, the docs pages · **Scope:** L
+
+**Owner ruling (2026-11-15, at the desk):** the applet drops — the one
+crate is worth more than the panel button; the research archive keeps
+its record. The canary row (Task 1) dies with the applet: it walks
+nothing anymore.
+
 ## Checkpoint: Phase 3 exits
 
 - [ ] Parity proven, one binary, the release cut — Phase 4 (X11, GNOME

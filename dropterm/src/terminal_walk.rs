@@ -57,7 +57,7 @@ use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions}
 use gpui::{App, Bounds, Size, WindowBackgroundAppearance, WindowBounds, WindowKind, point, px};
 
 use crate::terminal::view;
-use dropterm_core::config::DropTermConfig;
+use dropterm::core::config::DropTermConfig;
 
 /// The narrow grid the walk opens at (the acceptance's 8×20) and the
 /// widened column count it grows to, same rows.
@@ -92,10 +92,10 @@ fn pane_window_options(width: u32, height: u32) -> gpui::WindowOptions {
             origin: point(px(0.), px(0.)),
             size: Size::new(px(w), px(h)),
         })),
-        app_id: Some(dropterm_core::APP_ID.to_string()),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
         window_background: WindowBackgroundAppearance::Transparent,
         kind: WindowKind::LayerShell(LayerShellOptions {
-            namespace: dropterm_core::APP_ID.to_string(),
+            namespace: dropterm::core::APP_ID.to_string(),
             layer: Layer::Overlay,
             anchor: Anchor::TOP | Anchor::LEFT,
             exclusive_zone: Some(px(-1.)),
@@ -111,7 +111,7 @@ fn pane_window_options(width: u32, height: u32) -> gpui::WindowOptions {
 /// command), open the pane's window at the narrow grid, and widen it
 /// once mid-run.
 pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
-    let config = DropTermConfig::load_from(&dropterm_core::config::store::store_dir());
+    let config = DropTermConfig::load_from(&dropterm::core::config::store::store_dir());
 
     // The Kit's theme global (gpui-parity Task 1): the completion
     // menu's panel reads the popover tokens, so the harness
@@ -125,7 +125,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
     // exact `sh -c <line>` shape, a raw request over the resolution.
     let (shell, args) = walk_shell(std::env::var("DROPTERM_TERM_CMD").ok().as_deref());
     let mut request = view::PaneRequest::for_command(
-        &dropterm_core::spawn::SpawnCommand::Shell(shell),
+        &dropterm::core::spawn::SpawnCommand::Shell(shell),
         None,
         &config,
     );
@@ -135,7 +135,7 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         &config,
         request,
         None,
-        dropterm_core::tabs::TabId(0),
+        dropterm::core::tabs::TabId(0),
         None,
     ) else {
         std::process::exit(1);

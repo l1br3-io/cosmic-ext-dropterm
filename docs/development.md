@@ -96,10 +96,9 @@ Which recipe targets what, in one table:
 | --- | --- |
 | `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `dropterm-dev`, plus its (app-grid-hidden) desktop file |
 | `just act …`, `toggle`, `show`, `hide`, `new-tab …` | The dev instance — the verbs ride the `-dev` launcher and the dev instance executes them |
-| `just dev-applet` | Development — a second panel entry ("DropTerm (Dev)") under `~/.local`, tracking the dev terminal only |
-| `just dev-uninstall` | Development — removes the `-dev` launcher, the dev desktop files, and the dev applet's footprint |
+| `just dev-uninstall` | Development — removes the `-dev` launcher and the dev desktop file |
 | `just deps` | Prerequisites — checks the C toolchain, `pkg-config`, the system libraries, and cargo, installing what is missing via the distro's package manager (apt/dnf/pacman/zypper) or rustup; the build and install recipes run it first, and it is a silent no-op when everything is present |
-| `just build-all` + `sudo just install` | Installed — the release build of both packages into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes either |
+| `just build-all` + `sudo just install` | Installed — the release build into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes it |
 | `just check` | The gate — fmt + clippy + test across the workspace, each package also once under `dev-identity` |
 | `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
 
@@ -122,7 +121,7 @@ concerns stay in `#[cfg(test)]` module tests - `just test` runs them, and
 
 ## The COSMIC validation VM
 
-The applet rows at the bottom of [testing.md](testing.md) need a live
+The checklist's runtime rows in [testing.md](testing.md) need a live
 COSMIC session; the validation VM is where they walk when no spare
 hardware is at hand. The guest is a Pop!_OS 24.04 COSMIC image under
 virt-manager/QEMU — `/dev/kvm`, virtio-gpu with virgl: cosmic-comp
@@ -165,25 +164,49 @@ Recipes that use the guest user take it next — `just vm-status OtherVm
 alice` — or read `VM_USER` (`VM_USER=alice just vm-status`, `just
 vm-user=alice vm-status`).
 
+### When `vm-push` fails with "guest could not download"
+
+The preflight probes the transfer server from the host over loopback,
+so it passes while the guest still can't reach the host; the guest's
+`curl -sf`/`wget -q` then swallow the real error. Get it:
+
+    just vm-exec 'curl -v --max-time 5 -o /dev/null http://192.168.122.1:8000/dropterm-vm.tar.gz'
+
+- Instant `Permission denied` (EACCES) = **guest MAC** rejecting the
+  agent's outbound `connect`.
+- Hang/timeout = **host firewall** dropping guest-to-host traffic.
+
+**Host firewall** (ufw/firewalld/nftables): the transfer port must
+accept the guest subnet on the bridge. Pop!_OS ships none, so enabling
+one after it worked breaks this silently. ufw:
+
+    sudo ufw allow from 192.168.122.0/24
+
+**Guest MAC** (SELinux on Fedora/RHEL/openSUSE; AppArmor the analog on
+Ubuntu/Debian): the agent runs confined and its `guest-exec` children
+inherit that, so the guest's own `curl` is denied. Confirm with
+`just vm-exec 'id -Z'` (confined = `virt_qemu_ga_t`, not `unconfined`).
+On SELinux the `virt_qemu_ga_run_unconfined` boolean does **not** unconfine
+plain `guest-exec`; make the domain permissive instead, from the guest:
+
+    sudo semanage permissive -a virt_qemu_ga_t
+
+Install `policycoreutils-python-utils` first if `semanage` is missing.
+AppArmor needs the same outcome (agent profile unconfined or its connect
+rule added); no verified recipe yet, so none is recorded. Permissive
+persists across reboots.
+
 The walk, in order:
 
-1. Rewind to the stock snapshot; install the native terminal (and its
-   applet) from the published release tarball — `sha256sum -c
-   sha256sums`, copy `usr/` over `/usr`, reboot (auto-login returns
-   it).
-2. Add the applet to the panel: COSMIC Settings → Panel (the honest
-   human route), or the config route — append the applet id to
-   `~/.config/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_center`
-   and `pkill -x cosmic-panel`; the session respawns the panel, which
-   re-reads its config and spawns the applet.
-3. Drive the rows. The applet's toggle and running/not indicator ride
-   the session bus — watch them with `dbus-monitor --session` in-guest.
-   Scripted input goes through QEMU's monitor: `virsh send-key` for
-   keys, `input-send-event` for the pointer. Pointer quirks that
-   matter: absolute moves go to the USB tablet (axis 0–32767 across
-   the screen), the guest display runs 1280×800, and a batched
-   move+click **drops the button** — send the move, then the press,
-   then the release as three separate commands.
+1. Rewind to the stock snapshot; install the native terminal from the
+   published release tarball — `sha256sum -c sha256sums`, copy `usr/`
+   over `/usr`, reboot (auto-login returns it).
+2. Drive the rows. Scripted input goes through QEMU's monitor:
+   `virsh send-key` for keys, `input-send-event` for the pointer.
+   Pointer quirks that matter: absolute moves go to the USB tablet
+   (axis 0–32767 across the screen), the guest display runs 1280×800,
+   and a batched move+click **drops the button** — send the move, then
+   the press, then the release as three separate commands.
 
 What the VM cannot prove: real-hardware timing (GPU throughput,
 scanout), and the two GUI steps a script should not fake — the
@@ -264,7 +287,7 @@ On every Kit bump — and any time the border is questioned:
    `build.rs`).
 2. Re-apply the one-const change: `src/window_border.rs`, the
    `#[cfg(target_os = "linux")]` `SHADOW_SIZE` arm, to `px(0.0)`. The
-   `dropterm-gpui` crate's `the_carried_copy_is_the_patched_kit` test
+   `dropterm` crate's `the_carried_copy_is_the_patched_kit` test
    fails `just check` if this is forgotten.
 3. Check the release for a public border opt-out (changelog, `Root`
    docs, the `window_border` constant). If one exists: drop the copy,
@@ -274,7 +297,7 @@ On every Kit bump — and any time the border is questioned:
    validation VM (the walk routes are the ones above):
 
    ```sh
-   DROPTERM_CHECK=kit-c2b DROPTERM_EXIT_AFTER_MS=9000 dropterm-gpui
+   DROPTERM_CHECK=kit-c2b DROPTERM_EXIT_AFTER_MS=9000 dropterm
    ```
 
    The pass rows, in the log: every cadence height echoes back exactly

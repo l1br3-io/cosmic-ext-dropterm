@@ -1,24 +1,12 @@
-# The cutover's root (gpui-cutover Task 1): a virtual workspace —
-# the libcosmic frontend crate that used to be the root package is
-# deleted, not parked (the chunk's ruling), and the terminal crate is
-# `dropterm` (the renamed GPUI frontend, `dropterm/`), with
-# `dropterm-core` and the applet beside it. Git history keeps the
-# deleted frontend.
+# The cutover's root (gpui-cutover cu-1, collapsed by cu-4): a virtual
+# workspace around the one terminal package. The libcosmic frontend
+# that used to be the root package was deleted, not parked (cu-1's
+# ruling); cu-4 (the owner's ruling, 2026-11-15) then removed the
+# applet and dissolved `dropterm-core` into the terminal crate — the
+# workspace now carries `dropterm` alone. Git history keeps both.
 [workspace]
-members = ["applet", "dropterm-core", "dropterm"]
+members = ["dropterm"]
 resolver = "3"
-
-[workspace.dependencies]
-# The applet's toolkit (the terminal crate needs none of it since the
-# cutover). Bare URL, deliberately: libcosmic's own `applet` feature
-# pulls cosmic-panel-config → cosmic-config from `pop-os/libcosmic`
-# floating, and cargo only merges git references into ONE source when
-# the spec strings match — a `rev =` pin here would put a second
-# libcosmic source in the graph and break `cargo vendor` (duplicate
-# crates). Reproducibility lives in the committed Cargo.lock (every
-# recipe runs --locked); bump deliberately with
-# `cargo update -p libcosmic --precise <sha>`.
-libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false }
 
 # status-exit (OQ-1, decided 2026-11-03): the shell's own "command
 # finished with code N" (OSC 133;D, FinalTerm/contour shell
@@ -29,11 +17,10 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = fa
 # commits, so the patched sources are the lockfile's versions plus
 # the one arm): vte parses `133;D;<code>` into a default-no-op
 # Handler method; alacritty_terminal implements it on Term, emitting
-# Event::PromptExit(code). Unlike the bare libcosmic git URL above, a
-# [patch.crates-io] entry REPLACES each crate's registry source
-# rather than adding a second one, so cargo vendor still sees one
-# source per crate. Upstreaming: PRs to alacritty/vte and
-# alacritty/alacritty are the follow-up once the module proves out.
+# Event::PromptExit(code). A [patch.crates-io] entry REPLACES each
+# crate's registry source, so cargo vendor still sees one source per
+# crate. Upstreaming: PRs to alacritty/vte and alacritty/alacritty
+# are the follow-up once the module proves out.
 [patch.crates-io]
 vte = { git = "https://github.com/l1br3-io/vte", rev = "52dadb7b7ccc0429439c662490bd603824bd35c0" }
 alacritty_terminal = { git = "https://github.com/l1br3-io/alacritty", rev = "1185ffd98e1c16345230188fb02682a44bdefa3e" }

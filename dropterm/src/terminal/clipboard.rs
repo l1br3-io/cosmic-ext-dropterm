@@ -114,14 +114,14 @@ pub(crate) fn read_primary_blocking() -> Option<String> {
 pub(crate) enum ImageRead {
     Bytes(Vec<u8>),
     None,
-    Refused(dropterm_core::status::PasteRefusal),
+    Refused(dropterm::core::status::PasteRefusal),
 }
 
 /// The read's verdict split — the pure half the test pins: payload
 /// bytes under the cap, the over-cap refusal at it.
-fn classify_read(len: usize) -> Option<dropterm_core::status::PasteRefusal> {
-    (len > dropterm_core::paste_cache::PASTE_PAYLOAD_CAP)
-        .then_some(dropterm_core::status::PasteRefusal::OverCap)
+fn classify_read(len: usize) -> Option<dropterm::core::status::PasteRefusal> {
+    (len > dropterm::core::paste_cache::PASTE_PAYLOAD_CAP)
+        .then_some(dropterm::core::status::PasteRefusal::OverCap)
 }
 
 /// One data-control read of the clipboard's image offer — the paste
@@ -133,7 +133,7 @@ fn classify_read(len: usize) -> Option<dropterm_core::status::PasteRefusal> {
 /// honest silence (warned once where owed); the refusals name
 /// themselves for the band's verdict chip.
 pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
-    let cap = u64::try_from(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP + 1)
+    let cap = u64::try_from(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP + 1)
         .expect("the paste cap is a constant far below u64::MAX");
     let (pipe, _mime) = match wl_clipboard_rs::paste::get_contents(
         if primary {
@@ -154,12 +154,12 @@ pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
     let mut offer = pipe.take(cap);
     if let Err(err) = std::io::Read::read_to_end(&mut offer, &mut bytes) {
         println!("dropterm: data-control image read failed ({err})");
-        return ImageRead::Refused(dropterm_core::status::PasteRefusal::Failed);
+        return ImageRead::Refused(dropterm::core::status::PasteRefusal::Failed);
     }
     if let Some(refusal) = classify_read(bytes.len()) {
         println!(
             "dropterm: image offer refused — over the {}-byte paste cap",
-            dropterm_core::paste_cache::PASTE_PAYLOAD_CAP
+            dropterm::core::paste_cache::PASTE_PAYLOAD_CAP
         );
         return ImageRead::Refused(refusal);
     }
@@ -183,12 +183,12 @@ mod tests {
         // At the cap the bytes are the paste's payload; past it the
         // refusal is the band verdict's input.
         assert_eq!(
-            classify_read(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP),
+            classify_read(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP),
             None
         );
         assert_eq!(
-            classify_read(dropterm_core::paste_cache::PASTE_PAYLOAD_CAP + 1),
-            Some(dropterm_core::status::PasteRefusal::OverCap)
+            classify_read(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP + 1),
+            Some(dropterm::core::status::PasteRefusal::OverCap)
         );
     }
 

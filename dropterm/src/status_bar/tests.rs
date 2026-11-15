@@ -8,7 +8,7 @@
 //! the real shaped widths through the same pure pass.
 
 use super::*;
-use dropterm_core::terminal::{ProgressState, ReportedProgress};
+use dropterm::core::terminal::{ProgressState, ReportedProgress};
 use std::time::Duration;
 
 /// The monospace fake: 8 px per character, 0 for the empty string.

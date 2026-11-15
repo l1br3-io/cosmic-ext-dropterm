@@ -11,7 +11,7 @@
 //! `dropterm` — `DropTerm`'s GPUI frontend (gpui-scaffold spec).
 //!
 //! Phase 3's second binary beside the libcosmic one: it owns the same
-//! runtime identity ([`dropterm_core::APP_ID`]) and serves the same
+//! runtime identity ([`dropterm::core::APP_ID`]) and serves the same
 //! contract, on the ruled gpui-pre pin. Ships nothing until cutover —
 //! the release boundary holds.
 
@@ -48,8 +48,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 
-use dropterm_core::dbus_state;
-use dropterm_core::transport::{self, BusName, ForwardOutcome};
+use dropterm::core::dbus_state;
+use dropterm::core::transport::{self, BusName, ForwardOutcome};
 
 // The CLI surface — surface verbs and tab verbs alike — lives in
 // `cli` (py-5): one clap truth the launch, the forward encoder, and

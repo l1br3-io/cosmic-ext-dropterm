@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The tab strip on GPUI (gpui-tabs): the bar's view model over
-//! [`dropterm_core::tabs`]' unchanged model — every behavior (title
+//! [`dropterm::core::tabs`]' unchanged model — every behavior (title
 //! resolution and fallback, the title prefix's pin and attention
 //! markers, insert positions, activation, attention clearing) is a
 //! core call; this module only maps tab state to presentation and
@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 
-use dropterm_core::config::{Edge, TabPosition, TabTitleMode};
-use dropterm_core::tabs::{
+use dropterm::core::config::{Edge, TabPosition, TabTitleMode};
+use dropterm::core::tabs::{
     Attention, CloseDecision, CloseSweep, MoveDirection, TabId, close_tab, commit_rename,
     insert_new_tab, move_target, next_default_title, reorder_tabs, resolve_title,
     shell_title_from_report, sweep_targets, title_prefix,
@@ -191,7 +191,7 @@ pub(crate) struct TabRecord {
     /// Task 2): core's row type, one per image paste, existence-
     /// backed and deliberately not serialized (the rows die with the
     /// tab while the files outlive them in the paste cache).
-    pub(crate) pasted_images: Vec<dropterm_core::tabs::PastedImage>,
+    pub(crate) pasted_images: Vec<dropterm::core::tabs::PastedImage>,
     /// The profile id this tab launched under, if any (py-5): set at
     /// spawn — never on a plain or degraded arm — saved by the
     /// session and re-resolved by id at restore, exactly core's
@@ -226,7 +226,7 @@ fn resolve_record_title(tab: &TabRecord, mode: TabTitleMode) -> String {
 }
 
 /// The shell's tab list: plain records plus the active index, with
-/// every list behavior a [`dropterm_core::tabs`] call — insert
+/// every list behavior a [`dropterm::core::tabs`] call — insert
 /// positions through `insert_new_tab`, activation and attention
 /// clearing through core's `Attention` transition, titles through
 /// `resolve_title`. The bar renders from it; nothing here duplicates
@@ -294,7 +294,7 @@ impl TabList {
     /// pin, the cleared attention and bell latch, and the persistent
     /// profile seat. An unknown id applies nothing (the caller keeps
     /// the live tab).
-    pub(crate) fn apply_respawn(&mut self, id: TabId, fields: dropterm_core::tabs::RespawnFields) {
+    pub(crate) fn apply_respawn(&mut self, id: TabId, fields: dropterm::core::tabs::RespawnFields) {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
             tab.title = fields.title;
             tab.shell_title = None;
@@ -649,12 +649,12 @@ impl TabList {
         };
         self.tabs[index]
             .pasted_images
-            .push(dropterm_core::tabs::PastedImage::new(path, bytes));
+            .push(dropterm::core::tabs::PastedImage::new(path, bytes));
     }
 
     /// The tab with `id`'s pasted-image ledger (the panel's rows and
     /// the band chip's count), `None` for an unknown id.
-    pub(crate) fn pasted_images(&self, id: TabId) -> Option<&[dropterm_core::tabs::PastedImage]> {
+    pub(crate) fn pasted_images(&self, id: TabId) -> Option<&[dropterm::core::tabs::PastedImage]> {
         self.tabs
             .iter()
             .find(|tab| tab.id == id)

@@ -6,7 +6,7 @@
 //! (`menu_key`/`accept_kind`/`menu_panel_bounds`), re-stated over
 //! GPUI's keystroke shape so both frontends carry the same
 //! suggest-menu/autosuggest rules with no shared framework types.
-//! Core owns the model ([`dropterm_core::terminal::suggest`]); this
+//! Core owns the model ([`dropterm::core::terminal::suggest`]); this
 //! module owns only the view-shaped decisions, headless-tested
 //! beside the input translation's pins.
 //!
@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
-use dropterm_core::config::DropTermConfig;
-use dropterm_core::terminal::TerminalOptions;
-use dropterm_core::terminal::suggest::{self, AcceptKind, MenuKey};
+use dropterm::core::config::DropTermConfig;
+use dropterm::core::terminal::TerminalOptions;
+use dropterm::core::terminal::suggest::{self, AcceptKind, MenuKey};
 use gpui::{Bounds, Modifiers, Pixels, Point};
 
 /// The completion menu's scoped-key verdict (the libcosmic
@@ -165,7 +165,7 @@ pub(crate) fn pane_options(
     }
 }
 
-// The spawn truth lives in core now (py-5): `dropterm_core::spawn::
+// The spawn truth lives in core now (py-5): `dropterm::core::spawn::
 // spawned_as_program` resolves the command's program — wrapper-free —
 // through the one resolution both frontends share, superseding this
 // module's explicit-or-default shape.

@@ -2,7 +2,7 @@
 
 //! The terminal context menu on GPUI (gpui-chrome Task 1, py-5
 //! landing the profile folders): core's
-//! [`dropterm_core::context_menu`] model presented through the Kit's
+//! [`dropterm::core::context_menu`] model presented through the Kit's
 //! popover path — the same C2b-proven route the per-tab menu rides —
 //! with every pick landing in the path its keybind uses: the pane's
 //! four actions through the pane's own action entry (the keybind
@@ -12,9 +12,9 @@
 //! Tab first, then one row per profile in config order — exactly
 //! while ≥1 profile exists, core's own flat-otherwise ruling.
 
-pub(crate) use dropterm_core::context_menu::Item;
-use dropterm_core::context_menu::Row;
-use dropterm_core::profile::Profile;
+pub(crate) use dropterm::core::context_menu::Item;
+use dropterm::core::context_menu::Row;
+use dropterm::core::profile::Profile;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 use crate::terminal::input::TermAction;
@@ -140,7 +140,7 @@ pub(crate) fn build_menu(
     cx: &mut gpui::App,
 ) -> PopupMenu {
     let mut menu = menu;
-    for row in dropterm_core::context_menu::rows(profiles) {
+    for row in dropterm::core::context_menu::rows(profiles) {
         match row {
             Row::Item(item) => menu = item_row(menu, item, pick),
             Row::Divider => menu = menu.separator(),
@@ -210,7 +210,7 @@ mod tests {
         // Zero profiles keep today's menu byte-identical: core's rows
         // for an empty list are exactly the static items, so the
         // composition renders no submenu (core's own pin).
-        let rows = dropterm_core::context_menu::rows(&[]);
+        let rows = dropterm::core::context_menu::rows(&[]);
         assert!(
             rows.iter()
                 .all(|row| !matches!(row, Row::ProfilesFolder | Row::SwitchProfileFolder)),
@@ -224,7 +224,7 @@ mod tests {
         // the Switch Profile folder — core's composition, which the
         // Kit presentation follows one-for-one.
         let profiles = [profile("ssh-web"), profile("top")];
-        let rows = dropterm_core::context_menu::rows(&profiles);
+        let rows = dropterm::core::context_menu::rows(&profiles);
         assert!(rows.contains(&Row::ProfilesFolder));
         assert!(rows.contains(&Row::SwitchProfileFolder));
     }

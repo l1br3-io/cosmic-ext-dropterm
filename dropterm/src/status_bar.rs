@@ -4,7 +4,7 @@
 //! the surface's free edge narrating the active terminal — the view
 //! half `src/status_bar.rs` is for the libcosmic frontend. The
 //! segment model, the fit math, and the clock arithmetic are core's
-//! own `dropterm_core::status` module (moved by this slice), consumed
+//! own `dropterm::core::status` module (moved by this slice), consumed
 //! unchanged; what lives here is the view-model pass (resolved
 //! segments plus measured widths → the laid rows, separators, disc,
 //! and halo — pure, headless-pinned) and the `RenderOnce` view that
@@ -18,13 +18,13 @@
 //! frontend yet). The OSC-fed seats (reported cwd, the command
 //! timer's verdicts, progress, program status) ride Task 2's wiring.
 
-use dropterm_core::status::{
+use dropterm::core::status::{
     BAND_HEIGHT, LEFT_CLUSTER, PasteRefusal, PathFit, PathMeasure, RIGHT_CLUSTER, SEGMENT_GAP,
     SegmentId, StatusSegments, band_fit, click_jumps, copy_text, duration_display, elide_path_left,
     exit_display, pasted_display, prefixed_display, process_display, program_needs_attention,
     progress_display, refusal_display, refusal_seat, scrolled_display,
 };
-use dropterm_core::terminal::ProgressState;
+use dropterm::core::terminal::ProgressState;
 
 use crate::tab_bar;
 use gpui::prelude::*;
@@ -356,7 +356,7 @@ type CopyFn = std::rc::Rc<dyn Fn(SegmentId, String, &mut gpui::App)>;
 /// The action chips' verb shape: the chip's segment (the two
 /// deliberate action chips route their own verbs — the scrolled
 /// chip's jump, the pasted chip's panel door).
-type JumpFn = std::rc::Rc<dyn Fn(dropterm_core::status::SegmentId, &mut gpui::App)>;
+type JumpFn = std::rc::Rc<dyn Fn(dropterm::core::status::SegmentId, &mut gpui::App)>;
 
 /// The attention token's GPUI resolution (the reference band's own
 /// rule): the live terminal scheme's red — the bright variant on
@@ -409,7 +409,7 @@ pub(crate) struct StatusBandView {
     copied: Option<SegmentId>,
     /// The standing paste-refusal verdict (the audit's F7); the
     /// shell owns the timing and hands the fresh value per frame.
-    paste_refusal: Option<dropterm_core::status::PasteRefusal>,
+    paste_refusal: Option<dropterm::core::status::PasteRefusal>,
     /// The copy verb: `(segment, full value)` — the shell writes the
     /// clipboard and arms the flash (the App context rides the
     /// callback, the strip's own pattern).
@@ -465,7 +465,7 @@ impl StatusBandView {
 
     pub(crate) fn paste_refusal(
         mut self,
-        paste_refusal: Option<dropterm_core::status::PasteRefusal>,
+        paste_refusal: Option<dropterm::core::status::PasteRefusal>,
     ) -> Self {
         self.paste_refusal = paste_refusal;
         self

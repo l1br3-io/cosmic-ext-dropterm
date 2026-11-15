@@ -18,8 +18,8 @@ env:
 
 jobs:
   # vendor.tar for downstream offline rebuilders, plus the offline
-  # proof: network-present CI extracts the tar and builds both
-  # packages --frozen --offline from it (the path a distro build and
+  # proof: network-present CI extracts the tar and builds the release
+  # artifact --frozen --offline from it (the path a distro build and
   # the AUR-style consumer takes).
   vendor:
     name: vendor.tar + offline proof
@@ -85,10 +85,9 @@ jobs:
       - name: Test
         run: just test
 
-  # Per-arch release tarballs: per-package release builds (never a
-  # unified workspace build — feature unification would hand the
-  # applet the wgpu renderer), staged via `just rootdir=… install`,
-  # tarred as the usr/ tree AUR/deb consumers expect.
+  # Per-arch release tarballs: the locked release build, staged via
+  # `just rootdir=… install`, tarred as the usr/ tree AUR/deb
+  # consumers expect.
   build:
     name: build ${{ matrix.runs-on }}
     strategy:
@@ -118,10 +117,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build both packages (per-package, locked)
-        run: |
-          just build-release --locked
-          just build-applet --locked
+      - name: Build the release binary (locked)
+        run: just build-release --locked
 
       - name: Stage install tree and tarball
         run: |
