@@ -475,7 +475,7 @@ fn confirm_needs_both_the_toggle_and_a_running_child() {
 fn menu_rows_compose_the_per_tab_surface() {
     // A middle loose tab of five: every row present, both moves
     // live, the close cluster complete.
-    let rows = tab_menu_rows(5, 2, false);
+    let rows = tab_menu_rows(&[], 5, 2, false);
     let labels = rows
         .iter()
         .map(|row| row.label.as_str())
@@ -519,7 +519,7 @@ fn menu_rows_compose_the_per_tab_surface() {
 
     // A pinned tab: the pin row's label flips, both moves and the
     // close row mute (they would refuse), the sweeps stay live.
-    let pinned = tab_menu_rows(4, 1, true);
+    let pinned = tab_menu_rows(&[], 4, 1, true);
     assert_eq!(pinned[3].label, "Unpin Tab");
     assert!(pinned[3].enabled);
     assert!(!pinned[4].enabled, "Move Tab Left mutes for a pinned tab");
@@ -530,10 +530,10 @@ fn menu_rows_compose_the_per_tab_surface() {
     // Edge clamps: the leftmost tab's Move Left mutes; the
     // rightmost tab's Move Right mutes and its Close-Right row is
     // absent entirely (it would always no-op).
-    let leftmost = tab_menu_rows(3, 0, false);
+    let leftmost = tab_menu_rows(&[], 3, 0, false);
     assert!(!leftmost[4].enabled);
     assert!(leftmost[5].enabled);
-    let rightmost = tab_menu_rows(3, 2, false);
+    let rightmost = tab_menu_rows(&[], 3, 2, false);
     assert!(rightmost[4].enabled);
     assert!(!rightmost[5].enabled);
     assert_eq!(rightmost.len(), 8, "Close Tabs to the Right is hidden");
@@ -699,4 +699,76 @@ fn a_restored_tab_carries_its_plan_resolved_profile_seat() {
     );
     let record = tabs.records().last().expect("the restored record");
     assert!(!record.ephemeral, "a restored tab is never ephemeral");
+}
+
+// --- the profile menus (py-5) ---
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn tab_menu_rows_gain_the_switch_profile_section_only_with_profiles() {
+    // The reference composition (py-5): the muted, separated
+    // "Switch Profile" header plus one enabled row per profile in
+    // config order, surfacing exactly while ≥1 profile exists — zero
+    // profiles keep the flat menu byte-identical.
+    let flat = tab_menu_rows(&[], 5, 2, false);
+    assert!(
+        !flat
+            .iter()
+            .any(|row| row.pick == TabMenuPick::SwitchProfileHeader),
+        "zero profiles keep the flat menu"
+    );
+    let profile_names = names(&["ssh-web", "top"]);
+    let rows = tab_menu_rows(&profile_names, 5, 2, false);
+    let labels = rows
+        .iter()
+        .map(|row| row.label.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        vec![
+            "New Tab",
+            "Rename Tab",
+            "Duplicate Tab",
+            "Pin Tab",
+            "Switch Profile",
+            "ssh-web",
+            "top",
+            "Move Tab Left",
+            "Move Tab Right",
+            "Close Tab",
+            "Close Other Tabs",
+            "Close Tabs to the Right",
+        ]
+    );
+    // The header is the one muted row of the section; its picks carry
+    // the config order, and the section separates from the cluster
+    // above it.
+    let header = &rows[4];
+    assert_eq!(header.pick, TabMenuPick::SwitchProfileHeader);
+    assert!(!header.enabled, "the section header is muted");
+    assert!(header.separated);
+    assert_eq!(rows[5].pick, TabMenuPick::SwitchProfile(0));
+    assert_eq!(rows[6].pick, TabMenuPick::SwitchProfile(1));
+    assert!(rows[5].enabled && rows[6].enabled);
+}
+
+#[test]
+fn the_plus_dropdown_lists_the_plain_row_then_the_profiles() {
+    // The reference `+` dropdown (py-5): row 0 is the plain New Tab —
+    // the `+`'s own left-press funnel — then one row per profile in
+    // config order; zero profiles yield no rows (no dropdown, the
+    // flat-menu ruling).
+    assert!(dropdown_rows(&[]).is_empty(), "zero profiles, no dropdown");
+    let rows = dropdown_rows(&names(&["ssh-web", "top"]));
+    let labels = rows
+        .iter()
+        .map(|row| row.label.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, vec!["New Tab", "ssh-web", "top"]);
+    assert_eq!(rows[0].profile, None);
+    assert_eq!(rows[1].profile, Some(0));
+    assert_eq!(rows[2].profile, Some(1));
 }

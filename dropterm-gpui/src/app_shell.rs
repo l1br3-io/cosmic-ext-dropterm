@@ -1682,51 +1682,103 @@ impl Shell {
                     self.request_close(target, window, cx);
                 }
             }
+            // The section header's muted press only dismisses (the
+            // GNOME rule) — nothing routes.
+            TabMenuPick::SwitchProfileHeader => {}
+            TabMenuPick::SwitchProfile(profile_index) => {
+                self.switch_tab_profile(id, profile_index, cx);
+            }
         }
     }
 
-    /// One terminal context-menu pick (gpui-chrome) — every row's
-    /// verb routed to the path its keybind uses: the clipboard and
-    /// scrollback cluster through the active pane's own action
-    /// funnel, the tab and settings verbs through the shell calls
-    /// the tab menu's rows already use (the click away from an open
-    /// rename commits first, exactly like a tab-menu pick).
+    /// A menu profile launch (py-5, the reference `NewProfileTab`):
+    /// the submenu pick resolves through core's `profile_pick` — a
+    /// stale index (a config edited while the menu was open) warns and
+    /// no-ops — and the spawn composes the preset's live cwd over the
+    /// active tab's, the `open_new_tab` chain's profile arm.
+    fn open_profile_tab(&mut self, profile_index: usize, cx: &mut Context<Self>) {
+        self.commit_open_rename(cx);
+        let Some(command) = spawn::profile_pick(&self.config, profile_index) else {
+            println!(
+                "dropterm-gpui: profile launch: no profile at index {profile_index} \
+                 ({} configured)",
+                self.config.profiles.len()
+            );
+            return;
+        };
+        let inherited = self.active_cwd(cx);
+        let cwd = match &command {
+            spawn::SpawnCommand::Profile {
+                name, cwd: preset, ..
+            } => spawn::live_preset_cwd(name, preset.as_ref()).or(inherited),
+            // profile_pick only ever builds the Profile arm.
+            _ => inherited,
+        };
+        if let Some(id) = self.spawn_command_tab(cx, &command, cwd) {
+            println!(
+                "dropterm-gpui: profile tab -> {id:?} ({} tabs) at +{}ms",
+                self.tabs.records().len(),
+                self.boot.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// One terminal context-menu pick (gpui-chrome, py-5 the profile
+    /// folders) — every row's verb routed to the path its keybind
+    /// uses: the clipboard and scrollback cluster through the active
+    /// pane's own action funnel, the tab and settings verbs through
+    /// the shell calls the tab menu's rows already use, and the two
+    /// folder picks through the profile paths py-5 opened (a launch
+    /// and the active tab's in-place respawn). The click away from an
+    /// open rename commits first, exactly like a tab-menu pick.
     fn context_menu_pick(
         &mut self,
-        item: crate::context_menu::Item,
+        pick: crate::context_menu::Pick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::context_menu::{PickRoute, ShellPick};
         println!(
-            "dropterm-gpui: context menu pick {item:?} at +{}ms",
+            "dropterm-gpui: context menu pick {pick:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
         self.commit_open_rename(cx);
-        match crate::context_menu::route(item) {
-            PickRoute::Pane(action) => {
-                let Some(pane) = self.active_pane() else {
-                    return;
-                };
-                pane.update(cx, |pane, cx| pane.perform_term_action(action, cx));
-            }
-            PickRoute::Shell(ShellPick::NewTab) => self.new_tab(cx),
-            PickRoute::Shell(ShellPick::RenameTab) => {
-                if let Some(id) = self.tabs.active_id() {
-                    self.start_rename(id, window, cx);
+        match pick {
+            crate::context_menu::Pick::Item(item) => match crate::context_menu::route(item) {
+                PickRoute::Pane(action) => {
+                    let Some(pane) = self.active_pane() else {
+                        return;
+                    };
+                    pane.update(cx, |pane, cx| pane.perform_term_action(action, cx));
                 }
-            }
-            PickRoute::Shell(ShellPick::DuplicateTab) => {
-                if let Some(id) = self.tabs.active_id() {
-                    self.duplicate_tab(id, cx);
+                PickRoute::Shell(ShellPick::NewTab) => self.new_tab(cx),
+                PickRoute::Shell(ShellPick::RenameTab) => {
+                    if let Some(id) = self.tabs.active_id() {
+                        self.start_rename(id, window, cx);
+                    }
                 }
+                PickRoute::Shell(ShellPick::DuplicateTab) => {
+                    if let Some(id) = self.tabs.active_id() {
+                        self.duplicate_tab(id, cx);
+                    }
+                }
+                // The Settings row never reaches the in-update arm: the
+                // drawer's build reads the shell (the gc2 finding), so
+                // the pick closure below routes it outside the update
+                // borrow — this arm is unreachable for it.
+                PickRoute::Shell(ShellPick::Settings) => {
+                    println!(
+                        "dropterm-gpui: context menu pick Settings (routed outside the update)"
+                    );
+                }
+            },
+            crate::context_menu::Pick::NewProfileTab(profile_index) => {
+                self.open_profile_tab(profile_index, cx);
             }
-            // The Settings row never reaches the in-update arm: the
-            // drawer's build reads the shell (the gc2 finding), so
-            // the pick closure below routes it outside the update
-            // borrow — this arm is unreachable for it.
-            PickRoute::Shell(ShellPick::Settings) => {
-                println!("dropterm-gpui: context menu pick Settings (routed outside the update)");
+            crate::context_menu::Pick::SwitchProfile(profile_index) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.switch_tab_profile(id, profile_index, cx);
+                }
             }
         }
     }
@@ -2997,6 +3049,24 @@ impl Shell {
                     shell.update(cx, Shell::new_tab);
                 }
             })
+            // The `+` dropdown's pick (py-5): the plain row rides the
+            // `+`'s own funnel, a profile row launches the preset.
+            .on_plus_menu({
+                let shell = shell.clone();
+                move |profile, _window, cx: &mut App| match profile {
+                    None => shell.update(cx, Shell::new_tab),
+                    Some(index) => {
+                        shell.update(cx, |shell, cx| shell.open_profile_tab(index, cx));
+                    }
+                }
+            })
+            .profile_names(
+                self.config
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.name.clone())
+                    .collect(),
+            )
             .on_settings({
                 let shell = shell.clone();
                 move |window: &mut gpui::Window, cx: &mut App| {
@@ -3033,25 +3103,25 @@ impl Shell {
             return div().size_full();
         };
         let pane_area = {
-            // The terminal context menu (gpui-chrome): the pane's
-            // default-mode right press bubbles to this wrap and opens
-            // core's rows through the Kit's popover path — the same
-            // route the per-tab menu rides. The profile folders stay
-            // honestly absent (the module's scope note): the empty
-            // list is the front's truth until a profile spawn path
-            // exists.
+            // The terminal context menu (gpui-chrome, py-5 the profile
+            // folders): the pane's default-mode right press bubbles to
+            // this wrap and opens core's rows through the Kit's
+            // popover path — the same route the per-tab menu rides —
+            // over the live profile list (the folders' own ruling:
+            // zero profiles keep the flat menu).
             let shell = cx.entity();
             let pick: crate::context_menu::PickFn =
-                std::rc::Rc::new(move |item, window: &mut Window, cx: &mut App| {
-                    shell.update(cx, |shell, cx| shell.context_menu_pick(item, window, cx));
+                std::rc::Rc::new(move |pick, window: &mut Window, cx: &mut App| {
+                    shell.update(cx, |shell, cx| shell.context_menu_pick(pick, window, cx));
                 });
+            let menu_profiles = self.config.profiles.clone();
             div()
                 .flex_1()
                 .min_h_0()
                 .overflow_hidden()
                 .child(pane)
-                .context_menu(move |menu, _window, _cx| {
-                    crate::context_menu::build_menu(menu, &[], &pick)
+                .context_menu(move |menu, window, cx| {
+                    crate::context_menu::build_menu(menu, &menu_profiles, &pick, window, cx)
                 })
                 .into_any_element()
         };

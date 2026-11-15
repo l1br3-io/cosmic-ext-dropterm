@@ -671,9 +671,9 @@ impl TabList {
 
 /// One pick the per-tab context menu can publish, carried with the
 /// right-pressed tab's id. Every variant routes to a core call
-/// through the shell (the reference bar's `TabMenuPick`, the profile
-/// folder excepted — it rides a profile spawn path no GPUI slice
-/// carries yet).
+/// through the shell (the reference bar's `TabMenuPick` whole, py-5
+/// landing the Switch Profile section its spawn path was waiting
+/// for).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabMenuPick {
     /// The default spawn — the `+`'s funnel.
@@ -685,6 +685,12 @@ pub(crate) enum TabMenuPick {
     Duplicate,
     /// Flip the clicked tab's pin.
     Pin,
+    /// The Switch Profile section's header: muted, non-clickable — a
+    /// press only dismisses, like every muted row.
+    SwitchProfileHeader,
+    /// Respawn the clicked tab in place under the profile at the
+    /// config index (slot, activation, and rename pin kept).
+    SwitchProfile(usize),
     /// Nudge the clicked tab one slot toward the direction, clamping
     /// at the edge.
     Move(MoveDirection),
@@ -710,22 +716,30 @@ pub(crate) struct TabMenuRow {
 }
 
 /// The per-tab context menu's rows for the tab at `tab_index` of
-/// `tab_count`, `pinned` naming that tab's pin state — the reference
-/// bar's composition ported (the Switch Profile section excepted, see
-/// [`TabMenuPick`]): New Tab leads, the clicked-tab cluster follows
-/// with Pin/Unpin labeled by the flip in store, moves mute at the
-/// edges they clamp at and — a pinned tab staying put — for a pinned
-/// target, whose own Close Tab row mutes with them (the close front
-/// door's refusal, rendered), and Close Tabs to the Right is omitted
-/// at the rightmost tab (the row would always no-op there).
-pub(crate) fn tab_menu_rows(tab_count: usize, tab_index: usize, pinned: bool) -> Vec<TabMenuRow> {
+/// `tab_count`, `pinned` naming that tab's pin state and `profiles`
+/// the config's list — the reference bar's composition whole (py-5
+/// lands the Switch Profile section): New Tab leads, the clicked-tab
+/// cluster follows with Pin/Unpin labeled by the flip in store, the
+/// Switch Profile section renders exactly while ≥1 profile exists
+/// (the muted header plus one row per profile in config order), moves
+/// mute at the edges they clamp at and — a pinned tab staying put —
+/// for a pinned target, whose own Close Tab row mutes with them (the
+/// close front door's refusal, rendered), and Close Tabs to the Right
+/// is omitted at the rightmost tab (the row would always no-op
+/// there).
+pub(crate) fn tab_menu_rows(
+    profile_names: &[String],
+    tab_count: usize,
+    tab_index: usize,
+    pinned: bool,
+) -> Vec<TabMenuRow> {
     let row = |label: &str, pick: TabMenuPick, enabled: bool, separated: bool| TabMenuRow {
         label: label.to_string(),
         pick,
         enabled,
         separated,
     };
-    vec![
+    let mut rows = vec![
         row("New Tab", TabMenuPick::NewTab, true, false),
         row("Rename Tab", TabMenuPick::Rename, true, true),
         row("Duplicate Tab", TabMenuPick::Duplicate, true, false),
@@ -735,33 +749,89 @@ pub(crate) fn tab_menu_rows(tab_count: usize, tab_index: usize, pinned: bool) ->
             true,
             false,
         ),
-        row(
-            "Move Tab Left",
-            TabMenuPick::Move(MoveDirection::Left),
-            !pinned && tab_index > 0,
-            true,
-        ),
-        row(
-            "Move Tab Right",
-            TabMenuPick::Move(MoveDirection::Right),
-            !pinned && tab_index + 1 < tab_count,
+    ];
+    // The Switch Profile section: the reference composition's own
+    // shape — the muted, separated header plus one enabled row per
+    // profile, surfacing profiles exactly once.
+    if !profile_names.is_empty() {
+        rows.push(row(
+            "Switch Profile",
+            TabMenuPick::SwitchProfileHeader,
             false,
-        ),
-        row("Close Tab", TabMenuPick::Close, !pinned, true),
-        row("Close Other Tabs", TabMenuPick::CloseOthers, true, false),
-    ]
-    .into_iter()
+            true,
+        ));
+        rows.extend(
+            profile_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| row(name, TabMenuPick::SwitchProfile(index), true, false)),
+        );
+    }
+    rows.push(row(
+        "Move Tab Left",
+        TabMenuPick::Move(MoveDirection::Left),
+        !pinned && tab_index > 0,
+        true,
+    ));
+    rows.push(row(
+        "Move Tab Right",
+        TabMenuPick::Move(MoveDirection::Right),
+        !pinned && tab_index + 1 < tab_count,
+        false,
+    ));
+    rows.push(row("Close Tab", TabMenuPick::Close, !pinned, true));
+    rows.push(row(
+        "Close Other Tabs",
+        TabMenuPick::CloseOthers,
+        true,
+        false,
+    ));
     // The rightmost tab's Close-Right row would always no-op: hidden,
     // not muted (the reference bar's Firefox hide rule).
-    .chain((tab_index + 1 < tab_count).then(|| {
-        row(
+    if tab_index + 1 < tab_count {
+        rows.push(row(
             "Close Tabs to the Right",
             TabMenuPick::CloseRight,
             true,
             false,
-        )
-    }))
-    .collect()
+        ));
+    }
+    rows
+}
+
+/// One row of the `+` affordance's right-press dropdown: the launch a
+/// pick publishes — `None` is the plain default spawn (the `+`'s own
+/// left-press funnel), `Some(index)` launches the profile at the
+/// config index. Plain data, composed headless (the reference
+/// `DropdownRow`).
+pub(crate) struct DropdownRow {
+    pub(crate) label: String,
+    pub(crate) profile: Option<usize>,
+}
+
+/// The `+` dropdown's rows (py-5): row 0 is the plain `New Tab` (the
+/// default spawn — the `+`'s left-press semantics), then one row per
+/// profile in config order — the context-menu submenu's composition.
+/// An empty profile list yields no rows: zero profiles, no dropdown
+/// (the flat-menu ruling; a right press on the `+` no-ops).
+pub(crate) fn dropdown_rows(profile_names: &[String]) -> Vec<DropdownRow> {
+    if profile_names.is_empty() {
+        return Vec::new();
+    }
+    let mut rows = vec![DropdownRow {
+        label: "New Tab".to_string(),
+        profile: None,
+    }];
+    rows.extend(
+        profile_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| DropdownRow {
+                label: name.clone(),
+                profile: Some(index),
+            }),
+    );
+    rows
 }
 
 /// The close gate's decision (the reference bar's criterion 3): the
@@ -816,6 +886,10 @@ type MoveFn = std::rc::Rc<dyn Fn(TabId, usize, &mut gpui::Window, &mut gpui::App
 type MenuPickFn = std::rc::Rc<dyn Fn(TabId, TabMenuPick, &mut gpui::Window, &mut gpui::App)>;
 /// The strip's rename cancellation (the focused input's Escape).
 type CancelRenameFn = std::rc::Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
+/// The strip's `+`-dropdown pick: the row's profile slot — `None` is
+/// the plain default spawn (the `+`'s own funnel), `Some(index)`
+/// launches the profile at the config index.
+type PlusMenuFn = std::rc::Rc<dyn Fn(Option<usize>, &mut gpui::Window, &mut gpui::App)>;
 
 /// The tab strip element (Task 1's render half): one bar-height row —
 /// tab buttons while two or more tabs exist, the `+` and gear
@@ -837,6 +911,13 @@ pub(crate) struct TabBarView {
     on_cancel_rename: CancelRenameFn,
     on_new_tab: CornerFn,
     on_settings: CornerFn,
+    /// The `+` dropdown's pick (py-5), routed like every corner
+    /// affordance.
+    on_plus_menu: PlusMenuFn,
+    /// The config's profile names in order, the menus' composition
+    /// input (the per-tab Switch Profile section and the `+`
+    /// dropdown's rows — empty keeps both absent, the flat shape).
+    profile_names: Vec<String>,
     /// The open inline rename, if any: the renamed tab and the Kit
     /// input state it edits through (hosted in the row's label slot).
     rename: Option<(TabId, gpui::Entity<gpui_component::input::InputState>)>,
@@ -858,8 +939,29 @@ impl TabBarView {
             on_cancel_rename: std::rc::Rc::new(|_, _| {}),
             on_new_tab: std::rc::Rc::new(|_, _| {}),
             on_settings: std::rc::Rc::new(|_, _| {}),
+            on_plus_menu: std::rc::Rc::new(|_, _, _| {}),
+            profile_names: Vec::new(),
             rename: None,
         }
+    }
+
+    /// The `+` dropdown's pick (py-5): `None` runs the plain default
+    /// spawn (the `+`'s own funnel), `Some(index)` launches the
+    /// profile at the config index.
+    pub(crate) fn on_plus_menu(
+        mut self,
+        on_plus_menu: impl Fn(Option<usize>, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.on_plus_menu = std::rc::Rc::new(on_plus_menu);
+        self
+    }
+
+    /// The config's profile names in order — the Switch Profile
+    /// section's and the `+` dropdown's composition input; empty keeps
+    /// both menus in their flat shape.
+    pub(crate) fn profile_names(mut self, names: Vec<String>) -> Self {
+        self.profile_names = names;
+        self
     }
 
     /// Whether the border hairline renders (`tab_bar_border`).
@@ -982,6 +1084,7 @@ impl TabBarView {
         index: usize,
         count: usize,
         fg: gpui::Hsla,
+        profile_names: &[String],
         on_select: SelectFn,
         on_close: CloseFn,
         on_rename: RenameFn,
@@ -1020,6 +1123,7 @@ impl TabBarView {
         let menu_index = index;
         let menu_count = count;
         let menu_pinned = row.is_pinned;
+        let menu_profiles = profile_names.to_vec();
         let menu_pick = std::rc::Rc::clone(on_menu_pick);
         gpui::div()
             .id(gpui::ElementId::Name(format!("tab-{}", id.0).into()))
@@ -1108,7 +1212,7 @@ impl TabBarView {
             // the GNOME rule).
             .context_menu(move |menu, _window, _cx| {
                 let mut menu = menu;
-                for entry in tab_menu_rows(menu_count, menu_index, menu_pinned) {
+                for entry in tab_menu_rows(&menu_profiles, menu_count, menu_index, menu_pinned) {
                     if entry.separated {
                         menu = menu.separator();
                     }
@@ -1185,6 +1289,7 @@ impl gpui::RenderOnce for TabBarView {
                     index,
                     count,
                     fg,
+                    &self.profile_names,
                     std::rc::Rc::clone(&on_select),
                     std::rc::Rc::clone(&on_close),
                     std::rc::Rc::clone(&on_rename),
@@ -1208,7 +1313,35 @@ impl gpui::RenderOnce for TabBarView {
                 },
             )
             .child(gpui::div().flex_1())
-            .child(Self::glyph_button("+", fg, self.on_new_tab))
+            // The `+`'s right press opens the profile dropdown (py-5,
+            // the reference `+` dropdown): New Tab first, then one row
+            // per profile in config order — the context-menu submenu's
+            // composition, on the Kit's popover path. Zero profiles
+            // keep the flat shape: no context menu arms, a right press
+            // no-ops.
+            .when(!self.profile_names.is_empty(), |bar| {
+                let dropdown_profiles = self.profile_names.clone();
+                let on_plus_menu = std::rc::Rc::clone(&self.on_plus_menu);
+                let on_new_tab = std::rc::Rc::clone(&self.on_new_tab);
+                bar.child(Self::glyph_button("+", fg, on_new_tab).context_menu(
+                    move |menu, _window, _cx| {
+                        let mut menu = menu;
+                        for entry in dropdown_rows(&dropdown_profiles) {
+                            let pick_profile = entry.profile;
+                            let on_plus_menu = std::rc::Rc::clone(&on_plus_menu);
+                            menu = menu.item(PopupMenuItem::new(entry.label).on_click(
+                                move |_event, window, cx| {
+                                    on_plus_menu(pick_profile, window, cx);
+                                },
+                            ));
+                        }
+                        menu
+                    },
+                ))
+            })
+            .when(self.profile_names.is_empty(), |bar| {
+                bar.child(Self::glyph_button("+", fg, self.on_new_tab))
+            })
             .child(Self::glyph_button("⚙", fg, self.on_settings))
     }
 }
