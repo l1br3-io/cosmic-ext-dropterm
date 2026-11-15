@@ -586,9 +586,27 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
 
 **Checkpoint — full UI parity feature set.**
 
-- [ ] py-1 Suggest overlay + menu
-- [ ] py-2 Inline images
-- [ ] py-3 Bell + session restore
+- [x] py-1 Suggest overlay + menu (done 2026-11-15, a2f4172: the
+      view-model's routing/accept/geometry pins, the pane's key
+      funnel with the focus-dismissed ghost and the reveal timer, the
+      ghost + menu painting on the Kit's popover tokens, the
+      completions load with live pane push, and config.shell owning
+      the GPUI pty; autosuggest rows walked owner-run 2026-11-15 —
+      reported done, no deviations filed)
+- [x] py-2 Inline images (done 2026-11-15, 6f9c648: the sub-rect
+      math and handle cache over the engine's store with the
+      two-pass z-layer paint, the paste cache moved to core (one
+      exclusive-create write path, the libcosmic crate a re-export
+      front), and the paste-image road pasting the cache file's path
+      with the ledger recorded; images rows walked owner-run
+      2026-11-15 — reported done, no deviations filed)
+- [x] py-3 Bell + session restore (done 2026-11-15, d5acb47: the
+      notify gate/latch at the attention poll with the show
+      transition's re-arm, the restore arm (chrome replayed, cwd
+      honored, shell degradation, the walk fleet outranking the
+      plan) and the shape-detected debounced save with a seeded
+      baseline; bell + sessions rows walked owner-run 2026-11-15 —
+      reported done, no deviations filed)
 - [ ] py-4 The parity walk: the whole manual checklist, COSMIC + sway,
       row-named evidence; deviations filed — gate: open question item 9
       ruled (dock mode)

@@ -29,12 +29,13 @@ extended tiers) drive the GPUI overlay: trigger, navigate, accept, the
 menu's rows. View-model tests headless; rows on the rig + VM.
 
 **Acceptance criteria:**
-- [ ] Suggest triggers, navigates, and accepts per the libcosmic rows;
+- [x] Suggest triggers, navigates, and accepts per the libcosmic rows;
       the embedded floor works on a fontless base
 
 **Verification:**
-- [ ] Tests pass: `just check`
-- [ ] Manual: autosuggest rows of the checklist
+- [x] Tests pass: `just check`
+- [x] Manual: autosuggest rows of the checklist *(owner-run
+      2026-11-15: reported done, no deviations filed)*
 
 **Dependencies:** all UI slices merged · **Files:** the suggest module ·
 **Scope:** M
@@ -46,11 +47,12 @@ four formats); the view renders, places, and scrolls them, including the
 paste-image path.
 
 **Acceptance criteria:**
-- [ ] Images render in-grid and survive scrollback navigation per the
+- [x] Images render in-grid and survive scrollback navigation per the
       images rows
 
 **Verification:**
-- [ ] Manual: images rows of the checklist
+- [x] Manual: images rows of the checklist *(owner-run 2026-11-15:
+      reported done, no deviations filed)*
 
 **Dependencies:** Task 1 · **Files:** the image view · **Scope:** M
 
@@ -62,11 +64,12 @@ engine events; session capture/restore wired to the GPUI lifecycle
 semantics unchanged).
 
 **Acceptance criteria:**
-- [ ] Bell rows pass; session restore restores tabs, order, active, and
+- [x] Bell rows pass; session restore restores tabs, order, active, and
       working directories per the sessions rows
 
 **Verification:**
-- [ ] Manual: bell + sessions rows of the checklist
+- [x] Manual: bell + sessions rows of the checklist *(owner-run
+      2026-11-15: reported done, no deviations filed)*
 
 **Dependencies:** Task 2 · **Files:** the bell/restore wiring ·
 **Scope:** S
