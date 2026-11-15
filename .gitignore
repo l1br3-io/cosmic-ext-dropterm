@@ -7,3 +7,5 @@
 docs/_site/
 .jekyll-cache/
 .bundle/
+.tasks
+SPEC*.md

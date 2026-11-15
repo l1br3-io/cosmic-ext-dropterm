@@ -101,6 +101,6 @@ impl Connection<Connected> {
 ## Project gates
 
 Per `AGENTS.md`: `cargo clippy` and `cargo fmt --check` must pass before a
-change counts as done; `cargo test` is the verification gate. Runtime behavior
+change counts as done; `cargo test` is the verification gate, use "recipe" if available i.e "just test" or similar. Runtime behavior
 is only testable on real COSMIC hardware — unit tests cover what can be tested
 headless.
