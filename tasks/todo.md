@@ -615,13 +615,13 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       row-named evidence; deviations filed *(parked, owner ruling
       2026-11-15 — the walks no longer gate building; un-park by the
       owner running the walk; the feature tasks below land first)*
-- [ ] py-5 The tab-verb and profile spawn surface: core spawn
+- [x] py-5 The tab-verb and profile spawn surface: core spawn
       resolution + GPUI profile launches (env/cwd/per-tab appearance),
       default_profile, --cmd, the remote tab verbs (CLI + dbus + the
       shell funnel), the menu folders, the `+` dropdown, Switch
-      Profile, session profile ids, the band's profile seat *(opened
-      2026-11-15 by the same ruling — the parity gaps the walk would
-      have caught)*
+      Profile, session profile ids, the band's profile seat *(done
+      2026-11-15: 986e765 · 113566b · 847b99c · 2028c7f, `just check`
+      green across the four; the manual rows park with py-4)*
 - [ ] py-6 The GPUI images panel over core's paste cache and ledger,
       with the labeled confirm pair *(opened 2026-11-15 with py-5)*
 

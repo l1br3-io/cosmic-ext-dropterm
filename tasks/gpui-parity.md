@@ -122,12 +122,14 @@ per-tab menu's Switch Profile section through `plan_respawn`, the
 session saving profile ids, and the band's profile seat fed.
 
 **Acceptance criteria:**
-- [ ] Every profile/tab-verb row of the checklist passes headless or
+- [x] Every profile/tab-verb row of the checklist passes headless or
       carries the code path that walks it (the rows themselves are
       py-4's, parked with it)
 
 **Verification:**
-- [ ] Tests pass: `just check`
+- [x] Tests pass: `just check` *(green 2026-11-15 across the four
+      landing commits: 986e765 the core spawn move, 113566b the pane
+      + funnel, 847b99c the remote verbs, 2028c7f the menus)*
 - [ ] Manual: profile + remote rows *(parked with py-4, owner ruling
       2026-11-15)*
 
