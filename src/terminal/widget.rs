@@ -1160,11 +1160,14 @@ where
         // buffer, so selection, search, scrollback, and copy see
         // nothing. The panel anchors at the cursor's cell (dropping
         // below it, flipping above at the view's floor), shows the
-        // visible window from the scroll offset, paints from the live
-        // theme and the terminal's own scheme — never palette index
-        // 8, the zsh-invisible-text lesson — highlights the selected
-        // row, and right-aligns descriptions in the ghost's own dim
-        // tint where a source carries one. Shaped content caches in
+        // visible window from the scroll offset, paints its surface
+        // from the live theme and its rows from the terminal's own
+        // scheme — never palette index 8, the zsh-invisible-text
+        // lesson — and right-aligns descriptions in the ghost's own
+        // dim tint where a source carries one. The selected row is
+        // the one row the theme owns: an accent band with its label
+        // and description shaped on-accent, so the pick reads
+        // whatever the scheme's foreground. Shaped content caches in
         // State (the ghost cache's precedent); the geometry and the
         // highlight are per-frame.
         //
@@ -1200,6 +1203,11 @@ where
                 let metrics = terminal.with_buffer(Buffer::metrics);
                 let dim = terminal.ghost_color();
                 let fg = terminal.foreground_color();
+                let (selection_fill, selection_label, selection_dim) =
+                    menu_selection_style(cosmic_theme);
+                let selection_label = shaped_color(selection_label);
+                let selection_dim = shaped_color(selection_dim);
+                let selected_row = window.contains(&selected).then(|| selected - window.start);
                 let mut digest = String::new();
                 for row in visible {
                     digest.push_str(&row.label);
@@ -1207,7 +1215,15 @@ where
                     digest.push_str(row.description.as_deref().unwrap_or_default());
                     digest.push('\u{1F}');
                 }
-                let key = (digest, metrics, fg, dim);
+                let key = (
+                    digest,
+                    metrics,
+                    fg,
+                    dim,
+                    selection_label,
+                    selection_dim,
+                    selected_row,
+                );
                 let mut cache = state.menu_glyphs.borrow_mut();
                 let entry = match cache.take() {
                     Some(entry) if entry.0 == key => entry,
@@ -1219,6 +1235,9 @@ where
                             size.cell_width,
                             fg,
                             dim,
+                            selection_label,
+                            selection_dim,
+                            selected_row,
                             terminal.default_attrs(),
                         )),
                     ),
@@ -1281,9 +1300,9 @@ where
                         panel_fill,
                     );
 
-                    // The selected row's highlight: the panel surface
-                    // tinted with the container's own `on` color
-                    // ([`menu_selection_style`]).
+                    // The selected row's highlight: the theme's accent
+                    // band ([`menu_selection_style`]), with the row's
+                    // own text shaped on-accent above it.
                     if window.contains(&selected) {
                         #[expect(
                             clippy::cast_precision_loss,
@@ -1305,7 +1324,7 @@ where
                                 snap: true,
                                 ..Default::default()
                             },
-                            menu_selection_style(cosmic_theme, theme.transparent),
+                            selection_fill,
                         );
                     }
 
@@ -2740,10 +2759,20 @@ fn ghost_buffer(
 }
 
 /// The menu overlay's cache key: the visible rows' whole content
-/// (labels and descriptions, joined), the metrics, and the two text
-/// colors — everything the shaped pixels depend on. Selection and
-/// scroll are pure per-frame geometry and stay out of the key.
-type MenuGlyphKey = (String, Metrics, cosmic_text::Color, cosmic_text::Color);
+/// (labels and descriptions, joined), the metrics, the text colors,
+/// and which visible row is selected. Selection enters the key
+/// because the selected row shapes its label and description in the
+/// on-accent pair rather than the scheme's colors; scroll stays out
+/// (pure per-frame geometry).
+type MenuGlyphKey = (
+    String,
+    Metrics,
+    cosmic_text::Color,
+    cosmic_text::Color,
+    cosmic_text::Color,
+    cosmic_text::Color,
+    Option<usize>,
+);
 
 /// The menu overlay's shaped rows (suggest-menu spec): per visible
 /// row the label's buffer, plus the right-aligned description's own
@@ -2763,19 +2792,44 @@ struct MenuGlyphs {
 /// in cells — two, the ghost's own clip-reservation rhythm.
 const MENU_DESCRIPTION_GAP: f32 = 2.0;
 
+/// An iced color as a shaped-text color. A glyph buffer carries its
+/// own per-run colors (the draw-time `Raw::color` is only the default
+/// for uncolored runs), so the selected row's on-accent text is
+/// shaped in, not tinted at draw time.
+fn shaped_color(color: Color) -> cosmic_text::Color {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the channels are clamped unit floats, exact in u8"
+    )]
+    let channel = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    cosmic_text::Color::rgba(
+        channel(color.r),
+        channel(color.g),
+        channel(color.b),
+        channel(color.a),
+    )
+}
+
 /// Shapes the menu overlay's rows (suggest-menu spec) — the ghost
 /// overlay's own pattern, one no-wrap buffer per line at the
 /// terminal's own font and metrics (not cell-monospaced: the panel
-/// is not the grid), the label in the scheme's foreground, the
-/// description in the engine's ghost tint. No source carries a
-/// description today (the specs-data file is the supplier); the
-/// path shapes for the day one does.
+/// is not the grid); every row in the scheme's foreground and the
+/// ghost tint for its description, except the selected row, which
+/// shapes in the theme's on-accent pair so its text reads against the
+/// accent band. A source carries a description only where the
+/// completions file declares one; the path shapes for the day one
+/// does.
+#[allow(clippy::too_many_arguments)]
 fn menu_glyphs(
     rows: &[super::suggest::MenuCandidate],
     metrics: Metrics,
     cell_width: f32,
     fg: cosmic_text::Color,
     dim: cosmic_text::Color,
+    selected_label: cosmic_text::Color,
+    selected_dim: cosmic_text::Color,
+    selected: Option<usize>,
     default_attrs: &cosmic_text::Attrs<'_>,
 ) -> MenuGlyphs {
     let line = |text: &str, color: cosmic_text::Color| {
@@ -2792,9 +2846,18 @@ fn menu_glyphs(
     };
     let mut shaped = Vec::with_capacity(rows.len());
     let mut width = 0.0_f32;
-    for row in rows {
-        let (label, label_w) = line(&row.label, fg);
-        let description = row.description.as_deref().map(|text| line(text, dim));
+    for (index, row) in rows.iter().enumerate() {
+        let picked = selected == Some(index);
+        let (label_color, description_color) = if picked {
+            (selected_label, selected_dim)
+        } else {
+            (fg, dim)
+        };
+        let (label, label_w) = line(&row.label, label_color);
+        let description = row
+            .description
+            .as_deref()
+            .map(|text| line(text, description_color));
         let row_width = label_w
             + description
                 .as_ref()
@@ -3024,22 +3087,32 @@ fn menu_panel_style(
     )
 }
 
-/// The completion menu's selected-row fill (suggest-menu spec): the
-/// panel surface tinted with its container's own `on` color — the
-/// theme's text color for that surface — at 20%, opaque. `on` is the
-/// one palette entry derived to contrast the surface by design, so
-/// the band always moves the right way (darkens a light panel,
-/// lightens a dark one) whatever the theme or its accent. The first
-/// cut copied the scrollbar's pressed-state recipe (a 0.5-alpha
-/// tint): under the stock light palette that left a ~10% step against
-/// the elevated near-white panel — the light-theme report's invisible
-/// highlight — and the transparent light palette's own pressed state
-/// is only ~4% off its base, so no pressed-based fill could carry the
-/// highlight there. Pure theme math, headless-testable.
-fn menu_selection_style(cosmic_theme: &cosmic::cosmic_theme::Theme, transparent: bool) -> Color {
-    let container = cosmic_theme.background(transparent);
-    let fill = container.component.base.without_alpha().with_alpha(1.0);
-    Color::from(container.on.with_alpha(0.2).over(fill))
+/// The completion menu's selected-row colors (suggest-menu spec): the
+/// theme's accent as the row fill, the theme's on-accent pair for the
+/// row's text — the label fully on-accent, the description at 72% of
+/// it so it stays secondary yet legible. The band is a definite
+/// surface of its own, so the row's text must be the color the theme
+/// derives to contrast that surface; the terminal scheme's foreground
+/// knows nothing of the accent, and against the accent band the
+/// scheme's own fg is the wrong pairing (the light-theme report: the
+/// label washed out as soon as a band sat behind it). Unselected rows
+/// keep the scheme's own foreground and dim tint.
+///
+/// The earlier cuts tried to keep the scheme's text and derive the
+/// band from the panel surface instead: `component.pressed` at half
+/// alpha left a ~10% step on the light palette, and the transparent
+/// light palette's pressed state is itself only ~4% off its base, so
+/// no surface-derived tint could carry the highlight. The accent is
+/// the theme's one high-contrast selection color. Pure theme math,
+/// headless-testable.
+fn menu_selection_style(cosmic_theme: &cosmic::cosmic_theme::Theme) -> (Color, Color, Color) {
+    let accent = cosmic_theme.accent_color();
+    let on = cosmic_theme.on_accent_color();
+    (
+        Color::from(accent.without_alpha().with_alpha(1.0)),
+        Color::from(on.without_alpha().with_alpha(1.0)),
+        Color::from(on.without_alpha().with_alpha(0.72)),
+    )
 }
 
 /// The shell bytes a no-Ctrl character arm delivers for a press whose
@@ -3745,14 +3818,13 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_menu_row_reads_over_the_panel_in_both_themes() {
-        // The light-theme report: the highlight was a pressed tint at
-        // half alpha, ~10% against the elevated near-white panel, so
-        // the selected row did not read; the transparent light
-        // palette's pressed state is itself only ~4% off its base.
-        // The band is now the container's `on` tint at 20%,
-        // composited opaque; pin a contrast floor in both stock modes
-        // and both surface variants.
+    fn the_selected_menu_row_wears_the_accent_band_with_on_accent_text() {
+        // The light-theme report: the band was a surface tint and the
+        // scheme's own foreground lost contrast the moment it sat
+        // behind the band. The selected row is now the theme's accent
+        // band with the theme's on-accent text — pin the recipe and
+        // the two pairings (band against the panel, text against the
+        // band) in both stock modes and both panel variants.
         fn luminance(color: Color) -> f32 {
             fn channel(c: f32) -> f32 {
                 if c <= 0.039_28 {
@@ -3763,28 +3835,57 @@ mod tests {
             }
             0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
         }
+        fn contrast(a: Color, b: Color) -> f32 {
+            let (lighter, darker) = (
+                luminance(a).max(luminance(b)),
+                luminance(a).min(luminance(b)),
+            );
+            (lighter + 0.05) / (darker + 0.05)
+        }
+        fn over(top: Color, bottom: Color) -> Color {
+            let a = top.a;
+            Color::from_rgba(
+                top.r * a + bottom.r * (1.0 - a),
+                top.g * a + bottom.g * (1.0 - a),
+                top.b * a + bottom.b * (1.0 - a),
+                1.0,
+            )
+        }
         for theme in [cosmic::Theme::dark(), cosmic::Theme::light()] {
+            let (band, label, description) = menu_selection_style(theme.cosmic());
+            assert_eq!(band.a, 1.0, "the band fully covers the panel fill");
+            assert_eq!(
+                band,
+                Color::from(
+                    theme
+                        .cosmic()
+                        .accent_color()
+                        .without_alpha()
+                        .with_alpha(1.0)
+                ),
+                "the band is the theme's accent"
+            );
+            assert!(
+                contrast(band, label) >= 4.5,
+                "{:?} label-on-band contrast {:.2}:1 is too faint",
+                theme.theme_type,
+                contrast(band, label)
+            );
+            let dim_on_band = over(description, band);
+            assert!(
+                contrast(dim_on_band, band) >= 3.0,
+                "{:?} description-on-band contrast {:.2}:1 is too faint",
+                theme.theme_type,
+                contrast(dim_on_band, band)
+            );
             for transparent in [false, true] {
                 let (fill, _) = menu_panel_style(theme.cosmic(), transparent);
-                let selected = menu_selection_style(theme.cosmic(), transparent);
-                assert_eq!(selected.a, 1.0, "the band fully covers the panel fill");
-                let (lighter, darker) = {
-                    let (a, b) = (luminance(fill), luminance(selected));
-                    (a.max(b), a.min(b))
-                };
-                let contrast = (lighter + 0.05) / (darker + 0.05);
                 assert!(
-                    contrast >= 1.5,
-                    "{:?} (transparent: {transparent}) highlight contrast {contrast:.2}:1 \
-                     is too faint against the panel (fill {:?} selected {:?})",
+                    contrast(band, fill) >= 3.0,
+                    "{:?} (transparent: {transparent}) band-on-panel contrast {:.2}:1 \
+                     is too faint",
                     theme.theme_type,
-                    (fill.r * 255.0, fill.g * 255.0, fill.b * 255.0, fill.a),
-                    (
-                        selected.r * 255.0,
-                        selected.g * 255.0,
-                        selected.b * 255.0,
-                        selected.a
-                    )
+                    contrast(band, fill)
                 );
             }
         }
