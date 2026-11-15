@@ -1342,15 +1342,17 @@ fn images_panel_view(app: &DropTerm) -> Element<'_, Message> {
         // The identity line: the thumbnail beside its stamp and
         // dimensions — the image is the row's subject, its
         // bookkeeping secondary — and the whole line the Open
-        // button: the subject is its own target for its standard
-        // verb.
+        // click target: the subject is its own target for its
+        // standard verb. A bare `mouse_area`, not a button — the
+        // button's rounded chrome drew a border the square
+        // thumbnail overhung, and plain is the right look here.
         let mut identity = widget::row(Vec::<Element<'_, Message>>::new()).spacing(12);
         if let Some(handle) = app.images_panel_thumbs.get(&row.path) {
             identity = identity.push(widget::image(handle.clone()).height(Length::Fixed(64.0)));
         }
         identity = identity.push(text);
         let identity =
-            widget::button::custom(identity).on_press(Message::ImagesPanelOpen(row.path.clone()));
+            widget::mouse_area(identity).on_press(Message::ImagesPanelOpen(row.path.clone()));
         // The precedents' five verbs (paste-panel spec, PP-3): one
         // row-scoped message each, the row's path carried along — on
         // the row's own full-width line (five labeled verbs beside
