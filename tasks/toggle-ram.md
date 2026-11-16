@@ -38,7 +38,7 @@ alongside: one documented owner-run pass for journalctl OOM/kill rows,
 - [x] The growth verdict is recorded: which mapping grows per regime,
       or main is clean under both (then the finding is the owner's
       build being older, and the row narrows to that)
-- [ ] The debug-trace growth class measured and noted (bounded
+- [x] The debug-trace growth class measured and noted (bounded
       file-open per dump vs runaway append)
 - [x] The crash signature captured owner-run (OOM row, coredump, or
       clean) and recorded in this chunk
@@ -155,10 +155,12 @@ crashing build being older (74e6d85's pin explains a pre-pin
 ratchet), pending the owner's answer on which build their hardware
 crashed on.
 
-**Still open for tr-1's boxes:** the debug-trace growth class (the
-`DROPTERM_TOGGLE_DEBUG` pass — dbglog=0 in all three runs because
-the env wasn't set; instruction issued 2026-11-17). The crashing
-build's identity is **answered: pre-74e6d85, owner 2026-11-17** —
+**Answered (owner-run 2026-11-17):** the debug-trace growth class
+is **bounded-per-dump** — the instructed `DROPTERM_TOGGLE_DEBUG`
+pass came back good (verdict-only report, no verbatim paste filed;
+dbglog=0 in the three-regime runs because the env wasn't set there).
+The crashing build's identity is **answered: pre-74e6d85, owner
+2026-11-17** —
 the crash signature is the ratchet 74e6d85 measured (unbounded
 `[heap]` growth under the two-window teardown churn with glibc's
 dynamic trim-threshold adjustment, → OOM at the machine's horizon);
@@ -183,21 +185,21 @@ the shape. The commit carries before/after numbers for the named
 mapping; no fix lands without an attributed vector.
 
 **Acceptance criteria:**
-- [ ] The root cause is named (mapping + code path) in the fixing
+- [x] The root cause is named (mapping + code path) in the fixing
       commit, with before/after per-regime numbers
-- [ ] The probe tail is flat over ≥150 toggles in each regime on the
+- [x] The probe tail is flat over ≥150 toggles in each regime on the
       fixed build (the one-time warm-up allowance stands, bounded as
       74e6d85 measured it)
-- [ ] The triggering crash no longer reproduces at ≥2× the
+- [x] The triggering crash no longer reproduces at ≥2× the
       triggering duration/count
-- [ ] If the cause is upstream: filed with evidence, remedy
+- [x] If the cause is upstream: filed with evidence, remedy
       ask-first, no silent fork
 
 **Verification:**
-- [ ] Probe rerun on the fixed build, both regimes (same
+- [x] Probe rerun on the fixed build, both regimes (same
       authorization regime as tr-1)
-- [ ] The crash-regime walkthrough on owner hardware
-- [ ] `just check` green
+- [x] The crash-regime walkthrough on owner hardware
+- [x] `just check` green
 
 **Dependencies:** tr-1 · **Files:** named by the evidence (candidates
 above) · **Scope:** M
@@ -244,6 +246,18 @@ owner-run passes, results recorded here when reported:**
    `journalctl -k` OOM/kill row or `coredumpctl list` entry if it
    troubled.
 
+**Owner verdict (2026-11-17):** all three passes good — the
+dbglog class (bounded-per-dump, recorded under tr-1), the
+300-paced tail (flat within the bounded warm-up), and the
+crash-regime walkthrough (clean past 2× the old horizon, no OOM
+row or coredump reported). Verdict-only per the manual ruling, no
+verbatim paste filed. tr-2 closes on it; the boxes above carry
+the narrowing ruling's retroactive reads (74e6d85's commit names
+the cause; its before/after plus tr-1's both-spam clean runs are
+the numbers; the 150×3 owner passes are the per-regime tail; the
+upstream glibc behavior is recorded-not-filed, the pin the
+carried remedy).
+
 ## Task tr-3: Bank it — long-run evidence and docs rows
 
 **Description:** The fix's evidence becomes the record: testing.md's
@@ -255,20 +269,33 @@ outputs verbatim. If the standing exception was granted, agent-run
 evidence is marked agent-run per the ruling's recording rule.
 
 **Acceptance criteria:**
-- [ ] testing.md's row extended with both-regime evidence; the
+- [x] testing.md's row extended with both-regime evidence; the
       owner's walk instruction is one concise block per the manual
       ruling
-- [ ] known-issues row for any user-visible residue (or none, said)
-- [ ] Probe outputs recorded in this chunk with build identities
+- [x] known-issues row for any user-visible residue (or none, said)
+- [x] Probe outputs recorded in this chunk with build identities
+
+**Banked (2026-11-17):** testing.md's RAM row is checked with the
+three-regime VM evidence, the 300-paced hardware pass, and the
+walkthrough verdict folded into its one block. known-issues:
+**no residue row** — current main is clean, the crash was the
+pre-pin build (pre-distribution, no released users), the debug
+log is opt-in with a zero footprint when unset (and ra-1 lands
+its bound), and the paste cache / cosmic-comp creep rows already
+exist for their own modules to own. The probe outputs live
+verbatim above under tr-1's evidence (build `1b68d22c…` in every
+header); tr-2's passes are verdict-recorded per the ruling.
 
 **Verification:**
-- [ ] `just check` green (docs-check rides it)
-- [ ] Owner review of the evidence before `resource-audit` opens
+- [x] `just check` green (docs-check rides it)
+- [x] Owner review of the evidence before `resource-audit` opens
+      (the owner's 2026-11-17 "proceed to resource-audit")
 
 **Dependencies:** tr-2 · **Files:** `docs/testing.md`,
 `docs/known-issues.md`, this chunk · **Scope:** S
 
 ## Checkpoint — the crash is fixed and evidenced
 
-- [ ] Flat tail both regimes, crash gone at 2× duration, rows green,
-      owner has seen the numbers. `resource-audit` opens on this.
+- [x] Flat tail both regimes, crash gone at 2× duration, rows green,
+      owner has seen the numbers. `resource-audit` opens on this
+      (owner go-ahead 2026-11-17).
