@@ -1698,6 +1698,19 @@ impl ProfileDraft {
             }
         }
     }
+
+    /// Remove one env row, a stale index removing nothing: the form's
+    /// "-" button captures a render-time index, and a double-fire
+    /// before the re-render can hand over an index past the end —
+    /// answered with `get_mut`'s own silence, never a panic (ra-3).
+    pub fn remove_env_row(&mut self, index: usize) -> bool {
+        if index < self.env_rows.len() {
+            self.env_rows.remove(index);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// The override input's text for a profile's set override: the

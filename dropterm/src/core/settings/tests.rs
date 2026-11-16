@@ -1997,6 +1997,25 @@ fn draft_seeding_carries_the_scheme_into_clone_and_edit_forms() {
 
 // --- the profile form's env rows (profile-env) ---
 
+#[test]
+fn a_stale_env_row_index_removes_nothing() {
+    // The "-" button captures a render-time row index; a double-fire
+    // before the re-render hands the shell an index past the end.
+    // Core's own edit paths answer stale indices with `get_mut`'s
+    // silence (ra-3's census found the shell-side remove the one
+    // panicking exception) — the remove answers the same way: in
+    // range it takes the row, out of range nothing happens.
+    let mut draft = ProfileDraft::add();
+    draft.env_rows = vec![env_row("A", "1"), env_row("B", "2")];
+
+    assert!(draft.remove_env_row(1));
+    assert_eq!(draft.env_rows, vec![env_row("A", "1")]);
+
+    assert!(!draft.remove_env_row(1));
+    assert!(!draft.remove_env_row(9));
+    assert_eq!(draft.env_rows, vec![env_row("A", "1")]);
+}
+
 pub(super) fn env_row(key: &str, value: &str) -> ProfileEnvRow {
     ProfileEnvRow {
         key: key.to_string(),
