@@ -224,6 +224,26 @@ retroactively by 74e6d85's own message; the upstream criterion
 (glibc behavior) is recorded, not filed — the pin is the carried
 remedy and predates this module.
 
+**Instruction issued (2026-11-17, agent) — one block, three
+owner-run passes, results recorded here when reported:**
+
+1. *tr-1's dbglog class:* quit any running instance, `rm -f
+   /tmp/dropterm-toggle.log`, start a fresh hidden instance with
+   the env on the app (`DROPTERM_TOGGLE_DEBUG=1 dropterm &` from a
+   terminal), then one probe pass `sh scripts/vm-leak-probe.sh 150
+   paced` — the `dbglog=` column's growth per 10 toggles is the
+   class (bounded-per-dump vs runaway append).
+2. *tr-2's 2× duration:* `sh scripts/vm-leak-probe.sh 300 paced`
+   on the hardware beside the current-main binary (`1b68d22c…`
+   already installed; the probe's own header re-answers "which
+   build") — evidence: the verbatim output, verdict read from the
+   tail summary (flat within the bounded warm-up).
+3. *tr-2's crash-regime walkthrough:* on the hardware that
+   crashed, current main installed, normal F12 toggling past 2×
+   the old crash horizon — evidence: clean/crash verdict, plus any
+   `journalctl -k` OOM/kill row or `coredumpctl list` entry if it
+   troubled.
+
 ## Task tr-3: Bank it — long-run evidence and docs rows
 
 **Description:** The fix's evidence becomes the record: testing.md's
