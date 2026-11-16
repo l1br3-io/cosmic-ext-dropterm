@@ -25,6 +25,7 @@ Two routes through the manual side:
 - [ ] Hidden mode: the switcher and dock list no DropTerm entry ever, and the shortcut and CLI each summon it
 - [ ] Dock mode: exactly one named, iconed DropTerm entry, and selecting it disturbs neither surface nor clipboard
 - [ ] Copies survive a hide and a mid-session mode flip; the anchor rebuilds after an output vanishes (one warn, copies keep landing)
+- [ ] The paste cap refuses over-sized payloads with the band's verdict: a text offer or primary selection over 32 MiB refuses (the refusal chip narrates, nothing pastes), an OSC 52 store over it drops logged, an over-cap load reply feeds nothing — images were already capped
 
 ### The terminal surface
 

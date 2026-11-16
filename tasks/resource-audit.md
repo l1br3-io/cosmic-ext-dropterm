@@ -321,11 +321,23 @@ Anything whose default changes user-visible behavior is ask-first
 with the alternatives named.
 
 **Acceptance criteria:**
-- [ ] No P1 vector remains open without a bound or a filed row
-- [ ] Each landing carries its bound as a number and its pin
+- [x] No P1 vector remains open without a bound or a filed row
+- [x] Each landing carries its bound as a number and its pin
+
+**Assessment (2026-11-17): the batch is empty by construction.**
+Every P1-class finding was taken inline by its own tranche — the
+toggle-log bound (tr-1/ra-1), the paste-cache cap (ra-1, ruling),
+the thumbs orphan prune (ra-2), the env-row panic guard (ra-3),
+the `--is-visible` bound (ra-3), the text-paste and OSC 52 caps
+(ra-3, ruling). Nothing left needed a decision or crossed files
+beyond its landing. What remains is P2, filed: the per-tab-not-
+global image store, the verb-flood/tab-count ceiling, the config
+file size (known-issues rows, the report's evidence).
 
 **Verification:**
-- [ ] `just check` green; probe rerun where the fix is measurable
+- [x] `just check` green; probe rerun where the fix is measurable
+      — no batch fix exists to rerun; the measurable owner-run
+      halves (saturated tab, live flood row) are instructed below
 
 **Dependencies:** ra-1, ra-2, ra-3 · **Files:** per finding, ≤5 per
 landing (split rather than grow) · **Scope:** M
@@ -341,13 +353,19 @@ the index row; testing.md and known-issues reflect every landing;
 `just check` closes the pass.
 
 **Acceptance criteria:**
-- [ ] The report exists with a disposition for every inventory
+- [x] The report exists with a disposition for every inventory
       vector and the evidence cited
-- [ ] The research index row links it; docs rows true; `just check`
+- [x] The research index row links it; docs rows true; `just check`
       green
 
 **Verification:**
-- [ ] `just check` (docs-check rides it); owner review of the report
+- [x] `just check` (docs-check rides it)
+- [ ] Owner review of the report — pending; the module's closing
+      gate. The owner-run confirmations instructed alongside it:
+      the saturated-tab RSS delta (ra-2's instruction, against the
+      pinned ~50 MB math) and the live verb-flood row (ra-3's
+      filing: `for i in $(seq 100); do dropterm new-tab; done` in a
+      burst, then watch the tick absorb the batch and close tabs).
 
 **Dependencies:** ra-4 · **Files:** `docs/research/resource-audit.md`,
 `docs/research/README.md`, `docs/testing.md`,
@@ -356,4 +374,5 @@ the index row; testing.md and known-issues reflect every landing;
 ## Checkpoint — the sweep is dispositioned
 
 - [ ] Every vector: fixed + pinned, filed, or deferred by ruling. No
-      P1 open. The report is filed and the owner has seen it.
+      P1 open. The report is filed — **the owner has seen it** is
+      the open half: the review closes the pass.
