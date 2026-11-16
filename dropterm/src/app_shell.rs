@@ -631,7 +631,7 @@ impl Shell {
     /// draws its root synchronously, and drawing the Shell while this
     /// entity is mid-update panics ("already being updated" — the
     /// first walk's lesson, made structural).
-    fn pump(&mut self) -> Pumped {
+    fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
         let mut actions = Vec::new();
         let mut exited = Vec::new();
         let mut tab_verbs = Vec::new();
@@ -646,10 +646,10 @@ impl Shell {
                 "dropterm: startup action {startup} at +{}ms",
                 self.boot.elapsed().as_millis()
             );
-            self.dispatch(startup, &mut actions, &mut tab_verbs);
+            self.dispatch(cx, startup, &mut actions, &mut tab_verbs);
         }
         while let Ok(action) = self.verbs.try_recv() {
-            self.dispatch(action, &mut actions, &mut tab_verbs);
+            self.dispatch(cx, action, &mut actions, &mut tab_verbs);
         }
         // The panes' handed-up signals: one drain (repeat Hide sends
         // coalesce — a second hide on a hidden surface decides
@@ -662,6 +662,7 @@ impl Shell {
                         "dropterm: pane hide action -> the hide funnel at +{}ms",
                         self.boot.elapsed().as_millis()
                     );
+                    self.dump_visible_grid("pane-hide", cx);
                     let intents = self.machine.decide_hide(self.inputs);
                     self.execute_into(intents, &mut actions);
                 }
@@ -1143,6 +1144,7 @@ impl Shell {
     /// tick's App-level apply point.
     fn dispatch(
         &mut self,
+        cx: &Context<Self>,
         action: cli::Action,
         actions: &mut Vec<Action>,
         tab_verbs: &mut Vec<cli::Action>,
@@ -1160,6 +1162,12 @@ impl Shell {
                     "dropterm: action toggle accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
+                let label = match self.machine.state {
+                    SurfaceState::Hidden => "toggle->show",
+                    SurfaceState::Hiding(_) => "toggle->reverse-show",
+                    SurfaceState::Measuring(_) | SurfaceState::Shown(_) => "toggle->hide",
+                };
+                self.dump_visible_grid(label, cx);
                 match self.machine.state {
                     SurfaceState::Hidden => {
                         let intents = self.machine.decide_show(self.inputs);
@@ -1181,6 +1189,7 @@ impl Shell {
                     "dropterm: action show accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
+                self.dump_visible_grid("show", cx);
                 self.show_intent(actions);
             }
             cli::Action::Hide => {
@@ -1188,6 +1197,7 @@ impl Shell {
                     "dropterm: action hide accepted at +{}ms",
                     self.boot.elapsed().as_millis()
                 );
+                self.dump_visible_grid("hide", cx);
                 if matches!(
                     self.machine.state,
                     SurfaceState::Measuring(_) | SurfaceState::Shown(_)
@@ -1205,6 +1215,47 @@ impl Shell {
                 tab_verbs.push(tab);
             }
         }
+    }
+
+    /// The toggle-dump trace (`DROPTERM_TOGGLE_DEBUG`): the active
+    /// pane's visible grid at every accepted surface action — the
+    /// prompt-duplication repro's missing half. The log the app
+    /// already writes narrates what it drove (each pane resize with
+    /// its grid); this narrates what the shell did with it —
+    /// duplicated prompts present in the dump arrived through the
+    /// PTY (grid-side), prompts seen on screen but absent from the
+    /// dump are a paint-side artifact. Appended to
+    /// /tmp/dropterm-toggle.log and echoed to stdout, one walk's
+    /// evidence per file.
+    fn dump_visible_grid(&self, label: &str, cx: &Context<Self>) {
+        if std::env::var_os("DROPTERM_TOGGLE_DEBUG").is_none() {
+            return;
+        }
+        let ms = self.boot.elapsed().as_millis();
+        let block = match self.active_pane() {
+            Some(pane) => {
+                use std::fmt::Write as _;
+                let rows = pane.read(cx).visible_rows();
+                let mut block = format!(
+                    "dropterm: toggle-dump {label} at +{ms}ms — {} rows",
+                    rows.len()
+                );
+                for (n, row) in rows.iter().enumerate() {
+                    let _ = write!(block, "\n  {n:>3}| {row}");
+                }
+                block
+            }
+            None => format!("dropterm: toggle-dump {label} at +{ms}ms — no pane yet"),
+        };
+        println!("{block}");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/dropterm-toggle.log")
+            .and_then(|mut f| {
+                use std::io::Write as _;
+                writeln!(f, "{block}")
+            });
     }
 
     /// The show half every tab-facing verb rides (the libcosmic
@@ -4298,7 +4349,7 @@ pub(crate) fn boot(
                 .timer(Duration::from_millis(100))
                 .await;
             cx.update(|cx| {
-                let pumped = shell.update(cx, |shell, _| shell.pump());
+                let pumped = shell.update(cx, Shell::pump);
                 // gpui-theme Task 2: a scheme edit re-themes before
                 // the next frame — the App context lives here, not in
                 // pump (the same split every window action takes).

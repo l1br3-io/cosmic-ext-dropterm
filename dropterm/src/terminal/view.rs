@@ -219,6 +219,14 @@ impl TerminalPane {
             .working_directory()
     }
 
+    /// The engine's visible screen rows — the toggle-dump trace's
+    /// read (`DROPTERM_TOGGLE_DEBUG`): the shell dumps the active
+    /// pane's grid at every accepted surface action, under the
+    /// engine lock, through this.
+    pub(crate) fn visible_rows(&self) -> Vec<String> {
+        self.terminal.lock().expect("engine lock").visible_rows()
+    }
+
     /// Whether the tab's foreground child is running (the engine's
     /// `/proc` foreground check) — the close gate's detection, read
     /// at request time so a mid-session toggle flip applies to the
