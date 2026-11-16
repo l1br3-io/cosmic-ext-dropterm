@@ -18,7 +18,7 @@ Two routes through the manual side:
 - [ ] Caret on show: the block cursor paints at the prompt in the first shown frame, every route there (plain toggle, focus-loss hide re-toggle, tab switch)
 - [ ] Slide: ~130 ms in from the anchored edge, size/position/opacity steady through it; focus grabbed on show, released the instant a hide starts; mid-slide toggles reverse visibly and spam always ends in the last toggle's state
 - [ ] Background jobs and shell history survive a hide/show cycle; empty-desktop focus lands without a click; focus-reporting programs (fish, vim) repaint only on a real focus loss
-- [ ] RAM: 150 toggles leave resident flat after the one warm-up climb (`scripts/vm-leak-probe.sh` in the VM — `just vm-put scripts/vm-leak-probe.sh /tmp/vm-leak-probe.sh` then `just vm-exec-user 'sh /tmp/vm-leak-probe.sh 150'`: the after-80 → after-150 delta stays under ~1 MB; the compositor's own slow creep is out of scope)
+- [ ] RAM: 150 toggles leave resident flat after the one warm-up climb (`scripts/vm-leak-probe.sh` in the VM — `just vm-put scripts/vm-leak-probe.sh /tmp/vm-leak-probe.sh` then `just vm-exec-user 'sh /tmp/vm-leak-probe.sh 150'`: the after-80 → after-150 delta stays under ~1 MB; the same probe carries the spam regimes — `150 spam100` / `150 spam50`, toggles under the debounce and inside the slide — with per-mapping attribution (`[heap]`/anon/`/dev/dri`/memfd), fd/thread counts, and the build identity in every run's header; the compositor's own slow creep is out of scope)
 
 ### Shell presence and clipboard
 

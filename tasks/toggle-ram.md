@@ -54,6 +54,18 @@ alongside: one documented owner-run pass for journalctl OOM/kill rows,
 this chunk, a testing.md row if the harness changes shape ·
 **Scope:** S to M
 
+**State (2026-11-16, agent):** the probe is built and smoke-verified
+headless — the smaps bucket walk reconciles exactly with the kernel's
+own `smaps_rollup` (busy cosmic-comp: rollup = walk, both 335,752 kB,
+the stable gap to status `VmRSS` being shmem-class accounting, noted
+in the script); the full loop (build-identity header from the running
+exe, samples every 10, halfway anchor, settled sample, tail-summary
+deltas, pid-vanish/respawn notices, regime guard) exercised against
+a fake pid on the host. The boxes above stay open: the three ≥150-
+toggle runs, the growth verdict, the debug-trace class, and the
+crash signature are the owner-run evidence (2026-11-14 ruling; the
+standing-exception question below is asked at this review).
+
 ## Task tr-2: The fix (gate: tr-1's attribution)
 
 **Description:** Fix what the evidence names, at the root. Suspects to
