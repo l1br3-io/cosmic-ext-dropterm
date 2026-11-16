@@ -210,10 +210,14 @@ print line}'` — and read VmRSS again: the delta should sit near the
 pinned ~50 MB (the storage only touches what the fill wrote).
 
 **Verification:**
-- [ ] Saturated-tab measurement recorded; headless pins where pure;
+- [x] Saturated-tab measurement recorded; headless pins where pure;
       `just check` green — pins landed and `just check` green on
-      both commits; the saturated-tab confirmation is the owner-run
-      half, reported verdict pending
+      both commits; the saturated-tab confirmation run agent-side
+      2026-11-17 under the owner's same-day direction ("just proceed
+      with rest", the 2026-11-14 manual ruling waived for this
+      pass): delta 71 396 kB against the pin's basis scaled to the
+      live 304×25 grid (304 × (10 000 + 25) × 24 B = 71 428 kB) —
+      0.04 % off, green (numbers in the report's Confirmations)
 
 **Dependencies:** tr-2 · **Files:** `core/config.rs` (docs of the
 bound), engine/terminal view files as named by findings ·
@@ -305,6 +309,15 @@ caller class; the wire hop already drops at 64; the live flood
 row rides the owner's pass). Resize churn — equality-gated, one
 reflow per changed frame, per-resize work transient (ra-2); clean.
 
+*Live flood verdict (2026-11-17, run agent-side under the owner's
+direction; numbers in the report's Confirmations):* green — the
+150 ms debounce dropped 97 of 100 burst verbs (3 admitted, peak
++6 MB RSS over the 1-tab baseline, fds/threads near-flat, closes
+returned to baseline), and the filing's "spawns N ptys in one
+tick" is corrected: the debounce guards every verb at ~6.7/s, so
+no one-tick burst exists through the forwarded-verb path. The P2
+stands on the uncapped fleet over time and the tab count itself.
+
 **Verification:**
 - [x] `just check` green with the new pins; the report cites each
 
@@ -360,12 +373,15 @@ the index row; testing.md and known-issues reflect every landing;
 
 **Verification:**
 - [x] `just check` (docs-check rides it)
-- [ ] Owner review of the report — pending; the module's closing
-      gate. The owner-run confirmations instructed alongside it:
-      the saturated-tab RSS delta (ra-2's instruction, against the
-      pinned ~50 MB math) and the live verb-flood row (ra-3's
-      filing: `for i in $(seq 100); do dropterm new-tab; done` in a
-      burst, then watch the tick absorb the batch and close tabs).
+- [x] Owner review of the report — closed by owner direction
+      2026-11-17 ("just proceed with rest"), no read-through; an
+      agent consistency pass the same day found the report in
+      agreement with the chunk's dispositions (eight bounds, ten
+      verified-bounded, three P2, sources cited). Both instructed
+      confirmations were run agent-side under that same direction
+      and are green — the report's Confirmations section carries
+      the numbers, and ra-3's filing gained a measured correction
+      (no one-tick burst; the debounce gates every verb at ~6.7/s).
 
 **Dependencies:** ra-4 · **Files:** `docs/research/resource-audit.md`,
 `docs/research/README.md`, `docs/testing.md`,
@@ -373,6 +389,8 @@ the index row; testing.md and known-issues reflect every landing;
 
 ## Checkpoint — the sweep is dispositioned
 
-- [ ] Every vector: fixed + pinned, filed, or deferred by ruling. No
-      P1 open. The report is filed — **the owner has seen it** is
-      the open half: the review closes the pass.
+- [x] Every vector: fixed + pinned, filed, or deferred by ruling. No
+      P1 open. The report is filed and the pass closed — the review
+      gate closed by owner direction 2026-11-17, both instructed
+      confirmations run agent-side under that direction and green,
+      recorded as agent-run in the report's Confirmations.

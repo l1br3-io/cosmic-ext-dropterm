@@ -661,38 +661,45 @@ cut; Phase 4 may open. *(The code is one binary; parity's proof is
 py-4's parked walk and the release is cu-3's owner gate — the
 checkpoint rides both.)*
 
-## Hardening pass — toggle-ram (main; /planning 2026-11-16)
+## Hardening pass — toggle-ram (main; /planning 2026-11-16) — done 2026-11-17
 
-- [ ] tr-1 The attribution probe: per-mapping RSS + fds + threads,
+- [x] tr-1 The attribution probe: per-mapping RSS + fds + threads,
       paced 1 s + spam 100 ms/50 ms profiles, ≥150 toggles each, build
       identity per run; debug-trace growth class; the owner's crash
       signature captured
-- [ ] tr-2 The fix *(gate: tr-1's attribution; root cause named with
+- [x] tr-2 The fix *(gate: tr-1's attribution; root cause named with
       before/after numbers; upstream findings filed ask-first)* —
       **narrowed (owner 2026-11-17): the crashing build was
       pre-74e6d85, so the cause is already fixed and pinned;
       remaining is evidence only — the 2×-duration pass and the
       hardware walkthrough, owner-run; no new code fix**
-- [ ] tr-3 Bank it: testing.md row both-regime, known-issues residue,
+- [x] tr-3 Bank it: testing.md row both-regime, known-issues residue,
       probe outputs in the chunk
 
 **Checkpoint — the crash is fixed and evidenced:** flat tail both
 regimes, crash gone at 2× duration, rows green, owner has the numbers.
+*(Done 2026-11-17 — rows were left unticked here at the time; ticked
+retroactively to match the committed chunk and SPEC status.)*
 
-## Hardening pass — resource-audit (main; after toggle-ram)
+## Hardening pass — resource-audit (main; after toggle-ram) — done 2026-11-17
 
-- [ ] ra-1 Descriptors/processes/threads/disk sweep (paste-cache
+- [x] ra-1 Descriptors/processes/threads/disk sweep (paste-cache
       retention ask-first, session save, PTY reaping, watcher, debug
       log bound, fd/thread under spam)
-- [ ] ra-2 Memory/GPU sweep (scrollback cap verified + cost documented,
+- [x] ra-2 Memory/GPU sweep (scrollback cap verified + cost documented,
       atlas/GPU retention, images ledger, resize churn)
-- [ ] ra-3 Concurrency/panic census + input bombs (unwrap/expect
+- [x] ra-3 Concurrency/panic census + input bombs (unwrap/expect
       classification, tick queues, zbus bound, config/paste/decode/
       OSC 52/copy/flood)
-- [ ] ra-4 The P1 fix batch *(gate: ra-1..3 findings; one commit per
+- [x] ra-4 The P1 fix batch *(gate: ra-1..3 findings; one commit per
       fix, bound as a number, pinned)*
-- [ ] ra-5 The report filed (docs/research/resource-audit.md, index
+- [x] ra-5 The report filed (docs/research/resource-audit.md, index
       row, docs rows, just check)
 
 **Checkpoint — the sweep is dispositioned:** every vector fixed+pinned,
 filed, or deferred by ruling; no P1 open; report filed and reviewed.
+*(Closed 2026-11-17 by owner direction: both instructed confirmations
+run agent-side under that direction and green — the saturated tab
+0.04 % off the pinned math, the verb flood bounded with P2-2's
+one-tick clause corrected; the report's Confirmations section carries
+the numbers.)*
