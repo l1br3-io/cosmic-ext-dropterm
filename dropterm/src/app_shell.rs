@@ -1710,6 +1710,13 @@ impl Shell {
             return;
         };
         self.panes.remove(&id);
+        // The decoded-thumbnail cache follows the data: entries for
+        // paths no live ledger holds are unreachable from the panel
+        // now, so they go with the tab (ra-2's retention bound).
+        let pruned = Self::prune_orphaned_thumbs(&mut self.images_thumbs, &self.tabs);
+        if pruned > 0 {
+            println!("dropterm: {pruned} orphaned panel thumb(s) dropped with tab {id:?}");
+        }
         println!(
             "dropterm: tab {id:?} closed -> {} left, active {:?} at +{}ms",
             self.tabs.records().len(),
@@ -1729,6 +1736,26 @@ impl Shell {
             self.spawn_command_tab(cx, &command, cwd);
         }
         cx.notify();
+    }
+
+    /// The decoded-thumbnail cache's lifetime bound (ra-2): the
+    /// images panel only ever shows ledgers that are still alive, so
+    /// a cached decode whose path sits in no open tab's ledger is
+    /// unreachable — it drops. The rule is the union of live ledgers
+    /// (a duplicate tab shares its source's paths, so a path held by
+    /// a second tab survives the first's close). Generic over the
+    /// cached value so the decision pins without a decoded image.
+    fn prune_orphaned_thumbs<V>(
+        thumbs: &mut HashMap<std::path::PathBuf, V>,
+        tabs: &tab_bar::TabList,
+    ) -> usize {
+        let before = thumbs.len();
+        thumbs.retain(|path, _| {
+            tabs.records()
+                .iter()
+                .any(|tab| tab.pasted_images.iter().any(|row| &row.path == path))
+        });
+        before - thumbs.len()
     }
 
     /// Cancels the pending close (the modal's Escape, scrim press, or
@@ -4565,6 +4592,35 @@ mod tests {
             "first\nsecond\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_thumbs_cache_sheds_orphans_when_a_tab_closes() {
+        // The thumbnail cache's lifetime bound (ra-2): decoded panel
+        // thumbnails outlived their tabs — the panel only ever shows
+        // ledgers that are still alive, so a path no live ledger
+        // holds is unreachable and drops at the close. A duplicate
+        // tab shares its source's paths, so the rule is the union of
+        // live ledgers: a path held by a second tab survives the
+        // first's close.
+        let mut tabs = tab_bar::TabList::default();
+        let first = tabs.spawn(false);
+        let second = tabs.spawn(false);
+        let shared = std::path::PathBuf::from("/cache/paste/paste-20261108-140301-1.png");
+        let only_first = std::path::PathBuf::from("/cache/paste/paste-20261108-140301-2.png");
+        tabs.note_pasted_image(first, shared.clone(), b"bytes");
+        tabs.note_pasted_image(first, only_first.clone(), b"bytes");
+        tabs.note_pasted_image(second, shared.clone(), b"bytes");
+
+        let mut thumbs = HashMap::new();
+        thumbs.insert(shared.clone(), 1u8);
+        thumbs.insert(only_first.clone(), 2u8);
+        assert_eq!(Shell::prune_orphaned_thumbs(&mut thumbs, &tabs), 0);
+
+        let _ = tabs.close(first);
+        assert_eq!(Shell::prune_orphaned_thumbs(&mut thumbs, &tabs), 1);
+        assert!(thumbs.contains_key(&shared));
+        assert!(!thumbs.contains_key(&only_first));
     }
 
     #[test]
