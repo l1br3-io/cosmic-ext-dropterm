@@ -3490,6 +3490,82 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The drag capture (the 2026-11-16 grow-drag lesson): div
+    /// move/up listeners are hover-gated inside their hitbox wrapper,
+    /// and a grow drag leaves the surface on its first pixel — a 10%
+    /// drawer could never receive a downward move. These raw window
+    /// listeners (re-registered each paint by this canvas) ride the
+    /// wayland implicit grab: every move and the release reach the
+    /// pressed window wherever the pointer roams, hitboxes be damned
+    /// — the reference bar's own capture shape.
+    fn drag_capture(cx: &mut Context<Self>) -> gpui::AnyElement {
+        let move_shell = cx.entity();
+        let up_shell = move_shell.clone();
+        gpui::canvas(
+            move |_, _, _| (),
+            move |_, (), window: &mut Window, _: &mut App| {
+                window.on_mouse_event(
+                    move |event: &gpui::MouseMoveEvent,
+                          phase: gpui::DispatchPhase,
+                          _window: &mut Window,
+                          cx: &mut App| {
+                        // Capture only: raw listeners fire on both
+                        // phases, and one move must drive one decide.
+                        if phase != gpui::DispatchPhase::Capture {
+                            return;
+                        }
+                        // Gate before any update: no drag armed must
+                        // not so much as notify (a redraw per mouse
+                        // move would burn the frame budget).
+                        let (armed, ms) = {
+                            let shell = move_shell.read(cx);
+                            (
+                                shell.machine.drag.is_some(),
+                                shell.boot.elapsed().as_millis(),
+                            )
+                        };
+                        if !armed {
+                            return;
+                        }
+                        // Every move the window receives during an
+                        // armed drag, with the client's own button
+                        // state: the drag walks showed zero applies on
+                        // grow-drags, and this line is the ground
+                        // truth — present with y past the edge means
+                        // the grab delivers and the decide is wrong;
+                        // absent means the events never reach the app
+                        // at all.
+                        println!(
+                            "dropterm: drag move event y={:.0} btn={:?} at +{ms}ms",
+                            event.position.y.as_f32(),
+                            event.pressed_button
+                        );
+                        queue_shell_actions(&move_shell, cx, |shell, actions| {
+                            shell.drag_edge_move(event.position.y.as_f32(), actions);
+                        });
+                    },
+                );
+                window.on_mouse_event(
+                    move |_event: &gpui::MouseUpEvent,
+                          phase: gpui::DispatchPhase,
+                          _window: &mut Window,
+                          cx: &mut App| {
+                        if phase != gpui::DispatchPhase::Capture {
+                            return;
+                        }
+                        if up_shell.read(cx).machine.drag.is_some() {
+                            queue_shell_actions(&up_shell, cx, |shell, actions| {
+                                shell.drag_edge_release(actions);
+                            });
+                        }
+                    },
+                );
+            },
+        )
+        .flex_none()
+        .into_any_element()
+    }
+
     /// The pane's slot in the column (gpui-tabs Task 1's content
     /// half): the flex-grown pane, wrapped for the terminal context
     /// menu (gpui-chrome, py-5 the profile folders) — the pane's
@@ -3567,61 +3643,7 @@ impl Shell {
         }
         // The drag capture (the 2026-11-16 grow-drag lesson): div
         // move/up listeners are hover-gated inside their hitbox
-        // wrapper, and a grow drag leaves the surface on its first
-        // pixel — a 10% drawer could never receive a downward move.
-        // These raw window listeners (re-registered each paint by the
-        // capture canvas below) ride the wayland implicit grab: every
-        // move and the release reach the pressed window wherever the
-        // pointer roams, hitboxes be damned — the reference bar's own
-        // capture shape.
-        let drag_capture = {
-            let move_shell = cx.entity();
-            let up_shell = move_shell.clone();
-            gpui::canvas(
-                move |_, _, _| (),
-                move |_, (), window: &mut Window, _: &mut App| {
-                    window.on_mouse_event(
-                        move |event: &gpui::MouseMoveEvent,
-                              phase: gpui::DispatchPhase,
-                              _window: &mut Window,
-                              cx: &mut App| {
-                            // Capture only: raw listeners fire on both
-                            // phases, and one move must drive one
-                            // decide.
-                            if phase != gpui::DispatchPhase::Capture {
-                                return;
-                            }
-                            // Gate before any update: no drag armed
-                            // must not so much as notify (a redraw per
-                            // mouse move would burn the frame budget).
-                            if move_shell.read(cx).machine.drag.is_some() {
-                                queue_shell_actions(&move_shell, cx, |shell, actions| {
-                                    shell.drag_edge_move(event.position.y.as_f32(), actions);
-                                });
-                            }
-                        },
-                    );
-                    window.on_mouse_event(
-                        move |_event: &gpui::MouseUpEvent,
-                              phase: gpui::DispatchPhase,
-                              _window: &mut Window,
-                              cx: &mut App| {
-                            if phase != gpui::DispatchPhase::Capture {
-                                return;
-                            }
-                            if up_shell.read(cx).machine.drag.is_some() {
-                                queue_shell_actions(&up_shell, cx, |shell, actions| {
-                                    shell.drag_edge_release(actions);
-                                });
-                            }
-                        },
-                    );
-                },
-            )
-            .flex_none()
-            .into_any_element()
-        };
-        children.push(drag_capture);
+        children.push(Self::drag_capture(cx));
         let column = div().size_full().flex().flex_col().children(children);
         let Some(playing) = self.machine.slide else {
             return column;
