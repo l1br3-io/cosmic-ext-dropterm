@@ -499,7 +499,7 @@ uninstall:
 # SSH): `just vm-status` is the preflight doctor, `just vm-list` names
 # the domains and their guest users, `just vm-help` the command
 # reference. The default target is the sibling repo's existing
-# PopOs24.04 domain on this host, but every recipe that acts on a VM
+# PopOs24 domain on this host, but every recipe that acts on a VM
 # takes the libvirt domain as an optional argument — `just vm-push
 # OtherVm`, `just vm-exec 'pgrep -a cosmic-comp' OtherVm` — and the
 # recipes that use the guest user take it right after the domain:
@@ -507,8 +507,8 @@ uninstall:
 # per run: `VM_NAME=OtherVm VM_USER=alice just vm-push`, or `just
 # vm-name=OtherVm vm-user=alice vm-push` (assignment before the
 # recipe). BRIDGE_IP and PORT stay variables.
-vm-name := env_var_or_default("VM_NAME", "PopOs24.04")
-vm-user := env_var_or_default("VM_USER", "jpt-virt")
+vm-name := env_var_or_default("VM_NAME", "PopOs24")
+vm-user := env_var_or_default("VM_USER", "jpt")
 # vm-push's tarball (vm-install's guest-side source, staged under the
 # ignored target/), so neither the tarball nor the staging tree
 # (target/vm-stage) ever shows up as untracked files.

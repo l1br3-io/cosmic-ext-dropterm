@@ -154,7 +154,7 @@ The harness is `scripts/vm.sh` behind `just vm-*` recipes:
   replaced binary (the guest-side half of `stop-stale-release`).
   Re-running it needs no rebuild; `vm-push` again only for a new build.
 
-Every recipe targets the `PopOs24.04` domain by default (the value
+Every recipe targets the `PopOs24` domain by default (the value
 `VM_NAME` names, if set; `just vm-list` shows the choices). To target
 another libvirt domain, pass it as an optional argument — `just
 vm-push OtherVm`, `just vm-exec 'pgrep -a cosmic-comp' OtherVm` — or

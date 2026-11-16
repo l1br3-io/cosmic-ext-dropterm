@@ -17,8 +17,8 @@
 # precondition and reports ok/missing instead of failing.
 set -euo pipefail
 
-VM_NAME="${VM_NAME:-PopOs24.04}"
-VM_USER="${VM_USER:-jpt-virt}"
+VM_NAME="${VM_NAME:-PopOs24}"
+VM_USER="${VM_USER:-jpt}"
 BRIDGE_IP="${BRIDGE_IP:-192.168.122.1}"
 PORT="${PORT:-8000}"
 # Resolved per-run by resolve_guest() unless explicitly set above.
@@ -383,8 +383,8 @@ Ported from cosmic-ext-airlock's CP4 harness; drives the guest through
 the QEMU guest agent (no SSH) — the guest needs qemu-guest-agent once.
 
 Variables (override per run — forms below):
-  VM_NAME    libvirt domain                  default PopOs24.04
-  VM_USER    desktop user inside the guest   default jpt-virt
+  VM_NAME    libvirt domain                  default PopOs24
+  VM_USER    desktop user inside the guest   default jpt
   VM_HOME    guest home directory            default: looked up in the guest's /etc/passwd
   BRIDGE_IP  host IP on the VM NAT bridge    default 192.168.122.1
   PORT       transfer port                   default 8000
