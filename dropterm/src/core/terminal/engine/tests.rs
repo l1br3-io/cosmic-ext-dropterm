@@ -4300,3 +4300,20 @@ fn removals_feed_the_frontend_handle_cache() {
     assert!(removed.contains(&2), "the removed id feeds the cache");
     assert!(store.take_removed().is_empty(), "the feed is drained once");
 }
+
+#[test]
+fn the_scrollback_worst_case_math_is_pinned_to_the_cells_size() {
+    // ra-2's documented number (configuration.md's scrollback_lines
+    // row): one Cell per column per line — history, visible rows,
+    // and the storage's ≤1 000-row reallocation headroom. The Cell
+    // size pinned here is that row's basis: if the fork's Cell grows,
+    // the docs math moves with this test.
+    use alacritty_terminal::term::cell::Cell;
+
+    assert_eq!(std::mem::size_of::<Cell>(), 24);
+    let history = crate::core::config::DropTermConfig::default().scrollback_lines;
+    assert_eq!(history, 10_000);
+    let lines = history + 40 /* visible rows */ + 1_000 /* storage headroom */;
+    let bytes = lines as usize * 200 /* columns */ * std::mem::size_of::<Cell>();
+    assert_eq!(bytes, 52_992_000); // ~53 MB (50.5 MiB) per saturated tab
+}
