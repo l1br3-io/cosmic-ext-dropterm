@@ -391,3 +391,60 @@ Each is also recorded in its chunk:
    this pin, cost inside the slide budget.
 5. **Dock mode is an owner question** (open questions item 9), ruled
    before the parity walk reaches the shell-presence rows.
+
+## Hardening pass (opened 2026-11-16): toggle-ram → resource-audit
+
+The owner reported repeated toggling eating RAM until the app
+crashes; the pass fixes that and then sweeps every other
+crash/resource-exhaustion vector. Specs: [SPEC-toggle-ram.md](../SPEC-toggle-ram.md),
+[SPEC-resource-audit.md](../SPEC-resource-audit.md); chunks:
+[toggle-ram.md](toggle-ram.md), [resource-audit.md](resource-audit.md)
+(the chunks are the task detail; this section is the aggregate view).
+
+### Planning rulings (made at /planning 2026-11-16; veto at review)
+
+1. **Measure-first is mandatory.** No fix lands without an attributed
+   vector (mapping + code path) and before/after numbers — 74e6d85's
+   discipline, extended past `[heap]`.
+2. **Both regimes are first-class.** Paced (1 s settle, the only
+   regime ever measured) and spam (100 ms and 50 ms profiles, under
+   the 150 ms debounce and inside the ~130 ms slide — never probed).
+3. **VM probe stays owner-run by default** (2026-11-14 ruling). The
+   standing-exception ask rides tr-1's review; 74e6d85's one-off is
+   the precedent. Agent-run evidence, if sanctioned, is marked
+   agent-run.
+4. **The audit's dispositions are three**: fixed with a stated bound
+   (a number in a test or docs row) and a pin, filed in known-issues
+   with evidence, or deferred by owner ruling. The report
+   (`docs/research/resource-audit.md`) is an immutable research
+   record once filed.
+5. **Debug instrumentation is itself in scope**: the toggle-dump
+   trace's append-only `/tmp` log gets bounded or gated (ra-1's cheap
+   fix).
+
+### Task index
+
+- tr-1 the attribution probe (both regimes, per mapping, fd/thread,
+  build identity) → tr-2 the fix (gated on attribution) → tr-3 bank
+  it (evidence + docs rows). Checkpoint: flat tail, crash gone.
+- ra-1 descriptors/processes/threads/disk → ra-2 memory/GPU →
+  ra-3 concurrency/panics/input bombs (ra-1..3 may interleave; all
+  need tr-1's tooling) → ra-4 the P1 fix batch (gated on findings) →
+  ra-5 the report filed. Checkpoint: every vector dispositioned.
+
+### Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Root cause is upstream (GPUI/wgpu, cosmic-comp) | High | File with evidence; smallest carried remedy, ask-first (kit-root-border precedent) |
+| VM cannot reproduce the crash (hardware-only) | Med | tr-1's owner-run signature capture; hardware rows stay owner's |
+| Spam regime surfaces several interacting causes | Med | Triage by mapping size; one cause per commit, numbers each |
+| Findings grow past the chunk's shape | Low | Split tasks rather than grow them (house ≤5-file rule) |
+
+### Open questions
+
+1. Which build crashed (with or without 74e6d85) — tr-1 answers by
+   construction (build identity in every probe run).
+2. The crash's shape (OOM, panic, hang, session-level) — tr-1's
+   owner-run capture.
+3. The standing VM-probe exception — asked at tr-1's review.

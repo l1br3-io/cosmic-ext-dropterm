@@ -660,3 +660,35 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
 cut; Phase 4 may open. *(The code is one binary; parity's proof is
 py-4's parked walk and the release is cu-3's owner gate — the
 checkpoint rides both.)*
+
+## Hardening pass — toggle-ram (main; /planning 2026-11-16)
+
+- [ ] tr-1 The attribution probe: per-mapping RSS + fds + threads,
+      paced 1 s + spam 100 ms/50 ms profiles, ≥150 toggles each, build
+      identity per run; debug-trace growth class; the owner's crash
+      signature captured
+- [ ] tr-2 The fix *(gate: tr-1's attribution; root cause named with
+      before/after numbers; upstream findings filed ask-first)*
+- [ ] tr-3 Bank it: testing.md row both-regime, known-issues residue,
+      probe outputs in the chunk
+
+**Checkpoint — the crash is fixed and evidenced:** flat tail both
+regimes, crash gone at 2× duration, rows green, owner has the numbers.
+
+## Hardening pass — resource-audit (main; after toggle-ram)
+
+- [ ] ra-1 Descriptors/processes/threads/disk sweep (paste-cache
+      retention ask-first, session save, PTY reaping, watcher, debug
+      log bound, fd/thread under spam)
+- [ ] ra-2 Memory/GPU sweep (scrollback cap verified + cost documented,
+      atlas/GPU retention, images ledger, resize churn)
+- [ ] ra-3 Concurrency/panic census + input bombs (unwrap/expect
+      classification, tick queues, zbus bound, config/paste/decode/
+      OSC 52/copy/flood)
+- [ ] ra-4 The P1 fix batch *(gate: ra-1..3 findings; one commit per
+      fix, bound as a number, pinned)*
+- [ ] ra-5 The report filed (docs/research/resource-audit.md, index
+      row, docs rows, just check)
+
+**Checkpoint — the sweep is dispositioned:** every vector fixed+pinned,
+filed, or deferred by ruling; no P1 open; report filed and reviewed.
