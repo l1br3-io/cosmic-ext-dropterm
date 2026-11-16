@@ -118,10 +118,80 @@ pub(crate) enum ImageRead {
 }
 
 /// The read's verdict split — the pure half the test pins: payload
-/// bytes under the cap, the over-cap refusal at it.
-fn classify_read(len: usize) -> Option<dropterm::core::status::PasteRefusal> {
+/// bytes under the cap, the over-cap refusal at it. The OSC 52
+/// store/load guards ride the same split (ra-3): one cap, every
+/// clipboard payload.
+pub(crate) fn classify_read(len: usize) -> Option<dropterm::core::status::PasteRefusal> {
     (len > dropterm::core::paste_cache::PASTE_PAYLOAD_CAP)
         .then_some(dropterm::core::status::PasteRefusal::OverCap)
+}
+
+/// What one text read resolved to — the text twin of [`ImageRead`]
+/// (ra-3's ruling: text offers carry the paste cap images already
+/// had): the text, the honest silence (no text offer stood), or the
+/// refusal the band's verdict chip narrates.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TextRead {
+    Text(String),
+    None,
+    Refused(dropterm::core::status::PasteRefusal),
+}
+
+/// One paste's regular-clipboard text read, capped: GPUI has read
+/// the offer by the time the app sees it, so the cap lands as the
+/// post-read check — over it the paste refuses before a byte reaches
+/// the engine, the string dropped whole (ra-3).
+pub(crate) fn read_text_capped(cx: &App) -> TextRead {
+    match read(cx) {
+        Some(text) => match classify_read(text.len()) {
+            None => TextRead::Text(text),
+            Some(refusal) => {
+                println!(
+                    "dropterm: text offer refused — {} bytes over the {}-byte paste cap",
+                    text.len(),
+                    dropterm::core::paste_cache::PASTE_PAYLOAD_CAP
+                );
+                TextRead::Refused(refusal)
+            }
+        },
+        None => TextRead::None,
+    }
+}
+
+/// One paste's primary-selection text read, capped: the blocking
+/// twin stops the pipe one byte past the cap — the true read-side
+/// bound this road can apply — and over it the paste refuses whole
+/// (ra-3).
+pub(crate) fn read_primary_text_capped() -> TextRead {
+    let cap = u64::try_from(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP + 1)
+        .expect("the paste cap is a constant far below u64::MAX");
+    let (pipe, _mime) = match wl_clipboard_rs::paste::get_contents(
+        wl_clipboard_rs::paste::ClipboardType::Primary,
+        wl_clipboard_rs::paste::Seat::Unspecified,
+        wl_clipboard_rs::paste::MimeType::Text,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            println!("dropterm: data-control primary read failed ({err})");
+            return TextRead::None;
+        }
+    };
+    let mut text = String::new();
+    let mut offer = pipe.take(cap);
+    if let Err(err) = std::io::Read::read_to_string(&mut offer, &mut text) {
+        println!("dropterm: data-control primary read failed ({err})");
+        return TextRead::None;
+    }
+    match classify_read(text.len()) {
+        None => TextRead::Text(text),
+        Some(refusal) => {
+            println!(
+                "dropterm: primary text offer refused — over the {}-byte paste cap",
+                dropterm::core::paste_cache::PASTE_PAYLOAD_CAP
+            );
+            TextRead::Refused(refusal)
+        }
+    }
 }
 
 /// One data-control read of the clipboard's image offer — the paste

@@ -355,13 +355,22 @@ impl TerminalPane {
                 // OSC 52 store: a program copying out (tmux's copy
                 // mode, ssh forwarding) — the copy-while-unfocused
                 // class by nature, so it rides data-control, which
-                // needs neither focus nor serial.
+                // needs neither focus nor serial. The paste cap rides
+                // every clipboard payload (ra-3): a remote pushing
+                // past it is dropped, logged, never served.
                 let primary = kind == alacritty_terminal::term::ClipboardType::Selection;
-                println!(
-                    "dropterm: osc52 store {} bytes (primary={primary})",
-                    text.len()
-                );
-                clipboard::write_data_control(text, primary);
+                if let Some(refusal) = clipboard::classify_read(text.len()) {
+                    println!(
+                        "dropterm: osc52 store refused — {} bytes over the paste cap ({refusal:?}, primary={primary})",
+                        text.len()
+                    );
+                } else {
+                    println!(
+                        "dropterm: osc52 store {} bytes (primary={primary})",
+                        text.len()
+                    );
+                    clipboard::write_data_control(text, primary);
+                }
             }
             TermEvent::ClipboardLoad(kind, format) => {
                 // OSC 52 load: a program asking for the clipboard —
@@ -466,7 +475,10 @@ impl TerminalPane {
     /// selection through one background data-control read), apply
     /// the engine's format closure, and land the reply in the
     /// asking PTY — an empty clipboard still answers, formatted,
-    /// never silence (the clipboard-ownership spec's row).
+    /// never silence (the clipboard-ownership spec's row). An
+    /// over-cap clipboard answers nothing: the reply would feed the
+    /// whole payload into the PTY, and the paste cap rides every
+    /// clipboard payload (ra-3).
     fn load_clipboard_reply(
         &mut self,
         primary: bool,
@@ -475,6 +487,10 @@ impl TerminalPane {
     ) {
         if !primary {
             let data = clipboard::read(cx);
+            if clipboard::classify_read(data.as_ref().map_or(0, String::len)).is_some() {
+                println!("dropterm: osc52 load reply refused — clipboard over the paste cap");
+                return;
+            }
             let reply = format(&data.unwrap_or_default()).into_bytes();
             let mut terminal = self.terminal.lock().expect("engine lock");
             terminal.input_no_scroll(reply);
@@ -488,6 +504,10 @@ impl TerminalPane {
                 .spawn(async move { clipboard::read_primary_blocking() })
                 .await;
             let _ = this.update(cx, |_pane, cx| {
+                if clipboard::classify_read(data.as_ref().map_or(0, String::len)).is_some() {
+                    println!("dropterm: osc52 load reply refused — primary over the paste cap");
+                    return;
+                }
                 let reply = format(&data.unwrap_or_default()).into_bytes();
                 let mut terminal = terminal.lock().expect("engine lock");
                 terminal.input_no_scroll(reply);
@@ -770,6 +790,71 @@ impl TerminalPane {
         }
     }
 
+    /// The text half of a paste action: the capped read — regular
+    /// through GPUI, primary through one background data-control
+    /// read — then the engine paste, the image road on silence, the
+    /// band's verdict chip on refusal (ra-3: text offers carry the
+    /// paste cap images already had).
+    fn paste_text_action(&mut self, primary: bool, cx: &mut Context<Self>) {
+        if !primary {
+            match clipboard::read_text_capped(cx) {
+                clipboard::TextRead::Text(text) => {
+                    println!(
+                        "dropterm: pane action Paste — {} bytes through the engine's paste",
+                        text.len()
+                    );
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.paste(&text);
+                    engine.needs_update = true;
+                }
+                clipboard::TextRead::None => self.paste_clipboard_image(false, cx),
+                clipboard::TextRead::Refused(refusal) => {
+                    println!("dropterm: paste text refused — {refusal:?}");
+                    if let Some(signals) = &self.shell_signals {
+                        let _ = signals.send(PaneSignal::PasteRefused(refusal));
+                    }
+                }
+            }
+            return;
+        }
+        // The primary selection has no GPUI API: one data-control
+        // read off the UI thread, then the same engine paste.
+        println!("dropterm: pane action PastePrimary — data-control read");
+        let terminal = Arc::clone(&self.terminal);
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move { clipboard::read_primary_text_capped() })
+                .await;
+            match read {
+                clipboard::TextRead::Text(text) => {
+                    let _ = this.update(cx, |_pane, cx| {
+                        println!(
+                            "dropterm: paste primary — {} bytes through the engine's paste",
+                            text.len()
+                        );
+                        let mut engine = terminal.lock().expect("engine lock");
+                        engine.paste(&text);
+                        engine.needs_update = true;
+                        cx.notify();
+                    });
+                }
+                clipboard::TextRead::None => {
+                    let _ = this.update(cx, |pane, cx| pane.paste_clipboard_image(true, cx));
+                }
+                clipboard::TextRead::Refused(refusal) => {
+                    println!("dropterm: paste primary text refused — {refusal:?}");
+                    let _ = this.update(cx, |pane, _| {
+                        if let Some(signals) = &pane.shell_signals {
+                            let _ = signals.send(PaneSignal::PasteRefused(refusal));
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     /// One matched action through the pane — the terminal-view
     /// slice's execution (the libcosmic `perform_action` pared to
     /// the pane's own surface; clipboard lands with its task, the
@@ -779,50 +864,8 @@ impl TerminalPane {
             TermAction::Copy | TermAction::CopyPrimary => {
                 self.copy_selection(matches!(action, TermAction::CopyPrimary), cx);
             }
-            TermAction::Paste => match clipboard::read(cx) {
-                Some(text) => {
-                    println!(
-                        "dropterm: pane action Paste — {} bytes through the engine's paste",
-                        text.len()
-                    );
-                    let mut engine = self.terminal.lock().expect("engine lock");
-                    engine.paste(&text);
-                    engine.needs_update = true;
-                }
-                None => self.paste_clipboard_image(false, cx),
-            },
-            TermAction::PastePrimary => {
-                // The primary selection has no GPUI API: one
-                // data-control read off the UI thread, then the same
-                // engine paste.
-                println!("dropterm: pane action PastePrimary — data-control read");
-                let terminal = Arc::clone(&self.terminal);
-                cx.spawn(async move |this, cx| {
-                    let text = cx
-                        .background_executor()
-                        .spawn(async move { clipboard::read_primary_blocking() })
-                        .await;
-                    match text {
-                        Some(text) => {
-                            let _ = this.update(cx, |_pane, cx| {
-                                println!(
-                                    "dropterm: paste primary — {} bytes through the engine's paste",
-                                    text.len()
-                                );
-                                let mut engine = terminal.lock().expect("engine lock");
-                                engine.paste(&text);
-                                engine.needs_update = true;
-                                cx.notify();
-                            });
-                        }
-                        None => {
-                            let _ =
-                                this.update(cx, |pane, cx| pane.paste_clipboard_image(true, cx));
-                        }
-                    }
-                })
-                .detach();
-            }
+            TermAction::Paste => self.paste_text_action(false, cx),
+            TermAction::PastePrimary => self.paste_text_action(true, cx),
             TermAction::SelectAll => {
                 println!("dropterm: pane action SelectAll (every row selected)");
                 let mut engine = self.terminal.lock().expect("engine lock");
