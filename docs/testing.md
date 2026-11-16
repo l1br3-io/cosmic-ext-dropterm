@@ -14,7 +14,7 @@ Two routes through the manual side:
 
 ### Show/hide and the slide
 
-- [ ] First launch shows the overlay at the configured edge, focused and ready; the bound shortcut hides and re-shows it; rapid toggles neither crash nor duplicate the surface; it stacks above a fullscreen window
+- [x] First launch shows the overlay at the configured edge, focused and ready; the bound shortcut hides and re-shows it; rapid toggles neither crash nor duplicate the surface; it stacks above a fullscreen window
 - [ ] Caret on show: the block cursor paints at the prompt in the first shown frame, every route there (plain toggle, focus-loss hide re-toggle, tab switch)
 - [ ] Slide: ~130 ms in from the anchored edge, size/position/opacity steady through it; focus grabbed on show, released the instant a hide starts; mid-slide toggles reverse visibly and spam always ends in the last toggle's state
 - [ ] Background jobs and shell history survive a hide/show cycle; empty-desktop focus lands without a click; focus-reporting programs (fish, vim) repaint only on a real focus loss

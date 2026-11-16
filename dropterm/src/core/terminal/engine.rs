@@ -1585,6 +1585,33 @@ impl Terminal {
         (cols, rows)
     }
 
+    /// The visible screen's rows, trailing blanks trimmed — the
+    /// toggle-dump trace's read (the prompt-duplication repro's
+    /// missing half): the same cell-walk the repro pin drives,
+    /// shared here so the pin guards the reader the dump uses.
+    pub fn visible_rows(&self) -> Vec<String> {
+        use alacritty_terminal::index::Column;
+        let term = self.term.lock();
+        let grid = term.grid();
+        let columns = grid.columns();
+        let first = grid.history_size();
+        let total = first + grid.screen_lines();
+        let mut rows = Vec::with_capacity(grid.screen_lines());
+        for line in first..total {
+            let line = alacritty_terminal::index::Line(
+                i32::try_from(line)
+                    .expect("grid line indices are bounded by total_lines, far below i32::MAX"),
+            );
+            let row = &grid[line];
+            let mut text = String::new();
+            for column in 0..columns {
+                text.push(row[Column(column)].c);
+            }
+            rows.push(text.trim_end().to_string());
+        }
+        rows
+    }
+
     /// The grid recorded at the tab's spawn — the resting grid the
     /// status band's grid segment measures deviation against: the
     /// band narrates a grid only while the live one differs from

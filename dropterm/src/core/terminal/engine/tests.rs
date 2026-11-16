@@ -136,6 +136,105 @@ fn foreground_check_reads_false_without_a_master_handle() {
     assert!(!foreground_child_running(None, Some(1234)));
 }
 
+/// The toggle-reprint repro's grid read: every visible row's text,
+/// joined with `\n` — the engine's own `visible_rows`, the same
+/// read the toggle-dump trace hands the log.
+fn visible_text(terminal: &Terminal) -> String {
+    terminal.visible_rows().join("\n")
+}
+
+/// The first owner walk on the collapsed build (2026-11-16): every
+/// toggle appended the shell prompt onto its own line — "PS1 PS1
+/// PS1" — up to three copies. The suspects were the toggle-shaped
+/// resize churn (each show's pane lays out at an intermediate size
+/// before the final one), so this pin drives exactly that against a
+/// real interactive bash on the engine's own PTY: spawn with a
+/// deterministic PS1, wait for the first prompt, then three
+/// shrink-grow cycles at the engine's own cell arithmetic, and
+/// demand the prompt print exactly once. Bash's own reaction to the
+/// churn (readline redraws, SIGWINCH reprints) lands in the grid
+/// through the same pty loop the app rides, so a regression here
+/// reproduces the walk's symptom headlessly.
+#[test]
+fn toggle_shaped_resizes_never_reprint_the_bash_prompt() {
+    use alacritty_terminal::tty::Shell as PtyShell;
+    use std::collections::HashMap;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // Deterministic by construction: a fixed PS1 survives --norc (an
+    // inherited PS1 is only replaced when bash's own rc machinery
+    // runs), so the marker is stable on every box.
+    let mut env = HashMap::new();
+    env.insert("PS1".to_string(), "P$ ".to_string());
+    let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new(
+                "/bin/bash".to_owned(),
+                vec!["--norc".to_owned(), "-i".to_owned()],
+            )),
+            drain_on_exit: true,
+            env,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn an interactive bash");
+
+    // The first prompt must land before the churn starts: poll the
+    // grid (output arrives through the pty loop's wakeup channel).
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !visible_text(&terminal).contains("P$") {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for bash's first prompt; grid so far: {:?}",
+            visible_text(&terminal)
+        );
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Three toggle-shaped cycles: the pane's bounds pass through a
+    // degenerate intermediate before the final size (the show ramp's
+    // own shape), each distinct size landing one engine resize —
+    // exactly what a real toggle drives.
+    let size = terminal.size();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell px are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let (small_w, small_h) = (
+        (4.0 * size.cell_width).ceil() as u32,
+        (2.0 * size.cell_height).ceil() as u32,
+    );
+    let (full_w, full_h) = (size.width, size.height);
+    let mut pty_writes = Vec::new();
+    for _ in 0..3 {
+        terminal.resize(small_w, small_h);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        terminal.resize(full_w, full_h);
+        std::thread::sleep(std::time::Duration::from_millis(180));
+        while let Ok((_, event)) = rx.try_recv() {
+            if let Event::PtyWrite(text) = event {
+                pty_writes.push(text);
+            }
+        }
+    }
+
+    let text = visible_text(&terminal);
+    let prompts = text.matches("P$").count();
+    assert_eq!(
+        prompts, 1,
+        "the prompt reprinted across toggle-shaped resizes; grid:\n{text}\npty writes the \
+         engine handed bash: {pty_writes:?}"
+    );
+}
+
 #[test]
 fn foreground_check_reads_false_without_a_shell_pid() {
     // Fail-open pin (criterion 7): nothing to compare the
