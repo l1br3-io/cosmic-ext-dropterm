@@ -2104,9 +2104,13 @@ impl Shell {
 
     pub(crate) fn profile_draft_env_remove(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(draft) = self.settings.profile_draft.as_mut() {
-            draft.env_rows.remove(index);
-            draft.errors.clear();
-            cx.notify();
+            // A stale index (the "-" button's capture double-fired
+            // before the re-render) removes nothing, never panics —
+            // the guarded core remove (ra-3).
+            if draft.remove_env_row(index) {
+                draft.errors.clear();
+                cx.notify();
+            }
         }
     }
 
