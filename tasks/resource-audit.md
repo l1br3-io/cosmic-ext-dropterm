@@ -239,16 +239,74 @@ resource cost (bug 1's reprint correctness stays with the ux
 findings; this row is its cost).
 
 **Acceptance criteria:**
-- [ ] The unwrap/expect census lands in the report with
+- [x] The unwrap/expect census lands in the report with
       classifications; every input-reachable site is fixed, guarded,
       or filed with reasoning
-- [ ] Each constructible bomb has a headless test proving the bound
+- [x] Each constructible bomb has a headless test proving the bound
       or the graceful refusal
-- [ ] Verb-flood and tick-drain verdicts recorded (headless where
+- [x] Verb-flood and tick-drain verdicts recorded (headless where
       possible; the live flood row is owner-run)
 
+**Census + dispositions (2026-11-17):**
+
+*The panic census:* zero bare `unwrap`/`panic!`/`unreachable!` in
+non-test code across `app_shell.rs`, `executor.rs`, `dbus.rs`,
+`core/transport.rs` (the planning-read "15+6" were `expect`s).
+Classification: one **input-reachable** site — the drawer env-row
+`Vec::remove` on a stale captured index — **FIXED** (d4fa558 +
+10b2235, `remove_env_row` in core guarded like its own `get_mut`
+edit paths, pinned by `a_stale_env_row_index_removes_nothing`).
+The rest: startup/generator-regression tripwires (the theme-parse
+expect, pinned by theme_gen's tests), liveness expects by design
+(executor's "an intent names a live surface", `#[should_panic]`-
+pinned; the `record` None arm is invariant-guarded dead), poison
+amplifiers not origins (the engine-lock expects — a PTY-thread
+panic is loud at the next tick by design, the loud-miss rule),
+saturating casts, fixed-table indexing. Recorded, no change
+warranted; weakening any would break the loud-miss Never.
+
+*The tick's queues:* every accumulator drains to empty per tick or
+is a single-slot Option (census table in the research record);
+`verbs` is unbounded-between-ticks but drained wholesale, with the
+150 ms debounce capping *effects* at ~6.7/s and hop 1 (dbus →
+serve loop) bounded at 64 with drop+warn — pinned
+(`a_full_queue_drops_the_verb_and_still_replies_ok`). Bounded-drain
+holds. *zbus:* every owner-directed wait is now bounded — dea31aa
+closed the one gap (`--is-visible`'s property read, transport.rs),
+applying `FORWARD_DEADLINE_SECS` exactly as the forward does;
+recorded un-pinned with reasoning: BUS_NAME/session-bus hardcoding
+makes a headless wedged-owner fixture impractical without a
+testability refactor, and the wrap is the sf-4-walked pattern
+verbatim. *Reentrancy:* the gc-2 fix stands; every spawn/update
+site audited against it, none re-enters a live borrow.
+
+*The bombs:* config malformed/truncated — quarantine + defaults
+verified with the store's existing pins; huge config file
+uncapped — **FILED** (P2: the owner's own config file,
+self-inflicted). Text paste — was uncapped whole into RAM and the
+PTY; **FIXED** (d4165da, owner ruling 32 MiB refuse-over): the
+primary road takes the pipe at cap+1 (true read-side bound), the
+GPUI road post-checks (GPUI has already read by the time the app
+sees it — noted), refusals ride the existing band verdict
+(`PasteRefusal::OverCap`); the shared split is the already-pinned
+`classify_read`. Image decode bombs — verified fully guarded
+(32 MiB payload, 8192 px dimension, 64 MiB alloc incl. the
+explicit `w*h*4` pre-check, capped inflate, first-frame-only GIF)
+with the existing pin battery; the one unpinned branch (inflate
+over-cap) now pinned (e556a91). OSC 52 store + load reply — were
+uncapped verbatim; **FIXED** (d4165da, same ruling): over-cap
+stores drop logged, over-cap load replies never feed the PTY.
+Select-all copy — bounded by grid capacity by construction (the
+ra-2 scrollback math documents the ceiling); clean. Dbus verb
+flood — hop 1 bounded/pinned, drain exhaustive, but the unbounded
+between-tick queue plus no tab cap means a sustained `new-tab`
+flood spawns N ptys in one tick — **FILED** (P2: same-session
+caller class; the wire hop already drops at 64; the live flood
+row rides the owner's pass). Resize churn — equality-gated, one
+reflow per changed frame, per-resize work transient (ra-2); clean.
+
 **Verification:**
-- [ ] `just check` green with the new pins; the report cites each
+- [x] `just check` green with the new pins; the report cites each
 
 **Dependencies:** tr-1 · **Files:** `app_shell.rs`, `executor.rs`,
 `core/transport.rs`, clipboard/images files as named · **Scope:** M
