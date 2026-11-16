@@ -1250,8 +1250,13 @@ impl Shell {
     /// PTY (grid-side), prompts seen on screen but absent from the
     /// dump are a paint-side artifact. Appended to
     /// /tmp/dropterm-toggle.log and echoed to stdout, one walk's
-    /// evidence per file.
+    /// evidence per file — the process's first dump truncates the log
+    /// (ra-1), so the append never accumulates across runs.
     fn dump_visible_grid(&self, label: &str, cx: &Context<Self>) {
+        // The trace's own bound (ra-1): the process's first dump
+        // truncates the log, later dumps append — the append-per-dump
+        // growth never crosses runs.
+        static LOG_FRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
         if std::env::var_os("DROPTERM_TOGGLE_DEBUG").is_none() {
             return;
         }
@@ -1272,14 +1277,28 @@ impl Shell {
             None => format!("dropterm: toggle-dump {label} at +{ms}ms — no pane yet"),
         };
         println!("{block}");
-        let _ = std::fs::OpenOptions::new()
+        let reset = LOG_FRESH.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = Self::append_toggle_dump(
+            std::path::Path::new("/tmp/dropterm-toggle.log"),
+            reset,
+            &block,
+        );
+    }
+
+    /// The toggle log's one bound (resource-audit ra-1): `reset`
+    /// truncates before the append — the env-gated trace appends per
+    /// dump by design, and the process's first dump starting the file
+    /// fresh keeps it one session's evidence, never a cross-run
+    /// accumulation.
+    fn append_toggle_dump(path: &std::path::Path, reset: bool, block: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
-            .open("/tmp/dropterm-toggle.log")
-            .and_then(|mut f| {
-                use std::io::Write as _;
-                writeln!(f, "{block}")
-            });
+            .write(true)
+            .append(!reset)
+            .truncate(reset)
+            .open(path)?;
+        writeln!(file, "{block}")
     }
 
     /// The show half every tab-facing verb rides (the libcosmic
@@ -4522,6 +4541,30 @@ mod tests {
         assert_eq!(anchor_action(false, true), AnchorAction::Close);
         assert_eq!(anchor_action(true, true), AnchorAction::Keep);
         assert_eq!(anchor_action(false, false), AnchorAction::Keep);
+    }
+
+    #[test]
+    fn the_toggle_log_resets_on_the_first_dump_and_appends_after() {
+        // The trace's own bound (resource-audit ra-1): dumps append,
+        // so without a reset the env-gated log grows across runs
+        // while `DROPTERM_TOGGLE_DEBUG` is set. The process's first
+        // dump truncates the file; every later dump appends behind it.
+        let dir = std::env::temp_dir().join("dropterm-toggle-log-tests-ra1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let log = dir.join("toggle.log");
+        std::fs::write(&log, "a stale run's evidence\n").expect("stale fixture");
+
+        Shell::append_toggle_dump(&log, true, "first").expect("the first dump writes");
+        Shell::append_toggle_dump(&log, false, "second").expect("a later dump writes");
+
+        // The stale run is gone — one session's evidence per file —
+        // and this run's two dumps both stand in order.
+        assert_eq!(
+            std::fs::read_to_string(&log).expect("the log stands"),
+            "first\nsecond\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
