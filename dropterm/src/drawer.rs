@@ -1336,6 +1336,32 @@ impl Render for SettingsDrawer {
         self.refresh_from_echo(window, cx);
         let shell = self.shell.clone();
         let page = self.shell.read(cx).settings.page;
+        // The drawer's header (the context_drawer's own close
+        // affordance, ported): the title at the left, the explicit
+        // close's ✕ at the right — the reference drawer's escape
+        // route made visible, the same `close_settings` the Escape
+        // bind and the gear toggle ride.
+        let header = {
+            let target = shell.clone();
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .px_3()
+                .py_2()
+                .child(gpui::div().text_size(gpui::px(15.)).child("Settings"))
+                .child(
+                    gpui::div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .text_color(cx.theme().foreground)
+                        .child("✕")
+                        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                            target.update(cx, |shell, cx| shell.close_settings(window, cx));
+                        }),
+                )
+        };
         let mut strip = h_flex().gap_1().p_2();
         for tab in SettingsTab::ALL {
             let selected = tab == page;
@@ -1376,6 +1402,7 @@ impl Render for SettingsDrawer {
             })
             .when(armed, gpui::Styled::border_1)
             .size_full()
+            .child(header)
             .child(strip)
             .child(self.page_element(window, cx))
     }
