@@ -78,6 +78,11 @@ const STATUS_COPY_FLASH: Duration = Duration::from_millis(800);
 /// their paste failed.
 const STATUS_REFUSAL_FLASH: Duration = Duration::from_millis(3000);
 
+/// The drag edge's grab strip height: the reference grab bar's own
+/// `BAR_HEIGHT` — high enough to grab, thin enough to read as a
+/// handle's footprint rather than chrome.
+const DRAG_EDGE_PX: f32 = 8.0;
+
 fn grab_bar_at_rest(machine: &SurfaceMachine) -> bool {
     dropterm::core::surface_lifecycle::grab_bar_acts_on(&machine.state, machine.slide.is_some())
 }
@@ -825,6 +830,68 @@ impl Shell {
         }
     }
 
+    /// The real drag edge's press (the grab-bar port): a left press
+    /// on the free-edge strip arms the machine's drag at the
+    /// pointer's window y — the walk's synthetic arm, fed a real
+    /// event. The guard is the walk's own: shown, at rest.
+    pub(crate) fn drag_edge_press(&mut self, pointer_y: f32, actions: &mut Vec<Action>) {
+        if !grab_bar_at_rest(&self.machine) {
+            return;
+        }
+        println!(
+            "dropterm: drag edge press pointer_y={pointer_y:.0} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        let outcome = self
+            .machine
+            .drag_move(pointer_y, Instant::now(), self.inputs);
+        self.execute_into(outcome.intents, actions);
+    }
+
+    /// The drag edge's live move: only while the machine holds the
+    /// drag (a hover with no press arming does nothing) — the
+    /// cadence-gated applies and the trailing timer ride the same
+    /// machinery the walk drove.
+    pub(crate) fn drag_edge_move(&mut self, pointer_y: f32, actions: &mut Vec<Action>) {
+        if self.machine.drag.is_none() {
+            return;
+        }
+        let outcome = self
+            .machine
+            .drag_move(pointer_y, Instant::now(), self.inputs);
+        if let Some(target) = outcome.applied {
+            println!(
+                "dropterm: drag edge applied target={target}px at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+        }
+        self.execute_into(outcome.intents, actions);
+    }
+
+    /// The drag edge's release — the settle: the dragged pixels
+    /// quantize to a whole percent once, and a changed percent
+    /// persists through the one write path (the walk logged this
+    /// decision as "would persist" until the config-write slice
+    /// landed; the real edge rides the slice).
+    pub(crate) fn drag_edge_release(&mut self, actions: &mut Vec<Action>) {
+        if self.machine.drag.is_none() {
+            return;
+        }
+        let (intents, settled, write) = self.machine.drag_release(self.inputs);
+        println!(
+            "dropterm: drag edge release settled at {}% at +{}ms",
+            settled.height_percent,
+            self.boot.elapsed().as_millis()
+        );
+        if let Some(percent) = write {
+            self.write_settings(&dropterm::core::settings::PlannedWrite::HeightPercent(
+                percent,
+            ));
+        }
+        self.inputs.geometry = settled;
+        self.execute_into(intents, actions);
+    }
+
     /// External config edits: coalesce every signaled change into one
     /// reload, recompute the decision inputs, and reshape the live
     /// surface if the geometry actually changed (the machine's own
@@ -1209,6 +1276,27 @@ struct Pumped {
     /// point, where pane spawning's App context lives.
     tab_verbs: Vec<cli::Action>,
     quit: bool,
+}
+
+/// One mouse-handler step against the shell: mutate under the
+/// shell's update (collecting window actions), then apply them at
+/// App level — the same split the tick takes. A mouse handler runs
+/// inside the window's event dispatch, so no shell update may be on
+/// the stack when it builds elements (the gc-2 lesson, structural).
+fn run_shell_actions(
+    shell: &Entity<Shell>,
+    cx: &mut App,
+    step: impl FnOnce(&mut Shell, &mut Vec<Action>),
+) {
+    let actions = shell.update(cx, |shell, _| {
+        let mut actions = Vec::new();
+        step(shell, &mut actions);
+        actions
+    });
+    for action in actions {
+        apply_action(cx, shell, action);
+    }
+    shell.update(cx, |_, cx| cx.notify());
 }
 
 /// Applies one window action against live windows — App-level work by
@@ -3281,6 +3369,54 @@ impl Shell {
     /// and wire alike — a mid-slide window swap (the keyboard-hold
     /// recreate) remounts the frame driver but the translation stays
     /// continuous off the machine's `started`.
+    /// The drag edge's grab strip: the reference bar's `BAR_HEIGHT`
+    /// (8 px) at the drawer's free edge — thin enough to read as a
+    /// handle's footprint rather than chrome, tall enough to grab.
+    /// The press arms the drag; the strip paints nothing itself (the
+    /// band's border hairline already draws the edge).
+    fn drag_edge_strip(cx: &mut Context<Self>) -> gpui::AnyElement {
+        let shell = cx.entity();
+        gpui::div()
+            .w_full()
+            .flex_none()
+            .h(gpui::px(DRAG_EDGE_PX))
+            .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
+                run_shell_actions(&shell, cx, |shell, actions| {
+                    shell.drag_edge_press(event.position.y.as_f32(), actions);
+                });
+            })
+            .into_any_element()
+    }
+
+    /// The pane's slot in the column (gpui-tabs Task 1's content
+    /// half): the flex-grown pane, wrapped for the terminal context
+    /// menu (gpui-chrome, py-5 the profile folders) — the pane's
+    /// default-mode right press bubbles to this wrap and opens
+    /// core's rows through the Kit's popover path, the same route
+    /// the per-tab menu rides, over the live profile list (the
+    /// folders' own ruling: zero profiles keep the flat menu).
+    fn pane_area(
+        &mut self,
+        pane: Entity<TerminalPane>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let shell = cx.entity();
+        let pick: crate::context_menu::PickFn =
+            std::rc::Rc::new(move |pick, window: &mut Window, cx: &mut App| {
+                shell.update(cx, |shell, cx| shell.context_menu_pick(pick, window, cx));
+            });
+        let menu_profiles = self.config.profiles.clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(pane)
+            .context_menu(move |menu, window, cx| {
+                crate::context_menu::build_menu(menu, &menu_profiles, &pick, window, cx)
+            })
+            .into_any_element()
+    }
+
     fn sliding_band(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // The drawer's content is the strip plus the active pane
         // (gpui-tabs Task 1): the strip at the config's side of the
@@ -3290,34 +3426,11 @@ impl Shell {
         let pane_background = resolve_theme(&self.config).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let (strip, fg) = tab_bar::strip_pair(pane_background);
-        let bar = self.tab_strip(cx, at_bottom, strip, fg);
         let Some(pane) = self.active_pane() else {
             return div().size_full();
         };
-        let pane_area = {
-            // The terminal context menu (gpui-chrome, py-5 the profile
-            // folders): the pane's default-mode right press bubbles to
-            // this wrap and opens core's rows through the Kit's
-            // popover path — the same route the per-tab menu rides —
-            // over the live profile list (the folders' own ruling:
-            // zero profiles keep the flat menu).
-            let shell = cx.entity();
-            let pick: crate::context_menu::PickFn =
-                std::rc::Rc::new(move |pick, window: &mut Window, cx: &mut App| {
-                    shell.update(cx, |shell, cx| shell.context_menu_pick(pick, window, cx));
-                });
-            let menu_profiles = self.config.profiles.clone();
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .child(pane)
-                .context_menu(move |menu, window, cx| {
-                    crate::context_menu::build_menu(menu, &menu_profiles, &pick, window, cx)
-                })
-                .into_any_element()
-        };
-        let bar = bar.into_any_element();
+        let bar = self.tab_strip(cx, at_bottom, strip, fg).into_any_element();
+        let pane_area = self.pane_area(pane, cx);
 
         // The column through core's own stacking rule (gpui-status
         // Task 1): the status band always takes the slot adjacent to
@@ -3339,7 +3452,48 @@ impl Shell {
                 Strip::GrabBar => {}
             }
         }
-        let column = div().size_full().flex().flex_col().children(children);
+        // The drag edge (the grab bar's port, sr-2's funnel fed real
+        // input): a thin grab strip at the drawer's free edge, the
+        // press arming the machine's drag; the live move and release
+        // ride the column itself so the drag tracks the pointer
+        // wherever it roams — the reference bar's own capture shape.
+        let drag_edge = Self::drag_edge_strip(cx);
+        if self.inputs.geometry.edge == Edge::Bottom {
+            children.insert(0, drag_edge);
+        } else {
+            children.push(drag_edge);
+        }
+        let shell = cx.entity();
+        let on_drag_move = {
+            let shell = shell.clone();
+            move |event: &gpui::MouseMoveEvent, _window: &mut Window, cx: &mut gpui::App| {
+                // Gate before any update: a hover with no drag armed
+                // must not so much as notify (a redraw per mouse move
+                // would burn the frame budget).
+                if shell.read(cx).machine.drag.is_some() {
+                    run_shell_actions(&shell, cx, |shell, actions| {
+                        shell.drag_edge_move(event.position.y.as_f32(), actions);
+                    });
+                }
+            }
+        };
+        let on_drag_release = {
+            let shell = shell.clone();
+            move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
+                if shell.read(cx).machine.drag.is_some() {
+                    run_shell_actions(&shell, cx, |shell, actions| {
+                        shell.drag_edge_release(actions);
+                    });
+                }
+            }
+        };
+        let column = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(children)
+            .on_mouse_move(on_drag_move)
+            .on_mouse_up(gpui::MouseButton::Left, on_drag_release);
         let Some(playing) = self.machine.slide else {
             return column;
         };
