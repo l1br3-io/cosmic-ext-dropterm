@@ -4317,3 +4317,19 @@ fn the_scrollback_worst_case_math_is_pinned_to_the_cells_size() {
     let bytes = lines as usize * 200 /* columns */ * std::mem::size_of::<Cell>();
     assert_eq!(bytes, 52_992_000); // ~53 MB (50.5 MiB) per saturated tab
 }
+
+#[test]
+fn an_over_cap_inflate_refuses_whole() {
+    // ra-3: the one unpinned branch of the kitty decode's ceilings —
+    // a stream that inflates past IMAGE_PAYLOAD_CAP answers None
+    // (detected one byte past, never silently truncated), while an
+    // under-cap stream inflates whole.
+    let small = zlib_bytes(&[0u8; 64]);
+    assert_eq!(
+        super::inflate_capped(&small).map(|bytes| bytes.len()),
+        Some(64)
+    );
+
+    let over = zlib_bytes(&vec![0u8; super::IMAGE_PAYLOAD_CAP + 1]);
+    assert_eq!(super::inflate_capped(&over), None);
+}
