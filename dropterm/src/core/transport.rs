@@ -260,13 +260,28 @@ pub fn query_visibility() -> Option<bool> {
             .visible()
             .await
         };
-        if let Ok(visible) = read.await {
-            Some(visible)
-        } else {
-            eprintln!(
-                "dropterm: bus name owned but the V1 state                  interface is missing (stale binary?); treating as not                  visible"
-            );
-            None
+        // The forward's own 5 s rule (FORWARD_DEADLINE_SECS, the
+        // gpui-scaffold SIGSTOPped-owner finding) applied to the one
+        // owner-directed wait it missed (ra-3): a wedged owner —
+        // alive, name held, never answering — must not hang
+        // `--is-visible` forever. Silence past the deadline is the
+        // same "not visible" as a missing interface, with its own
+        // note.
+        let deadline = std::time::Duration::from_secs(FORWARD_DEADLINE_SECS);
+        match tokio::time::timeout(deadline, read).await {
+            Ok(Ok(visible)) => Some(visible),
+            Ok(Err(_)) => {
+                eprintln!(
+                    "dropterm: bus name owned but the V1 state interface is missing (stale binary?); treating as not visible"
+                );
+                None
+            }
+            Err(_) => {
+                eprintln!(
+                    "dropterm: no answer from the bus name owner within {FORWARD_DEADLINE_SECS} s; treating as not visible"
+                );
+                None
+            }
         }
     })
 }
