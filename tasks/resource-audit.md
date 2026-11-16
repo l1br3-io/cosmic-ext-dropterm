@@ -31,19 +31,92 @@ log (`app_shell.rs:1276`, bounded or gated — cheap fix, land it);
 dbus/wayland socket counts.
 
 **Acceptance criteria:**
-- [ ] Every listed vector carries a disposition with evidence (probe
+- [x] Every listed vector carries a disposition with evidence (probe
       numbers or file:line citation) in this chunk
-- [ ] The debug-trace log bound lands (truncate-on-enable or size
+- [x] The debug-trace log bound lands (truncate-on-enable or size
       cap) with a pin
-- [ ] The paste-cache retention remedy is ask-first with the measured
+- [x] The paste-cache retention remedy is ask-first with the measured
       growth curve attached (no silent default change)
-- [ ] fd/thread counts under spam recorded; a leak gets its fix or
+- [x] fd/thread counts under spam recorded; a leak gets its fix or
       its filed row
 
 **Verification:**
-- [ ] Headless pins for every landed fix; `just check` green
-- [ ] Probe-derived numbers recorded (owner-run default; the standing
-      exception if granted covers this module too)
+- [x] Headless pins for every landed fix; `just check` green
+- [x] Probe-derived numbers recorded (owner-run default; the standing
+      exception if granted covers this module too — tr-1's owner data
+      is the probe record; no exception was needed)
+
+**Dispositions (2026-11-17, evidence: census citations + tr-1's
+owner-run probe data):**
+
+1. **Paste cache — FIXED (770ffe8, owner ruling: bytes cap +
+   oldest-evict at 256 MiB).** Growth was monotonic with no
+   eviction anywhere (one exclusive-create `0600` file per paste,
+   `paste_cache.rs:132-185`; per-file 32 MiB cap only, `:26`);
+   100 screenshot pastes ≈ 0.1–0.3 GB, abuse ceiling 32 MiB ×
+   count. The ask-first carried the math; the ruling chose the cap.
+   `PASTE_CACHE_CAP` + `enforce_paste_cache_cap_in` evict
+   oldest-first (generated names are timestamp-stamped, so name
+   order is creation order) after each write, never the fresh
+   paste, never foreign names — five pins; known-issues row
+   rewrites "never sweeps" to "capped, not swept".
+2. **Debug-trace log — FIXED (4b46fd1).** The env-gated dump
+   appended per call with no reset (`app_shell.rs`'s
+   `dump_visible_grid`); the process's first dump now truncates —
+   one session's evidence per file — pinned by
+   `the_toggle_log_resets_on_the_first_dump_and_appends_after`.
+   The owner's tr-1 class measurement (bounded-per-dump) stands as
+   the within-run verdict.
+3. **Session saves — CLEAN (code-cited).** Metadata-only per tab
+   (title/shell/cwd/profile/pinned, `session.rs:37-60` — never the
+   grid), shape-gated with a 500 ms debounce
+   (`SESSION_WRITE_INTERVAL` `session.rs:262`, pumped from the
+   100 ms tick `app_shell.rs:1023-1043`), atomic
+   temp+fsync+rename (`session.rs:422-443`), overwrite-in-place
+   with one `.bak` only on corrupt-load quarantine. Grows only
+   with tab count at ~hundreds of bytes per tab (100 tabs ≈ tens
+   of kB). Uncapped tab count itself is carried below.
+4. **PTY + child reaping — CLEAN (code-cited).** Close → Terminal
+   drop → notifier channel closes → pinned alacritty fork's reader
+   thread exits → `Drop for Pty` does SIGHUP + blocking `wait()`
+   (fork `tty/unix.rs:311-320`); SIGCHLD-driven `try_wait` while
+   open (`unix.rs:381-393`); close path `app_shell.rs:1686-1713`,
+   profile respawn replaces the pane (`app_shell.rs:2658`), the
+   never-empty respawn runs after the old child is reaped; the
+   suggest generator SIGKILLs + reaps its one-shot child
+   (`engine.rs:1286-1310`). No zombie path found; the reap is
+   asynchronous on the reader thread by design.
+5. **inotify/config watcher — CLEAN.** Exactly one
+   `recommended_watcher`, armed at boot on the config dir, its
+   thread parked for the process lifetime
+   (`app_shell.rs:4392-4407`); echo-apply drains through the same
+   single watcher (`app_shell.rs:924-943`); never recreated. One
+   fd, total.
+6. **fd/thread counts under spam — CLEAN (measured, tr-1
+   owner-run).** fds 53–61, threads 45–47 across all three regimes
+   × 150, no upward trend (spam50 even ended 53/45). The census
+   inventory reconciles the absolute count: std 2–3, one wayland
+   display + gpui-pre's shm/poll fds, one zbus session connection
+   + tokio internals (`dbus.rs:127-171`), 1 inotify, ~5–6 per PTY
+   tab, transient bell/clipboard connections.
+7. **dbus/wayland sockets — CLEAN.** Three persistent connections,
+   none per tab/toggle/window (wayland display; the one served zbus
+   connection held for the process lifetime; inotify). Transients:
+   notify-rust opens one zbus connection per bell; wl-clipboard-rs
+   opens its own per data-control copy/paste, the serve thread held
+   only while an offer stands (`terminal/clipboard.rs:24-60,96-108`)
+   — bounded by event rate, closed after. Boot probes' connections
+   drop at startup (`startup.rs:43`, `transport.rs:38-45`).
+8. **Other disk writes — CLEAN.** No logging-framework file sinks
+   (the `log` facade with println/eprintln only); config writes
+   atomic, fixed-schema (`config/store.rs:81-106`); no memfd, no
+   other /tmp paths, no other cache dirs.
+9. **Carried: uncapped tab count** (~5–6 fds + one engine per tab;
+   the session file grows with it). Opening tabs is ordinary use,
+   but the count is user-chosen — abuse-class P2, carried to ra-2's
+   many-tabs cost math and the report; a cap would change
+   user-visible defaults, ask-first only if that math makes it
+   matter.
 
 **Dependencies:** tr-1 (probe tooling) · **Files:**
 `core/paste_cache.rs`, `core/tabs.rs`, `dropterm/src/app_shell.rs`,
