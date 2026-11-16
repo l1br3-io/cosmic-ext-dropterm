@@ -187,6 +187,10 @@ pub(crate) struct Shell {
     show_open: Instant,
     frames: u64,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Window actions produced inside a mouse dispatch (the drag
+    /// edge), waiting for the tick's App-level apply point — see
+    /// [`queue_shell_actions`].
+    deferred_actions: Vec<Action>,
     machine: SurfaceMachine,
     executor: GpuiExecutor,
     inputs: SurfaceInputs,
@@ -555,6 +559,7 @@ impl Shell {
             show_open: boot,
             frames: 0,
             last_bounds: None,
+            deferred_actions: Vec::new(),
             machine: SurfaceMachine::default(),
             executor: GpuiExecutor::new(),
             inputs,
@@ -624,6 +629,22 @@ impl Shell {
         }
     }
 
+    /// The mouse dispatch's queued window actions (the drag edge),
+    /// handed to pump's returned actions — the tick's App-level
+    /// apply point, outside any input dispatch. Logged so a walk
+    /// sees the deferral working.
+    fn take_deferred_actions(&mut self) -> Vec<Action> {
+        let actions = std::mem::take(&mut self.deferred_actions);
+        if !actions.is_empty() {
+            println!(
+                "dropterm: {} deferred window action(s) -> the tick's apply at +{}ms",
+                actions.len(),
+                self.boot.elapsed().as_millis()
+            );
+        }
+        actions
+    }
+
     /// One pump: drains the forwarded verbs and the measuring slot
     /// through the decision layer, executing every intent into
     /// actions — pure decision work, no window touched. The tick
@@ -632,7 +653,10 @@ impl Shell {
     /// entity is mid-update panics ("already being updated" — the
     /// first walk's lesson, made structural).
     fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
-        let mut actions = Vec::new();
+        // The mouse dispatch's queued window actions (the drag edge)
+        // apply here first — the tick's App-level point, outside any
+        // input dispatch.
+        let mut actions = self.take_deferred_actions();
         let mut exited = Vec::new();
         let mut tab_verbs = Vec::new();
         // The startup action applies once, on the first pump — the
@@ -1330,24 +1354,50 @@ struct Pumped {
 }
 
 /// One mouse-handler step against the shell: mutate under the
-/// shell's update (collecting window actions), then apply them at
-/// App level — the same split the tick takes. A mouse handler runs
-/// inside the window's event dispatch, so no shell update may be on
-/// the stack when it builds elements (the gc-2 lesson, structural).
-fn run_shell_actions(
+/// shell's update (collecting window actions), then queue them for
+/// the tick's App-level apply point instead of applying inline. The
+/// 2026-11-16 drag walk caught the inline apply dead: a resize
+/// driven from inside the window's own mouse dispatch never reached
+/// gpui's client bounds (no pane relayout, no frame-mapped line, the
+/// compositor surface never moved), while the walk harness — which
+/// resizes from a timer — resizes live. Window-adjacent actions
+/// apply outside input dispatch, the codebase's own rule; the queue
+/// buys at most one tick (100 ms) of drag latency, under the drag's
+/// own apply cadence.
+fn queue_shell_actions(
     shell: &Entity<Shell>,
     cx: &mut App,
     step: impl FnOnce(&mut Shell, &mut Vec<Action>),
 ) {
-    let actions = shell.update(cx, |shell, _| {
+    shell.update(cx, |shell, _| {
         let mut actions = Vec::new();
         step(shell, &mut actions);
-        actions
+        shell.deferred_actions.extend(actions);
     });
-    for action in actions {
-        apply_action(cx, shell, action);
-    }
     shell.update(cx, |_, cx| cx.notify());
+}
+
+/// The 2026-11-16 drag walk's probe: the walk's resizes logged yet
+/// the viewport never followed (no pane relayout, no frame-mapped
+/// line) — so every resize re-reads the viewport a beat later. The
+/// viewport matching the ask closes the loop; a stuck viewport means
+/// the request died client-side.
+fn resize_probe(window: gpui::AnyWindowHandle, width: Option<u32>, height: u32, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(300))
+            .await;
+        let _ = window.update(cx, |_, window, _| {
+            let size = window.viewport_size();
+            println!(
+                "dropterm: resize probe +300ms: viewport {:.0}x{:.0} (asked {}x{height})",
+                size.width,
+                size.height,
+                width.map_or_else(|| "fill".to_string(), |w| w.to_string()),
+            );
+        });
+    })
+    .detach();
 }
 
 /// Applies one window action against live windows — App-level work by
@@ -1432,6 +1482,7 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 width.map_or_else(|| "fill".to_string(), |w| w.to_string()),
                 shell.read(cx).boot.elapsed().as_millis()
             );
+            resize_probe(window, width, height, cx);
         }
         Action::Remove { handle } => {
             let window = shell.read(cx).executor.window_of(handle);
@@ -3432,7 +3483,7 @@ impl Shell {
             .flex_none()
             .h(gpui::px(DRAG_EDGE_PX))
             .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
-                run_shell_actions(&shell, cx, |shell, actions| {
+                queue_shell_actions(&shell, cx, |shell, actions| {
                     shell.drag_edge_press(event.position.y.as_f32(), actions);
                 });
             })
@@ -3522,7 +3573,7 @@ impl Shell {
                 // must not so much as notify (a redraw per mouse move
                 // would burn the frame budget).
                 if shell.read(cx).machine.drag.is_some() {
-                    run_shell_actions(&shell, cx, |shell, actions| {
+                    queue_shell_actions(&shell, cx, |shell, actions| {
                         shell.drag_edge_move(event.position.y.as_f32(), actions);
                     });
                 }
@@ -3532,7 +3583,7 @@ impl Shell {
             let shell = shell.clone();
             move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
                 if shell.read(cx).machine.drag.is_some() {
-                    run_shell_actions(&shell, cx, |shell, actions| {
+                    queue_shell_actions(&shell, cx, |shell, actions| {
                         shell.drag_edge_release(actions);
                     });
                 }
