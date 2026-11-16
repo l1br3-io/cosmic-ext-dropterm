@@ -138,15 +138,82 @@ caches rebuilt per show (the theme-applied count behavior from gm-2 is
 the pin pattern).
 
 **Acceptance criteria:**
-- [ ] Scrollback: cap verified honored, worst-case per-tab and
+- [x] Scrollback: cap verified honored, worst-case per-tab and
       10-tab cost measured and documented (docs row states the number)
-- [ ] Atlas/GPU retention dispositioned — a bound, a filed upstream
+- [x] Atlas/GPU retention dispositioned — a bound, a filed upstream
       row, or a carried remedy (ask-first)
-- [ ] Every remaining tranche vector dispositioned with evidence
+- [x] Every remaining tranche vector dispositioned with evidence
+
+**Dispositions (2026-11-17, census citations; tr-1/tr-2 probe data
+for the upstream-owned halves):**
+
+1. **Scrollback — VERIFIED + DOCUMENTED (515e5a0).** The cap is a
+   hard ring: the fork clamps growth at
+   `min(count, max_scroll_limit - history)` and shrinks through
+   `update_history` (fork `grid/mod.rs:154-180`), reached only via
+   the spawn request (`scrolling_history` from
+   `effective_scrollback`, `view.rs:2168-2171` → `engine.rs` Term
+   config) — spawn-fixed per tab, the documented "applies to the
+   next spawn" semantics. Worst case: 24 B/cell (fork
+   `term/cell.rs:162-170`, char + two Colors + u16 flags + Option
+   Arc niche) × columns × (history + rows + the storage's ≤1 000-row
+   headroom, `grid/storage.rs:13,107-138`) = **~53 MB (50.5 MiB) per
+   saturated tab** at the default and 200 columns; **10 saturated
+   tabs ≈ 0.5 GB**. configuration.md's row states the numbers;
+   `the_scrollback_worst_case_math_is_pinned_to_the_cells_size`
+   pins the basis (Cell size, default, arithmetic). Owner-run live
+   confirmation instructed 2026-11-17 (below).
+2. **Resize copies — CLEAN.** dropterm-side resize is the PTY ioctl
+   + `Term::resize` (`engine.rs:2648-2706`); the per-paint
+   `display_rows` Vec is rebuilt and freed per frame
+   (`view.rs:1553-1559`). Fork-side reflow allocates transient Vecs
+   per wrapped row; the retained effects are the damage Vec replaced
+   in place and the bounded ≤1 000-row headroom — nothing grows with
+   resize count.
+3. **Images in memory — one FIXED, rest CLEAN/BOUNDED.** Ledger
+   rows are metadata (header-only dims read, `core/tabs.rs:139-155`)
+   and die with the tab. The pane's `ImageCache` handles die with
+   the pane (`terminal/images.rs:25-58`). The engine's decoded-store
+   is budgeted **320 MiB per tab with oldest-evict**
+   (`IMAGE_STORE_BUDGET`, `engine.rs:4141`, eviction pinned by
+   `removals_feed_the_frontend_handle_cache`) — a stated bound, but
+   per-tab not global: N tabs of image traffic worst-case N ×
+   320 MiB. Lowering or globalizing changes user-visible defaults →
+   **filed for the report/owner** (P2: needs N tabs each carrying
+   image output), not silently changed. The shell's
+   `images_thumbs` map was the leak-shaped one — full-size decodes
+   for every path ever panel-shown, surviving tab close — **FIXED
+   (5c4a159)**: orphans drop at close, the union of live ledgers the
+   rule (duplicates share paths), pinned by
+   `the_thumbs_cache_sheds_orphans_when_a_tab_closes`.
+4. **Theme and font caches — CLEAN (one cost note).** Theme schemes
+   are compile-time consts (`theme_source.rs`), no runtime cache;
+   the apply path is identity-gated (gm-2's pinned behavior). The
+   terminal font rides GPUI's app-level text system (one clone per
+   pane, `host.rs:43-79`); status/glyph caches are GPUI's. Cost
+   note, no fix: fontdb does a full system-font scan per
+   settings-drawer open (`font_list.rs:35-38` ← `drawer.rs:298`,
+   drawer dropped on close) — transient, user-triggered, bounded;
+   caching it would change nothing user-visible for real cost.
+5. **Atlas/GPU — UPSTREAM-OWNED, MEASURED CLEAN.** dropterm
+   allocates no GPU/wgpu resources itself (two paint-hook
+   `gpui::canvas` uses only; images ride upstream
+   `paint_image`/`RenderImage`). tr-1/tr-2's owner-run probe shows
+   no `/dev/dri` or memfd growth across toggle churn — nothing to
+   file; window/compositor retention is GPUI's and measured flat.
+
+**Saturated-tab confirmation (owner-run, instructed 2026-11-17):**
+with dropterm running, read `grep VmRSS /proc/$(pidof
+dropterm)/status`, fill one tab's scrollback at full width — `awk
+'BEGIN{line="";for(j=0;j<200;j++)line=line "x";for(i=0;i<12000;i++)
+print line}'` — and read VmRSS again: the delta should sit near the
+pinned ~50 MB (the storage only touches what the fill wrote).
 
 **Verification:**
 - [ ] Saturated-tab measurement recorded; headless pins where pure;
-      `just check` green
+      `just check` green — pins landed and `just check` green on
+      both commits; the saturated-tab confirmation is the owner-run
+      half, reported verdict pending
 
 **Dependencies:** tr-2 · **Files:** `core/config.rs` (docs of the
 bound), engine/terminal view files as named by findings ·
