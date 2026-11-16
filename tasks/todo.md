@@ -668,7 +668,11 @@ checkpoint rides both.)*
       identity per run; debug-trace growth class; the owner's crash
       signature captured
 - [ ] tr-2 The fix *(gate: tr-1's attribution; root cause named with
-      before/after numbers; upstream findings filed ask-first)*
+      before/after numbers; upstream findings filed ask-first)* —
+      **narrowed (owner 2026-11-17): the crashing build was
+      pre-74e6d85, so the cause is already fixed and pinned;
+      remaining is evidence only — the 2×-duration pass and the
+      hardware walkthrough, owner-run; no new code fix**
 - [ ] tr-3 Bank it: testing.md row both-regime, known-issues residue,
       probe outputs in the chunk
 

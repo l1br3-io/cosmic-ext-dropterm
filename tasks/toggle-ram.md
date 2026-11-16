@@ -40,7 +40,7 @@ alongside: one documented owner-run pass for journalctl OOM/kill rows,
       build being older, and the row narrows to that)
 - [ ] The debug-trace growth class measured and noted (bounded
       file-open per dump vs runaway append)
-- [ ] The crash signature captured owner-run (OOM row, coredump, or
+- [x] The crash signature captured owner-run (OOM row, coredump, or
       clean) and recorded in this chunk
 
 **Verification:**
@@ -157,9 +157,15 @@ crashed on.
 
 **Still open for tr-1's boxes:** the debug-trace growth class (the
 `DROPTERM_TOGGLE_DEBUG` pass — dbglog=0 in all three runs because
-the env wasn't set) and the crashing build's identity (owner report)
-— the 2×-duration confirmation (300 toggles) rides whichever regime
-the owner's crash resembles.
+the env wasn't set; instruction issued 2026-11-17). The crashing
+build's identity is **answered: pre-74e6d85, owner 2026-11-17** —
+the crash signature is the ratchet 74e6d85 measured (unbounded
+`[heap]` growth under the two-window teardown churn with glibc's
+dynamic trim-threshold adjustment, → OOM at the machine's horizon);
+on current main the owner-run VM passes are clean (no OOM row, no
+coredump, no pid change, 150×3). Signature attribution is
+inferred-from-the-measured-mechanism, not a captured old OOM row —
+the pre-pin build's journal is gone with the build.
 
 ## Task tr-2: The fix (gate: tr-1's attribution)
 
@@ -195,6 +201,28 @@ mapping; no fix lands without an attributed vector.
 
 **Dependencies:** tr-1 · **Files:** named by the evidence (candidates
 above) · **Scope:** M
+
+**Narrowed (owner ruling 2026-11-17):** tr-1's attribution gate
+resolves to a cause already fixed — the crashing build was
+**pre-74e6d85** (owner report), and that incident measured and
+pinned exactly this vector: `[heap]` ratcheting ~53 kB/toggle under
+the two-window show/hide teardown churn, because glibc's dynamic
+trim-threshold adjustment never returns the top chunk, → OOM at the
+machine's horizon. Current main (pin in) is owner-run clean in all
+three regimes at 150. No new code fix is warranted; manufacturing a
+pre-pin "before" for the spam regimes would mean rebuilding a fixed
+bug — 74e6d85's paced before/after (+3,020 of +3,052 kB in `[heap]`
+over 100 toggles → flat, 324 kB over the last 70) plus tr-1's
+both-spam-regime clean "after" stand as the numbers. What remains of
+tr-2 is evidence, both owner-run: the ≥2×-duration pass (300
+toggles; the probe runs on hardware too — `sh
+scripts/vm-leak-probe.sh 300 paced` beside the dropterm binary) and
+the crash-regime walkthrough on the hardware that crashed (current
+main installed, toggling ≥2× the old crash horizon). The
+"root cause named in the fixing commit" criterion is satisfied
+retroactively by 74e6d85's own message; the upstream criterion
+(glibc behavior) is recorded, not filed — the pin is the carried
+remedy and predates this module.
 
 ## Task tr-3: Bank it — long-run evidence and docs rows
 
