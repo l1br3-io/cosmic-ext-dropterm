@@ -78,7 +78,30 @@ fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
     }
 }
 
+/// Pin glibc's trim threshold before any heavy allocation lands (the
+/// F12 ratchet fix, measured 2026-11-16): every show/hide cycle tears
+/// down and rebuilds two GPUI windows (the measuring pass plus the
+/// swap on show, the slide-out destroy on hide), and the freed heap —
+/// fonts, scenes, grids — piles onto the arena's top chunk. glibc's
+/// *default* threshold is also 128 KiB, but it self-adjusts upward
+/// after large frees, so the top never comes back down and RSS
+/// ratchets by a sustained ~50 kB per toggle, unbounded (the VM
+/// probe: every kB of the +3 MB growth over 100 toggles landed in
+/// `[heap]`; the same probe with the threshold pinned ran flat).
+/// Setting it explicitly disables that
+/// dynamic adjustment, so each cycle's churn returns to the OS.
+fn pin_malloc_trim_threshold() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt only adjusts allocator parameters; it touches
+    // no memory the program owns. Called before any thread that
+    // allocates has started, so the parameter applies process-wide.
+    unsafe {
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
+    }
+}
+
 fn main() {
+    pin_malloc_trim_threshold();
     println!("dropterm: booting on the gpui-pre 0.3.12 pin (wayland)");
     let args = cli::Args::parse();
     // The query path exits before any bus-name attempt and before the
