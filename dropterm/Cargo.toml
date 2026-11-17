@@ -1,0 +1,172 @@
+# The one terminal package (the collapse, gpui-cutover cu-4): the GPUI
+# frontend and the toolkit-neutral core are one crate now — the bin is
+# `dropterm`, the core lives in the crate's `core` module, and the
+# core package and the applet it fed are gone (the owner's ruling,
+# 2026-11-15). Git history keeps both halves whole.
+[package]
+name = "dropterm"
+version = "0.5.0"
+authors = ["l1br3-io"]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.93"
+description = "A native, Yakuake/Guake-style drop-down terminal for the COSMIC desktop"
+repository = "https://github.com/l1br3-io/dropterm"
+
+[[bin]]
+name = "dropterm"
+path = "src/main.rs"
+
+# The package's lib half: the `core` module (the toolkit-neutral
+# engine, models, and contract — the dissolved dropterm-core) as a
+# proper library target, so its API surface stays reachable the way a
+# crate boundary makes it and the bin consumes it by name. One
+# package, one CLI; the lib ships nothing by itself.
+[lib]
+name = "dropterm"
+path = "src/lib.rs"
+
+[dependencies]
+# The ruled pin (plan open questions item 8, ruled 2026-11-13 on the
+# Kit pass's recommendation): published crates, never a zed git pin —
+# gpui-pre exact at 0.3.12 (the crates.io snapshot of zed
+# d2a4fb6ded7c470be25d1541281da3882495b65b, the rev the spike ran its
+# checks on), default features off, wayland + font-kit only — exactly
+# the set the Kit itself consumes. GPUI's x11/macOS features are
+# Phase 4–5's call and never enter here. gpui-pre-platform rides the
+# same exact version; its `wayland` feature is the consumer-side
+# switch into the Linux crate's wayland backend.
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["wayland", "font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland"] }
+
+# The Kit (plan item 7's adoption, kit-pass C2b/C3): gpui-component
+# exact at 0.9.1, component-only — default features off, never the
+# gpui-kit aggregate, never gpui-shell; windows stay embedder-owned
+# (cx.open_window + a manual Root wrap). Resolves to the carried copy
+# through the root [patch.crates-io] (the Root auto-border, zeroed).
+gpui-component = { version = "=0.9.1", default-features = false }
+
+# The layer-shell startup probe (gpui-scaffold Task 3): one registry
+# roundtrip before any surface exists, on this binary's own
+# connection — the same direct-dependency ruling the libcosmic
+# frontend's guard took (no existing dependency exposes a usable
+# connection). Version-matched to the 0.31 line gpui-pre carries in
+# the lock.
+wayland-client = "0.31"
+
+# The CLI surface (gpui-scaffold Task 4): the surface verbs'
+# derive-based parser, the frontend's own line. Version-matched to the
+# 4.x line the lock already carries.
+clap = { version = "4", features = ["derive"] }
+
+# The control bus beside the render loop (gpui-scaffold Task 4): the
+# served loop's own multi-thread runtime and the forwarded-verb channel
+# (`rt-multi-thread` + `sync`; the dbus_state wire tests' mpsc rides
+# the same 1.x line). No timers of our own — the drainer blocks on the
+# channel instead.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+
+# The served connection itself (gpui-scaffold Task 4): the builder, the
+# name request, and the changed-helper emission this binary drives
+# directly (default features off, the tokio executor). `p2p` serves
+# the dbus_state wire tests' headless peer-to-peer harness — the same
+# union the two-crate graph already built, so the shipped binary
+# carries nothing new.
+zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
+
+# The live config-edit reshape (gpui-surface Task 2): watch the
+# config dir for external edits and signal the shell's tick — the
+# sanctioned watcher crate (config-store spec, 2026-11-10).
+# Version-matched to the 8.2 line the lock already carries.
+notify = "8.2"
+
+# The terminal engine's own types cross into the view (gpui-terminal
+# spec): the grid's `Cell`/`Color`/`Colors` for the row projection,
+# and the engine's metadata + color types in the core module. The
+# [patch.crates-io] entry pins the fork; no new code enters the build.
+alacritty_terminal = "0.25.1"
+
+# The image store (iterm-images spec): the core module decodes the
+# four formats into its cache; the view turns the stored pixels into
+# GPUI `RenderImage` frames (gpui-parity Task 2). Same 0.25 line the
+# lock already carries.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# The engine's text stack (core module): plain data plus the shaper
+# the test host uses, the `TextHost` seam's `Buffer` ownership, and
+# the band's own metrics (shared-core + gpui-terminal specs). Same
+# 0.19 line, same features, the lock already carries.
+cosmic-text = { version = "0.19", features = ["monospace_fallback", "shape-run-cache"] }
+
+# The engine's metadata set (grid cell styling).
+indexmap = "2"
+
+# The inline-image wire's base64 and the completions file's inflate
+# and parse.
+base64 = "0.22"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+toml = "0.5"
+dirs = "6"
+
+# `tcgetpgrp`/`getpgid` for foreground-process detection — no safe
+# std API exists for either.
+libc = "0.2"
+
+# The status band's shell-process and clock plumbing (gpui-status
+# spec): the log facade the config store speaks.
+log = "0.4"
+
+# The session file's serde format.
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+
+# The font picker's enumeration (gpui-chrome spec): walks the system
+# font dirs once at startup. Version-matched to the 0.23.0 line
+# cosmic-text already pulls into the lock — with every default
+# feature already unified on — so no new code enters the build.
+fontdb = "0.23"
+
+# The images panel's Open verbs (gpui-parity py-6): the system viewer
+# and the file manager. Same 5.3.2 line the lock already carries.
+open = "5.3.2"
+
+# The bell's desktop notification (gpui-parity Task 3): direct-D-Bus
+# notify-rust, 4.18, the line the lock already carries.
+notify-rust = "4.18"
+
+# The pane's focus-free clipboard half (gpui-terminal Task 3): the
+# data-control protocol serves copies made while unfocused (OSC 52
+# stores) and the primary selection, which GPUI's clipboard does not
+# expose. Same 0.9 line the lock already carries.
+wl-clipboard-rs = "0.9"
+
+# The status band's clock (gpui-status spec): `Zoned::now` for the
+# minute-boundary text — the core module owns the arithmetic, the
+# view reads the wall clock. Same 0.2 line the lock already carries.
+jiff = "0.2"
+
+# The generator's output medium (gpui-theme spec): the carried kit-pass
+# C4 module emits the scheme → theme mapping as a `serde_json::Value`
+# for `from_value::<ThemeConfig>` — the sanctioned JSON path (the
+# `#[non_exhaustive]` struct is never constructed in code). Also the
+# config-key ↔ docs sync test's serializer. Same 1.x line the lock
+# already carries.
+serde_json = "1"
+
+[features]
+# Re-identifies the binary as `io.github.l1br3_io.dropterm.Dev` —
+# its own single-instance slot, bus name, config file, state
+# directory, and namespace. Never default: release artifacts carry
+# the plain identity.
+dev-identity = []
+
+[dev-dependencies]
+# The pickers' component tests (gpui-chrome Task 1): the Kit's own
+# test harness — TestAppContext/add_empty_window for headless picker
+# state, seeding, and confirm wiring. The same exact pin as the Kit's
+# own select tests ride; test builds only, never the shipped binary.
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+
+# The dbus_state wire tests' stream combinators and `join!`.
+# Version-matched to the 0.3.34 line the lock already carries.
+futures = "0.3"

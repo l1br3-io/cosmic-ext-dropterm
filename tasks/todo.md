@@ -10,14 +10,21 @@ chunk's verification passing.
 - [x] rc-1 Session 1: COSMIC baseline (16 checks, slot filled) *(agent-run 2026-11-11 in the validation VM, 9091b19: 1/4/8/12/13/15 pass, input rows n-a — owner's eyes-on, parked 2026-11-13)*
 - [x] rc-2 Session 2a: sway (shared with the spike) *(agent-run headless, 1deed62: green where exercisable — maps/renders/lifecycle/handoff; input rows + bell row want one hardware sway session — parked
       2026-11-13)*
-- [ ] rc-3 Session 2b: Hyprland *(parked 2026-11-13, owner ruling —
-      un-park by running the session; a headless-docker attempt may
-      still carry it the way sway's session went)*
-- [ ] rc-4 Session 3: KDE Plasma (Wayland) *(parked 2026-11-13, owner
-      ruling — un-park by running the session)*
-- [ ] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
-      *(parked 2026-11-13, owner ruling — expected-fail and
-      confirmatory; the guard already has weston-headless evidence)*
+- [x] rc-3 Session 2b: Hyprland *(waived — owner ruling 2026-11-15
+      closing Phase 0 with the sessions unrun; the parked note stands: a
+      headless-docker attempt may still carry it the way sway's session
+      went if Hyprland is ever questioned)*
+- [x] rc-4 Session 3: KDE Plasma (Wayland) *(waived with the phase,
+      owner ruling 2026-11-15 — the smoke 2026-11-15 owner-run on a
+      Fedora KDE VM against the GPUI frontend remains the only KDE
+      evidence: layer-shell works, hidden mode clean with no frame; with
+      dock mode on, a KWin rounded frame drew around the drawer —
+      dock-on/off correlation, mechanism unconfirmed; an informal smoke,
+      not a session fill, and still not one)*
+- [x] rc-5 Session 4: GNOME — how it fails (feeds layer-shell-guard)
+      *(waived with the phase, owner ruling 2026-11-15 — expected-fail
+      and confirmatory; the guard's weston-headless evidence stands as
+      the no-layer-shell record)*
 - [x] rc-6 Session 5: one X11 session (record which) *(i3 over Xvfb, 482a37d: zombie + degenerate 32px DOCK band first launch, truthful --is-visible, libXi-less panic variant; expected-fail recorded)*
 - [x] rc-7 Session 6: non-Pop distro — floor, ldd, fonts (feeds
       distro-reach) *(run 2026-11-11 on archlinux:latest, slot filled
@@ -25,9 +32,11 @@ chunk's verification passing.
       green, ldd under-reports through winit's dlopen, fontless base;
       this box only catches todo up — the chunk and plan record
       already carried it)*
-- [ ] rc-8 Close-out: every failure filed and named in its slot
+- [x] rc-8 Close-out: every failure filed and named in its slot
       *(parked 2026-11-13 with the three open sessions — it sweeps
-      what they fill)*
+      what they fill — closed by the same 2026-11-15 ruling: the waived
+      sessions filed nothing to sweep; the filled slots' failures are
+      named and the known class carries the layer-shell-guard fix)*
 
 ## Phase 1 — app-identity (flag day; merges first)
 
@@ -608,17 +617,143 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       baseline; bell + sessions rows walked owner-run 2026-11-15 —
       reported done, no deviations filed)
 - [ ] py-4 The parity walk: the whole manual checklist, COSMIC + sway,
-      row-named evidence; deviations filed — gate: open question item 9
-      ruled (dock mode)
+      row-named evidence; deviations filed *(parked, owner ruling
+      2026-11-15 — the walks no longer gate building; un-park by the
+      owner running the walk; the feature tasks below land first)*
+- [x] py-5 The tab-verb and profile spawn surface: core spawn
+      resolution + GPUI profile launches (env/cwd/per-tab appearance),
+      default_profile, --cmd, the remote tab verbs (CLI + dbus + the
+      shell funnel), the menu folders, the `+` dropdown, Switch
+      Profile, session profile ids, the band's profile seat *(done
+      2026-11-15: 986e765 · 113566b · 847b99c · 2028c7f, `just check`
+      green across the four; the manual rows park with py-4)*
+- [x] py-6 The GPUI images panel over core's paste cache and ledger,
+      with the labeled confirm pair *(done 2026-11-15, b33cf05, `just
+      check` green — the manual rows park with py-4)*
 
 **Checkpoint — parity:** Phase 3's exit line holds on both compositors.
 
-- [ ] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
-      deleted; applet canary — owner-gated
-- [ ] cu-2 Docs true (architecture rewrite incl. diagrams;
-      known-issues fractional row)
+- [x] cu-1 The swap: GPUI bin becomes `dropterm`; libcosmic frontend
+      deleted; applet canary — the code swap proceeds under the
+      2026-11-15 walk-skip ruling *(done 2026-11-15, a2cd89f: package
+      and bin renamed, the frontend deleted, the root a virtual
+      workspace, the workflow's version read re-pointed; `just check`
+      and `just build-all` green — the canary row died with the
+      applet, cu-4)*
+- [x] cu-2 Docs true (architecture rewrite incl. diagrams;
+      known-issues fractional row) *(done 2026-11-15, 7d98912)*
+- [x] cu-4 The collapse: one package `dropterm` (bin + the `core`
+      lib half), one CLI, the applet and `dropterm-core` gone
+      *(owner ruling 2026-11-15 — "one cli command and crate; drop
+      it"; done the same day: the gpui directory renamed `dropterm/`,
+      the core dissolved into the package's lib target with the
+      toolkit pin re-homed as a source-walking test, the applet
+      package + res + justfile + workflow legs deleted, docs and
+      testing.md re-truthed, Cargo.lock −2.3k lines with libcosmic
+      out of the graph; `just check` and `just build-all` green,
+      clippy clean, 1225 tests green both identities)*
 - [ ] cu-3 The deferred release, `/release` ritual, walk gate — owner
-      fires it
+      fires it *(owner-gated: the release stays the owner's to cut;
+      nothing here pushes or tags)*
 
 **Checkpoint — Phase 3 exits:** parity proven, one binary, the release
-cut; Phase 4 may open.
+cut; Phase 4 may open. *(The code is one binary; parity's proof is
+py-4's parked walk and the release is cu-3's owner gate — the
+checkpoint rides both.)*
+
+## Hardening pass — toggle-ram (main; /planning 2026-11-16) — done 2026-11-17
+
+- [x] tr-1 The attribution probe: per-mapping RSS + fds + threads,
+      paced 1 s + spam 100 ms/50 ms profiles, ≥150 toggles each, build
+      identity per run; debug-trace growth class; the owner's crash
+      signature captured
+- [x] tr-2 The fix *(gate: tr-1's attribution; root cause named with
+      before/after numbers; upstream findings filed ask-first)* —
+      **narrowed (owner 2026-11-17): the crashing build was
+      pre-74e6d85, so the cause is already fixed and pinned;
+      remaining is evidence only — the 2×-duration pass and the
+      hardware walkthrough, owner-run; no new code fix**
+- [x] tr-3 Bank it: testing.md row both-regime, known-issues residue,
+      probe outputs in the chunk
+
+**Checkpoint — the crash is fixed and evidenced:** flat tail both
+regimes, crash gone at 2× duration, rows green, owner has the numbers.
+*(Done 2026-11-17 — rows were left unticked here at the time; ticked
+retroactively to match the committed chunk and SPEC status.)*
+
+## Hardening pass — resource-audit (main; after toggle-ram) — done 2026-11-17
+
+- [x] ra-1 Descriptors/processes/threads/disk sweep (paste-cache
+      retention ask-first, session save, PTY reaping, watcher, debug
+      log bound, fd/thread under spam)
+- [x] ra-2 Memory/GPU sweep (scrollback cap verified + cost documented,
+      atlas/GPU retention, images ledger, resize churn)
+- [x] ra-3 Concurrency/panic census + input bombs (unwrap/expect
+      classification, tick queues, zbus bound, config/paste/decode/
+      OSC 52/copy/flood)
+- [x] ra-4 The P1 fix batch *(gate: ra-1..3 findings; one commit per
+      fix, bound as a number, pinned)*
+- [x] ra-5 The report filed (docs/research/resource-audit.md, index
+      row, docs rows, just check)
+
+**Checkpoint — the sweep is dispositioned:** every vector fixed+pinned,
+filed, or deferred by ruling; no P1 open; report filed and reviewed.
+*(Closed 2026-11-17 by owner direction: both instructed confirmations
+run agent-side under that direction and green — the saturated tab
+0.04 % off the pinned math, the verb flood bounded with P2-2's
+one-tick clause corrected; the report's Confirmations section carries
+the numbers.)*
+
+## RAM initiative — ram-leak (main; /planning 2026-11-17)
+
+- [x] rl-1 The capped reproduction formalized (`#[ignore]` real-rc
+      churn test, the curve recorded agent-run under the cap, the
+      probe's panic-shape gone from the tree)
+- [x] rl-2 Attribution (heaptrack under the cap / dhat fallback; the
+      stack, the GB/s arithmetic, the fix-site verdict)
+- [x] rl-3 The fix + pins *(gate: rl-2; root cause named with
+      before/after numbers, synthetic pin in `just check`, capped
+      rerun flat; fork path ask-first)* — done 2026-11-17: the
+      carried path ruled by the owner, two upstream-bug guards in
+      carried/alacritty-terminal + dropterm's own `visible_rows`
+      viewport fix; pin (≤1024 grid rows) green in `just check`,
+      capped real-rc rerun flat 50.1→51.2 MiB / 22 cycles (was
+      49 MB → the cap inside one resize; 47.1 GB / 12 s uncapped)
+- [x] rl-4 Bank it (incident record + index row, testing row,
+      residue — including what the fix does not explain of daily
+      growth) — done 2026-11-17: docs/research/ram-leak.md filed
+      (journal lines verbatim, the attribution, the numbers, the
+      upstream PR draft); known-issues carries the daily-growth
+      open thread for ram-telemetry's curve
+
+**Checkpoint — the bomb is fixed and evidenced:** capped repro flat
+with a stated bound, pin green, owner has the numbers; ram-telemetry
+opens on it.
+
+## RAM initiative — ram-telemetry (main; after ram-leak)
+
+- [x] rt-1 The sampler module (`core/mem.rs`: parse / rotate /
+      fail-safe, unit-pinned, zero new deps) — done 2026-11-18: 19
+      tests green in `just check`; the realistic rollup fixture
+      caught a real parser bug (smaps_rollup writes no colons,
+      status does) before it ever hit the every-30th read
+- [x] rt-2 The 1 Hz tick hook + children feed + capped smoke
+      (agent-run; the owner's daily-session instruction issued) —
+      done 2026-11-18: `tick_mem_watch` on the shell's 100 ms pump
+      (every 10th tick, pinned), children fed from the panes' engine
+      pids, smoke `ticks=20600 writes=2060 A=2048 B=12 rollup=68`
+      green in `just check`; the owner's daily-session row issued in
+      the chunk, verdict pending
+- [x] rt-3 Docs + banking (schema + agent-extraction one-liners +
+      capture ladder, README index link, testing row, residue) —
+      done 2026-11-18: docs/memory-diagnostics.md landed (schema
+      table, copy-runnable one-liners, the tooling record's
+      five-step ladder), linked from README's index; the testing row
+      open for the owner's verdict (the module's close — flat
+      closes the known-issues daily-growth row); the tooling
+      record's research row moved Proposed → Adopted; `just check`
+      green with docs-check
+
+**Checkpoint — the watch is live:** sampler in every build, the log
+verified on disk, docs landed; the owner's daily-session verdict
+closes the module.

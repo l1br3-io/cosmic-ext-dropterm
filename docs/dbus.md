@@ -1,6 +1,6 @@
 # The D-Bus contract
 
-Everything an integrator needs to drive or query DropTerm from another program - a GNOME Shell extension, a KDE widget, a swaybar module - without reading Rust: the address, the two interfaces, the CLI's wire encoding, and the stability promise. The [panel applet](applet.md) is the reference consumer. Every member named below is pinned to the served surface by a wire test in the terminal's own suite: a member added to either interface without a row on this page fails `just check`.
+Everything an integrator needs to drive or query DropTerm from another program - a GNOME Shell extension, a KDE widget, a swaybar module - without reading Rust: the address, the two interfaces, the CLI's wire encoding, and the stability promise. Every member named below is pinned to the served surface by a wire test in the terminal's own suite: a member added to either interface without a row on this page fails `just check`.
 
 ## The address
 
@@ -75,4 +75,4 @@ The plan's ruling, stated exactly: **the V1 D-Bus contract is *the* API; D-Bus i
 
 ## Writing a consumer
 
-The [panel applet](applet.md) is the reference: it watches the bus name for the terminal's lifecycle, reads both V1 properties through the generated proxy in the terminal crate's library (the shared half of the contract - the state types can never drift between the two binaries), and sends the same `ActivateAction("toggle", [])` a second CLI launch would through its own thin proxy, pinned byte-identical to the CLI's message by a wire test in the applet's own suite. An out-of-tree consumer needs only a D-Bus client; everything on this page is the whole contract.
+The CLI is the reference consumer: a second launch forwards its verb through `org.freedesktop.DBus` to the running instance, and the same one encoder/decoder pair (`cli.rs`) serves every word-carrying tab verb. An out-of-tree consumer needs only a D-Bus client; everything on this page is the whole contract.

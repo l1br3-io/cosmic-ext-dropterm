@@ -14,7 +14,6 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 - [Configuration](configuration.md) - all 52 config keys, profiles, and direct editing
 - [Keybindings](keybindings.md) - every default chord and how to rebind
 - [CLI reference](cli.md) - scripting the running instance: new tabs, the tab verbs, `--is-visible`
-- [Panel applet](applet.md) - toggling DropTerm and reading its state from the COSMIC panel
 - [FAQ](faq.md) - the recurring questions, answered directly
 
 ## In depth

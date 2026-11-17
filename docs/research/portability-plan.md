@@ -1315,15 +1315,27 @@ No failures to file beyond the bell row, which rides with the rewalk.
 
 #### Session 2b: Hyprland
 
-*Pending.*
+*Waived — owner ruling 2026-11-15 closed Phase 0 with this session
+unrun. No results; a headless-docker rig (the sway session's pattern)
+can still fill the slot if Hyprland is ever questioned.*
 
 #### Session 3: KDE Plasma (Wayland)
 
-*Pending.*
+*Waived with the phase — owner ruling 2026-11-15, session unrun. The
+only KDE evidence on record is the informal smoke of the same date
+(owner-run, Fedora KDE VM, GPUI frontend): layer-shell up, hidden mode
+clean with no frame; with dock mode on, a KWin rounded frame drew
+around the drawer — dock-on/off correlation, mechanism unconfirmed. Not
+a session fill.*
 
 #### Session 4: GNOME (Wayland)
 
-*Pending.*
+*Waived with the phase — owner ruling 2026-11-15, session unrun. It was
+expected-fail and confirmatory; the no-layer-shell record stands on the
+guard's weston-headless evidence (19 globals, no `zwlr_layer_shell_v1`,
+refuses with the message + exit 1 — `layer-shell-guard`, f73cf27), and
+the 2026-11-08 sandbox walk's lying-true `--is-visible` mode stays the
+companion-extension design's known failure mode.*
 
 #### Session 5: X11
 

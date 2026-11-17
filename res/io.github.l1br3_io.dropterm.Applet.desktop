@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=DropTerm
-Exec=dropterm-applet
-Icon=io.github.l1br3_io.dropterm-symbolic
-NoDisplay=true
-X-CosmicApplet=true
-X-CosmicShrinkable=true

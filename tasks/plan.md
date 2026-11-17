@@ -114,8 +114,14 @@ spine (`shared-core`, `gpui-scaffold`, the closers) runs on main.
 ## Task list (index into the chunks)
 
 ### Phase 0 — hardware, no code ([reality-check](reality-check.md))
-- [ ] Tasks 1–7: the seven sessions, one slot each in the plan record
-- [ ] Task 8: close-out — every failure filed
+- [x] Tasks 1–7: the seven sessions, one slot each in the plan record
+      *(rc-1/2/6/7 ran and their slots are filled; 2b/Hyprland, 3/KDE,
+      and 4/GNOME waived — owner ruling 2026-11-15 closing Phase 0 with
+      the sessions unrun; the plan record's slots carry the ruling)*
+- [x] Task 8: close-out — every failure filed *(closed with the phase by
+      the same ruling: the waived sessions filed nothing; the filled
+      slots' failures are named, the no-layer-shell class carried the
+      layer-shell-guard fix)*
 
 ### Phase 1 — flag day ([app-identity](app-identity.md))
 - [ ] Task 1: the three owner rulings
@@ -385,3 +391,137 @@ Each is also recorded in its chunk:
    this pin, cost inside the slide budget.
 5. **Dock mode is an owner question** (open questions item 9), ruled
    before the parity walk reaches the shell-presence rows.
+
+## Hardening pass (opened 2026-11-16): toggle-ram → resource-audit
+
+The owner reported repeated toggling eating RAM until the app
+crashes; the pass fixes that and then sweeps every other
+crash/resource-exhaustion vector. Specs: [SPEC-toggle-ram.md](../SPEC-toggle-ram.md),
+[SPEC-resource-audit.md](../SPEC-resource-audit.md); chunks:
+[toggle-ram.md](toggle-ram.md), [resource-audit.md](resource-audit.md)
+(the chunks are the task detail; this section is the aggregate view).
+
+### Planning rulings (made at /planning 2026-11-16; veto at review)
+
+1. **Measure-first is mandatory.** No fix lands without an attributed
+   vector (mapping + code path) and before/after numbers — 74e6d85's
+   discipline, extended past `[heap]`.
+2. **Both regimes are first-class.** Paced (1 s settle, the only
+   regime ever measured) and spam (100 ms and 50 ms profiles, under
+   the 150 ms debounce and inside the ~130 ms slide — never probed).
+3. **VM probe stays owner-run by default** (2026-11-14 ruling). The
+   standing-exception ask rides tr-1's review; 74e6d85's one-off is
+   the precedent. Agent-run evidence, if sanctioned, is marked
+   agent-run.
+4. **The audit's dispositions are three**: fixed with a stated bound
+   (a number in a test or docs row) and a pin, filed in known-issues
+   with evidence, or deferred by owner ruling. The report
+   (`docs/research/resource-audit.md`) is an immutable research
+   record once filed.
+5. **Debug instrumentation is itself in scope**: the toggle-dump
+   trace's append-only `/tmp` log gets bounded or gated (ra-1's cheap
+   fix).
+
+### Task index
+
+- tr-1 the attribution probe (both regimes, per mapping, fd/thread,
+  build identity) → tr-2 the fix (gated on attribution) → tr-3 bank
+  it (evidence + docs rows). Checkpoint: flat tail, crash gone.
+- ra-1 descriptors/processes/threads/disk → ra-2 memory/GPU →
+  ra-3 concurrency/panics/input bombs (ra-1..3 may interleave; all
+  need tr-1's tooling) → ra-4 the P1 fix batch (gated on findings) →
+  ra-5 the report filed. Checkpoint: every vector dispositioned.
+
+### Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Root cause is upstream (GPUI/wgpu, cosmic-comp) | High | File with evidence; smallest carried remedy, ask-first (kit-root-border precedent) |
+| VM cannot reproduce the crash (hardware-only) | Med | tr-1's owner-run signature capture; hardware rows stay owner's |
+| Spam regime surfaces several interacting causes | Med | Triage by mapping size; one cause per commit, numbers each |
+| Findings grow past the chunk's shape | Low | Split tasks rather than grow them (house ≤5-file rule) |
+
+### Open questions
+
+1. Which build crashed (with or without 74e6d85) — tr-1 answers by
+   construction (build identity in every probe run).
+2. The crash's shape (OOM, panic, hang, session-level) — tr-1's
+   owner-run capture.
+3. The standing VM-probe exception — asked at tr-1's review.
+
+## RAM initiative (opened 2026-11-17): ram-leak → ram-telemetry
+
+The kernel OOM-killed this repo's own lib-test binary on 2026-11-17
+20:54 — 47.1 GB anon-rss in a ~12 s run of the real-rc resize-churn
+probe (`dropterm-59e80177bea39695`), the app's exact toggle path —
+and the owner confirms daily-use RAM growth. The initiative fixes
+the bomb, then ships the always-on sampler that makes daily growth
+observable as data. Specs: [SPEC-ram-leak.md](../SPEC-ram-leak.md),
+[SPEC-ram-telemetry.md](../SPEC-ram-telemetry.md); chunks:
+[ram-leak.md](ram-leak.md), [ram-telemetry.md](ram-telemetry.md)
+(the chunks are the task detail; this section is the aggregate
+view). Tooling grounding:
+[docs/research/memory-tracking-tooling.md](../docs/research/memory-tracking-tooling.md).
+
+### Planning rulings (made at /planning 2026-11-17; veto at review)
+
+1. **Every reproduction is capped, every time** —
+   `systemd-run --user --scope -p MemoryMax=2G -p MemoryHigh=1536M
+   -p MemorySwapMax=0`; the High-before-Max ordering is what lets
+   heaptrack's exit-time dump finalize, and the cap value is
+   recorded per run (owner sanction 2026-11-17: agent-run headless
+   reproductions allowed under exactly this shape).
+2. **Instruments, fixed**: heaptrack primary; dhat mid-run
+   `HeapStats` the fallback when the kill is the point (exit-time
+   dumps die with SIGKILL, stderr survives); massif only if
+   heaptrack is unavailable; bytehound reserved for fragmentation
+   questions.
+3. **The real-rc reproduction is `#[ignore]`-gated** — a real login
+   rc is environment-dependent, so `just check` stays deterministic
+   and runs none of it; the CI-load pin is synthetic once rl-2
+   names the mechanism.
+4. **The sampler is std-only**; `procfs = 0.18` is the ask-first
+   typed fallback; `memory-stats` and `sysinfo` are rejected on the
+   tooling record's verdicts.
+5. **Sampler rows are self-describing plain text with children
+   columns fed from tracked pids** (the owner's 2026-11-17
+   AI-extractability ruling): an agent extracts the log with std
+   tooling, no parsing preamble; child-driven growth shows in the
+   log itself.
+6. **Fork fixes ride kit-root-border**: the patch carried at the
+   pin plus an upstream ask; a re-pin is ask-first, never silent.
+7. **Evidence recording**: agent-run capped evidence is marked
+   agent-run (the 2026-11-17 sanction); GUI rows stay owner-run
+   (the 2026-11-14 ruling).
+
+### Task index
+
+- rl-1 the capped reproduction (`#[ignore]` test, curve recorded,
+  the probe's panic-shape gone) → rl-2 attribution (heaptrack/dhat,
+  the stack + GB/s arithmetic + fix-site verdict) → rl-3 the fix +
+  synthetic pin *(gated on attribution; fork path ask-first)* →
+  rl-4 the incident record. Checkpoint: capped repro flat, owner
+  has the numbers.
+- rt-1 the sampler module (parse/rotate/failure-safe, unit-pinned,
+  zero deps) → rt-2 the 1 Hz tick hook + children feed + capped
+  smoke (the owner's daily-session instruction issued) → rt-3 docs
+  (schema, extraction one-liners, capture ladder). Checkpoint: the
+  watch live; the owner's daily-session verdict closes it.
+
+### Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| heaptrack's dump dies with the process under the cap | Med | High-before-Max ordering + deadline-bounded churn; dhat mid-run stderr the fallback |
+| The root cause lands in the pinned fork | High | kit-root-border shape: carried patch + upstream ask, re-pin ask-first (ruling 6) |
+| The mechanism resists a synthetic pin | Med | The real-rc test stays `#[ignore]`-gated and rides rl-3's rerun; the pin can assert the mechanism's unit if the full churn can't be headless |
+| Daily growth survives the fix (a second vector) | Med | Expected and watched: ram-telemetry's curve is the detector; rl-4 records what the fix does not explain rather than hiding it |
+| Dev-profile symbolization noise in heaptrack stacks | Low | The record's symbolization notes (dev build, or release with `debug = true`); rl-2 records which was used |
+
+### Open questions
+
+1. Whether the daily-use growth is the same vector as the bomb —
+   answered by ram-telemetry's curve post-fix (rl-4 states the
+   expectation honestly either way).
+2. heaptrack availability on the owner's machine (Pop!_OS:
+   `apt install heaptrack`) — rl-2 answers by construction.

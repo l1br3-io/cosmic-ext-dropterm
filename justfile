@@ -90,12 +90,10 @@ dev-image-install:
 
 # `pkill -f` pattern matching only the dev instance — the launcher's
 # `-dev` name, the dev image's target path, or the debug binary's
-# target path with a `( |$)` guard so it stops at the binary name
-# instead of also matching the applet's debug path (whose name
-# extends dropterm with `-applet`). Each alternative's
-# first character is bracketed so the pattern cannot match this
-# recipe's own `sh -c` command line. The installed release and its
-# applet never match — leaving them running through a dev cycle is
+# target path with a `( |$)` guard so it stops at the binary name.
+# Each alternative's first character is bracketed so the pattern
+# cannot match this recipe's own `sh -c` command line. The installed
+# release never matches — leaving it running through a dev cycle is
 # the point of the dev-identity split.
 dev-kill-pattern := '[d]ropterm-dev|[t]arget/debug/dropterm-dev-image( |$)|[t]arget/debug/dropterm( |$)'
 
@@ -118,31 +116,12 @@ completions-extended-src := 'data' / 'completions-extended.toml'
 completions-extended-dir := clean(rootdir / prefix) / 'share' / appid
 completions-extended-dst := completions-extended-dir / 'completions-extended.toml'
 
-# The panel applet: its own workspace package so its libcosmic feature
-# set never meets the terminal's wgpu renderer.
-applet := name + '-applet'
-applet-desktop := appid + '.Applet.desktop'
-applet-icon := appid + '-symbolic.svg'
-applet-bin-src := cargo-target-dir / 'release' / applet
-applet-bin-dst := base-dir / 'bin' / applet
-applet-desktop-src := 'res' / applet-desktop
-applet-desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / applet-desktop
-applet-metainfo := appid + '.Applet.metainfo.xml'
-applet-metainfo-src := 'res' / applet-metainfo
-applet-metainfo-dst := clean(rootdir / prefix) / 'share' / 'metainfo' / applet-metainfo
-applet-icon-src := 'res' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
-applet-icon-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon
-
-# The applet's app id: the terminal's id plus the .Applet suffix,
-# doubling as its desktop-file stem (the panel matches applets by stem).
-applet-appid := appid + '.Applet'
-
-# Where dev-applet installs the applet's desktop file and icon.
+# Where the dev identity's desktop file lands.
 dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 
 # The dev terminal's desktop file: the res/ original with the dev
-# name, Exec, and StartupWMClass, generated here (like the dev
-# applet's) so the desktop contract has one source of truth. The stem
+# name, Exec, and StartupWMClass, generated here so the desktop
+# contract has one source of truth. The stem
 # is the dev identity's app id — the window switcher matches the
 # clipboard-anchor toplevel (always mapped) by it, and without the
 # file the dev anchor lists as "unknown". NoDisplay stays set
@@ -166,12 +145,10 @@ fmt-check:
 clippy *args:
     {{just_executable()}} quietly 'cargo clippy --all-targets --workspace --locked {{args}} -- -D warnings'
     {{just_executable()}} quietly 'cargo clippy --all-targets -p {{name}} --locked --features dev-identity {{args}} -- -D warnings'
-    {{just_executable()}} quietly 'cargo clippy --all-targets -p {{applet}} --locked --features dev-identity {{args}} -- -D warnings'
 
 test *args:
     {{just_executable()}} quietly 'cargo test --workspace --locked {{args}}'
     {{just_executable()}} quietly 'cargo test -p {{name}} --locked --features dev-identity {{args}}'
-    {{just_executable()}} quietly 'cargo test -p {{applet}} --locked --features dev-identity {{args}}'
 
 # Docs drift gate: every internal markdown link — relative path and
 # in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
@@ -376,10 +353,7 @@ deps:
         fi
     fi
 
-# Compiles with the debug profile. Per-package on purpose — a plain
-# `cargo build` now spans the workspace and unifies features across
-# both crates (see build-applet for why that must not produce
-# release artifacts).
+# Compiles with the debug profile.
 build-debug *args: deps
     {{just_executable()}} quietly 'cargo build -p {{name}} {{args}}'
 
@@ -387,23 +361,14 @@ build-debug *args: deps
 build-release *args: deps
     {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{name}} --release -j {{build-jobs}} {{args}}'
 
-# Compiles the applet with the release profile, throttled like
-# build-release. Per-package on purpose: a unified workspace release
-# build would hand the applet a wgpu-enabled libcosmic through
-# feature unification, and the wgpu renderer falls back to llvmpipe
-# on panel surfaces.
-build-applet *args: deps
-    {{just_executable()}} quietly 'nice -n {{build-nice}} cargo build -p {{applet}} --release -j {{build-jobs}} {{args}}'
-
-# Both release artifacts, each per-package, in the shape `install`
-# expects. Exists as one recipe because `build-release` takes
-# arguments, so `just build-release build-applet` would pass the
-# second name through to cargo.
-build-all: build-release build-applet
+# The release artifact, in the shape `install` expects. Exists as one
+# recipe so callers get the artifact without `build-release`'s own
+# argument plumbing in the way.
+build-all: build-release
 
 # Vendored offline builds (the System76 release convention): `vendor`
 # snapshots the whole dependency graph — including the git-pinned
-# libcosmic — into vendor.tar together with the source-replacement
+# vte/alacritty forks — into vendor.tar together with the source-replacement
 # config cargo vendor prints (a git dependency needs its own
 # [source."url"] redirect, so the config cannot be hand-written). The
 # working tree is cleaned afterward so dev builds keep using git deps.
@@ -433,10 +398,9 @@ vendor-extract:
     rm -rf vendor .cargo
     tar -xf vendor.tar
 
-# Compiles both release artifacts from vendor.tar, per package,
-# --frozen --offline: the proof that vendor.tar is a complete
-# dependency snapshot (see build-applet for why per-package).
-build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args) (build-applet '--frozen' '--offline')
+# Compiles the release artifact from vendor.tar, --frozen --offline:
+# the proof that vendor.tar is a complete dependency snapshot.
+build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args)
 
 run *args:
     cargo run {{args}}
@@ -472,33 +436,13 @@ dev: dev-install dev-reload
 dev-watch:
     cargo watch -q -w src -w Cargo.toml -s 'just dev-reload'
 
-# The dev applet's desktop file: the res/ original with the dev name
-# and Exec, generated here so the panel contract has one source of
-# truth. The stem is the dev identity's app id — the panel matches
-# applets by stem, and the release stem must never collide with it.
-dev-applet-desktop := dev-data-dir / 'applications' / (applet-appid + '.Dev.desktop')
-
-# Build the applet (debug, dev identity) and install it, its dev
-# desktop file, and its icon under ~/.local — a second panel entry,
-# "DropTerm (Dev)", that coexists with an installed applet and tracks
-# the dev terminal only. Depends on dev-install because the dev
-# applet summons the dev launcher. Add it via COSMIC Settings →
-# Panel.
-dev-applet: dev-install
-    {{just_executable()}} quietly 'cargo build -p {{applet}} {{dev-identity-args}}'
-    install -Dm0755 {{cargo-target-dir / 'debug' / applet}} {{dev-bin-dir / (applet + '-dev')}}
-    install -d {{dev-data-dir / 'applications'}}
-    sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{applet}}-dev/' {{applet-desktop-src}} > {{dev-applet-desktop}}
-    install -Dm0644 {{applet-icon-src}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
-
-# Removes the dev footprint — the launcher, the dev terminal's
-# desktop file, the dev applet's binary, desktop file, and icon. The
-# dev identity's config and session files
+# Removes the dev footprint — the launcher and the dev terminal's
+# desktop file. The dev identity's config and session files
 # (~/.config/io.github.l1br3_io.dropterm.Dev.ron,
 # ~/.local/state/io.github.l1br3_io.dropterm.Dev/) stay
 # behind for the user to keep or delete.
 dev-uninstall:
-    rm -f {{dev-bin}} {{dev-desktop}} {{dev-bin-dir / (applet + '-dev')}} {{dev-applet-desktop}} {{dev-data-dir / 'icons' / 'hicolor' / 'scalable' / 'apps' / applet-icon}}
+    rm -f {{dev-bin}} {{dev-desktop}}
     rm -rf {{dev-data-dir / appid}} {{dev-data-dir / (appid + '.Dev')}}
 
 clean:
@@ -510,12 +454,10 @@ clean:
 # "<path> (deleted)", and the instance keeps serving the pre-install
 # code until manually restarted (the stale-instance footgun). The
 # exact-string exe check can never match the dev instance (its own
-# image path) or the applet (its own name); only genuinely replaced
-# release processes stop. The next summon — keybind, panel applet,
-# or `just act toggle` — starts the fresh binary. Running this
-# standalone (`just stop-stale-release`) is the one-command restart
-# after a manual binary swap. The panel applet refreshes on its own
-# schedule and is deliberately left alone.
+# image path); only genuinely replaced release processes stop. The
+# next summon — keybind or `just act toggle` — starts the fresh
+# binary. Running this standalone (`just stop-stale-release`) is the
+# one-command restart after a manual binary swap.
 stop-stale-release:
     #!/usr/bin/env sh
     # -e: a failed kill must abort before the success echo below — never
@@ -538,10 +480,6 @@ install: deps
     install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
     install -Dm0644 {{icon-src}} {{icon-dst}}
     install -Dm0644 {{completions-extended-src}} {{completions-extended-dst}}
-    install -Dm0755 {{applet-bin-src}} {{applet-bin-dst}}
-    install -Dm0644 {{applet-desktop-src}} {{applet-desktop-dst}}
-    install -Dm0644 {{applet-metainfo-src}} {{applet-metainfo-dst}}
-    install -Dm0644 {{applet-icon-src}} {{applet-icon-dst}}
     @{{just_executable()}} stop-stale-release
 
 # Uninstalls installed files (and stops any instance left running
@@ -549,12 +487,11 @@ install: deps
 uninstall:
     rm -f {{bin-dst}} {{desktop-dst}} {{metainfo-dst}} {{icon-dst}}
     rm -rf {{completions-extended-dir}}
-    rm -f {{applet-bin-dst}} {{applet-desktop-dst}} {{applet-icon-dst}} {{applet-metainfo-dst}}
     @{{just_executable()}} stop-stale-release
 
 # ── COSMIC validation VM ──
 #
-# Host-side plumbing for walking the manual checklist's applet rows
+# Host-side plumbing for walking the manual checklist's runtime rows
 # inside a clean Pop!_OS COSMIC VM (the item-5 evidence route; the
 # full recipe lives at docs/development.md#the-cosmic-validation-vm).
 # Delegates to scripts/vm.sh — ported from cosmic-ext-airlock's CP4
@@ -562,7 +499,7 @@ uninstall:
 # SSH): `just vm-status` is the preflight doctor, `just vm-list` names
 # the domains and their guest users, `just vm-help` the command
 # reference. The default target is the sibling repo's existing
-# PopOs24.04 domain on this host, but every recipe that acts on a VM
+# PopOs24 domain on this host, but every recipe that acts on a VM
 # takes the libvirt domain as an optional argument — `just vm-push
 # OtherVm`, `just vm-exec 'pgrep -a cosmic-comp' OtherVm` — and the
 # recipes that use the guest user take it right after the domain:
@@ -570,8 +507,8 @@ uninstall:
 # per run: `VM_NAME=OtherVm VM_USER=alice just vm-push`, or `just
 # vm-name=OtherVm vm-user=alice vm-push` (assignment before the
 # recipe). BRIDGE_IP and PORT stay variables.
-vm-name := env_var_or_default("VM_NAME", "PopOs24.04")
-vm-user := env_var_or_default("VM_USER", "jpt-virt")
+vm-name := env_var_or_default("VM_NAME", "PopOs24")
+vm-user := env_var_or_default("VM_USER", "jpt")
 # vm-push's tarball (vm-install's guest-side source, staged under the
 # ignored target/), so neither the tarball nor the staging tree
 # (target/vm-stage) ever shows up as untracked files.
@@ -605,14 +542,14 @@ vm-exec-user cmd vm=vm-name user=vm-user:
 vm-put file dest vm=vm-name user=vm-user:
     VM_NAME={{vm}} VM_USER={{user}} scripts/vm.sh put "{{file}}" "{{dest}}"
 
-# Build both artifacts and ship the install payload: builds, stages the
-# usr/ tree exactly as release CI does (release.yml runs
+# Build the release artifact and ship the install payload: builds,
+# stages the usr/ tree exactly as release CI does (release.yml runs
 # `just rootdir=stage install` before tarring), tars it, and transfers
 # the tarball into the guest (sha256 verified both sides by vm.sh put),
 # leaving it at /root/dropterm-vm.tar.gz. Nothing the guest runs changes
 # until `just vm-install`, which can then re-run the install half
 # without rebuilding. Install and update are the same install: the
-# tarball always overwrites the nine files `install` stages.
+# tarball always overwrites the five files `install` stages.
 vm-push vm=vm-name user=vm-user:
     #!/usr/bin/env sh
     set -eu
@@ -627,17 +564,15 @@ vm-push vm=vm-name user=vm-user:
 # the tarball records the host uid, and a root-side extract would chown
 # /usr files to it), refreshes the desktop database, and stops anything
 # still running a replaced binary — the guest-side half of
-# stop-stale-release, since a warm process keeps its old inode and the
-# applet waits for its panel supervisor to respawn it. Installs whatever
-# the last push to that domain left at /root. The stops match an anchored
-# full-command pattern: the `(^|/)…([ ]|$)` anchors keep the exec wrapper
-# shells (name mid-command-line) and the pattern's own text out of the
-# match, and stop the terminal's pattern short of the applet, whose name
-# extends it. The next summon (keybind, panel, CLI) runs this build;
-# no relogin.
+# stop-stale-release, since a warm process keeps its old inode.
+# Installs whatever the last push to that domain left at /root. The
+# stop matches an anchored full-command pattern: the `(^|/)…([ ]|$)`
+# anchors keep the exec wrapper shells (name mid-command-line) and the
+# pattern's own text out of the match. The next summon (keybind, CLI)
+# runs this build; no relogin.
 vm-install vm=vm-name:
     VM_NAME={{vm}} scripts/vm.sh exec 'test -f /root/dropterm-vm.tar.gz || { echo "vm: no pushed tarball in the guest — run: just vm-push {{vm}}" >&2; exit 1; }; tar -xzf /root/dropterm-vm.tar.gz -C / --no-same-owner && rm -f /root/dropterm-vm.tar.gz && { update-desktop-database /usr/share/applications 2>/dev/null || true; }'
-    VM_NAME={{vm}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"; pkill -f "(^|/){{applet}}([ ]|$)" && echo "vm: stopped the panel applet; cosmic-panel respawns it on this build" || echo "vm: no applet was running"'
+    VM_NAME={{vm}} scripts/vm.sh exec 'pkill -f "(^|/){{name}}([ ]|$)" && echo "vm: stopped a running dropterm; the next summon runs this build" || echo "vm: no dropterm instance was running"'
     echo "vm: installed into {{vm}}; the next summon runs this build"
 
 # Capture the VM's display (evidence screenshots)
@@ -691,14 +626,14 @@ release version:
     # Only release files may be in flight — anything else would ride
     # into the release commit silently. Untracked files are fine;
     # they are never added.
-    bad=$(git diff --name-only HEAD | grep -v -E '^(Cargo\.toml|applet/Cargo\.toml|Cargo\.lock|README\.md|ROADMAP\.md|docs/releases\.md|docs/testing\.md|res/[^/]+\.metainfo\.xml)$' || true)
+    bad=$(git diff --name-only HEAD | grep -v -E '^(dropterm/Cargo\.toml|Cargo\.lock|README\.md|ROADMAP\.md|docs/releases\.md|docs/testing\.md|res/[^/]+\.metainfo\.xml)$' || true)
     [ -z "$bad" ] || {
         echo "release: unrelated changes in the tree — commit or stash them first:" >&2
         echo "$bad" | sed 's/^/  /' >&2
         exit 1
     }
 
-    old="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+    old="$(sed -n 's/^version = "\(.*\)"$/\1/p' dropterm/Cargo.toml | head -n1)"
     [ "$ver" != "$old" ] || {
         echo "release: Cargo.toml already reads $ver" >&2
         exit 1
@@ -708,7 +643,7 @@ release version:
     # The curated pieces must already exist, in today's dated shape —
     # fail before touching anything so a half-release is never left
     # behind by missing notes.
-    for f in {{metainfo-src}} {{applet-metainfo-src}}; do
+    for f in {{metainfo-src}}; do
         grep -q "<release version=\"$ver\" date=\"$today\">" "$f" || {
             echo "release: $f carries no <release version=\"$ver\" date=\"$today\"> entry — write it first (docs/development.md#releasing)" >&2
             exit 1
@@ -728,17 +663,12 @@ release version:
         exit 1
     }
 
-    # Both crates bump together (first `version =` line only — the
-    # manifests carry dependency versions too), and the lock follows
+    # The one package bumps (first `version =` line only — the
+    # manifest carries dependency versions too), and the lock follows
     # so every --locked recipe keeps holding.
-    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" Cargo.toml
-    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" applet/Cargo.toml
-    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)" = "$ver" ] || {
-        echo "release: Cargo.toml's package version no longer reads $old — bump it by hand" >&2
-        exit 1
-    }
-    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' applet/Cargo.toml | head -n1)" = "$ver" ] || {
-        echo "release: applet/Cargo.toml's package version no longer reads $old — bump it by hand" >&2
+    sed -i "0,/^version = \"$old\"$/s//version = \"$ver\"/" dropterm/Cargo.toml
+    [ "$(sed -n 's/^version = "\(.*\)"$/\1/p' dropterm/Cargo.toml | head -n1)" = "$ver" ] || {
+        echo "release: dropterm/Cargo.toml's package version no longer reads $old — bump it by hand" >&2
         exit 1
     }
     cargo update -w
@@ -749,11 +679,11 @@ release version:
     # is the backstop).
     {{just_executable()}} check
     if command -v appstreamcli >/dev/null 2>&1; then
-        appstreamcli validate --no-net {{metainfo-src}} {{applet-metainfo-src}}
+        appstreamcli validate --no-net {{metainfo-src}}
     fi
 
-    git add Cargo.toml applet/Cargo.toml Cargo.lock README.md ROADMAP.md \
-        docs/releases.md docs/testing.md {{metainfo-src}} {{applet-metainfo-src}}
+    git add dropterm/Cargo.toml Cargo.lock README.md ROADMAP.md \
+        docs/releases.md docs/testing.md {{metainfo-src}}
     git commit -m "chore: release hygiene for v$ver — versions, release notes, install URLs"
     git tag -a "v$ver" -m "Release $ver"
 

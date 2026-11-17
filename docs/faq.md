@@ -31,7 +31,7 @@ Yes - DropTerm keeps an invisible anchor window alive for exactly this reason, s
 Those programs turn on mouse reporting, and the terminal hands every press to the program - that is the mode working as asked. Hold **Shift** to take the pointer back: Shift+drag selects, Shift+right-click opens the context menu, and Copy (`Ctrl+Shift+C`) copies that selection like any other. The same escape hatch alacritty, kitty, and gnome-terminal offer; the scroll wheel stays the program's even with Shift held.
 
 **Why doesn't DropTerm appear in the dock or Alt-Tab? Can I get it back?**
-That is the default: the app hides from both, and you summon it with your shortcut, the [panel applet](applet.md), or the CLI. If you would rather have a DropTerm entry to click, write `show_in_dock: true` - the trade is that the entry also joins Alt-Tab, because the dock icon and the switcher window are the same mapped window underneath ([configuration](configuration.md#layer-focus-and-panels)).
+That is the default: the app hides from both, and you summon it with your shortcut or the CLI. If you would rather have a DropTerm entry to click, write `show_in_dock: true` - the trade is that the entry also joins Alt-Tab, because the dock icon and the switcher window are the same mapped window underneath ([configuration](configuration.md#layer-focus-and-panels)).
 
 **Why does the window flash or recreate when it hides?**
 Hiding destroys the layer surface and the next show builds a fresh one - deliberately, to sidestep a cosmic-comp bug other layer-shell clients hit when a surface is updated after its role is destroyed. You are seeing the designed path, not a glitch ([Known issues](known-issues.md)).

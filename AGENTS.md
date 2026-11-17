@@ -30,7 +30,7 @@ This project uses the [addyosmani/agent-skills](https://github.com/addyosmani/ag
 - Rust code / review → `rust-best-practices`
 - Security-sensitive input, auth, secrets, dependencies → `security-and-hardening`
 - Performance requirements or suspected regressions → `performance-optimization`
-- Cutting a release / publishing a version → `dropterm-release` (or `/release`) — the project's release ritual, adapted from cosmic-ext-airlock's `airlock-release`; it supersedes the pack's generic `release-orchestration` here
+- Cutting a release / publishing a version → `dropterm-release` (or `/release`) — the project's release ritual; it supersedes the pack's generic `release-orchestration` here
 - Runtime verification on a live session (any platform) — `docs/testing.md` rows, `just vm-*` validation-VM walks, portability sessions — → manual, owner-run (owner ruling, 2026-11-14): the agent never runs or dispatches these; at each walk/check it hands the owner one concise instruction — the rows to walk, the build to install, the harness and snapshot, the evidence each clause needs — and records only the owner's reported result
 - Making a change (always) → `git-workflow-and-versioning`
 
