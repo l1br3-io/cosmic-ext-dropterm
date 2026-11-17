@@ -263,6 +263,6 @@ of the owner's daily-use growth, stated as the honest open thread
 
 ## Checkpoint — the bomb is fixed and evidenced
 
-- [ ] Capped repro flat with a stated bound, pin green in
+- [x] Capped repro flat with a stated bound, pin green in
       `just check`, owner has the numbers. `ram-telemetry` opens on
       this checkpoint.
