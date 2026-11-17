@@ -89,18 +89,73 @@ the fix lands — ours (engine wrapper, pane funnel) or the pinned
 fork's reflow.
 
 **Acceptance criteria:**
-- [ ] The stack and mechanism are recorded in this chunk with the
+- [x] The stack and mechanism are recorded in this chunk with the
       numbers, and the GB/s arithmetic shown
-- [ ] The fix-site verdict is stated: ours, or the fork's (with the
+- [x] The fix-site verdict is stated: ours, or the fork's (with the
       carried-patch implication flagged for rl-3)
-- [ ] The instrument choice is recorded (heaptrack, or dhat fallback
+- [x] The instrument choice is recorded (heaptrack, or dhat fallback
       with why)
 
 **Verification:**
-- [ ] heaptrack output (or the dhat stderr series) summarized in the
+- [x] heaptrack output (or the dhat stderr series) summarized in the
       chunk, agent-run, capped
-- [ ] `just check` green (a dhat dev-dep, if added, is dev-only and
+- [x] `just check` green (a dhat dev-dep, if added, is dev-only and
       noted)
+
+**rl-2 attribution record (agent-run, 2026-11-17, every run capped
+under rl-1's recipe):**
+
+- **Instrument:** heaptrack is not installed on this rig, and an
+  exit-time dump could not fire against rl-1's swap-less MemoryHigh
+  livelock anyway (the run never exits); dhat's aggregates were not
+  needed once the stack could be sampled directly. The instrument that
+  worked: the capped repro plus a `PR_SET_PTRACER_ANY` aid in the
+  test, `eu-stack` sampled mid-wedge (yama scope 1 otherwise blocks
+  attach; no root on this rig), PCs resolved with addr2line. The
+  spec's "mid-run survives" principle, realized as mid-run stack
+  sampling. The repro's per-cycle prints also moved to stderr —
+  stdout to a pipe is block-buffered, so the wedged run's cycle lines
+  died unflushed (why rl-1 could not say which cycle wedged).
+- **The stack (12/12 samples identical):**
+  `Terminal::resize → Term::resize → Grid::resize →
+  Grid::shrink_columns → Vec<Cell>::insert → insert_mut → grow_one →
+  grow_amortized → finish_grow → realloc`, stalled in
+  `mem_cgroup_handle_over_high`. Line:
+  `alacritty_terminal/src/grid/resize.rs:297` —
+  `wrapped.insert(0, wide_char)` (the fork @ 1185ffd).
+- **The mechanism — the immortal wide-led row:** at `columns == 1`,
+  `shrink_columns` peels one cell per loop iteration; but when the
+  surviving cell (`row[0]`) is `WIDE_CHAR`-flagged, lines 293-297
+  replace it with a spacer, push the 1-cell row, and **re-prepend the
+  wide cell to `wrapped` — which becomes the next row at the same
+  length**. The row never shrinks, the loop never exits, and every
+  iteration allocates a fresh k-cell `Vec` plus one pushed `Row`.
+  Unbounded, at GB/s.
+- **The wide-glyph source (captured):** the owner's real prompt
+  carries wide emoji. Feeding a live `/bin/bash -i` a cols-1↔cols-264
+  churn under `script` emitted U+1F918 🤘, U+1F387 🎇, U+1F4BB 💻 in
+  readline's redraw — all East-Asian Wide (the `┌` U+250C is narrow).
+  At 1 column the redraw wraps one glyph per row, so an emoji with
+  any cell behind it is an immortal-row lead. (The `~/.bashrc` `PS1`
+  lines are ASCII; the emoji prompt is set elsewhere in the
+  interactive rc chain — the capture is the evidence, the rc line is
+  not pinned.)
+- **The arithmetic:** one iteration ≈ rebuild a k-cell `Vec`
+  (k ≈ 300 cells × ~16 B ≈ 4.8 KB) + one 1-cell `Row` push + an O(k)
+  insert shift. Observed ~1 GB/s throttled (49 MB → 1.67 GB inside
+  the first churn pair); the uncapped incident 47.1 GB / ~12 s ≈
+  4 GB/s ≈ 800 K iterations/s — a µs-scale tight loop. Consistent.
+- **Fix-site verdict: the pinned fork's `shrink_columns`** — and the
+  code is upstream-identical (the fork's only delta is the OSC 133;D
+  arm; alacritty/alacritty **master carries the same unguarded loop
+  today**, checked 2026-11-17). rl-3 takes the kit-root-border
+  shape: a carried patch at the pin plus an upstream ask
+  (alacritty/alacritty), re-pin **ask-first** before any pin change.
+- **Honest residue:** this explains the incident (emoji prompt + the
+  real toggle churn is the exact trigger) and the capped repro. It
+  does not by itself explain the owner's gradual daily-use growth —
+  whether each real show toggle catches an emoji-led row is
+  timing-dependent; `ram-telemetry`'s curve is the watch.
 
 **Dependencies:** rl-1 · **Files:** this chunk, `dropterm/Cargo.toml`
 (dev-dep only if dhat) · **Scope:** S to M

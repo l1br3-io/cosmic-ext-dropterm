@@ -709,7 +709,7 @@ the numbers.)*
 - [x] rl-1 The capped reproduction formalized (`#[ignore]` real-rc
       churn test, the curve recorded agent-run under the cap, the
       probe's panic-shape gone from the tree)
-- [ ] rl-2 Attribution (heaptrack under the cap / dhat fallback; the
+- [x] rl-2 Attribution (heaptrack under the cap / dhat fallback; the
       stack, the GB/s arithmetic, the fix-site verdict)
 - [ ] rl-3 The fix + pins *(gate: rl-2; root cause named with
       before/after numbers, synthetic pin in `just check`, capped

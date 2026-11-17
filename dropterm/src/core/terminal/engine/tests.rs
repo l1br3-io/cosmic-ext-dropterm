@@ -4374,6 +4374,18 @@ fn real_rc_toggle_churn_rss_curve() {
     use alacritty_terminal::tty::Shell as PtyShell;
     use std::collections::HashMap;
 
+    // Attribution aid (ram-leak rl-2): yama's ptrace_scope is 1, so
+    // no external unwinder may attach to this process mid-wedge.
+    // This run's whole point is to be inspected while a churn resize
+    // stalls at the cgroup watermark, so open tracing to any tracer
+    // (eu-stack) for the life of the process. Test-only, and only
+    // ever executed under the capped recipe.
+    // SAFETY: PR_SET_PTRACER with PR_SET_PTRACER_ANY widens the
+    // ptrace policy for this process only; no memory is touched.
+    unsafe {
+        libc::prctl(libc::PR_SET_PTRACER, libc::PR_SET_PTRACER_ANY);
+    }
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut env: HashMap<String, String> = std::env::vars().collect();
     env.entry("TERM".to_string())
@@ -4434,7 +4446,9 @@ fn real_rc_toggle_churn_rss_curve() {
     // GB/s-scale (three cycles reached 47 GB), so a long count only
     // pads the run — the cap or the deadline ends it.
     let markers = visible_text(&terminal).matches('@').count();
-    println!(
+    // eprintln, not println: stdout to a pipe is block-buffered, so a
+    // wedged run's per-cycle lines die unflushed — stderr survives.
+    eprintln!(
         "curve start: VmRSS {} KiB, {markers} prompt markers",
         vm_rss_kib()
     );
@@ -4447,7 +4461,7 @@ fn real_rc_toggle_churn_rss_curve() {
         std::thread::sleep(std::time::Duration::from_millis(400));
         while rx.try_recv().is_ok() {}
         let markers = visible_text(&terminal).matches('@').count();
-        println!(
+        eprintln!(
             "cycle {cycle}: VmRSS {} KiB, {markers} prompt markers",
             vm_rss_kib()
         );
