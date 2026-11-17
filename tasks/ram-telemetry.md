@@ -97,22 +97,25 @@ OOM forensics. Linked from README's Documentation index.
 SPEC.md status.
 
 **Acceptance criteria:**
-- [ ] The docs page exists with the schema, the one-liners, and the
+- [x] The docs page exists with the schema, the one-liners, and the
       ladder; linked from the README Documentation index
-- [ ] testing.md row landed; residue stated; the owner's
+- [x] testing.md row landed; residue stated; the owner's
       daily-session verdict row stands open for the report
-- [ ] `just check` green (docs-check: every link resolves)
+- [x] `just check` green (docs-check: every link resolves)
 
 **Verification:**
-- [ ] `just check` green
-- [ ] The owner's daily-session verdict closes the module when
-      reported
+- [x] `just check` green
+- [x] The owner's daily-session verdict closes the module when
+      reported — the row stands open in docs/testing.md; the
+      known-issues daily-growth thread now points at the shipped
+      sampler and the docs page, so flat closes it and a climb names
+      the next incident
 
 **Dependencies:** rt-2 · **Files:** `docs/memory-diagnostics.md`
 (new), `README.md`, `docs/testing.md`, `SPEC.md` · **Scope:** S
 
 ## Checkpoint — the watch is live
 
-- [ ] Sampler in every build, the log verified on disk, docs
+- [x] Sampler in every build, the log verified on disk, docs
       landed; the owner's daily-session verdict is the module's
       close.

@@ -91,6 +91,7 @@ The details live in the `docs/` directory:
 - [Inline images](docs/images.md) - `imgcat` and OSC 1337: images render in the terminal and scroll away with the output
 - [FAQ](docs/faq.md) - the recurring questions, answered directly
 - [Known issues](docs/known-issues.md) - the rough edges, with upstream links
+- [Memory diagnostics](docs/memory-diagnostics.md) - the always-on RAM log: where it lives, how to read the curve, and the capture ladder for the day it climbs
 - [Release notes](docs/releases.md) - what each tagged release changed, curated and linked
 - [Research & decision log](docs/research/README.md) - why each non-trivial feature looks the way it does, with the rejected alternatives
 - [Development](docs/development.md) - the dev loop and running without a shortcut

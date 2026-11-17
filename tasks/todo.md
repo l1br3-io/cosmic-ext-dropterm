@@ -744,8 +744,15 @@ opens on it.
       pids, smoke `ticks=20600 writes=2060 A=2048 B=12 rollup=68`
       green in `just check`; the owner's daily-session row issued in
       the chunk, verdict pending
-- [ ] rt-3 Docs + banking (schema + agent-extraction one-liners +
-      capture ladder, README index link, testing row, residue)
+- [x] rt-3 Docs + banking (schema + agent-extraction one-liners +
+      capture ladder, README index link, testing row, residue) —
+      done 2026-11-18: docs/memory-diagnostics.md landed (schema
+      table, copy-runnable one-liners, the tooling record's
+      five-step ladder), linked from README's index; the testing row
+      open for the owner's verdict (the module's close — flat
+      closes the known-issues daily-growth row); the tooling
+      record's research row moved Proposed → Adopted; `just check`
+      green with docs-check
 
 **Checkpoint — the watch is live:** sampler in every build, the log
 verified on disk, docs landed; the owner's daily-session verdict
