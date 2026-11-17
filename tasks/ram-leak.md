@@ -248,13 +248,13 @@ of the owner's daily-use growth, stated as the honest open thread
 `ram-telemetry` watches.
 
 **Acceptance criteria:**
-- [ ] The record is filed with its index row (never edited after)
-- [ ] testing.md row landed; residue stated (or none, said)
-- [ ] SPEC.md's `ram-leak` status updated; the daily-growth
+- [x] The record is filed with its index row (never edited after)
+- [x] testing.md row landed; residue stated (or none, said)
+- [x] SPEC.md's `ram-leak` status updated; the daily-growth
       expectation stated honestly
 
 **Verification:**
-- [ ] `just check` green (docs-check rides it)
+- [x] `just check` green (docs-check rides it)
 - [ ] Owner review at the checkpoint
 
 **Dependencies:** rl-3 · **Files:** `docs/research/ram-leak.md`

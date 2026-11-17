@@ -719,9 +719,12 @@ the numbers.)*
       viewport fix; pin (≤1024 grid rows) green in `just check`,
       capped real-rc rerun flat 50.1→51.2 MiB / 22 cycles (was
       49 MB → the cap inside one resize; 47.1 GB / 12 s uncapped)
-- [ ] rl-4 Bank it (incident record + index row, testing row,
+- [x] rl-4 Bank it (incident record + index row, testing row,
       residue — including what the fix does not explain of daily
-      growth)
+      growth) — done 2026-11-17: docs/research/ram-leak.md filed
+      (journal lines verbatim, the attribution, the numbers, the
+      upstream PR draft); known-issues carries the daily-growth
+      open thread for ram-telemetry's curve
 
 **Checkpoint — the bomb is fixed and evidenced:** capped repro flat
 with a stated bound, pin green, owner has the numbers; ram-telemetry
