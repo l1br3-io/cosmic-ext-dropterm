@@ -138,19 +138,24 @@ pub(crate) fn band_vm(
         SegmentId::Process,
         process_display(&segments.process, segments.program_status),
     );
-    let duration_text = display(
-        SegmentId::Duration,
-        prefixed_display(SegmentId::Duration, &duration_display(segments)),
-    );
+    // The narration seats' steady texts: the fit accounts their
+    // widths ([`band_fit`]'s contract — every present segment but
+    // the path and the process consumes room), and like the path it
+    // measures the steady value so the ✓/refusal swap re-lays the
+    // row without re-fitting the band.
+    let duration_steady = prefixed_display(SegmentId::Duration, &duration_display(segments));
+    let duration_text = display(SegmentId::Duration, duration_steady.clone());
+    let exit_steady = segments.exit_code.map(exit_display).unwrap_or_default();
     let exit_text = segments
         .exit_code
-        .map(|code| display(SegmentId::Exit, exit_display(code)));
-    let progress_text = segments.progress.map(|progress| {
-        display(
-            SegmentId::Progress,
-            prefixed_display(SegmentId::Progress, &progress_display(progress)),
-        )
-    });
+        .map(|_| display(SegmentId::Exit, exit_steady.clone()));
+    let progress_steady = segments
+        .progress
+        .map(|progress| prefixed_display(SegmentId::Progress, &progress_display(progress)))
+        .unwrap_or_default();
+    let progress_text = segments
+        .progress
+        .map(|_| display(SegmentId::Progress, progress_steady.clone()));
     let path_value = prefixed_display(SegmentId::Path, segments.path.as_deref().unwrap_or(""));
     let branch = display(
         SegmentId::Branch,
@@ -214,6 +219,21 @@ pub(crate) fn band_vm(
     }
     if !branch.is_empty() {
         widths.push((SegmentId::Branch, measure(&branch)));
+    }
+    // The left cluster's narration seats are fit-accounted like
+    // every other present segment ([`band_fit`]'s contract): the
+    // rect walk lays them beside the process, so leaving them out
+    // of the sum painted the path and branch straight through the
+    // right cluster under width pressure — the overlap the narrow
+    // walk exposed.
+    for (id, text) in [
+        (SegmentId::Duration, &duration_steady),
+        (SegmentId::Exit, &exit_steady),
+        (SegmentId::Progress, &progress_steady),
+    ] {
+        if !text.is_empty() {
+            widths.push((id, measure(text)));
+        }
     }
     let process_width = measure(&process_text);
     let fixed = if process_width > 0.0 {

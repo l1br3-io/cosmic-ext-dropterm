@@ -342,6 +342,42 @@ fn attention_red_picks_by_strip_luminance_and_degrades_honestly() {
 }
 
 #[test]
+fn narration_is_fit_accounted_so_the_clusters_never_overlap() {
+    // The left cluster's narration seats are present and wide at
+    // once. `band_fit`'s contract reserves every present segment
+    // but the path and the process; before the narration joined the
+    // sum, the path and branch were laid straight through the right
+    // cluster at every width below ~800 px, and even at 600 the
+    // grid and profile collided with them. No two rows may overlap
+    // at any width.
+    let mut s = rich();
+    s.exit_code = Some(3);
+    s.progress = Some(ReportedProgress {
+        state: ProgressState::InProgress,
+        value: Some(42),
+        refreshed_at: std::time::Instant::now(),
+    });
+    let mut failures = Vec::new();
+    for width in [
+        200.0_f32, 260.0, 300.0, 340.0, 420.0, 500.0, 600.0, 800.0, 1280.0,
+    ] {
+        let vm = band_vm(&s, width, &fake_measure, None, None);
+        let mut spans: Vec<(f32, f32, SegmentId)> =
+            vm.rows.iter().map(|r| (r.x, r.x + r.width, r.id)).collect();
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for pair in spans.windows(2) {
+            if pair[0].1 > pair[1].0 + 0.01 {
+                failures.push(format!(
+                    "width {width}: {:?} ends {} > {:?} starts {}",
+                    pair[0].2, pair[0].1, pair[1].2, pair[1].0
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
     // With pastes standing, the verdict swaps the pasted chip's
     // display for its 3 s window — measured like text, the row
