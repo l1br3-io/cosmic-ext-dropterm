@@ -4333,3 +4333,128 @@ fn an_over_cap_inflate_refuses_whole() {
     let over = zlib_bytes(&vec![0u8; super::IMAGE_PAYLOAD_CAP + 1]);
     assert_eq!(super::inflate_capped(&over), None);
 }
+
+/// `/proc/self/status`'s `VmRSS` in KiB — the same field the
+/// telemetry spec samples, read straight from the procfs text (no
+/// dependency for one number).
+fn vm_rss_kib() -> u64 {
+    let status =
+        std::fs::read_to_string("/proc/self/status").expect("/proc/self/status is readable");
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))
+        .expect("VmRSS is present in /proc/self/status");
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|kib| kib.parse().ok())
+        .expect("VmRSS's value parses as a KiB count")
+}
+
+/// The 2026-11-17 incident's capped reproduction (ram-leak rl-1): the
+/// kernel OOM-killed this repo's own lib-test binary at 47.1 GB
+/// anon-rss over ~12 s of the app's exact show churn under the
+/// owner's real login rc. This is that probe formalized: spawn
+/// `/bin/bash -i` with the full inherited environment — the real rc,
+/// hence `#[ignore]`: the prompt and its readline redraws are
+/// machine-dependent, and the growth path must only ever run under a
+/// memory cap. Churn is deadline-bounded, and `VmRSS` is sampled per
+/// cycle so the curve survives even a cap kill.
+///
+/// Run recipe (every time — never uncapped):
+///
+/// ```text
+/// systemd-run --user --scope -p MemoryMax=2G -p MemoryHigh=1536M \
+///   -p MemorySwapMax=0 -- cargo test -p dropterm --lib \
+///   real_rc_toggle_churn_rss_curve -- --ignored --test-threads=1 \
+///   --nocapture
+/// ```
+#[test]
+#[ignore = "needs the real login rc and a hard memory cap; the run recipe is in the doc comment"]
+fn real_rc_toggle_churn_rss_curve() {
+    use alacritty_terminal::tty::Shell as PtyShell;
+    use std::collections::HashMap;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    env.entry("TERM".to_string())
+        .or_insert_with(|| "xterm-256color".to_string());
+    let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/bash".to_owned(), vec!["-i".to_owned()])),
+            drain_on_exit: true,
+            env,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn an interactive bash with the login rc");
+
+    // The churn only means anything once readline owns the grid: the
+    // reflow's row expansion multiplies the rc's prompt reprints, and
+    // before the first prompt there is nothing to reprint. The marker
+    // is the login prompt's user@host '@'.
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !visible_text(&terminal).contains('@') {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the rc's first prompt; grid so far: {:?}",
+            visible_text(&terminal)
+        );
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // The incident's exact churn: the degenerate 1-col first paint,
+    // then the full-width drawer (304 cols × 25 rows — the live grid
+    // the resource-audit measured) two frames later.
+    let size = terminal.size();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell px are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let tiny_w = size.cell_width.ceil() as u32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell px products with small row/col counts are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let (tiny_h, full_w, full_h) = (
+        (25.0 * size.cell_height).ceil() as u32,
+        (304.0 * size.cell_width).ceil() as u32,
+        (25.0 * size.cell_height).ceil() as u32,
+    );
+
+    // Deadline-bounded, not count-bounded: pre-fix the growth is
+    // GB/s-scale (three cycles reached 47 GB), so a long count only
+    // pads the run — the cap or the deadline ends it.
+    let markers = visible_text(&terminal).matches('@').count();
+    println!(
+        "curve start: VmRSS {} KiB, {markers} prompt markers",
+        vm_rss_kib()
+    );
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    let mut cycle = 0;
+    while Instant::now() < deadline {
+        terminal.resize(tiny_w, tiny_h);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        terminal.resize(full_w, full_h);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        while rx.try_recv().is_ok() {}
+        let markers = visible_text(&terminal).matches('@').count();
+        println!(
+            "cycle {cycle}: VmRSS {} KiB, {markers} prompt markers",
+            vm_rss_kib()
+        );
+        cycle += 1;
+    }
+    assert!(
+        cycle > 0,
+        "the deadline must admit at least one churn cycle"
+    );
+}

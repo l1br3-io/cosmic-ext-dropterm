@@ -706,7 +706,7 @@ the numbers.)*
 
 ## RAM initiative — ram-leak (main; /planning 2026-11-17)
 
-- [ ] rl-1 The capped reproduction formalized (`#[ignore]` real-rc
+- [x] rl-1 The capped reproduction formalized (`#[ignore]` real-rc
       churn test, the curve recorded agent-run under the cap, the
       probe's panic-shape gone from the tree)
 - [ ] rl-2 Attribution (heaptrack under the cap / dhat fallback; the

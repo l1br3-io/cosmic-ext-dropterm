@@ -36,18 +36,40 @@ kills — the run records the climb to that point. The probe file's
 panic-shape is replaced wholesale in this task's commit.
 
 **Acceptance criteria:**
-- [ ] The test exists, `#[ignore]`-gated; `just check` runs nothing
+- [x] The test exists, `#[ignore]`-gated; `just check` runs nothing
       of it and stays green
-- [ ] The capped run's curve is recorded in this chunk (agent-run,
+- [x] The capped run's curve is recorded in this chunk (agent-run,
       per the owner's 2026-11-17 sanction, cap values in the header)
-- [ ] The old probe text is gone from the tree — no panic-shape
+- [x] The old probe text is gone from the tree — no panic-shape
       test is ever committed
-- [ ] No uncapped run of the growth path is made, ever
+- [x] No uncapped run of the growth path is made, ever
 
 **Verification:**
-- [ ] Capped run output in the chunk with the cap values and build
+- [x] Capped run output in the chunk with the cap values and build
       identity
-- [ ] `just check` green
+- [x] `just check` green
+
+**rl-1 capped run record (agent-run, 2026-11-17, scope
+`run-r2ea836d9d18a459e979b1b7b1e5fd8fc`):** the record's recipe
+verbatim — MemoryMax=2G, MemoryHigh=1536M, MemorySwapMax=0,
+`--ignored --test-threads=1 --nocapture` — on
+`target/debug/deps/dropterm-59e80177bea39695` (sha256 986e6f97…).
+First prompt found; `curve start: VmRSS 50052 KiB, 1 prompt markers`;
+cycle 0 never printed — the climb (49 MB → ~1.67 GiB) lands inside
+the first cycle's resize pair, and the run then wedges in a
+**swap-less MemoryHigh livelock**: `memory.current` 1,789,595,648 B
+between High (17,100 `high` throttle events) and Max (0 oom, 0
+kills), RSS 1.6 GiB / VSZ 1.71 GiB; threads — main futex-waiting on
+the term mutex, one in D-state `mem_cgroup_handle_over_high` (the
+allocator), one running. Live anon at the watermark with swap off
+gives reclaim nothing, so the run neither finishes nor reaches the
+kill; it was ended by `systemctl --user stop` (SIGTERM, cargo exit
+143). Read: **one churn cycle's resize allocates at GB/s** — the
+incident's 47.1 GB / ~12 s uncapped, the same climb throttled at
+1.5 GiB inside cycle 0 here. Consequence for rl-2: an exit-time
+heaptrack dump cannot finalize against a livelock that never exits —
+dhat's mid-run `HeapStats` polling (the sanctioned fallback) is the
+expected instrument; heaptrack only if a run shape allows an exit.
 
 **Dependencies:** none · **Files:** engine/tests.rs · **Scope:** S
 
