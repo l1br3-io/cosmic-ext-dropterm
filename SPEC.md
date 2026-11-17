@@ -43,6 +43,8 @@ until its note's un-park condition is met.
 | `gpui-cutover` | 3 | deletion + release | `gpui-parity` | main | deletes the libcosmic frontend | [SPEC-gpui-cutover.md](SPEC-gpui-cutover.md) | cu-1 done 2026-11-15 (a2cd89f, proceeding under the walk-skip ruling: the GPUI crate renamed `dropterm`, the libcosmic frontend deleted — 31,672 lines — the root a virtual workspace, the release workflow's version read re-pointed; `just check` + `just build-all` green, the applet canary parking with py-4) · cu-2 done 2026-11-15 (7d98912: architecture rewritten to the one-core-one-bin map, known-issues' carried rows + GPUI-truthed mechanisms, README/images.md re-truthed) · cu-3 the release — owner-gated, the owner fires `/release` · cu-4 done 2026-11-15 (the owner's one-crate ruling: the package collapsed to one `dropterm` — bin + `core` lib half, the toolkit pin re-homed as a source-walking test — and the applet deleted with every justfile/workflow/doc leg; `just check` + `just build-all` green, libcosmic out of the graph) |
 | `toggle-ram` | hardening | code + probe | none | main | none active | [SPEC-toggle-ram.md](SPEC-toggle-ram.md) | done (2026-11-17) — tr-1's probe + owner evidence: main clean, all three regimes × 150 (`1b68d22c…`, pin in; `[heap]` bedding-in to a bounded steady state then flat, fds/threads bounded, memfd transient); the crashing build identified **pre-74e6d85** (owner), so tr-2 narrowed to evidence — the 300-paced 2× pass, the crash-regime hardware walkthrough, and the dbglog class (bounded-per-dump) all owner-run good 2026-11-17; tr-3 banked (testing.md's RAM row checked with both-regime + hardware evidence, known-issues residue: none) |
 | `resource-audit` | hardening | code + audit | `toggle-ram` | main | none | [SPEC-resource-audit.md](SPEC-resource-audit.md) | done (2026-11-17) — the sweep complete 2026-11-17 (ra-1..ra-5): eight bounds landed (the paste cache 256 MiB + every clipboard payload 32 MiB by owner ruling; the toggle-log, thumbs, env-row panic, `--is-visible` fixes; the inflate pin), ten vectors verified bounded with citations (the scrollback math ~53 MB/saturated tab stated in configuration.md; PTY reaping, watcher, sockets, tick queues, resize, select-all, decode ceilings clean), three P2 filed (per-tab 320 MiB image store, verb flood/tab count, config file size — known-issues rows), ra-4's P1 batch empty by construction; [the report](docs/research/resource-audit.md) filed with its index row. The pass closed the same day by owner direction ("just proceed with rest", the 2026-11-14 manual ruling waived for the two confirmations, both run agent-side on the live COSMIC session under throwaway XDG dirs and recorded as agent-run): the saturated tab green at 0.04 % (delta 71 396 kB vs 71 428 kB predicted at the live 304×25 grid) and the verb flood green with P2-2's one-tick clause corrected (the 150 ms debounce gates every verb at ~6.7/s — 97/100 burst verbs dropped, peak +6 MB — so no one-tick burst exists; the P2 stands on the uncapped fleet over time); the report's Confirmations section carries the numbers |
+| `ram-leak` | hardening | code + diagnosis | none (builds first in the RAM initiative) | main | none | [SPEC-ram-leak.md](SPEC-ram-leak.md) | not started — spec approved 2026-11-17 (owner's proceed-to-`/planning`), chunk written ([tasks/ram-leak.md](tasks/ram-leak.md)) |
+| `ram-telemetry` | hardening | code + docs | after `ram-leak` (build order, not code) | main | none | [SPEC-ram-telemetry.md](SPEC-ram-telemetry.md) | not started — spec approved 2026-11-17 (owner's proceed-to-`/planning`), chunk written ([tasks/ram-telemetry.md](tasks/ram-telemetry.md)) |
 
 \* A merge-order dependency only: the package may start before
 `app-identity` merges and rebases onto it. `app-identity`'s code diff is
@@ -65,7 +67,10 @@ then `gpui-tabs` ∥ `gpui-status`) → `gpui-chrome` → `gpui-parity` →
 
 The hardening pass (outside the plan's numbered phases; its Phase 4/5
 stay the X11/macOS backend slots) runs `toggle-ram` →
-`resource-audit`, the sweep consuming the fix's probe tooling.
+`resource-audit`, the sweep consuming the fix's probe tooling. The
+RAM initiative continues it: `ram-leak` (the fix for the growth the
+2026-11-17 kernel OOM evidenced) → `ram-telemetry` (the always-on
+release sampler).
 
 ## Worktree split
 
@@ -174,3 +179,17 @@ stands whenever it is cut (plan record, Release boundaries).
   spec approval, chunks are written
   ([toggle-ram](tasks/toggle-ram.md), [resource-audit](tasks/resource-audit.md)),
   and `/build` may start with tr-1.
+- The RAM initiative opened 2026-11-17 (`/spec`, owner report: the
+  app eats RAM until the laptop crashes — the same day at 20:54 the
+  kernel OOM-killed a 47.1 GB anon-rss run of the real-rc
+  resize-churn probe, the lib test binary
+  `dropterm-59e80177bea39695` under target/debug/deps): `ram-leak`
+  (the capped-reproduction hunt and fix; agent-run capped headless
+  reproductions sanctioned by the owner, memory-capped every time)
+  then `ram-telemetry` (always-on release sampler, owner ruling
+  2026-11-17; the daily-use growth the owner confirmed is its reason
+  to exist). Specs approved 2026-11-17 (the owner's
+  proceed-to-`/planning`); `/planning` ran the same day — chunks
+  written ([ram-leak](tasks/ram-leak.md),
+  [ram-telemetry](tasks/ram-telemetry.md)) and `/build` may start
+  with rl-1.
