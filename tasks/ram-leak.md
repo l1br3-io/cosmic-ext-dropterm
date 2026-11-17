@@ -172,18 +172,65 @@ re-pin ask-first, never silent. The capped real-rc reproduction
 from rl-1 reruns post-fix: flat, the bound a stated number.
 
 **Acceptance criteria:**
-- [ ] The root cause is named in the fixing commit with before/after
+- [x] The root cause is named in the fixing commit with before/after
       numbers
-- [ ] The synthetic pin is green inside `just check`; the real-rc
+- [x] The synthetic pin is green inside `just check`; the real-rc
       test stays `#[ignore]`-gated
-- [ ] The capped real-rc rerun is flat, its bound stated as a number
-- [ ] Fork path, if taken: upstream ask filed, the owner's re-pin
+- [x] The capped real-rc rerun is flat, its bound stated as a number
+- [x] Fork path, if taken: upstream ask filed, the owner's re-pin
       ruling recorded
 
 **Verification:**
-- [ ] Capped repro rerun output in the chunk (agent-run)
-- [ ] `just check` green
-- [ ] Ask-first answered before any re-pin
+- [x] Capped repro rerun output in the chunk (agent-run)
+- [x] `just check` green
+- [x] Ask-first answered before any re-pin
+
+**rl-3 fix record (agent-run, 2026-11-17, every growth run capped;
+the owner's re-pin ruling — carried path — landed the same day):**
+
+- **The patch (two guards, both upstream-bug class):** (1)
+  `grid/resize.rs` `shrink_columns` — skip the wide-char carry at
+  `columns < 2` (rl-2's immortal row); (2) `term/mod.rs` `input` —
+  at `columns < 2` a wide glyph's spacer has no cell to occupy: skip
+  the fit-dance and the spacer write, leave the cursor on the glyph
+  with `input_needs_wrap`. Bug (2) is a second latent upstream
+  OOB the fix exposed (the pty write path indexed `column+1` on a
+  1-wide row; unreachable pre-fix only because the resize wedged
+  first — PTY-reader panic, backtrace captured capped).
+- **A third finding, ours:** `engine.rs` `visible_rows` indexed
+  `grid[Line(history_size..)]` — this fork's positive-line domain is
+  `[0, screen_lines)` (history is negative lines), so any scrolled
+  content tripped a debug assert (release: wrapped index). Exposed by
+  the real-rc rerun (storage.rs:221 backtrace, captured); fixed to
+  read `0..screen_lines`. The app's only caller is the debug-only
+  toggle-dump trace.
+- **The carry:** `carried/alacritty-terminal` — the exact fork @
+  1185ffd sources plus the two guards (diff-audited: only
+  `resize.rs` and `term/mod.rs` differ), manifest carrying the
+  kit-root-border provenance comment; the working tree's
+  `[patch.crates-io]` points at it (the git-rev entry preserved in a
+  comment for verbatim restore).
+- **The pin:** `a_one_col_churn_over_wide_glyphs_stays_bounded` —
+  `--norc` bash, 🤘 + trailing content through the pty, three
+  1-col↔full cycles, asserting the grid stays ≤ 1024 total rows
+  (history + screen; the churn's content is a few dozen). Hermetic
+  where process RSS is not — in-suite parallel tests rode the same
+  VmRSS (166 MB observed noise), so the row bound is the in-`just
+  check` pin and the RSS numbers live here: **+488 KiB** isolated
+  capped for the pin's churn.
+- **The capped real-rc rerun (the headline):** flat — 50,116 →
+  51,184 KiB over 22 cycles (**+1.1 MiB total drift**, plateauing;
+  ≈49 KiB/cycle bedding-in). Before: 49 MB → the 1.5 GiB throttle
+  inside the first resize, unbounded beyond; uncapped, 47.1 GB /
+  ~12 s. No panics; `just check` green on the fixed tree.
+- **The ruling (owner, 2026-11-17): carried path copy** — the
+  kit-root-border shape exactly, as staged: `[patch.crates-io]`
+  points at `carried/alacritty-terminal`, the pre-carry git-rev pin
+  preserved in a comment as the retirement's re-pin target. The
+  upstream ask is the owner's outward action; the PR draft (both
+  guards — the immortal shrink loop and the wide-spacer OOB at one
+  column, both still in alacritty master) rides the incident record
+  (`docs/research/ram-leak.md`, rl-4).
 
 **Dependencies:** rl-2 · **Files:** named by the attribution
 (candidates: `engine.rs`, the fork's grid/reflow through the git

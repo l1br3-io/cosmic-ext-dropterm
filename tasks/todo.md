@@ -711,9 +711,14 @@ the numbers.)*
       probe's panic-shape gone from the tree)
 - [x] rl-2 Attribution (heaptrack under the cap / dhat fallback; the
       stack, the GB/s arithmetic, the fix-site verdict)
-- [ ] rl-3 The fix + pins *(gate: rl-2; root cause named with
+- [x] rl-3 The fix + pins *(gate: rl-2; root cause named with
       before/after numbers, synthetic pin in `just check`, capped
-      rerun flat; fork path ask-first)*
+      rerun flat; fork path ask-first)* — done 2026-11-17: the
+      carried path ruled by the owner, two upstream-bug guards in
+      carried/alacritty-terminal + dropterm's own `visible_rows`
+      viewport fix; pin (≤1024 grid rows) green in `just check`,
+      capped real-rc rerun flat 50.1→51.2 MiB / 22 cycles (was
+      49 MB → the cap inside one resize; 47.1 GB / 12 s uncapped)
 - [ ] rl-4 Bank it (incident record + index row, testing row,
       residue — including what the fix does not explain of daily
       growth)

@@ -1594,10 +1594,15 @@ impl Terminal {
         let term = self.term.lock();
         let grid = term.grid();
         let columns = grid.columns();
-        let first = grid.history_size();
-        let total = first + grid.screen_lines();
-        let mut rows = Vec::with_capacity(grid.screen_lines());
-        for line in first..total {
+        // Viewport only: this fork's `grid[Line(n)]` accepts n in
+        // [0, screen_lines) — history lives at negative lines, so a
+        // history-offset start indexes out of contract (a debug
+        // assert; a wrapped index in release) as soon as any content
+        // has scrolled. The read this dump wants is the visible
+        // screen, which is exactly 0..screen_lines.
+        let lines = grid.screen_lines();
+        let mut rows = Vec::with_capacity(lines);
+        for line in 0..lines {
             let line = alacritty_terminal::index::Line(
                 i32::try_from(line)
                     .expect("grid line indices are bounded by total_lines, far below i32::MAX"),

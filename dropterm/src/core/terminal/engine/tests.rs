@@ -4472,3 +4472,107 @@ fn real_rc_toggle_churn_rss_curve() {
         "the deadline must admit at least one churn cycle"
     );
 }
+
+/// The immortal-row pin (ram-leak rl-3): the incident's mechanism —
+/// a wide-flagged cell leading a row with cells behind it — drove
+/// the fork's `shrink_columns` into an infinite rebuild loop at one
+/// column (one row allocation per iteration; 47.1 GB in ~12 s
+/// uncapped). The carried fork fix guards the wide-char carry at one
+/// column. This pin drives the engine exactly as the app does — a
+/// plain `/bin/bash --norc` with a deterministic prompt (no login
+/// rc, so `just check` runs it), a wide glyph plus trailing content
+/// fed through the pty, then the app's degenerate 1-col↔full show
+/// churn — and demands the churn complete with the grid inside a
+/// stated row bound. Pre-fix this shape wedges forever (the capped
+/// evidence in the chunk); the fix and this pin land together.
+#[test]
+fn a_one_col_churn_over_wide_glyphs_stays_bounded() {
+    use alacritty_terminal::tty::Shell as PtyShell;
+    use std::collections::HashMap;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut env = HashMap::new();
+    env.insert("PS1".to_string(), "P$ ".to_string());
+    let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new(
+                "/bin/bash".to_owned(),
+                vec!["--norc".to_owned(), "-i".to_owned()],
+            )),
+            drain_on_exit: true,
+            env,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn an interactive bash");
+
+    // The prompt first, then the trigger content: 🤘 (U+1F918, East-
+    // Asian wide) with cells behind it on the same row — readline's
+    // echo and printf's output both put that shape on the grid.
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !visible_text(&terminal).contains("P$") {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for bash's first prompt; grid so far: {:?}",
+            visible_text(&terminal)
+        );
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    terminal.input_no_scroll(&b"printf '\xF0\x9F\xA4\x98xxx yyy\n'\r"[..]);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !visible_text(&terminal).contains("yyy") {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the wide-glyph content; grid so far: {:?}",
+            visible_text(&terminal)
+        );
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // The app's degenerate churn against it: 1-col first paint ↔ the
+    // terminal's own full size, three cycles.
+    let size = terminal.size();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell px are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let tiny_w = size.cell_width.ceil() as u32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell px are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let tiny_h = (25.0 * size.cell_height).ceil() as u32;
+    for _ in 0..3 {
+        terminal.resize(tiny_w, tiny_h);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        terminal.resize(size.width, size.height);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        while rx.try_recv().is_ok() {}
+    }
+
+    // The bound, stated as grid rows — hermetic where process RSS is
+    // not (the suite runs tests in parallel, and their allocations
+    // ride the same VmRSS). The churn's own content is a few dozen
+    // rows; 1024 total (history + screen) is the generous ceiling.
+    // The pre-fix bomb never completes this test at all — it wedges
+    // in the first resize — and a bloated-but-bounded reflow
+    // regression shows here. (The capped isolated RSS numbers live in
+    // the chunk: +488 KiB for this pin, flat for the real-rc repro.)
+    let term = terminal.term.lock();
+    let total_rows = term.grid().history_size() + term.grid().screen_lines();
+    drop(term);
+    assert!(
+        total_rows <= 1024,
+        "the wide-glyph churn left {total_rows} grid rows — above the 1024 bound"
+    );
+}
