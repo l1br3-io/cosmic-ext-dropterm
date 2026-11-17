@@ -448,3 +448,80 @@ crash/resource-exhaustion vector. Specs: [SPEC-toggle-ram.md](../SPEC-toggle-ram
 2. The crash's shape (OOM, panic, hang, session-level) — tr-1's
    owner-run capture.
 3. The standing VM-probe exception — asked at tr-1's review.
+
+## RAM initiative (opened 2026-11-17): ram-leak → ram-telemetry
+
+The kernel OOM-killed this repo's own lib-test binary on 2026-11-17
+20:54 — 47.1 GB anon-rss in a ~12 s run of the real-rc resize-churn
+probe (`dropterm-59e80177bea39695`), the app's exact toggle path —
+and the owner confirms daily-use RAM growth. The initiative fixes
+the bomb, then ships the always-on sampler that makes daily growth
+observable as data. Specs: [SPEC-ram-leak.md](../SPEC-ram-leak.md),
+[SPEC-ram-telemetry.md](../SPEC-ram-telemetry.md); chunks:
+[ram-leak.md](ram-leak.md), [ram-telemetry.md](ram-telemetry.md)
+(the chunks are the task detail; this section is the aggregate
+view). Tooling grounding:
+[docs/research/memory-tracking-tooling.md](../docs/research/memory-tracking-tooling.md).
+
+### Planning rulings (made at /planning 2026-11-17; veto at review)
+
+1. **Every reproduction is capped, every time** —
+   `systemd-run --user --scope -p MemoryMax=2G -p MemoryHigh=1536M
+   -p MemorySwapMax=0`; the High-before-Max ordering is what lets
+   heaptrack's exit-time dump finalize, and the cap value is
+   recorded per run (owner sanction 2026-11-17: agent-run headless
+   reproductions allowed under exactly this shape).
+2. **Instruments, fixed**: heaptrack primary; dhat mid-run
+   `HeapStats` the fallback when the kill is the point (exit-time
+   dumps die with SIGKILL, stderr survives); massif only if
+   heaptrack is unavailable; bytehound reserved for fragmentation
+   questions.
+3. **The real-rc reproduction is `#[ignore]`-gated** — a real login
+   rc is environment-dependent, so `just check` stays deterministic
+   and runs none of it; the CI-load pin is synthetic once rl-2
+   names the mechanism.
+4. **The sampler is std-only**; `procfs = 0.18` is the ask-first
+   typed fallback; `memory-stats` and `sysinfo` are rejected on the
+   tooling record's verdicts.
+5. **Sampler rows are self-describing plain text with children
+   columns fed from tracked pids** (the owner's 2026-11-17
+   AI-extractability ruling): an agent extracts the log with std
+   tooling, no parsing preamble; child-driven growth shows in the
+   log itself.
+6. **Fork fixes ride kit-root-border**: the patch carried at the
+   pin plus an upstream ask; a re-pin is ask-first, never silent.
+7. **Evidence recording**: agent-run capped evidence is marked
+   agent-run (the 2026-11-17 sanction); GUI rows stay owner-run
+   (the 2026-11-14 ruling).
+
+### Task index
+
+- rl-1 the capped reproduction (`#[ignore]` test, curve recorded,
+  the probe's panic-shape gone) → rl-2 attribution (heaptrack/dhat,
+  the stack + GB/s arithmetic + fix-site verdict) → rl-3 the fix +
+  synthetic pin *(gated on attribution; fork path ask-first)* →
+  rl-4 the incident record. Checkpoint: capped repro flat, owner
+  has the numbers.
+- rt-1 the sampler module (parse/rotate/failure-safe, unit-pinned,
+  zero deps) → rt-2 the 1 Hz tick hook + children feed + capped
+  smoke (the owner's daily-session instruction issued) → rt-3 docs
+  (schema, extraction one-liners, capture ladder). Checkpoint: the
+  watch live; the owner's daily-session verdict closes it.
+
+### Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| heaptrack's dump dies with the process under the cap | Med | High-before-Max ordering + deadline-bounded churn; dhat mid-run stderr the fallback |
+| The root cause lands in the pinned fork | High | kit-root-border shape: carried patch + upstream ask, re-pin ask-first (ruling 6) |
+| The mechanism resists a synthetic pin | Med | The real-rc test stays `#[ignore]`-gated and rides rl-3's rerun; the pin can assert the mechanism's unit if the full churn can't be headless |
+| Daily growth survives the fix (a second vector) | Med | Expected and watched: ram-telemetry's curve is the detector; rl-4 records what the fix does not explain rather than hiding it |
+| Dev-profile symbolization noise in heaptrack stacks | Low | The record's symbolization notes (dev build, or release with `debug = true`); rl-2 records which was used |
+
+### Open questions
+
+1. Whether the daily-use growth is the same vector as the bomb —
+   answered by ram-telemetry's curve post-fix (rl-4 states the
+   expectation honestly either way).
+2. heaptrack availability on the owner's machine (Pop!_OS:
+   `apt install heaptrack`) — rl-2 answers by construction.

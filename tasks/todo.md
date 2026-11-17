@@ -703,3 +703,34 @@ run agent-side under that direction and green — the saturated tab
 0.04 % off the pinned math, the verb flood bounded with P2-2's
 one-tick clause corrected; the report's Confirmations section carries
 the numbers.)*
+
+## RAM initiative — ram-leak (main; /planning 2026-11-17)
+
+- [ ] rl-1 The capped reproduction formalized (`#[ignore]` real-rc
+      churn test, the curve recorded agent-run under the cap, the
+      probe's panic-shape gone from the tree)
+- [ ] rl-2 Attribution (heaptrack under the cap / dhat fallback; the
+      stack, the GB/s arithmetic, the fix-site verdict)
+- [ ] rl-3 The fix + pins *(gate: rl-2; root cause named with
+      before/after numbers, synthetic pin in `just check`, capped
+      rerun flat; fork path ask-first)*
+- [ ] rl-4 Bank it (incident record + index row, testing row,
+      residue — including what the fix does not explain of daily
+      growth)
+
+**Checkpoint — the bomb is fixed and evidenced:** capped repro flat
+with a stated bound, pin green, owner has the numbers; ram-telemetry
+opens on it.
+
+## RAM initiative — ram-telemetry (main; after ram-leak)
+
+- [ ] rt-1 The sampler module (`core/mem.rs`: parse / rotate /
+      fail-safe, unit-pinned, zero new deps)
+- [ ] rt-2 The 1 Hz tick hook + children feed + capped smoke
+      (agent-run; the owner's daily-session instruction issued)
+- [ ] rt-3 Docs + banking (schema + agent-extraction one-liners +
+      capture ladder, README index link, testing row, residue)
+
+**Checkpoint — the watch is live:** sampler in every build, the log
+verified on disk, docs landed; the owner's daily-session verdict
+closes the module.
