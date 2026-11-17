@@ -732,8 +732,11 @@ opens on it.
 
 ## RAM initiative — ram-telemetry (main; after ram-leak)
 
-- [ ] rt-1 The sampler module (`core/mem.rs`: parse / rotate /
-      fail-safe, unit-pinned, zero new deps)
+- [x] rt-1 The sampler module (`core/mem.rs`: parse / rotate /
+      fail-safe, unit-pinned, zero new deps) — done 2026-11-18: 19
+      tests green in `just check`; the realistic rollup fixture
+      caught a real parser bug (smaps_rollup writes no colons,
+      status does) before it ever hit the every-30th read
 - [ ] rt-2 The 1 Hz tick hook + children feed + capped smoke
       (agent-run; the owner's daily-session instruction issued)
 - [ ] rt-3 Docs + banking (schema + agent-extraction one-liners +

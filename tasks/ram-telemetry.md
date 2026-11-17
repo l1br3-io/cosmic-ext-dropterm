@@ -28,14 +28,14 @@ the sample — telemetry never panics the app. Unit tests inline per
 house rules (sibling `tests.rs` past ~500 lines).
 
 **Acceptance criteria:**
-- [ ] Fixtures parse to exact numbers; unknown/missing fields skip
-- [ ] Rotation drops the oldest row at the cap and never the fresh
+- [x] Fixtures parse to exact numbers; unknown/missing fields skip
+- [x] Rotation drops the oldest row at the cap and never the fresh
       one; both files' bounds hold as pinned numbers
-- [ ] The XDG override is honored (throwaway dirs in tests)
-- [ ] Zero new dependencies (Cargo.toml untouched)
+- [x] The XDG override is honored (throwaway dirs in tests)
+- [x] Zero new dependencies (Cargo.toml untouched)
 
 **Verification:**
-- [ ] `just check` green — the module's tests ride it
+- [x] `just check` green — the module's tests ride it
 
 **Dependencies:** none (build order after `ram-leak`, no code
 dependency) · **Files:** `dropterm/src/core/mem.rs` ·
