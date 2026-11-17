@@ -1741,6 +1741,14 @@ impl Terminal {
         foreground_child_running(self.master_fd.as_ref(), self.shell_pid)
     }
 
+    /// The shell this terminal's PTY was spawned as (the pid recorded
+    /// at construction, `None` where the platform withholds one) —
+    /// the RAM watch's children feed (ram-telemetry): one bounded
+    /// status read per pane's pid, no `/proc` scanning.
+    pub fn shell_pid(&self) -> Option<u32> {
+        self.shell_pid
+    }
+
     /// The foreground process group's name for the status band:
     /// [`foreground_process_name`] over this terminal's dup'd master
     /// and recorded shell pid — `None` reads idle/unreadable, and the

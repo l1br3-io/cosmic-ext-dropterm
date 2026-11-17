@@ -54,17 +54,33 @@ concise instruction issued at this task's close (install the build,
 use a normal day, `tail` the log — the verdict reported back).
 
 **Acceptance criteria:**
-- [ ] The hook fires exactly once per 10 ticks (cadence-counted,
+- [x] The hook fires exactly once per 10 ticks (cadence-counted,
       unit-pinned); `smaps_rollup` once per 30 samples
-- [ ] Children columns populated from tracked pids (unit-pinned
+- [x] Children columns populated from tracked pids (unit-pinned
       with fixture children)
-- [ ] The smoke run is green and its log artifacts recorded
+- [x] The smoke run is green and its log artifacts recorded
       (agent-run, capped); the owner's daily-session instruction
       issued
 
 **Verification:**
-- [ ] Smoke output in the chunk
-- [ ] `just check` green
+- [x] Smoke output in the chunk:
+      `rt-2 smoke: ticks=20600 writes=2060 A=2048 rows/86817B B=12 rows/626B rollup_rows=68`
+      (the module's loop on a fake cadence — real own-process
+      `/proc` reads, real files, 0.11 s: slot A at exactly its
+      pinned cap, the spill in B, every 30th row carrying rollup,
+      both files tens of KB)
+- [x] `just check` green
+
+**Owner-run row (the daily session, 2026-11-14 ruling — issued
+2026-11-18, verdict pending):** install the dev build
+(`just dev-image && just dev-image-install`), use `dropterm-dev`
+for a normal day (tabs, shells, a couple of heavy commands), then
+read the curve — `tail -n 3
+~/.local/state/io.github.l1br3_io.dropterm.Dev/memory.log*` — and
+report: the files exist, `vm_rss_kb` lands in a plausible band,
+`children_n` tracks the open shells, and (the module's whole point)
+whether the numbers hold flat over the day or climb. The verdict
+closes the module.
 
 **Dependencies:** rt-1 · **Files:** `dropterm/src/app_shell.rs`,
 `dropterm/src/core/mem.rs` (integration point) · **Scope:** S to M

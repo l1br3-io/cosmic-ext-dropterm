@@ -352,6 +352,15 @@ pub(crate) struct Shell {
     /// surfaces are invisible to the toplevel listings by protocol —
     /// no body needed there).
     dock_anchor: Option<gpui::WindowHandle<DockAnchor>>,
+    /// The RAM watch (ram-telemetry): the sampler writing the bounded
+    /// rotating log under XDG state — always-on in release by the
+    /// 2026-11-17 owner ruling, sampled on the tick's own cadence
+    /// (never a new timer or thread), failure-safe by construction
+    /// (a skipped sample is a missing row, nothing more).
+    mem: dropterm::core::mem::Sampler,
+    /// The tick counter (ram-telemetry): the 100 ms loop's own beat,
+    /// divided by 10 for the 1 Hz sample.
+    tick_n: u64,
 }
 
 /// The fleet's structural truth the session save detects changes
@@ -610,6 +619,8 @@ impl Shell {
             // The booted fleet is the baseline: a restored session
             // writes nothing until it truly changes.
             session_written: Some(session_written),
+            mem: dropterm::core::mem::Sampler::new(&dropterm::core::mem::state_dir()),
+            tick_n: 0,
         }
     }
 
@@ -653,6 +664,7 @@ impl Shell {
     /// entity is mid-update panics ("already being updated" — the
     /// first walk's lesson, made structural).
     fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
+        self.tick_mem_watch(cx);
         // The mouse dispatch's queued window actions (the drag edge)
         // apply here first — the tick's App-level point, outside any
         // input dispatch.
@@ -2811,6 +2823,30 @@ impl Shell {
                 println!("dropterm: tab {id:?} retitled -> {}", tab.title);
             }
         }
+    }
+
+    /// The RAM watch's beat (ram-telemetry rt-2): every 10th tick of
+    /// the 100 ms loop is the 1 Hz sample — the tick's own cadence
+    /// divided, no new timer, no new thread.
+    fn tick_mem_watch(&mut self, cx: &mut Context<Self>) {
+        self.tick_n = self.tick_n.saturating_add(1);
+        if dropterm::core::mem::tick_samples(self.tick_n) {
+            self.sample_memory(cx);
+        }
+    }
+
+    /// One RAM sample (ram-telemetry): the panes' tracked PTY child
+    /// pids feed the children columns — one bounded status read per
+    /// pane, a dead shell reads nothing — beside the own-process
+    /// reading, landing as one row in the rotating log under XDG
+    /// state.
+    fn sample_memory(&mut self, cx: &mut Context<Self>) {
+        let children: Vec<u32> = self
+            .panes
+            .values()
+            .filter_map(|pane| pane.read(cx).shell_pid())
+            .collect();
+        self.mem.sample(&children);
     }
 
     /// One attention poll (the tick's apply point beside the title

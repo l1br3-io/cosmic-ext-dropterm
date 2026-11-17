@@ -737,8 +737,13 @@ opens on it.
       tests green in `just check`; the realistic rollup fixture
       caught a real parser bug (smaps_rollup writes no colons,
       status does) before it ever hit the every-30th read
-- [ ] rt-2 The 1 Hz tick hook + children feed + capped smoke
-      (agent-run; the owner's daily-session instruction issued)
+- [x] rt-2 The 1 Hz tick hook + children feed + capped smoke
+      (agent-run; the owner's daily-session instruction issued) —
+      done 2026-11-18: `tick_mem_watch` on the shell's 100 ms pump
+      (every 10th tick, pinned), children fed from the panes' engine
+      pids, smoke `ticks=20600 writes=2060 A=2048 B=12 rollup=68`
+      green in `just check`; the owner's daily-session row issued in
+      the chunk, verdict pending
 - [ ] rt-3 Docs + banking (schema + agent-extraction one-liners +
       capture ladder, README index link, testing row, residue)
 

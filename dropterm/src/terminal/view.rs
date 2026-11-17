@@ -219,6 +219,13 @@ impl TerminalPane {
             .working_directory()
     }
 
+    /// The shell this pane's PTY was spawned as (the engine's
+    /// recorded pid) — the RAM watch's children feed, polled by the
+    /// shell's tick (ram-telemetry).
+    pub(crate) fn shell_pid(&self) -> Option<u32> {
+        self.terminal.lock().expect("engine lock").shell_pid()
+    }
+
     /// The engine's visible screen rows — the toggle-dump trace's
     /// read (`DROPTERM_TOGGLE_DEBUG`): the shell dumps the active
     /// pane's grid at every accepted surface action, under the

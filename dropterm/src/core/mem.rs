@@ -19,6 +19,17 @@ pub const ROW_CAP: usize = 2048;
 /// cadence: the expensive read once per 30 s of 1 Hz sampling).
 pub const ROLLUP_EVERY: u64 = 30;
 
+/// The tick division (rt-2): the shell's 100 ms loop samples every
+/// 10th tick — 1 Hz — on the existing tick's cadence, no new timer
+/// and no new thread.
+pub const SAMPLE_EVERY_TICKS: u64 = 10;
+
+/// Whether 1-based tick `n` carries a sample: exactly one firing per
+/// [`SAMPLE_EVERY_TICKS`] ticks, on the window's last tick.
+pub fn tick_samples(tick: u64) -> bool {
+    tick.is_multiple_of(SAMPLE_EVERY_TICKS)
+}
+
 /// The log's self-describing schema — fixed whitespace-separated
 /// columns, the `#` line skipped by `grep -v '^#'` — so an agent
 /// extracts the log with std tooling and no parsing preamble.

@@ -379,3 +379,79 @@ fn sample_takes_a_real_own_process_reading() {
     assert!(vm_rss > 1024, "implausible own VmRSS: {vm_rss} kB");
     assert_eq!(fields[5], "-");
 }
+
+#[test]
+fn tick_cadence_fires_exactly_once_per_ten_ticks() {
+    assert_eq!(SAMPLE_EVERY_TICKS, 10);
+    // One firing per 10-tick window, on the window's last tick —
+    // never two inside one window, never a silent window.
+    for tick in 1..=30u64 {
+        assert_eq!(tick_samples(tick), tick.is_multiple_of(10), "tick {tick}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rollup_rides_every_thirtieth_sample() {
+    let dir = TempDir::new("rollup-cadence");
+    let mut sampler = Sampler::new(dir.path());
+    for _ in 0..31 {
+        assert!(sampler.sample(&[]));
+    }
+    let rows = data_rows(&log(dir.path()));
+    assert_eq!(rows.len(), 31);
+    let is_rollup = |row: &String| row.split_whitespace().nth(5) != Some("-");
+    let rollups: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| is_rollup(row))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(rollups, vec![29], "exactly the 30th sample carries rollup");
+}
+
+/// The rt-2 agent-run capped smoke (headless, the sanctioned
+/// pattern): the shell's 100 ms loop faked by its counter — real
+/// own-process `/proc` reads, real log files, no sleeps — driven
+/// past the rotation cap, asserting the on-disk log whole.
+#[cfg(target_os = "linux")]
+#[test]
+fn smoke_the_tick_loop_produces_the_bounded_log() {
+    let dir = TempDir::new("rt2-smoke");
+    let mut sampler = Sampler::new(dir.path());
+    // 20 600 ticks of the 100 ms cadence (~34 min) -> 2 060 samples:
+    // the first slot fills to its cap and the tail spills into the
+    // second.
+    let ticks = 20_600u64;
+    let mut writes = 0u64;
+    for tick in 1..=ticks {
+        if tick_samples(tick) {
+            assert!(sampler.sample(&[]), "the fresh sample was dropped");
+            writes += 1;
+        }
+    }
+    assert_eq!(writes, 2_060);
+
+    let a_rows = data_rows(&log(dir.path()));
+    let b_rows = data_rows(&log_alt(dir.path()));
+    assert_eq!(a_rows.len(), ROW_CAP, "slot A holds exactly its cap");
+    assert_eq!(b_rows.len(), 12, "the spill lands in slot B");
+    let is_rollup = |row: &String| row.split_whitespace().nth(5) != Some("-");
+    let rollups = a_rows.iter().filter(|row| is_rollup(row)).count()
+        + b_rows.iter().filter(|row| is_rollup(row)).count();
+    assert_eq!(rollups, 68, "every 30th of 2 060 samples carries rollup");
+    for row in a_rows.iter().chain(&b_rows) {
+        assert_eq!(row.split_whitespace().count(), 11, "malformed row: {row}");
+    }
+    let a_bytes = fs::metadata(log(dir.path())).expect("stat A").len();
+    let b_bytes = fs::metadata(log_alt(dir.path())).expect("stat B").len();
+    assert!(
+        a_bytes < 1024 * 1024 && b_bytes < 1024 * 1024,
+        "log out of bound"
+    );
+    println!(
+        "rt-2 smoke: ticks={ticks} writes={writes} A={} rows/{a_bytes}B B={} rows/{b_bytes}B rollup_rows={rollups}",
+        a_rows.len(),
+        b_rows.len(),
+    );
+}
