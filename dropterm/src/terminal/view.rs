@@ -617,6 +617,34 @@ impl TerminalPane {
         consumed
     }
 
+    /// The kit-inspector seat's answer (`ctrl-shift-i` in debug
+    /// builds — the render-time registration beside this method is
+    /// the whole story): the chord runs whatever our table owns on
+    /// it, exactly as the key listener would have run it; a table
+    /// that no longer owns the chord propagates, and the kit's
+    /// inspector keeps the seat.
+    #[cfg(debug_assertions)]
+    fn on_kit_inspector(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let chord = gpui::Keystroke {
+            key: "i".into(),
+            key_char: None,
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..gpui::Modifiers::default()
+            },
+        };
+        match input::matched_action(&self.binds, &chord) {
+            Some(action) if action.is_shell_verb() => {
+                self.dispatch_shell_verb(action, window, cx);
+            }
+            Some(action) => {
+                self.perform_action(action, cx);
+            }
+            None => cx.propagate(),
+        }
+    }
+
     /// The engine's focus flag over real focus changes (the
     /// libcosmic app's focus-event wiring): the ghost's eligibility,
     /// the menu's open state, and the caret's swap all ride
@@ -1474,7 +1502,7 @@ impl gpui::Render for TerminalPane {
         // pane, the canvas
         // paints inside it (carrying its own `size_full` — a
         // default-styled child collapses; the first walk's lesson).
-        div()
+        let frame = div()
             .size_full()
             .track_focus(&self.focus)
             .on_mouse_down(gpui::MouseButton::Left, {
@@ -1573,24 +1601,43 @@ impl gpui::Render for TerminalPane {
                         pane.on_key(&event.keystroke, window, cx);
                     });
                 }
-            })
-            .child(
-                canvas(
-                    move |bounds, _, _| bounds,
-                    move |bounds, _, window, cx| {
-                        paint_pane(
-                            &terminal,
-                            &skin,
-                            &walk_log,
-                            &image_cache,
-                            bounds,
-                            window,
-                            cx,
-                        );
-                    },
-                )
-                .size_full(),
+            });
+        // The Kit's inspector seat: the kit binds `ctrl-shift-i`
+        // globally in every debug build, and gpui's dispatch runs
+        // matched keymap actions ahead of every key listener — the
+        // stop-propagation-at-the-listener guard below is a phase
+        // too late for the one chord the keymap claims (the second
+        // hardware walk's finding: the inspector still opened). The
+        // pane answers the kit's own action at the element layer,
+        // which runs before the kit's app-level handler; element
+        // handlers stop propagation by default, and the not-ours arm
+        // propagates the seat back.
+        #[cfg(debug_assertions)]
+        let frame = frame.on_action({
+            let pane = pane.clone();
+            move |_: &gpui_component::ToggleInspector,
+                  window: &mut gpui::Window,
+                  cx: &mut gpui::App| {
+                pane.update(cx, |pane, cx| pane.on_kit_inspector(window, cx));
+            }
+        });
+        frame.child(
+            canvas(
+                move |bounds, _, _| bounds,
+                move |bounds, _, window, cx| {
+                    paint_pane(
+                        &terminal,
+                        &skin,
+                        &walk_log,
+                        &image_cache,
+                        bounds,
+                        window,
+                        cx,
+                    );
+                },
             )
+            .size_full(),
+        )
     }
 }
 
@@ -1776,6 +1823,36 @@ fn paint_pane(
         )]
         let row_origin_y = bounds.origin.y + geometry.cell_height * row as f32;
         let caret_col = (caret_row == Some(row)).then_some(cursor.column.0);
+        // The caret's own quad: the block is the cell's rect in the
+        // cell's resolved foreground, painted under the glyphs. The
+        // projected run carries the same rect as its background
+        // color, but that rect rides the shaper's glyph-boundary
+        // flush — the one link in the caret chain no walk ever
+        // banked (the hardware walks' "no cursor" against a paint
+        // that traced green up to the run); the quad's geometry is
+        // the cell's own, shaper-free, so the block no longer
+        // depends on it. The run keeps the inverted glyph — the
+        // cut-out when the cursor sits on a character.
+        if let Some(col) = caret_col
+            && let Some(cell) = cells.get(col)
+        {
+            let block = grid::hsla(grid::resolve_color(&skin.colors, cell.fg));
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a grid column is far below 2^24: exact in f32"
+            )]
+            let origin = point(
+                bounds.origin.x + geometry.cell_width * col as f32,
+                row_origin_y,
+            );
+            window.paint_quad(fill(
+                gpui::Bounds {
+                    origin,
+                    size: gpui::Size::new(geometry.cell_width, geometry.cell_height),
+                },
+                block,
+            ));
+        }
         let runs = grid::project_row(cells, &skin.colors, caret_col);
         // The walk's row-0 content evidence (the spike's own check-9
         // row): what the paint actually shaped, logged once per
@@ -1853,7 +1930,7 @@ fn paint_pane(
         let mut log = walk_log.lock().expect("walk log");
         if log.caret != Some(cell_at) {
             println!(
-                "dropterm: caret at col {} row {} (block, first-frame rule)",
+                "dropterm: caret at col {} row {} (block, cell quad)",
                 cell_at.0, cell_at.1
             );
             log.caret = Some(cell_at);
