@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, Context, Entity, Pixels, Window, div, prelude::*, px,
+    Anchor, Animation, AnimationExt, App, Bounds, Context, DismissEvent, Entity, Pixels,
+    Subscription, Window, div, prelude::*, px,
 };
 
 use dropterm::core::config::DropTermConfig;
@@ -30,14 +31,14 @@ use dropterm::core::dbus_state::SurfacePhase;
 use dropterm::core::intent::SurfaceExecutor;
 use dropterm::core::slide::{self, SLIDE_DURATION_MS};
 use dropterm::core::spawn;
-use dropterm::core::status::{self, StatusInputs, StatusSegments, Strip};
+use dropterm::core::status::{self, BandVm, StatusInputs, StatusSegments, Strip};
 use dropterm::core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
 use dropterm::core::tabs::TabId;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
 use gpui_component::input::{InputEvent, InputState};
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use notify::Watcher as _;
 
 use crate::cli;
@@ -321,6 +322,34 @@ pub(crate) struct Shell {
     /// the 3 s window passes, a successful paste clears it early
     /// with its row.
     status_paste_refusal: Option<(dropterm::core::status::PasteRefusal, Instant)>,
+    /// The band's interaction machine (gn-4): the cursor's
+    /// band-local rest — the hover tint's, the tips', and the
+    /// reveal's one input — and the laid-row snapshot the last
+    /// band event carried (the machine's pure calls walk the very
+    /// rows the frame painted; a press held across a relayout
+    /// reads one frame stale at worst, the reference's own
+    /// snapshot trade).
+    status_hover: Option<(f32, f32)>,
+    status_rows: Option<std::rc::Rc<BandVm>>,
+    /// The fingerprint the last hover report resolved to (the
+    /// hovered segment and the path row's display length — the
+    /// reveal's visible toggle): a move that changes neither
+    /// repaints nothing.
+    status_hover_fingerprint: Option<(Option<dropterm::core::status::SegmentId>, usize)>,
+    /// The armed Left press: its band-local anchor and whether it
+    /// opened as a double-click's second press (the release routes
+    /// to the selection verb regardless of distance).
+    status_press: Option<((f32, f32), bool)>,
+    /// The standing selection span (anchor, focus), band-local —
+    /// live while the drag runs, persisting after the release
+    /// until the next press clears it.
+    status_selection: Option<((f32, f32), (f32, f32))>,
+    /// The band's open context menu (gn-4): the Kit entity the
+    /// shell owns — the checklist's press-dismissal row demands
+    /// nothing under the bubble reach the terminal, so the shell
+    /// holds the entity, occludes the press, tracks the dismissal,
+    /// and closes it on hide/show.
+    status_menu: Option<StatusMenu>,
     /// Our own hostname, read once at construction — the OSC 7
     /// report's host-qualification base (a reported host renders
     /// only when it differs from this).
@@ -536,6 +565,27 @@ impl SpecsWatch {
     }
 }
 
+/// The band's open context menu (gn-4): the Kit entity the shell
+/// owns — the checklist's press-dismissal row demands nothing under
+/// the bubble reach the terminal, so the shell holds the entity,
+/// occludes the press, tracks the dismissal, and closes it on
+/// hide/show.
+struct StatusMenu {
+    menu: Entity<PopupMenu>,
+    /// The opening press's window position — the bubble's
+    /// anchor.
+    position: gpui::Point<Pixels>,
+    /// The focus the menu interrupted, restored when the shell
+    /// closes it itself (hide/show) — the dismissal path
+    /// restores its own.
+    prev_focus: Option<gpui::FocusHandle>,
+    /// The `DismissEvent` subscription keeping the seat honest
+    /// through the Kit's own dismissal routes (Escape, item
+    /// picks, the out-press) — held, never read: dropping the
+    /// menu drops it.
+    _subscription: Subscription,
+}
+
 impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -606,6 +656,12 @@ impl Shell {
             band_font,
             status_copied: None,
             status_paste_refusal: None,
+            status_hover: None,
+            status_rows: None,
+            status_hover_fingerprint: None,
+            status_press: None,
+            status_selection: None,
+            status_menu: None,
             was_hidden: true,
             status_timer_logged: (false, None, None),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -699,6 +755,10 @@ impl Shell {
                         self.boot.elapsed().as_millis()
                     );
                     self.dump_visible_grid("pane-hide", cx);
+                    // The band's transient seats die with the tree
+                    // (gn-4): an open menu returns closed, the
+                    // selection and press stand down.
+                    self.clear_status_machine();
                     let intents = self.machine.decide_hide(self.inputs);
                     self.execute_into(intents, &mut actions);
                 }
@@ -1406,6 +1466,20 @@ fn queue_shell_actions(
         shell.deferred_actions.extend(actions);
     });
     shell.update(cx, |_, cx| cx.notify());
+}
+
+/// The band's window-y origin (gn-4): the band spans the
+/// window's full width at one of its two ends — the bottom when the
+/// anchor edge is Top (the terminal above it), the top otherwise
+/// (the border hairline's own flag). The drag-capture listeners
+/// convert band-local through it.
+fn band_y0(shell: &Shell, window: &Window) -> f32 {
+    let height = window.bounds().size.height.as_f32();
+    if shell.inputs.geometry.edge == Edge::Top {
+        height - status::BAND_HEIGHT
+    } else {
+        0.0
+    }
 }
 
 /// The 2026-11-16 drag walk's probe: the walk's resizes logged yet
@@ -2960,6 +3034,346 @@ impl Shell {
         );
     }
 
+    /// The band's event funnel (gn-4): every press and hover the
+    /// band's root reports, dispatched into the machine — the
+    /// associated-fn shape `toggle_settings` set (the menu's
+    /// open needs the window outside the shell's update).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the funnel's one event, matched once — the reference band's own message shape"
+    )]
+    fn status_band_event(
+        shell: &Entity<Self>,
+        event: status_bar::BandEvent,
+        rows: std::rc::Rc<BandVm>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match event {
+            status_bar::BandEvent::Hover { at } => {
+                shell.update(cx, |shell, cx| shell.status_hover_report(at, rows, cx));
+            }
+            status_bar::BandEvent::Press {
+                button: gpui::MouseButton::Left,
+                x,
+                y,
+                click_count,
+                hit,
+                ..
+            } => {
+                shell.update(cx, |shell, cx| {
+                    // A press clears whatever selection stands
+                    // (the persisting highlight's rule) and arms
+                    // the click-vs-drag discrimination; a
+                    // double-click over a rendered row routes
+                    // the release to the selection verb instead
+                    // — its span the row's whole display.
+                    shell.status_selection = None;
+                    shell.status_press = None;
+                    shell.status_hover = Some((x, y));
+                    shell.status_rows = Some(std::rc::Rc::clone(&rows));
+                    if click_count >= 2
+                        && let Some(row) = rows.rows.iter().find(|row| Some(row.id) == hit)
+                    {
+                        shell.status_selection = Some(((row.x, 0.0), (row.x + row.width, 0.0)));
+                        shell.status_press = Some(((x, y), true));
+                    } else {
+                        shell.status_press = Some(((x, y), false));
+                    }
+                    cx.notify();
+                });
+            }
+            status_bar::BandEvent::Press {
+                button: gpui::MouseButton::Right,
+                hit,
+                wx,
+                wy,
+                ..
+            } => {
+                Shell::status_open_menu(shell, hit, wx, wy, window, cx);
+            }
+            status_bar::BandEvent::Press {
+                button: gpui::MouseButton::Middle,
+                ..
+            } => {
+                // The context menu's own Paste funnel verbatim —
+                // gaps paste too (the band is chrome), and the
+                // press leaves the copy and selection state
+                // untouched.
+                shell.update(cx, |shell, cx| {
+                    if let Some(pane) = shell.active_pane() {
+                        pane.update(cx, |pane, cx| {
+                            pane.perform_term_action(crate::terminal::input::TermAction::Paste, cx);
+                        });
+                    }
+                });
+            }
+            status_bar::BandEvent::Press { .. } => {}
+        }
+    }
+
+    /// One hover report: the cursor's rest recorded, the frame
+    /// re-laid only when the report changes what the band would
+    /// paint (the hovered segment or the reveal's visible
+    /// toggle) — a move that changes neither repaints nothing.
+    fn status_hover_report(
+        &mut self,
+        at: Option<(f32, f32)>,
+        rows: std::rc::Rc<BandVm>,
+        cx: &mut Context<Self>,
+    ) {
+        let fingerprint = at.map(|(x, y)| {
+            let hovered = status::hover_segment(&rows.rows, Some((x, y)), false);
+            let path_len = rows
+                .rows
+                .iter()
+                .find(|row| row.id == status::SegmentId::Path)
+                .map_or(0, |row| row.text.chars().count());
+            (hovered, path_len)
+        });
+        let changed = fingerprint != self.status_hover_fingerprint;
+        self.status_hover = at;
+        self.status_rows = Some(rows);
+        self.status_hover_fingerprint = fingerprint;
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// The Right press's verb (gn-4): the Kit menu built from
+    /// core's live rows, focused, anchored at the press on the
+    /// terminal's side — the seat the `DismissEvent` subscription
+    /// keeps honest.
+    fn status_open_menu(
+        shell: &Entity<Self>,
+        pressed: Option<status::SegmentId>,
+        wx: f32,
+        wy: f32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Close any standing menu first (the reference's
+        // re-open rule) — its focus restored by the dismissal
+        // it carries itself is gone with the entity, so the
+        // shell restores what it recorded.
+        if let Some(standing) = shell.read(cx).status_menu.as_ref()
+            && let Some(prev) = standing.prev_focus.clone()
+        {
+            window.focus(&prev, cx);
+        }
+        let segments = shell.read(cx).status.clone();
+        let menu = {
+            let rows = status::menu_rows(&segments, pressed);
+            let shell = shell.clone();
+            PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+                for row in rows {
+                    if row.separated {
+                        menu = menu.separator();
+                    }
+                    let pick = row.pick;
+                    let enabled = row.enabled;
+                    let shell = shell.clone();
+                    menu = menu.item(PopupMenuItem::new(row.label).disabled(!enabled).on_click(
+                        move |_event, window, cx| {
+                            if let Some(pick) = pick {
+                                Shell::status_menu_pick(&shell, pick, window, cx);
+                            }
+                        },
+                    ));
+                }
+                menu
+            })
+        };
+        // The focus the menu interrupts, restored when the shell
+        // itself closes it; then focus the menu before its
+        // first frame (the ext's own rule) and subscribe: every
+        // DismissEvent — Escape, an item pick, the out-press —
+        // clears the seat.
+        let prev_focus = window.focused(cx);
+        menu.focus_handle(cx).focus(window, cx);
+        let subscription = window.subscribe(&menu, cx, {
+            let shell = shell.clone();
+            move |_, _: &DismissEvent, _window, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.status_menu = None;
+                    cx.notify();
+                });
+            }
+        });
+        shell.update(cx, |shell, cx| {
+            // The reference's rule: a right press clears the whole
+            // machine — any live selection dies with the menu's
+            // opening.
+            shell.status_press = None;
+            shell.status_selection = None;
+            shell.status_menu = Some(StatusMenu {
+                menu,
+                position: gpui::Point {
+                    x: px(wx),
+                    y: px(wy),
+                },
+                prev_focus,
+                _subscription: subscription,
+            });
+            println!(
+                "dropterm: status menu open (pressed {pressed:?}) at +{}ms",
+                shell.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        });
+    }
+
+    /// One menu pick (gn-4): the copy rows land their payloads
+    /// against the live segments (the click verb's own writer
+    /// for Copy; the clipboard alone for Copy All — no segment
+    /// owns it, no flash), and every action row routes to the
+    /// keybinds' own funnels — the menu introduces no behavior
+    /// of its own (the terminal menu's contract).
+    fn status_menu_pick(
+        shell: &Entity<Self>,
+        pick: status::MenuPick,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match pick {
+            status::MenuPick::CopySegment(id) => {
+                shell.update(cx, |shell, cx| {
+                    let payload = status::copy_text(id, &shell.status);
+                    if !payload.is_empty() {
+                        shell.status_copy(id, payload, cx);
+                    }
+                });
+            }
+            status::MenuPick::CopyAll => {
+                shell.update(cx, |shell, cx| {
+                    let payload = status::copy_all_text(&shell.status);
+                    if !payload.is_empty() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(payload));
+                    }
+                });
+            }
+            status::MenuPick::Paste
+            | status::MenuPick::ZoomIn
+            | status::MenuPick::ZoomOut
+            | status::MenuPick::ZoomReset => {
+                let action = match pick {
+                    status::MenuPick::Paste => crate::terminal::input::TermAction::Paste,
+                    status::MenuPick::ZoomIn => crate::terminal::input::TermAction::ZoomIn,
+                    status::MenuPick::ZoomOut => crate::terminal::input::TermAction::ZoomOut,
+                    _ => crate::terminal::input::TermAction::ZoomReset,
+                };
+                shell.update(cx, |shell, cx| {
+                    if let Some(pane) = shell.active_pane() {
+                        pane.update(cx, |pane, cx| {
+                            pane.perform_term_action(action, cx);
+                        });
+                    }
+                });
+            }
+            status::MenuPick::ToggleStatusBar => {
+                shell.update(cx, |shell, _| {
+                    let next = !shell.config.status_bar_enabled;
+                    shell.write_settings(
+                        &dropterm::core::settings::PlannedWrite::StatusBarEnabled(next),
+                    );
+                });
+            }
+            status::MenuPick::Settings => {
+                // Outside the update borrow — the drawer's build
+                // reads the shell (gc-2's finding).
+                Shell::toggle_settings(shell, window, cx);
+            }
+        }
+    }
+
+    /// The release's routing (gn-4): a click (under the 4 px
+    /// threshold, and never a double-click's second press) rides
+    /// the copy/jump verb at the release's own hit; a drag
+    /// copies its WYSIWYG selection to both destinations; a
+    /// double-click's release selects the display. The selection
+    /// persists — the next press clears it.
+    fn status_release(&mut self, at: (f32, f32), cx: &mut Context<Self>) {
+        let Some((anchor, double)) = self.status_press.take() else {
+            return;
+        };
+        let rows = self.status_rows.clone();
+        let Some(rows) = rows else {
+            return;
+        };
+        if double {
+            // The span already covers the pressed row's whole
+            // display (set at the press); the payload is its
+            // WYSIWYG text, both destinations, no flash — the
+            // highlight is the feedback.
+            if let Some((from, to)) = self.status_selection {
+                let text = status::selection_text(from, to, &rows.rows);
+                if !text.is_empty() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+                    cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+                }
+            }
+            cx.notify();
+            return;
+        }
+        if status::selection_is_click(anchor, at) {
+            // The click verb: the two action chips jump, every
+            // other rendered seat copies its full un-elided
+            // value — resolved at the release's own hit.
+            let hit = status::segment_at(&rows.rows, at.0, at.1);
+            if let Some(id) = hit {
+                if status::click_jumps(id) {
+                    match id {
+                        status::SegmentId::Pasted => self.open_images_panel(cx),
+                        _ => Shell::scroll_active_to_bottom(self, cx),
+                    }
+                } else {
+                    let payload = status::copy_text(id, &self.status);
+                    if !payload.is_empty() {
+                        self.status_copy(id, payload, cx);
+                    }
+                }
+            }
+            cx.notify();
+            return;
+        }
+        // The drag: the span stands (the moves set it), the
+        // payload its WYSIWYG text — both destinations, no
+        // flash.
+        let text = status::selection_text(anchor, at, &rows.rows);
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+            cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+        }
+        cx.notify();
+    }
+
+    /// One drag move while a press stands (gn-4): past the 4 px
+    /// threshold the selection goes live — the persisting
+    /// highlight arming under the drag.
+    fn status_drag_move(&mut self, at: (f32, f32), cx: &mut Context<Self>) {
+        let Some(((ax, ay), _)) = self.status_press else {
+            return;
+        };
+        let (dx, dy) = (at.0 - ax, at.1 - ay);
+        if dx.abs() >= status::SELECTION_THRESHOLD || dy.abs() >= status::SELECTION_THRESHOLD {
+            self.status_selection = Some(((ax, ay), at));
+            cx.notify();
+        }
+    }
+
+    /// The whole machine stands down (gn-4): the hide/show flip
+    /// and the band's own toggling kill the transient seats —
+    /// the menu's entity with its subscription (the surface's
+    /// focus is going with it), the press, the selection, and
+    /// the hover.
+    fn clear_status_machine(&mut self) {
+        self.status_menu = None;
+        self.status_press = None;
+        self.status_selection = None;
+        self.status_hover = None;
+        self.status_hover_fingerprint = None;
+    }
+
     /// The pasted chip's door (py-6): the panel opens over the active
     /// tab's ledger, its missing thumbnails decoding off the UI
     /// thread's clock — the reference panel's batch-open arm.
@@ -3146,6 +3560,11 @@ impl Shell {
     fn clear_activity_on_show(&mut self, cx: &mut Context<Self>) {
         let hidden = matches!(self.machine.state, SurfaceState::Hidden);
         if self.was_hidden && !hidden {
+            // The show side of the band's hide/show close (gn-4):
+            // whatever the hide path missed — a keyboard-driven
+            // surface toggle that never drained a pane signal —
+            // stands down here all the same.
+            self.clear_status_machine();
             for pane in self.panes.values() {
                 let engine = pane.read(cx).terminal.clone();
                 engine.lock().expect("engine lock").clear_missed_activity();
@@ -3186,25 +3605,22 @@ impl Shell {
             .map(|(r, g, b)| gpui::Rgba { r, g, b, a: 1. }.into());
         let attention = status_bar::attention_color(red, bright, fg, strip);
         let shell = cx.entity();
-        let on_copy = {
+        let on_event = {
             let shell = shell.clone();
-            move |id, payload, cx: &mut gpui::App| {
-                shell.update(cx, |shell, cx| shell.status_copy(id, payload, cx));
+            move |event: status_bar::BandEvent,
+                  rows: std::rc::Rc<BandVm>,
+                  window: &mut gpui::Window,
+                  cx: &mut gpui::App| {
+                Shell::status_band_event(&shell, event, rows, window, cx);
             }
         };
-        let on_scroll_bottom = {
-            let shell = shell.clone();
-            move |id: dropterm::core::status::SegmentId, cx: &mut gpui::App| {
-                // The two action chips' own verbs (py-6 grew the
-                // pair): the scrolled chip's jump, the pasted chip's
-                // panel door.
-                shell.update(cx, |shell, cx| match id {
-                    dropterm::core::status::SegmentId::Pasted => {
-                        shell.open_images_panel(cx);
-                    }
-                    _ => Shell::scroll_active_to_bottom(shell, cx),
-                });
-            }
+        // The machine's visual inputs: the hover clears while a
+        // selection stands or the menu is open (the one-narrator
+        // rule), the selection paints its span.
+        let hover = if self.status_menu.is_some() {
+            None
+        } else {
+            self.status_hover
         };
         status_bar::StatusBandView::new(self.status.clone(), strip, fg)
             .font(self.band_font.clone())
@@ -3214,8 +3630,9 @@ impl Shell {
             .copied(self.status_copied.map(|(id, _)| id))
             .paste_refusal(self.status_paste_refusal.map(|(r, _)| r))
             .attention(Some(attention))
-            .on_copy(on_copy)
-            .on_scroll_bottom(on_scroll_bottom)
+            .hover(hover)
+            .selection(self.status_selection)
+            .on_event(on_event)
     }
 
     /// The status band's refresh (gpui-status Task 1): the clock's
@@ -3593,7 +4010,7 @@ impl Shell {
                 window.on_mouse_event(
                     move |event: &gpui::MouseMoveEvent,
                           phase: gpui::DispatchPhase,
-                          _window: &mut Window,
+                          window: &mut Window,
                           cx: &mut App| {
                         // Capture only: raw listeners fire on both
                         // phases, and one move must drive one decide.
@@ -3603,13 +4020,28 @@ impl Shell {
                         // Gate before any update: no drag armed must
                         // not so much as notify (a redraw per mouse
                         // move would burn the frame budget).
-                        let (armed, ms) = {
+                        let (armed, band_press, ms) = {
                             let shell = move_shell.read(cx);
                             (
                                 shell.machine.drag.is_some(),
+                                shell.status_press.is_some(),
                                 shell.boot.elapsed().as_millis(),
                             )
                         };
+                        // The band's selection drag (gn-4): the same
+                        // implicit-grab lesson — moves past the
+                        // band's own hitbox must keep driving the
+                        // span wherever the pointer roams.
+                        if !armed && band_press {
+                            let at = (
+                                event.position.x.as_f32(),
+                                event.position.y.as_f32() - band_y0(move_shell.read(cx), window),
+                            );
+                            move_shell.update(cx, |shell, cx| {
+                                shell.status_drag_move(at, cx);
+                            });
+                            return;
+                        }
                         if !armed {
                             return;
                         }
@@ -3632,11 +4064,25 @@ impl Shell {
                     },
                 );
                 window.on_mouse_event(
-                    move |_event: &gpui::MouseUpEvent,
+                    move |event: &gpui::MouseUpEvent,
                           phase: gpui::DispatchPhase,
-                          _window: &mut Window,
+                          window: &mut Window,
                           cx: &mut App| {
                         if phase != gpui::DispatchPhase::Capture {
+                            return;
+                        }
+                        // The band's release (gn-4): the click/drag
+                        // discrimination and its verbs route here —
+                        // the capture canvas, so a release outside
+                        // the band's hitbox still lands.
+                        if up_shell.read(cx).status_press.is_some() {
+                            let at = (
+                                event.position.x.as_f32(),
+                                event.position.y.as_f32() - band_y0(up_shell.read(cx), window),
+                            );
+                            up_shell.update(cx, |shell, cx| {
+                                shell.status_release(at, cx);
+                            });
                             return;
                         }
                         if up_shell.read(cx).machine.drag.is_some() {
@@ -3730,6 +4176,11 @@ impl Shell {
         // The drag capture (the 2026-11-16 grow-drag lesson): div
         // move/up listeners are hover-gated inside their hitbox
         children.push(Self::drag_capture(cx));
+        // The hover tip floats free of the band's clipped root —
+        // deferred above the whole column (gn-4).
+        if let Some(tip) = self.status_tip_element(strip, fg) {
+            children.push(tip);
+        }
         let column = div().size_full().flex().flex_col().children(children);
         let Some(playing) = self.machine.slide else {
             return column;
@@ -3849,6 +4300,8 @@ impl gpui::Render for Shell {
             band = self.settings_overlay(band, cx);
         } else if self.images_open {
             band = self.images_overlay(band, cx);
+        } else if self.status_menu.is_some() {
+            band = self.band_menu_overlay(band);
         }
         let Some(pending) = pending else {
             return band;
@@ -3989,6 +4442,112 @@ impl Shell {
     /// x through `drawer_drag_px`, the release writes the width, a
     /// double-click resets to the built-in default and clears the
     /// stored value.
+    /// The band's context-menu layer (gn-4, the owner's ruling):
+    /// the shell-owned Kit `PopupMenu` deferred above everything,
+    /// over a full-window occluder — a press anywhere outside the
+    /// bubble is blocked from the terminal beneath (the checklist's
+    /// no-side-effects row), while the menu's own capture-phase
+    /// out-listener dismisses it and the `DismissEvent` subscription
+    /// clears the seat.
+    fn band_menu_overlay(&self, band: gpui::AnyElement) -> gpui::AnyElement {
+        let Some(open) = self.status_menu.as_ref() else {
+            return band;
+        };
+        let menu = open.menu.clone();
+        // The bubble pops to the terminal's side (the reference's
+        // rule): below a band at the column's bottom, above one at
+        // the top — the only sides with surface under them.
+        let at_bottom = self.inputs.geometry.edge == Edge::Top;
+        let (anchor, y) = if at_bottom {
+            (
+                Anchor::TopLeft,
+                open.position.y + px(status::BAND_HEIGHT + 4.0),
+            )
+        } else {
+            (Anchor::BottomLeft, open.position.y - px(4.0))
+        };
+        let layer = gpui::div()
+            .size_full()
+            .occlude()
+            .child(gpui::deferred(
+                gpui::anchored()
+                    .position(gpui::Point::new(open.position.x, y))
+                    .anchor(anchor)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(menu),
+            ))
+            .into_any_element();
+        gpui::div()
+            .size_full()
+            .child(band)
+            .child(layer)
+            .into_any_element()
+    }
+
+    /// The band's hover tip (gn-4): the pane-inverted bubble — the
+    /// tab strip's own tip look — naming the hovered segment and
+    /// its verb, floating free of the band's `overflow_hidden`
+    /// root on the terminal's side. Suppressed while the menu is
+    /// open or a selection stands (one narrator at a time); gaps
+    /// and absent segments tip nothing (core's `segment_tip`
+    /// returns the empty string).
+    fn status_tip_element(&self, strip: gpui::Hsla, fg: gpui::Hsla) -> Option<gpui::AnyElement> {
+        if self.status_menu.is_some() || self.status_selection.is_some() {
+            return None;
+        }
+        let rows = self.status_rows.as_ref()?;
+        let (hx, hy) = self.status_hover?;
+        let hovered = status::hover_segment(&rows.rows, Some((hx, hy)), false)?;
+        let row = rows.rows.iter().find(|row| row.id == hovered)?;
+        let tip = status::segment_tip(hovered, &self.status);
+        if tip.is_empty() {
+            return None;
+        }
+        let at_bottom = self.inputs.geometry.edge == Edge::Top;
+        let (window_w, window_h) = self.last_bounds.map_or((1280.0, 320.0), |bounds| {
+            (bounds.size.width.as_f32(), bounds.size.height.as_f32())
+        });
+        let band_y0 = if at_bottom {
+            window_h - status::BAND_HEIGHT
+        } else {
+            0.0
+        };
+        // The anchor: centered on the row (an estimated advance —
+        // the walk retunes), clamped to the window's ends, on the
+        // terminal's side of the band.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a px-scale char estimate on tip strings, exact enough in f32"
+        )]
+        let tip_w = tip.chars().count() as f32 * 7.5 + 12.0;
+        let x =
+            (row.x + row.width / 2.0 - tip_w / 2.0).clamp(4.0, (window_w - tip_w - 4.0).max(4.0));
+        let (anchor, y) = if at_bottom {
+            (Anchor::TopLeft, band_y0 + status::BAND_HEIGHT + 4.0)
+        } else {
+            (Anchor::BottomLeft, band_y0 - 4.0)
+        };
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(gpui::Point::new(px(x), px(y)))
+                    .anchor(anchor)
+                    .snap_to_window_with_margin(px(4.))
+                    .child(
+                        gpui::div()
+                            .bg(fg)
+                            .text_color(strip)
+                            .text_size(gpui::px(12.))
+                            .rounded(gpui::px(4.))
+                            .px(gpui::px(6.))
+                            .py(gpui::px(3.))
+                            .child(tip),
+                    ),
+            )
+            .into_any_element(),
+        )
+    }
+
     fn settings_overlay(
         &mut self,
         band: gpui::AnyElement,
