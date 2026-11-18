@@ -75,7 +75,7 @@ just dev
 starts the new binary. Killing first matters: a plain relaunch only toggles the
 already-running process, which is still the code from before your edit.
 `just dev-reload` does just the restart, and `just dev-install` just the build
-plus launcher.
+plus launcher. Builds are silent on success; `V=1 just dev` shows the output.
 
 Every local launch of the app rides a memory fence: the `just dev*` recipes,
 the `dropterm-dev` launcher itself (so a COSMIC shortcut, `just act` /

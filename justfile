@@ -10,6 +10,10 @@ set quiet
 quietly command:
     #!/usr/bin/env bash
     set -euo pipefail
+    # V=1 passes the command straight through (the make convention).
+    if [ "${V:-0}" != "0" ]; then
+        exec bash -c '{{command}}'
+    fi
     out="$(mktemp)"
     set +e
     bash -c '{{command}}' >"$out" 2>&1
