@@ -10,6 +10,17 @@ Two routes through the manual side:
   parity pass walks it. When a quick row fails, find its clause below
   before filing anything - the quick row is a pointer, not a replacement.
 
+The hardware loop for both (owner-run, per the 2026-11-14 manual ruling):
+`just dev` builds the dev-identity debug image, installs the fenced
+launcher at `~/.local/bin/dropterm-dev`, and restarts the dev instance —
+bind that launcher to a system shortcut (F12 here) and walk rows against
+your own session; `just dev-watch` rebuilds and restarts on every save.
+The dev identity keeps its own config, session, and bus names (the `.Dev`
+suffix), so it coexists with any installed release, and every launch
+rides the memory fence (4G max by default). The validation VM
+(`just vm-*`, [development.md](development.md)) remains the clean-room
+route for evidence that must not see the dev machine.
+
 ## Quick pass
 
 ### Show/hide and the slide
