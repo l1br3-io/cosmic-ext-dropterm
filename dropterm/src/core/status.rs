@@ -1097,6 +1097,704 @@ pub fn reveal_display(
         PathFit::Gone => String::new(),
     }
 }
+// --- the laid band (the view-model pass the renderers share) ---
+//
+// gpui-status Task 4 moved the GPUI band's pure layout pass here
+// framework-free (the model move's precedent): the reference band's
+// fit + rect rules over measured widths, one deterministic pass the
+// view paints and the shell's interaction machine reads. The
+// interaction families below (selection, hover, reveal, menu) all
+// walk these laid rows, so the tint, the hit-testing, and the copy
+// verbs can never disagree about a strip.
+
+/// Segment text size in logical pixels — one notch below the tab
+/// strip's 14 px titles: the band is the terminal speaking about
+/// itself, in its own voice (the reference band's own constant).
+pub const SEGMENT_FONT_SIZE: f32 = 12.0;
+
+/// The state disc's diameter, and the hollow ring's stroke.
+pub const DISC_SIZE: f32 = 8.0;
+pub const DISC_RING_WIDTH: f32 = 1.5;
+
+/// The attention halo's clearance outside the disc — the ring sits
+/// this far beyond the disc's edge so it rings the disc, never
+/// overdraws it.
+pub const HALO_GAP: f32 = 1.5;
+
+/// Side padding of the band's clusters.
+pub const PAD_X: f32 = 12.0;
+
+/// The inter-segment hairline's painted size: one pixel wide, half
+/// the band tall, centered.
+pub const SEPARATOR_WIDTH: f32 = 1.0;
+pub const SEPARATOR_HEIGHT: f32 = 12.0;
+
+/// The gap between the disc and the process name.
+pub const DISC_GAP: f32 = 6.0;
+
+/// The dimmed alpha the right cluster's segments — and the
+/// duration's own narration — carry: hierarchy by alpha, never a
+/// new hue.
+pub const DIM_ALPHA: f32 = 0.6;
+
+/// One laid row: a segment's hit rect (`x`/`width`, band-local),
+/// where its text paints (`text_x`, the disc's gap ahead of the
+/// process name), and its paint flags — the dim seat and the
+/// attention-red seat.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandRowVm {
+    pub id: SegmentId,
+    pub text: String,
+    pub x: f32,
+    pub width: f32,
+    pub text_x: f32,
+    pub dimmed: bool,
+    /// The attention seat (the exit chip, error-state progress):
+    /// painted in the scheme's red, the copy payload unaffected.
+    pub attention: bool,
+}
+
+/// The process disc: its x (band-local), fill state, and the
+/// program report's attention tint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscVm {
+    pub x: f32,
+    pub filled: bool,
+    pub attention: bool,
+}
+
+/// The band's laid view-model: rows in x-order (left cluster then
+/// right), the separator hairlines' gap-center positions, the disc,
+/// and the missed-activity halo's center — pure over the resolved
+/// segments and measured widths, deterministic for a fixed input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandVm {
+    pub rows: Vec<BandRowVm>,
+    pub separators: Vec<f32>,
+    pub disc: Option<DiscVm>,
+    /// The halo's center x — `None` when no missed activity stands.
+    pub halo_center_x: Option<f32>,
+    /// The path seat's fit decision behind the laid row — the
+    /// reveal's arming reads its elided flag; a laid path row is
+    /// always `Full` or `Elided` (a `Gone` path composes no row).
+    pub path_fit: PathFit,
+}
+
+/// The band's one layout pass: the reference band's fit + rect
+/// rules over measured widths — the path elides first, segments
+/// drop in [`DROP_ORDER`] (the fit's accounting seats: the branch
+/// and the right cluster, exactly the reference's set — the command
+/// narration seats ride outside it, never dropped, the reference's
+/// own construction), survivors keeping their cluster seats. The
+/// right cluster anchors at the band's right padding, one
+/// [`SEGMENT_GAP`] before each seat.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reference band's three laid passes fused into one — displays, fit, and rects read as one rule"
+)]
+pub fn band_vm(
+    segments: &StatusSegments,
+    width: f32,
+    measure: &dyn Fn(&str) -> f32,
+    copied: Option<SegmentId>,
+    paste_refusal: Option<PasteRefusal>,
+    hover: Option<(f32, f32)>,
+) -> BandVm {
+    use crate::core::terminal::ProgressState;
+
+    // The copy flash's swap (the reference's own rule): the ✓ takes
+    // the copied segment's display seat alone — measured like any
+    // text, so the row re-lays for its flash — while the path's own
+    // fit measure below keeps the steady value (the flash never
+    // re-fits the path). The refusal verdict (the audit's F7) is
+    // the same rule's second tenant: while fresh it takes the
+    // pasted chip's seat, or the clock's when no pastes stand —
+    // measured like text, the row re-lays, the fit follows.
+    let refusal_swap = paste_refusal.map(|r| (refusal_seat(segments), refusal_display(r)));
+    let display = |id: SegmentId, text: String| {
+        if copied == Some(id) {
+            "\u{2713}".to_string()
+        } else if let Some((_, verdict)) = refusal_swap.as_ref().filter(|(seat, _)| *seat == id) {
+            verdict.clone()
+        } else {
+            text
+        }
+    };
+    // The display texts, glyphs riding (the copy payloads stay bare
+    // values in copy_text — never these).
+    let process_text = display(
+        SegmentId::Process,
+        process_display(&segments.process, segments.program_status),
+    );
+    // The narration seats' steady texts: the fit accounts their
+    // widths (band_fit's contract — every present segment but the
+    // path and the process consumes room), and like the path it
+    // measures the steady value so the ✓/refusal swap re-lays the
+    // row without re-fitting the band.
+    let duration_steady = prefixed_display(SegmentId::Duration, &duration_display(segments));
+    let duration_text = display(SegmentId::Duration, duration_steady.clone());
+    let exit_steady = segments.exit_code.map(exit_display).unwrap_or_default();
+    let exit_text = segments
+        .exit_code
+        .map(|_| display(SegmentId::Exit, exit_steady.clone()));
+    let progress_steady = segments
+        .progress
+        .map(|progress| prefixed_display(SegmentId::Progress, &progress_display(progress)))
+        .unwrap_or_default();
+    let progress_text = segments
+        .progress
+        .map(|_| display(SegmentId::Progress, progress_steady.clone()));
+    let path_value = prefixed_display(SegmentId::Path, segments.path.as_deref().unwrap_or(""));
+    let branch = display(
+        SegmentId::Branch,
+        prefixed_display(SegmentId::Branch, segments.branch.as_deref().unwrap_or("")),
+    );
+    let profile = prefixed_display(
+        SegmentId::Profile,
+        segments.profile.as_deref().unwrap_or(""),
+    );
+    let grid = segments.grid.map(|(cols, rows)| {
+        display(
+            SegmentId::Grid,
+            prefixed_display(SegmentId::Grid, &format!("{cols}×{rows}")),
+        )
+    });
+    let tab = segments.tab_position.map(|(index, total)| {
+        display(
+            SegmentId::Tab,
+            prefixed_display(SegmentId::Tab, &format!("{index}/{total}")),
+        )
+    });
+    let zoom = segments.zoom_percent.map(|percent| {
+        display(
+            SegmentId::Zoom,
+            prefixed_display(SegmentId::Zoom, &format!("{percent:+}%")),
+        )
+    });
+    let scrolled = segments
+        .scrolled
+        .map(|lines| display(SegmentId::Scrolled, scrolled_display(lines)));
+    let pasted = segments.pasted.map(|count| {
+        display(
+            SegmentId::Pasted,
+            prefixed_display(SegmentId::Pasted, &pasted_display(count)),
+        )
+    });
+    let clock = display(
+        SegmentId::Clock,
+        prefixed_display(SegmentId::Clock, segments.clock.as_deref().unwrap_or("")),
+    );
+
+    // The fit's accounting seats: the branch plus the right
+    // cluster, measured — the process cluster and the command
+    // narration ride `fixed`-side or unaccounted, exactly the
+    // reference's construction.
+    let mut widths: Vec<(SegmentId, f32)> = Vec::new();
+    let mut right_cluster: Vec<(SegmentId, String)> = Vec::new();
+    for (id, text) in [
+        (SegmentId::Profile, profile),
+        (SegmentId::Grid, grid.unwrap_or_default()),
+        (SegmentId::Tab, tab.unwrap_or_default()),
+        (SegmentId::Zoom, zoom.unwrap_or_default()),
+        (SegmentId::Scrolled, scrolled.unwrap_or_default()),
+        (SegmentId::Pasted, pasted.unwrap_or_default()),
+        (SegmentId::Clock, clock),
+    ] {
+        if !text.is_empty() {
+            widths.push((id, measure(&text)));
+            right_cluster.push((id, text));
+        }
+    }
+    if !branch.is_empty() {
+        widths.push((SegmentId::Branch, measure(&branch)));
+    }
+    // The left cluster's narration seats are fit-accounted like
+    // every other present segment (band_fit's contract): the rect
+    // walk lays them beside the process, so leaving them out of the
+    // sum painted the path and branch straight through the right
+    // cluster under width pressure — the overlap the narrow walk
+    // exposed.
+    for (id, text) in [
+        (SegmentId::Duration, &duration_steady),
+        (SegmentId::Exit, &exit_steady),
+        (SegmentId::Progress, &progress_steady),
+    ] {
+        if !text.is_empty() {
+            widths.push((id, measure(text)));
+        }
+    }
+    let process_width = measure(&process_text);
+    let fixed = if process_width > 0.0 {
+        PAD_X + DISC_SIZE + DISC_GAP + process_width + SEGMENT_GAP + PAD_X
+    } else {
+        PAD_X + SEGMENT_GAP + PAD_X
+    };
+    let fit = band_fit(
+        width,
+        fixed,
+        &widths,
+        PathMeasure {
+            // The steady value measures the fit (the reference's
+            // rule: the flash's swap never re-fits the path).
+            chars: path_value.chars().count(),
+            full_width: measure(&path_value),
+        },
+    );
+    // The fit's verdicts: dropped seats compose no row.
+    let dropped = |id: SegmentId| fit.dropped.contains(&id);
+
+    // The laid rows — the reference's rect walk: the process
+    // cluster from the left padding, the narration seats after it,
+    // the right cluster anchored at the right padding with one gap
+    // before each seat.
+    let mut rows: Vec<BandRowVm> = Vec::new();
+    let mut disc = None;
+    let mut x = PAD_X;
+    if process_width > 0.0 {
+        disc = Some(DiscVm {
+            x,
+            filled: segments.running,
+            attention: program_needs_attention(segments.program_status),
+        });
+        rows.push(BandRowVm {
+            id: SegmentId::Process,
+            text: process_text.clone(),
+            x,
+            width: DISC_SIZE + DISC_GAP + process_width,
+            text_x: x + DISC_SIZE + DISC_GAP,
+            dimmed: false,
+            attention: false,
+        });
+        x += DISC_SIZE + DISC_GAP + process_width + SEGMENT_GAP;
+    }
+    let path_text = match fit.path {
+        PathFit::Full => path_value.clone(),
+        PathFit::Elided(max_chars) => elide_path_left(&path_value, max_chars),
+        PathFit::Gone => String::new(),
+    };
+    // The inline reveal's seat loan (status-glance criterion 3): an
+    // elided path whose cursor rests on its rect re-lays with the
+    // branch's seat lent to it — the longest fitting expansion (the
+    // whole value when it fits), the branch row vanishing for the
+    // loan. Arming reads the path's resting rect, computable ahead
+    // of the rect walk (the narration seats ahead of it are already
+    // measured); the armed text fits by `reveal_display`'s own
+    // construction, and the expanded rect contains the resting one,
+    // so arming is stable through the swap.
+    let seats_ahead = [
+        (SegmentId::Duration, &duration_steady),
+        (SegmentId::Exit, &exit_steady),
+        (SegmentId::Progress, &progress_steady),
+    ]
+    .iter()
+    .filter(|(id, text)| !text.is_empty() && !dropped(*id))
+    .map(|(_, text)| measure(text) + SEGMENT_GAP)
+    .sum::<f32>();
+    let path_resting_x = x + seats_ahead;
+    let armed = reveal_armed(
+        (!path_text.is_empty()).then(|| BandRect {
+            x: path_resting_x,
+            y: 0.0,
+            width: measure(&path_text),
+            height: BAND_HEIGHT,
+        }),
+        hover,
+        matches!(fit.path, PathFit::Elided(_)),
+    );
+    let (path_text, branch) = if armed {
+        let survivors: Vec<(SegmentId, f32)> = widths
+            .iter()
+            .copied()
+            .filter(|(id, _)| !dropped(*id))
+            .collect();
+        (
+            reveal_display(
+                &path_value,
+                width,
+                fixed,
+                &survivors,
+                PathMeasure {
+                    chars: path_value.chars().count(),
+                    full_width: measure(&path_value),
+                },
+            ),
+            String::new(),
+        )
+    } else {
+        (path_text, branch)
+    };
+    let path_text = display(SegmentId::Path, path_text);
+    let narration = [
+        (SegmentId::Duration, duration_text),
+        (SegmentId::Exit, exit_text.unwrap_or_default()),
+        (SegmentId::Progress, progress_text.unwrap_or_default()),
+        (SegmentId::Path, path_text),
+        (SegmentId::Branch, branch),
+    ];
+    let progress_is_error = segments
+        .progress
+        .is_some_and(|progress| progress.state == ProgressState::Error);
+    for (id, text) in narration {
+        if text.is_empty() || dropped(id) {
+            continue;
+        }
+        let w = measure(&text);
+        rows.push(BandRowVm {
+            id,
+            text,
+            x,
+            width: w,
+            text_x: x,
+            dimmed: id == SegmentId::Duration,
+            attention: id == SegmentId::Exit
+                || (id == SegmentId::Progress && progress_is_error)
+                || refusal_swap.as_ref().is_some_and(|(seat, _)| *seat == id),
+        });
+        x += w + SEGMENT_GAP;
+    }
+    let mut right = width - PAD_X;
+    for (id, text) in right_cluster.iter().rev() {
+        if dropped(*id) {
+            continue;
+        }
+        let w = measure(text);
+        right -= w;
+        rows.push(BandRowVm {
+            id: *id,
+            text: text.clone(),
+            x: right,
+            width: w,
+            text_x: right,
+            dimmed: true,
+            // The refusal verdict's seat wears the attention red
+            // (the exit chip's rule) even though the cluster dims —
+            // the verdict outranks the cluster's quiet styling.
+            attention: refusal_swap.as_ref().is_some_and(|(seat, _)| *seat == *id),
+        });
+        right -= SEGMENT_GAP;
+    }
+    // x-order: the left cluster composed first, the right cluster's
+    // seats accumulated right-to-left — reverse them back.
+    let right_rows = right_cluster.iter().filter(|(id, _)| !dropped(*id)).count();
+    let right_start = rows.len() - right_rows;
+    rows[right_start..].reverse();
+
+    // The separators: one between each pair of adjacent rendered
+    // seats of the same cluster — never between the clusters, never
+    // beside an absent one.
+    let mut separators = Vec::new();
+    for cluster in [LEFT_CLUSTER.as_slice(), RIGHT_CLUSTER.as_slice()] {
+        let mut prev_end: Option<f32> = None;
+        for id in cluster {
+            let Some(rect) = rows.iter().find(|row| row.id == *id) else {
+                continue;
+            };
+            if let Some(start) = prev_end {
+                separators.push(f32::midpoint(start, rect.x));
+            }
+            prev_end = Some(rect.x + rect.width);
+        }
+    }
+
+    let halo_center_x = segments.missed_activity.then(|| {
+        disc.as_ref()
+            .map_or(PAD_X / 2.0, |disc| disc.x + DISC_SIZE / 2.0)
+    });
+    BandVm {
+        rows,
+        separators,
+        disc,
+        halo_center_x,
+        path_fit: fit.path,
+    }
+}
+
+// --- the band's interactions (gpui-status Task 4) ---
+//
+// The reference band's walked semantics ported whole (`git show
+// 55ba623:src/status_bar.rs`, the cutover's parent): the drag
+// selection with its 4 px click discrimination and its per-char
+// WYSIWYG assembly, the hover tint's one-narrator rule, the inline
+// reveal's arming, and the context menu's live-enablement rows. All
+// pure over the laid rows — the renderers supply rects and points.
+
+/// A band-local rectangle — the pure half of the laid rows' hit
+/// geometry; the laid rows' rects span the band's full height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl BandRect {
+    /// The laid row's hit rect: its x/width strip, full band height.
+    pub fn from_row(row: &BandRowVm) -> Self {
+        Self {
+            x: row.x,
+            y: 0.0,
+            width: row.width,
+            height: BAND_HEIGHT,
+        }
+    }
+
+    /// Whether the point rests inside — a `width`/`height` of zero
+    /// contains nothing.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+/// The selection-drag threshold: a press that stays within it is a
+/// click, past it a selection — the tab row's reorder-drag idiom
+/// at a text-selection scale. The double-click's px tolerance rides
+/// the same value, one constant fewer.
+pub const SELECTION_THRESHOLD: f32 = 4.0;
+
+/// The alpha of the selection highlight — the pane foreground at a
+/// quarter strength, hierarchy by alpha, never a new hue.
+pub const SELECTION_ALPHA: f32 = 0.25;
+
+/// The hover tint's alpha — the context menu's hover strength, one
+/// idiom across the band and its bubble, hierarchy by alpha.
+pub const HOVER_ALPHA: f32 = 0.1;
+
+/// The segment whose laid rect contains `point`, if any. Gaps and
+/// everything outside the row belong to no segment.
+pub fn segment_at(rows: &[BandRowVm], x: f32, y: f32) -> Option<SegmentId> {
+    rows.iter()
+        .map(BandRect::from_row)
+        .position(|rect| rect.contains(x, y))
+        .and_then(|index| rows.get(index).map(|row| row.id))
+}
+
+/// The segment the hover tint paints — the hovered segment's own
+/// rect, the same rects hit-testing walks, so the tint and the copy
+/// verb can never disagree about a strip. Suppressed while a live
+/// drag or the persisting selection owns the visual (one narrator
+/// at a time); an absent cursor, a gap, and everything outside the
+/// row tint nothing.
+pub fn hover_segment(
+    rows: &[BandRowVm],
+    cursor: Option<(f32, f32)>,
+    selection_live: bool,
+) -> Option<SegmentId> {
+    if selection_live {
+        return None;
+    }
+    cursor.and_then(|(x, y)| segment_at(rows, x, y))
+}
+
+/// Whether the inline reveal is armed (status-glance criterion 3,
+/// the OQ-1 inline ruling): the path's display must be elided and
+/// the cursor must rest on its **current** display rect — the
+/// elided strip at rest, the expanded strip once armed (the
+/// expanded rect contains the elided one, so arming is stable
+/// through the swap). An un-elided path's display already is its
+/// value, other segments arm nothing, and a gone path has no rect.
+/// Instant (OQ-3); disarming is absence.
+pub fn reveal_armed(
+    path_rect: Option<BandRect>,
+    cursor: Option<(f32, f32)>,
+    path_elided: bool,
+) -> bool {
+    path_elided
+        && matches!(
+            (path_rect, cursor),
+            (Some(rect), Some((x, y))) if rect.contains(x, y)
+        )
+}
+
+/// Whether a press-release pair is a click (it rides the copy
+/// verb) rather than a drag (it selects).
+pub fn selection_is_click(anchor: (f32, f32), release: (f32, f32)) -> bool {
+    let dx = release.0 - anchor.0;
+    let dy = release.1 - anchor.1;
+    (dx * dx + dy * dy) < SELECTION_THRESHOLD * SELECTION_THRESHOLD
+}
+
+/// The normalized horizontal span of a selection drag.
+fn selection_span(anchor: (f32, f32), focus: (f32, f32)) -> (f32, f32) {
+    if anchor.0 <= focus.0 {
+        (anchor.0, focus.0)
+    } else {
+        (focus.0, anchor.0)
+    }
+}
+
+/// The highlight quads of a selection: the span intersected with
+/// each laid row's rect — the visual mark, painted under the text
+/// on the armed frames.
+pub fn selection_rects(anchor: (f32, f32), focus: (f32, f32), rows: &[BandRowVm]) -> Vec<BandRect> {
+    let (lo, hi) = selection_span(anchor, focus);
+    rows.iter()
+        .map(BandRect::from_row)
+        .map(|rect| {
+            let left = lo.max(rect.x);
+            let right = hi.min(rect.x + rect.width);
+            BandRect {
+                x: left,
+                y: rect.y,
+                width: (right - left).max(0.0),
+                height: rect.height,
+            }
+        })
+        .filter(|rect| rect.width > 0.0)
+        .collect()
+}
+
+/// The selected text: the characters whose cells the span covers,
+/// segments joined by single spaces (the visual gaps) — WYSIWYG,
+/// the elided display included; the click verb remains the full
+/// value through [`copy_text`].
+pub fn selection_text(anchor: (f32, f32), focus: (f32, f32), rows: &[BandRowVm]) -> String {
+    let (lo, hi) = selection_span(anchor, focus);
+    let mut parts: Vec<String> = Vec::new();
+    for row in rows {
+        let chars: Vec<char> = row.text.chars().collect();
+        if chars.is_empty() {
+            continue;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "px-scale char math on strings < 2^24 chars, exact in f32"
+        )]
+        let len = chars.len() as f32;
+        let per_char = row.width / len;
+        if per_char <= 0.0 {
+            continue;
+        }
+        // A character is covered when its cell intersects the span;
+        // the cell indices clamp into range before the usize cast.
+        let cells =
+            |edge: f32, round: fn(f32) -> f32| round((edge - row.x) / per_char).clamp(0.0, len);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a char index clamped into 0..=len from a px offset"
+        )]
+        let first = cells(lo, f32::floor) as usize;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a char index clamped into 0..=len from a px offset"
+        )]
+        let last = cells(hi, f32::ceil) as usize;
+        if last > first {
+            parts.push(chars[first..last].iter().collect());
+        }
+    }
+    parts.join(" ")
+}
+
+/// One pick a status-menu row carries. The copy rows resolve
+/// against the live segments at pick time — the pressed segment for
+/// [`MenuPick::CopySegment`], every present one for
+/// [`MenuPick::CopyAll`] — while every action row routes to an
+/// existing funnel, the keybinds' own: the menu introduces no
+/// behavior of its own (the terminal menu's contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuPick {
+    /// Copy the pressed segment's full [`copy_text`] value — the
+    /// click verb's twin, ✓ flash included.
+    CopySegment(SegmentId),
+    /// Copy every present segment's full value, space-joined (the
+    /// selection release's join rule).
+    CopyAll,
+    /// Paste into the narrated terminal — the keybind's own verb.
+    Paste,
+    ZoomIn,
+    ZoomOut,
+    /// Back to the base font size — muted while already there.
+    ZoomReset,
+    /// Hide the band — the `Ctrl+Shift+B` toggle's own write path.
+    ToggleStatusBar,
+    /// Open the settings drawer.
+    Settings,
+}
+
+/// One rendered row of the band's context menu — the per-tab
+/// menu's row shape: label, the pick a left press publishes
+/// (`None` when the row has nothing to pick — the Copy row over a
+/// gap press), whether it renders active (the GNOME disabled-row
+/// rule), and whether a separator line renders above it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuRow {
+    /// Label drawn in the row.
+    pub label: String,
+    /// The pick a left press publishes.
+    pub pick: Option<MenuPick>,
+    /// Whether the row renders active and publishes its pick.
+    pub enabled: bool,
+    /// Whether a separator line renders above the row.
+    pub separated: bool,
+}
+
+/// An interactive row.
+fn pick_row(label: &str, pick: MenuPick, enabled: bool, separated: bool) -> MenuRow {
+    MenuRow {
+        label: label.to_owned(),
+        pick: Some(pick),
+        enabled,
+        separated,
+    }
+}
+
+/// The band's context-menu rows for the live segments and the
+/// opening press's segment — the checklist's composition verbatim:
+/// Copy · Copy All · Paste │ Zoom In · Zoom Out · Reset Zoom │
+/// Hide Status Bar · Settings… . Copy resolves the pressed
+/// segment's value against the same live segments at pick time and
+/// mutes on a gap press or an empty payload; Reset Zoom mutes at
+/// base size (`zoom_percent`'s own condition); Paste never mutes —
+/// the band is chrome, and its menu's Paste serves the terminal
+/// under any state. Labels are static; enablement is live,
+/// re-derived each open, so a keybind passing through the open
+/// menu cannot leave a stale enabled row. Muted rows render
+/// disabled and never publish, the tab menu's edge-move rule.
+pub fn menu_rows(segments: &StatusSegments, pressed: Option<SegmentId>) -> Vec<MenuRow> {
+    vec![
+        MenuRow {
+            label: "Copy".to_owned(),
+            pick: pressed.map(MenuPick::CopySegment),
+            enabled: pressed.is_some_and(|id| !copy_text(id, segments).is_empty()),
+            separated: false,
+        },
+        pick_row(
+            "Copy All",
+            MenuPick::CopyAll,
+            !copy_all_text(segments).is_empty(),
+            false,
+        ),
+        pick_row("Paste", MenuPick::Paste, true, false),
+        pick_row("Zoom In", MenuPick::ZoomIn, true, true),
+        pick_row("Zoom Out", MenuPick::ZoomOut, true, false),
+        pick_row(
+            "Reset Zoom",
+            MenuPick::ZoomReset,
+            segments.zoom_percent.is_some(),
+            false,
+        ),
+        pick_row("Hide Status Bar", MenuPick::ToggleStatusBar, true, true),
+        pick_row("Settings\u{2026}", MenuPick::Settings, true, false),
+    ]
+}
+
+/// The Copy All payload: every present segment's full [`copy_text`]
+/// value in row order (left cluster then right), joined by single
+/// spaces — the selection release's join rule; full values, never
+/// displays. Empty when nothing is present.
+pub fn copy_all_text(segments: &StatusSegments) -> String {
+    LEFT_CLUSTER
+        .iter()
+        .chain(RIGHT_CLUSTER.iter())
+        .map(|id| copy_text(*id, segments))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The band's wall-clock text: 24-hour `HH:MM`, local zone.
 pub fn clock_text(now: &jiff::Zoned) -> String {
     now.strftime("%H:%M").to_string()

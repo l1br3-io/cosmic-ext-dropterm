@@ -565,7 +565,12 @@ slices merged — 05ac2ba · 761547d · 36648c1.)*
       proven after the walk's structural find: the pane's starved
       engine-flag fix, its own commit; the scrolled rows ride the
       wheel class; merged 35ea4cf with `just check` green on
-      the result)
+      the result) · gn-4 The interaction families (in progress — the
+      merge's scope-note deferrals: the band's context menu on a
+      shell-owned Kit `PopupMenu` (owner ruling 2026-11-18), the
+      drag-selection WYSIWYG pair with double-click and middle-click,
+      the hover tint, the inline reveal, the hover tips; the pure
+      halves in core, the reference semantics `55ba623`)
 - [x] gc-1 Context menu + pickers on the Kit popover path (done
       2026-11-14: the models in core — context_menu's rows/labels and
       font_list whole — the menu on the pane's right click through the
