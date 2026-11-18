@@ -431,6 +431,38 @@ impl SurfaceMachine {
         Vec::new()
     }
 
+    /// The config-edit keyboard decision: a shown surface at rest
+    /// re-holds live when the *resolved* mode changed — the stay-open
+    /// flip (`hide_on_focus_loss` off) downgrades an exclusive grab to
+    /// `OnDemand` immediately, because an exclusive grab held by a
+    /// stay-open surface keeps winning the keyboard back from every
+    /// other input (the hostage rule of [`shown_keyboard_mode`]). The
+    /// intent is the lifecycle's own [`SurfaceIntent::Hold`]: the
+    /// executor's no-op-at-live-mode check absorbs echoes, and a
+    /// change recreates with the shape standing. The same defer gates
+    /// as the reshape and rezone; any state but `Shown` needs no
+    /// intent (a hiding surface's reversal re-resolves anyway, and a
+    /// hidden one resolves at its next show). `keyboard_mode` itself
+    /// stays a next-show key — the caller pairs both resolutions over
+    /// the old mode, so this fires only for the `hide_on_focus_loss`
+    /// flip's effect.
+    pub fn decide_rehold(
+        &mut self,
+        old: KeyboardHold,
+        new: KeyboardHold,
+        drag_armed: bool,
+    ) -> Vec<SurfaceIntent> {
+        if config_edit_reholds(old != new, drag_armed, self.slide.is_some())
+            && let SurfaceState::Shown(handle) = self.state
+        {
+            return vec![SurfaceIntent::Hold {
+                handle,
+                keyboard: new,
+            }];
+        }
+        Vec::new()
+    }
+
     /// The live drag: arm on the first move — anchored at the height
     /// the surface has right now — then retarget absolutely per move
     /// in pixels: one pixel of pointer travel is one pixel of
@@ -649,6 +681,17 @@ pub fn config_edit_reshapes(
 /// the same way.
 pub fn config_edit_rezones(zone_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
     zone_changed && !drag_armed && !slide_animating
+}
+
+/// Whether a `ConfigChanged` may re-hold a shown surface live: pure
+/// so the guard is headless-testable, the stay-open flip's twin of
+/// [`config_edit_reshapes`] and [`config_edit_rezones`]. The resolved
+/// mode must actually have changed; the same defer gates apply — a
+/// drag armed mid-edit defers the live swap (the release settle runs
+/// a shape apply, and the in-memory config's resolution lands on the
+/// next show), a slide animating defers the same way.
+pub fn config_edit_reholds(hold_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
+    hold_changed && !drag_armed && !slide_animating
 }
 
 /// What a toggle-intent request must do with the surface: pure so the

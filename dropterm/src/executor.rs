@@ -1233,6 +1233,54 @@ mod tests {
     }
 
     #[test]
+    fn a_stay_open_flip_downgrades_an_exclusive_grab_live() {
+        // The `hide_on_focus_loss` flip's live half (the pinned
+        // testing row): an exclusive grab held by a stay-open surface
+        // keeps winning the keyboard back from every other input, so
+        // the Hold downgrade recreates at OnDemand with the shape
+        // standing — before the next focus loss, not at it.
+        let mut exec = GpuiExecutor::new();
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Measure {
+            handle,
+            keyboard: KeyboardMode::Exclusive,
+        });
+        exec.adopt(handle, fake_window(11));
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(12));
+        let actions = exec.execute(SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::OnDemand,
+        });
+        let [
+            Action::SwapWindow {
+                options, reason, ..
+            },
+        ] = actions.as_slice()
+        else {
+            panic!("a hold change swaps the window: {actions:?}");
+        };
+        assert!(matches!(reason, SwapReason::KeyboardHold));
+        let WindowKind::LayerShell(ls) = &options.kind else {
+            panic!("unreachable: the show always builds a layer-shell kind");
+        };
+        assert_eq!(ls.keyboard_interactivity, KeyboardInteractivity::OnDemand);
+        // The shape stands: the surface stays exactly as tall as it is.
+        assert_eq!(options.window_bounds, live_ls_options_bounds());
+        assert_eq!(
+            exec.creation_of(handle).keyboard,
+            KeyboardInteractivity::OnDemand
+        );
+    }
+
+    #[test]
     fn focus_yields_the_terminal_input_action() {
         // The intent's presence is structural now; the terminal input
         // it routes to arrives with gpui-terminal.

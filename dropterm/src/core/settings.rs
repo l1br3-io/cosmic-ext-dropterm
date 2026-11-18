@@ -1022,15 +1022,20 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // itself (the `Rezone` intent, one recreate with the shape
         // standing); a hidden surface picks the zone up at its next
         // show — live either way.
-        | ConfigKey::RespectPanel => ApplyTiming::Live,
+        | ConfigKey::RespectPanel
+        // The stay-open flip re-holds a shown surface on the echo
+        // itself (the `Hold` intent): an exclusive grab held by a
+        // stay-open surface must downgrade to `OnDemand` before the
+        // next focus loss, not at it; a hidden surface resolves at
+        // its next show — live either way.
+        | ConfigKey::HideOnFocusLoss => ApplyTiming::Live,
         ConfigKey::Layer | ConfigKey::KeyboardMode => ApplyTiming::NextShow,
         ConfigKey::Shell
         | ConfigKey::Args
         | ConfigKey::ScrollbackLines
         | ConfigKey::NewTabCwd
         | ConfigKey::DefaultCwd => ApplyTiming::NewTab,
-        ConfigKey::HideOnFocusLoss
-        | ConfigKey::SessionPersistenceEnabled
+        ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
         | ConfigKey::BellNotificationEnabled
         | ConfigKey::CommandFinishNotificationEnabled

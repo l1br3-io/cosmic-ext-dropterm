@@ -93,6 +93,33 @@ fn unchanged_zone_never_rezones() {
     assert!(!config_edit_rezones(false, false, false));
 }
 
+// --- the re-hold guard ---
+//
+// The stay-open flip's live half (`config_edit_reholds`, the guard
+// family's third twin): the resolved mode change must reach the
+// surface before the next focus loss, not at it — the same two
+// windows defer it as the reshape and rezone.
+
+#[test]
+fn resolved_mode_change_at_rest_reholds_live() {
+    assert!(config_edit_reholds(true, false, false));
+}
+
+#[test]
+fn resolved_mode_change_mid_slide_defers_to_the_next_show() {
+    assert!(!config_edit_reholds(true, false, true));
+}
+
+#[test]
+fn resolved_mode_change_mid_drag_defers_to_release() {
+    assert!(!config_edit_reholds(true, true, false));
+}
+
+#[test]
+fn unchanged_resolution_never_reholds() {
+    assert!(!config_edit_reholds(false, false, false));
+}
+
 // --- the grab-bar guard ---
 //
 // `GrabBarDragged` is the one geometry-call site that could run
@@ -676,6 +703,117 @@ fn an_unchanged_zone_emits_no_rezone() {
                 ExclusiveZone::InsideReserved,
                 false
             )
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_stay_open_flip_reholds_a_shown_surface_live() {
+    // The `hide_on_focus_loss` flip's live half: exclusive config,
+    // flip to stay-open — the resolved mode drops to OnDemand and the
+    // machine emits the lifecycle's own Hold (the executor's
+    // no-op-at-live-mode check absorbs echoes, a change recreates
+    // with the shape standing). The flip back re-holds per the
+    // configured mode.
+    let handle = SurfaceHandle::next();
+    let mut machine = SurfaceMachine {
+        state: SurfaceState::Shown(handle),
+        output_size: Some((1920, 1080)),
+        ..SurfaceMachine::default()
+    };
+    // Exclusive config, flip off (stay-open): Exclusive -> OnDemand.
+    assert_eq!(
+        machine.decide_rehold(
+            KeyboardHold::from(shown_keyboard_mode(KeyboardMode::Exclusive, true)),
+            KeyboardHold::from(shown_keyboard_mode(KeyboardMode::Exclusive, false)),
+            false
+        ),
+        vec![SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::OnDemand,
+        }]
+    );
+    // Flip back on: the configured mode returns.
+    assert_eq!(
+        machine.decide_rehold(
+            KeyboardHold::from(shown_keyboard_mode(KeyboardMode::Exclusive, false)),
+            KeyboardHold::from(shown_keyboard_mode(KeyboardMode::Exclusive, true)),
+            false
+        ),
+        vec![SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::Exclusive,
+        }]
+    );
+}
+
+#[test]
+fn a_rehold_on_any_other_state_waits_for_its_own_resolution() {
+    // A hidden surface resolves at its next show, a measuring one's
+    // pending configure carries the resolved mode, and a hiding one's
+    // reversal re-resolves anyway — none needs a re-hold here.
+    let handle = SurfaceHandle::next();
+    for state in [
+        SurfaceState::Hidden,
+        SurfaceState::Measuring(handle),
+        SurfaceState::Hiding(handle),
+    ] {
+        let mut machine = SurfaceMachine {
+            state,
+            output_size: Some((1920, 1080)),
+            ..SurfaceMachine::default()
+        };
+        assert!(
+            machine
+                .decide_rehold(KeyboardHold::Exclusive, KeyboardHold::OnDemand, false)
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_rehold_mid_drag_or_slide_defers_to_the_next_show() {
+    // The same defer gates as the reshape and rezone.
+    let handle = SurfaceHandle::next();
+    let mut machine = SurfaceMachine {
+        state: SurfaceState::Shown(handle),
+        output_size: Some((1920, 1080)),
+        ..SurfaceMachine::default()
+    };
+    assert!(
+        machine
+            .decide_rehold(KeyboardHold::Exclusive, KeyboardHold::OnDemand, true)
+            .is_empty()
+    );
+    machine.slide = Some(slide::Playing {
+        started: Instant::now(),
+        active: slide::Active {
+            direction: slide::Direction::In,
+            from_offset_px: 0.0,
+            distance_px: 540.0,
+        },
+    });
+    assert!(
+        machine
+            .decide_rehold(KeyboardHold::Exclusive, KeyboardHold::OnDemand, false)
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_unchanged_resolution_emits_no_rehold() {
+    // The no-op guard: a flip whose resolution did not move (an
+    // OnDemand-configured surface flipping to stay-open resolves to
+    // OnDemand either way) recreates nothing.
+    let handle = SurfaceHandle::next();
+    let mut machine = SurfaceMachine {
+        state: SurfaceState::Shown(handle),
+        output_size: Some((1920, 1080)),
+        ..SurfaceMachine::default()
+    };
+    assert!(
+        machine
+            .decide_rehold(KeyboardHold::OnDemand, KeyboardHold::OnDemand, false)
             .is_empty()
     );
 }

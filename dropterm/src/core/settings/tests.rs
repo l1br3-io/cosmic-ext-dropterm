@@ -598,9 +598,10 @@ fn submitted_scrollback_follows_the_scrollback_rules() {
 #[test]
 fn apply_timing_states_each_field_s_documented_semantics() {
     // The apply-timing copy, per key: geometry/font/colors/opacity
-    // live (respect_panel rezones a shown surface live too); layer/
-    // keyboard_mode at next show; shell/args/scrollback on new tabs;
-    // the toggles on their next trigger.
+    // live (respect_panel rezones and hide_on_focus_loss re-holds a
+    // shown surface live too); layer/keyboard_mode at next show;
+    // shell/args/scrollback on new tabs; the toggles on their next
+    // trigger.
     for key in [
         ConfigKey::HeightPercent,
         ConfigKey::WidthPercent,
@@ -631,6 +632,10 @@ fn apply_timing_states_each_field_s_documented_semantics() {
         // The panel-respect flip rezones a shown surface live (the
         // `Rezone` intent); a hidden surface applies at its next show.
         ConfigKey::RespectPanel,
+        // The stay-open flip re-holds a shown surface live (the
+        // `Hold` intent): the exclusive grab downgrades before the
+        // next focus loss, not at it.
+        ConfigKey::HideOnFocusLoss,
     ] {
         assert_eq!(apply_timing(key), ApplyTiming::Live, "{key:?}");
     }
@@ -647,7 +652,6 @@ fn apply_timing_states_each_field_s_documented_semantics() {
         assert_eq!(apply_timing(key), ApplyTiming::NewTab, "{key:?}");
     }
     for key in [
-        ConfigKey::HideOnFocusLoss,
         ConfigKey::SessionPersistenceEnabled,
         ConfigKey::SlideAnimationEnabled,
         ConfigKey::NewTabAfterCurrent,
