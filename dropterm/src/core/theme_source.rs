@@ -289,6 +289,105 @@ pub fn cosmic_light() -> Colors {
     Colors::from(&COSMIC_LIGHT)
 }
 
+// --- the GitHub pair (the defaults) ---
+//
+// GitHub's own palettes: the anchors and the 16 ANSI slots come from
+// @primer/primitives@7.10.0 — the exact version
+// [primer/github-vscode-theme](https://github.com/primer/github-vscode-theme)
+// pins — through that theme's `src/theme.js` terminal block
+// (`terminal.ansiX ← color.ansi.X`, `terminal.foreground ←
+// fg.default`). Real backgrounds, never the `None` system-defer the
+// COSMIC pair carries: a fresh install paints GitHub's canvas.
+
+/// The GitHub Dark name — identity, persisted under
+/// `color_scheme_dark`, shown in the dropdowns. Lives here (the
+/// schemes' definition site); the config defaults and the
+/// unknown-name fallback read this one constant.
+pub const GITHUB_THEME_DARK: &str = "GitHub Dark";
+
+/// The GitHub Light name — same contract as [`GITHUB_THEME_DARK`]
+/// on the light side.
+pub const GITHUB_THEME_LIGHT: &str = "GitHub Light";
+
+/// The GitHub Dark palette. Upstream citations per slot live in the
+/// spot-check tests; the one deliberate deviation from the port's
+/// table: bright blue is the theme's dark `accent.fg` `#2f81f7`
+/// (its `src/colors.js` override), not the port's `blueBright`
+/// `#79c0ff` — `theme_gen` rides the chrome accent on `BrightBlue`,
+/// and the entry pins it to GitHub's dark accent blue. Dims,
+/// cursor, and dim/bright foregrounds derive at conversion (the
+/// port's terminal block publishes none).
+const GITHUB_DARK: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0xE6_EDF3)),
+    background: Some(rgb(0x0D_1117)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x48_4F58)),
+        red: Some(rgb(0xFF_7B72)),
+        green: Some(rgb(0x3F_B950)),
+        yellow: Some(rgb(0xD2_9922)),
+        blue: Some(rgb(0x58_A6FF)),
+        magenta: Some(rgb(0xBC_8CFF)),
+        cyan: Some(rgb(0x39_C5CF)),
+        white: Some(rgb(0xB1_BAC4)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x6E_7681)),
+        red: Some(rgb(0xFF_A198)),
+        green: Some(rgb(0x56_D364)),
+        yellow: Some(rgb(0xE3_B341)),
+        blue: Some(rgb(0x2F_81F7)),
+        magenta: Some(rgb(0xD2_A8FF)),
+        cyan: Some(rgb(0x56_D4DD)),
+        white: Some(rgb(0xFF_FFFF)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// The GitHub Light palette — same sources and the same one
+/// deviation (bright blue pinned to the light `accent.fg`
+/// `#0969da`, not the port's `blueBright` `#218bff`).
+const GITHUB_LIGHT: ColorScheme = ColorScheme {
+    foreground: Some(rgb(0x1F_2328)),
+    background: Some(rgb(0xFF_FFFF)),
+    cursor: None,
+    bright_foreground: None,
+    dim_foreground: None,
+    normal: ColorSchemeAnsi {
+        black: Some(rgb(0x24_292F)),
+        red: Some(rgb(0xCF_222E)),
+        green: Some(rgb(0x11_6329)),
+        yellow: Some(rgb(0x4D_2D00)),
+        blue: Some(rgb(0x09_69DA)),
+        magenta: Some(rgb(0x82_50DF)),
+        cyan: Some(rgb(0x1B_7C83)),
+        white: Some(rgb(0x6E_7781)),
+    },
+    bright: ColorSchemeAnsi {
+        black: Some(rgb(0x57_606A)),
+        red: Some(rgb(0xA4_0E26)),
+        green: Some(rgb(0x1A_7F37)),
+        yellow: Some(rgb(0x63_3C01)),
+        blue: Some(rgb(0x09_69DA)),
+        magenta: Some(rgb(0xA4_75F9)),
+        cyan: Some(rgb(0x31_92AA)),
+        white: Some(rgb(0x8C_959F)),
+    },
+    dim: ColorSchemeAnsi::EMPTY,
+};
+
+/// The GitHub Dark scheme as alacritty colors.
+pub fn github_dark() -> Colors {
+    Colors::from(&GITHUB_DARK)
+}
+
+/// The GitHub Light scheme as alacritty colors.
+pub fn github_light() -> Colors {
+    Colors::from(&GITHUB_LIGHT)
+}
+
 // --- third-party palettes ---
 //
 // Transcription rule: each palette carries exactly what its theme
@@ -658,9 +757,18 @@ struct SchemeEntry {
 
 /// The built-in scheme registry: the single definition site the
 /// `by_name` lookup, the settings dropdowns, and the tests all read,
-/// so names, options, and lookup cannot drift. COSMIC Dark/Light
-/// first (the defaults), the rest alphabetical.
-const SCHEMES: [SchemeEntry; 12] = [
+/// so names, options, and lookup cannot drift. GitHub Dark/Light
+/// first (the defaults), the COSMIC pair behind them, the rest
+/// alphabetical.
+const SCHEMES: [SchemeEntry; 14] = [
+    SchemeEntry {
+        name: GITHUB_THEME_DARK,
+        scheme: GITHUB_DARK,
+    },
+    SchemeEntry {
+        name: GITHUB_THEME_LIGHT,
+        scheme: GITHUB_LIGHT,
+    },
     SchemeEntry {
         name: COSMIC_THEME_DARK,
         scheme: COSMIC_DARK,
@@ -713,7 +821,7 @@ const SCHEMES: [SchemeEntry; 12] = [
 
 /// Look up a built-in color scheme by name (its display name is the
 /// on-disk config value). Unknown names return `None` — the caller
-/// (`active_colors()`) falls back to the COSMIC pair for the active
+/// (`active_colors()`) falls back to the GitHub pair for the active
 /// mode; no error surface.
 pub fn by_name(name: &str) -> Option<Colors> {
     SCHEMES
@@ -759,10 +867,11 @@ pub fn scheme_swatch(name: &str) -> Option<SchemeSwatch> {
     })
 }
 
-/// The registry's scheme names in registry order (COSMIC pair first,
-/// the rest alphabetical) — the option list the settings dropdowns
-/// feed from. Derived from the same `SCHEMES` table `by_name` reads,
-/// so the picker can never offer a name lookup would reject.
+/// The registry's scheme names in registry order (GitHub pair first,
+/// the COSMIC pair behind them, the rest alphabetical) — the option
+/// list the settings dropdowns feed from. Derived from the same
+/// `SCHEMES` table `by_name` reads, so the picker can never offer a
+/// name lookup would reject.
 pub fn scheme_names() -> Vec<&'static str> {
     SCHEMES.iter().map(|entry| entry.name).collect()
 }
@@ -1032,13 +1141,16 @@ mod tests {
 
     #[test]
     fn registry_pins_the_shipped_scheme_order() {
-        // COSMIC pair first (the defaults), the rest alphabetical.
+        // GitHub pair first (the defaults), the COSMIC pair behind
+        // them, the rest alphabetical.
         let names: Vec<&str> = SCHEMES.iter().map(|entry| entry.name).collect();
         assert_eq!(
             names,
             [
-                "COSMIC Dark",
-                "COSMIC Light",
+                GITHUB_THEME_DARK,
+                GITHUB_THEME_LIGHT,
+                COSMIC_THEME_DARK,
+                COSMIC_THEME_LIGHT,
                 "Catppuccin Latte",
                 "Catppuccin Mocha",
                 "Dracula",
@@ -1142,8 +1254,13 @@ mod tests {
             NamedColor::DimWhite,
         ];
         // The COSMIC pair deliberately leaves Background to the system
-        // theme; every other scheme must come through complete.
-        for entry in SCHEMES.iter().skip(2) {
+        // theme; every other scheme must come through complete. The
+        // background-less pair is identified by name — the registry's
+        // row order is the defaults pin's business, not this test's.
+        for entry in SCHEMES
+            .iter()
+            .filter(|entry| entry.name != COSMIC_THEME_DARK && entry.name != COSMIC_THEME_LIGHT)
+        {
             let colors = by_name(entry.name).expect("pinned by the test above");
             for slot in normal_and_bright {
                 assert!(colors[slot].is_some(), "{}: {slot:?} unset", entry.name);
@@ -1155,6 +1272,62 @@ mod tests {
             assert!(colors[NamedColor::Background].is_some());
             assert!(colors[NamedColor::Cursor].is_some());
         }
+    }
+
+    #[test]
+    fn github_dark_spot_checks_match_primer_and_the_vscode_theme_port() {
+        // Upstream: @primer/primitives@7.10.0 (the version
+        // primer/github-vscode-theme pins) `dark.json` via the
+        // theme's own `src/theme.js` terminal block — background
+        // canvas.default `#0d1117`, foreground fg.default
+        // `#e6edf3` (the theme's `src/colors.js` override),
+        // ANSI slots color.ansi.*. The one deviation: bright blue
+        // is the theme's dark accent.fg `#2f81f7` (also a
+        // colors.js override), not the port's blueBright
+        // `#79c0ff` — theme_gen rides the chrome accent on
+        // BrightBlue, and the entries pin it to GitHub's dark
+        // accent blue (theme-defaults spec, owner answers
+        // 2026-11-18).
+        let colors = by_name(GITHUB_THEME_DARK).expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x0D_1117)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xE6_EDF3)));
+        assert_eq!(colors[NamedColor::Black], Some(rgb(0x48_4F58)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_7B72)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x3F_B950)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x58_A6FF)));
+        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0xBC_8CFF)));
+        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x39_C5CF)));
+        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x6E_7681)));
+        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x2F_81F7)));
+        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xFF_FFFF)));
+        // Derived slots (no upstream in the terminal block):
+        // cursor defaults to the foreground at conversion.
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xE6_EDF3)));
+    }
+
+    #[test]
+    fn github_light_spot_checks_match_primer_and_the_vscode_theme_port() {
+        // Upstream: @primer/primitives@7.10.0 `light.json` via the
+        // theme's terminal block — background canvas.default
+        // `#ffffff`, foreground fg.default `#1f2328` (the theme's
+        // colors.js override), ANSI slots color.ansi.*. The one
+        // deviation: bright blue is accent.fg `#0969da`, not the
+        // port's blueBright `#218bff` — same reason as the dark
+        // entry's, pinning theme_gen's accent on GitHub's light
+        // accent blue.
+        let colors = by_name(GITHUB_THEME_LIGHT).expect("registry entry");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFF_FFFF)));
+        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x1F_2328)));
+        assert_eq!(colors[NamedColor::Black], Some(rgb(0x24_292F)));
+        assert_eq!(colors[NamedColor::Red], Some(rgb(0xCF_222E)));
+        assert_eq!(colors[NamedColor::Green], Some(rgb(0x11_6329)));
+        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0x4D_2D00)));
+        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x09_69DA)));
+        assert_eq!(colors[NamedColor::White], Some(rgb(0x6E_7781)));
+        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x57_606A)));
+        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x09_69DA)));
+        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0x8C_959F)));
+        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0x1F_2328)));
     }
 
     #[test]
@@ -1260,7 +1433,7 @@ mod tests {
         // system theme), so its chip previews exactly that — `None`,
         // which the view renders from the live theme.
         let previews = scheme_previews();
-        assert_eq!(previews.len(), 12);
+        assert_eq!(previews.len(), SCHEMES.len());
         for (name, preview) in previews {
             assert!(
                 preview.foreground.is_some(),
@@ -1305,11 +1478,18 @@ mod tests {
         // A palette transcription regression lands here: known hexes
         // straight off the pinned tables above.
         let previews: Vec<_> = scheme_previews();
-        let (_, cosmic_dark) = previews[0];
-        assert_eq!(cosmic_dark.background, None);
-        assert_eq!(cosmic_dark.foreground, Some(rgb(0xC4_C4C4)));
-        assert_eq!(cosmic_dark.ansi[0], Some(rgb(0x1B_1B1B)));
-        assert_eq!(cosmic_dark.ansi[8], Some(rgb(0x80_8080)));
+        let (_, github_dark) = previews[0];
+        assert_eq!(github_dark.background, Some(rgb(0x0D_1117)));
+        assert_eq!(github_dark.foreground, Some(rgb(0xE6_EDF3)));
+        assert_eq!(github_dark.ansi[0], Some(rgb(0x48_4F58)));
+        assert_eq!(github_dark.ansi[8], Some(rgb(0x6E_7681)));
+
+        let cosmic_dark = previews
+            .iter()
+            .find(|(name, _)| *name == COSMIC_THEME_DARK)
+            .expect("COSMIC Dark registered");
+        assert_eq!(cosmic_dark.1.background, None);
+        assert_eq!(cosmic_dark.1.foreground, Some(rgb(0xC4_C4C4)));
 
         let dracula = previews
             .iter()

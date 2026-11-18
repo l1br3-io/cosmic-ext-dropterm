@@ -37,7 +37,7 @@ pub fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
 /// [`profile::effective_scheme_name`] resolves the scheme name (the
 /// profile's explicit pick in both system modes, else the global
 /// pair for `is_dark`), and the registry lookup falls back to the
-/// COSMIC pair for the mode on any miss — unknown profile names and
+/// GitHub pair for the mode on any miss — unknown profile names and
 /// unknown global names alike. The chain never errors, and the store
 /// is never rewritten to "fix" a stored name.
 pub fn effective_colors(
@@ -53,9 +53,9 @@ pub fn effective_colors(
     );
     theme_source::by_name(name).unwrap_or_else(|| {
         if is_dark {
-            theme_source::cosmic_dark()
+            theme_source::github_dark()
         } else {
-            theme_source::cosmic_light()
+            theme_source::github_light()
         }
     })
 }
@@ -194,6 +194,77 @@ mod tests {
             plain_tab[NamedColor::Background]
         );
         assert_ne!(profile_tab[NamedColor::Red], plain_tab[NamedColor::Red]);
+    }
+
+    #[test]
+    fn unknown_names_fall_back_to_the_github_pair() {
+        // The unknown-name fallback is the GitHub pair. The arm is
+        // reached when the *global* name is unknown — an unknown
+        // profile pick is ignored in favor of global resolution
+        // (pinned above), so it can never reach it. A profile
+        // without its own scheme does not shield the tab either.
+        for (dark, background) in [(true, 0x0D_1117), (false, 0xFF_FFFF)] {
+            let config = DropTermConfig {
+                color_scheme_dark: "Stale Name".to_string(),
+                color_scheme_light: "Stale Name".to_string(),
+                profiles: vec![profile::Profile {
+                    name: "ssh-prod".to_string(),
+                    command: "ssh web-prod".to_string(),
+                    cwd: None,
+                    color_scheme: None,
+                    env: None,
+                    font_size: None,
+                    scrollback_lines: None,
+                }],
+                ..DropTermConfig::default()
+            };
+            let colors = effective_colors(&config, None, dark);
+            assert_eq!(colors[NamedColor::Background], Some(rgb(background)));
+            let colors =
+                effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), dark);
+            assert_eq!(colors[NamedColor::Background], Some(rgb(background)));
+        }
+    }
+
+    #[test]
+    fn registry_defaults_and_fallback_agree_on_the_github_pair() {
+        // The one-agreement pin (theme-defaults spec): the registry's
+        // first two rows, the config defaults, and the unknown-name
+        // fallback all name the same pair — by construction through
+        // the shared constants, pinned here so a second definition
+        // can never drift in.
+        let names = theme_source::scheme_names();
+        assert_eq!(names[0], crate::core::theme_source::GITHUB_THEME_DARK);
+        assert_eq!(names[1], crate::core::theme_source::GITHUB_THEME_LIGHT);
+        assert_eq!(
+            DropTermConfig::default().color_scheme_dark,
+            crate::core::theme_source::GITHUB_THEME_DARK
+        );
+        assert_eq!(
+            DropTermConfig::default().color_scheme_light,
+            crate::core::theme_source::GITHUB_THEME_LIGHT
+        );
+        // The fallback serves exactly the registry entries those
+        // names resolve — same background slot either route.
+        let config = DropTermConfig {
+            color_scheme_dark: "Stale Name".to_string(),
+            color_scheme_light: "Stale Name".to_string(),
+            ..DropTermConfig::default()
+        };
+        let fallback_dark = effective_colors(&config, None, true);
+        let registry_dark = theme_source::by_name(crate::core::theme_source::GITHUB_THEME_DARK)
+            .expect("registry name");
+        assert_eq!(
+            fallback_dark[NamedColor::Background],
+            registry_dark[NamedColor::Background]
+        );
+        let fallback_light = effective_colors(&config, None, false);
+        let registry_light = theme_source::by_name(crate::core::theme_source::GITHUB_THEME_LIGHT)
+            .expect("registry name");
+        assert_eq!(
+            fallback_light[NamedColor::Background],
+            registry_light[NamedColor::Background]
+        );
     }
 
     #[test]

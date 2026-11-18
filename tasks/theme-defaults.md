@@ -46,23 +46,23 @@ table cited. `docs/configuration.md`: the `color_scheme_*` default
 rows and the "falls back to the COSMIC pair" sentence (line 119).
 
 **Acceptance criteria:**
-- [ ] `by_name` resolves both GitHub names; the order pin carries the
+- [x] `by_name` resolves both GitHub names; the order pin carries the
       14-name array, GitHub pair first, COSMIC at 2-3
-- [ ] Every color slot cited to its upstream token in the spot-check
+- [x] Every color slot cited to its upstream token in the spot-check
       tests (Primer or github-vscode-theme); derived slots say so
-- [ ] Config defaults pin the GitHub pair (constants shared with the
+- [x] Config defaults pin the GitHub pair (constants shared with the
       registry, no second definition); `theme_preference` stays
       `System`
-- [ ] Unknown scheme name → the GitHub pair, and the agreement pin
+- [x] Unknown scheme name → the GitHub pair, and the agreement pin
       (registry == defaults == fallback) is green
-- [ ] The generated chrome accent equals `#0969DA` (light) /
+- [x] The generated chrome accent equals `#0969DA` (light) /
       `#2F81F7` (dark), pinned
-- [ ] Pickers/previews show 14 entries with GitHub swatches; the
+- [x] Pickers/previews show 14 entries with GitHub swatches; the
       dropdown pins updated; `just check` green
 
 **Verification:**
-- [ ] `just test` green (the new + updated pins)
-- [ ] `just check` green
+- [x] `just test` green (the new + updated pins)
+- [x] `just check` green
 
 **Dependencies:** none · **Files:** `core/theme_source.rs`,
 `core/config.rs`, `core/theme_glue.rs`, `core/settings/tests.rs`,

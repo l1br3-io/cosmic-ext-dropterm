@@ -51,8 +51,8 @@ A fresh install has no files here at all - each appears the first time something
 | `show_in_dock` | `false` |
 | `font_name` | `"Noto Sans Mono"` |
 | `font_size` | `14` |
-| `color_scheme_dark` | `"COSMIC Dark"` |
-| `color_scheme_light` | `"COSMIC Light"` |
+| `color_scheme_dark` | `"GitHub Dark"` |
+| `color_scheme_light` | `"GitHub Light"` |
 | `opacity` | `100` |
 | `scrollback_lines` | `10000` |
 | `hide_on_focus_loss` | `true` |
@@ -112,11 +112,11 @@ Geometry applies live: a shown surface is reshaped in place, a hidden one picks 
 | `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The settings drawer's picker lists the installed monospace families; a name the renderer cannot resolve falls back to its default while keeping your value in the file. |
 | `font_size` | points | `14` | The terminal's font size. |
 | `opacity` | 0-100 | `100` | Background opacity. |
-| `color_scheme_dark` | scheme name | `COSMIC Dark` | Scheme used while the system is in dark mode. |
-| `color_scheme_light` | scheme name | `COSMIC Light` | Scheme used while the system is in light mode. |
+| `color_scheme_dark` | scheme name | `GitHub Dark` | Scheme used while the system is in dark mode. |
+| `color_scheme_light` | scheme name | `GitHub Light` | Scheme used while the system is in light mode. |
 | `theme_preference` | `System`, `Dark`, `Light` | `System` | Follow the OS light/dark setting, or pin one. |
 
-Scheme names come from the built-in registry - the same names the drawer's pickers offer ([Theming](theming.md#color-schemes)). A name the registry does not know falls back to the COSMIC pair and is never rewritten. All six keys apply live.
+Scheme names come from the built-in registry - the same names the drawer's pickers offer ([Theming](theming.md#color-schemes)). A name the registry does not know falls back to the GitHub pair and is never rewritten. All six keys apply live.
 
 ## Tab bar position
 

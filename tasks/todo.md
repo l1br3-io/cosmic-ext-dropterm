@@ -765,7 +765,7 @@ closes the module.
 
 ## Theming — theme-defaults (main; /planning 2026-11-18)
 
-- [ ] td-1 The GitHub pair ships as the default (Primer-cited entries
+- [x] td-1 The GitHub pair ships as the default (Primer-cited entries
       at registry rows 0-1, config defaults + fallback flipped to the
       one shared constant pair, the four hard pins updated,
       configuration.md rows; accent lands on `#0969DA`/`#2F81F7`)
