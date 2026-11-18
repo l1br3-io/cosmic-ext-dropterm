@@ -566,3 +566,276 @@ fn git_branch_reads_heads_never_guessing() {
     assert_eq!(git_branch(None), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the interaction families (gpui-status Task 4) ---
+//
+// The reference band's pins ported: the drag selection's threshold
+// and per-char WYSIWYG, the menu's live enablement, the reveal's
+// seat loan, and the seam rule's stacking input. The laid rows are
+// built directly (the measurer-free half of band_vm's output).
+
+/// Three laid rows at the reference's fixture seats: x=12 (8 wide),
+/// x=64 (10 wide), x=300 (5 wide) — gaps on both sides of the last.
+fn laid_rows() -> Vec<BandRowVm> {
+    vec![
+        BandRowVm {
+            id: SegmentId::Process,
+            text: "cargooo".to_owned(),
+            x: 12.0,
+            width: 8.0,
+            text_x: 12.0,
+            dimmed: false,
+            attention: false,
+        },
+        BandRowVm {
+            id: SegmentId::Path,
+            text: "…/ced2".to_owned(),
+            x: 64.0,
+            width: 10.0,
+            text_x: 64.0,
+            dimmed: false,
+            attention: false,
+        },
+        BandRowVm {
+            id: SegmentId::Clock,
+            text: "14:3".to_owned(),
+            x: 300.0,
+            width: 5.0,
+            text_x: 300.0,
+            dimmed: true,
+            attention: false,
+        },
+    ]
+}
+
+#[test]
+fn the_four_px_threshold_discriminates_click_from_drag() {
+    let anchor = (50.0, 10.0);
+    assert!(selection_is_click(anchor, (52.0, 11.0)));
+    assert!(selection_is_click(anchor, anchor));
+    // Past the threshold in either axis — squared compare, both.
+    assert!(!selection_is_click(anchor, (55.0, 10.0)));
+    assert!(!selection_is_click(anchor, (50.0, 15.0)));
+    assert!(!selection_is_click(anchor, (53.0, 13.0)));
+}
+
+#[test]
+fn hit_testing_names_the_row_and_never_a_gap() {
+    let rows = laid_rows();
+    assert_eq!(segment_at(&rows, 65.0, 5.0), Some(SegmentId::Path));
+    assert_eq!(segment_at(&rows, 30.0, 5.0), None);
+    assert_eq!(segment_at(&rows, 76.0, 5.0), None);
+    assert_eq!(segment_at(&rows, 299.0, 27.0), None);
+}
+
+#[test]
+fn the_selection_span_painting_covers_the_intersection_only() {
+    let rows = laid_rows();
+    // Backwards and forwards drags select the same span.
+    let forward = selection_rects((66.0, 10.0), (302.0, 10.0), &rows);
+    let backward = selection_rects((302.0, 10.0), (66.0, 10.0), &rows);
+    assert_eq!(forward, backward);
+    // The middle row's intersection, clamped to the span's edges.
+    assert_eq!(forward.len(), 2);
+    assert!((forward[0].x - 66.0).abs() < f32::EPSILON);
+    assert!((forward[0].width - 8.0).abs() < f32::EPSILON);
+    assert!((forward[1].x - 300.0).abs() < f32::EPSILON);
+    assert!((forward[1].width - 2.0).abs() < f32::EPSILON);
+    // A gap-confined drag selects nothing.
+    assert!(selection_rects((30.0, 10.0), (40.0, 10.0), &rows).is_empty());
+}
+
+#[test]
+fn the_selection_text_is_wysiwyg_joined_by_single_spaces() {
+    let rows = laid_rows();
+    // Per-char cells floor/ceil from the span's edges: the first
+    // row's tail chars plus the second row whole.
+    let text = selection_text((16.0, 10.0), (75.0, 10.0), &rows);
+    assert_eq!(text, "gooo …/ced2");
+    // All three rows covered partly: joined by exactly one space,
+    // the elided display's `…` riding the payload — WYSIWYG.
+    let both = selection_text((14.0, 10.0), (302.0, 10.0), &rows);
+    assert_eq!(both, "argooo …/ced2 14");
+}
+
+#[test]
+fn the_menu_mutes_exactly_its_two_conditional_rows() {
+    let mut rich = inputs();
+    rich.branch = Some("main");
+    rich.grid = Some((100, 24));
+    rich.zoom_adj = 2;
+    let segments = resolve_segments(&rich, toggles());
+
+    let pressed = menu_rows(&segments, Some(SegmentId::Path));
+    let labels: Vec<&str> = pressed.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Copy",
+            "Copy All",
+            "Paste",
+            "Zoom In",
+            "Zoom Out",
+            "Reset Zoom",
+            "Hide Status Bar",
+            "Settings\u{2026}",
+        ]
+    );
+    // Separators before the zoom cluster and the band lifecycle
+    // cluster — the checklist's `·`/`│` composition.
+    assert!(pressed[3].separated && pressed[6].separated);
+    assert!(!pressed[0].separated);
+    // Copy lives (a value stands), Reset Zoom lives (zoomed).
+    assert!(pressed[0].enabled && pressed[5].enabled);
+    assert_eq!(
+        pressed[0].pick,
+        Some(MenuPick::CopySegment(SegmentId::Path))
+    );
+    assert!(
+        pressed
+            .iter()
+            .all(|row| row.pick.is_some() || row.label == "Copy")
+    );
+
+    // The gap press mutes Copy; base zoom mutes Reset Zoom.
+    let gap = menu_rows(&segments, None);
+    assert!(!gap[0].enabled && gap[0].pick.is_none());
+    let base = resolve_segments(&inputs(), toggles());
+    let at_base = menu_rows(&base, Some(SegmentId::Path));
+    assert!(!at_base[5].enabled);
+    // Paste never mutes — the band is chrome.
+    assert!(gap[2].enabled && at_base[2].enabled);
+}
+
+#[test]
+fn copy_all_joins_every_present_value_in_row_order() {
+    let mut rich = inputs();
+    rich.branch = Some("main");
+    rich.grid = Some((100, 24));
+    rich.tab_position = Some((2, 5));
+    rich.zoom_adj = 2;
+    rich.exit_status = Some(3);
+    let segments = resolve_segments(&rich, toggles());
+    // Full values, never displays: no glyphs, no `✗`, no `+`.
+    assert_eq!(
+        copy_all_text(&segments),
+        "fish 3 ~/src main 100×24 2/5 +250% 14:32"
+    );
+    // The empty band copies nothing.
+    assert_eq!(copy_all_text(&StatusSegments::default()), "");
+}
+
+#[test]
+fn the_reveal_arms_only_on_an_elided_path_under_the_cursor() {
+    let elided = Some(BandRect {
+        x: 64.0,
+        y: 0.0,
+        width: 10.0,
+        height: BAND_HEIGHT,
+    });
+    let on_it = Some((70.0, 5.0));
+    assert!(reveal_armed(elided, on_it, true));
+    // An un-elided path never arms, whatever the cursor.
+    assert!(!reveal_armed(elided, on_it, false));
+    // The cursor away or absent disarms.
+    assert!(!reveal_armed(elided, Some((30.0, 5.0)), true));
+    assert!(!reveal_armed(elided, None, true));
+    // No rect (a gone path), no arming.
+    assert!(!reveal_armed(None, on_it, true));
+}
+
+#[test]
+fn band_vm_lends_the_branch_seat_to_an_armed_reveal() {
+    // The measurer: 8 px per char, the view tests' own fake.
+    fn fake_measure(text: &str) -> f32 {
+        #[expect(clippy::cast_precision_loss, reason = "test strings, exact in f32")]
+        let width = text.chars().count() as f32 * 8.0;
+        width
+    }
+    let mut segments = StatusSegments {
+        process: "sh".to_owned(),
+        path: Some("~/src/oss/l1br3/ced2".to_owned()),
+        branch: Some("main".to_owned()),
+        ..StatusSegments::default()
+    };
+    segments.scrolled = None;
+    // Narrow enough that the path elides at rest.
+    let width = 260.0;
+    let resting = band_vm(&segments, width, &fake_measure, None, None, None);
+    assert!(
+        matches!(resting.path_fit, PathFit::Elided(_)),
+        "the fixture must elide at rest"
+    );
+    assert!(resting.rows.iter().any(|row| row.id == SegmentId::Branch));
+
+    // The cursor on the resting path's rect arms the reveal: the
+    // path row expands (longer text than the resting elision) and
+    // the branch row vanishes for the loan.
+    let path_row = resting
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Path)
+        .expect("the path row lays");
+    let hover = (path_row.x + 1.0, 5.0);
+    let armed = band_vm(&segments, width, &fake_measure, None, None, Some(hover));
+    let armed_path = armed
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Path)
+        .expect("the armed path row lays");
+    assert!(
+        armed_path.text.chars().count() > path_row.text.chars().count(),
+        "the reveal expands the display"
+    );
+    assert!(
+        armed
+            .rows
+            .iter()
+            .all(|row| row.id != SegmentId::Branch || row.text.is_empty()),
+        "the branch yields its seat while the path is examined"
+    );
+
+    // The cursor elsewhere disarms — the resting layout stands.
+    let away = band_vm(
+        &segments,
+        width,
+        &fake_measure,
+        None,
+        None,
+        Some((8.0, 5.0)),
+    );
+    assert_eq!(
+        away.rows
+            .iter()
+            .find(|row| row.id == SegmentId::Path)
+            .map(|row| row.text.clone()),
+        Some(path_row.text.clone())
+    );
+}
+
+#[test]
+fn the_bands_terminal_facing_side_matches_the_stacking_in_every_combination() {
+    // The border hairline's side rule's input: the band's
+    // terminal-facing side is the side the terminal sits on, so
+    // `at_bottom == (edge == Top)` must agree with the stacking in
+    // every combination — the seam never doubles because each bar
+    // draws exactly its own facing line.
+    for edge in [Edge::Top, Edge::Bottom] {
+        for tab_position in [TabPosition::Auto, TabPosition::Top, TabPosition::Bottom] {
+            let stacking = column_stacking(edge, tab_position);
+            let terminal_index = stacking
+                .iter()
+                .position(|strip| *strip == Strip::Terminal)
+                .expect("the terminal lays");
+            let band_index = stacking
+                .iter()
+                .position(|strip| *strip == Strip::StatusBand)
+                .expect("the band lays");
+            assert_eq!(
+                terminal_index < band_index,
+                edge == Edge::Top,
+                "the band's terminal-facing side must flip with the anchor edge: {edge:?}/{tab_position:?}"
+            );
+        }
+    }
+}

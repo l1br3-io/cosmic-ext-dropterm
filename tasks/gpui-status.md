@@ -86,6 +86,45 @@ them.
 **Dependencies:** Task 1 · **Files:** the status-band module · **Scope:**
 M
 
+## Task 4: The interaction families (follow-on; the merge's scope notes)
+
+**Description:** The families the merge's scope notes deferred — the
+band's context menu, the drag-selection WYSIWYG pair with its
+double-click and middle-click idioms, the per-segment hover tint, the
+elided path's inline reveal, and the hover tips — ported from the
+reference band's walked semantics (`git show
+55ba623:src/status_bar.rs`, the cutover's parent) onto the GPUI
+band. The menu rides a shell-owned Kit `PopupMenu` (the owner's
+ruling, 2026-11-18): the shell holds the entity, tracks
+`DismissEvent`, closes it on hide/show, and suppresses through-presses
+while it stands — the checklist's press-dismissal row demands nothing
+reach the terminal under the bubble, and the Kit ext's outside-press
+dismissal captures nothing. Tips ride the same pass (owner ruling,
+same day). The pure halves land in core framework-free: the selection
+math (4 px click discrimination, span rects, the per-char WYSIWYG
+assembly joined by single spaces), the reveal arming, the menu rows
+with their live enablement, and the laid-band VM the selection and
+tips read.
+
+**Acceptance criteria:**
+- [ ] Every segment click-copies its full value with the `✓` flash;
+      drag-select is WYSIWYG; double-click selects the display;
+      middle-click pastes; hover tints one segment
+- [ ] Squeeze inline reveal on hover; the hover tip bubbles name each
+      segment's verb and vanish with the cursor
+- [ ] Context menu: right composition, full-value copies, keybind-
+      equivalent actions, press-dismissal, closed on hide/show
+- [ ] The implemented rows' audit: the border seam holds one hairline
+      through the four stackings; the walked rows stay untouched
+
+**Verification:**
+- [ ] `just check` green with the new core pins
+- [ ] Manual: rows 49–56 plus the tips/suppression full rows, owner-
+      run walk
+
+**Dependencies:** Task 3 (merged) · **Files:** core status model, the
+status-band view, the shell's band machine · **Scope:** L
+
 ## Task 3: Rows and merge
 
 **Description:** The status-band rows walked on COSMIC + sway; merge.
