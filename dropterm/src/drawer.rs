@@ -726,7 +726,14 @@ impl SettingsDrawer {
                 } else {
                     &self.scheme_light.state
                 };
-                Select::new(state).w_full().into_any_element()
+                // The menu is wider than the trigger column: the
+                // scheme row's strip plus its name don't share the
+                // 208 px control (the name clipped away entirely —
+                // pickers.rs's geometry test pins the budget).
+                Select::new(state)
+                    .menu_width(gpui::px(pickers::SCHEME_MENU_WIDTH_PX))
+                    .w_full()
+                    .into_any_element()
             }
             ControlKind::ShellPicker => v_flex()
                 .w_full()

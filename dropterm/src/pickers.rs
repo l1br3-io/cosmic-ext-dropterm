@@ -176,6 +176,37 @@ impl SearchableListDelegate for FontFamilies {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SchemeRow(pub &'static str);
 
+/// The scheme strip's chip footprint: a full strip is the background
+/// and foreground chips plus the sixteen ANSI colors — eighteen
+/// [`SCHEME_CHIP_W_PX`]-wide chips separated by
+/// [`SCHEME_CHIP_GAP_PX`] gaps. The drawer's select column is narrow
+/// (`CONTROL_COLUMN_PX`), so the chips are narrower than tall: the
+/// strip must leave the row's name room or the name clips away and
+/// the rows turn unidentifiable (the no-text regression the geometry
+/// test below pins).
+const SCHEME_CHIP_W_PX: f32 = 6.;
+const SCHEME_CHIP_H_PX: f32 = 10.;
+const SCHEME_CHIP_GAP_PX: f32 = 1.;
+/// The full strip's chip count (background, foreground, 16 ANSI); a
+/// preview with an unset slot draws one chip fewer.
+const SCHEME_CHIP_COUNT: usize = 18;
+/// The scheme select's menu width: wider than the trigger column so
+/// the full strip and the registry names share the row (the popover
+/// positioner clamps into the viewport). The strip's own width is
+/// [`SCHEME_CHIP_COUNT`] × [`SCHEME_CHIP_W_PX`] + the gaps.
+pub(crate) const SCHEME_MENU_WIDTH_PX: f32 = 320.;
+
+/// The full strip's intrinsic width, chips and gaps together.
+#[cfg(test)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an eighteen-chip count is exact in f32's 23-bit mantissa"
+)]
+fn scheme_strip_px() -> f32 {
+    SCHEME_CHIP_COUNT as f32 * SCHEME_CHIP_W_PX
+        + (SCHEME_CHIP_COUNT - 1) as f32 * SCHEME_CHIP_GAP_PX
+}
+
 /// The scheme picker's delegate: the registry's rows in registry
 /// order, each with its preview resolved once at build.
 #[derive(Clone, Default)]
@@ -237,16 +268,32 @@ impl SearchableListDelegate for Schemes {
             },
             |(_, preview)| *preview,
         );
-        let mut strip = h_flex().gap(px(1.));
+        let mut strip = h_flex().gap(px(SCHEME_CHIP_GAP_PX)).flex_shrink_0();
         for color in preview
             .background
             .into_iter()
             .chain(preview.foreground)
             .chain(preview.ansi.iter().flatten().copied())
         {
-            strip = strip.child(gpui::div().size(px(10.)).rounded_sm().bg(hsla(color)));
+            strip = strip.child(
+                gpui::div()
+                    .w(px(SCHEME_CHIP_W_PX))
+                    .h(px(SCHEME_CHIP_H_PX))
+                    .rounded_sm()
+                    .bg(hsla(color)),
+            );
         }
-        let mut row = h_flex().px_2().py_1().gap_2().child(strip).child(item.0);
+        let mut row = h_flex()
+            .w_full()
+            .min_w_0()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .child(strip)
+            // The name truncates with an ellipsis inside its room
+            // rather than clipping away — the row always identifies
+            // its scheme.
+            .child(gpui::div().min_w_0().truncate().child(item.0));
         if checked {
             row = row.child("✓");
         }
@@ -348,6 +395,33 @@ mod tests {
     use super::*;
 
     // --- the pure model ---
+
+    // The scheme row's geometry budget: the strip plus the row chrome
+    // must leave the name its room inside the scheme menu's width, or
+    // the name clips away and the picker turns unidentifiable (the
+    // drawer's no-text regression). The chrome numbers are the row's
+    // own paddings plus the item wrapper's (its px_2) and the check
+    // icon's reserved slot — each pinned here so a change that
+    // re-balances them updates this test with it.
+    #[test]
+    fn the_scheme_row_leaves_the_name_room_inside_the_menu_width() {
+        // The row's chrome: our px_2 pair and gap_2, the item
+        // wrapper's px_2 pair, and the reserved check-icon slot
+        // (xsmall icon plus the item's gap_x_1).
+        const ROW_AND_ITEM_CHROME_PX: f32 = 8. * 2. + 8. + 8. * 2. + 14. + 4.;
+        // The name's floor: the registry's longest name ("Tokyo
+        // Night Storm") at the rows' text size, with slack.
+        const NAME_FLOOR_PX: f32 = 120.;
+        assert!(
+            scheme_strip_px() + ROW_AND_ITEM_CHROME_PX + NAME_FLOOR_PX <= SCHEME_MENU_WIDTH_PX,
+            "the strip ({}) plus chrome ({}) plus the name's floor ({}) exceeds the menu width ({}); \
+             shrink the chips or widen SCHEME_MENU_WIDTH_PX",
+            scheme_strip_px(),
+            ROW_AND_ITEM_CHROME_PX,
+            NAME_FLOOR_PX,
+            SCHEME_MENU_WIDTH_PX,
+        );
+    }
 
     #[test]
     fn font_rows_list_the_families_with_the_stored_value_as_a_synthetic_leader_when_unmatched() {
