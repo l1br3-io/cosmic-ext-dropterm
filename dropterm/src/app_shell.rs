@@ -4447,13 +4447,21 @@ impl Shell {
             return column;
         };
         let (active, started) = (playing.active, playing.started);
+        // The animation id keys on the slide's epoch: GPUI's animation
+        // element is oneshot — its element state flips `done` at mount
+        // + duration and stops scheduling frames — so a re-targeted
+        // slide riding the constant id would step at the pump tick once
+        // the window-recreate mask is gone. The epoch-keyed id remounts
+        // the driver fresh on every start and reversal
+        // (slide-animation-smoothness, finding 5).
+        let slide_id = gpui::ElementId::NamedInteger("slide".into(), playing.epoch);
         let edge = self.inputs.geometry.edge;
         div().size_full().child(
             div()
                 .absolute()
                 .size_full()
                 .with_animation(
-                    "slide",
+                    slide_id,
                     Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
                     move |band, _progress| {
                         #[expect(

@@ -9,26 +9,10 @@
 //! the resting position, and the window-space sign is applied only at
 //! the draw site.
 
-use std::time::Duration;
-
 /// Duration of one slide in milliseconds: mid-range of the 120–150 ms
 /// band, ease-out on show / ease-in on hide. A compile-time constant —
 /// not user-configurable.
 pub const SLIDE_DURATION_MS: u64 = 130;
-
-/// Tick cadence of the animation clock: ticks exist only to provoke
-/// redraw requests — the eased offset itself is evaluated at draw
-/// time at frame presentation, so tick timing never distorts the
-/// pose. The cadence must put at least one pending redraw request
-/// inside every compositor frame window: a frame callback that finds
-/// none draws nothing (the surface re-presents its previous buffer —
-/// a held frame, then a jump), so the tick period must stay below the
-/// frame period at any refresh rate. 1 ms covers outputs up to 1000
-/// Hz and absorbs scheduling noise; it is redraw-only and a state
-/// no-op (~130 messages per 130 ms slide, batched by the runtime's
-/// `AboutToWait` pass — no layer-shell traffic; the runtime saturates
-/// on resize storms, not redraw requests).
-pub const SLIDE_TICK: Duration = Duration::from_millis(1);
 
 /// Which way a slide is moving: `In` shows the content (offset decays
 /// to rest), `Out` hides it (offset grows to the distance).
@@ -145,6 +129,14 @@ pub struct Playing {
     pub started: std::time::Instant,
     /// What slides, from where, toward which endpoint.
     pub active: Active,
+    /// Which slide instance this is — the machine's monotone counter,
+    /// bumped on every start and re-target. The frontend folds it into
+    /// the animation element's id: GPUI keys the animation element's
+    /// per-element state on the id, and a oneshot element that already
+    /// flipped `done` at its own mount+duration never schedules another
+    /// frame — an epoch-keyed id remounts the driver fresh on every
+    /// re-target instead of riding a finished one.
+    pub epoch: u64,
 }
 
 #[cfg(test)]

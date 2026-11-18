@@ -135,6 +135,12 @@ pub struct SurfaceMachine {
     /// (see [`Drag`]). Cleared by every hide — a leaving surface's
     /// drag is moot.
     pub drag: Option<Drag>,
+    /// The monotone slide-instance counter, bumped on every slide
+    /// start and re-target and stamped into the live [`slide::Playing`]
+    /// — the frontend's animation-element id keys on it, so a
+    /// re-targeted slide remounts GPUI's animation element instead of
+    /// riding a finished one's dead frame schedule.
+    slide_epoch: u64,
 }
 
 /// One live-drag decision's outcome: the intents (empty when the
@@ -163,6 +169,13 @@ impl SurfaceMachine {
         }
         self.last_toggle = Some(now);
         true
+    }
+
+    /// The next slide instance's epoch: bumped, not read, so no two
+    /// live slides share one.
+    fn next_slide_epoch(&mut self) -> u64 {
+        self.slide_epoch = self.slide_epoch.wrapping_add(1);
+        self.slide_epoch
     }
 
     /// The show decision: only a hidden surface opens — a measuring
@@ -247,6 +260,7 @@ impl SurfaceMachine {
                         from_offset_px,
                         distance_px,
                     },
+                    epoch: self.next_slide_epoch(),
                 });
                 // Keyboard interactivity releases at slide-out START,
                 // not at destroy: the previously focused window regains
@@ -308,6 +322,7 @@ impl SurfaceMachine {
                     &playing.active,
                     playing.started.elapsed().as_millis() as u64,
                 ),
+                epoch: self.next_slide_epoch(),
             };
             self.slide = Some(reversed);
         }
@@ -394,6 +409,7 @@ impl SurfaceMachine {
             slide::Playing {
                 started: Instant::now(),
                 active,
+                epoch: self.next_slide_epoch(),
             }
         });
         vec![

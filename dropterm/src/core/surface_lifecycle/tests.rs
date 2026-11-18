@@ -736,6 +736,7 @@ fn a_zone_flip_mid_drag_or_slide_defers_to_the_next_show() {
             from_offset_px: 0.0,
             distance_px: 540.0,
         },
+        epoch: 0,
     });
     assert!(
         machine
@@ -854,6 +855,7 @@ fn a_rehold_mid_drag_or_slide_defers_to_the_next_show() {
             from_offset_px: 0.0,
             distance_px: 540.0,
         },
+        epoch: 0,
     });
     assert!(
         machine
@@ -894,6 +896,7 @@ fn hide_from_shown_with_slides_off_destroys_now() {
                 from_offset_px: 100.0,
                 distance_px: 540.0,
             },
+            epoch: 0,
         }),
         ..SurfaceMachine::default()
     };
@@ -949,6 +952,7 @@ fn reverse_show_reholds_keyboard_and_focuses_the_input() {
                 from_offset_px: 0.0,
                 distance_px: 540.0,
             },
+            epoch: 0,
         }),
         ..SurfaceMachine::default()
     };
@@ -1274,13 +1278,14 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
     // The out-slide's completion tick destroys the surface.
     machine.slide = Some(slide::Playing {
         started: std::time::Instant::now()
-            .checked_sub(slide::SLIDE_TICK + std::time::Duration::from_millis(200))
+            .checked_sub(std::time::Duration::from_millis(200))
             .expect("now is far past the slide window"),
         active: slide::Active {
             direction: slide::Direction::Out,
             from_offset_px: 0.0,
             distance_px: 540.0,
         },
+        epoch: 0,
     });
     assert_eq!(
         machine.decide_slide_tick(),
