@@ -240,7 +240,7 @@ The alias map is written by hand in `config.ron`, one expansion per declared ali
 |---|---|---|---|
 | `layer` | `Overlay`, `Top` | `Overlay` | `Overlay` sits above fullscreen windows; `Top` sits below them but behaves better with input methods. |
 | `keyboard_mode` | `Exclusive`, `OnDemand` | `Exclusive` | How the surface asks for keyboard focus. `Exclusive` always grabs the keyboard while shown; `OnDemand` is gentler but not auto-focused by every compositor. While `hide_on_focus_loss` is `false` the shown surface always runs `OnDemand`: an exclusive grab held by a stay-open surface would keep winning the keyboard back from every other input. |
-| `respect_panel` | `true`/`false` | `false` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies on the next show. |
+| `respect_panel` | `true`/`false` | `false` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies immediately — a shown drop-down re-places itself in place; a hidden one picks the value up on its next show. |
 | `show_in_dock` | `true`/`false` | `false` | Whether the app keeps a presence in the dock and the window switcher. The invisible clipboard anchor that holds your copies across every hide is, on Wayland, always a mapped window — `false` makes it a layer surface no switcher or dock can list (summon by shortcut or the CLI); `true` keeps it a normal window, so DropTerm shows in both. A flip applies immediately; whatever is on the clipboard at that moment is lost once. |
 
 The anchor itself never takes input or focus in either mode — it exists to keep a copied selection alive while the drop-down is hidden.

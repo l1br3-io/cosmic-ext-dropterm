@@ -1017,10 +1017,13 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::ThemePreference
         // The presence flip swaps the anchor on the echo itself
         // (shell-presence spec): destroy, reopen, rebind — live.
-        | ConfigKey::ShowInDock => ApplyTiming::Live,
-        ConfigKey::Layer | ConfigKey::KeyboardMode | ConfigKey::RespectPanel => {
-            ApplyTiming::NextShow
-        }
+        | ConfigKey::ShowInDock
+        // The panel-respect flip rezones a shown surface on the echo
+        // itself (the `Rezone` intent, one recreate with the shape
+        // standing); a hidden surface picks the zone up at its next
+        // show — live either way.
+        | ConfigKey::RespectPanel => ApplyTiming::Live,
+        ConfigKey::Layer | ConfigKey::KeyboardMode => ApplyTiming::NextShow,
         ConfigKey::Shell
         | ConfigKey::Args
         | ConfigKey::ScrollbackLines

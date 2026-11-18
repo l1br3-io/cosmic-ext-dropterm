@@ -407,6 +407,30 @@ impl SurfaceMachine {
         Vec::new()
     }
 
+    /// The config-edit zone decision: a shown surface at rest rezones
+    /// in place — the `respect_panel` edit applies immediately, one
+    /// recreate with the surface's shape standing — when the exclusive
+    /// zone actually changed. The same defer gates as the reshape: a
+    /// drag armed mid-edit defers (the release settle is a shape
+    /// apply; the in-memory config's zone lands on the next show), a
+    /// slide animating defers the same way. Any state but `Shown`
+    /// needs no intent: a measuring surface's pending configure reads
+    /// the caller's fresh inputs, and a hidden or hiding one picks the
+    /// zone up on its next show.
+    pub fn decide_rezone(
+        &mut self,
+        old: ExclusiveZone,
+        new: ExclusiveZone,
+        drag_armed: bool,
+    ) -> Vec<SurfaceIntent> {
+        if config_edit_rezones(old != new, drag_armed, self.slide.is_some())
+            && let SurfaceState::Shown(handle) = self.state
+        {
+            return vec![SurfaceIntent::Rezone { handle, zone: new }];
+        }
+        Vec::new()
+    }
+
     /// The live drag: arm on the first move — anchored at the height
     /// the surface has right now — then retarget absolutely per move
     /// in pixels: one pixel of pointer travel is one pixel of
@@ -614,6 +638,17 @@ pub fn config_edit_reshapes(
     slide_animating: bool,
 ) -> bool {
     geometry_changed && !drag_armed && !slide_animating
+}
+
+/// Whether a `ConfigChanged` may rezone a shown surface in place:
+/// pure so the guard is headless-testable, the zone twin of
+/// [`config_edit_reshapes`]. The zone must actually have changed; the
+/// same defer gates apply — a drag armed mid-edit defers the live
+/// swap (the release settle runs a shape apply, and the in-memory
+/// config's zone lands on the next show), a slide animating defers
+/// the same way.
+pub fn config_edit_rezones(zone_changed: bool, drag_armed: bool, slide_animating: bool) -> bool {
+    zone_changed && !drag_armed && !slide_animating
 }
 
 /// What a toggle-intent request must do with the surface: pure so the
