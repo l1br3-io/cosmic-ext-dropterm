@@ -130,11 +130,14 @@ tips read.
       every Ctrl/Alt byte-press in the input table's character gate,
       fixed same-day by deriving the control code from the printed
       key, and the tab chords (Ctrl+Shift+T & family) never bound on
-      this frontend at all — the pane's map owns fifteen chords and
-      the tab family stays the shell's to claim, [filed in
-      known-issues](../docs/known-issues.md); the caret's verdict
-      still rides the owner's eyes — every upstream state and paint
-      step traces green)*
+      this frontend at all — landed the same day with the owner's go
+      (the shell-chords slice, gpui-parity's follow-on note: the
+      pane's map at the reference table's whole set, the shell verbs
+      handing up through the pane's weak shell handle, and the Kit
+      inspector's ctrl-shift-i collision — the Settings chord —
+      retired by stop_propagation on every owned chord); the caret's
+      verdict still rides the owner's eyes — every upstream state and
+      paint step traces green)*
 
 **Verification:**
 - [ ] `just check` green with the new core pins

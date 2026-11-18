@@ -184,3 +184,25 @@ divergences stand until cutover deletes the libcosmic frontend:
 
 The `scroll_to_bottom` keybind is **not** a divergence: it landed in the
 shared core registry and both frontends' funnels.
+
+## Follow-on: the shell-owned chords land (2026-11-18, owner go)
+
+The first `just dev` hardware walk's keyboard verdict, built the same
+day with the owner's go: the pane's map grows from its fifteen chords
+to the reference table's whole set — the five tab letter verbs, the
+cycle pair's four seats, the moves' two, the eight numbered seats plus
+the last, settings, images, and the band toggle — every shell verb
+matching in the pane (the key_char-less real-hardware shape included,
+key_char never part of the match) and handing up through the pane's
+new weak shell handle to the funnels the menus already call
+(`shell_verb`, one arm per verb, the close gate and the rename input
+riding the key handler's own window). Two findings the same wire
+retires: the tab chords were never bound anywhere on this frontend
+(the earlier known-issues row), and the Kit's debug inspector —
+globally bound to `ctrl-shift-i` in every debug build — collided with
+the Settings chord; every owned chord now stops propagation at the
+match, so the keymap phase (and the Kit's debug bindings behind it)
+sees only chords the table does not own. The map's count pin moves 15
+→ 38; the custom-overlay rule unchanged. The manual rows (the
+checklist's Tabs-and-keybinds section, the settings/band chords) await
+the owner's walk.

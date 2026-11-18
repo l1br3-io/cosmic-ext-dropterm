@@ -43,35 +43,102 @@ pub(crate) enum TermAction {
     /// status band's scrolled chip's jump verb as a chord, the same
     /// engine call the chip's click routes.
     ScrollToBottom,
+    // The shell-owned family (the keyboard route the menus always
+    // had — the reference app's whole table, wired through the
+    // pane's key handler because the pane is where every keystroke
+    // lands): each verb hands up to the shell's own funnels, the
+    // ones the menus call; the pane owns only the match.
+    NewTab,
+    NewTabHome,
+    DuplicateTab,
+    CloseTab,
+    RenameTab,
+    NextTab,
+    PrevTab,
+    MoveTabLeft,
+    MoveTabRight,
+    /// Activate tab N (1-based, 1..=8 — 9 is [`Self::ActivateLastTab`]).
+    ActivateTab(u8),
+    ActivateLastTab,
+    Settings,
+    ImagesPanel,
+    ToggleStatusBar,
+}
+
+impl TermAction {
+    /// Whether the verb belongs to the shell (its funnels are the
+    /// menus' own) rather than the pane — the key handler's routing
+    /// gate between `perform_action` and the shell handoff.
+    pub(crate) fn is_shell_verb(self) -> bool {
+        matches!(
+            self,
+            TermAction::NewTab
+                | TermAction::NewTabHome
+                | TermAction::DuplicateTab
+                | TermAction::CloseTab
+                | TermAction::RenameTab
+                | TermAction::NextTab
+                | TermAction::PrevTab
+                | TermAction::MoveTabLeft
+                | TermAction::MoveTabRight
+                | TermAction::ActivateTab(_)
+                | TermAction::ActivateLastTab
+                | TermAction::Settings
+                | TermAction::ImagesPanel
+                | TermAction::ToggleStatusBar
+        )
+    }
 }
 
 /// The stable string id of an action — the `custom_key_binds` key,
 /// identical to the libcosmic frontend's ids (the file-format
-/// contract one id set across frontends).
+/// contract one id set across frontends). The numbered seats are
+/// per-slot ids (`activate_tab_1` … `activate_tab_8`) and resolve
+/// through [`activate_slot_id`]; the payload form carries no single
+/// id, so it answers `None`.
 // Not consumed outside the tests yet: the id vocabulary's other
 // consumers (the settings editor) arrive with their slice, and the
 // round-trip test holds the contract until then.
 #[allow(dead_code)]
-pub(crate) fn action_id(action: TermAction) -> &'static str {
+pub(crate) fn action_id(action: TermAction) -> Option<&'static str> {
     match action {
-        TermAction::Copy => "copy",
-        TermAction::CopyPrimary => "copy_primary",
-        TermAction::Paste => "paste",
-        TermAction::PastePrimary => "paste_primary",
-        TermAction::SelectAll => "select_all",
-        TermAction::ClearScrollback => "clear_scrollback",
-        TermAction::ZoomIn => "zoom_in",
-        TermAction::ZoomOut => "zoom_out",
-        TermAction::ZoomReset => "zoom_reset",
-        TermAction::Hide => "hide",
-        TermAction::ShowCompletions => "show_completions",
-        TermAction::ScrollToBottom => "scroll_to_bottom",
+        TermAction::Copy => Some("copy"),
+        TermAction::CopyPrimary => Some("copy_primary"),
+        TermAction::Paste => Some("paste"),
+        TermAction::PastePrimary => Some("paste_primary"),
+        TermAction::SelectAll => Some("select_all"),
+        TermAction::ClearScrollback => Some("clear_scrollback"),
+        TermAction::ZoomIn => Some("zoom_in"),
+        TermAction::ZoomOut => Some("zoom_out"),
+        TermAction::ZoomReset => Some("zoom_reset"),
+        TermAction::Hide => Some("hide"),
+        TermAction::ShowCompletions => Some("show_completions"),
+        TermAction::ScrollToBottom => Some("scroll_to_bottom"),
+        TermAction::NewTab => Some("new_tab"),
+        TermAction::NewTabHome => Some("new_tab_home"),
+        TermAction::DuplicateTab => Some("duplicate_tab"),
+        TermAction::CloseTab => Some("close_tab"),
+        TermAction::RenameTab => Some("rename_tab"),
+        TermAction::NextTab => Some("next_tab"),
+        TermAction::PrevTab => Some("prev_tab"),
+        TermAction::MoveTabLeft => Some("move_tab_left"),
+        TermAction::MoveTabRight => Some("move_tab_right"),
+        TermAction::ActivateTab(_) => None,
+        TermAction::ActivateLastTab => Some("activate_last_tab"),
+        TermAction::Settings => Some("settings"),
+        TermAction::ImagesPanel => Some("images_panel"),
+        TermAction::ToggleStatusBar => Some("toggle_status_bar"),
     }
 }
 
+/// The numbered seat's per-slot id (`activate_tab_4` for seat 4).
+#[cfg(test)]
+pub(crate) fn activate_slot_id(slot: u8) -> String {
+    format!("activate_tab_{slot}")
+}
+
 /// The action an id string resolves to, for the actions this slice
-/// owns; `None` for anything else (another slice's action id or a
-/// stale hand-edited entry).
+/// owns; `None` for anything else (a stale hand-edited entry).
 pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
     match id {
         "copy" => Some(TermAction::Copy),
@@ -86,7 +153,26 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "hide" => Some(TermAction::Hide),
         "show_completions" => Some(TermAction::ShowCompletions),
         "scroll_to_bottom" => Some(TermAction::ScrollToBottom),
-        _ => None,
+        "new_tab" => Some(TermAction::NewTab),
+        "new_tab_home" => Some(TermAction::NewTabHome),
+        "duplicate_tab" => Some(TermAction::DuplicateTab),
+        "close_tab" => Some(TermAction::CloseTab),
+        "rename_tab" => Some(TermAction::RenameTab),
+        "next_tab" => Some(TermAction::NextTab),
+        "prev_tab" => Some(TermAction::PrevTab),
+        "move_tab_left" => Some(TermAction::MoveTabLeft),
+        "move_tab_right" => Some(TermAction::MoveTabRight),
+        "activate_last_tab" => Some(TermAction::ActivateLastTab),
+        "settings" => Some(TermAction::Settings),
+        "images_panel" => Some(TermAction::ImagesPanel),
+        "toggle_status_bar" => Some(TermAction::ToggleStatusBar),
+        // The numbered seats (`activate_tab_1` … `activate_tab_8`);
+        // a seat past 8 is not this table's (9 is activate_last_tab).
+        _ => id
+            .strip_prefix("activate_tab_")
+            .and_then(|slot| slot.parse::<u8>().ok())
+            .filter(|slot| (1..=8).contains(slot))
+            .map(TermAction::ActivateTab),
     }
 }
 
@@ -151,6 +237,36 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
         chord(&[ModifierName::Ctrl], "space"),
         TermAction::ShowCompletions,
     );
+    // The shell-owned family — the reference table's own defaults
+    // (core `keybinds::BINDING_ROWS`), one chord for one verb, the
+    // pane matching and the shell executing. The pair audit against
+    // the pane's own fifteen above: every letter seat (t h d w r i
+    // p b) is fresh, the numbered seats ride Ctrl+Shift+1..9 where
+    // only the Ctrl-held 0/-/=/+ cluster lives, and the PageUp/Down
+    // seats split by modifier exactly as the reference does —
+    // Ctrl+PageUp/Down cycles, Ctrl+Shift+PageUp/Down moves, the
+    // bare Shift+PageUp/Down scroll staying the translation's own.
+    map.insert(chord(cs, "t"), TermAction::NewTab);
+    map.insert(chord(cs, "h"), TermAction::NewTabHome);
+    map.insert(chord(cs, "d"), TermAction::DuplicateTab);
+    map.insert(chord(cs, "w"), TermAction::CloseTab);
+    map.insert(chord(cs, "r"), TermAction::RenameTab);
+    map.insert(
+        chord(&[ModifierName::Ctrl], "pagedown"),
+        TermAction::NextTab,
+    );
+    map.insert(chord(&[ModifierName::Ctrl], "tab"), TermAction::NextTab);
+    map.insert(chord(&[ModifierName::Ctrl], "pageup"), TermAction::PrevTab);
+    map.insert(chord(cs, "tab"), TermAction::PrevTab);
+    map.insert(chord(cs, "pageup"), TermAction::MoveTabLeft);
+    map.insert(chord(cs, "pagedown"), TermAction::MoveTabRight);
+    for slot in 1..=8u8 {
+        map.insert(chord(cs, &slot.to_string()), TermAction::ActivateTab(slot));
+    }
+    map.insert(chord(cs, "9"), TermAction::ActivateLastTab);
+    map.insert(chord(cs, "i"), TermAction::Settings);
+    map.insert(chord(cs, "p"), TermAction::ImagesPanel);
+    map.insert(chord(cs, "b"), TermAction::ToggleStatusBar);
     map
 }
 
@@ -628,7 +744,9 @@ mod tests {
     #[test]
     fn the_action_ids_round_trip_across_frontends() {
         // The file-format contract: one id set across frontends. The
-        // round-trip pins the vocabulary this slice owns.
+        // round-trip pins the whole vocabulary — the pane's own verbs
+        // and the shell family — plus the numbered seats through
+        // their per-slot ids.
         for action in [
             TermAction::Copy,
             TermAction::CopyPrimary,
@@ -642,10 +760,34 @@ mod tests {
             TermAction::Hide,
             TermAction::ShowCompletions,
             TermAction::ScrollToBottom,
+            TermAction::NewTab,
+            TermAction::NewTabHome,
+            TermAction::DuplicateTab,
+            TermAction::CloseTab,
+            TermAction::RenameTab,
+            TermAction::NextTab,
+            TermAction::PrevTab,
+            TermAction::MoveTabLeft,
+            TermAction::MoveTabRight,
+            TermAction::ActivateLastTab,
+            TermAction::Settings,
+            TermAction::ImagesPanel,
+            TermAction::ToggleStatusBar,
         ] {
-            assert_eq!(action_from_id(action_id(action)), Some(action));
+            let id = action_id(action).expect("the payload-less verbs carry ids");
+            assert_eq!(action_from_id(id), Some(action));
         }
-        assert_eq!(action_from_id("new_tab"), None, "another slice's id");
+        for slot in 1..=8u8 {
+            assert_eq!(
+                action_from_id(&activate_slot_id(slot)),
+                Some(TermAction::ActivateTab(slot))
+            );
+        }
+        // The payload form answers None (no single id), and the seat
+        // past 8 is not this table's — 9 is activate_last_tab.
+        assert_eq!(action_id(TermAction::ActivateTab(4)), None);
+        assert_eq!(action_from_id("activate_tab_9"), None);
+        assert_eq!(action_from_id("not_an_action"), None);
     }
 
     #[test]
@@ -660,11 +802,38 @@ mod tests {
                 "chord {chord:?} fires {action:?}"
             );
         }
-        // And the counts stay honest: the clipboard pair, the
-        // primary paste, select-all, clear-scrollback, the
-        // scroll-to-bottom jump, the zoom cluster's six, the hide,
-        // and the completion trigger.
-        assert_eq!(default_key_binds().len(), 15);
+        // And the counts stay honest: the pane's fifteen (the
+        // clipboard pair, the primary paste, select-all,
+        // clear-scrollback, the scroll-to-bottom jump, the zoom
+        // cluster's six, the hide, the completion trigger) plus the
+        // shell family's twenty-three (the five letter verbs, the
+        // cycle pair's four, the moves' two, the eight numbered
+        // seats, the last seat, settings, images, the band).
+        assert_eq!(default_key_binds().len(), 38);
+    }
+
+    #[test]
+    fn the_settings_chord_is_ours_not_the_kit_inspectors() {
+        // The collision the first `just dev` hardware walk caught:
+        // the Kit's debug inspector binds Ctrl+Shift+I globally in
+        // every debug build — the table's own Settings chord. The
+        // match makes the press ours (and the key handler stops
+        // propagation), so the chord fires Settings, never the
+        // inspector.
+        let cs_i = key(ctrl_shift(), "i", None);
+        assert_eq!(
+            translate(&cs_i, &default_key_binds(), plain_modes()),
+            KeyInput::Action(TermAction::Settings)
+        );
+        // A chord the table does not own still swallows into
+        // nothing here — what falls through to the keymap (the
+        // inspector's dev reachability) is the handler's propagation
+        // boundary, not the table's.
+        let cs_y = key(ctrl_shift(), "y", None);
+        assert_eq!(
+            translate(&cs_y, &default_key_binds(), plain_modes()),
+            KeyInput::Swallowed
+        );
     }
 
     #[test]
@@ -723,21 +892,13 @@ mod tests {
     #[test]
     fn key_char_less_presses_still_guess_nothing() {
         // The boundary the fallback keeps: Shift-held presses (the
-        // typed case is the layout's), non-letter Ctrl pairings (no
-        // xterm byte), and the tab chords this pane's map does not
-        // own — Ctrl+Shift+T stays swallowed for the shell's own
-        // slice to claim (see known-issues: the GPUI frontend's tab
-        // chords).
+        // typed case is the layout's) and non-letter Ctrl pairings
+        // (no xterm byte). The shell family's chords are binds now
+        // (the shell-chords slice) — Ctrl+Shift+T fires NewTab in
+        // the key_char-less shape like every other chord, covered by
+        // the every-chord row above.
         assert_eq!(
             translate(&key(ctrl(), "1", None), &default_key_binds(), plain_modes()),
-            KeyInput::Swallowed
-        );
-        assert_eq!(
-            translate(
-                &key(ctrl_shift(), "t", None),
-                &default_key_binds(),
-                plain_modes()
-            ),
             KeyInput::Swallowed
         );
         let shift_b = shift();
@@ -748,6 +909,14 @@ mod tests {
                 plain_modes()
             ),
             KeyInput::Swallowed
+        );
+        assert_eq!(
+            translate(
+                &key(ctrl_shift(), "t", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Action(TermAction::NewTab)
         );
     }
 

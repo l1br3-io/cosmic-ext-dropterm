@@ -177,6 +177,13 @@ pub(crate) struct TerminalPane {
     /// fleet (`None` in the standalone walk harness — the Hide
     /// action only logs there).
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
+    /// The owning shell, weak — the keyboard's shell verbs (tabs,
+    /// settings, images, the band) update it from the key handler's
+    /// own window, the menus' own callback shape. Weak by design:
+    /// the shell's pane map owns this pane, so a strong handle would
+    /// cycle; `None` until the shell adopts the pane (and forever in
+    /// the standalone walk harness, where the verbs only log).
+    shell: Option<gpui::WeakEntity<crate::app_shell::Shell>>,
     /// The pane's tab id (the Exited signal's address).
     id: TabId,
     /// The latched attention signals since the shell's last poll —
@@ -305,6 +312,7 @@ impl TerminalPane {
             reporter: MouseReporter::default(),
             reporting_gesture: false,
             shell_signals: None,
+            shell: None,
             id,
             attention: AttentionFlags::default(),
             reveal_armed: false,
@@ -932,12 +940,54 @@ impl TerminalPane {
             TermAction::ShowCompletions => {
                 println!("dropterm: pane show-completions action (the routing owns it)");
             }
+            // The shell family never reaches the pane's own dispatch
+            // (on_key routes every shell verb to the handoff first);
+            // a future caller that lands here gets a log, never a
+            // panic.
+            action if action.is_shell_verb() => {
+                println!("dropterm: pane action {action:?} (a shell verb off its keyboard route)");
+            }
+            // Exhaustiveness: every pane-owned variant is matched
+            // above; the shell family is the guard arm.
+            _ => {}
         }
         cx.notify();
     }
 
+    /// The shell's adoption (the keyboard's shell verbs): the weak
+    /// handle lands here once the shell entity exists — the boot
+    /// loop over the restored fleet, and every spawn path after it.
+    pub(crate) fn adopt_shell(&mut self, shell: gpui::WeakEntity<crate::app_shell::Shell>) {
+        self.shell = Some(shell);
+    }
+
+    /// One shell verb off the keyboard (the menus' own funnels): the
+    /// pane matched the chord, the shell executes it — with the key
+    /// handler's own window, exactly the context the menu callbacks
+    /// hold, so the modal (close), the rename input, and the settings
+    /// focus hand-off all work identically. The walk harness (no
+    /// shell) logs, the Hide signal's own precedent.
+    fn dispatch_shell_verb(
+        &mut self,
+        action: TermAction,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shell) = self.shell.as_ref().and_then(gpui::WeakEntity::upgrade) else {
+            println!("dropterm: pane shell verb {action:?} (no shell in the walk harness)");
+            return;
+        };
+        let pane = self.id;
+        shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
+    }
+
     /// One key press through the translation and its outcome.
-    fn on_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+    fn on_key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
         // The walk affordance: the exact keystroke shape the platform
         // delivered (key, modifiers, key_char) — rig/VM input walks
         // set `DROPTERM_TRACE_KEYS=1` to see what actually arrives.
@@ -962,15 +1012,24 @@ impl TerminalPane {
                 has_selection: term.selection.is_some(),
             }
         };
+        // An owned chord never leaves the pane: the Kit's debug
+        // bindings sit behind gpui's keymap phase — the inspector on
+        // Ctrl+Shift+I in every debug build, colliding with the
+        // Settings chord — so the app's own chords stop propagation
+        // the moment they match (the shell verbs still route through
+        // the handoff below, which runs before the return). Chords
+        // the table does not own keep falling through; the inspector
+        // stays reachable in dev on any unbound chord.
+        let matched = input::matched_action(&self.binds, keystroke);
+        if matched.is_some() {
+            cx.stop_propagation();
+        }
         // The completion menu's routing (suggest-menu spec), before
         // the keybind swallow and every mapping — a showing menu
         // outranks them all; the soft trigger chord tries the open
         // here, its decline falling through with the chord's own
         // shell bytes still to send.
-        let trigger_chord = matches!(
-            input::matched_action(&self.binds, keystroke),
-            Some(TermAction::ShowCompletions)
-        );
+        let trigger_chord = matches!(matched, Some(TermAction::ShowCompletions));
         if self.route_menu_press(keystroke, trigger_chord, cx) {
             return;
         }
@@ -1025,7 +1084,13 @@ impl TerminalPane {
                     .expect("engine lock")
                     .input_scroll(bytes);
             }
-            KeyInput::Action(action) => self.perform_action(action, cx),
+            KeyInput::Action(action) => {
+                if action.is_shell_verb() {
+                    self.dispatch_shell_verb(action, window, cx);
+                } else {
+                    self.perform_action(action, cx);
+                }
+            }
             KeyInput::Scroll(scroll) => {
                 println!("dropterm: pane scroll {scroll:?} (Shift+PageUp/Down/Home/End)");
                 let mut engine = self.terminal.lock().expect("engine lock");
@@ -1503,8 +1568,10 @@ impl gpui::Render for TerminalPane {
             })
             .on_key_down({
                 let pane = pane.clone();
-                move |event: &gpui::KeyDownEvent, _window, cx| {
-                    pane.update(cx, |pane, cx| pane.on_key(&event.keystroke, cx));
+                move |event: &gpui::KeyDownEvent, window, cx| {
+                    pane.update(cx, |pane, cx| {
+                        pane.on_key(&event.keystroke, window, cx);
+                    });
                 }
             })
             .child(

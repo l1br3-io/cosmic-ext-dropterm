@@ -1738,10 +1738,132 @@ impl Shell {
             self.tabs.close(id);
             return None;
         };
+        // The keyboard's shell verbs ride the weak handle (the
+        // shell-chords slice): every pane the shell spawns carries
+        // its owner from the first keystroke.
+        let shell = cx.entity().downgrade();
+        pane.update(cx, |pane, _| pane.adopt_shell(shell));
         self.panes.insert(id, pane);
         self.tabs.note_spawn_facts(id, profile_id, ephemeral);
         cx.notify();
         Some(id)
+    }
+
+    /// One keyboard shell verb (the shell-chords slice): the pane
+    /// matched the chord against the reference table's defaults and
+    /// handed the verb up with the key handler's own window — every
+    /// arm routes to the funnel the corresponding menu pick already
+    /// calls, so the keyboard and the menu can never disagree. The
+    /// `pane` id addresses the tab the keys landed in (the active
+    /// tab by construction — the pane holding focus is the one
+    /// dispatching).
+    pub(crate) fn shell_verb(
+        &mut self,
+        action: crate::terminal::input::TermAction,
+        pane: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use dropterm::core::tabs::{
+            MoveDirection, activate_index_target, activate_last_target, cycle_next, cycle_prev,
+        };
+        println!(
+            "dropterm: shell verb {action:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        match action {
+            crate::terminal::input::TermAction::NewTab => self.new_tab(cx),
+            crate::terminal::input::TermAction::NewTabHome => self.new_tab_home(cx),
+            crate::terminal::input::TermAction::DuplicateTab => self.duplicate_tab(pane, cx),
+            crate::terminal::input::TermAction::CloseTab => self.request_close(pane, window, cx),
+            crate::terminal::input::TermAction::RenameTab => self.start_rename(pane, window, cx),
+            crate::terminal::input::TermAction::NextTab
+            | crate::terminal::input::TermAction::PrevTab => {
+                let active = self.tabs.active_index();
+                let target = if matches!(action, crate::terminal::input::TermAction::NextTab) {
+                    cycle_next(self.tabs.records(), active)
+                } else {
+                    cycle_prev(self.tabs.records(), active)
+                };
+                if let Some(tab) = self.tabs.records().get(target) {
+                    self.select_tab(tab.id, cx);
+                }
+            }
+            crate::terminal::input::TermAction::MoveTabLeft
+            | crate::terminal::input::TermAction::MoveTabRight => {
+                let direction = if matches!(action, crate::terminal::input::TermAction::MoveTabLeft)
+                {
+                    MoveDirection::Left
+                } else {
+                    MoveDirection::Right
+                };
+                if self.tabs.move_by(pane, direction) {
+                    println!(
+                        "dropterm: tab {pane:?} moved {direction:?} at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    cx.notify();
+                }
+            }
+            crate::terminal::input::TermAction::ActivateTab(slot) => {
+                let len = self.tabs.records().len();
+                if let Some(index) = activate_index_target(len, usize::from(slot))
+                    && let Some(tab) = self.tabs.records().get(index)
+                {
+                    self.select_tab(tab.id, cx);
+                }
+            }
+            crate::terminal::input::TermAction::ActivateLastTab => {
+                let len = self.tabs.records().len();
+                if let Some(index) = activate_last_target(len)
+                    && let Some(tab) = self.tabs.records().get(index)
+                {
+                    self.select_tab(tab.id, cx);
+                }
+            }
+            crate::terminal::input::TermAction::Settings => {
+                // Outside the update borrow — the drawer's build
+                // reads the shell (gc-2's finding, the menu arm's
+                // own shape).
+                let shell = cx.entity();
+                Shell::toggle_settings(&shell, window, cx);
+            }
+            crate::terminal::input::TermAction::ImagesPanel => self.open_images_panel(cx),
+            crate::terminal::input::TermAction::ToggleStatusBar => {
+                self.toggle_status_bar_setting(cx);
+            }
+            // The pane-owned verbs never reach this handoff; the
+            // catch-all is unreachable by dispatch_shell_verb's gate.
+            _ => {}
+        }
+    }
+
+    /// The home-directory new tab (`Ctrl+Shift+H`, the reference's
+    /// "New tab (home directory)"): the explicit home wins over both
+    /// cwd modes exactly as a `--cwd` does — the checklist's
+    /// "keep their own directories in both modes" row.
+    fn new_tab_home(&mut self, cx: &mut Context<Self>) {
+        self.commit_open_rename(cx);
+        let command = spawn::default_spawn_command(&self.config);
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        if let Some(id) = self.spawn_command_tab(cx, &command, home) {
+            println!(
+                "dropterm: tab + home -> {id:?} ({} tabs) at +{}ms",
+                self.tabs.records().len(),
+                self.boot.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// The status band's toggle as one funnel — the band menu's own
+    /// verb and the `Ctrl+Shift+B` chord write through the same
+    /// planned setting.
+    fn toggle_status_bar_setting(&mut self, cx: &mut Context<Self>) {
+        let next = !self.config.status_bar_enabled;
+        self.write_settings(&dropterm::core::settings::PlannedWrite::StatusBarEnabled(
+            next,
+        ));
+        cx.notify();
     }
 
     /// The gated front door every user-initiated close rides — the
@@ -2460,6 +2582,8 @@ impl Shell {
             self.tabs.close(id);
             return;
         };
+        let shell = cx.entity().downgrade();
+        pane.update(cx, |pane, _| pane.adopt_shell(shell));
         self.panes.insert(id, pane);
         self.tabs.note_spawn_facts(id, None, false);
         println!(
@@ -2791,6 +2915,8 @@ impl Shell {
         // the close path's own way), and the respawn's field half —
         // the resolved title, the kept pin, the persistent profile
         // seat — lands through core's plan.
+        let shell = cx.entity().downgrade();
+        pane.update(cx, |pane, _| pane.adopt_shell(shell));
         drop(self.panes.insert(id, pane));
         let fields = dropterm::core::tabs::plan_respawn(
             self.config.tab_title_mode,
@@ -3271,12 +3397,7 @@ impl Shell {
                 });
             }
             status::MenuPick::ToggleStatusBar => {
-                shell.update(cx, |shell, _| {
-                    let next = !shell.config.status_bar_enabled;
-                    shell.write_settings(
-                        &dropterm::core::settings::PlannedWrite::StatusBarEnabled(next),
-                    );
-                });
+                shell.update(cx, Shell::toggle_status_bar_setting);
             }
             status::MenuPick::Settings => {
                 // Outside the update borrow — the drawer's build
@@ -5081,6 +5202,16 @@ pub(crate) fn boot(
             specs,
         )
     });
+    // The keyboard's shell verbs ride the weak handle (the
+    // shell-chords slice): the boot-time fleet (the first tab and
+    // every restored pane) predates the shell entity, so the panes
+    // adopt their owner here — every later spawn path adopts at its
+    // own boot_pane site.
+    let boot_panes: Vec<_> = shell.read(cx).panes.values().cloned().collect();
+    let weak = shell.downgrade();
+    for pane in boot_panes {
+        pane.update(cx, |pane, _| pane.adopt_shell(weak.clone()));
+    }
     // The dock presence (item 9's replicate ruling): the boot-time
     // sync opens the body for a dock-mode config without waiting for
     // the tick's first pass.
