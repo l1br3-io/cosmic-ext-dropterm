@@ -4411,6 +4411,28 @@ impl gpui::Render for Shell {
         {
             pane.read(cx).focus_handle().focus(window, cx);
         }
+        // The tab swap's repair: the outgoing pane's handle outlives
+        // its rendered element (the window's focus id stays on an
+        // unmounted element — nothing blurs it), and every pane's
+        // claim defers to the holder (the cooperative rule above), so
+        // the incoming pane never grabs — the new tab's caret paints
+        // while the keys go nowhere (the Ctrl+Shift+T walk's focus
+        // loss; the same dangle rides every render swap: a tab
+        // switch, a move). A pane holder that isn't the active pane
+        // is exactly that leftover — every shell-owned claimant (the
+        // modal, the drawer, the rename input, the band menu) holds
+        // its own handle, never a pane's — so the active pane takes
+        // the keyboard back, the modal repair's own shape.
+        if let Some(focused) = window.focused(cx)
+            && let Some(pane) = self.active_pane()
+            && pane.read(cx).focus_handle() != focused
+            && self
+                .panes
+                .values()
+                .any(|holder| holder.read(cx).focus_handle() == focused)
+        {
+            pane.read(cx).focus_handle().focus(window, cx);
+        }
         // The windowless arm's completion (py-5): a remote close
         // armed the modal with no window on the stack to focus it on;
         // the first paint that carries it takes the keyboard, exactly
