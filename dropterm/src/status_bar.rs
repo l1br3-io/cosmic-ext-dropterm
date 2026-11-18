@@ -292,6 +292,13 @@ impl gpui::RenderOnce for StatusBandView {
                 .flex()
                 .items_center()
                 .font(self.font.clone())
+                // The laid rects come from the measure pass at
+                // SEGMENT_FONT_SIZE; the divs must paint at the same
+                // size or gpui's 20 px default text style overflows
+                // every row into its neighbor (the first `just dev`
+                // walk's overlap — the tab strip sets its own the
+                // same way).
+                .text_size(gpui::px(SEGMENT_FONT_SIZE))
                 .cursor_pointer();
             text = text.child(row.text.clone());
             let color = if row.attention {

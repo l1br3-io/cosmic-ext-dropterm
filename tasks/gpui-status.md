@@ -117,6 +117,16 @@ tips read.
 - [ ] The implemented rows' audit: the border seam holds one hairline
       through the four stackings; the walked rows stay untouched
 
+      *(the owner's walk began 2026-11-18 on the new `just dev`
+      hardware loop — the first look at the merged band — and found
+      three failures before any row could pass: the band's rows
+      painted at gpui's 20 px default text size over the 12 px laid
+      rects (segments touching and overlapping; fixed the same day —
+      the row divs now carry `text_size(SEGMENT_FONT_SIZE)` the tab
+      strip's own way), and the keyboard family dead — no caret at
+      the prompt, no chords firing — diagnosis open, the launch log
+      the next evidence)*
+
 **Verification:**
 - [ ] `just check` green with the new core pins
 - [ ] Manual: rows 49–56 plus the tips/suppression full rows, owner-
