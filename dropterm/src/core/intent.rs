@@ -150,6 +150,14 @@ pub enum SurfaceIntent {
         handle: SurfaceHandle,
         keyboard: KeyboardHold,
     },
+    /// Desired: the shown surface placed by `zone` and nothing else
+    /// changes — the live `respect_panel` edit. The exclusive zone is
+    /// create-time on GPUI, so the executor reconciles with a swap
+    /// that keeps the surface's shape standing.
+    Rezone {
+        handle: SurfaceHandle,
+        zone: ExclusiveZone,
+    },
     /// Desired: the surface gone now — destroyed without animation.
     /// The animated hide starts as a [`SurfaceIntent::Hold`] with
     /// [`KeyboardHold::Released`] and its completion lands here.

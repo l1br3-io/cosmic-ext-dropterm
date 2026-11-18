@@ -28,11 +28,13 @@ use dropterm::core::config::DropTermConfig;
 use dropterm::core::config::Edge;
 use dropterm::core::config::TabTitleMode;
 use dropterm::core::dbus_state::SurfacePhase;
-use dropterm::core::intent::SurfaceExecutor;
+use dropterm::core::intent::{ExclusiveZone, KeyboardHold, SurfaceExecutor};
 use dropterm::core::slide::{self, SLIDE_DURATION_MS};
 use dropterm::core::spawn;
 use dropterm::core::status::{self, BandVm, StatusInputs, StatusSegments, Strip};
-use dropterm::core::surface_lifecycle::{SurfaceInputs, SurfaceMachine, SurfaceState};
+use dropterm::core::surface_lifecycle::{
+    SurfaceInputs, SurfaceMachine, SurfaceState, shown_keyboard_mode,
+};
 use dropterm::core::tabs::TabId;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
@@ -1045,32 +1047,66 @@ impl Shell {
         }
         let new_inputs = SurfaceInputs::from_config(&config);
         let old_geometry = self.inputs.geometry;
+        let old_zone = ExclusiveZone::from_panel_respect(self.inputs.respect_panel);
+        let new_zone = ExclusiveZone::from_panel_respect(new_inputs.respect_panel);
+        // The stay-open flip's live half: both resolutions pair over
+        // the OLD keyboard mode on purpose, so `keyboard_mode` itself
+        // stays a next-show key and only the `hide_on_focus_loss`
+        // flip's hold change (exclusive -> OnDemand, the hostage rule)
+        // lands here.
+        let old_hold = KeyboardHold::from(shown_keyboard_mode(
+            self.inputs.keyboard_mode,
+            self.inputs.hide_on_focus_loss,
+        ));
+        let new_hold = KeyboardHold::from(shown_keyboard_mode(
+            self.inputs.keyboard_mode,
+            new_inputs.hide_on_focus_loss,
+        ));
+        let geometry_changed = old_geometry != new_inputs.geometry;
+        let zone_changed = old_zone != new_zone;
+        let hold_changed = old_hold != new_hold;
         let drag_armed = self.machine.drag.is_some();
-        let intents = self
-            .machine
-            .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
-        if intents.is_empty() && old_geometry == new_inputs.geometry {
-            // The write (or its echo) changed nothing the surface's
-            // geometry reads: absorb the rest of the burst quietly —
-            // a pending theme (a scheme-only edit) still rides the
-            // tick's apply.
-            self.config_quiet_until = Some(Instant::now() + Duration::from_millis(300));
+        let mut intents =
+            self.machine
+                .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
+        intents.extend(self.machine.decide_rezone(old_zone, new_zone, drag_armed));
+        intents.extend(self.machine.decide_rehold(old_hold, new_hold, drag_armed));
+        // The in-memory inputs land on every path — the surface
+        // decisions read them hereafter: a deferred reshape, rezone,
+        // or re-hold (drag armed, slide animating) applies on the next
+        // show, and the next-show keys (`layer`, `keyboard_mode`)
+        // reach their next decision fresh. Skipping this update froze
+        // the old values until a geometry edit or a restart — a
+        // `respect_panel` flip never reached the show at all.
+        self.inputs = new_inputs;
+        if intents.is_empty() {
+            // Nothing the surface decisions read (or a drag or slide
+            // deferred the apply): absorb the rest of the burst
+            // quietly — a pending theme (a scheme-only edit) still
+            // rides the tick's apply.
+            if !geometry_changed && !zone_changed && !hold_changed {
+                self.config_quiet_until = Some(Instant::now() + Duration::from_millis(300));
+            }
             return;
         }
         println!(
             "dropterm: config changed -> reshape decision: {} intent(s) \
-             (geometry {}%/{}% {:?} {:?} -> {}%/{}% {:?} {:?})",
+             (geometry {}%/{}% {:?} {:?} -> {}%/{}% {:?} {:?}{})",
             intents.len(),
             old_geometry.height_percent,
             old_geometry.width_percent,
             old_geometry.h_align,
             old_geometry.edge,
-            new_inputs.geometry.height_percent,
-            new_inputs.geometry.width_percent,
-            new_inputs.geometry.h_align,
-            new_inputs.geometry.edge,
+            self.inputs.geometry.height_percent,
+            self.inputs.geometry.width_percent,
+            self.inputs.geometry.h_align,
+            self.inputs.geometry.edge,
+            if zone_changed {
+                format!(", panel-respect {old_zone:?} -> {new_zone:?}")
+            } else {
+                String::new()
+            },
         );
-        self.inputs = new_inputs;
         self.execute_into(intents, actions);
     }
 

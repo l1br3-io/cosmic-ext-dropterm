@@ -86,13 +86,15 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `tab_bar_border`, `status_bar_border` | live - the bar's hairline appears or vanishes on the next render, nothing resizes |
 | `tab_title_mode` | live - every un-renamed tab re-titles immediately |
 | `font_name`, `font_size`, `opacity`, `color_scheme_dark`, `color_scheme_light`, `theme_preference` | live, visible beneath the open drawer. `font_size` and the scheme pair apply to every tab whose profile does not override that field |
-| `layer`, `keyboard_mode` | next show - a shown surface is never recreated under itself |
+| `respect_panel` | live - a shown drop-down re-places itself in place (one recreate with the shape standing, the anchor-edit path); a hidden one picks the value up at its next show |
+| `layer`, `keyboard_mode` | next show - a shown surface is never recreated for these |
 | `custom_key_binds` | instant - the very next key press uses the new chord |
 | `settings_drawer_width` | live by drag - written on handle release; double-clicking the handle resets it |
 | `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
 | `profiles` (color_scheme, font_size) | live - an edit recolors or re-sizes the profile's running tabs without a respawn |
 | `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched |
-| `hide_on_focus_loss`, `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
+| `hide_on_focus_loss` | live - a shown drop-down's keyboard hold re-resolves in place (the stay-open flip downgrades an exclusive grab to shared before the next focus loss); a hidden one resolves at its next show. The hide gate itself reads the flip at the next focus loss |
+| `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
 | `close_confirmation_enabled` | next close - the key is read at request time |
 | `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
 | `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |

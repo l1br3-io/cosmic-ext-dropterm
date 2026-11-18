@@ -341,7 +341,7 @@ After building, check:
 - [ ] With `respect_panel: true`, `edge: bottom`, and a bottom dock, the drop-down sits above the dock
 - [ ] With `respect_panel: true`, the drop-down still appears above a fullscreen window
 - [ ] With a config directory that has no `respect_panel` key (or `false` written), the drop-down still covers the panel
-- [ ] Toggling `respect_panel` in the settings drawer or config file while the drop-down is shown applies on the next show
+- [ ] Toggling `respect_panel` in the settings drawer or config file while the drop-down is shown re-places it in place immediately (the panel appears or the drop-down stops covering it, without a hide/show cycle); toggling while hidden applies on the next show
 - [ ] With an autohide panel and `respect_panel: true`, the drop-down lands below the panel's handle strip
 - [ ] Arrange several tabs (distinct titles and cwds, one renamed, a middle tab focused), quit, relaunch: the same tabs return in the same order, each a fresh shell in its saved cwd, the rename intact, the same tab focused
 - [ ] A saved cwd that no longer exists (delete the directory, or hand-edit the file): that shell respawns in `$HOME`
@@ -411,7 +411,7 @@ After building, check:
 - [ ] Multi-chord defaults: uncustomized, zoom-in's row shows every default chord joined (`Ctrl + + / Ctrl + = / Ctrl + Shift + + / Ctrl + Shift + =`); rebinding it to one chord retires all four defaults, and revert restores them; the numbered rows (`activate_tab_3`) rebind independently; Copy-primary shows `None` and binds from empty
 - [ ] Keybindings file round-trip: hand-edit `custom_key_binds` while the app runs - the next press uses the new binding; an entry with an unknown id or an empty key is skipped with a warn (defaults keep working), and bare `Ctrl+I` still reaches the shell as the TAB byte (the default map never binds it)
 - [ ] Controls respect the config ranges (height 10-100, width 30-100, opacity 0-100, scrollback non-negative); garbage scrollback text writes nothing
-- [ ] Geometry edits from the drawer land at the next show; `layer`/`keyboard_mode`/`respect_panel` at the next show; `shell`/`args`/`scrollback_lines` on newly spawned tabs only; font/colors/opacity on every tab
+- [ ] Geometry edits from the drawer land at the next show; `respect_panel` re-zones a shown drop-down live (hidden: at the next show); `layer`/`keyboard_mode` at the next show; `shell`/`args`/`scrollback_lines` on newly spawned tabs only; font/colors/opacity on every tab
 - [ ] `session_persistence_enabled: false` stops session saves and skips launch restore (fresh single tab); `session.ron` is left untouched; re-enabling resumes saving over it
 - [ ] `slide_animation_enabled: false` restores instant show/hide; toggling it mid-animation never aborts the running slide
 - [ ] Race check (newest intent wins): drag the grab bar, release, immediately open settings and drag the height slider - the slider's value is what lands in the config file, no write/reshape storm

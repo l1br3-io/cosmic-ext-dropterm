@@ -96,6 +96,10 @@ pub(crate) enum SwapReason {
     /// A keyboard hold change: keyboard mode is create-time at this
     /// pin, so releasing or re-grabbing rides a recreate.
     KeyboardHold,
+    /// A `respect_panel` edit: the exclusive zone is create-time at
+    /// this pin, so the live rezone rides a recreate with the shape
+    /// standing.
+    PanelRespect,
 }
 
 impl fmt::Display for SwapReason {
@@ -104,6 +108,7 @@ impl fmt::Display for SwapReason {
             Self::MeasuredShow => "measured-show",
             Self::AnchorEdit => "anchor-edit",
             Self::KeyboardHold => "keyboard-hold",
+            Self::PanelRespect => "panel-respect",
         };
         f.write_str(name)
     }
@@ -582,6 +587,33 @@ impl GpuiExecutor {
             reason: SwapReason::KeyboardHold,
         }]
     }
+
+    /// The rezone's derivation: the live zone is a no-op, any change
+    /// recreates at the new zone with the surface's shape standing
+    /// (the exclusive zone is create-time at this pin).
+    fn execute_rezone(&mut self, handle: SurfaceHandle, zone: ExclusiveZone) -> Vec<Action> {
+        let creation = self.creation_of(handle);
+        if zone == creation.zone {
+            // The zone the surface already carries: nothing moves, no
+            // recreate for its own sake.
+            return Vec::new();
+        }
+        let mut succeeded = creation;
+        succeeded.zone = zone;
+        self.record(handle, succeeded);
+        vec![Action::SwapWindow {
+            handle,
+            options: shaped_options(
+                succeeded.geometry,
+                succeeded.output,
+                succeeded.layer,
+                succeeded.keyboard,
+                zone,
+                ShapeHeight::Pixels(succeeded.height_px),
+            ),
+            reason: SwapReason::PanelRespect,
+        }]
+    }
 }
 
 impl SurfaceExecutor for GpuiExecutor {
@@ -610,6 +642,7 @@ impl SurfaceExecutor for GpuiExecutor {
                 height,
             } => self.execute_shape(handle, geometry, output, height),
             SurfaceIntent::Hold { handle, keyboard } => self.execute_hold(handle, keyboard),
+            SurfaceIntent::Rezone { handle, zone } => self.execute_rezone(handle, zone),
             SurfaceIntent::Focus { handle } => vec![Action::FocusTerminal { handle }],
             SurfaceIntent::Destroy { handle } => {
                 // Liveness asserted here (a decision bug is loud);
@@ -1175,6 +1208,138 @@ mod tests {
             keyboard: KeyboardHold::Exclusive,
         });
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn a_rezone_recreates_at_the_new_zone_with_the_shape_standing() {
+        // The immediate `respect_panel` apply: one swap whose options
+        // carry the new zone and every other creation-fixed property
+        // (geometry, layer, keyboard, size) exactly as they stand.
+        let mut exec = GpuiExecutor::new();
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Measure {
+            handle,
+            keyboard: KeyboardMode::Exclusive,
+        });
+        exec.adopt(handle, fake_window(7));
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(8));
+        let actions = exec.execute(SurfaceIntent::Rezone {
+            handle,
+            zone: ExclusiveZone::InsideReserved,
+        });
+        let [
+            Action::SwapWindow {
+                handle: swapped,
+                options,
+                reason,
+            },
+        ] = actions.as_slice()
+        else {
+            panic!("a zone change swaps the window: {actions:?}");
+        };
+        assert_eq!(*swapped, handle);
+        assert!(matches!(reason, SwapReason::PanelRespect));
+        let WindowKind::LayerShell(ls) = &options.kind else {
+            panic!("unreachable: the show always builds a layer-shell kind");
+        };
+        assert_eq!(ls.exclusive_zone, Some(px(0.)));
+        // The shape stands: same bounds the surface was shaped with at
+        // show (the hold recreate's keep-the-size rule, zone twin).
+        assert_eq!(options.window_bounds, live_ls_options_bounds());
+        // The recorded creation carries the new zone — a following
+        // intent reconciles against what was applied.
+        assert_eq!(exec.creation_of(handle).zone, ExclusiveZone::InsideReserved);
+        // The flip back recreates too.
+        let actions = exec.execute(SurfaceIntent::Rezone {
+            handle,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        assert!(matches!(actions.as_slice(), [Action::SwapWindow { .. }]));
+        assert_eq!(exec.creation_of(handle).zone, ExclusiveZone::CoversReserved);
+    }
+
+    #[test]
+    fn a_rezone_at_the_live_zone_is_a_no_op() {
+        // Re-applying the zone the surface already carries changes
+        // nothing: no recreate for its own sake — the swap cost is
+        // only paid when the placement actually moves.
+        let mut exec = GpuiExecutor::new();
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Measure {
+            handle,
+            keyboard: KeyboardMode::Exclusive,
+        });
+        exec.adopt(handle, fake_window(9));
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(10));
+        let actions = exec.execute(SurfaceIntent::Rezone {
+            handle,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn a_stay_open_flip_downgrades_an_exclusive_grab_live() {
+        // The `hide_on_focus_loss` flip's live half (the pinned
+        // testing row): an exclusive grab held by a stay-open surface
+        // keeps winning the keyboard back from every other input, so
+        // the Hold downgrade recreates at OnDemand with the shape
+        // standing — before the next focus loss, not at it.
+        let mut exec = GpuiExecutor::new();
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Measure {
+            handle,
+            keyboard: KeyboardMode::Exclusive,
+        });
+        exec.adopt(handle, fake_window(11));
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(12));
+        let actions = exec.execute(SurfaceIntent::Hold {
+            handle,
+            keyboard: KeyboardHold::OnDemand,
+        });
+        let [
+            Action::SwapWindow {
+                options, reason, ..
+            },
+        ] = actions.as_slice()
+        else {
+            panic!("a hold change swaps the window: {actions:?}");
+        };
+        assert!(matches!(reason, SwapReason::KeyboardHold));
+        let WindowKind::LayerShell(ls) = &options.kind else {
+            panic!("unreachable: the show always builds a layer-shell kind");
+        };
+        assert_eq!(ls.keyboard_interactivity, KeyboardInteractivity::OnDemand);
+        // The shape stands: the surface stays exactly as tall as it is.
+        assert_eq!(options.window_bounds, live_ls_options_bounds());
+        assert_eq!(
+            exec.creation_of(handle).keyboard,
+            KeyboardInteractivity::OnDemand
+        );
     }
 
     #[test]
