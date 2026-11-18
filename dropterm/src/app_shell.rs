@@ -1549,15 +1549,32 @@ fn resize_probe(window: gpui::AnyWindowHandle, width: Option<u32>, height: u32, 
 }
 
 /// Resets the show window's frame watch — the counter, the show
-/// instant, and the bounds cache the render-time logs and the slide
-/// re-base ride. Every open or swap that brings the show surface
-/// back calls it.
+/// instant, the bounds cache, and the activation carry the render-time
+/// logs, the slide re-base, and the focus-loss classification ride.
+/// Every open or swap that brings the show surface back calls it.
 fn reset_show_watch(cx: &mut App, shell: &Entity<Shell>) {
     shell.update(cx, |shell, _| {
         shell.show_open = Instant::now();
         shell.frames = 0;
         shell.last_bounds = None;
+        // The activation carry resets with the watch: it belongs to the
+        // window being watched, and a carried `Some(true)` from a dead
+        // predecessor turns the fresh show's pre-grant inactive frame
+        // (every surface's first frame reads LOST before the
+        // compositor grants the exclusive keyboard) into a queued
+        // focus loss — the steady-state re-show hid itself in that
+        // window (the toggle-show flash of 2026-11-18). A fresh open
+        // starts seatless, exactly like the first boot show.
+        shell.last_active = None;
     });
+}
+
+/// The activation transition's loss queueing: a LOST that follows a
+/// GAINED on the watched window queues the focus-loss decision; the
+/// seatless rest state (`None` — a fresh show's pre-grant inactive
+/// frame) and every stay-put read queue nothing.
+fn activation_loss_queues(prev: Option<bool>, now: bool) -> bool {
+    !now && prev == Some(true)
 }
 
 /// Opens a KitRoot-hosted window under `handle` and adopts it — the
@@ -4475,7 +4492,7 @@ impl gpui::Render for Shell {
             // frame without ever having gained.
             if active {
                 self.machine.focused = true;
-            } else if self.last_active == Some(true) {
+            } else if activation_loss_queues(self.last_active, active) {
                 self.focus_lost = true;
             }
             self.last_active = Some(active);
@@ -5453,6 +5470,23 @@ mod tests {
         assert_eq!(anchor_action(false, true), AnchorAction::Close);
         assert_eq!(anchor_action(true, true), AnchorAction::Keep);
         assert_eq!(anchor_action(false, false), AnchorAction::Keep);
+    }
+
+    #[test]
+    fn the_re_show_pre_grant_frame_queues_nothing() {
+        // The steady-state re-show's self-hide (2026-11-18): a carried
+        // `Some(true)` from the destroyed predecessor made the fresh
+        // window's pre-grant inactive frame read as a real focus loss,
+        // and the pump's decision hid the just-shown surface. The rule
+        // the render applies must queue only a genuine GAINED->LOST
+        // transition on the watched window — the seatless rest state a
+        // fresh open starts from (`reset_show_watch` clears the carry)
+        // and every stay-put read queue nothing.
+        assert!(activation_loss_queues(Some(true), false));
+        assert!(!activation_loss_queues(None, false));
+        assert!(!activation_loss_queues(Some(false), false));
+        assert!(!activation_loss_queues(None, true));
+        assert!(!activation_loss_queues(Some(true), true));
     }
 
     #[test]
