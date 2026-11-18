@@ -4360,16 +4360,12 @@ fn vm_rss_kib() -> u64 {
 /// memory cap. Churn is deadline-bounded, and `VmRSS` is sampled per
 /// cycle so the curve survives even a cap kill.
 ///
-/// Run recipe (every time — never uncapped):
-///
-/// ```text
-/// systemd-run --user --scope -p MemoryMax=2G -p MemoryHigh=1536M \
-///   -p MemorySwapMax=0 -- cargo test -p dropterm --lib \
-///   real_rc_toggle_churn_rss_curve -- --ignored --test-threads=1 \
-///   --nocapture
-/// ```
+/// Run recipe (every time — never uncapped): `just mem-churn` —
+/// the justfile recipe holding the pinned systemd-run scope
+/// (`MemoryMax=2G`, `MemoryHigh=1536M`, `MemorySwapMax=0`), the
+/// one home of the caps.
 #[test]
-#[ignore = "needs the real login rc and a hard memory cap; the run recipe is in the doc comment"]
+#[ignore = "needs the real login rc and a hard memory cap; run via `just mem-churn` (the pinned scope)"]
 fn real_rc_toggle_churn_rss_curve() {
     use alacritty_terminal::tty::Shell as PtyShell;
     use std::collections::HashMap;

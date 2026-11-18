@@ -150,6 +150,22 @@ test *args:
     {{just_executable()}} quietly 'cargo test --workspace --locked {{args}}'
     {{just_executable()}} quietly 'cargo test -p {{name}} --locked --features dev-identity {{args}}'
 
+# The incident probe as a recipe (ram-leak rl-1): the real-rc
+# toggle churn test is ignore-gated because its growth path must
+# only ever run under a hard cap — until now the pinned
+# systemd-run scope lived only in the test's doc comment, retyped
+# by hand each run. The caps are the incident's own (2G max,
+# 1536M high, no swap): a live regression dies at the cgroup with
+# the per-cycle VmRSS curve already printed, never at the host's
+# OOM killer. Not routed through `quietly` — the curve is the
+# deliverable. Owner-run: the input is the real login rc, which
+# no agent shell has.
+mem-churn:
+    systemd-run --user --scope -p MemoryMax=2G -p MemoryHigh=1536M \
+      -p MemorySwapMax=0 -- cargo test -p {{name}} --locked --lib \
+      real_rc_toggle_churn_rss_curve -- --ignored --test-threads=1 \
+      --nocapture
+
 # Docs drift gate: every internal markdown link — relative path and
 # in-file anchor — in README.md, ROADMAP.md, and docs/ must resolve.
 # External (http/mailto) links are out of scope. Silent on success;
