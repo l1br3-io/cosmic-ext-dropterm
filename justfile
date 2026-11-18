@@ -455,6 +455,11 @@ dev-install: (build-debug dev-identity-args) dev-image-install
     #!/usr/bin/env sh
     set -eu
     install -d {{dev-bin-dir}}
+    # rm FIRST: an older launcher may be a symlink to the image, and
+    # `cat >` through it would overwrite the BINARY with this script
+    # (the 2026-11-18 recursion — every launch then exec'd the script
+    # on itself). Removing before writing guarantees a regular file.
+    rm -f {{dev-bin}}
     # The fence's defaults are baked here as literals (launch-time
     # env override in the script); the quoted heredoc keeps ${…} for
     # the launcher itself while just bakes the image path in.
