@@ -1829,11 +1829,18 @@ impl Shell {
                 }
             }
             crate::terminal::input::TermAction::Settings => {
-                // Outside the update borrow — the drawer's build
-                // reads the shell (gc-2's finding, the menu arm's
-                // own shape).
+                // The toggle needs App level — the drawer's build
+                // reads the shell (gc-2's finding), and this verb
+                // itself lives inside a shell.update (dispatch_
+                // shell_verb wraps it; `cx.entity()` only grabs the
+                // handle, the borrow stays). `Window::defer` parks
+                // the call to the end of the effect cycle, where the
+                // menu's and gear's own callers already stand — the
+                // same class of split pump's window actions take.
                 let shell = cx.entity();
-                Shell::toggle_settings(&shell, window, cx);
+                window.defer(cx, move |window, cx| {
+                    Shell::toggle_settings(&shell, window, cx);
+                });
             }
             crate::terminal::input::TermAction::ImagesPanel => self.open_images_panel(cx),
             crate::terminal::input::TermAction::ToggleStatusBar => {
@@ -2940,12 +2947,16 @@ impl Shell {
         cx.notify();
     }
 
-    /// The gear affordance's press and the menu's Settings… row: the
-    /// one settings trigger — a repeat press closes. A free function,
-    /// not a shell method, by necessity (the gc2 walk's structural
-    /// finding): the drawer's construction reads the shell, and a
-    /// read while the shell is being updated panics — so the build
-    /// happens outside the update borrow, the state flip inside it.
+    /// The gear affordance's press, the menu's Settings… row, and the
+    /// keyboard's deferred verb: the one settings trigger — a repeat
+    /// press closes. A free function, not a shell method, by
+    /// necessity (the gc2 walk's structural finding): the drawer's
+    /// construction reads the shell, and a read while the shell is
+    /// being updated panics — so the build happens outside the update
+    /// borrow, the state flip inside it. The contract is therefore
+    /// "call me at App level": the menu and the gear arrive there
+    /// naturally, and a caller living inside a shell update (the
+    /// keyboard's verb) defers first (`Window::defer`).
     pub(crate) fn toggle_settings(shell: &Entity<Shell>, window: &mut Window, cx: &mut App) {
         let open = shell.read(cx).settings.open;
         if open {
@@ -5576,5 +5587,97 @@ mod tests {
         ] {
             assert_eq!(resolved[nc], boot[nc], "{nc:?} must agree — one chain");
         }
+    }
+
+    // The gc-2 re-entrancy's guard (the Ctrl+Shift+I walk's panic:
+    // "cannot read Shell while it is already being updated"): the
+    // keyboard's Settings verb enters the toggle from inside a
+    // shell.update — the pane's key dispatch wraps every verb — and
+    // the toggle's read under that borrow used to panic before the
+    // arm learned to defer. This walks the exact shape: the verb
+    // dispatched inside an update, the drawer open after the flush,
+    // and a repeat verb closing it again through the same deferral.
+    #[gpui::test]
+    fn the_settings_verb_toggles_outside_the_update_borrow(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tab_bar::TabList::default(),
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+
+        // The bug's own frame: the verb inside a shell.update.
+        cx.update(|window, cx| {
+            let shell = shell.clone();
+            shell.update(cx, |shell, cx| {
+                shell.shell_verb(
+                    crate::terminal::input::TermAction::Settings,
+                    TabId(0),
+                    window,
+                    cx,
+                );
+            });
+        });
+        // The deferral flushes at the end of the effect cycle — the
+        // toggle runs there, the drawer opens, nothing panics.
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(
+                shell.read(cx).settings.open,
+                "the deferred Settings verb must open the drawer"
+            );
+        });
+
+        // The repeat press closes through the same deferral (the
+        // toggle's repeat rule, both halves of the read).
+        cx.update(|window, cx| {
+            let shell = shell.clone();
+            shell.update(cx, |shell, cx| {
+                shell.shell_verb(
+                    crate::terminal::input::TermAction::Settings,
+                    TabId(0),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(
+                !shell.read(cx).settings.open,
+                "the repeat Settings verb must close the drawer"
+            );
+        });
     }
 }

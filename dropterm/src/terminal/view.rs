@@ -990,11 +990,20 @@ impl TerminalPane {
     }
 
     /// One shell verb off the keyboard (the menus' own funnels): the
-    /// pane matched the chord, the shell executes it — with the key
-    /// handler's own window, exactly the context the menu callbacks
-    /// hold, so the modal (close), the rename input, and the settings
-    /// focus hand-off all work identically. The walk harness (no
-    /// shell) logs, the Hide signal's own precedent.
+    /// pane matched the chord, the shell executes it. The dispatch
+    /// runs *outside* this key handler's own pane lease — the verb
+    /// handlers read and update panes freely (the new tab's active-
+    /// cwd inherit, the close gate's running check, the duplicate's
+    /// source read), and every one of those reads would panic
+    /// "cannot read `TerminalPane` while it is already being updated"
+    /// under the synchronous nesting, because this pane is on the
+    /// lease stack for the whole dispatch (the `NewTab` walk's panic,
+    /// the Ctrl+Shift+I drawer's sibling). `Window::defer` parks the
+    /// verb to the effect flush — App-level with the key handler's
+    /// own window, exactly the standing the menu and gear callbacks
+    /// already hold, so the modal (close), the rename input, and the
+    /// settings focus hand-off all work identically. The walk
+    /// harness (no shell) logs, the Hide signal's own precedent.
     fn dispatch_shell_verb(
         &mut self,
         action: TermAction,
@@ -1006,7 +1015,9 @@ impl TerminalPane {
             return;
         };
         let pane = self.id;
-        shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
+        });
     }
 
     /// One key press through the translation and its outcome.
