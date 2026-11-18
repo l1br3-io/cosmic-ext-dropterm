@@ -1151,7 +1151,18 @@ impl TabBarView {
         gpui::div()
             .id(gpui::ElementId::Name(format!("tab-{}", id.0).into()))
             .h_full()
-            .min_w(gpui::px(MIN_BUTTON_WIDTH))
+            // The renamed row claims the full max width: its slot's
+            // Kit input has no intrinsic width of its own (size_full
+            // against a content-sized parent collapses), so a
+            // content-sized row starves the editor into a clipped
+            // sliver — the blank-input report's whole story. A
+            // definite row width is what gives the flex_1 slot a
+            // real span (the strip's caret walk pins this).
+            .min_w(gpui::px(if rename.is_some() {
+                MAX_BUTTON_WIDTH
+            } else {
+                MIN_BUTTON_WIDTH
+            }))
             .max_w(gpui::px(MAX_BUTTON_WIDTH))
             .px(gpui::px(BUTTON_PADDING_X))
             .rounded_sm()

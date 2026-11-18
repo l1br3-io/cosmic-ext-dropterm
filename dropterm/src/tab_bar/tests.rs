@@ -772,3 +772,94 @@ fn the_plus_dropdown_lists_the_plain_row_then_the_profiles() {
     assert_eq!(rows[1].profile, Some(0));
     assert_eq!(rows[2].profile, Some(1));
 }
+
+// --- the open rename's paint walk (the blank-input report) ---
+
+/// The strip mounted with an open rename, on a real two-tab list —
+/// the harness that banks the rename input's own paint evidence.
+struct RenameSlotHost {
+    tabs: TabList,
+    strip: gpui::Hsla,
+    fg: gpui::Hsla,
+    tab: TabId,
+    state: gpui::Entity<gpui_component::input::InputState>,
+}
+
+impl gpui::Render for RenameSlotHost {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        TabBarView::new(self.tabs.rows(), self.strip, self.fg)
+            .renaming(self.tab, self.state.clone())
+    }
+}
+
+#[gpui::test]
+fn the_open_rename_banks_caret_and_selection_in_the_row_slot(cx: &mut gpui::TestAppContext) {
+    // The blank-input report's guard: `start_rename`'s exact state
+    // steps rendered through the strip's real hosting must land the
+    // editor's paint — the caret's hairline quad in the theme's own
+    // caret color, and the select-all's selection path. The collapse
+    // this catches: a content-sized renamed row starves the Kit
+    // input (no intrinsic width of its own) into a clipped sliver,
+    // and every editor primitive is culled — the field reads blank
+    // while keystrokes still commit.
+    //
+    // The test platform starts the window inactive, and both the
+    // caret and the selection are gated on that flag, so the frame
+    // activates first — the compositor's keyboard-grab analog.
+    // Glyphs are not banked here: the headless text system paints no
+    // sprites at all, so the visible-draft half stays an owner-walk
+    // row (docs/testing.md).
+    cx.update(gpui_component::init);
+    let (strip, fg) = strip_pair(None);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        use gpui::Focusable as _;
+        let mut tabs = TabList::default();
+        let tab = tabs.spawn(false);
+        let _ = tabs.spawn(false);
+        // `start_rename`'s three steps, verbatim.
+        let state =
+            cx.new(|cx| gpui_component::input::InputState::new(window, cx).default_value("work"));
+        state.update(cx, |state, cx| state.select_all(window, cx));
+        state.read(cx).focus_handle(cx).focus(window, cx);
+        RenameSlotHost {
+            tabs,
+            strip,
+            fg,
+            tab,
+            state,
+        }
+    });
+    cx.run_until_parked();
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    // The Kit's redraw shape: GPUI Fast replays retained subtrees, so
+    // refresh first — a bare draw may skip render/paint.
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+
+    cx.update(|window, cx| {
+        use gpui_component::ActiveTheme as _;
+        let caret_color = cx.theme().caret;
+        let quads = window.painted_quads();
+        // The caret: the one hairline quad in the caret color.
+        let caret = quads.iter().find(|quad| {
+            quad.bounds.size.width.as_f32() <= 2.
+                && quad.bounds.size.height.as_f32() >= 5.
+                && quad.background == caret_color.into()
+        });
+        assert!(
+            caret.is_some(),
+            "no caret quad painted for the focused rename input ({} quads total)",
+            quads.len(),
+        );
+        // The select-all: the draft's selection paints.
+        let paths = window.rendered_scene().paths.len();
+        assert!(paths > 0, "no selection path painted for the select-all");
+    });
+}

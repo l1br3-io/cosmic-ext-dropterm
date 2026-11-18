@@ -165,7 +165,10 @@ dev-identity = []
 # test harness — TestAppContext/add_empty_window for headless picker
 # state, seeding, and confirm wiring. The same exact pin as the Kit's
 # own select tests ride; test builds only, never the shipped binary.
-gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+# bench-support rides beside test-support for `rendered_scene` — the
+# rename slot's paint walk reads glyphs and selection paths off the
+# rendered frame (the tab_bar tests' caret walk).
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support", "bench-support"] }
 
 # The dbus_state wire tests' stream combinators and `join!`.
 # Version-matched to the 0.3.34 line the lock already carries.
