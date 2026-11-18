@@ -135,9 +135,17 @@ tips read.
       pane's map at the reference table's whole set, the shell verbs
       handing up through the pane's weak shell handle, and the Kit
       inspector's ctrl-shift-i collision — the Settings chord —
-      retired by stop_propagation on every owned chord); the caret's
-      verdict still rides the owner's eyes — every upstream state and
-      paint step traces green)*
+      retired by stop_propagation on every owned chord); the second
+      walk (same day) still found the inspector opening and no
+      caret, and both fixes landed with it (99b3b2a): the keymap
+      dispatches matched actions *ahead of every key listener* at
+      this pin, so the pane now answers the kit's own
+      ToggleInspector at the element layer (owned chord → the
+      shell-verb funnel; unowned → propagate, the seat-back), and
+      the caret paints an explicit cell quad instead of riding the
+      shaper's TextRun-background flush — the one chain link no
+      walk ever banked; the re-verify rides the owner's next `just
+      dev`)*
 
 **Verification:**
 - [ ] `just check` green with the new core pins
