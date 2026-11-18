@@ -65,6 +65,15 @@ pub(crate) enum Action {
         width: Option<u32>,
         height: u32,
     },
+    /// Open the shaped window outright under a handle that never
+    /// opened one: the steady-state show's direct open (the
+    /// retained-output re-show — no probe exists to swap, one
+    /// surface, one map). The applier opens, then adopts the same
+    /// handle, exactly [`Action::OpenMeasuring`]'s apply shape.
+    OpenShaped {
+        handle: SurfaceHandle,
+        options: WindowOptions,
+    },
     /// Destroy the handle's window now (hide completions, teardown).
     Remove { handle: SurfaceHandle },
     /// Route keyboard into the terminal input — the input focus a
@@ -347,14 +356,16 @@ pub(crate) struct Creation {
     pub keyboard: KeyboardInteractivity,
 }
 
-/// One live surface: the handle's window, and — once the two-surface
-/// show's second pass has derived it — what it was created with. A
-/// measuring probe carries no creation: only intents that command a
-/// shaped surface read it, and those cannot reach a probe (the
-/// decision layer's states guard it).
+/// One live surface: the handle's window — `None` between the
+/// steady-state show's record and its open's adoption (the same
+/// apply pass) — and, once the two-surface show's second pass has
+/// derived it, what it was created with. A measuring probe carries
+/// no creation: only intents that command a shaped surface read it,
+/// and those cannot reach a probe (the decision layer's states guard
+/// it).
 #[derive(Debug, Clone, Copy)]
 struct LiveWindow {
-    window: AnyWindowHandle,
+    window: Option<AnyWindowHandle>,
     creation: Option<Creation>,
 }
 
@@ -373,19 +384,19 @@ impl GpuiExecutor {
     }
 
     /// Registers the window an open action created under its handle —
-    /// the apply half of [`Action::OpenMeasuring`] and
-    /// [`Action::SwapWindow`]; a swap re-registers the successor
-    /// window under the same handle.
+    /// the apply half of [`Action::OpenMeasuring`],
+    /// [`Action::OpenShaped`], and [`Action::SwapWindow`]; a swap
+    /// re-registers the successor window under the same handle.
     pub(crate) fn adopt(&mut self, handle: SurfaceHandle, window: AnyWindowHandle) {
         match self.live.get_mut(&handle) {
             // A swap's derivation already recorded the successor's
             // creation; adopting only re-points the window.
-            Some(live) => live.window = window,
+            Some(live) => live.window = Some(window),
             None => {
                 self.live.insert(
                     handle,
                     LiveWindow {
-                        window,
+                        window: Some(window),
                         creation: None,
                     },
                 );
@@ -393,15 +404,18 @@ impl GpuiExecutor {
         }
     }
 
-    /// The window a handle commands. An intent always names a live
-    /// surface — the decision layer allocates the handle at `Measure`
-    /// and retires it at `Destroy` — so a miss is a decision-layer
-    /// bug, loud here rather than a silently wrong-window command.
+    /// The window a handle commands. An intent always names a live,
+    /// windowed surface — the decision layer allocates the handle at
+    /// `Measure` (or the steady-state show) and retires it at
+    /// `Destroy` — so a miss, or a record whose open has not landed
+    /// yet, is a decision-layer bug, loud here rather than a silently
+    /// wrong-window command.
     pub(crate) fn window_of(&self, handle: SurfaceHandle) -> AnyWindowHandle {
         self.live
             .get(&handle)
             .expect("an intent names a live surface")
             .window
+            .expect("an intent names a windowed surface")
     }
 
     /// Retires a handle: the apply half of [`Action::Remove`], after
@@ -426,7 +440,10 @@ impl GpuiExecutor {
 impl GpuiExecutor {
     /// Records (or updates) a handle's creation — the successor's
     /// record lands at derivation, so a later intent reconciles
-    /// against what is being applied, never a stale window.
+    /// against what is being applied, never a stale window. A handle
+    /// with no live record yet is the steady-state show's pre-open
+    /// window: the record precedes it, the open's adoption follows in
+    /// the same apply pass.
     fn record(&mut self, handle: SurfaceHandle, creation: Creation) {
         match self.live.get_mut(&handle) {
             Some(live) => live.creation = Some(creation),
@@ -434,7 +451,7 @@ impl GpuiExecutor {
                 self.live.insert(
                     handle,
                     LiveWindow {
-                        window: self.window_of(handle),
+                        window: None,
                         creation: Some(creation),
                     },
                 );
@@ -442,9 +459,11 @@ impl GpuiExecutor {
         }
     }
 
-    /// The show's derivation: the liveness assert (the probe window
-    /// was adopted at its open), the successor's recorded creation,
-    /// and the swap action whose options carry the configured shape.
+    /// The show's derivation: the successor's recorded creation, and
+    /// the window action the handle's liveness picks — the steady
+    /// state opens shaped outright (no probe exists to swap), the
+    /// measured show swaps its adopted probe, and a live record
+    /// without a window is the old decision-layer bug, loud.
     fn execute_show(
         &mut self,
         handle: SurfaceHandle,
@@ -454,7 +473,6 @@ impl GpuiExecutor {
         keyboard: KeyboardMode,
         zone: ExclusiveZone,
     ) -> Vec<Action> {
-        let _ = self.window_of(handle);
         let interactivity = gpui_keyboard(keyboard);
         let (_, height_px) = sized(geometry, output, ShapeHeight::Percent);
         self.record(
@@ -468,18 +486,31 @@ impl GpuiExecutor {
                 keyboard: interactivity,
             },
         );
-        vec![Action::SwapWindow {
-            handle,
-            options: shaped_options(
-                geometry,
-                output,
-                layer,
-                interactivity,
-                zone,
-                ShapeHeight::Percent,
-            ),
-            reason: SwapReason::MeasuredShow,
-        }]
+        let options = shaped_options(
+            geometry,
+            output,
+            layer,
+            interactivity,
+            zone,
+            ShapeHeight::Percent,
+        );
+        if self
+            .live
+            .get(&handle)
+            .is_some_and(|live| live.window.is_some())
+        {
+            // The measured show: the probe's adopted window swaps for
+            // the shaped one.
+            vec![Action::SwapWindow {
+                handle,
+                options,
+                reason: SwapReason::MeasuredShow,
+            }]
+        } else {
+            // The steady-state show: no window ever opened under this
+            // handle — the shaped surface opens directly.
+            vec![Action::OpenShaped { handle, options }]
+        }
     }
 
     /// The shape's derivation: the reconcile split decides resize vs
@@ -993,18 +1024,48 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an intent names a live surface")]
-    fn an_intent_naming_an_unadopted_handle_panics_loudly() {
-        // The loud-failure contract, mirroring the libcosmic executor:
-        // a Show derived before the measuring window was adopted is a
-        // decision-layer bug — loud, never a silently wrong-window
-        // command.
+    fn the_steady_state_show_opens_shaped_without_a_live_window() {
+        // A Show naming a handle with no live window is the
+        // steady-state show (the retained-output re-show): the shaped
+        // surface opens directly — no probe to swap — and the
+        // creation record lands before the window exists; the open's
+        // adoption re-points the record in the same apply pass.
         let mut exec = GpuiExecutor::new();
         let handle = SurfaceHandle::next();
-        exec.execute(SurfaceIntent::Measure {
+        let actions = exec.execute(SurfaceIntent::Show {
             handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
             keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
         });
+        match actions.as_slice() {
+            [Action::OpenShaped { handle: h, .. }] => assert_eq!(*h, handle),
+            other => panic!("the steady-state show opens shaped: {other:?}"),
+        }
+        // The creation record precedes the window; a window command
+        // before adoption is loud, never a silently wrong window.
+        assert_eq!(exec.creation_of(handle).geometry, plain_geometry());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { exec.window_of(handle) }))
+                .is_err()
+        );
+        let shaped = fake_window(9);
+        exec.adopt(handle, shaped);
+        assert_eq!(exec.window_of(handle), shaped);
+    }
+
+    #[test]
+    #[should_panic(expected = "an intent names a windowed surface")]
+    fn a_destroy_naming_a_windowless_record_panics_loudly() {
+        // The loud-failure contract, shifted with the steady-state
+        // show: a live-less Show is now the steady-state open, so the
+        // loud miss guards the window commands — a destroy derived
+        // against the pre-open window is a decision bug, loud, never
+        // a silently wrong-window command.
+        let mut exec = GpuiExecutor::new();
+        let handle = SurfaceHandle::next();
         let _ = exec.execute(SurfaceIntent::Show {
             handle,
             geometry: plain_geometry(),
@@ -1013,6 +1074,7 @@ mod tests {
             keyboard: KeyboardMode::Exclusive,
             zone: ExclusiveZone::CoversReserved,
         });
+        let _ = exec.execute(SurfaceIntent::Destroy { handle });
     }
 
     #[test]

@@ -454,11 +454,12 @@ fn resize_from_a_foreign_window_never_feeds_the_pin() {
 // these same decisions through a real executor seam.
 
 #[test]
-fn show_from_hidden_measures_with_the_resolved_keyboard_mode() {
-    // The intent carries the mode already resolved for a shown
-    // surface — the map-time focus grant — and the machine moves
-    // to Measuring on the fresh handle.
-    let mut machine = hidden_machine(Some((1920, 1080)));
+fn show_without_a_retained_output_measures_with_the_resolved_keyboard_mode() {
+    // The first-ever show (no output measured yet): the intent
+    // carries the mode already resolved for a shown surface — the
+    // map-time focus grant — and the machine moves to Measuring on
+    // the fresh handle.
+    let mut machine = hidden_machine(None);
     let intents = machine.decide_show(plain_inputs(true));
     let Some(SurfaceIntent::Measure { handle, keyboard }) = intents.first() else {
         panic!("the show decision measures");
@@ -469,11 +470,12 @@ fn show_from_hidden_measures_with_the_resolved_keyboard_mode() {
 }
 
 #[test]
-fn show_from_a_stay_open_config_measures_as_on_demand() {
+fn show_without_a_retained_output_measures_as_on_demand() {
     // The resolved mode of a stay-open surface (`hide_on_focus_loss`
-    // off): `Exclusive` is never held while the surface stays open —
-    // the intent must carry the downgraded `OnDemand`.
-    let mut machine = hidden_machine(Some((1920, 1080)));
+    // off) on the first-ever show: `Exclusive` is never held while
+    // the surface stays open — the intent must carry the downgraded
+    // `OnDemand`.
+    let mut machine = hidden_machine(None);
     let mut inputs = plain_inputs(true);
     inputs.hide_on_focus_loss = false;
     let intents = machine.decide_show(inputs);
@@ -488,8 +490,8 @@ fn show_from_a_stay_open_config_measures_as_on_demand() {
 
 #[test]
 fn show_while_visible_leaves_the_surface_alone() {
-    // A measuring or shown surface is already on its way: the
-    // show decision emits nothing.
+    // A measuring or shown surface is already on its way: the show
+    // decision emits nothing.
     let handle = SurfaceHandle::next();
     for state in [SurfaceState::Measuring(handle), SurfaceState::Shown(handle)] {
         let mut machine = SurfaceMachine {
@@ -498,6 +500,66 @@ fn show_while_visible_leaves_the_surface_alone() {
         };
         assert!(machine.decide_show(plain_inputs(true)).is_empty());
     }
+}
+
+#[test]
+fn show_with_a_retained_output_opens_shaped_directly() {
+    // The steady-state show: a retained output (every show after the
+    // first) opens the shaped surface outright — no measuring pass,
+    // no probe. The probe's map-destroy-swap repainted the toggle
+    // open into a flash; one surface, one map, is the smooth shape.
+    // The intents match the measured path's show column exactly
+    // (shape, layer, resolved keyboard, zone, focus), and the
+    // slide-in arms over the same deterministic distance.
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    let inputs = plain_inputs(true);
+    let intents = machine.decide_show(inputs);
+    let handle = match intents.as_slice() {
+        [
+            SurfaceIntent::Show {
+                handle,
+                geometry,
+                output,
+                layer,
+                keyboard,
+                zone,
+            },
+            SurfaceIntent::Focus { handle: focused },
+        ] => {
+            assert_eq!(*geometry, inputs.geometry);
+            assert_eq!(*output, (1920, 1080));
+            assert_eq!(*layer, crate::core::config::Layer::Overlay);
+            assert_eq!(*keyboard, KeyboardMode::Exclusive);
+            assert_eq!(*zone, ExclusiveZone::CoversReserved);
+            assert_eq!(handle, focused);
+            *handle
+        }
+        other => panic!("the steady-state show opens shaped: {other:?}"),
+    };
+    assert_eq!(machine.state, SurfaceState::Shown(handle));
+    assert!(!machine.focused);
+    let playing = machine
+        .slide
+        .expect("the slide-in arms on the steady-state show");
+    assert_eq!(playing.active.direction, slide::Direction::In);
+    // Half the 1080-px output at 50%: the deterministic distance,
+    // from-offset and distance alike.
+    assert_eq!(playing.active.from_offset_px, 540.0);
+    assert_eq!(playing.active.distance_px, 540.0);
+}
+
+#[test]
+fn show_with_a_retained_output_skips_the_slide_when_disabled() {
+    // The slide toggle gates the steady-state show's entry exactly
+    // like the measured one: a disabled show opens at rest.
+    let mut machine = hidden_machine(Some((1920, 1080)));
+    let intents = machine.decide_show(plain_inputs(false));
+    assert!(matches!(
+        intents.as_slice(),
+        [SurfaceIntent::Show { .. }, SurfaceIntent::Focus { .. }]
+    ));
+    assert!(matches!(machine.state, SurfaceState::Shown(_)));
+    assert!(machine.slide.is_none(), "a disabled show opens at rest");
 }
 
 #[test]
@@ -935,4 +997,29 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
         vec![SurfaceIntent::Destroy { handle }]
     );
     assert_eq!(machine.state, SurfaceState::Hidden);
+
+    // The steady-state re-show: the output is retained past the
+    // destroy, so the next show opens the shaped surface outright —
+    // a fresh handle, the same show column, no measuring pass.
+    for intent in machine.decide_show(inputs) {
+        exec.execute(intent);
+    }
+    let SurfaceState::Shown(reshown) = machine.state else {
+        panic!("the steady-state show reopens");
+    };
+    assert_ne!(reshown, handle, "a re-show allocates a fresh handle");
+    assert_eq!(
+        &exec.recorded()[exec.recorded().len() - 2..],
+        &[
+            SurfaceIntent::Show {
+                handle: reshown,
+                geometry: inputs.geometry,
+                output: (1920, 1080),
+                layer: crate::core::config::Layer::Overlay,
+                keyboard: KeyboardMode::Exclusive,
+                zone: ExclusiveZone::CoversReserved,
+            },
+            SurfaceIntent::Focus { handle: reshown },
+        ]
+    );
 }

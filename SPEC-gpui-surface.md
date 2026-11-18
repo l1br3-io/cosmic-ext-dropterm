@@ -19,11 +19,23 @@ it does not.
 
 ## The executor's reconcile rules (spike-ruled)
 
-- **Show**: the two-surface show — measure, destroy, create shaped. It never
-  reads `cx.displays()`, so check 6's integer-rounded-metadata debt is dodged
-  by construction and fractional outputs mis-size nothing. Creation carries
+- **Show**: the two-surface show — measure, destroy, create shaped — for the
+  first-ever show only (no output measured yet). It never reads
+  `cx.displays()`, so check 6's integer-rounded-metadata debt is dodged by
+  construction and fractional outputs mis-size nothing. Creation carries
   layer, keyboard mode, and zone (create-only on GPUI; check 4's `Top`/zone
-  `-1` honored at every shaped open).
+  `-1` honored at every shaped open). **Amended 2026-11-18 (the
+  smooth-open fix, owner-judged on the unanswered flash ruling)**: the
+  decision layer retains the measured output past a destroy, so every
+  later show opens the shaped surface outright on a fresh handle — one
+  surface, one map. The probe's map → destroy → swap, plus GPUI's
+  pre-configure draw and the granted resize repaint, presented every
+  toggle open as a flash regardless of the slide setting; the direct
+  open removes the churn. The executor derives a windowless Show as
+  `OpenShaped` (open + adopt, no swap); a windowed Show still swaps.
+  The trade — a monitor change while hidden sizes the next show from the
+  retained output — is owned by [the known-issues
+  row](docs/known-issues.md).
 - **Shape** (resize vs edit): height and width resize in place — every
   80 ms drag-cadence height lands (check 2; #64994 never fired) — while
   anchor/margin/alignment changes recreate the surface: open ruling 3's

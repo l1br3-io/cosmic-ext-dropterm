@@ -1512,6 +1512,48 @@ fn resize_probe(window: gpui::AnyWindowHandle, width: Option<u32>, height: u32, 
     .detach();
 }
 
+/// Resets the show window's frame watch — the counter, the show
+/// instant, and the bounds cache the render-time logs and the slide
+/// re-base ride. Every open or swap that brings the show surface
+/// back calls it.
+fn reset_show_watch(cx: &mut App, shell: &Entity<Shell>) {
+    shell.update(cx, |shell, _| {
+        shell.show_open = Instant::now();
+        shell.frames = 0;
+        shell.last_bounds = None;
+    });
+}
+
+/// Opens a KitRoot-hosted window under `handle` and adopts it — the
+/// open+adopt apply shape the steady-state show and the swap share
+/// (the Kit's Root hosts its overlays, the per-tab menu's popover
+/// path — the manual wrap the kit-pass C3 ruling names, the kill
+/// check's own shape). `label` names the pass in the log; a failure
+/// is loud and quits.
+fn open_shaped_window(
+    cx: &mut App,
+    shell: &Entity<Shell>,
+    handle: dropterm::core::intent::SurfaceHandle,
+    options: gpui::WindowOptions,
+    label: &str,
+) {
+    match cx.open_window(options, |window, cx| {
+        cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
+    }) {
+        Ok(window) => {
+            shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
+            println!(
+                "dropterm: {label} opened at +{}ms",
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+        Err(err) => {
+            eprintln!("dropterm: {label} open failed: {err:?}");
+            cx.quit();
+        }
+    }
+}
+
 /// Applies one window action against live windows — App-level work by
 /// necessity (see [`Shell::pump`]): opens draw their root view
 /// synchronously, so no shell update may be on the stack.
@@ -1541,6 +1583,14 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 }
             }
         }
+        Action::OpenShaped { handle, options } => {
+            // The steady-state show's direct open (the retained-output
+            // re-show): the shaped surface opens outright — one
+            // surface, one map, no probe to destroy and no swap's
+            // double paint.
+            reset_show_watch(cx, shell);
+            open_shaped_window(cx, shell, handle, options, "steady-state show");
+        }
         Action::SwapWindow {
             handle,
             options,
@@ -1548,29 +1598,14 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
         } => {
             let old = shell.read(cx).executor.window_of(handle);
             let _ = old.update(cx, |_, window, _| window.remove_window());
-            shell.update(cx, |shell, _| {
-                shell.show_open = Instant::now();
-                shell.frames = 0;
-                shell.last_bounds = None;
-            });
-            match cx.open_window(options, |window, cx| {
-                // The Kit's Root hosts its overlays (the per-tab
-                // menu's popover path) — the manual wrap the kit-pass
-                // C3 ruling names, the kill check's own shape.
-                cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
-            }) {
-                Ok(window) => {
-                    shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
-                    println!(
-                        "dropterm: window swap ({reason}) opened at +{}ms",
-                        shell.read(cx).boot.elapsed().as_millis()
-                    );
-                }
-                Err(err) => {
-                    eprintln!("dropterm: swapped window open failed: {err:?}");
-                    cx.quit();
-                }
-            }
+            reset_show_watch(cx, shell);
+            open_shaped_window(
+                cx,
+                shell,
+                handle,
+                options,
+                &format!("window swap ({reason})"),
+            );
         }
         Action::Resize {
             handle,
@@ -4375,6 +4410,17 @@ impl gpui::Render for Shell {
                 "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
                 self.show_open.elapsed().as_millis()
             );
+            // The slide clock re-bases at the show window's first
+            // render: the arm instant (the measured path's probe
+            // configure) precedes this window's first frame, and a
+            // pose evaluated from arm time skips the animation's head
+            // — the first presented frame lands mid-slide, reading as
+            // a jump. One re-base per show: `frames` resets at every
+            // open, and a slide rides only the window it was armed
+            // for.
+            if let Some(playing) = self.machine.slide.as_mut() {
+                playing.started = Instant::now();
+            }
         }
         let active = window.is_window_active();
         if self.last_active != Some(active) {

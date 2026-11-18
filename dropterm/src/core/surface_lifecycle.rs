@@ -165,20 +165,39 @@ impl SurfaceMachine {
         true
     }
 
-    /// The show decision: only a hidden surface starts the measuring
-    /// pass — a measuring or shown one is already on its way and
-    /// leaves with nothing. The intent carries the keyboard mode
-    /// already resolved for a shown surface (`shown_keyboard_mode`):
-    /// the map-time focus grant is the one path that focuses the
-    /// surface on an empty desktop, and the executor's translation
-    /// heals a lost clipboard anchor strictly ahead of the probe.
+    /// The show decision: only a hidden surface opens — a measuring
+    /// or shown one is already on its way and leaves with nothing.
+    /// The first-ever show (no output measured yet) starts the
+    /// measuring pass, its intent carrying the keyboard mode already
+    /// resolved for a shown surface (`shown_keyboard_mode`): the
+    /// map-time focus grant is the one path that focuses the surface
+    /// on an empty desktop, and the executor's translation heals a
+    /// lost clipboard anchor strictly ahead of the probe.
+    ///
+    /// Every later show — the output is retained past a destroy
+    /// (`decide_configure` adopted it, `decide_hide` never clears it)
+    /// — opens the shaped surface outright on a fresh handle: one
+    /// surface, one map. The two-surface pass (probe map → destroy →
+    /// shaped map, plus GPUI's pre-configure draw and the granted
+    /// resize repaint) presented the toggle open as a flash, slide
+    /// setting irrelevant; the direct open is the smooth shape. The
+    /// trade is owned by the retained output: a monitor change while
+    /// hidden sizes the next show from the stale measurement (the
+    /// known-issues row owns the gap).
     pub fn decide_show(&mut self, inputs: SurfaceInputs) -> Vec<SurfaceIntent> {
         if !matches!(self.state, SurfaceState::Hidden) {
             return Vec::new();
         }
         let handle = SurfaceHandle::next();
-        self.state = SurfaceState::Measuring(handle);
         self.focused = false;
+        // The steady-state show: the retained measurement opens the
+        // shaped surface directly — the exact show column the
+        // measured path reaches at its first configure.
+        if let Some(output) = self.output_size {
+            self.state = SurfaceState::Shown(handle);
+            return self.arm_show(handle, output, inputs);
+        }
+        self.state = SurfaceState::Measuring(handle);
         vec![SurfaceIntent::Measure {
             handle,
             keyboard: shown_keyboard_mode(inputs.keyboard_mode, inputs.hide_on_focus_loss),
@@ -332,16 +351,11 @@ impl SurfaceMachine {
 
     /// The first-configure decision (`SurfaceOpened` on the
     /// measuring probe): adopts the measured output as the reshape
-    /// base, moves to `Shown` on the same handle, arms the slide-in
-    /// — gated by the slide toggle; the full surface height is both
-    /// the from-offset and the distance, deterministic and known at
-    /// open time, unlike the granted window height, which
-    /// double-reports through `WindowResized` — and emits the show
-    /// intents: the surface shown at the config geometry, riding the
-    /// configured layer, the resolved keyboard hold, and the
-    /// configured exclusive zone, with the terminal input focused.
-    /// A foreign window's open event finds no measuring surface and
-    /// leaves with nothing.
+    /// base and moves to `Shown` on the same handle, then arms the
+    /// slide-in and emits the show intents — the shared
+    /// [`Self::arm_show`] emission the steady-state show
+    /// (`decide_show`) reaches directly. A foreign window's open
+    /// event finds no measuring surface and leaves with nothing.
     pub fn decide_configure(
         &mut self,
         output: (u32, u32),
@@ -352,6 +366,24 @@ impl SurfaceMachine {
         };
         self.output_size = Some(output);
         self.state = SurfaceState::Shown(handle);
+        self.arm_show(handle, output, inputs)
+    }
+
+    /// The show emission the measured first configure and the
+    /// steady-state show share: the slide-in arms — gated by the
+    /// slide toggle; the full surface height is both the from-offset
+    /// and the distance, deterministic and known at open time, unlike
+    /// the granted window height, which double-reports through
+    /// `WindowResized` — and the show intents leave: the surface
+    /// shown at the config geometry over the named output, riding
+    /// the configured layer, the resolved keyboard hold, and the
+    /// configured exclusive zone, with the terminal input focused.
+    fn arm_show(
+        &mut self,
+        handle: SurfaceHandle,
+        output: (u32, u32),
+        inputs: SurfaceInputs,
+    ) -> Vec<SurfaceIntent> {
         #[expect(
             clippy::cast_precision_loss,
             reason = "output px are < 2^24, exact in f32"
