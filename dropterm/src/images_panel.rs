@@ -18,11 +18,11 @@ use std::sync::Arc;
 
 use dropterm::core::tabs::PastedImage;
 use gpui::prelude::*;
-use gpui::{App, Context, Styled, Window, px};
+use gpui::{App, Styled, Window, px};
 use gpui_component::ActiveTheme as _;
 use gpui_component::{h_flex, v_flex};
 
-use crate::app_shell::Shell;
+use dropterm::core::settings::drawer_width;
 
 /// The panel's row order (the reference `images_panel_rows`): a view
 /// over the pruned ledger, newest first — the most recent paste is
@@ -246,9 +246,9 @@ pub(crate) fn overlay(
     thumbs: &std::collections::HashMap<PathBuf, Arc<gpui::RenderImage>>,
     verb: &VerbFn,
     surface_width: f32,
-    cx: &mut Context<Shell>,
+    cx: &App,
 ) -> gpui::AnyElement {
-    let width = dropterm::core::settings::drawer_width(None, surface_width);
+    let width = drawer_width(None, surface_width);
     let verb_header = Rc::clone(verb);
     let verb_backdrop = Rc::clone(verb);
     let verb_close = Rc::clone(verb);
@@ -258,6 +258,12 @@ pub(crate) fn overlay(
         .bottom_0()
         .right_0()
         .w(px(width))
+        // The panel's own occlusion (this gpui's dispatch rule: a
+        // bubble mouse listener fires for every hitbox containing the
+        // point, down to the first `BlockMouse` one — without the
+        // occlusion the backdrop beneath stays hovered and every
+        // panel press closes the drawer).
+        .occlude()
         .flex()
         .flex_col()
         .bg(cx.theme().background)
@@ -302,26 +308,127 @@ pub(crate) fn overlay(
         .absolute()
         .inset_0()
         .child(band)
+        // The backdrop a sibling BENEATH the panel — the settings
+        // drawer's own veil shape, and the panel's occlusion above
+        // stops its hover short (this gpui's dispatch rule: a bubble
+        // mouse listener fires for every hitbox containing the point,
+        // down to the first `BlockMouse` one — a backdrop that nests
+        // the panel, or a panel that does not occlude, sees every
+        // panel press as its own and closes the drawer under the
+        // user's hand).
         .child(
             gpui::div()
                 .absolute()
                 .inset_0()
                 .id("images-panel-backdrop")
+                .occlude()
                 .bg(gpui::black().opacity(0.5))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     move |_event, window: &mut Window, cx: &mut App| {
                         verb_backdrop(PanelVerb::Close, window, cx);
                     },
-                )
-                .child(panel),
+                ),
         )
+        .child(panel)
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct OverlayProbe {
+        verbs: std::rc::Rc<std::cell::RefCell<Vec<PanelVerb>>>,
+    }
+
+    impl gpui::Render for OverlayProbe {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let verb: VerbFn = {
+                let verbs = Rc::clone(&self.verbs);
+                Rc::new(move |verb, _: &mut Window, _: &mut App| {
+                    verbs.borrow_mut().push(verb);
+                })
+            };
+            let ledger = [PastedImage {
+                path: PathBuf::from("/cache/paste-20261119-101010-1.png"),
+                stamp: "paste-20261119-101010-1".to_string(),
+                dims: None,
+            }];
+            let rows = panel_rows(&ledger)
+                .into_iter()
+                .map(|row| PanelRow {
+                    cluster: delete_cluster(None, &row.path),
+                    row,
+                })
+                .collect();
+            overlay(
+                gpui::div().into_any_element(),
+                rows,
+                &std::collections::HashMap::new(),
+                &verb,
+                window.bounds().size.width.as_f32(),
+                cx,
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn a_panel_press_stays_open_and_a_backdrop_press_closes(cx: &mut gpui::TestAppContext) {
+        // The click-close report's pin: the overlay's real composition
+        // rendered, a press over the panel's interior (the header's
+        // bare midline — no verb, the exact press a row-adjacent
+        // misclick lands) must stay open, and a press over the
+        // backdrop's bare left half must close. The nested-backdrop
+        // build saw every panel press bubble into the backdrop's
+        // hitbox and closed the panel under the user's hand.
+        cx.update(gpui_component::init);
+        let verbs = Rc::new(std::cell::RefCell::new(Vec::<PanelVerb>::new()));
+        let probe = Rc::clone(&verbs);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(1280.), px(800.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, cx| cx.new(|_| OverlayProbe { verbs: probe }),
+                )
+            })
+            .expect("open the overlay probe window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), &cx);
+        // The Kit's redraw shape: refresh first — a bare draw may skip
+        // render/paint (the rename-slot pin's precedent).
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+
+        let width = drawer_width(None, 1280.);
+        let panel_mid_x = 1280. - width / 2.;
+        // A press over the panel's interior, mouse-up included.
+        cx.simulate_click(gpui::point(px(panel_mid_x), px(24.)), gpui::Modifiers::default());
+        assert!(
+            verbs.borrow().is_empty(),
+            "a panel interior press closed the panel: {:?}",
+            verbs.borrow()
+        );
+
+        // A press over the backdrop's bare left half.
+        cx.simulate_click(gpui::point(px(320.), px(400.)), gpui::Modifiers::default());
+        assert_eq!(
+            *verbs.borrow(),
+            vec![PanelVerb::Close],
+            "the backdrop press must be the one close"
+        );
+    }
 
     fn row(path: &str, stamp: &str) -> PastedImage {
         PastedImage {
