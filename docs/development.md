@@ -15,9 +15,10 @@ launcher that always runs the current debug build instead:
 just dev-install
 ```
 
-That builds the debug profile and symlinks `~/.local/bin/dropterm-dev`
-to the dev image `target/debug/dropterm-dev-image` — a copy of the
-dev-identity build that only the `just dev*` recipes ever rewrite. Set the
+That builds the debug profile and installs `~/.local/bin/dropterm-dev` — a
+small launcher script that starts the dev image
+`target/debug/dropterm-dev-image` (a copy of the dev-identity build that only
+the `just dev*` recipes ever rewrite) under the memory fence below. Set the
 development shortcut's Command to `dropterm-dev` once and leave it.
 The `-dev` suffix keeps an installed release (from `sudo just install` or a
 release tarball) separate: plain `dropterm` on PATH is always the
@@ -76,12 +77,18 @@ already-running process, which is still the code from before your edit.
 `just dev-reload` does just the restart, and `just dev-install` just the build
 plus launcher.
 
-The restart runs under a memory fence: the instance and every shell it spawns
-ride a systemd-run scope (`MemoryMax=4G`, `MemoryHigh=3G`, no swap by default;
-`DROPTERM_DEV_MEM_MAX` / `DROPTERM_DEV_MEM_HIGH` override for a session that
-legitimately needs more). A runaway build dies at the cgroup instead of
-OOM-ing the host — the `just mem-churn` probe's hard-pinned, smaller cap is
-the same fence sized for the test process alone.
+Every local launch of the app rides a memory fence: the `just dev*` recipes,
+the `dropterm-dev` launcher itself (so a COSMIC shortcut, `just act` /
+`just toggle` cold starts, and manual runs are fenced too), and `just run`
+all start the app inside a systemd-run scope (`MemoryMax=4G`,
+`MemoryHigh=3G`, no swap by default; `DROPTERM_DEV_MEM_MAX` /
+`DROPTERM_DEV_MEM_HIGH` override for a session that legitimately needs
+more). The instance and every shell it spawns stay inside the cap, so a
+runaway dies at the cgroup instead of OOM-ing the host — the
+`just mem-churn` probe's hard-pinned, smaller cap is the same fence sized
+for the test process alone. The boundary: raw `cargo run` / `cargo test`
+outside just, and the installed release copy, are outside the fence —
+fencing the release is an in-app concern, not the justfile's.
 
 To skip the manual step, `just dev-watch` reruns that loop whenever a file
 under `src/` (or `Cargo.toml`) changes:

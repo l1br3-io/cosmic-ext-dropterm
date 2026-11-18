@@ -50,10 +50,12 @@ debug-bin := cargo-target-dir / 'debug' / name
 # entry simply never matches anything.
 export PATH := env('CARGO_HOME', home_directory() / '.cargo') / 'bin' + ':' + env('PATH', '')
 
-# Where the dev launcher lives. The launcher carries a `-dev` suffix
+# Where the dev launcher lives. The launcher is a fence-wrapping
+# script (see `dev-install`), not a bare symlink, so every launch of
+# the dev identity rides the memory cap. It carries a `-dev` suffix
 # so it never shadows an installed release: `dropterm` on
 # PATH is always the installed copy, `dropterm-dev` always
-# the dev build.
+# the fenced dev build.
 dev-bin-dir := env('XDG_BIN_HOME', home_directory() / '.local' / 'bin')
 dev-bin := dev-bin-dir / (name + '-dev')
 
@@ -429,17 +431,37 @@ vendor-extract:
 # the proof that vendor.tar is a complete dependency snapshot.
 build-vendored *args: vendor-extract (build-release '--frozen' '--offline' args)
 
+# The raw debug-bin path (`cargo run`, release identity) — fenced
+# like every other local launch of the app. cargo's build rides
+# inside the scope too; a fence-killed build here means the cap was
+# genuinely earning its keep.
 run *args:
-    cargo run {{args}}
+    systemd-run --user --scope --quiet -p MemoryMax={{dev-mem-max}} \
+      -p MemoryHigh={{dev-mem-high}} -p MemorySwapMax=0 -- \
+      cargo run {{args}}
 
-# Symlinks the dev launcher at `~/.local/bin/dropterm-dev`
-# to the dev image (see `dev-image-install`) so a COSMIC shortcut
-# (and the act recipes) can run it; the `-dev` name leaves an
-# installed release's plain name untouched. Also installs the dev
-# identity's desktop file (see `dev-desktop`).
+# Installs the dev launcher at `~/.local/bin/dropterm-dev` — a
+# fence-wrapping script, not a bare symlink, so EVERY launch of the
+# dev identity (a COSMIC shortcut, the act recipes' cold starts, a
+# manual run) rides the capped scope, not just the `just dev*`
+# recipes. The `-dev` name leaves an installed release's plain name
+# untouched. Also installs the dev identity's desktop file (see
+# `dev-desktop`).
 dev-install: (build-debug dev-identity-args) dev-image-install
+    #!/usr/bin/env sh
+    set -eu
     install -d {{dev-bin-dir}}
-    ln -sfn {{dev-image}} {{dev-bin}}
+    # The fence's defaults are baked here as literals (launch-time
+    # env override in the script); the quoted heredoc keeps ${…} for
+    # the launcher itself while just bakes the image path in.
+    cat > {{dev-bin}} <<'EOF'
+    #!/bin/sh
+    exec systemd-run --user --scope --quiet \
+      -p MemoryMax="${DROPTERM_DEV_MEM_MAX:-4G}" \
+      -p MemoryHigh="${DROPTERM_DEV_MEM_HIGH:-3G}" \
+      -p MemorySwapMax=0 -- {{dev-image}} "$@"
+    EOF
+    chmod 0755 {{dev-bin}}
     install -d {{dev-data-dir / 'applications'}}
     sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{name}}-dev/' -e 's/^StartupWMClass=.*/StartupWMClass={{appid}}.Dev/' {{desktop-src}} > {{dev-desktop}}
     # The installed extended tier for the dev identity: both seats,
@@ -456,7 +478,7 @@ dev-install: (build-debug dev-identity-args) dev-image-install
 dev-reload: (build-debug dev-identity-args) dev-image-install
     -pkill -f '{{dev-kill-pattern}}'
     sleep 0.3
-    systemd-run --user --scope -p MemoryMax={{dev-mem-max}} \
+    systemd-run --user --scope --quiet -p MemoryMax={{dev-mem-max}} \
       -p MemoryHigh={{dev-mem-high}} -p MemorySwapMax=0 -- {{dev-image}}
 
 # Build, install the launcher, and restart on the latest code in one step.
