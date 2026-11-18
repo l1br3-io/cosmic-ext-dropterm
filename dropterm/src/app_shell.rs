@@ -56,6 +56,13 @@ gpui::actions!(dropterm_gpui, [DismissCloseConfirm, DismissSettings]);
 /// halves the strip's callbacks get.
 type ModalFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// The settings drawer's resize-handle drag closures' shapes
+/// (drawer-resize): the press, move, and release handlers the
+/// overlay threads through to the shell.
+type DrawerDownFn = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App)>;
+type DrawerMoveFn = Box<dyn Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App)>;
+type DrawerUpFn = Box<dyn Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App)>;
+
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
 /// and every non-positive or unparsable value — means a real app's
@@ -4674,7 +4681,6 @@ impl Shell {
         band: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let shell = cx.entity();
         let drawer = self
             .settings_drawer
             .clone()
@@ -4687,69 +4693,13 @@ impl Shell {
             live.or(self.config.settings_drawer_width),
             surface,
         );
+        let (on_handle_down, on_move, on_release) = Self::drawer_drag_handlers(cx, surface);
 
-        // The handle's press arms the drag (or resets on a
-        // double-click); the overlay's moves track it, its release
-        // commits.
-        let on_handle_down = {
-            let shell = shell.clone();
-            move |event: &gpui::MouseDownEvent, _window: &mut Window, cx: &mut gpui::App| {
-                shell.update(cx, |shell, cx| {
-                    if event.button == gpui::MouseButton::Left && event.click_count >= 2 {
-                        // The reset: the built-in default, the stored
-                        // value cleared.
-                        shell.write_settings(
-                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(None),
-                        );
-                        println!(
-                            "dropterm: drawer width reset at +{}ms",
-                            shell.boot.elapsed().as_millis()
-                        );
-                        cx.notify();
-                    } else if event.button == gpui::MouseButton::Left {
-                        shell.settings.drawer_drag =
-                            Some(dropterm::core::settings::drawer_drag_px(
-                                event.position.x.as_f32(),
-                                surface,
-                            ));
-                        cx.notify();
-                    }
-                });
-            }
-        };
-        let on_move = {
-            let shell = shell.clone();
-            move |event: &gpui::MouseMoveEvent, _window: &mut Window, cx: &mut gpui::App| {
-                shell.update(cx, |shell, cx| {
-                    if shell.settings.drawer_drag.is_some() {
-                        shell.settings.drawer_drag =
-                            Some(dropterm::core::settings::drawer_drag_px(
-                                event.position.x.as_f32(),
-                                surface,
-                            ));
-                        cx.notify();
-                    }
-                });
-            }
-        };
-        let on_release = {
-            let shell = shell.clone();
-            move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
-                shell.update(cx, |shell, cx| {
-                    if let Some(px) = shell.settings.drawer_drag.take() {
-                        shell.write_settings(
-                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
-                        );
-                        println!(
-                            "dropterm: drawer width released at {px}px (+{}ms)",
-                            shell.boot.elapsed().as_millis()
-                        );
-                        cx.notify();
-                    }
-                });
-            }
-        };
-
+        // The panel is opaque and clips its contents: a solid
+        // backdrop so the settings never read through onto the live
+        // terminal, a left border as the seam against it, and
+        // `overflow_hidden` so no row, tab, or popover can paint
+        // past the pane's edge whatever its content does.
         let panel = gpui::div()
             .absolute()
             .top_0()
@@ -4758,7 +4708,10 @@ impl Shell {
             .w(px(width))
             .flex()
             .flex_row()
-            .bg(gpui::transparent_black())
+            .bg(cx.theme().background)
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .overflow_hidden()
             // The handle leads the panel: a thin grab strip on the
             // pane's leading edge.
             .child(
@@ -4774,14 +4727,101 @@ impl Shell {
             )
             .child(gpui::div().flex_1().min_w_0().child(drawer));
 
+        // The veil — the drawer's modality, the reference drawer's
+        // own rule: a dimmed backdrop over the exposed terminal that
+        // occludes and captures every press, so no input reaches the
+        // shell beneath while the drawer is open (what a veil press
+        // means stays the parked click-close module's to own). The
+        // panel paints above it, so the drawer's own controls keep
+        // their events.
+        let veil = gpui::div()
+            .absolute()
+            .inset_0()
+            .id("settings-veil")
+            .occlude()
+            .bg(gpui::black().opacity(0.4))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {});
+
         gpui::div()
             .absolute()
             .inset_0()
             .on_mouse_move(on_move)
             .on_mouse_up(gpui::MouseButton::Left, on_release)
             .child(band)
+            .child(veil)
             .child(panel)
             .into_any_element()
+    }
+
+    /// The resize handle's three drag closures (drawer-resize): the
+    /// handle's press arms the drag (or resets on a double-click),
+    /// the overlay's moves track it, its release commits — all
+    /// through core's `drawer_drag_px` math against the live surface
+    /// width.
+    fn drawer_drag_handlers(
+        cx: &mut Context<Self>,
+        surface: f32,
+    ) -> (DrawerDownFn, DrawerMoveFn, DrawerUpFn) {
+        let shell_down = cx.entity();
+        let on_handle_down = move |event: &gpui::MouseDownEvent,
+                                   _window: &mut Window,
+                                   cx: &mut gpui::App| {
+            shell_down.update(cx, |shell, cx| {
+                if event.button == gpui::MouseButton::Left && event.click_count >= 2 {
+                    // The reset: the built-in default, the stored
+                    // value cleared.
+                    shell.write_settings(
+                        &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(None),
+                    );
+                    println!(
+                        "dropterm: drawer width reset at +{}ms",
+                        shell.boot.elapsed().as_millis()
+                    );
+                    cx.notify();
+                } else if event.button == gpui::MouseButton::Left {
+                    shell.settings.drawer_drag = Some(dropterm::core::settings::drawer_drag_px(
+                        event.position.x.as_f32(),
+                        surface,
+                    ));
+                    cx.notify();
+                }
+            });
+        };
+        let shell_move = cx.entity();
+        let on_move = move |event: &gpui::MouseMoveEvent,
+                            _window: &mut Window,
+                            cx: &mut gpui::App| {
+            shell_move.update(cx, |shell, cx| {
+                if shell.settings.drawer_drag.is_some() {
+                    shell.settings.drawer_drag = Some(dropterm::core::settings::drawer_drag_px(
+                        event.position.x.as_f32(),
+                        surface,
+                    ));
+                    cx.notify();
+                }
+            });
+        };
+        let shell_release = cx.entity();
+        let on_release =
+            move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
+                shell_release.update(cx, |shell, cx| {
+                    if let Some(px) = shell.settings.drawer_drag.take() {
+                        shell.write_settings(
+                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
+                        );
+                        println!(
+                            "dropterm: drawer width released at {px}px (+{}ms)",
+                            shell.boot.elapsed().as_millis()
+                        );
+                        cx.notify();
+                    }
+                });
+            };
+        (
+            Box::new(on_handle_down),
+            Box::new(on_move),
+            Box::new(on_release),
+        )
     }
 
     /// The pasted-images panel's overlay mount (py-6): the live band
