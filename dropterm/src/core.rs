@@ -47,6 +47,7 @@ pub mod slide;
 pub mod spawn;
 pub mod status;
 pub mod surface_lifecycle;
+pub mod system_mode;
 pub mod tabs;
 pub mod terminal;
 pub mod theme_glue;

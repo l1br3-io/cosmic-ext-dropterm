@@ -525,3 +525,80 @@ view). Tooling grounding:
    expectation honestly either way).
 2. heaptrack availability on the owner's machine (Pop!_OS:
    `apt install heaptrack`) — rl-2 answers by construction.
+
+## Theming module (opened 2026-11-18): theme-defaults
+
+First install today always opens COSMIC Dark — `System` is pinned
+dark at all three resolve sites (the live watch deferred since
+cutover), no OS accent is read, and no github scheme exists. The
+module ships GitHub's Primer pair as the default schemes and makes
+Follow system real through the portal color-scheme. Spec:
+[SPEC-theme-defaults.md](../SPEC-theme-defaults.md); chunk:
+[theme-defaults.md](theme-defaults.md) (the chunk is the task
+detail; this section is the aggregate view).
+
+### Planning rulings (made at /planning 2026-11-18; veto at review)
+
+1. **Registry order keeps defaults-first**: GitHub Dark, GitHub
+   Light at rows 0-1, the COSMIC pair at 2-3, the alphabetical rest
+   after — the "first two are the defaults" convention survives with
+   new names, and the dropdowns open on the real defaults. The
+   hole-check test skips the background-less pair by name, not
+   index.
+2. **One default-pair source**: the name constants live in
+   `theme_source.rs` (the schemes' definition site); config's
+   `Default`, the registry rows, and `theme_glue`'s unknown-name
+   fallback all reference them, and an agreement pin ties the three
+   (today they are three independent definition sites — a constants
+   flip alone would not move the fallback).
+3. **The system mode travels through a process-global cell**
+   (`core/system_mode.rs`, the engine-globals pattern): `AtomicBool`
+   + revision, default dark — the fallback is also the pre-read
+   state. The three literal-`true` sites read it, which also answers
+   the pre-Shell fleet-boot ordering (no Shell field exists yet
+   there).
+4. **Boot is fallback-then-correct, never a block**: the watch
+   spawns before the boot apply; the cell reads dark until the
+   portal answers; the landed value bumps the revision and the
+   pump's check feeds the same resolve → identity → `pending_theme`
+   funnel config echoes use (one extracted helper, two callers). The
+   app boots hidden, so the correction lands before a human ever
+   sees a frame — the 130 ms OPEN→FIRST_FRAME budget is untouched.
+5. **The watch owns its thread** — a std thread + current-thread
+   tokio runtime, the `dbus.rs` spawn shape without coupling to the
+   V1 server's lifecycle (whose loser arm parks forever). zbus 5.19
+   is in-tree; no new dependencies.
+6. **Accent anchors rule the transcription**: the entries' slots are
+   chosen so the generated chrome accent lands on `#0969DA` /
+   `#2F81F7`; any deviation from github-vscode-theme's table is
+   cited in the spot-check test.
+
+### Task index
+
+- td-1 the GitHub pair ships as the default (entries + citations,
+  defaults flip, fallback flip, the four hard pins, configuration.md
+  rows) → td-2 Follow system reads the OS for real (`system_mode`
+  cell + portal watch, the three sites wired, the funnel reuse,
+  theming.md re-truthed, the owner's manual rows). Checkpoint: fresh
+  install GitHub-themed following the OS, dark fallback on bare
+  sway, docs true.
+
+### Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| A host's portal lacks the appearance key (backend-dependent) | Med | Error arm stays dark (today's behavior); td-2's owner walk verifies the chain on COSMIC; a cosmic-config reader is the ask-first fallback plan |
+| Global cell races parallel tests | Med | Lock-guarded override seam (`with_system_mode`); tests restore state |
+| SettingChanged fires for every namespace | Low | The watch filters to `org.freedesktop.appearance` / `color-scheme`; the mapping is unit-pinned |
+| Test-pin churn exceeds the estimate (order/len/commit rows, `skip(2)`) | Low | All four named in td-1; mechanical |
+| One-tick transient after a flip (render resolves the new mode before `apply_pending_theme` runs) | Low | The same ≤100 ms window config edits already have; no new mechanism |
+
+### Open questions
+
+1. Does the COSMIC portal backend serve the appearance color-scheme
+   key and its `SettingChanged` signal — td-2's owner walk answers
+   on the primary platform; if absent, the fallback is dark and the
+   cosmic-config reader goes to ask-first.
+2. Does github-vscode-theme's terminal palette cover both modes
+   without gaps — td-1's transcription answers; derived slots must
+   say so in the citation rather than inventing values.

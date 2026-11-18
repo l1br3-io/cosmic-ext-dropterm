@@ -128,11 +128,14 @@ struct ResolvedTheme {
 }
 
 /// Resolve a config's theme (gpui-theme Task 2): the same glue chain
-/// the pane's [`view::boot_colors`] runs — `System` resolves dark
-/// until the live system-mode read lands (the drawer default) — plus
+/// the pane's [`view::boot_colors`] runs — `System` follows the real
+/// OS mode the system-mode cell holds (theme-defaults td-2) — plus
 /// the scheme name and mode [`crate::theme_gen`] wants.
 fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
-    let dark = dropterm::core::theme_glue::effective_is_dark(config.theme_preference, true);
+    let dark = dropterm::core::theme_glue::effective_is_dark(
+        config.theme_preference,
+        dropterm::core::system_mode::is_dark(),
+    );
     ResolvedTheme {
         name: dropterm::core::profile::effective_scheme_name(
             None,
@@ -274,6 +277,10 @@ pub(crate) struct Shell {
     /// A scheme edit awaiting the tick's apply point (the Kit's
     /// tokens and the pane's colors re-apply before the next frame).
     pending_theme: Option<ResolvedTheme>,
+    /// The system-mode revision this shell last resolved against
+    /// (theme-defaults td-2): a bump is an OS dark/light flip, and
+    /// the tick's compare is what turns it into a staged re-theme.
+    system_mode_revision: u64,
     /// The measuring probe's granted-bounds slot: the probe writes
     /// the configured output size (never from inside a render does it
     /// touch this shell — queued entity updates flush inside the
@@ -639,6 +646,7 @@ impl Shell {
             pane_signals,
             theme,
             pending_theme: None,
+            system_mode_revision: dropterm::core::system_mode::revision(),
             drag_walk: drag_walk.unwrap_or_default().into(),
             drag_release_at: None,
             config_changes,
@@ -730,6 +738,7 @@ impl Shell {
     /// first walk's lesson, made structural).
     fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
         self.tick_mem_watch(cx);
+        self.tick_system_mode();
         // The mouse dispatch's queued window actions (the drag edge)
         // apply here first — the tick's App-level point, outside any
         // input dispatch.
@@ -1031,20 +1040,10 @@ impl Shell {
         self.specs.arm_reload(&config);
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
-        // The identity compare absorbs echoes (an unchanged scheme is
-        // not a re-theme) and keeps geometry-only edits off the theme
-        // path.
-        let resolved = resolve_theme(&config);
-        let identity = theme_identity(&resolved);
-        if identity != self.theme {
-            println!(
-                "dropterm: config changed -> theme: {} ({})",
-                resolved.name,
-                if resolved.dark { "dark" } else { "light" }
-            );
-            self.theme = identity;
-            self.pending_theme = Some(resolved);
-        }
+        // theme-defaults td-2: the funnel is shared with the
+        // system-mode flip (a config echo and an OS flip stage the
+        // same way).
+        self.stage_theme_if_changed(&config);
         let new_inputs = SurfaceInputs::from_config(&config);
         let old_geometry = self.inputs.geometry;
         let old_zone = ExclusiveZone::from_panel_respect(self.inputs.respect_panel);
@@ -1108,6 +1107,26 @@ impl Shell {
             },
         );
         self.execute_into(intents, actions);
+    }
+
+    /// Stage a re-theme when the config's theme identity changed —
+    /// the one funnel a config echo and a system-mode flip share
+    /// (theme-defaults td-2; the tick's apply point consumes the
+    /// staged theme). The identity compare absorbs echoes (an
+    /// unchanged scheme is not a re-theme) and keeps geometry-only
+    /// edits off the theme path.
+    fn stage_theme_if_changed(&mut self, config: &DropTermConfig) {
+        let resolved = resolve_theme(config);
+        let identity = theme_identity(&resolved);
+        if identity != self.theme {
+            println!(
+                "dropterm: theme change -> {} ({})",
+                resolved.name,
+                if resolved.dark { "dark" } else { "light" }
+            );
+            self.theme = identity;
+            self.pending_theme = Some(resolved);
+        }
     }
 
     /// The tick's theme apply point (gpui-theme Task 2): the Kit's
@@ -3138,6 +3157,21 @@ impl Shell {
         self.tick_n = self.tick_n.saturating_add(1);
         if dropterm::core::mem::tick_samples(self.tick_n) {
             self.sample_memory(cx);
+        }
+    }
+
+    /// The tick's system-mode check (theme-defaults td-2), beside
+    /// [`Self::tick_mem_watch`]: a portal-read revision bump is an OS
+    /// dark/light flip — staged through the same identity-gated
+    /// funnel a config echo uses, so geometry-only echoes still never
+    /// re-theme and the applied theme follows the OS without a
+    /// restart.
+    fn tick_system_mode(&mut self) {
+        let revision = dropterm::core::system_mode::revision();
+        if revision != self.system_mode_revision {
+            self.system_mode_revision = revision;
+            let config = self.config.clone();
+            self.stage_theme_if_changed(&config);
         }
     }
 
@@ -5293,6 +5327,12 @@ pub(crate) fn boot(
         gpui::KeyBinding::new("escape", DismissSettings, Some("settings-drawer")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);
+    // The system-mode watch (theme-defaults td-2) spawns before the
+    // boot theme apply: fallback-then-correct — the apply below reads
+    // the cell (dark until the portal answers) and never blocks, and
+    // the app boots hidden, so a correction lands through the tick
+    // before any human sees a frame.
+    dropterm::core::system_mode::spawn_watch();
     let boot_theme = resolve_theme(&config);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
@@ -5691,14 +5731,71 @@ mod tests {
         };
         assert_ne!(theme_identity(&resolve_theme(&scheme)), base_id);
 
-        // A preference flip changes the mode (System resolves dark
-        // until the live system-mode read lands; Light resolves
-        // light).
+        // A preference flip changes the mode (System follows the OS
+        // mode cell; Light resolves light).
         let pref = DropTermConfig {
             theme_preference: ThemePreference::Light,
             ..DropTermConfig::default()
         };
         assert_ne!(theme_identity(&resolve_theme(&pref)), base_id);
+    }
+
+    #[test]
+    fn resolve_theme_follows_the_system_mode_cell() {
+        // theme-defaults td-2: `System` reads the real OS mode — the
+        // cell the portal watch feeds — through the same
+        // `effective_is_dark` seam, so a light OS resolves the GitHub
+        // Light default and a dark OS the dark one. No literal dark
+        // survives at the site.
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        let config = DropTermConfig::default();
+        let light = dropterm::core::system_mode::with_system_mode(false, || resolve_theme(&config));
+        assert!(!light.dark);
+        assert_eq!(light.name, "GitHub Light");
+        assert_eq!(
+            light.colors[NamedColor::Background],
+            Some(Rgb {
+                r: 0xFF,
+                g: 0xFF,
+                b: 0xFF
+            })
+        );
+        let dark = dropterm::core::system_mode::with_system_mode(true, || resolve_theme(&config));
+        assert!(dark.dark);
+        assert_eq!(dark.name, "GitHub Dark");
+        assert_eq!(
+            dark.colors[NamedColor::Background],
+            Some(Rgb {
+                r: 0x0D,
+                g: 0x11,
+                b: 0x17
+            })
+        );
+    }
+
+    #[test]
+    fn a_system_mode_flip_changes_the_identity_a_geometry_edit_does_not() {
+        // The revision-bump funnel's decision (the pump stages a
+        // re-theme through the identity gate): the *same* config
+        // resolves a different identity under each OS mode, while a
+        // geometry-only edit under one mode still resolves the same
+        // identity — the echo-absorbing gate the flip rides.
+        let config = DropTermConfig::default();
+        let dark_id = dropterm::core::system_mode::with_system_mode(true, || {
+            theme_identity(&resolve_theme(&config))
+        });
+        let light_id = dropterm::core::system_mode::with_system_mode(false, || {
+            theme_identity(&resolve_theme(&config))
+        });
+        assert_ne!(dark_id, light_id);
+        let geometry_only = DropTermConfig {
+            height_percent: 70,
+            ..DropTermConfig::default()
+        };
+        let geometry_id = dropterm::core::system_mode::with_system_mode(true, || {
+            theme_identity(&resolve_theme(&geometry_only))
+        });
+        assert_eq!(geometry_id, dark_id);
     }
 
     #[test]

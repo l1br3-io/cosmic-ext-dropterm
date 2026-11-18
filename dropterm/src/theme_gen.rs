@@ -183,6 +183,35 @@ mod tests {
     }
 
     #[test]
+    fn the_github_pair_generates_the_anchor_accent_blues() {
+        // theme-defaults spec criterion 3: the chrome accent lands
+        // on GitHub blue — light `#0969DA`, dark `#2F81F7` — through
+        // the existing scheme→accent mapping (accent/link ride
+        // BrightBlue, primary rides Blue), with no new setting. The
+        // entries pin BrightBlue to the anchor so the accent is
+        // exact; dark's primary keeps the port's terminal blue.
+        let dark =
+            dropterm::core::theme_source::by_name(dropterm::core::theme_source::GITHUB_THEME_DARK)
+                .expect("registry entry");
+        let v = kit_theme_json(&dark, "github-dark", true);
+        let c = colors_of(&v);
+        assert_eq!(c["accent.background"], json!("#2F81F7"));
+        assert_eq!(c["link"], json!("#2F81F7"));
+        assert_eq!(c["primary.background"], json!("#58A6FF"));
+        assert_eq!(c["background"], json!("#0D1117"));
+
+        let light =
+            dropterm::core::theme_source::by_name(dropterm::core::theme_source::GITHUB_THEME_LIGHT)
+                .expect("registry entry");
+        let v = kit_theme_json(&light, "github-light", false);
+        let c = colors_of(&v);
+        assert_eq!(c["accent.background"], json!("#0969DA"));
+        assert_eq!(c["link"], json!("#0969DA"));
+        assert_eq!(c["primary.background"], json!("#0969DA"));
+        assert_eq!(c["background"], json!("#FFFFFF"));
+    }
+
+    #[test]
     fn name_and_mode_pass_through() {
         let v = kit_theme_json(&dropterm_dark(), "dropterm-dark", true);
         assert_eq!(v["name"], json!("dropterm-dark"));

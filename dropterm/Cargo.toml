@@ -74,6 +74,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 # carries nothing new.
 zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"] }
 
+# The portal watch's change stream (theme-defaults td-2) plus the
+# dbus_state wire tests' stream combinators and `join!`. The same
+# 0.3.34 line the lock already carried; promoted from dev-only when
+# the watch moved its consumption into the lib.
+futures = "0.3"
+
 # The live config-edit reshape (gpui-surface Task 2): watch the
 # config dir for external edits and signal the shell's tick — the
 # sanctioned watcher crate (config-store spec, 2026-11-10).
@@ -170,6 +176,3 @@ dev-identity = []
 # rendered frame (the tab_bar tests' caret walk).
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support", "bench-support"] }
 
-# The dbus_state wire tests' stream combinators and `join!`.
-# Version-matched to the 0.3.34 line the lock already carries.
-futures = "0.3"

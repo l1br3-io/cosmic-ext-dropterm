@@ -28,9 +28,11 @@ pub const MIN_WIDTH_PERCENT: u8 = 30;
 /// Inclusive upper bound for `width_percent`.
 pub const MAX_WIDTH_PERCENT: u8 = 100;
 
-/// Name of the stock COSMIC dark theme (the dark-mode scheme default).
+/// Name of the stock COSMIC dark theme — a built-in scheme, the
+/// dark-mode default before the GitHub pair took over.
 pub const COSMIC_THEME_DARK: &str = "COSMIC Dark";
-/// Name of the stock COSMIC light theme (the light-mode scheme default).
+/// Name of the stock COSMIC light theme — a built-in scheme, the
+/// light-mode default before the GitHub pair took over.
 pub const COSMIC_THEME_LIGHT: &str = "COSMIC Light";
 
 /// Which screen edge the drop-down is anchored to.
@@ -597,8 +599,8 @@ impl Default for DropTermConfig {
             args: Vec::new(),
             font_name: "Noto Sans Mono".to_string(),
             font_size: 14,
-            color_scheme_dark: COSMIC_THEME_DARK.to_string(),
-            color_scheme_light: COSMIC_THEME_LIGHT.to_string(),
+            color_scheme_dark: crate::core::theme_source::GITHUB_THEME_DARK.to_string(),
+            color_scheme_light: crate::core::theme_source::GITHUB_THEME_LIGHT.to_string(),
             opacity: 100,
             scrollback_lines: 10_000,
             hide_on_focus_loss: true,

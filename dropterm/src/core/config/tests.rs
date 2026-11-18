@@ -173,6 +173,25 @@ fn defaults_are_sane() {
 }
 
 #[test]
+fn default_schemes_are_the_github_pair_and_preference_follows_system() {
+    // First install opens GitHub-themed (theme-defaults spec): the
+    // default pair is the GitHub Dark/Light entries — the same name
+    // constants the registry's first two rows carry, no second
+    // definition — and `theme_preference` stays `System`, now the
+    // real OS-following mode.
+    let config = DropTermConfig::default();
+    assert_eq!(
+        config.color_scheme_dark,
+        crate::core::theme_source::GITHUB_THEME_DARK
+    );
+    assert_eq!(
+        config.color_scheme_light,
+        crate::core::theme_source::GITHUB_THEME_LIGHT
+    );
+    assert_eq!(config.theme_preference, ThemePreference::System);
+}
+
+#[test]
 fn session_and_slide_toggles_default_on() {
     // Both keys ship `true` — the default is the always-on
     // behavior, so existing configs keep it.
