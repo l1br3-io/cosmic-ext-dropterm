@@ -207,6 +207,15 @@ pub(crate) fn sized(
 /// desktop).
 pub(crate) fn measuring_options(keyboard: KeyboardMode) -> WindowOptions {
     WindowOptions {
+        // GPUI's default throttles unfocused windows to ~30 fps, and a
+        // layer surface is unfocused for exactly the frames a slide
+        // must be smooth in — the hide's keyboard-less surface is never
+        // focused at all, and every show's head frames run before the
+        // compositor grants the keyboard (slide-animation-smoothness
+        // research, findings 3–4). The pacer field's documented off
+        // switch disarms the arm entirely; the 100 ms pump cadence caps
+        // ambient churn.
+        inactive_frame_interval: None,
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.), px(0.)),
@@ -247,6 +256,10 @@ pub(crate) fn shaped_options(
     let (anchor, margins) = anchor_margins(geometry, output);
     let (width, height_px) = sized(geometry, output, height);
     WindowOptions {
+        // Same unarm as the measuring window: the slide's smoothest
+        // frames belong to a surface that is unfocused or deliberately
+        // keyboard-less (slide-animation-smoothness, findings 3–4).
+        inactive_frame_interval: None,
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.), px(0.)),
