@@ -4572,3 +4572,59 @@ fn a_one_col_churn_over_wide_glyphs_stays_bounded() {
         "the wide-glyph churn left {total_rows} grid rows — above the 1024 bound"
     );
 }
+
+// --- the image paste's terminal half (paste-image spec, PI-1) ---
+
+#[test]
+fn an_image_pastes_its_path_visible_at_the_bash_prompt() {
+    // The paste-image road's own half: `paste` writes the cache
+    // file's path to the PTY through the same channel a text paste
+    // rides, and the shell's echo lands it on the grid as ordinary
+    // text — the path is the paste's one visible trace, so a road
+    // regression here blanks the prompt line under the user's hand.
+    // A real interactive bash on the engine's own PTY drives the
+    // echo (the toggle-churn pin's harness); the owner walk covers
+    // the render on real hardware (docs/testing.md).
+    use alacritty_terminal::tty::Shell as PtyShell;
+    use std::collections::HashMap;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut env = HashMap::new();
+    env.insert("PS1".to_string(), "P$ ".to_string());
+    let terminal = Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new(
+                "/bin/bash".to_owned(),
+                vec!["--norc".to_owned(), "-i".to_owned()],
+            )),
+            drain_on_exit: true,
+            env,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn an interactive bash");
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !visible_text(&terminal).contains("P$") {
+        assert!(Instant::now() < deadline, "no first prompt: {:?}", visible_text(&terminal));
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    while rx.try_recv().is_ok() {}
+
+    let path = "/home/u/.cache/dropterm/pastes/paste-20261119-101010-1.png";
+    terminal.paste(path);
+
+    // Give bash a moment to echo, then drain and dump the grid.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    while rx.try_recv().is_ok() {}
+    let text = visible_text(&terminal);
+    println!("=== grid after paste ===\n{text}\n=== contains path: {} ===", text.contains("paste-20261119"));
+    assert!(text.contains(path), "the pasted path is not on the grid; grid:\n{text}");
+}
