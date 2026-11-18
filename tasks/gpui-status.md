@@ -123,9 +123,18 @@ tips read.
       painted at gpui's 20 px default text size over the 12 px laid
       rects (segments touching and overlapping; fixed the same day —
       the row divs now carry `text_size(SEGMENT_FONT_SIZE)` the tab
-      strip's own way), and the keyboard family dead — no caret at
-      the prompt, no chords firing — diagnosis open, the launch log
-      the next evidence)*
+      strip's own way); and the keyboard family, diagnosed to two
+      findings the same day from the traced run — the real-hardware
+      key_char-less shape (`key_char: None` on every modified press,
+      a shape the rig's synthesized keys never produce) swallowed
+      every Ctrl/Alt byte-press in the input table's character gate,
+      fixed same-day by deriving the control code from the printed
+      key, and the tab chords (Ctrl+Shift+T & family) never bound on
+      this frontend at all — the pane's map owns fifteen chords and
+      the tab family stays the shell's to claim, [filed in
+      known-issues](../docs/known-issues.md); the caret's verdict
+      still rides the owner's eyes — every upstream state and paint
+      step traces green)*
 
 **Verification:**
 - [ ] `just check` green with the new core pins

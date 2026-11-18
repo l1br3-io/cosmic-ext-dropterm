@@ -383,10 +383,19 @@ pub(crate) fn translate(
     }
 
     // The character keys: `key` is the lowercase printed key,
-    // `key_char` the typed character (Shift's case, Alt's symbol).
-    let Some(typed) = keystroke.key_char.as_deref().and_then(|c| c.chars().next()) else {
-        return KeyInput::Swallowed;
-    };
+    // `key_char` the typed character (Shift's case, Alt's symbol)
+    // — where the platform reports one. Real hardware reports
+    // `None` for every modified press (the rig's synthesized keys
+    // always carried it, so the walks never met this shape — the
+    // first `just dev` hardware loop's catch): Ctrl and Alt still
+    // own the press, so the character derives from `key` itself
+    // through [`bare_key_char`]. Shift-held presses guess nothing —
+    // the typed case is the layout's, never ours.
+    let typed = keystroke
+        .key_char
+        .as_deref()
+        .and_then(|c| c.chars().next())
+        .or_else(|| bare_key_char(key, *modifiers));
     match (
         modifiers.platform,
         modifiers.control,
@@ -398,7 +407,9 @@ pub(crate) fn translate(
         // Ctrl+Alt: the control-character or literal pairing,
         // ESC-prefixed.
         (false, true, true, _) => {
-            if !typed.is_control() || (u32::from(typed) < 32) {
+            if let Some(typed) = typed
+                && (!typed.is_control() || (u32::from(typed) < 32))
+            {
                 let mut buf = vec![0x1b];
                 let mut char_buf = [0; 4];
                 buf.extend_from_slice(typed.encode_utf8(&mut char_buf).as_bytes());
@@ -409,9 +420,12 @@ pub(crate) fn translate(
         }
         // Ctrl (no shift): the typed control character itself
         // (Ctrl-A's 0x01 — the platform carries the control code in
-        // `key_char` while `key` holds the printed letter).
+        // `key_char` while `key` holds the printed letter, and the
+        // key_char-less press derives the same code from `key`).
         (false, true, false, false) => {
-            if typed.is_control() {
+            if let Some(typed) = typed
+                && typed.is_control()
+            {
                 let mut buf = [0; 4];
                 KeyInput::Bytes(typed.encode_utf8(&mut buf).as_bytes().to_vec())
             } else {
@@ -421,7 +435,9 @@ pub(crate) fn translate(
         // Ctrl+Shift: the one pairing the libcosmic build honors —
         // Ctrl+Shift+_ sends 0x1F (xterm's rule; bare Ctrl+_ is the
         // same byte through the control-character path above on the
-        // layouts where `_` survives Shift-less).
+        // layouts where `_` survives Shift-less). The arm reads
+        // `key`, never `key_char`, so it stands on the key_char-less
+        // platform shape too.
         (false, true, false, true) => {
             if keystroke.key == "_" {
                 KeyInput::Bytes(b"\x1f".to_vec())
@@ -430,9 +446,39 @@ pub(crate) fn translate(
             }
         }
         // Alt (no ctrl): the typed character, ESC-prefixed.
-        (false, false, true, _) => KeyInput::Bytes(no_ctrl_input(typed, true)),
+        (false, false, true, _) => typed.map_or(KeyInput::Swallowed, |typed| {
+            KeyInput::Bytes(no_ctrl_input(typed, true))
+        }),
         // Bare: the typed character, Shift's case included.
-        (false, false, false, _) => KeyInput::Bytes(no_ctrl_input(typed, false)),
+        (false, false, false, _) => typed.map_or(KeyInput::Swallowed, |typed| {
+            KeyInput::Bytes(no_ctrl_input(typed, false))
+        }),
+    }
+}
+
+/// The character a `key_char`-less press stands for, if any: the
+/// platform reported no typed character (every modified press on
+/// real hardware), so Ctrl derives the control code from the
+/// printed letter (`l` → 0x0C, xterm's rule) and Alt takes the key
+/// itself for the ESC prefix. Shift-held and Super presses, and
+/// keys that are not a single ASCII character, stay `None` — the
+/// swallow stands (the layout's case is never ours to guess, and
+/// Ctrl's non-letter pairings have no xterm byte to send).
+fn bare_key_char(key: &str, modifiers: Modifiers) -> Option<char> {
+    if modifiers.shift || modifiers.platform {
+        return None;
+    }
+    let mut chars = key.chars();
+    let printed = chars.next()?;
+    if chars.next().is_some() || !printed.is_ascii_lowercase() {
+        return None;
+    }
+    if modifiers.control {
+        // `a`..=`z` → 0x01..=0x1A, the same byte the platform carries
+        // in `key_char` where it reports one.
+        char::from_u32(u32::from(printed) - u32::from(b'a') + 1)
+    } else {
+        modifiers.alt.then_some(printed)
     }
 }
 
@@ -619,6 +665,90 @@ mod tests {
         // scroll-to-bottom jump, the zoom cluster's six, the hide,
         // and the completion trigger.
         assert_eq!(default_key_binds().len(), 15);
+    }
+
+    #[test]
+    fn key_char_less_ctrl_letters_send_their_control_codes() {
+        // The real-hardware shape (the first `just dev` hardware
+        // walk, 2026-11-18): every modified press arrives with
+        // `key_char: None` — the synthesized rig keys always carried
+        // the control code, so only the live keyboard met the gap.
+        // Ctrl+C must interrupt (`^C`), Ctrl+L must clear.
+        assert_eq!(
+            translate(&key(ctrl(), "c", None), &default_key_binds(), plain_modes()),
+            KeyInput::Bytes(vec![0x03])
+        );
+        assert_eq!(
+            translate(&key(ctrl(), "l", None), &default_key_binds(), plain_modes()),
+            KeyInput::Bytes(vec![0x0c])
+        );
+    }
+
+    #[test]
+    fn key_char_less_alt_letters_take_the_esc_prefix() {
+        assert_eq!(
+            translate(&key(alt(), "b", None), &default_key_binds(), plain_modes()),
+            KeyInput::Bytes(vec![0x1b, b'b'])
+        );
+        // Ctrl+Alt pairs the pair: ESC before the control code.
+        let ctrl_alt = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            translate(
+                &key(ctrl_alt, "b", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Bytes(vec![0x1b, 0x02])
+        );
+    }
+
+    #[test]
+    fn key_char_less_ctrl_shift_underscore_still_sends_0x1f() {
+        // The arm reads `key`, never `key_char` — readline's undo
+        // survives on the key_char-less platform shape.
+        assert_eq!(
+            translate(
+                &key(ctrl_shift(), "_", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Bytes(vec![0x1f])
+        );
+    }
+
+    #[test]
+    fn key_char_less_presses_still_guess_nothing() {
+        // The boundary the fallback keeps: Shift-held presses (the
+        // typed case is the layout's), non-letter Ctrl pairings (no
+        // xterm byte), and the tab chords this pane's map does not
+        // own — Ctrl+Shift+T stays swallowed for the shell's own
+        // slice to claim (see known-issues: the GPUI frontend's tab
+        // chords).
+        assert_eq!(
+            translate(&key(ctrl(), "1", None), &default_key_binds(), plain_modes()),
+            KeyInput::Swallowed
+        );
+        assert_eq!(
+            translate(
+                &key(ctrl_shift(), "t", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Swallowed
+        );
+        let shift_b = shift();
+        assert_eq!(
+            translate(
+                &key(shift_b, "b", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Swallowed
+        );
     }
 
     #[test]
