@@ -43,11 +43,12 @@ use gpui::{
     Styled, Window,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{Disableable, Sizable, h_flex, v_flex};
 
 use crate::app_shell::Shell;
 use crate::pickers::{self, FontPickerHandle, SchemePickerHandle};
@@ -682,7 +683,7 @@ impl SettingsDrawer {
                         }
                     },
                 );
-                h_flex().child(toggle).into_any_element()
+                h_flex().justify_end().child(toggle).into_any_element()
             }
             ControlKind::Slider => {
                 let Some((_, state)) = self.sliders.iter().find(|(k, _)| *k == key) else {
@@ -690,15 +691,22 @@ impl SettingsDrawer {
                 };
                 let value = slider_value(key, &self.shell.read(cx).settings.buffer, config);
                 v_flex()
+                    .w_full()
+                    .gap_1()
                     .child(Slider::new(state))
-                    .child(h_flex().justify_end().child(format!("{value:.0}")))
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .text_size(gpui::px(12.))
+                            .child(format!("{value:.0}")),
+                    )
                     .into_any_element()
             }
             ControlKind::Dropdown => {
                 let Some((_, state)) = self.dropdowns.iter().find(|(k, _)| *k == key) else {
                     return placeholder_row(key).into_any_element();
                 };
-                Select::new(state).into_any_element()
+                Select::new(state).w_full().into_any_element()
             }
             ControlKind::Text => {
                 let Some(field) = text_field_of(key) else {
@@ -707,24 +715,28 @@ impl SettingsDrawer {
                 let Some((_, state)) = self.inputs.iter().find(|(f, _)| *f == field) else {
                     return placeholder_row(key).into_any_element();
                 };
-                Input::new(state).into_any_element()
+                Input::new(state).w_full().into_any_element()
             }
-            ControlKind::FontPicker => Select::new(&self.font_picker.state).into_any_element(),
+            ControlKind::FontPicker => Select::new(&self.font_picker.state)
+                .w_full()
+                .into_any_element(),
             ControlKind::SchemePicker => {
                 let state = if key == ConfigKey::ColorSchemeDark {
                     &self.scheme_dark.state
                 } else {
                     &self.scheme_light.state
                 };
-                Select::new(state).into_any_element()
+                Select::new(state).w_full().into_any_element()
             }
             ControlKind::ShellPicker => v_flex()
-                .child(Select::new(&self.shell_control.picker))
-                .child(Input::new(&self.shell_control.input))
+                .w_full()
+                .gap_1()
+                .child(Select::new(&self.shell_control.picker).w_full())
+                .child(Input::new(&self.shell_control.input).w_full())
                 .into_any_element(),
         };
         let _ = window;
-        row_card(label, description, control).into_any_element()
+        row_card(label, description, control, cx).into_any_element()
     }
 
     /// The open page: the section cards (the Profiles and
@@ -738,6 +750,7 @@ impl SettingsDrawer {
             .p_4()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .overflow_y_scroll();
         match page {
             SettingsTab::Profiles => {
@@ -748,11 +761,18 @@ impl SettingsDrawer {
             }
             _ => {
                 for section in tab_sections(page) {
-                    let mut card = v_flex().gap_2().p_4().rounded_lg().bg(cx.theme().popover);
+                    let mut card = v_flex()
+                        .gap_3()
+                        .p_4()
+                        .rounded_lg()
+                        .min_w_0()
+                        .bg(cx.theme().popover);
                     card = card.child(
-                        h_flex()
-                            .child(section.title())
-                            .text_color(cx.theme().popover_foreground),
+                        gpui::div()
+                            .text_size(gpui::px(13.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().popover_foreground)
+                            .child(section.title()),
                     );
                     for key in section.keys() {
                         card = card.child(self.control_row(*key, &config, window, cx));
@@ -835,60 +855,208 @@ fn dropdown_row_of(key: ConfigKey, label: &SharedString) -> usize {
         .unwrap_or(0)
 }
 
-fn row_card(label: &str, description: String, control: gpui::AnyElement) -> impl IntoElement {
-    v_flex()
-        .gap_1()
+/// The control column's width: every row's control — switch, slider,
+/// dropdown, picker, text — sits in one right-hand column this wide,
+/// so the rows share one geometry (aligned left labels, aligned
+/// right controls) whatever the control's own intrinsic width.
+const CONTROL_COLUMN_PX: f32 = 208.;
+
+/// One row of a section card, the settings-item discipline the
+/// libcosmic drawer drew and the Kit's own `setting` module still
+/// draws: the label and its description in a wrapping left column,
+/// the control in the fixed right column — vertically centered,
+/// mutually truncating, never overflowing the card.
+fn row_card(
+    label: &str,
+    description: String,
+    control: gpui::AnyElement,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .justify_between()
+        .gap_4()
+        .min_w_0()
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    gpui::div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(gpui::px(13.))
+                        .child(label.to_string()),
+                )
+                .child(
+                    gpui::div()
+                        .min_w_0()
+                        .text_size(gpui::px(12.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(description),
+                ),
+        )
         .child(
             h_flex()
-                .justify_between()
-                .child(label.to_string())
+                .flex_none()
+                .w(gpui::px(CONTROL_COLUMN_PX))
+                .justify_end()
                 .child(control),
         )
-        .child(description)
 }
 
-/// One small affordance button carrying a shell-routed verb.
+/// One small affordance button carrying a shell-routed verb — the
+/// Kit's Button in its quiet secondary style, so hover, focus, and
+/// sizing come from the component instead of a hand-rolled div.
 fn small_button(
+    id: impl Into<gpui::ElementId>,
     label: &str,
-    cx: &App,
-    on_press: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    gpui::div()
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .text_color(cx.theme().accent_foreground)
-        .bg(cx.theme().accent)
-        .child(label.to_string())
-        .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
-            on_press(event, window, cx);
-        })
+    on_press: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .label(label)
+        .small()
+        .secondary()
+        .on_click(move |_: &gpui::ClickEvent, window, cx| on_press(window, cx))
 }
 
-/// `small_button` for render-only sites (no live rebuild between
-/// press and re-render — the shell's notify covers it).
-fn small_button_static(
+/// `small_button` in the primary style — a page's one standard verb.
+fn primary_button(
+    id: impl Into<gpui::ElementId>,
     label: &str,
-    cx: &App,
-    on_press: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    small_button(label, cx, on_press)
+    on_press: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .label(label)
+        .small()
+        .primary()
+        .on_click(move |_: &gpui::ClickEvent, window, cx| on_press(window, cx))
+}
+
+/// `small_button` in the danger style — an armed destructive
+/// confirm.
+fn danger_button(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    on_press: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .label(label)
+        .small()
+        .danger()
+        .on_click(move |_: &gpui::ClickEvent, window, cx| on_press(window, cx))
 }
 
 /// One labeled field row with its control and, when a Save rejected
-/// it, the inline error under the control.
-fn field_row(label: &str, control: impl IntoElement, error: Option<String>) -> impl IntoElement {
-    let mut row = v_flex()
-        .gap_1()
-        .child(h_flex().gap_2().child(label.to_string()).child(control));
+/// it, the inline error under the control: the label in a fixed
+/// left column, the control filling the rest, the error indented to
+/// the control's column.
+fn field_row(
+    label: &str,
+    control: impl IntoElement,
+    error: Option<String>,
+    cx: &App,
+) -> impl IntoElement {
+    let mut row = v_flex().gap_1().min_w_0().child(
+        h_flex()
+            .gap_3()
+            .child(
+                gpui::div()
+                    .w(gpui::px(112.))
+                    .flex_none()
+                    .text_size(gpui::px(13.))
+                    .child(label.to_string()),
+            )
+            .child(h_flex().flex_1().min_w_0().child(control)),
+    );
     if let Some(error) = error {
-        row = row.child(error);
+        row = row.child(
+            h_flex()
+                .gap_3()
+                .child(gpui::div().w(gpui::px(112.)).flex_none())
+                .child(
+                    gpui::div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(gpui::px(12.))
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                ),
+        );
     }
     row
 }
 
 fn placeholder_row(key: ConfigKey) -> impl IntoElement {
     h_flex().child(key.label())
+}
+
+/// One profile row's action cluster, right of the name: Clone, the
+/// delete pair (Arm → Confirm/Keep, the confirm in the danger
+/// style), and the reorder pair — one Vec so [`SettingsDrawer::
+/// profile_row`] stays a layout function.
+fn profile_action_buttons(
+    target: &Entity<Shell>,
+    index: usize,
+    armed: bool,
+) -> Vec<gpui_component::button::Button> {
+    let mut buttons = Vec::new();
+    let clone = target.clone();
+    buttons.push(small_button(
+        ("profile-clone", index),
+        "Clone",
+        move |_, cx| {
+            clone.update(cx, |shell, cx| shell.profile_clone(index, cx));
+        },
+    ));
+    if armed {
+        let confirm = target.clone();
+        let keep = target.clone();
+        buttons.push(danger_button(
+            ("profile-delete-confirm", index),
+            "Confirm delete",
+            move |_, cx| {
+                confirm.update(cx, |shell, cx| shell.profile_delete_confirm(index, cx));
+            },
+        ));
+        buttons.push(small_button(
+            ("profile-delete-keep", index),
+            "Keep",
+            move |_, cx| {
+                keep.update(cx, Shell::profile_delete_keep);
+            },
+        ));
+    } else {
+        let arm = target.clone();
+        buttons.push(small_button(
+            ("profile-delete-arm", index),
+            "Delete",
+            move |_, cx| {
+                arm.update(cx, |shell, cx| shell.profile_delete_arm(index, cx));
+            },
+        ));
+    }
+    let up = target.clone();
+    let down = target.clone();
+    buttons.push(small_button(
+        ("profile-reorder-up", index),
+        "Up",
+        move |_, cx| {
+            up.update(cx, |shell, cx| {
+                shell.profile_reorder(index, settings::ReorderDirection::Up, cx);
+            });
+        },
+    ));
+    buttons.push(small_button(
+        ("profile-reorder-down", index),
+        "Down",
+        move |_, cx| {
+            down.update(cx, |shell, cx| {
+                shell.profile_reorder(index, settings::ReorderDirection::Down, cx);
+            });
+        },
+    ));
+    buttons
 }
 
 impl SettingsDrawer {
@@ -909,26 +1077,17 @@ impl SettingsDrawer {
             )
         };
 
-        let mut page = v_flex().gap_3().p_2();
+        let mut page = v_flex().gap_3().min_w_0();
+        let add_target = self.shell.clone();
         page = page.child(
             h_flex()
                 .gap_3()
-                .child(Select::new(&self.default_picker))
+                .child(Select::new(&self.default_picker).flex_1().min_w_0())
                 .child(
-                    gpui::div()
-                        .px_3()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(cx.theme().accent)
-                        .text_color(cx.theme().accent_foreground)
-                        .when(locked, |el| el.opacity(0.5))
-                        .child("Add profile")
-                        .when(!locked, |el| {
-                            let target = self.shell.clone();
-                            el.on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
-                                target.update(cx, Shell::profile_add);
-                            })
-                        }),
+                    primary_button("profile-add", "Add profile", move |_, cx| {
+                        add_target.update(cx, Shell::profile_add);
+                    })
+                    .disabled(locked),
                 ),
         );
         for (index, profile) in profiles.iter().enumerate() {
@@ -949,9 +1108,9 @@ impl SettingsDrawer {
         page.into_any_element()
     }
 
-    /// One profile row: the name and prompt line, the select (a
-    /// press opens the edit draft), Clone, the delete cluster
-    /// (Arm → Confirm/Keep), and the reorder pair.
+    /// One profile row: the name and prompt line in a filling,
+    /// truncating column, the select (a press opens the edit draft),
+    /// and the action cluster pinned to the right edge.
     fn profile_row(
         &self,
         index: usize,
@@ -965,14 +1124,30 @@ impl SettingsDrawer {
         let mut row = h_flex()
             .gap_2()
             .px_2()
-            .py_1()
+            .py_2()
             .rounded_sm()
+            .min_w_0()
             .bg(cx.theme().popover)
-            .when(selected, gpui::Styled::border_1)
+            .when(selected, |el| el.border_1().border_color(cx.theme().accent))
             .child(
                 v_flex()
-                    .child(profile.name.clone())
-                    .child(settings::shell_label(&profile.command)),
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(gpui::px(13.))
+                            .child(profile.name.clone()),
+                    )
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(gpui::px(12.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings::shell_label(&profile.command)),
+                    ),
             )
             .when(!locked, |el| {
                 let t = target.clone();
@@ -981,34 +1156,8 @@ impl SettingsDrawer {
                 })
             });
         if !locked {
-            let t = target.clone();
-            row = row.child(small_button("Clone", cx, move |_, _, cx| {
-                t.update(cx, |shell, cx| shell.profile_clone(index, cx));
-            }));
-            if armed {
-                let confirm = target.clone();
-                let keep = target.clone();
-                row = row
-                    .child(small_button("Confirm delete", cx, move |_, _, cx| {
-                        confirm.update(cx, |shell, cx| shell.profile_delete_confirm(index, cx));
-                    }))
-                    .child(small_button("Keep", cx, move |_, _, cx| {
-                        keep.update(cx, Shell::profile_delete_keep);
-                    }));
-            } else {
-                let arm = target.clone();
-                row = row.child(small_button("Delete", cx, move |_, _, cx| {
-                    arm.update(cx, |shell, cx| shell.profile_delete_arm(index, cx));
-                }));
-            }
-            for (label, direction) in [
-                ("Up", settings::ReorderDirection::Up),
-                ("Down", settings::ReorderDirection::Down),
-            ] {
-                let t = target.clone();
-                row = row.child(small_button(label, cx, move |_, _, cx| {
-                    t.update(cx, |shell, cx| shell.profile_reorder(index, direction, cx));
-                }));
+            for button in profile_action_buttons(&target, index, armed) {
+                row = row.child(button);
             }
         }
         row
@@ -1126,7 +1275,12 @@ impl SettingsDrawer {
                 .find(|(at, _)| *at == field)
                 .map(|(_, error)| error.message().to_string())
         };
-        let mut card = v_flex().gap_2().p_4().rounded_lg().bg(cx.theme().popover);
+        let mut card = v_flex()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .min_w_0()
+            .bg(cx.theme().popover);
         for (label, state, field) in [
             ("Name", &form.name, ProfileField::Name),
             ("Command", &form.command, ProfileField::Command),
@@ -1134,46 +1288,84 @@ impl SettingsDrawer {
             ("Font size", &form.font_size, ProfileField::FontSize),
             ("Scrollback", &form.scrollback, ProfileField::Scrollback),
         ] {
-            card = card.child(field_row(label, Input::new(state), error_for(field)));
+            card = card.child(field_row(
+                label,
+                Input::new(state).w_full(),
+                error_for(field),
+                cx,
+            ));
         }
         card = card.child(field_row(
             "Color scheme",
-            Select::new(&form.scheme),
+            Select::new(&form.scheme).w_full(),
             error_for(ProfileField::Scheme),
-        ));
-        // The env rows editor: one key/value pair per row, the add
-        // and remove affordances, the row errors under their keys.
-        for (index, (key, value)) in form.env.iter().enumerate() {
-            let target = self.shell.clone();
-            let mut row = h_flex()
-                .gap_2()
-                .child(Input::new(key))
-                .child(Input::new(value))
-                .child(small_button_static("-", cx, move |_, _, cx| {
-                    target.update(cx, |shell, cx| shell.profile_draft_env_remove(index, cx));
-                }));
-            if let Some(error) = error_for(ProfileField::EnvKey(index)) {
-                row = row.child(error);
-            }
-            card = card.child(row);
-        }
-        let target = self.shell.clone();
-        card = card.child(small_button_static("+ env row", cx, move |_, _, cx| {
-            target.update(cx, Shell::profile_draft_env_add);
-        }));
-        let target = self.shell.clone();
-        card = card.child(h_flex().gap_2().child(small_button_static(
-            "Cancel",
             cx,
-            move |_, _, cx| {
-                target.update(cx, Shell::profile_draft_cancel);
-            },
-        )));
+        ));
+        card = card.children(self.env_rows_element(form, &error_for, cx));
         let target = self.shell.clone();
-        card = card.child(small_button_static("Save", cx, move |_, _, cx| {
-            target.update(cx, Shell::profile_draft_save);
-        }));
+        card = card.child(small_button(
+            "profile-env-add",
+            "+ env row",
+            move |_, cx| {
+                target.update(cx, Shell::profile_draft_env_add);
+            },
+        ));
+        let cancel = self.shell.clone();
+        let save = self.shell.clone();
+        card = card.child(
+            h_flex()
+                .gap_2()
+                .justify_end()
+                .child(small_button("profile-cancel", "Cancel", move |_, cx| {
+                    cancel.update(cx, Shell::profile_draft_cancel);
+                }))
+                .child(primary_button("profile-save", "Save", move |_, cx| {
+                    save.update(cx, Shell::profile_draft_save);
+                })),
+        );
         card.into_any_element()
+    }
+
+    /// The env rows editor: one key/value pair per row with the
+    /// remove affordance, the row errors under their keys.
+    fn env_rows_element(
+        &self,
+        form: &FormInputs,
+        error_for: &impl Fn(ProfileField) -> Option<String>,
+        cx: &App,
+    ) -> Vec<gpui::AnyElement> {
+        form.env
+            .iter()
+            .enumerate()
+            .map(|(index, (key, value))| {
+                let target = self.shell.clone();
+                let mut env = v_flex().gap_1().min_w_0().child(
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .child(Input::new(key).flex_1().min_w_0())
+                        .child(Input::new(value).flex_1().min_w_0())
+                        .child(small_button(
+                            ("profile-env-remove", index),
+                            "−",
+                            move |_, cx| {
+                                target.update(cx, |shell, cx| {
+                                    shell.profile_draft_env_remove(index, cx);
+                                });
+                            },
+                        )),
+                );
+                if let Some(error) = error_for(ProfileField::EnvKey(index)) {
+                    env = env.child(
+                        gpui::div()
+                            .text_size(gpui::px(12.))
+                            .text_color(cx.theme().danger)
+                            .child(error),
+                    );
+                }
+                env.into_any_element()
+            })
+            .collect()
     }
 
     /// The Keybindings page: the search box, the grouped rows (a
@@ -1187,19 +1379,26 @@ impl SettingsDrawer {
         let search = shell.settings.keybind_search.clone();
         let armed = shell.settings.keybind_capture;
         let conflict = shell.settings.keybind_conflict;
-        let mut page = v_flex().gap_3().p_2();
-        page = page.child(Input::new(&self.keybind_search));
+        let mut page = v_flex().gap_3().min_w_0();
+        page = page.child(Input::new(&self.keybind_search).w_full());
         if armed.is_some() {
+            let target = self.shell.clone();
             page = page.child(
                 h_flex()
                     .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(cx.theme().secondary)
+                    .text_size(gpui::px(13.))
                     .child("Press the chord to bind — Escape cancels")
-                    .child({
-                        let target = self.shell.clone();
-                        small_button_static("Cancel", cx, move |_, window, cx| {
+                    .child(small_button(
+                        "keybind-capture-cancel",
+                        "Cancel",
+                        move |window, cx| {
                             target.update(cx, |shell, cx| shell.keybind_capture_end(window, cx));
-                        })
-                    }),
+                        },
+                    )),
             );
         }
         if let Some((id, holder)) = conflict {
@@ -1207,57 +1406,100 @@ impl SettingsDrawer {
                 .iter()
                 .find(|row| row.id == holder)
                 .map_or(holder, |row| row.label);
-            page = page.child(format!("That chord is held by {holder_label} ({id})"));
+            page = page.child(
+                gpui::div()
+                    .text_size(gpui::px(13.))
+                    .text_color(cx.theme().danger)
+                    .child(format!("That chord is held by {holder_label} ({id})")),
+            );
         }
-        let mut rows = dropterm::core::keybinds::binding_rows().iter().peekable();
-        while let Some(row) = rows.next() {
-            let _ = rows.peek();
+        for (row_ix, row) in dropterm::core::keybinds::binding_rows().iter().enumerate() {
             if !dropterm::core::keybinds::row_matches_search(row, &search) {
                 continue;
             }
-            let is_armed = armed == Some(row.id);
-            let customized = custom.contains_key(row.id);
-            let target = self.shell.clone();
-            let id = row.id;
-            let mut element = h_flex()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .bg(cx.theme().popover)
-                .child(row.label)
-                .child(
-                    gpui::div()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(cx.theme().accent)
-                        .text_color(cx.theme().accent_foreground)
-                        .child(dropterm::core::keybinds::effective_binding_display(
-                            row.id, &custom,
-                        ))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
-                                target.update(cx, |shell, cx| {
-                                    shell.keybind_capture_start(id, window, cx);
-                                });
-                            },
-                        ),
-                );
-            if customized {
-                let target = self.shell.clone();
-                let id = row.id;
-                element = element.child(small_button_static("Revert", cx, move |_, _, cx| {
-                    target.update(cx, |shell, cx| shell.keybind_revert(id, cx));
-                }));
-            }
-            if is_armed {
-                element = element.child("capturing…");
-            }
-            page = page.child(element);
+            page = page.child(self.keybind_row(
+                row,
+                row_ix,
+                armed == Some(row.id),
+                custom.contains_key(row.id),
+                &custom,
+                cx,
+            ));
         }
         page.into_any_element()
+    }
+
+    /// One keybindings row: the action's label in a filling,
+    /// truncating column, the binding chip (the arm affordance) at
+    /// the right edge, the revert beside it while a custom entry
+    /// exists, the armed hint while it captures.
+    fn keybind_row(
+        &self,
+        row: &dropterm::core::keybinds::BindingRow,
+        row_ix: usize,
+        is_armed: bool,
+        customized: bool,
+        custom: &std::collections::BTreeMap<String, dropterm::core::keybinds::Binding>,
+        cx: &App,
+    ) -> impl IntoElement {
+        let target = self.shell.clone();
+        let id = row.id;
+        let mut element = h_flex()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .min_w_0()
+            .bg(cx.theme().popover)
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(gpui::px(13.))
+                    .child(row.label),
+            )
+            .child(
+                gpui::div()
+                    .id(("keybind-bind", row_ix))
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(cx.theme().accent)
+                    .text_color(cx.theme().accent_foreground)
+                    .text_size(gpui::px(12.))
+                    .child(dropterm::core::keybinds::effective_binding_display(
+                        row.id, custom,
+                    ))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            target.update(cx, |shell, cx| {
+                                shell.keybind_capture_start(id, window, cx);
+                            });
+                        },
+                    ),
+            );
+        if customized {
+            let target = self.shell.clone();
+            let id = row.id;
+            element = element.child(small_button(
+                ("keybind-revert", row_ix),
+                "Revert",
+                move |_, cx| {
+                    target.update(cx, |shell, cx| shell.keybind_revert(id, cx));
+                },
+            ));
+        }
+        if is_armed {
+            element = element.child(
+                gpui::div()
+                    .text_size(gpui::px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("capturing…"),
+            );
+        }
+        element
     }
 
     /// The echo-refresh pass: after a config reload (a write's echo
@@ -1345,34 +1587,68 @@ impl Render for SettingsDrawer {
             let target = shell.clone();
             h_flex()
                 .w_full()
+                .flex_none()
                 .justify_between()
-                .items_center()
                 .px_3()
                 .py_2()
-                .child(gpui::div().text_size(gpui::px(15.)).child("Settings"))
+                .border_b_1()
+                .border_color(cx.theme().border)
                 .child(
                     gpui::div()
+                        .text_size(gpui::px(15.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Settings"),
+                )
+                .child(
+                    gpui::div()
+                        .id("settings-close")
                         .px_2()
                         .py_1()
                         .rounded_sm()
-                        .text_color(cx.theme().foreground)
+                        .text_color(cx.theme().muted_foreground)
                         .child("✕")
                         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                             target.update(cx, |shell, cx| shell.close_settings(window, cx));
                         }),
                 )
         };
-        let mut strip = h_flex().gap_1().p_2();
-        for tab in SettingsTab::ALL {
+        // The tab strip as an even-split segmented row: each tab
+        // takes an equal share of the pane's width and truncates
+        // inside it, so the strip always fits the panel — never a
+        // ragged left-packed row that overruns a narrow drawer.
+        let mut strip = h_flex()
+            .flex_none()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border);
+        for (index, tab) in SettingsTab::ALL.into_iter().enumerate() {
             let selected = tab == page;
             let target = shell.clone();
             strip = strip.child(
                 gpui::div()
-                    .px_3()
-                    .py_1()
+                    .id(("settings-tab", index))
+                    .flex_1()
+                    .min_w_0()
+                    .h_7()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_sm()
-                    .when(selected, |el| el.bg(cx.theme().accent))
-                    .child(tab_header(tab))
+                    .text_size(gpui::px(13.))
+                    .when(selected, |el| {
+                        el.bg(cx.theme().accent)
+                            .text_color(cx.theme().accent_foreground)
+                    })
+                    .when(!selected, |el| el.text_color(cx.theme().muted_foreground))
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .max_w_full()
+                            .truncate()
+                            .child(tab_header(tab)),
+                    )
                     .on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
                         target.update(cx, |shell, cx| {
                             shell.settings.page = tab;
@@ -1402,6 +1678,7 @@ impl Render for SettingsDrawer {
             })
             .when(armed, gpui::Styled::border_1)
             .size_full()
+            .min_w_0()
             .child(header)
             .child(strip)
             .child(self.page_element(window, cx))
