@@ -75,6 +75,17 @@ dev-image := cargo-target-dir / 'debug' / (name + '-dev-image')
 # an installed release's.
 dev-identity-args := '--features=dev-identity'
 
+# The dev instance's memory fence — `just mem-churn`'s daily twin:
+# every `dev-reload` launch rides a systemd-run scope, so a runaway
+# dev build dies at its own cgroup (the telemetry curve waits in the
+# `.Dev` state log for the post-mortem) instead of OOM-ing the host
+# the 47.1 GB way. Roomier than the probe's pin on purpose: the
+# scope inherits every PTY child, and the dev instance's daily job
+# is running this repo's builds inside itself. Both overridable by
+# env for a heavy session; the churn probe's cap stays hard-pinned.
+dev-mem-max := env('DROPTERM_DEV_MEM_MAX', '4G')
+dev-mem-high := env('DROPTERM_DEV_MEM_HIGH', '3G')
+
 # Show all recipes when `just` is run with no arguments (without a
 # default recipe, just runs the first one — dev-image-install —
 # silently, under `set quiet`).
@@ -437,13 +448,16 @@ dev-install: (build-debug dev-identity-args) dev-image-install
     install -Dm0644 {{completions-extended-src}} {{dev-data-dir / appid / 'completions-extended.toml'}}
     install -Dm0644 {{completions-extended-src}} {{dev-data-dir / (appid + '.Dev') / 'completions-extended.toml'}}
 
-# Kill the running dev instance and restart on the dev image. An
-# installed release keeps running — the two identities coexist, each
-# answering its own launcher.
+# Kill the running dev instance and restart on the dev image, under
+# the memory fence: the systemd-run scope holds the instance and
+# every PTY child it spawns, so a runaway dies at the cgroup, host
+# untouched. An installed release keeps running — the two
+# identities coexist, each answering its own launcher.
 dev-reload: (build-debug dev-identity-args) dev-image-install
     -pkill -f '{{dev-kill-pattern}}'
     sleep 0.3
-    {{dev-image}}
+    systemd-run --user --scope -p MemoryMax={{dev-mem-max}} \
+      -p MemoryHigh={{dev-mem-high}} -p MemorySwapMax=0 -- {{dev-image}}
 
 # Build, install the launcher, and restart on the latest code in one step.
 dev: dev-install dev-reload

@@ -76,6 +76,13 @@ already-running process, which is still the code from before your edit.
 `just dev-reload` does just the restart, and `just dev-install` just the build
 plus launcher.
 
+The restart runs under a memory fence: the instance and every shell it spawns
+ride a systemd-run scope (`MemoryMax=4G`, `MemoryHigh=3G`, no swap by default;
+`DROPTERM_DEV_MEM_MAX` / `DROPTERM_DEV_MEM_HIGH` override for a session that
+legitimately needs more). A runaway build dies at the cgroup instead of
+OOM-ing the host — the `just mem-churn` probe's hard-pinned, smaller cap is
+the same fence sized for the test process alone.
+
 To skip the manual step, `just dev-watch` reruns that loop whenever a file
 under `src/` (or `Cargo.toml`) changes:
 
