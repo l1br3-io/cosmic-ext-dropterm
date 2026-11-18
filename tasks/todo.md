@@ -762,3 +762,21 @@ opens on it.
 **Checkpoint — the watch is live:** sampler in every build, the log
 verified on disk, docs landed; the owner's daily-session verdict
 closes the module.
+
+## Theming — theme-defaults (main; /planning 2026-11-18)
+
+- [ ] td-1 The GitHub pair ships as the default (Primer-cited entries
+      at registry rows 0-1, config defaults + fallback flipped to the
+      one shared constant pair, the four hard pins updated,
+      configuration.md rows; accent lands on `#0969DA`/`#2F81F7`)
+- [ ] td-2 Follow system reads the OS for real (`core/system_mode.rs`
+      cell + portal watch on its own thread, the three literal-dark
+      sites wired, the pump's revision check feeding the
+      `pending_theme` funnel, deferral comments swept, theming.md
+      re-truthed; the owner's manual rows issued — fresh installs
+      light/dark, mid-run flip, preference round-trip, bare sway,
+      light-mode new tab)
+
+**Checkpoint — first install is GitHub-themed, following the OS:**
+rows green, dark fallback on bare sway, docs true; SPEC.md's
+`theme-defaults` status updated on the module's close.

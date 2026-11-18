@@ -202,5 +202,8 @@ stands whenever it is cut (plan record, Release boundaries).
   color-scheme, dark fallback), so first install opens
   GitHub-themed following the OS. Owner answers 2026-11-18: full
   scope including the watch; Primer official palette; unreadable
-  preference resolves dark. Spec approved 2026-11-18 — `/planning`
-  writes the chunk next.
+  preference resolves dark. Spec approved 2026-11-18; `/planning`
+  ran the same day — chunk written
+  ([theme-defaults](tasks/theme-defaults.md), rulings in
+  [tasks/plan.md](tasks/plan.md)'s theming section) and `/build` may
+  start with td-1.
