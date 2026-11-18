@@ -2167,26 +2167,14 @@ fn hsla_fg(colors: &Colors) -> gpui::Hsla {
 
 /// Resize the engine to the pane's granted bounds — this frame
 /// already renders the new grid (SIGWINCH rides the notifier), and
-/// the transition logs the walk's resize evidence row. The pixel
-/// request is clamped to the engine's own one-cell floor *before*
-/// the comparison, so a sub-cell window converges (the engine's
-/// internal clamp would otherwise store one-cell dimensions against
-/// a sub-cell request every frame — the first walk's oscillation).
+/// the transition logs the walk's resize evidence row. The decision
+/// is the pure `resize_px` (the testable seam); this wrapper reads
+/// the engine's own cell metrics and applies the request.
 fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
-    let (width, height) = (
-        bounds.size.width.as_f32().max(0.),
-        bounds.size.height.as_f32().max(0.),
-    );
     let size = terminal.size();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "cell and surface px are positive and far below u32::MAX; ceil keeps a partial cell whole"
-    )]
-    let px_size = (
-        width.max(size.cell_width.ceil()).round() as u32,
-        height.max(size.cell_height.ceil()).round() as u32,
-    );
+    let Some(px_size) = resize_px(bounds, size.cell_width, size.cell_height) else {
+        return;
+    };
     if (size.width, size.height) != px_size {
         terminal.resize(px_size.0, px_size.1);
         #[expect(
@@ -2197,6 +2185,42 @@ fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
         let grid = grid::grid_of(w, h, size.cell_width, size.cell_height);
         println!("dropterm: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)");
     }
+}
+
+/// The frame's px request: `None` when the frame must not touch the
+/// engine. The pixel request is clamped to the engine's own one-cell
+/// floor *before* the comparison, so a sub-cell window converges
+/// (the engine's internal clamp would otherwise store one-cell
+/// dimensions against a sub-cell request every frame — the first
+/// walk's oscillation). A zero-width grant is never a request: a
+/// freshly opened window (the surface, the keyboard-hold swap) maps
+/// its first frame before the compositor's configure lands — width
+/// 0, the height carried over — and resizing then drives the shell
+/// through a one-column grid (SIGWINCH); bash repaints its prompt
+/// wrapped, the fragments survive the configure frame's resize-back,
+/// and every hide/show toggle piles another layer onto the grid (the
+/// toggle corruption walk). The configure frame carries the real
+/// width and resizes once.
+fn resize_px(
+    bounds: gpui::Bounds<Pixels>,
+    cell_width: f32,
+    cell_height: f32,
+) -> Option<(u32, u32)> {
+    let width = bounds.size.width.as_f32().max(0.);
+    if width <= 0. {
+        return None;
+    }
+    let height = bounds.size.height.as_f32().max(0.);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "cell and surface px are positive and far below u32::MAX; ceil keeps a partial cell whole"
+    )]
+    let px_size = (
+        width.max(cell_width.ceil()).round() as u32,
+        height.max(cell_height.ceil()).round() as u32,
+    );
+    Some(px_size)
 }
 
 /// Paint one projected row: one shaped line, forced to the cell
@@ -2602,5 +2626,39 @@ mod tests {
 
         flags.note_bell();
         assert_eq!(flags.take(), (true, false));
+    }
+
+    // --- the toggle corruption's guard: the zero-width frame ---
+
+    fn px_bounds(width: f32, height: f32) -> gpui::Bounds<Pixels> {
+        gpui::Bounds {
+            origin: gpui::Point::new(px(0.), px(0.)),
+            size: gpui::Size::new(px(width), px(height)),
+        }
+    }
+
+    #[test]
+    fn the_unconfigured_zero_width_frame_makes_no_resize_request() {
+        // Every freshly opened window (the surface, the keyboard-hold
+        // swap) maps its first frame before the compositor's
+        // configure lands: a zero-width grant with the height carried
+        // over. Resizing the engine there drives the shell through a
+        // one-column grid (SIGWINCH) — bash repaints its prompt
+        // wrapped, the fragments survive the configure frame's
+        // resize-back, and every hide/show toggle piles another
+        // layer onto the grid (the prompt smeared across rows). The
+        // guard: a zero-width grant makes no request, so the
+        // configure frame resizes once. The sub-cell floor and the
+        // real request keep their old answers.
+        assert_eq!(resize_px(px_bounds(0., 749.), 8.4, 20.), None);
+        assert_eq!(
+            resize_px(px_bounds(9., 679.), 8.4, 20.),
+            Some((9, 679)),
+            "the sub-cell width still floors to one cell (the first walk's oscillation)"
+        );
+        assert_eq!(
+            resize_px(px_bounds(2558., 679.), 8.4, 20.),
+            Some((2558, 679))
+        );
     }
 }
