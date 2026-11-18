@@ -2174,15 +2174,12 @@ fn paint_row(
 
 /// The scheme the pane resolves for a config at boot — the effective
 /// colors chain with no profile (single pane, no tabs yet) and the
-/// preference's own dark/light; `System` still resolves dark (the
-/// drawer default): gpui-theme shipped the config-pass re-theme, and
-/// a live system-mode watch rides a later slice.
+/// preference's own dark/light; `System` follows the real OS mode
+/// the system-mode cell holds (theme-defaults td-2).
 pub(crate) fn boot_colors(config: &dropterm::core::config::DropTermConfig) -> Colors {
     let is_dark = dropterm::core::theme_glue::effective_is_dark(
         config.theme_preference,
-        // System → dark: the live system-mode read arrives with the
-        // gpui-theme slice.
-        true,
+        dropterm::core::system_mode::is_dark(),
     );
     dropterm::core::theme_glue::effective_colors(config, None, is_dark)
 }
@@ -2270,11 +2267,13 @@ impl PaneRequest {
             .and_then(|id| dropterm::core::profile::find(&config.profiles, id));
         let colors = match profile {
             // The boot-time mode resolution mirrors `boot_colors`'s
-            // (the one-chain pin): `System` resolves dark until the
-            // live system-mode watch ships.
+            // (the one-chain pin): `System` follows the real OS mode
+            // the system-mode cell holds.
             Some(profile) => {
-                let is_dark =
-                    dropterm::core::theme_glue::effective_is_dark(config.theme_preference, true);
+                let is_dark = dropterm::core::theme_glue::effective_is_dark(
+                    config.theme_preference,
+                    dropterm::core::system_mode::is_dark(),
+                );
                 dropterm::core::theme_glue::effective_colors(config, Some(profile), is_dark)
             }
             None => boot_colors(config),
@@ -2467,6 +2466,40 @@ mod tests {
         assert_eq!(request.spawned_as, "/bin/sh");
         assert_eq!(request.appearance.font_size, 15);
         assert_eq!(request.appearance.scrollback, 4_000);
+    }
+
+    #[test]
+    fn boot_colors_and_command_requests_follow_the_system_mode_cell() {
+        // theme-defaults td-2: both pane-side resolution sites read
+        // the OS-mode cell the portal watch feeds — no literal dark
+        // remains — so a tab opened under a light OS carries light
+        // colors.
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        let config = request_config();
+        let boot = dropterm::core::system_mode::with_system_mode(false, || boot_colors(&config));
+        assert_eq!(
+            boot[NamedColor::Background],
+            Some(Rgb {
+                r: 0xFF,
+                g: 0xFF,
+                b: 0xFF
+            })
+        );
+        let request = dropterm::core::system_mode::with_system_mode(false, || {
+            PaneRequest::for_command(
+                &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                None,
+                &config,
+            )
+        });
+        assert_eq!(
+            request.appearance.colors[NamedColor::Background],
+            Some(Rgb {
+                r: 0xFF,
+                g: 0xFF,
+                b: 0xFF
+            })
+        );
     }
 
     #[test]

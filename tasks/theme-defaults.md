@@ -114,24 +114,24 @@ Dark → Follow system re-derives on the spot; bare sway (no portal) →
 GitHub Dark; a new tab under a light OS carries light colors.
 
 **Acceptance criteria:**
-- [ ] The mapping pins (0/1/2) and the error-arm semantics (stay
+- [x] The mapping pins (0/1/2) and the error-arm semantics (stay
       dark) are green headless; the watch thread never panics the
       app on a missing bus/portal
-- [ ] `resolve_theme` / `boot_colors` / `for_command` follow an
+- [x] `resolve_theme` / `boot_colors` / `for_command` follow an
       overridden cell; no literal `true` remains at any site
-- [ ] A revision bump sets `pending_theme` and the applied identity
+- [x] A revision bump sets `pending_theme` and the applied identity
       updates — chrome tokens and every pane re-theme; a
       geometry-only config echo still re-themes nothing (the
       existing gate pin holds)
-- [ ] The four deferral comments are gone; `docs/theming.md` states
+- [x] The four deferral comments are gone; `docs/theming.md` states
       the portal truth, the 14 schemes, the GitHub defaults, and the
       dark fallback
-- [ ] `just check` green; the owner's row instruction issued, and
+- [x] `just check` green; the owner's row instruction issued, and
       only the owner's reported result recorded
 
 **Verification:**
-- [ ] `just test` green (mapping, seam, funnel pins)
-- [ ] `just check` green
+- [x] `just test` green (mapping, seam, funnel pins)
+- [x] `just check` green
 - [ ] Owner-run rows: the fresh-install pair, the mid-run flip, the
       preference round-trip, bare sway, the light-mode new tab
 
