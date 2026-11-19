@@ -880,6 +880,11 @@ const BUTTON_PADDING_X: f32 = 10.0;
 const BUTTON_GAP: f32 = 4.0;
 /// Side length of the square close/`+`/gear glyph targets.
 const GLYPH_SIZE: f32 = 24.0;
+/// The painted icon's floor (user-ruled 2026-11-20): every icon glyph
+/// renders at least 16x16, never the strip's 14px text size it would
+/// otherwise inherit. The 24px target stays the press area, the glyph
+/// itself the visible icon.
+const GLYPH_FONT_SIZE: f32 = 16.0;
 /// Title text size in logical pixels.
 const TITLE_FONT_SIZE: f32 = 14.0;
 /// Narrowest a tab button may get under squeeze or with an empty
@@ -1181,6 +1186,7 @@ impl TabBarView {
                     .items_center()
                     .justify_center()
                     .text_color(gpui::Hsla { a: 0.7, ..fg })
+                    .text_size(gpui::px(GLYPH_FONT_SIZE))
                     .child("×")
                     // The glyph's press closes its tab through the
                     // gated front door, and never also selects it
@@ -1274,6 +1280,7 @@ impl TabBarView {
             .items_center()
             .justify_center()
             .text_color(fg)
+            .text_size(gpui::px(GLYPH_FONT_SIZE))
             .child(glyph)
             .on_mouse_down(
                 gpui::MouseButton::Left,

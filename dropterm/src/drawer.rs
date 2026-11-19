@@ -867,6 +867,10 @@ fn dropdown_row_of(key: ConfigKey, label: &SharedString) -> usize {
 /// so the rows share one geometry (aligned left labels, aligned
 /// right controls) whatever the control's own intrinsic width.
 const CONTROL_COLUMN_PX: f32 = 208.;
+/// The close glyph's floor (user-ruled 2026-11-20): every icon glyph
+/// paints at least 16x16, pinned here because the ✕ would otherwise
+/// inherit whatever text size an ancestor later sets.
+const CLOSE_GLYPH_FONT_SIZE: f32 = 16.;
 
 /// One row of a section card, the settings-item discipline the
 /// libcosmic drawer drew and the Kit's own `setting` module still
@@ -1613,6 +1617,7 @@ impl Render for SettingsDrawer {
                         .py_1()
                         .rounded_sm()
                         .text_color(cx.theme().muted_foreground)
+                        .text_size(gpui::px(CLOSE_GLYPH_FONT_SIZE))
                         .child("✕")
                         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                             target.update(cx, |shell, cx| shell.close_settings(window, cx));
@@ -1695,6 +1700,14 @@ impl Render for SettingsDrawer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The close glyph paints at the icon floor (user-ruled
+    /// 2026-11-20): 16x16 or larger, never inherited smaller. The pin
+    /// is compile-time: a floor regression fails the build, not a run.
+    #[test]
+    fn the_close_glyph_paints_at_the_icon_floor() {
+        const { assert!(CLOSE_GLYPH_FONT_SIZE >= 16.0) }
+    }
 
     /// Every section-hosted key resolves to a control, and the two
     /// keys no section hosts resolve to none — the rendering face of
