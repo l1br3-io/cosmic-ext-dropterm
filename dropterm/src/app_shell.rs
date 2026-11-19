@@ -3753,6 +3753,19 @@ impl Shell {
         cx.notify();
     }
 
+    /// The system-launch verbs' close consequence (the 2026-11-20
+    /// owner ruling, the open-behavior record's supersession): a
+    /// landed launch — the row's Open or the header's Open folder
+    /// handing its path to the system — closes the drawer for the
+    /// launch. The launched window is the feedback and the drawer
+    /// gets out of its way; the close takes an armed delete pair
+    /// with it like every close. A refused launch (the verb's own
+    /// warn) never reaches here — nothing opened, the panel stays
+    /// put.
+    fn system_open_landed(&mut self, cx: &mut Context<Self>) {
+        self.close_images_panel(cx);
+    }
+
     /// The covering report's rule, lifted off the one signal it
     /// first rode: ANY paste that lands text on the grid — an image
     /// paste's path, the panel's own re-paste, or a plain keyboard
@@ -3804,9 +3817,12 @@ impl Shell {
         match verb {
             PanelVerb::Open(path) => {
                 // The OpenHyperlink precedent: hand it to the system
-                // viewer, one warn on refusal.
-                if let Err(err) = open::that_detached(&path) {
-                    println!("dropterm: failed to open {}: {err}", path.display());
+                // viewer, one warn on refusal — and a landed launch
+                // closes the panel (the 2026-11-20 owner ruling, the
+                // open-behavior record's supersession).
+                match open::that_detached(&path) {
+                    Ok(()) => self.system_open_landed(cx),
+                    Err(err) => println!("dropterm: failed to open {}: {err}", path.display()),
                 }
             }
             PanelVerb::CopyPath(path) => {
@@ -3896,13 +3912,13 @@ impl Shell {
             PanelVerb::OpenCache => {
                 // The OpenHyperlink precedent for the folder: the file
                 // manager, one warn on refusal — including the no-XDG
-                // case.
+                // case (a refusal keeps the panel; nothing opened). A
+                // landed launch closes the panel like Open's.
                 match dropterm::core::paste_cache::paste_cache_dir() {
-                    Some(dir) => {
-                        if let Err(err) = open::that_detached(&dir) {
-                            println!("dropterm: failed to open {}: {err}", dir.display());
-                        }
-                    }
+                    Some(dir) => match open::that_detached(&dir) {
+                        Ok(()) => self.system_open_landed(cx),
+                        Err(err) => println!("dropterm: failed to open {}: {err}", dir.display()),
+                    },
                     None => println!(
                         "dropterm: paste cache unavailable: no XDG cache directory resolves"
                     ),
@@ -6018,6 +6034,34 @@ mod tests {
             assert!(
                 engine.lock().expect("engine lock").needs_update,
                 "the re-paste must reach the engine's paste funnel"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_landed_system_open_closes_the_standing_panel(cx: &mut gpui::TestAppContext) {
+        // The open-behavior supersession's pin (owner ruling,
+        // 2026-11-20): the Open-shaped verbs hand their path to the
+        // system and the drawer closes for the launch — the launched
+        // window is the feedback, the drawer gets out of its way, an
+        // armed pair dies with the close like every close. The
+        // launch call itself stays outside the hermetic tests (a
+        // real viewer spawn), so the verb's Ok arm routes through
+        // the landed seam; its refusal arm — the warn — leaves the
+        // panel put, nothing opened to close for.
+        let (shell, _signals_tx, _tab, cx) = shell_with_standing_panel(cx);
+        cx.update(|_window, cx| {
+            shell.update(cx, super::Shell::system_open_landed);
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the landed launch must close the standing panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
             );
         });
     }
