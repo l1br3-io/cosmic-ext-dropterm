@@ -28,6 +28,14 @@ surface, and accepts the superseded record's stated cost without flinching:
 every Open close disarms an armed delete pair, exactly as every close always
 has, and a follow-up verb means re-opening through the chip.
 
+**The same ruling's second leg (the owner's follow-up after the live walk
+confirmed the first): the stay-open surface follows the launch out.** With
+`hide_on_focus_loss` on, the viewer's grab runs the natural focus-loss hide
+and the window walks itself out; with the flag off the surface shares focus
+and the viewer would sit behind the still-mapped drop-down — so the landed
+launch hands its own Hide through the pane-signal funnel, and the whole
+surface follows the drawer.
+
 ## Findings
 
 1. **The superseded record's evidence stands; the verdict was a preference,
@@ -60,24 +68,49 @@ has, and a follow-up verb means re-opening through the chip.
    panel exactly where it stood, so the close never fires for an action
    that did not happen.
 
+## The second leg: the stay-open surface follows the launch out (2026-11-20)
+
+The live walk confirmed the drawer close and surfaced the regime the first
+verdict's compositor argument had papered over: the drop-down is a layer
+surface, and a stay-open one (`hide_on_focus_loss` off — the Ghostty
+`quick-terminal-autohide=false` model the flag's own doc cites) shares
+keyboard focus instead of holding the exclusive grab, so the launched
+viewer never triggers the focus-loss hide and, with the drawer closed, it
+still sits behind the mapped drop-down. The owner ruled the same outcome as
+the grab-holding regime: pressing Open walks the whole surface out.
+
+The mechanics follow the surface's own grammar. The funnel gate stands as
+documented (`focus_loss_hides` — only the automatic focus-loss path
+consults it; explicit hides call the decision directly), so the launch acts
+like the other explicit hides: `system_open_landed` hands `PaneSignal::Hide`
+into the pane-signal channel when the flag is off, and the pump's drain runs
+the machine's hide funnel with it — decided at the tick's window point,
+never inside the verb's event handler (sr-1's lesson). A grab-holding
+surface (`hide_on_focus_loss` on) sends nothing: its focus-loss hide already
+owns the exit, and the launch must not race it with a second funnel run.
+
 ## What DropTerm has today
 
-- `PanelVerb::Open` (`dropterm/src/app_shell.rs:3818`) matches the launch
-  result: `Ok` → `system_open_landed` (`:3765`), `Err` → the warn. The
-  header's `OpenCache` (`:3912`) rides the same shape, with the no-XDG
+- `PanelVerb::Open` (`dropterm/src/app_shell.rs:3832`) matches the launch
+  result: `Ok` → `system_open_landed` (`:3774`), `Err` → the warn. The
+  header's `OpenCache` (`:3926`) rides the same shape, with the no-XDG
   refusal keeping the panel.
-- `system_open_landed` (`:3765`) is the ruling's named seam: a landed
+- `system_open_landed` (`:3774`) is the ruling's named seam: a landed
   launch closes the drawer through `close_images_panel` — armed pair dies
-  with the close like every close. The verb docs in
+  with the close like every close — and hands the stay-open surface's own
+  `PaneSignal::Hide` when `hide_on_focus_loss` is off (the second leg's
+  funnel hand-off; a grab-holding surface sends nothing). The verb docs in
   `dropterm/src/images_panel.rs` (`:62-64`, `:77-79`) carry the rule.
 - Pinned hermetically by `a_landed_system_open_closes_the_standing_panel`
-  (`:6034`) — the launch call itself stays outside the tests (a real viewer
-  spawn), so the seam carries the pin and the refusal arms are audited at
-  the match.
+  (`:6048`) and `a_landed_open_hides_a_stay_open_surface_itself` (`:6076`,
+  the two regimes' hand-off through the funnel's own receiver) — the launch
+  call itself stays outside the tests (a real viewer spawn), so the seam
+  carries the pins and the refusal arms are audited at the match.
 - The user shape is documented at `docs/images.md:19` (the launch closes the
-  panel, refusals leave it standing, every close disarms) and the walk row
-  owns the manual check (`docs/testing.md:465` — the drawer closing behind
-  the launch for both Open targets and Open folder).
+  panel, refusals leave it standing, every close disarms, the stay-open
+  surface follows the launch out) and the walk row owns the manual check
+  (`docs/testing.md:465` — the drawer closing behind the launch, the
+  flag-off surface sliding out with it).
 
 ## Recommendation
 
