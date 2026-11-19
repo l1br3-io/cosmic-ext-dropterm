@@ -364,6 +364,95 @@ mod tests {
         }
     }
 
+    struct VerbProbe {
+        verbs: std::rc::Rc<std::cell::RefCell<Vec<PanelVerb>>>,
+    }
+
+    impl gpui::Render for VerbProbe {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let verb: VerbFn = {
+                let verbs = Rc::clone(&self.verbs);
+                Rc::new(move |verb, _: &mut Window, _: &mut App| {
+                    verbs.borrow_mut().push(verb);
+                })
+            };
+            // The verb at a known seat — the window's own top-left
+            // corner, inside a sized frame — so the click needs no
+            // panel-layout geometry.
+            gpui::div()
+                .size_full()
+                .child(gpui::div().absolute().top_0().left_0().child(quiet_verb(
+                    "probe-open",
+                    "Open",
+                    PanelVerb::Open(PathBuf::from("/cache/paste-1.png")),
+                    &verb,
+                    false,
+                )))
+                .child(
+                    gpui::div()
+                        .absolute()
+                        .top_0()
+                        .left(px(200.))
+                        .child(quiet_verb(
+                            "probe-delete",
+                            "Delete",
+                            PanelVerb::ArmDelete(PathBuf::from("/cache/paste-1.png")),
+                            &verb,
+                            true,
+                        )),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_button_click_fires_its_verb(cx: &mut gpui::TestAppContext) {
+        // The Kit-Button migration's pin: the verbs moved from
+        // on_mouse_down divs to Button on_click — a full press and
+        // release on the element must fire the routed verb, both
+        // styles (the quiet secondary and the danger cluster). The
+        // old probe pins the press stays-open rule; this one pins
+        // the routing itself.
+        cx.update(gpui_component::init);
+        let verbs = Rc::new(std::cell::RefCell::new(Vec::<PanelVerb>::new()));
+        let probe = Rc::clone(&verbs);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(640.), px(400.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, cx| cx.new(|_| VerbProbe { verbs: probe }),
+                )
+            })
+            .expect("open the verb probe window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+
+        // A full click on the secondary verb, then the danger one.
+        cx.simulate_click(gpui::point(px(20.), px(14.)), gpui::Modifiers::default());
+        cx.simulate_click(gpui::point(px(220.), px(14.)), gpui::Modifiers::default());
+        assert_eq!(
+            *verbs.borrow(),
+            vec![
+                PanelVerb::Open(PathBuf::from("/cache/paste-1.png")),
+                PanelVerb::ArmDelete(PathBuf::from("/cache/paste-1.png")),
+            ],
+            "the button clicks must route their verbs: {:?}",
+            verbs.borrow()
+        );
+    }
+
     #[gpui::test]
     fn a_panel_press_stays_open_and_a_backdrop_press_closes(cx: &mut gpui::TestAppContext) {
         // The click-close report's pin: the overlay's real composition

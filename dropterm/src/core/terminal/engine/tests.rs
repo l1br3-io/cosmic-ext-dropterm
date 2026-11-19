@@ -465,7 +465,13 @@ fn settling_after_the_grant_applied_records_the_grid_already_held() {
     // already held; a settled record still never re-snapshots.
     let mut terminal = spawn_grid_terminal();
     resize_cols(&mut terminal, 45); // the grant applied first
-    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    // The close itself: `true` is the close — the caller may owe the
+    // fresh-prompt adoption one update. The value is the paint's
+    // `needs_update` contract (the funnel's return drives it).
+    assert!(
+        terminal.settle_spawn_grid_now(),
+        "the first close on a waiting record must report the close"
+    ); // the funnel's close, after
     assert_eq!(terminal.spawn_grid().0, 45);
     resize_cols(&mut terminal, 70);
     assert_eq!(
@@ -473,7 +479,12 @@ fn settling_after_the_grant_applied_records_the_grid_already_held() {
         45,
         "settled: later resizes deviate"
     );
-    terminal.settle_spawn_grid_now(); // every re-show adoption: no-op
+    // Every re-show adoption: `false` — an already-settled record,
+    // nothing owed.
+    assert!(
+        !terminal.settle_spawn_grid_now(),
+        "a settled record must report no close"
+    ); // every re-show adoption: no-op
     resize_cols(&mut terminal, 80);
     assert_eq!(
         terminal.spawn_grid().0,

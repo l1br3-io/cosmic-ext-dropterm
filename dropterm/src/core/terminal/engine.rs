@@ -771,14 +771,17 @@ pub struct Terminal {
 
 /// The spawn-grid settle (status-glance criterion 1): a fresh
 /// terminal's first resizes are not user deviations — the
-/// construction default, an opening surface's measuring stretch,
-/// and the granted-size stream all land before the resting grid
-/// exists — so the record re-baselines through them and freezes
-/// only once the surface has settled.
+/// construction default and the granted-size stream land before the
+/// resting grid exists — so the record re-baselines through them
+/// and freezes only once the surface has settled. The settle's one
+/// runtime arm is the paint: a pane's first frame under nonzero
+/// granted bounds calls [`Self::settle_spawn_grid_now`] (the
+/// `TerminalView`'s `resize_to_bounds`), which is the whole close —
+/// no app-side arm exists beside it.
 enum SpawnSettle {
     /// The surface is opening: every resize re-baselines the record
-    /// (opening churn) until the app's granted-size adoption arms
-    /// the close.
+    /// (opening churn) until the pane's first granted frame closes
+    /// the settle in the paint.
     WaitingAdoption,
     /// A laid-out surface exists (or an adoption just landed): the
     /// next resize is the settling one — it records the resting
@@ -1621,21 +1624,22 @@ impl Terminal {
     /// status band's grid segment measures deviation against: the
     /// band narrates a grid only while the live one differs from
     /// this (status-glance criterion 1). Recorded through the
-    /// spawn-settle machinery ([`Self::arm_spawn_grid_next_resize`]);
-    /// a respawn is a fresh terminal, so its settle — and record —
-    /// start over.
+    /// spawn-settle machinery ([`Self::settle_spawn_grid_now`], the
+    /// pane paint's first granted frame); a respawn is a fresh
+    /// terminal, so its settle — and record — start over.
     pub fn spawn_grid(&self) -> (u16, u16) {
         self.spawn_grid
     }
 
     /// Arms the spawn-grid settle's close: the terminal's next
-    /// resize records the resting grid and freezes the record. The
-    /// app arms where a laid-out surface's granted size is adopted
-    /// (the pin funnel — every show runs one) and, only when a live
-    /// surface already exists, at spawn/respawn, where the fresh
-    /// terminal's first — settling — resize is the resting one.
-    /// Arming a settled record is a no-op: a later adoption (every
-    /// re-show) must never re-snapshot a frozen record.
+    /// resize records the resting grid and freezes the record.
+    /// Test seam only — the runtime close rides
+    /// [`Self::settle_spawn_grid_now`] in the pane's paint (the
+    /// first granted frame is itself the settling moment, so no
+    /// arm exists beside it); this entry keeps the `NextResize`
+    /// state reachable for the suite. Arming a settled record is a
+    /// no-op: a later adoption (every re-show) must never
+    /// re-snapshot a frozen record.
     pub fn arm_spawn_grid_next_resize(&mut self) {
         if matches!(self.spawn_settle, SpawnSettle::WaitingAdoption) {
             self.spawn_settle = SpawnSettle::NextResize;

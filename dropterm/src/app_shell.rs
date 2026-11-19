@@ -5579,6 +5579,115 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[gpui::test]
+    fn a_paste_closes_a_standing_panel_and_records_its_row(cx: &mut gpui::TestAppContext) {
+        // The covering report's model half: with the images panel
+        // standing — the 560px drawer and its veil over the terminal
+        // — an image paste must close it first (the armed pair dies
+        // with the close), the path's ledger row must land, and a
+        // standing refusal verdict must retire. A paste on a closed
+        // panel records the row and touches nothing else.
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        let tab = tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+
+        let path = std::path::PathBuf::from("/cache/paste/paste-20261119-101010-1.png");
+        let bytes = b"png-bytes".to_vec();
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.images_open = true;
+                shell.images_armed = Some(path.clone());
+                shell.status_paste_refusal = Some((
+                    dropterm::core::status::PasteRefusal::OverCap,
+                    Instant::now(),
+                ));
+            });
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.note_pasted_image(tab, path.clone(), &bytes, cx);
+            });
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the paste must close the standing panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
+            );
+            assert_eq!(
+                shell.status_paste_refusal, None,
+                "a landed paste retires the refusal verdict"
+            );
+            assert!(
+                shell
+                    .tabs
+                    .pasted_images(tab)
+                    .is_some_and(|rows| rows.iter().any(|row| row.path == path)),
+                "the ledger row must record"
+            );
+        });
+
+        // A paste on a closed panel: the row records, the closed
+        // panel stays closed.
+        let second = std::path::PathBuf::from("/cache/paste/paste-20261119-101010-2.png");
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.note_pasted_image(tab, second, b"more".as_slice(), cx);
+            });
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(!shell.images_open, "a closed panel stays closed");
+            assert_eq!(
+                shell
+                    .tabs
+                    .pasted_images(tab)
+                    .map(<[dropterm::core::tabs::PastedImage]>::len),
+                Some(2)
+            );
+        });
+    }
+
     #[test]
     fn the_thumbs_cache_sheds_orphans_when_a_tab_closes() {
         // The thumbnail cache's lifetime bound (ra-2): decoded panel
