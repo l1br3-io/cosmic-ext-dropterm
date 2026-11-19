@@ -125,7 +125,7 @@ fn unchanged_resolution_never_reholds() {
 // `GrabBarDragged` is the one geometry-call site that could run
 // while a slide animates: a slide-in rides a `Shown` surface, so
 // matching `Shown` alone does not exclude it — a press inside the
-// 130 ms window must neither arm a drag nor send `set_size` on the
+// 150 ms window must neither arm a drag nor send `set_size` on the
 // animating surface. With arming gated, `DragApplyDue` and
 // `GrabBarReleased` are covered by construction: they only act on an
 // armed drag, and the hide decision clears any live drag before a
@@ -181,7 +181,7 @@ fn toggle_or_show_from_hidden_runs_the_measuring_pass() {
 #[test]
 fn toggle_or_hide_from_measuring_destroys_immediately() {
     // A measuring surface has no reshaped content to animate —
-    // the surface dies now, not in 130 ms.
+    // the surface dies now, not in 150 ms.
     let handle = SurfaceHandle::next();
     assert_eq!(
         toggle_step(ToggleIntent::Toggle, &SurfaceState::Measuring(handle), true),
@@ -903,7 +903,7 @@ fn hide_from_shown_with_slides_off_destroys_now() {
 #[test]
 fn hide_from_measuring_destroys_the_probe() {
     // A measuring surface has no reshaped content to animate: it
-    // dies now, never in 130 ms.
+    // dies now, never in 150 ms.
     let handle = SurfaceHandle::next();
     let mut machine = SurfaceMachine {
         state: SurfaceState::Measuring(handle),

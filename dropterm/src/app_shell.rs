@@ -167,7 +167,17 @@ fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
     let json = crate::theme_gen::kit_theme_json(&theme.colors, &theme.name, theme.dark);
     let config: gpui_component::ThemeConfig = serde_json::from_value(json)
         .expect("the generated theme parses — pinned by theme_gen's own tests");
-    gpui_component::Theme::update(cx, |t| t.apply_config(&std::rc::Rc::new(config)));
+    gpui_component::Theme::update(cx, |t| {
+        t.apply_config(&std::rc::Rc::new(config));
+        // The Kit's window frame token: `window_border` paints the
+        // WindowBorder wrapper's 1 px frame at the window bounds —
+        // static while the drawer slides (the slide's canvas rule,
+        // fifth walk). Neutralized here so the frame the eye follows
+        // is the drawer's own, painted inside the band where it rides
+        // the slide; the token is window chrome, not scheme color, so
+        // the override lives on the apply route, not the generator.
+        t.window_border = gpui::transparent_black();
+    });
     let applied = cx.theme();
     println!(
         "dropterm: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
@@ -729,6 +739,34 @@ impl Shell {
         actions
     }
 
+    /// The slide clock's parking tick: the machine parks finished
+    /// slides (an `In` slide rides every shown surface until it parks,
+    /// and an unparked slide would block reshapes and drags by the
+    /// decision layer's own guards); an `Out` slide's park is the
+    /// destroy that lands the hide. The completion destroy is a state
+    /// change the served mirror must see: Hiding became Hidden with no
+    /// verb anywhere in the path. Diagnostic: the `DROPTERM_SLIDE_DEBUG`
+    /// park line anchors the destroy instant against the animator's
+    /// last frame.
+    fn slide_park_tick(&mut self, actions: &mut Vec<Action>) {
+        let parked_epoch = self.machine.slide.as_ref().map(|p| p.epoch);
+        let slide_intents = self.machine.decide_slide_tick();
+        if slide_intents.is_empty() {
+            return;
+        }
+        if let (Some(epoch), true) = (
+            parked_epoch,
+            std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some(),
+        ) {
+            println!(
+                "dropterm: slide park e{epoch} +{}ms — destroy",
+                self.boot.elapsed().as_millis()
+            );
+        }
+        self.execute_into(slide_intents, actions);
+        self.publish_phase();
+    }
+
     /// One pump: drains the forwarded verbs and the measuring slot
     /// through the decision layer, executing every intent into
     /// actions — pure decision work, no window touched. The tick
@@ -802,14 +840,7 @@ impl Shell {
         // by the decision layer's own guards). The animated
         // translation of an `Out` slide is task 3's; the clock is
         // this shell's to tick.
-        let slide_intents = self.machine.decide_slide_tick();
-        if !slide_intents.is_empty() {
-            self.execute_into(slide_intents, &mut actions);
-            // The completion tick's destroy is a state change the
-            // served mirror must see: Hiding became Hidden with no
-            // verb anywhere in the path.
-            self.publish_phase();
-        }
+        self.slide_park_tick(&mut actions);
         self.drag_walk_step(&mut actions);
         self.drain_config_changes(&mut actions);
         let quit = match self.exit_at {
@@ -1622,7 +1653,18 @@ fn open_shaped_window(
     label: &str,
 ) {
     match cx.open_window(options, |window, cx| {
-        cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
+        // The slide's canvas rule: the Kit styles the window root with
+        // the theme background (WindowState's root styling) — a
+        // full-window opaque backdrop in the terminal's own background
+        // color, behind the drawer's sliding band. Against it the band
+        // reads as content moving inside a static rectangle, not as a
+        // window sliding (the fifth slide walk's root cause; the
+        // surface itself is already `Transparent` in the window
+        // options). The root goes transparent: the drawer paints its
+        // whole self — strip, pane, band, its own frame overlay — and
+        // the vacated area shows the desktop, so the drawer itself is
+        // what slides.
+        cx.new(|cx| KitRoot::new(shell.clone(), window, cx).bg(gpui::transparent_black()))
     }) {
         Ok(window) => {
             shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
@@ -4444,6 +4486,21 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The slide offset's window-space sign — the draw site's half of
+    /// the slide model's edge-space rule: the content exits through
+    /// the surface's *anchored* screen edge. A top drawer drops down
+    /// in from the top and retracts up into it; a bottom one rises up
+    /// in from the bottom and sinks back into it. The bounce walk's
+    /// root cause: these arms were crossed — each drawer played the
+    /// mirror motion of its edge, rising in and sinking out through
+    /// the free edge, which read as bouncing on the mid-screen line.
+    fn slide_top_offset(edge: Edge, offset_px: f32) -> f32 {
+        match edge {
+            Edge::Top => -offset_px,
+            Edge::Bottom => offset_px,
+        }
+    }
+
     fn sliding_band(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // The drawer's content is the strip plus the active pane
         // (gpui-tabs Task 1): the strip at the config's side of the
@@ -4498,7 +4555,28 @@ impl Shell {
         if let Some(tip) = self.status_tip_element(strip, fg) {
             children.push(tip);
         }
-        let column = div().size_full().flex().flex_col().children(children);
+        // The drawer's own frame (the slide's canvas rule, fifth
+        // walk): the Kit's WindowBorder painted a 1 px frame at the
+        // window bounds — static while the band slides — so the
+        // drawer carries its frame itself, as an overlay pinned to
+        // the column. Absolute and zero-layout on purpose: the pane's
+        // cell metrics stay byte-identical to the frameless column,
+        // and the same border color the Kit's frame rode
+        // (`window_border` fell back to `border`). The column is what
+        // translates, so the frame rides the slide in both paths.
+        let column = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .relative()
+            .children(children)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_1()
+                    .border_color(cx.theme().border),
+            );
         let Some(playing) = self.machine.slide else {
             return column;
         };
@@ -4512,6 +4590,12 @@ impl Shell {
         // (slide-animation-smoothness, finding 5).
         let slide_id = gpui::ElementId::NamedInteger("slide".into(), playing.epoch);
         let edge = self.inputs.geometry.edge;
+        // The slide walk's frame log (DROPTERM_SLIDE_DEBUG): one line
+        // per animator invocation — the boot clock stamps the frame
+        // interval, GPUI's element progress and the machine's elapsed
+        // ride side by side so a clock divergence shows, and the offset
+        // exposes any non-monotone pose. The bounce walk reads this.
+        let (epoch, direction, boot) = (playing.epoch, playing.active.direction, self.boot);
         div().size_full().child(
             div()
                 .absolute()
@@ -4519,20 +4603,24 @@ impl Shell {
                 .with_animation(
                     slide_id,
                     Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
-                    move |band, _progress| {
+                    move |band, progress| {
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
                         )]
-                        let offset =
-                            slide::offset(&active, started.elapsed().as_millis() as u64);
-                        match edge {
-                            // Sliding out toward the free edge: a
-                            // top-anchored drawer drops down, a
-                            // bottom-anchored one rises.
-                            Edge::Top => band.top(px(offset)),
-                            Edge::Bottom => band.top(px(-offset)),
+                        let ms = started.elapsed().as_millis() as u64;
+                        let offset = slide::offset(&active, ms);
+                        if std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some() {
+                            println!(
+                                "dropterm: slide e{epoch} {} +{}ms el={progress:.2} m={ms}ms off={offset:.1}",
+                                match direction {
+                                    slide::Direction::In => "show",
+                                    slide::Direction::Out => "hide",
+                                },
+                                boot.elapsed().as_millis(),
+                            );
                         }
+                        band.top(px(Self::slide_top_offset(edge, offset)))
                     },
                 )
                 .child(column),
@@ -4558,7 +4646,7 @@ impl gpui::Render for Shell {
         }
         if self.frames == 1 {
             println!(
-                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
+                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 150ms)",
                 self.show_open.elapsed().as_millis()
             );
             // The slide clock re-bases at the show window's first
@@ -5564,6 +5652,42 @@ pub(crate) fn boot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_slide_exits_through_the_anchored_edge() {
+        // The bounce walk's regression pin: the window-space top sign
+        // sends the content out through the surface's anchored screen
+        // edge — a top drawer's hidden pose sits above the surface
+        // (negative top), a bottom one's sits below it (positive). The
+        // crossed arms had each drawer rising in and sinking out
+        // through its free edge, which read as bouncing on the
+        // mid-screen line.
+        assert_eq!(Shell::slide_top_offset(Edge::Top, 835.0), -835.0);
+        assert_eq!(Shell::slide_top_offset(Edge::Bottom, 835.0), 835.0);
+        // Rest is rest on either edge — byte-identical to the
+        // unwrapped column.
+        assert_eq!(Shell::slide_top_offset(Edge::Top, 0.0), 0.0);
+        assert_eq!(Shell::slide_top_offset(Edge::Bottom, 0.0), 0.0);
+    }
+
+    #[gpui::test]
+    fn the_kit_backdrop_paints_no_window_of_its_own(cx: &mut gpui::TestAppContext) {
+        // The slide's canvas rule (the fifth walk's pin): the Kit's
+        // window-frame token is neutralized on the theme apply route —
+        // a static 1 px frame at the window bounds would read as a
+        // fixed rectangle while the drawer slides inside it. The
+        // drawer paints its own frame (the band's border overlay);
+        // the window is the transparent canvas behind it.
+        cx.update(gpui_component::init);
+        cx.update(|cx| apply_kit_theme(cx, &DropTermConfig::default()));
+        cx.update(|cx| {
+            assert_eq!(
+                cx.theme().window_border,
+                gpui::transparent_black(),
+                "the Kit's window frame must not paint over the slide's canvas"
+            );
+        });
+    }
 
     #[test]
     fn the_dock_anchor_swap_rule_is_exact() {
