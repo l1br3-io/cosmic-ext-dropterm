@@ -91,18 +91,18 @@ owns the exit, and the launch must not race it with a second funnel run.
 
 ## What DropTerm has today
 
-- `PanelVerb::Open` (`dropterm/src/app_shell.rs:3832`) matches the launch
-  result: `Ok` → `system_open_landed` (`:3774`), `Err` → the warn. The
-  header's `OpenCache` (`:3926`) rides the same shape, with the no-XDG
+- `PanelVerb::Open` (`dropterm/src/app_shell.rs:3834`) matches the launch
+  result: `Ok` → `system_open_landed` (`:3776`), `Err` → the warn. The
+  header's `OpenCache` (`:3928`) rides the same shape, with the no-XDG
   refusal keeping the panel.
-- `system_open_landed` (`:3774`) is the ruling's named seam: a landed
+- `system_open_landed` (`:3776`) is the ruling's named seam: a landed
   launch closes the drawer through `close_images_panel` — armed pair dies
   with the close like every close — and hands the stay-open surface's own
   `PaneSignal::Hide` when `hide_on_focus_loss` is off (the second leg's
   funnel hand-off; a grab-holding surface sends nothing). The verb docs in
   `dropterm/src/images_panel.rs` (`:62-64`, `:77-79`) carry the rule.
 - Pinned hermetically by `a_landed_system_open_closes_the_standing_panel`
-  (`:6048`) and `a_landed_open_hides_a_stay_open_surface_itself` (`:6076`,
+  (`:6110`) and `a_landed_open_hides_a_stay_open_surface_itself` (`:6307`,
   the two regimes' hand-off through the funnel's own receiver) — the launch
   call itself stays outside the tests (a real viewer spawn), so the seam
   carries the pins and the refusal arms are audited at the match.
