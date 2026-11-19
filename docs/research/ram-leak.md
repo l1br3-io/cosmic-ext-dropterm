@@ -139,7 +139,7 @@ drives the same 1-col↔full churn against the same emoji prompt, so
 the immortal loop plausibly fired with timing-dependent frequency
 (some toggles catch an emoji-led row, others grow out first) — but
 this record cannot prove that was *all* of it. The always-on sampler
-([ram-telemetry](../../SPEC-ram-telemetry.md)) owns that question:
+(`SPEC-ram-telemetry`) owns that question:
 if daily curves now sit flat, this fix was the whole story; if a
 second vector remains, its curve names it.
 
@@ -175,5 +175,5 @@ Draft PR to alacritty/alacritty, both guards, both still in master:
 - The carried fix: `carried/alacritty-terminal` (this repo, ruled
   2026-11-17); the pins and repro in
   [dropterm's engine tests](../../dropterm/src/core/terminal/engine/tests.rs);
-  the chunk ([tasks/ram-leak.md](../../tasks/ram-leak.md)) carries
+  the chunk (`tasks/ram-leak.md`) carries
   every run's numbers and cap values.

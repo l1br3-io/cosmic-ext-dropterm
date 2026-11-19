@@ -7,7 +7,7 @@ new rows, this text never changes.
 ## TL;DR
 
 The sweep walked every vector in
-[SPEC-resource-audit.md](../../SPEC-resource-audit.md)'s inventory
+`SPEC-resource-audit.md`'s inventory
 across the one GPUI binary. **Eight bounds landed** (two by owner
 ruling), **ten vectors verified bounded with code citations**, and
 **three filed as P2** with their evidence here. No P1 vector remains
@@ -21,7 +21,7 @@ queue/reentrancy census, the bomb-guard census, and the two memory
 censes), cross-checked against `toggle-ram`'s owner-run probe data
 (three regimes × 150 toggles, build `1b68d22c…`). Every fix landed
 its own commit with a headless pin; the chunks in
-[tasks/resource-audit.md](../../tasks/resource-audit.md) carry the
+`tasks/resource-audit.md` carry the
 per-task dispositions verbatim.
 
 ## Bounds that landed
@@ -135,5 +135,5 @@ user state was touched. Recorded as agent-run, not owner-run.
 
 The five censes (2026-11-17, this repository at 17767c1 + the
 module's commits through 1299312), `toggle-ram`'s owner-run probe
-series ([tasks/toggle-ram.md](../../tasks/toggle-ram.md)), and the
+series (`tasks/toggle-ram.md`), and the
 pinned alacritty fork at rev 1185ffd.
