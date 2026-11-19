@@ -948,6 +948,130 @@ fn a_fresh_tabs_menu_declines_until_the_funnel_close_arms_the_anchor() {
     );
 }
 
+/// The auto-popup tests' terminal: the /bin/sh autosuggest shape with
+/// the menu auto-popup key flipped on through `set_config` — the same
+/// pass the app's config echo rides, so a test walks the exact
+/// toggle-on route the settings flip takes.
+fn menu_auto_terminal() -> Terminal {
+    let mut terminal = autosuggest_terminal();
+    terminal.set_config(
+        &TerminalOptions {
+            autosuggestions_menu_auto: true,
+            ..TerminalOptions::default()
+        },
+        &Colors::default(),
+    );
+    terminal
+}
+
+/// Seeds the history tier with three commands sharing one prefix, so
+/// a typed segment collects the two-or-more candidate set the
+/// auto-popup's open rule demands.
+fn seed_three_sleep_commands(terminal: &mut Terminal) {
+    terminal.suggest.seed_history([
+        "sleep 30".to_string(),
+        "sleep 60".to_string(),
+        "sleepy".to_string(),
+    ]);
+}
+
+#[test]
+fn the_auto_popups_navigation_survives_its_own_updates() {
+    // The 2026-11-20 report: the auto-opened menu showed, but the
+    // arrow keys read dead. The unconditioned re-collection in
+    // `update()` re-opened the menu on every repaint — `open()`
+    // resets the selection to the top — so a Down press's move was
+    // erased before the frame that should have shown it ever
+    // painted. The pin drives the exact sequence the pane produces:
+    // the menu-scoped press, then the repaint's update drain.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() >= 3,
+        "the echo's update auto-opens the three-row menu",
+    );
+    assert_eq!(terminal.menu_selected(), 0, "the open selects the top");
+    terminal.menu_press(suggest::MenuKey::Down);
+    assert_eq!(terminal.menu_selected(), 1, "the press moved the selection");
+    terminal.update();
+    assert_eq!(
+        terminal.menu_selected(),
+        1,
+        "the same-typed update never re-opens over the selection"
+    );
+    terminal.menu_press(suggest::MenuKey::Up);
+    assert_eq!(terminal.menu_selected(), 0);
+    terminal.update();
+    assert_eq!(
+        terminal.menu_selected(),
+        0,
+        "and the up move survives its repaint too"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn the_auto_popups_close_survives_the_updates_before_the_next_keystroke() {
+    // The close half of the same report: Escape and an accept close
+    // the menu, and the next same-typed update popped it right back
+    // open — Escape read dead, and a standing menu kept consuming
+    // Enter as the next accept. The pin drives close-then-update on
+    // both keys and demands the closed state stick.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() >= 3,
+        "the echo's update auto-opens the three-row menu",
+    );
+    // Escape (the menu's Other key): the close lands, and the
+    // same-typed repaint leaves it closed.
+    terminal.menu_press(suggest::MenuKey::Other);
+    assert!(!terminal.menu_is_open(), "the escape closed the menu");
+    terminal.update();
+    assert!(
+        !terminal.menu_is_open(),
+        "the escape's close survives the same-typed update"
+    );
+    // A typed change re-arms the auto-popup (the "as you type" rule):
+    // backspacing to the bare prefix re-opens it.
+    terminal.input_no_scroll(&b"\x7f"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() >= 3,
+        "the backspace's echo re-opens the menu",
+    );
+    // Enter (the accept): the suffix lands, the menu closes, and it
+    // stays closed while the typed segment holds still.
+    terminal.menu_press(suggest::MenuKey::Accept);
+    assert!(!terminal.menu_is_open(), "the accept closed the menu");
+    terminal.update();
+    assert!(
+        !terminal.menu_is_open(),
+        "the accept's close survives the same-typed update"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
 #[test]
 fn autosuggest_accept_full_lands_the_suffix_in_the_grid() {
     let mut terminal = autosuggest_terminal();
