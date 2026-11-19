@@ -4232,8 +4232,8 @@ impl Shell {
     /// element drives the frames (the chunk's ruling — GPUI's
     /// animation replaces the libcosmic draw-time translation), while
     /// the position is core's own slide model, one clock for pixels
-    /// and wire alike — a mid-slide window swap (the keyboard-hold
-    /// recreate) remounts the frame driver but the translation stays
+    /// and wire alike — a re-targeted slide remounts the frame driver
+    /// through the epoch-keyed animation id, the translation staying
     /// continuous off the machine's `started`.
     /// The drag edge's grab strip: the reference bar's `BAR_HEIGHT`
     /// (8 px) at the drawer's free edge — thin enough to read as a

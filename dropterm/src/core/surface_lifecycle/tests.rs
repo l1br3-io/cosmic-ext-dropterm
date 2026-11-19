@@ -617,25 +617,19 @@ fn show_with_a_retained_output_skips_the_slide_when_disabled() {
 }
 
 #[test]
-fn hide_from_shown_releases_the_keyboard_and_slides_out() {
-    // The out-slide's start: keyboard releases now (the previously
-    // focused window regains focus while the slide plays), the
+fn hide_from_shown_holds_the_keyboard_and_slides_out() {
+    // The out-slide's start: no intents at all — the keyboard hold
+    // rides unchanged through the slide (a slide-out-start release
+    // forced a window recreate, and the recreate gap flashed), the
     // state moves to Hiding with the out-slide armed — the destroy
-    // lands on the slide's completion, not here.
+    // lands on the slide's completion, the hold dying with it.
     let handle = SurfaceHandle::next();
     let mut machine = SurfaceMachine {
         state: SurfaceState::Shown(handle),
         output_size: Some((1920, 1080)),
         ..SurfaceMachine::default()
     };
-    let intents = machine.decide_hide(plain_inputs(true));
-    assert_eq!(
-        intents,
-        vec![SurfaceIntent::Hold {
-            handle,
-            keyboard: KeyboardHold::Released,
-        }]
-    );
+    assert!(machine.decide_hide(plain_inputs(true)).is_empty());
     assert_eq!(machine.state, SurfaceState::Hiding(handle));
     let playing = machine.slide.expect("the out-slide is armed");
     assert_eq!(playing.active.direction, slide::Direction::Out);
@@ -1222,18 +1216,10 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
         })
     ));
 
-    // Hide: the out-slide starts — the keyboard hold releases now,
-    // the destroy lands on the slide's completion tick.
-    for intent in machine.decide_hide(inputs) {
-        exec.execute(intent);
-    }
-    assert_eq!(
-        exec.recorded().last(),
-        Some(&SurfaceIntent::Hold {
-            handle,
-            keyboard: KeyboardHold::Released,
-        })
-    );
+    // Hide: the out-slide starts with no intents — the keyboard hold
+    // rides unchanged through the slide, the destroy lands on the
+    // slide's completion tick.
+    assert!(machine.decide_hide(inputs).is_empty());
     assert_eq!(machine.state, SurfaceState::Hiding(handle));
 
     // Mid-slide reversal: the same live surface re-holds keyboard at
@@ -1264,16 +1250,7 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
     machine.focused = true;
     let (report, hides) = machine.decide_focus_loss(inputs);
     assert!(report && hides);
-    for intent in machine.decide_hide(inputs) {
-        exec.execute(intent);
-    }
-    assert_eq!(
-        exec.recorded().last(),
-        Some(&SurfaceIntent::Hold {
-            handle,
-            keyboard: KeyboardHold::Released,
-        })
-    );
+    assert!(machine.decide_hide(inputs).is_empty());
 
     // The out-slide's completion tick destroys the surface.
     machine.slide = Some(slide::Playing {
