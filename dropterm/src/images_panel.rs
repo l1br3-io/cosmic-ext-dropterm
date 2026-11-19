@@ -22,6 +22,9 @@ use gpui::{App, Styled, Window, px};
 use gpui_component::ActiveTheme as _;
 use gpui_component::{h_flex, v_flex};
 
+use gpui_component::Sizable as _;
+use gpui_component::button::{Button, ButtonVariants as _};
+
 use dropterm::core::settings::drawer_width;
 
 /// The panel's row order (the reference `images_panel_rows`): a view
@@ -101,26 +104,30 @@ pub(crate) fn decode_thumb(path: &Path) -> Option<Arc<gpui::RenderImage>> {
     Some(Arc::new(gpui::RenderImage::new([frame])))
 }
 
-/// One quiet text verb — the transfer verbs' own look (the muted
-/// label, the press routed).
+/// One panel verb — the Kit's Button so hover and pressed feedback
+/// come from the component instead of a hand-rolled div (the walk's
+/// press-reaction report: bare divs give the hand nothing): the
+/// recoverable verbs ride the quiet secondary style, the destructive
+/// cluster the danger one. The drawer's own `small_button` shape.
 fn quiet_verb(
-    id: gpui::SharedString,
+    id: impl Into<gpui::ElementId>,
     label: &'static str,
     make: PanelVerb,
     verb: &VerbFn,
-    color: gpui::Hsla,
-) -> impl gpui::IntoElement {
+    danger: bool,
+) -> Button {
     let verb = Rc::clone(verb);
-    gpui::div()
-        .id(id)
-        .text_color(color)
-        .child(label)
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            move |_event, window: &mut Window, cx: &mut App| {
-                verb(make.clone(), window, cx);
-            },
-        )
+    let button = Button::new(id).label(label).small();
+    let button = if danger {
+        button.danger()
+    } else {
+        button.secondary()
+    };
+    button.on_click(
+        move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+            verb(make.clone(), window, cx);
+        },
+    )
 }
 
 /// The panel's content: the row list, scrollable — or the empty state
@@ -196,7 +203,7 @@ pub(crate) fn panel_content(
                 label,
                 make,
                 verb,
-                cx.theme().muted_foreground,
+                false,
             ));
         }
         actions = actions.child(gpui::div().flex_1());
@@ -204,29 +211,23 @@ pub(crate) fn panel_content(
         // armed row's labeled pair (the ruling's shape — the drawer's
         // own delete idiom).
         let cluster = match panel_row.cluster {
-            DeleteCluster::Idle => {
-                vec![(
-                    "Delete",
-                    cx.theme().danger,
-                    PanelVerb::ArmDelete(row.path.clone()),
-                )]
-            }
+            DeleteCluster::Idle => vec![("Delete", true, PanelVerb::ArmDelete(row.path.clone()))],
             DeleteCluster::Armed => vec![
                 (
                     "Confirm delete",
-                    cx.theme().danger,
+                    true,
                     PanelVerb::ConfirmDelete(row.path.clone()),
                 ),
-                ("Keep", cx.theme().muted_foreground, PanelVerb::KeepDelete),
+                ("Keep", false, PanelVerb::KeepDelete),
             ],
         };
-        for (label, color, make) in cluster {
+        for (label, danger, make) in cluster {
             actions = actions.child(quiet_verb(
                 gpui::SharedString::from(format!("panel-delete-{label}-{}", row.stamp)),
                 label,
                 make,
                 verb,
-                color,
+                danger,
             ));
         }
         list = list.child(v_flex().gap_2().child(identity).child(actions));
@@ -274,35 +275,21 @@ pub(crate) fn overlay(
                 .justify_between()
                 .px_4()
                 .child(gpui::div().text_size(px(16.)).child("Pasted images"))
-                .child(
-                    h_flex().gap_4().child(
-                        gpui::div()
-                            .id("panel-open-cache")
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Open folder")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                move |_event, window: &mut Window, cx: &mut App| {
-                                    verb_header(PanelVerb::OpenCache, window, cx);
-                                },
-                            ),
-                    ),
-                ),
+                .child(h_flex().gap_4().child(quiet_verb(
+                    "panel-open-cache",
+                    "Open folder",
+                    PanelVerb::OpenCache,
+                    &verb_header,
+                    false,
+                ))),
         )
-        .child(
-            h_flex().flex_none().justify_end().px_4().child(
-                gpui::div()
-                    .id("panel-close")
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Close")
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        move |_event, window: &mut Window, cx: &mut App| {
-                            verb_close(PanelVerb::Close, window, cx);
-                        },
-                    ),
-            ),
-        )
+        .child(h_flex().flex_none().justify_end().px_4().child(quiet_verb(
+            "panel-close",
+            "Close",
+            PanelVerb::Close,
+            &verb_close,
+            false,
+        )))
         .child(panel_content(rows, thumbs, verb, cx));
     gpui::div()
         .absolute()
@@ -403,7 +390,7 @@ mod tests {
                 )
             })
             .expect("open the overlay probe window");
-        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), &cx);
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
         // The Kit's redraw shape: refresh first — a bare draw may skip
         // render/paint (the rename-slot pin's precedent).
         cx.update(|window, cx| {
@@ -414,7 +401,10 @@ mod tests {
         let width = drawer_width(None, 1280.);
         let panel_mid_x = 1280. - width / 2.;
         // A press over the panel's interior, mouse-up included.
-        cx.simulate_click(gpui::point(px(panel_mid_x), px(24.)), gpui::Modifiers::default());
+        cx.simulate_click(
+            gpui::point(px(panel_mid_x), px(24.)),
+            gpui::Modifiers::default(),
+        );
         assert!(
             verbs.borrow().is_empty(),
             "a panel interior press closed the panel: {:?}",

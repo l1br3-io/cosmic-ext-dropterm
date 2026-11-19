@@ -4612,7 +4612,11 @@ fn an_image_pastes_its_path_visible_at_the_bash_prompt() {
 
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     while !visible_text(&terminal).contains("P$") {
-        assert!(Instant::now() < deadline, "no first prompt: {:?}", visible_text(&terminal));
+        assert!(
+            Instant::now() < deadline,
+            "no first prompt: {:?}",
+            visible_text(&terminal)
+        );
         while rx.try_recv().is_ok() {}
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -4625,6 +4629,12 @@ fn an_image_pastes_its_path_visible_at_the_bash_prompt() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     while rx.try_recv().is_ok() {}
     let text = visible_text(&terminal);
-    println!("=== grid after paste ===\n{text}\n=== contains path: {} ===", text.contains("paste-20261119"));
-    assert!(text.contains(path), "the pasted path is not on the grid; grid:\n{text}");
+    println!(
+        "=== grid after paste ===\n{text}\n=== contains path: {} ===",
+        text.contains("paste-20261119")
+    );
+    assert!(
+        text.contains(path),
+        "the pasted path is not on the grid; grid:\n{text}"
+    );
 }

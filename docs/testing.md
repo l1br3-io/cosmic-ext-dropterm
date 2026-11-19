@@ -71,6 +71,8 @@ route for evidence that must not see the dev machine.
 
 - [ ] `imgcat` both forms and `chafa -f iterm` render; `kitten icat` detects and renders; scroll/resize/select bookkeeping holds; the kill switch silences the next image live
 - [ ] Paste lands a path plus a panel row: thumbnail, readable stamp, Open/Copy path/Copy image/Re-paste, two-step Delete; the chip and `Ctrl+Shift+P` doors stay open when the chip squeezes out; hand-deleted files reflect; uri pastes carry the cascade and its refusals
+- [ ] The pasted path is the paste's visible trace at the prompt: the path text reads on the command line after an image paste — with the panel open, the paste closes it first so nothing stands over the path — and a press anywhere inside the images panel (header, row, verbs) keeps it open; only the backdrop press or Close closes it otherwise
+- [ ] Every panel verb gives the hand its feedback: header buttons, row verbs, and the delete pair hover and show a pressed state (Kit buttons, the drawer's own style); the destructive pair stays danger-styled
 
 ### Notifications
 

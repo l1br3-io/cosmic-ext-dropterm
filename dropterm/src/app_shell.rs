@@ -792,20 +792,7 @@ impl Shell {
                     exited.push(id);
                 }
                 view::PaneSignal::ImagePasted(id, path, bytes) => {
-                    // The paste's ledger row (paste-ledger spec): the
-                    // pane already pasted the cache file's path at its
-                    // prompt; the shell records the row on the pane's
-                    // tab — the pasted-images chip's input. The panel
-                    // that lists the rows rides the chrome slices.
-                    println!(
-                        "dropterm: pane {id:?} pasted {} ({} bytes) -> the tab's ledger",
-                        path.display(),
-                        bytes.len()
-                    );
-                    self.tabs.note_pasted_image(id, path, &bytes);
-                    // A paste succeeded: any standing refusal verdict
-                    // is stale news — its chip yields early.
-                    self.status_paste_refusal = None;
+                    self.note_pasted_image(id, path, &bytes, cx);
                 }
                 view::PaneSignal::PasteRefused(refusal) => {
                     // The paste verdict (the audit's F7): the band's
@@ -3697,6 +3684,37 @@ impl Shell {
             self.boot.elapsed().as_millis()
         );
         cx.notify();
+    }
+
+    /// One landed image paste, the [`PaneSignal::ImagePasted`]
+    /// handler (paste-ledger spec): the pane already pasted the cache
+    /// file's path at its prompt; the shell records the row on the
+    /// pane's tab — the pasted-images chip's input. The path is the
+    /// paste's one visible trace (the presentation ruling), so an
+    /// open panel — the 560px drawer over the band's right half, the
+    /// veil over the rest — must not be standing where the path
+    /// lands: the paste closes it first (the armed pair dies with the
+    /// close), the row reads at the prompt, and the chip reopens the
+    /// panel. A paste also retires any standing refusal verdict —
+    /// stale news, its chip yields early.
+    fn note_pasted_image(
+        &mut self,
+        id: TabId,
+        path: std::path::PathBuf,
+        bytes: &[u8],
+        cx: &mut Context<Self>,
+    ) {
+        println!(
+            "dropterm: pane {id:?} pasted {} ({} bytes) -> the tab's ledger",
+            path.display(),
+            bytes.len()
+        );
+        if self.images_open {
+            println!("dropterm: paste closes the standing images panel");
+            self.close_images_panel(cx);
+        }
+        self.tabs.note_pasted_image(id, path, bytes);
+        self.status_paste_refusal = None;
     }
 
     /// One images-panel verb (py-6, the reference handlers' port):
