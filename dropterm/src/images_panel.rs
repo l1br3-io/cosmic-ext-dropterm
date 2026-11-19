@@ -59,7 +59,8 @@ pub(crate) fn delete_cluster(armed: Option<&Path>, path: &Path) -> DeleteCluster
 /// arm/disarm pair, and the panel's doors).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PanelVerb {
-    /// The row's standard verb — the system viewer.
+    /// The row's standard verb — the system viewer; its landed
+    /// launch closes the panel (the 2026-11-20 ruling).
     Open(PathBuf),
     /// The row's path as text, the focus-free write.
     CopyPath(PathBuf),
@@ -74,7 +75,8 @@ pub(crate) enum PanelVerb {
     ConfirmDelete(PathBuf),
     /// The armed pair's disarm: delete nothing.
     KeepDelete,
-    /// The header's folder verb: the paste cache in the file manager.
+    /// The header's folder verb: the paste cache in the file
+    /// manager; its landed launch closes the panel like Open's.
     OpenCache,
     /// The panel's close door: the header's Close and the backdrop's
     /// press ride it (an armed pair never survives the close).
