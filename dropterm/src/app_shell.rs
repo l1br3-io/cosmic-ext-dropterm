@@ -766,43 +766,7 @@ impl Shell {
         // nothing), the Hide actions run through the machine's hide
         // funnel exactly like the verb's.
         while let Ok(signal) = self.pane_signals.try_recv() {
-            match signal {
-                view::PaneSignal::Hide => {
-                    println!(
-                        "dropterm: pane hide action -> the hide funnel at +{}ms",
-                        self.boot.elapsed().as_millis()
-                    );
-                    self.dump_visible_grid("pane-hide", cx);
-                    // The band's transient seats die with the tree
-                    // (gn-4): an open menu returns closed, the
-                    // selection and press stand down.
-                    self.clear_status_machine();
-                    let intents = self.machine.decide_hide(self.inputs);
-                    self.execute_into(intents, &mut actions);
-                }
-                view::PaneSignal::Exited(id) => {
-                    // A shell exit closes its tab ungated (never the
-                    // confirm gate); the close touches panes and may
-                    // respawn, so it applies at the tick's App-level
-                    // point like every window-adjacent action.
-                    println!(
-                        "dropterm: pane {id:?} exited -> closing its tab at +{}ms",
-                        self.boot.elapsed().as_millis()
-                    );
-                    exited.push(id);
-                }
-                view::PaneSignal::ImagePasted(id, path, bytes) => {
-                    self.note_pasted_image(id, path, &bytes, cx);
-                }
-                view::PaneSignal::PasteRefused(refusal) => {
-                    // The paste verdict (the audit's F7): the band's
-                    // flash channel narrates the refusal for its 3 s
-                    // window; the log warn already fired at the read.
-                    println!("dropterm: paste refused ({refusal:?}) -> the band's verdict chip");
-                    self.status_paste_refusal =
-                        Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
-                }
-            }
+            self.apply_pane_signal(signal, cx, &mut actions, &mut exited);
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -869,6 +833,67 @@ impl Shell {
             exited,
             tab_verbs,
             quit,
+        }
+    }
+
+    /// One pane-signal arm of [`Shell::pump`]'s drain: the hide, the
+    /// exits, and the paste family's three verdicts — the image
+    /// paste's ledger row, the text paste's panel clearance, and the
+    /// refusal's verdict chip.
+    fn apply_pane_signal(
+        &mut self,
+        signal: view::PaneSignal,
+        cx: &mut Context<Self>,
+        actions: &mut Vec<Action>,
+        exited: &mut Vec<TabId>,
+    ) {
+        match signal {
+            view::PaneSignal::Hide => {
+                println!(
+                    "dropterm: pane hide action -> the hide funnel at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.dump_visible_grid("pane-hide", cx);
+                // The band's transient seats die with the tree
+                // (gn-4): an open menu returns closed, the
+                // selection and press stand down.
+                self.clear_status_machine();
+                let intents = self.machine.decide_hide(self.inputs);
+                self.execute_into(intents, actions);
+            }
+            view::PaneSignal::Exited(id) => {
+                // A shell exit closes its tab ungated (never the
+                // confirm gate); the close touches panes and may
+                // respawn, so it applies at the tick's App-level
+                // point like every window-adjacent action.
+                println!(
+                    "dropterm: pane {id:?} exited -> closing its tab at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                exited.push(id);
+            }
+            view::PaneSignal::ImagePasted(id, path, bytes) => {
+                self.note_pasted_image(id, path, &bytes, cx);
+            }
+            view::PaneSignal::TextPasted => {
+                // The covering report's other half: a keyboard
+                // text paste lands under the same veil an image
+                // path does (the pane holds the keyboard while
+                // the panel stands), and its trace deserves the
+                // same clearance — the panel yields, no row.
+                println!(
+                    "dropterm: text paste landed -> a standing panel yields at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.paste_landed(cx);
+            }
+            view::PaneSignal::PasteRefused(refusal) => {
+                // The paste verdict (the audit's F7): the band's
+                // flash channel narrates the refusal for its 3 s
+                // window; the log warn already fired at the read.
+                println!("dropterm: paste refused ({refusal:?}) -> the band's verdict chip");
+                self.status_paste_refusal = Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
+            }
         }
     }
 
@@ -3686,17 +3711,27 @@ impl Shell {
         cx.notify();
     }
 
+    /// The covering report's rule, lifted off the one signal it
+    /// first rode: ANY paste that lands text on the grid — an image
+    /// paste's path, the panel's own re-paste, or a plain keyboard
+    /// text paste — is the paste's one visible trace, so whatever
+    /// veil stands over the band (the images panel's drawer and its
+    /// 50% backdrop) drops first: the armed pair dies with the close
+    /// and a standing refusal verdict retires as stale news.
+    fn paste_landed(&mut self, cx: &mut Context<Self>) {
+        if self.images_open {
+            println!("dropterm: paste closes the standing images panel");
+            self.close_images_panel(cx);
+        }
+        self.status_paste_refusal = None;
+    }
+
     /// One landed image paste, the [`PaneSignal::ImagePasted`]
     /// handler (paste-ledger spec): the pane already pasted the cache
     /// file's path at its prompt; the shell records the row on the
-    /// pane's tab — the pasted-images chip's input. The path is the
-    /// paste's one visible trace (the presentation ruling), so an
-    /// open panel — the 560px drawer over the band's right half, the
-    /// veil over the rest — must not be standing where the path
-    /// lands: the paste closes it first (the armed pair dies with the
-    /// close), the row reads at the prompt, and the chip reopens the
-    /// panel. A paste also retires any standing refusal verdict —
-    /// stale news, its chip yields early.
+    /// pane's tab — the pasted-images chip's input — through the
+    /// shared [`Shell::paste_landed`] clearance, and the chip reopens
+    /// the panel.
     fn note_pasted_image(
         &mut self,
         id: TabId,
@@ -3709,12 +3744,8 @@ impl Shell {
             path.display(),
             bytes.len()
         );
-        if self.images_open {
-            println!("dropterm: paste closes the standing images panel");
-            self.close_images_panel(cx);
-        }
+        self.paste_landed(cx);
         self.tabs.note_pasted_image(id, path, bytes);
-        self.status_paste_refusal = None;
     }
 
     /// One images-panel verb (py-6, the reference handlers' port):
@@ -3765,11 +3796,18 @@ impl Shell {
             }
             PanelVerb::Repaste(path) => {
                 // The same channel a text paste uses — bracketed
-                // paste rides it unchanged.
+                // paste rides it unchanged — and the same clearance
+                // every paste rides (the covering report's rule): the
+                // path this verb writes must not land under the
+                // panel's own veil, so the panel yields first.
+                self.paste_landed(cx);
                 if let Some(pane) = self.active_pane() {
                     let engine = pane.read(cx).terminal.clone();
                     let text = path.to_string_lossy();
-                    engine.lock().expect("engine lock").paste(&text);
+                    let mut engine = engine.lock().expect("engine lock");
+                    engine.paste(&text);
+                    engine.needs_update = true;
+                    drop(engine);
                     println!(
                         "dropterm: panel re-paste {} at +{}ms",
                         path.display(),
@@ -5684,6 +5722,170 @@ mod tests {
                     .pasted_images(tab)
                     .map(<[dropterm::core::tabs::PastedImage]>::len),
                 Some(2)
+            );
+        });
+    }
+
+    /// The shared scaffold of the paste-clearance tests below: a
+    /// shell over one empty tab, its pane-signal channel wired, and
+    /// the panel left standing with a row armed and a refusal verdict
+    /// flashing — the exact state a paste lands into. The windowed
+    /// context rides home with the shell (the verb calls need a
+    /// window).
+    fn shell_with_standing_panel(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        Entity<Shell>,
+        std::sync::mpsc::Sender<view::PaneSignal>,
+        TabId,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        let tab = tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx.clone(),
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.images_open = true;
+                shell.images_armed = Some(std::path::PathBuf::from(
+                    "/cache/paste/paste-20261119-101010-1.png",
+                ));
+                shell.status_paste_refusal = Some((
+                    dropterm::core::status::PasteRefusal::OverCap,
+                    Instant::now(),
+                ));
+            });
+        });
+        (shell, signals_tx, tab, cx)
+    }
+
+    #[gpui::test]
+    fn a_text_paste_signal_drops_the_standing_panel(cx: &mut gpui::TestAppContext) {
+        // The covering report's second report: a keyboard text paste
+        // lands while the panel stands (the pane holds the keyboard
+        // under the veil) and nothing closed it — the text pasted
+        // into the veil, the cursor visibly marching right under it.
+        // The TextPasted signal rides the pane's text-paste funnel to
+        // the pump, and the panel must yield with no ledger row
+        // recorded (a text paste leaves none).
+        let (shell, signals_tx, tab, cx) = shell_with_standing_panel(cx);
+        signals_tx
+            .send(view::PaneSignal::TextPasted)
+            .expect("the signal queues");
+        cx.update(|_window, cx| {
+            shell.update(cx, Shell::pump);
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the text paste must close the standing panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
+            );
+            assert_eq!(
+                shell.status_paste_refusal, None,
+                "a landed paste retires the refusal verdict"
+            );
+            assert_eq!(
+                shell
+                    .tabs
+                    .pasted_images(tab)
+                    .map(<[dropterm::core::tabs::PastedImage]>::len),
+                Some(0),
+                "a text paste records no ledger row"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_repaste_verb_pastes_with_the_panel_standing_down(cx: &mut gpui::TestAppContext) {
+        // The covering report's third report: the panel's own
+        // Re-paste verb wrote the row's path while its veil stood —
+        // the paste landed under the very panel that issued it. The
+        // verb must clear its own panel first, then reach the
+        // engine's paste channel.
+        let (shell, _signals_tx, tab, cx) = shell_with_standing_panel(cx);
+        // One real pane behind the standing panel: the verb's paste
+        // needs the active seat (the engine's own PTY, the boot
+        // funnel's plain shell) — seated on the scaffold's own tab,
+        // the active one.
+        let config = DropTermConfig::default();
+        let (engine, pane) = cx
+            .update(|_window, cx| {
+                let request = view::PaneRequest::for_command(
+                    &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                    None,
+                    &config,
+                );
+                view::boot_pane(cx, &config, request, None, tab, None)
+            })
+            .expect("boot the pane");
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.panes.insert(tab, pane);
+            });
+        });
+        let path = std::path::PathBuf::from("/cache/paste/paste-20261119-101010-1.png");
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.images_verb(
+                    crate::images_panel::PanelVerb::Repaste(path.clone()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the re-paste must not paste under its own panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
+            );
+            assert!(
+                engine.lock().expect("engine lock").needs_update,
+                "the re-paste must reach the engine's paste funnel"
             );
         });
     }
