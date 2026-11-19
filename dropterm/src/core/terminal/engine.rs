@@ -3246,7 +3246,11 @@ impl Terminal {
                     // its accumulated idle: the user's typing is the
                     // fact, the viewport is not.
                     let now = Instant::now();
-                    if before_cursor != self.suggest_last_before_cursor {
+                    // The just-typed fact, kept for both consumers:
+                    // the ghost's idle clock and the auto-popup's
+                    // re-evaluation gate below.
+                    let typed_changed = before_cursor != self.suggest_last_before_cursor;
+                    if typed_changed {
                         self.suggest_typed_at = now;
                         self.suggest_last_before_cursor.clone_from(&before_cursor);
                     }
@@ -3293,21 +3297,33 @@ impl Terminal {
                     }
                     // The auto-popup opt-in (suggest-menu spec, the
                     // OQ-1 condition decided in the module's final
-                    // task): with the key on, this idle update's
-                    // typed segment collects the providers' full
-                    // sets — two or more candidates pops the menu
+                    // task): with the key on, an update whose typed
+                    // segment just changed collects the providers'
+                    // full sets — two or more candidates pops the menu
                     // without the chord, narrowing past the boundary
                     // (or any ineligibility, which collects nothing)
                     // closes an auto-opened one. A chord-opened
                     // session is the user's: only its own rules
                     // close it. Default off never runs a byte of
                     // this — the chord is today's only opener.
+                    //
+                    // The typed-changed gate is the menu's own keys'
+                    // survival: every menu-scoped press repaints
+                    // through `update()`, and an unconditioned
+                    // re-collection here would re-open over the
+                    // press's transition — a navigation selection
+                    // reset to the top (the keys read dead), a closed
+                    // menu popped back open (Escape and an accept
+                    // never stuck, and the standing menu kept
+                    // consuming Enter as the next accept). Nothing
+                    // changed, nothing to re-evaluate.
                     if self.autosuggestions_menu_auto
                         && self.autosuggestions_menu_enabled
                         && self.autosuggestions_enabled
                         && observation.focused
                         && !observation.foreground_child
                         && observation.display_offset == 0
+                        && typed_changed
                         && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
                         && !typed.is_empty()
                     {
