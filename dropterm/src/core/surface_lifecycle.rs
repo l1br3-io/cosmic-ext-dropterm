@@ -31,10 +31,10 @@ pub enum SurfaceState {
     /// A shown surface sliding out toward its anchored edge: the
     /// content still renders — translated by the live `Out` slide —
     /// and the layer surface is destroyed only when that slide
-    /// completes. Keyboard interactivity was already released at
-    /// slide-out start, so focus events find no `Shown` surface to
-    /// act on; the drag handlers and live reshape ignore this state
-    /// by construction (they match `Shown` exclusively).
+    /// completes, the keyboard hold dying with it. An unfocus at the
+    /// destroy finds no `Shown` surface to act on; the drag handlers
+    /// and live reshape ignore this state by construction (they match
+    /// `Shown` exclusively).
     Hiding(SurfaceHandle),
 }
 
@@ -262,16 +262,22 @@ impl SurfaceMachine {
                     },
                     epoch: self.next_slide_epoch(),
                 });
-                // Keyboard interactivity releases at slide-out START,
-                // not at destroy: the previously focused window regains
-                // focus while the slide plays. The compositor answers
-                // with an `Unfocused` layer event, which the
-                // `Shown(handle)` guard in its handler already rejects —
-                // the surface is `Hiding` by the time it arrives.
-                vec![SurfaceIntent::Hold {
-                    handle,
-                    keyboard: KeyboardHold::Released,
-                }]
+                // Keyboard interactivity rides unchanged through the
+                // slide and dies with the completion destroy: releasing
+                // at slide-out start is create-time at this pin, so it
+                // forced a window recreate — the old surface died, the
+                // compositor cleared the layer, and the ~140 ms gap
+                // read as a flash on every animated hide. The trade
+                // (owner-ruled 2026-11-19): the previously focused
+                // window regains focus at the destroy, ~130 ms later
+                // than the old slide-out-start release — and the
+                // animating surface stays focused, which also keeps it
+                // out of GPUI's inactive-window throttle. No unfocus
+                // can trail our own release mid-slide anymore; an
+                // Unfocused at the destroy finds the machine already
+                // `Hidden`, and a focus-loss hide mid-slide still fires
+                // through `decide_focus_loss`'s latch.
+                Vec::new()
             }
             // `Hide` never decides to show, and a hiding or hidden
             // surface leaves with nothing.
@@ -327,14 +333,16 @@ impl SurfaceMachine {
             self.slide = Some(reversed);
         }
         // The mirror of hide's focus bookkeeping: none — hide reports
-        // nothing, so nothing returns here; the `LayerFocused` this
+        // nothing, so nothing returns here; the `LayerFocused` the
         // re-hold synthesizes repeats the terminal's standing focus
         // harmlessly (`set_focused` reports only real changes). The
-        // re-hold runs the resolved mode: a stay-open surface reversed
-        // mid-slide comes back as `OnDemand`, which commits no grab of
-        // its own — the window that regained focus at slide-out start
-        // keeps the keyboard, and a click on the terminal wins it back
-        // (the sharing rule of `shown_keyboard_mode`).
+        // re-hold runs the resolved mode, and since the hold now rides
+        // unchanged through the slide-out, it no-ops whenever the mode
+        // already matches — the mid-slide reversal stays in-window with
+        // no recreate at all; a stay-open surface reversed mid-slide
+        // comes back as `OnDemand` (no grab of its own — a click on the
+        // terminal wins the keyboard back, the sharing rule of
+        // `shown_keyboard_mode`).
         vec![
             SurfaceIntent::Hold {
                 handle,
@@ -768,8 +776,9 @@ pub enum ToggleStep {
     /// content to animate, so there is nothing to slide.
     DestroyNow(SurfaceHandle),
     /// Slide out from the current offset and destroy on the slide's
-    /// completion tick. Keyboard interactivity releases at slide-out
-    /// start.
+    /// completion tick — the keyboard hold rides unchanged through the
+    /// slide and dies with that destroy (a slide-out-start release is
+    /// a window recreate at this pin, and the recreate gap flashed).
     SlideOut(SurfaceHandle),
     /// Reverse a hiding slide back to shown on the same live surface:
     /// no new measuring pass — `output_size` is retained — the slide

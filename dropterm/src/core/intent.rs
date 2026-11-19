@@ -41,9 +41,10 @@ impl SurfaceHandle {
 }
 
 /// The keyboard hold a surface desires: the two configured modes a
-/// shown surface runs, plus the released state a slide-out starts
-/// from — the previously focused window regains the keyboard while the
-/// slide plays, so `Released` is a real desired state, not an absence.
+/// shown surface runs, plus the released state the vocabulary can
+/// express — no decision emits it since the slide-out recreate went
+/// (a hold rides unchanged through the slide and dies with the
+/// destroy), but the executor's mapping stays total over the enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHold {
     /// `Exclusive`: only this surface takes keyboard input.
@@ -143,9 +144,8 @@ pub enum SurfaceIntent {
     /// handle cannot misfire here.
     Focus { handle: SurfaceHandle },
     /// Desired: the surface's keyboard hold is `keyboard` and nothing
-    /// else changes — released at slide-out start, re-held at the
-    /// resolved mode by a reversal, downgraded to `OnDemand` by a live
-    /// stay-open flip.
+    /// else changes — re-held at the resolved mode by a reversal,
+    /// downgraded to `OnDemand` by a live stay-open flip.
     Hold {
         handle: SurfaceHandle,
         keyboard: KeyboardHold,
@@ -159,8 +159,8 @@ pub enum SurfaceIntent {
         zone: ExclusiveZone,
     },
     /// Desired: the surface gone now — destroyed without animation.
-    /// The animated hide starts as a [`SurfaceIntent::Hold`] with
-    /// [`KeyboardHold::Released`] and its completion lands here.
+    /// The animated hide reaches this through the slide's completion
+    /// tick, the keyboard hold dying with the surface.
     Destroy { handle: SurfaceHandle },
 }
 
@@ -217,11 +217,11 @@ mod tests {
         // The contract the decision layer will emit once it migrates
         // (Tasks 3–4), expressed through the recording executor: a
         // show measures, the first configure shows the surface and
-        // routes keyboard into the terminal input, a hide with slides
-        // releases the keyboard hold at slide-out start, and the
-        // slide's completion destroys the surface. One handle threads
-        // the whole cycle — the executor maps it to the toolkit's
-        // window id, the decision layer never sees one.
+        // routes keyboard into the terminal input, a hold re-targets
+        // the keyboard (the released arm rides the vocabulary's total
+        // mapping), and the slide's completion destroys the surface.
+        // One handle threads the whole cycle — the executor maps it to
+        // the toolkit's window id, the decision layer never sees one.
         let mut exec = RecordingExecutor::default();
         let handle = SurfaceHandle::next();
         let geometry = Geometry {

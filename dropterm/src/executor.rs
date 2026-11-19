@@ -311,7 +311,9 @@ pub(crate) fn gpui_keyboard(mode: KeyboardMode) -> KeyboardInteractivity {
 }
 
 /// The keyboard interactivity a hold maps to: the two modes pass
-/// through, the released hold asks for none — the slide-out start.
+/// through, the released hold asks for none — a hold rides unchanged
+/// through the slide now, so nothing emits `Released` (the mapping
+/// stays total over the vocabulary).
 pub(crate) fn hold_keyboard(hold: KeyboardHold) -> KeyboardInteractivity {
     match hold {
         KeyboardHold::Exclusive => KeyboardInteractivity::Exclusive,
@@ -1126,9 +1128,10 @@ mod tests {
     #[test]
     fn a_released_hold_recreates_at_no_keyboard() {
         // Keyboard mode is create-time at this pin: a released hold
-        // (slide-out start) rides a recreate at `None`, and the
-        // creation record follows — the reversal's re-hold recreates
-        // right back at the resolved mode.
+        // (the vocabulary's no-keyboard arm — no decision emits it
+        // since the slide-out recreate went) rides a recreate at
+        // `None`, and the creation record follows — the reversal's
+        // re-hold recreates right back at the resolved mode.
         let mut exec = GpuiExecutor::new();
         let handle = SurfaceHandle::next();
         exec.execute(SurfaceIntent::Measure {
