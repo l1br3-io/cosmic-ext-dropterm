@@ -4490,6 +4490,14 @@ impl Shell {
         let shell = cx.entity();
         let pick: crate::context_menu::PickFn =
             std::rc::Rc::new(move |pick, window: &mut Window, cx: &mut App| {
+                // The Settings row must not enter a shell update (the
+                // drawer's build reads the shell — the gc2 finding):
+                // it rides the same App-level toggle the gear uses,
+                // before the update borrow begins.
+                if pick == crate::context_menu::Pick::Item(crate::context_menu::Item::Settings) {
+                    Self::toggle_settings(&shell, window, cx);
+                    return;
+                }
                 shell.update(cx, |shell, cx| shell.context_menu_pick(pick, window, cx));
             });
         let menu_profiles = self.config.profiles.clone();
