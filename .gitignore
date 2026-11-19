@@ -8,5 +8,6 @@ docs/_site/
 .jekyll-cache/
 .bundle/
 .tasks
+.zcode-site/
 /SPEC*.md
 /tasks/
