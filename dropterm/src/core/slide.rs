@@ -9,10 +9,12 @@
 //! the resting position, and the window-space sign is applied only at
 //! the draw site.
 
-/// Duration of one slide in milliseconds: mid-range of the 120–150 ms
-/// band, ease-out on show / ease-in on hide. A compile-time constant —
-/// not user-configurable.
-pub const SLIDE_DURATION_MS: u64 = 130;
+/// Duration of one slide in milliseconds: the settle end of the
+/// 120–150 ms band, cubic ease-out on show / cubic ease-in on hide —
+/// the canonical slide-through-an-edge transition now that the whole
+/// drawer (frame and all) travels the distance. A compile-time
+/// constant — not user-configurable.
+pub const SLIDE_DURATION_MS: u64 = 150;
 
 /// Which way a slide is moving: `In` shows the content (offset decays
 /// to rest), `Out` hides it (offset grows to the distance).
@@ -41,15 +43,14 @@ pub struct Active {
 
 /// The content's edge-space offset `elapsed_ms` into `active`: eased
 /// from `from_offset_px` toward the direction's endpoint over exactly
-/// [`SLIDE_DURATION_MS`] — quadratic ease-out for [`Direction::In`]
-/// (fast in, settling at rest), quadratic ease-in for
-/// [`Direction::Out`] (leaving gently, accelerating off-screen). At or
-/// past completion the endpoint is returned *directly*, not
-/// recomputed — `from + (distance - from)` is not float-exact, and
-/// the completed pose must be byte-identical to the resting (In) or
-/// fully-hidden (Out) one. Pure over injected milliseconds: the
-/// frontend's draw path feeds the wall clock at frame presentation;
-/// tests feed fakes.
+/// [`SLIDE_DURATION_MS`] — cubic ease-out for [`Direction::In`]
+/// (fast in, settling at rest), cubic ease-in for [`Direction::Out`]
+/// (leaving gently, accelerating off-screen). At or past completion
+/// the endpoint is returned *directly*, not recomputed —
+/// `from + (distance - from)` is not float-exact, and the completed
+/// pose must be byte-identical to the resting (In) or fully-hidden
+/// (Out) one. Pure over injected milliseconds: the frontend's draw
+/// path feeds the wall clock at frame presentation; tests feed fakes.
 pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
     #[expect(
         clippy::cast_precision_loss,
@@ -63,9 +64,9 @@ pub fn offset(active: &Active, elapsed_ms: u64) -> f32 {
         };
     }
     match active.direction {
-        Direction::In => active.from_offset_px * (1.0 - progress).powi(2),
+        Direction::In => active.from_offset_px * (1.0 - progress).powi(3),
         Direction::Out => {
-            active.from_offset_px + (active.distance_px - active.from_offset_px) * progress.powi(2)
+            active.from_offset_px + (active.distance_px - active.from_offset_px) * progress.powi(3)
         }
     }
 }
@@ -143,7 +144,7 @@ pub struct Playing {
 mod tests {
     use super::*;
 
-    // --- Direction::In (show): quadratic ease-out from -> rest ---
+    // --- Direction::In (show): cubic ease-out from -> rest ---
 
     #[test]
     fn show_starts_at_the_from_offset_exactly() {
@@ -196,17 +197,17 @@ mod tests {
     }
 
     #[test]
-    fn show_midpoint_quarters_the_offset() {
-        // Quadratic ease-out at half the duration: (1 - 1/2)^2 = 1/4.
+    fn show_midpoint_eighths_the_offset() {
+        // Cubic ease-out at half the duration: (1 - 1/2)^3 = 1/8.
         let active = Active {
             direction: Direction::In,
             from_offset_px: 800.0,
             distance_px: 800.0,
         };
-        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 200.0);
+        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 100.0);
     }
 
-    // --- Direction::Out (hide): quadratic ease-in from -> distance ---
+    // --- Direction::Out (hide): cubic ease-in from -> distance ---
 
     #[test]
     fn hide_starts_at_the_from_offset_exactly() {
@@ -257,15 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn hide_midpoint_covers_a_quarter_of_the_gap() {
-        // Quadratic ease-in at half the duration: (1/2)^2 = 1/4 of
-        // the from->distance gap.
+    fn hide_midpoint_covers_an_eighth_of_the_gap() {
+        // Cubic ease-in at half the duration: (1/2)^3 = 1/8 of the
+        // from->distance gap.
         let active = Active {
             direction: Direction::Out,
             from_offset_px: 0.0,
             distance_px: 800.0,
         };
-        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 200.0);
+        assert_eq!(offset(&active, SLIDE_DURATION_MS / 2), 100.0);
     }
 
     // --- finished ---
@@ -338,7 +339,7 @@ mod tests {
 
     #[test]
     fn reversed_slide_completes_exactly_once_on_its_own_clock() {
-        // The re-target is a fresh fixed 130 ms — measured from the
+        // The re-target is a fresh fixed 150 ms — measured from the
         // reversal, not the original start.
         let showing = Active {
             direction: Direction::In,

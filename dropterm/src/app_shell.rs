@@ -167,7 +167,17 @@ fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
     let json = crate::theme_gen::kit_theme_json(&theme.colors, &theme.name, theme.dark);
     let config: gpui_component::ThemeConfig = serde_json::from_value(json)
         .expect("the generated theme parses — pinned by theme_gen's own tests");
-    gpui_component::Theme::update(cx, |t| t.apply_config(&std::rc::Rc::new(config)));
+    gpui_component::Theme::update(cx, |t| {
+        t.apply_config(&std::rc::Rc::new(config));
+        // The Kit's window frame token: `window_border` paints the
+        // WindowBorder wrapper's 1 px frame at the window bounds —
+        // static while the drawer slides (the slide's canvas rule,
+        // fifth walk). Neutralized here so the frame the eye follows
+        // is the drawer's own, painted inside the band where it rides
+        // the slide; the token is window chrome, not scheme color, so
+        // the override lives on the apply route, not the generator.
+        t.window_border = gpui::transparent_black();
+    });
     let applied = cx.theme();
     println!(
         "dropterm: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
@@ -1618,7 +1628,18 @@ fn open_shaped_window(
     label: &str,
 ) {
     match cx.open_window(options, |window, cx| {
-        cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
+        // The slide's canvas rule: the Kit styles the window root with
+        // the theme background (WindowState's root styling) — a
+        // full-window opaque backdrop in the terminal's own background
+        // color, behind the drawer's sliding band. Against it the band
+        // reads as content moving inside a static rectangle, not as a
+        // window sliding (the fifth slide walk's root cause; the
+        // surface itself is already `Transparent` in the window
+        // options). The root goes transparent: the drawer paints its
+        // whole self — strip, pane, band, its own frame overlay — and
+        // the vacated area shows the desktop, so the drawer itself is
+        // what slides.
+        cx.new(|cx| KitRoot::new(shell.clone(), window, cx).bg(gpui::transparent_black()))
     }) {
         Ok(window) => {
             shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
@@ -4496,7 +4517,28 @@ impl Shell {
         if let Some(tip) = self.status_tip_element(strip, fg) {
             children.push(tip);
         }
-        let column = div().size_full().flex().flex_col().children(children);
+        // The drawer's own frame (the slide's canvas rule, fifth
+        // walk): the Kit's WindowBorder painted a 1 px frame at the
+        // window bounds — static while the band slides — so the
+        // drawer carries its frame itself, as an overlay pinned to
+        // the column. Absolute and zero-layout on purpose: the pane's
+        // cell metrics stay byte-identical to the frameless column,
+        // and the same border color the Kit's frame rode
+        // (`window_border` fell back to `border`). The column is what
+        // translates, so the frame rides the slide in both paths.
+        let column = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .relative()
+            .children(children)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_1()
+                    .border_color(cx.theme().border),
+            );
         let Some(playing) = self.machine.slide else {
             return column;
         };
@@ -4566,7 +4608,7 @@ impl gpui::Render for Shell {
         }
         if self.frames == 1 {
             println!(
-                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
+                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 150ms)",
                 self.show_open.elapsed().as_millis()
             );
             // The slide clock re-bases at the show window's first
@@ -5588,6 +5630,25 @@ mod tests {
         // unwrapped column.
         assert_eq!(Shell::slide_top_offset(Edge::Top, 0.0), 0.0);
         assert_eq!(Shell::slide_top_offset(Edge::Bottom, 0.0), 0.0);
+    }
+
+    #[gpui::test]
+    fn the_kit_backdrop_paints_no_window_of_its_own(cx: &mut gpui::TestAppContext) {
+        // The slide's canvas rule (the fifth walk's pin): the Kit's
+        // window-frame token is neutralized on the theme apply route —
+        // a static 1 px frame at the window bounds would read as a
+        // fixed rectangle while the drawer slides inside it. The
+        // drawer paints its own frame (the band's border overlay);
+        // the window is the transparent canvas behind it.
+        cx.update(gpui_component::init);
+        cx.update(|cx| apply_kit_theme(cx, &DropTermConfig::default()));
+        cx.update(|cx| {
+            assert_eq!(
+                cx.theme().window_border,
+                gpui::transparent_black(),
+                "the Kit's window frame must not paint over the slide's canvas"
+            );
+        });
     }
 
     #[test]

@@ -274,7 +274,7 @@ pub struct DropTermConfig {
     /// symmetric: saves stop and launch restore is skipped, while the
     /// state file itself is left untouched to wait for a re-enable.
     pub session_persistence_enabled: bool,
-    /// Animate show/hide with the 130 ms slide. Defaults to `true`.
+    /// Animate show/hide with the 150 ms slide. Defaults to `true`.
     /// `false` restores instant show/hide with immediate destroy; a
     /// running animation is never aborted by the toggle.
     pub slide_animation_enabled: bool,
