@@ -2304,6 +2304,26 @@ fn paint_row(
         window
             .text_system()
             .shape_line(text.into(), geometry.font_size, &text_runs, Some(forced));
+    // The background pass. `ShapedLine::paint` draws glyphs,
+    // underlines and strikes only — a run's `background_color`
+    // reaches pixels solely through the separate `paint_background`.
+    // A row holding any explicit background (an INVERSE cell's
+    // swapped pair, bash's whole bracketed-paste preview among them)
+    // needs that pass under its glyphs, or its glyphs paint in the
+    // swapped foreground — the pane background — over the pane
+    // background: text and caret present, line reading as blank
+    // until the program redraws the span plain. Rows without a
+    // background skip the pass and pay nothing.
+    if runs.iter().any(|run| run.bg.is_some()) {
+        let _ = shaped.paint_background(
+            origin,
+            geometry.cell_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
     let _ = shaped.paint(
         origin,
         geometry.cell_height,
@@ -2735,18 +2755,21 @@ mod tests {
         reason = "one pane's whole lifecycle through its own paint clock — the boot, the prompt wait, both paste shapes, the backspace redraw, and the shell-exit teardown are one scene"
     )]
     fn pasted_paths_read_on_the_painted_prompt_line(cx: &mut gpui::TestAppContext) {
-        // The hidden-paste report's headless pin. The root cause lived
-        // at boot, not in the pane: the app never set `TERM` for its
+        // The hidden-paste report's headless pin, the text half. The
+        // boot defect was real — the app never set `TERM` for its
         // ptys, so a desktop-launched drop-down handed its shells a
-        // GUI session's empty `TERM` — readline degraded (bracketed
-        // paste off, conservative redraws), a paste arrived as raw
-        // typing, and the pasted line hid behind the degraded redraw
-        // until a backspace forced a rewrite. The pane itself was
-        // innocent throughout; this test pins its innocence under the
-        // environment the fixed boot guarantees — a real TERM, so
-        // bash's bracketed paste rides and the preview paints. The
-        // walk rows own the boot-side half (a pane's `$TERM` answers
-        // `alacritty` or `xterm-256color`).
+        // GUI session's empty `TERM` and readline degraded (bracketed
+        // paste off, conservative redraws) — but it was only half the
+        // veil: with a real TERM the pasted line still vanished,
+        // because bash's bracketed-paste preview draws wholly in SGR-7
+        // reverse video and the pane's row painter dropped run
+        // backgrounds (the pixels half lives in
+        // `reverse_video_rows_paint_their_highlight_band`). This test
+        // pins the text half: under the environment the fixed boot
+        // guarantees — a real TERM — bash's bracketed paste rides and
+        // the preview's characters paint whole across wrapped rows.
+        // The walk rows own the boot-side half (a pane's `$TERM`
+        // answers `alacritty` or `xterm-256color`).
         cx.update(gpui_component::init);
         let config = request_config();
         let (terminal, pane) = cx
@@ -2977,5 +3000,134 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+
+    // --- the veil's pixels: a reverse-video span paints its block ---
+
+    #[gpui::test]
+    fn reverse_video_rows_paint_their_highlight_band(cx: &mut gpui::TestAppContext) {
+        // The hidden-paste veil, pixels side. bash's bracketed-paste
+        // preview draws wholly in SGR-7 reverse video (a pty probe
+        // holds the bytes: `\x1b[7m`…text…`\x1b[27m`, and the
+        // backspace redraw plain — the report's own reveal), so the
+        // pane's row painter owes every run background a pass under
+        // its glyphs: gpui's `ShapedLine::paint` paints glyphs,
+        // underlines and strikes only, and without the pane's own
+        // `paint_background` call an INVERSE cell's glyphs paint in
+        // the swapped foreground — the pane background — over the
+        // pane background. Text and caret present, line reading as
+        // blank. This pins real rasterized pixels: the reversed span
+        // must hold a solid highlight block as wide as its three
+        // cells — the block caret is one cell and cannot counterfeit
+        // three.
+        cx.update(gpui_component::init);
+        let config = request_config();
+        let (terminal, pane) = cx
+            .update(|cx| {
+                let request = PaneRequest::for_command(
+                    &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                    None,
+                    &config,
+                );
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let pane_read = pane.clone();
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(900.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, _| pane,
+                )
+            })
+            .expect("open the pane's window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+
+        // The paint clock: refresh-then-draw (a bare draw may skip
+        // render/paint), parked so the pane's event pump lands
+        // between frames — the ignored walk test's own precedent.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        };
+        // Feed the pane's shell a printf whose output is Q, a
+        // three-cell reverse span, E — output, not echoed input: the
+        // bytes pass back through the pty into the grid.
+        terminal
+            .lock()
+            .expect("engine lock")
+            .input_scroll("printf 'Q\u{1b}[7mWWW\u{1b}[27mE'\r".as_bytes());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(cx);
+            let painted = cx.update(|_, cx| {
+                pane_read
+                    .read(cx)
+                    .walk_log
+                    .lock()
+                    .expect("walk log")
+                    .rows
+                    .iter()
+                    .any(|row| row.contains("QWWWE"))
+            });
+            if painted {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reverse span never painted: {:?}",
+                cx.update(|_, cx| {
+                    pane_read
+                        .read(cx)
+                        .walk_log
+                        .lock()
+                        .expect("walk log")
+                        .rows
+                        .clone()
+                })
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // One more frame, then the scene itself: the rendered frame's
+        // quads must hold the reversed span's background — a block
+        // one cell tall and about three cells wide (the block caret
+        // is a single cell and cannot counterfeit two more). The
+        // raster path (`Window::render_to_image`) needs a headless
+        // renderer this gpui-pre only configures on macOS, so the
+        // scene walk — the tab-bar caret test's own channel — is the
+        // pane's pixel truth on Linux. Quads ride scaled pixels; the
+        // engine's cell metrics ride logical — one scale factor
+        // reconciles them.
+        frame(cx);
+        let cell_w = terminal.lock().expect("engine lock").size().cell_width;
+        let cell_h = terminal.lock().expect("engine lock").size().cell_height;
+        let (block, quad_count) = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let quads = &window.rendered_scene().quads;
+            (
+                quads.iter().any(|quad| {
+                    quad.bounds.size.width.as_f32() >= 1.8 * cell_w * scale
+                        && (quad.bounds.size.height.as_f32() - cell_h * scale).abs() <= 2. * scale
+                }),
+                quads.len(),
+            )
+        });
+        assert!(
+            block,
+            "the reverse span's background quad never painted ({quad_count} quads \
+             in the frame, none one cell tall and ≥ two cells wide) — the pane \
+             painted its glyphs but not the run's background, the hidden-paste \
+             veil"
+        );
     }
 }
