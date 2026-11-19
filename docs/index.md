@@ -22,7 +22,7 @@ The terminal slides down from the top (or bottom) edge of the screen and is togg
 - [Status bar](status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](sessions.md) - what is saved, when, and how restore behaves
 - [Theming](theming.md) - the Application theme pin and the 12 built-in color schemes
-- [Slide animation](animation.md) - the 130 ms slide and its reversal rules
+- [Slide animation](animation.md) - the 150 ms slide and its reversal rules
 - [Bell notifications](bell.md) - hidden-terminal bells and the per-tab latch
 - [Inline images](images.md) - `imgcat` and OSC 1337: images render in the terminal and scroll away with the output
 - [Release notes](releases.md) - what each tagged release changed, curated and linked

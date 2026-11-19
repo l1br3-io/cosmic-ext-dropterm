@@ -100,8 +100,25 @@ fn pin_malloc_trim_threshold() {
     }
 }
 
+/// The pane environment's one boot-time truth (the hidden-paste
+/// fix): a terminal emulator advertises its own emulation — the pty
+/// runs THIS VTE, never the launching terminal's. Without it the
+/// panes inherit the launching env's `TERM`: a desktop-launched
+/// drop-down (`autostart`, `DBus` activation) inherits a GUI session
+/// with no `TERM` at all, and the shell's line editor degrades —
+/// bracketed paste turns off, so a paste arrives as raw typing and
+/// readline's scrolled redraw hides the pasted line's head until a
+/// backspace forces a rewrite (the user's report). The vendored
+/// alacritty-terminal's own answer, called exactly where alacritty
+/// calls it: `TERM=alacritty` when the system carries that terminfo,
+/// else `xterm-256color`, plus `COLORTERM=truecolor`.
+fn setup_pane_env() {
+    alacritty_terminal::tty::setup_env();
+}
+
 fn main() {
     pin_malloc_trim_threshold();
+    setup_pane_env();
     println!("dropterm: booting on the gpui-pre 0.3.12 pin (wayland)");
     let args = cli::Args::parse();
     // The query path exits before any bus-name attempt and before the
@@ -191,11 +208,55 @@ fn main() {
 mod tests {
     // The manifest/graph pins (gpui-scaffold Task 1): the ruled pin is
     // exact, wayland-only, and the dependency graph never grows an
-    // edge to the Kit's aggregates — so a careless bump fails
-    // `just check` instead of shipping.
+    // edge to the Kit's aggregates — so a careless bump fails `just
+    // check` instead of shipping.
 
-    use super::check_mode_from_env;
+    use super::{check_mode_from_env, setup_pane_env};
     use std::process::Command;
+
+    #[test]
+    fn boot_advertises_the_terms_the_ptys_inherit() {
+        // The hidden-paste fix's own pin (the covering report): a
+        // pane's shell must see a real TERM — with none, readline
+        // degrades (bracketed paste off, conservative redraws) and a
+        // paste arrives as raw typing that hides until a backspace
+        // redraws. The boot's one call carries the vendored
+        // alacritty-terminal's own answer: TERM=alacritty when the
+        // system carries that terminfo, else xterm-256color, plus
+        // COLORTERM=truecolor. The pane-level render half of the
+        // guard is the ignored live-PTY test in terminal::view.
+        let restore_term = std::env::var_os("TERM");
+        let restore_colorterm = std::env::var_os("COLORTERM");
+        // SAFETY: single-threaded within this test's critical
+        // section; the process-global writes are restored below and
+        // no parallel test of this crate reads TERM.
+        unsafe {
+            std::env::remove_var("TERM");
+            std::env::remove_var("COLORTERM");
+        }
+        setup_pane_env();
+        let term = std::env::var("TERM").unwrap_or_default();
+        assert!(
+            term == "alacritty" || term == "xterm-256color",
+            "TERM must be the emulation this VTE owns, got {term:?}"
+        );
+        assert_eq!(
+            std::env::var("COLORTERM").unwrap_or_default(),
+            "truecolor",
+            "COLORTERM advertises the 24-bit pipeline"
+        );
+        // SAFETY: as above — restoring what the process carried.
+        unsafe {
+            match restore_term {
+                Some(value) => std::env::set_var("TERM", value),
+                None => std::env::remove_var("TERM"),
+            }
+            match restore_colorterm {
+                Some(value) => std::env::set_var("COLORTERM", value),
+                None => std::env::remove_var("COLORTERM"),
+            }
+        }
+    }
 
     /// This crate's own manifest text.
     fn manifest() -> String {

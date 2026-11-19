@@ -87,6 +87,11 @@ pub(crate) enum PaneSignal {
     /// rides to the shell, whose band narrates the verdict — the
     /// paste action's visible failure, never a silent one.
     PasteRefused(dropterm::core::status::PasteRefusal),
+    /// The pane pasted text onto the grid (the covering report's
+    /// completion): a plain text paste's trace is as visible as the
+    /// image path's, so the shell drops whatever veil stands over
+    /// the band — no ledger row, the text itself leaves none.
+    TextPasted,
 }
 
 /// The pane's polled attention latch (the tab markers' input): bell
@@ -849,6 +854,11 @@ impl TerminalPane {
                     let mut engine = self.terminal.lock().expect("engine lock");
                     engine.paste(&text);
                     engine.needs_update = true;
+                    drop(engine);
+                    if let Some(signals) = &self.shell_signals {
+                        let _ = signals.send(PaneSignal::TextPasted);
+                    }
+                    cx.notify();
                 }
                 clipboard::TextRead::None => self.paste_clipboard_image(false, cx),
                 clipboard::TextRead::Refused(refusal) => {
@@ -871,7 +881,7 @@ impl TerminalPane {
                 .await;
             match read {
                 clipboard::TextRead::Text(text) => {
-                    let _ = this.update(cx, |_pane, cx| {
+                    let _ = this.update(cx, |pane, cx| {
                         println!(
                             "dropterm: paste primary — {} bytes through the engine's paste",
                             text.len()
@@ -879,6 +889,10 @@ impl TerminalPane {
                         let mut engine = terminal.lock().expect("engine lock");
                         engine.paste(&text);
                         engine.needs_update = true;
+                        drop(engine);
+                        if let Some(signals) = &pane.shell_signals {
+                            let _ = signals.send(PaneSignal::TextPasted);
+                        }
                         cx.notify();
                     });
                 }
@@ -2290,6 +2304,26 @@ fn paint_row(
         window
             .text_system()
             .shape_line(text.into(), geometry.font_size, &text_runs, Some(forced));
+    // The background pass. `ShapedLine::paint` draws glyphs,
+    // underlines and strikes only — a run's `background_color`
+    // reaches pixels solely through the separate `paint_background`.
+    // A row holding any explicit background (an INVERSE cell's
+    // swapped pair, bash's whole bracketed-paste preview among them)
+    // needs that pass under its glyphs, or its glyphs paint in the
+    // swapped foreground — the pane background — over the pane
+    // background: text and caret present, line reading as blank
+    // until the program redraws the span plain. Rows without a
+    // background skip the pass and pay nothing.
+    if runs.iter().any(|run| run.bg.is_some()) {
+        let _ = shaped.paint_background(
+            origin,
+            geometry.cell_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
     let _ = shaped.paint(
         origin,
         geometry.cell_height,
@@ -2708,6 +2742,392 @@ mod tests {
         assert_eq!(
             resize_px(px_bounds(2558., 679.), 8.4, 20.),
             Some((2558, 679))
+        );
+    }
+
+    // --- the covering report's third telling: a pasted path hides
+    // until a backspace redraws the line ---
+
+    #[gpui::test]
+    #[ignore = "a live PTY reader thread cannot satisfy the gpui test                 scheduler's thread-affinity gate at teardown: every                 assertion runs and prints its evidence, then the harness                 panics at drop — read the stdout, not the exit code                 (just test pasted_paths -- --ignored)"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pane's whole lifecycle through its own paint clock — the boot, the prompt wait, both paste shapes, the backspace redraw, and the shell-exit teardown are one scene"
+    )]
+    fn pasted_paths_read_on_the_painted_prompt_line(cx: &mut gpui::TestAppContext) {
+        // The hidden-paste report's headless pin, the text half. The
+        // boot defect was real — the app never set `TERM` for its
+        // ptys, so a desktop-launched drop-down handed its shells a
+        // GUI session's empty `TERM` and readline degraded (bracketed
+        // paste off, conservative redraws) — but it was only half the
+        // veil: with a real TERM the pasted line still vanished,
+        // because bash's bracketed-paste preview draws wholly in SGR-7
+        // reverse video and the pane's row painter dropped run
+        // backgrounds (the pixels half lives in
+        // `reverse_video_rows_paint_their_highlight_band`). This test
+        // pins the text half: under the environment the fixed boot
+        // guarantees — a real TERM — bash's bracketed paste rides and
+        // the preview's characters paint whole across wrapped rows.
+        // The walk rows own the boot-side half (a pane's `$TERM`
+        // answers `alacritty` or `xterm-256color`).
+        cx.update(gpui_component::init);
+        let config = request_config();
+        let (terminal, pane) = cx
+            .update(|cx| {
+                // The PI test's own pty shape, hand-resolved past
+                // `for_command` (whose wrap exists for the real app's
+                // command-then-shell seats), carrying the TERM the
+                // fixed boot guarantees: an interactive bash with a
+                // known prompt, straight onto the pane.
+                let request = PaneRequest {
+                    program: "/bin/bash".to_string(),
+                    args: vec!["--norc".to_string(), "-i".to_string()],
+                    cwd: None,
+                    env: std::collections::HashMap::from([
+                        ("PS1".to_string(), "P$ ".to_string()),
+                        ("TERM".to_string(), "xterm-256color".to_string()),
+                    ]),
+                    spawned_as: "bash".to_string(),
+                    profile_id: None,
+                    appearance: PaneAppearance {
+                        colors: boot_colors(&config),
+                        font_size: config.font_size,
+                        scrollback: config.scrollback_lines,
+                    },
+                };
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let pane_read = pane.clone();
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(900.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, _| pane,
+                )
+            })
+            .expect("open the pane's window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+
+        // The paint clock: refresh-then-draw (a bare draw may skip
+        // render/paint — the rename-slot pin's precedent), parked so
+        // the pane's event pump lands between frames. The assertion
+        // channel is the WALK LOG — what the paint actually shaped,
+        // not the engine's rows (the PTY reader updates the grid
+        // ahead of any paint, so engine truth can race ahead of
+        // pixels; the walk log cannot).
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        };
+        let painted = |cx: &mut gpui::VisualTestContext, needle: &str| {
+            cx.update(|_, cx| {
+                pane_read
+                    .read(cx)
+                    .walk_log
+                    .lock()
+                    .expect("walk log")
+                    .rows
+                    .iter()
+                    .any(|row| row.contains(needle))
+            })
+        };
+        // The wrapped shape: a row that fills the grid's whole width
+        // continues at the next row's first cell, so the trimmed rows
+        // joined hold a wrapped line's full text.
+        let painted_wrapped = |cx: &mut gpui::VisualTestContext, needle: &str| {
+            cx.update(|_, cx| {
+                let joined: String = pane_read
+                    .read(cx)
+                    .walk_log
+                    .lock()
+                    .expect("walk log")
+                    .rows
+                    .iter()
+                    .map(|row| row.trim_end())
+                    .collect::<Vec<_>>()
+                    .join("");
+                joined.contains(needle)
+            })
+        };
+        let wait_painted = |cx: &mut gpui::VisualTestContext, needle: &str| -> Vec<String> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                frame(cx);
+                if painted(cx, needle) {
+                    return Vec::new();
+                }
+                if std::time::Instant::now() >= deadline {
+                    return cx.update(|_, cx| {
+                        pane_read
+                            .read(cx)
+                            .walk_log
+                            .lock()
+                            .expect("walk log")
+                            .rows
+                            .clone()
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        let missed = wait_painted(cx, "P$");
+        assert!(
+            missed.is_empty(),
+            "the first prompt never painted: {missed:?}"
+        );
+
+        // The paste, both shapes. Fitting: the real paste-cache
+        // path's own length. Over-width: past the grid's width — the
+        // bracketed-paste preview paints the WHOLE text (wrapped over
+        // rows), never a scrolled window that hides its head.
+        let fits = "/home/jpt/.cache/dropterm/paste/paste-20261119-101010-1.png";
+        terminal.lock().expect("engine lock").paste(fits);
+        let missed = wait_painted(cx, fits);
+        assert!(
+            missed.is_empty(),
+            "the fitting pasted path never painted: {missed:?}"
+        );
+
+        // A clean line for the over-width shape (^U), then the paste.
+        let engine = terminal.lock().expect("engine lock");
+        engine.input_scroll(&b"\x15"[..]);
+        drop(engine);
+        let missed = wait_painted(cx, "P$ ");
+        assert!(
+            missed.is_empty(),
+            "the cleared prompt never painted: {missed:?}"
+        );
+        let long = format!("/tmp/paste-20261119-{}.png", "x".repeat(160));
+        terminal.lock().expect("engine lock").paste(&long);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(cx);
+            if painted_wrapped(cx, &long) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the over-width pasted path must paint whole (the bracketed-paste \
+                 preview), not hide behind a scrolled window: {:?}",
+                cx.update(|_, cx| {
+                    pane_read
+                        .read(cx)
+                        .walk_log
+                        .lock()
+                        .expect("walk log")
+                        .rows
+                        .clone()
+                })
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            missed.is_empty(),
+            "the over-width pasted path must paint whole (the bracketed-paste              preview), not hide behind a scrolled window: {missed:?}"
+        );
+
+        // The report's own reveal, still whole after it: one
+        // backspace redraws the line (a char shorter at the tail)
+        // and the path stays on the painted rows.
+        let engine = terminal.lock().expect("engine lock");
+        engine.input_scroll(&b"\x7f"[..]);
+        drop(engine);
+        let shortened = format!("/tmp/paste-20261119-{}.pn", "x".repeat(160));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(cx);
+            if painted_wrapped(cx, &shortened) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the backspace redraw must keep the pasted path painted: {:?}",
+                cx.update(|_, cx| {
+                    pane_read
+                        .read(cx)
+                        .walk_log
+                        .lock()
+                        .expect("walk log")
+                        .rows
+                        .clone()
+                })
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // Teardown: the gpui test scheduler demands determinism, and
+        // the pane's PTY reader thread keeps scheduling wakeups while
+        // its shell lives. Exit bash and let the reader drain to EOF
+        // before the test ends.
+        let engine = terminal.lock().expect("engine lock");
+        engine.input_scroll(&b"\x15"[..]); // ^U: the line is the pasted path; exit needs it clear
+        engine.input_scroll("exit\r".as_bytes());
+        drop(engine);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while {
+            cx.run_until_parked();
+            terminal
+                .lock()
+                .expect("engine lock")
+                .foreground_child_running()
+        } {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pane's shell never exited for teardown"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // The reader's own endgame (its EIO wakeup and final
+        // bookkeeping) lands after the child's reap; settle until a
+        // full quiet second passes so the scheduler never sees the
+        // reader thread again.
+        let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let quiet = std::time::Instant::now();
+        while std::time::Instant::now() < quiet_deadline {
+            cx.run_until_parked();
+            if quiet.elapsed() >= std::time::Duration::from_secs(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    // --- the veil's pixels: a reverse-video span paints its block ---
+
+    #[gpui::test]
+    fn reverse_video_rows_paint_their_highlight_band(cx: &mut gpui::TestAppContext) {
+        // The hidden-paste veil, pixels side. bash's bracketed-paste
+        // preview draws wholly in SGR-7 reverse video (a pty probe
+        // holds the bytes: `\x1b[7m`…text…`\x1b[27m`, and the
+        // backspace redraw plain — the report's own reveal), so the
+        // pane's row painter owes every run background a pass under
+        // its glyphs: gpui's `ShapedLine::paint` paints glyphs,
+        // underlines and strikes only, and without the pane's own
+        // `paint_background` call an INVERSE cell's glyphs paint in
+        // the swapped foreground — the pane background — over the
+        // pane background. Text and caret present, line reading as
+        // blank. This pins real rasterized pixels: the reversed span
+        // must hold a solid highlight block as wide as its three
+        // cells — the block caret is one cell and cannot counterfeit
+        // three.
+        cx.update(gpui_component::init);
+        let config = request_config();
+        let (terminal, pane) = cx
+            .update(|cx| {
+                let request = PaneRequest::for_command(
+                    &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                    None,
+                    &config,
+                );
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let pane_read = pane.clone();
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(900.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, _| pane,
+                )
+            })
+            .expect("open the pane's window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+
+        // The paint clock: refresh-then-draw (a bare draw may skip
+        // render/paint), parked so the pane's event pump lands
+        // between frames — the ignored walk test's own precedent.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        };
+        // Feed the pane's shell a printf whose output is Q, a
+        // three-cell reverse span, E — output, not echoed input: the
+        // bytes pass back through the pty into the grid.
+        terminal
+            .lock()
+            .expect("engine lock")
+            .input_scroll("printf 'Q\u{1b}[7mWWW\u{1b}[27mE'\r".as_bytes());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(cx);
+            let painted = cx.update(|_, cx| {
+                pane_read
+                    .read(cx)
+                    .walk_log
+                    .lock()
+                    .expect("walk log")
+                    .rows
+                    .iter()
+                    .any(|row| row.contains("QWWWE"))
+            });
+            if painted {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reverse span never painted: {:?}",
+                cx.update(|_, cx| {
+                    pane_read
+                        .read(cx)
+                        .walk_log
+                        .lock()
+                        .expect("walk log")
+                        .rows
+                        .clone()
+                })
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // One more frame, then the scene itself: the rendered frame's
+        // quads must hold the reversed span's background — a block
+        // one cell tall and about three cells wide (the block caret
+        // is a single cell and cannot counterfeit two more). The
+        // raster path (`Window::render_to_image`) needs a headless
+        // renderer this gpui-pre only configures on macOS, so the
+        // scene walk — the tab-bar caret test's own channel — is the
+        // pane's pixel truth on Linux. Quads ride scaled pixels; the
+        // engine's cell metrics ride logical — one scale factor
+        // reconciles them.
+        frame(cx);
+        let cell_w = terminal.lock().expect("engine lock").size().cell_width;
+        let cell_h = terminal.lock().expect("engine lock").size().cell_height;
+        let (block, quad_count) = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let quads = &window.rendered_scene().quads;
+            (
+                quads.iter().any(|quad| {
+                    quad.bounds.size.width.as_f32() >= 1.8 * cell_w * scale
+                        && (quad.bounds.size.height.as_f32() - cell_h * scale).abs() <= 2. * scale
+                }),
+                quads.len(),
+            )
+        });
+        assert!(
+            block,
+            "the reverse span's background quad never painted ({quad_count} quads \
+             in the frame, none one cell tall and ≥ two cells wide) — the pane \
+             painted its glyphs but not the run's background, the hidden-paste \
+             veil"
         );
     }
 }

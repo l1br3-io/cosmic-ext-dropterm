@@ -269,7 +269,7 @@ impl SurfaceMachine {
                 // compositor cleared the layer, and the ~140 ms gap
                 // read as a flash on every animated hide. The trade
                 // (owner-ruled 2026-11-19): the previously focused
-                // window regains focus at the destroy, ~130 ms later
+                // window regains focus at the destroy, ~150 ms later
                 // than the old slide-out-start release — and the
                 // animating surface stays focused, which also keeps it
                 // out of GPUI's inactive-window throttle. No unfocus
@@ -295,7 +295,7 @@ impl SurfaceMachine {
     /// reused — no new measuring pass, `output_size` is retained (the
     /// `geometry` module's guarantee) — the slide re-targets `In`
     /// from the current offset (`slide::reverse`: no teleport, a
-    /// fresh fixed 130 ms), keyboard interactivity is re-held per the
+    /// fresh fixed 150 ms), keyboard interactivity is re-held per the
     /// resolved mode ([`shown_keyboard_mode`]) with the terminal
     /// input focused, and the focus latch stands untouched — the
     /// pre-recreate-drop reset here armed a stale latch against the
@@ -877,7 +877,7 @@ pub fn focus_loss_hides(hide_on_focus_loss: bool) -> bool {
 /// must only ever run on a shown surface at rest: the `Hiding` arm
 /// excludes out-slides and their reversals by state, and the slide
 /// arm excludes slide-ins — which ride a `Shown` surface, so the
-/// surface state alone cannot gate them (a press inside the 130 ms
+/// surface state alone cannot gate them (a press inside the 150 ms
 /// window must not arm a drag, or the first cadence-eligible move
 /// would fire `set_size` on the animating surface). Gating the
 /// *arming* here covers the trailing `DragApplyDue` and the
@@ -885,7 +885,7 @@ pub fn focus_loss_hides(hide_on_focus_loss: bool) -> bool {
 /// armed drag, no drag can arm while a slide animates, and the hide
 /// decision clears any live drag before any slide can start. A
 /// throttled press is simply inert — the surface rests in at most
-/// 130 ms and the next press drags normally.
+/// 150 ms and the next press drags normally.
 pub fn grab_bar_acts_on(surface: &SurfaceState, slide_animating: bool) -> bool {
     matches!(surface, SurfaceState::Shown(_)) && !slide_animating
 }

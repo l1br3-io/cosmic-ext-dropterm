@@ -167,7 +167,17 @@ fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
     let json = crate::theme_gen::kit_theme_json(&theme.colors, &theme.name, theme.dark);
     let config: gpui_component::ThemeConfig = serde_json::from_value(json)
         .expect("the generated theme parses — pinned by theme_gen's own tests");
-    gpui_component::Theme::update(cx, |t| t.apply_config(&std::rc::Rc::new(config)));
+    gpui_component::Theme::update(cx, |t| {
+        t.apply_config(&std::rc::Rc::new(config));
+        // The Kit's window frame token: `window_border` paints the
+        // WindowBorder wrapper's 1 px frame at the window bounds —
+        // static while the drawer slides (the slide's canvas rule,
+        // fifth walk). Neutralized here so the frame the eye follows
+        // is the drawer's own, painted inside the band where it rides
+        // the slide; the token is window chrome, not scheme color, so
+        // the override lives on the apply route, not the generator.
+        t.window_border = gpui::transparent_black();
+    });
     let applied = cx.theme();
     println!(
         "dropterm: theme applied ({}, {}) — tokens: background {:?} primary {:?} \
@@ -729,6 +739,34 @@ impl Shell {
         actions
     }
 
+    /// The slide clock's parking tick: the machine parks finished
+    /// slides (an `In` slide rides every shown surface until it parks,
+    /// and an unparked slide would block reshapes and drags by the
+    /// decision layer's own guards); an `Out` slide's park is the
+    /// destroy that lands the hide. The completion destroy is a state
+    /// change the served mirror must see: Hiding became Hidden with no
+    /// verb anywhere in the path. Diagnostic: the `DROPTERM_SLIDE_DEBUG`
+    /// park line anchors the destroy instant against the animator's
+    /// last frame.
+    fn slide_park_tick(&mut self, actions: &mut Vec<Action>) {
+        let parked_epoch = self.machine.slide.as_ref().map(|p| p.epoch);
+        let slide_intents = self.machine.decide_slide_tick();
+        if slide_intents.is_empty() {
+            return;
+        }
+        if let (Some(epoch), true) = (
+            parked_epoch,
+            std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some(),
+        ) {
+            println!(
+                "dropterm: slide park e{epoch} +{}ms — destroy",
+                self.boot.elapsed().as_millis()
+            );
+        }
+        self.execute_into(slide_intents, actions);
+        self.publish_phase();
+    }
+
     /// One pump: drains the forwarded verbs and the measuring slot
     /// through the decision layer, executing every intent into
     /// actions — pure decision work, no window touched. The tick
@@ -766,43 +804,7 @@ impl Shell {
         // nothing), the Hide actions run through the machine's hide
         // funnel exactly like the verb's.
         while let Ok(signal) = self.pane_signals.try_recv() {
-            match signal {
-                view::PaneSignal::Hide => {
-                    println!(
-                        "dropterm: pane hide action -> the hide funnel at +{}ms",
-                        self.boot.elapsed().as_millis()
-                    );
-                    self.dump_visible_grid("pane-hide", cx);
-                    // The band's transient seats die with the tree
-                    // (gn-4): an open menu returns closed, the
-                    // selection and press stand down.
-                    self.clear_status_machine();
-                    let intents = self.machine.decide_hide(self.inputs);
-                    self.execute_into(intents, &mut actions);
-                }
-                view::PaneSignal::Exited(id) => {
-                    // A shell exit closes its tab ungated (never the
-                    // confirm gate); the close touches panes and may
-                    // respawn, so it applies at the tick's App-level
-                    // point like every window-adjacent action.
-                    println!(
-                        "dropterm: pane {id:?} exited -> closing its tab at +{}ms",
-                        self.boot.elapsed().as_millis()
-                    );
-                    exited.push(id);
-                }
-                view::PaneSignal::ImagePasted(id, path, bytes) => {
-                    self.note_pasted_image(id, path, &bytes, cx);
-                }
-                view::PaneSignal::PasteRefused(refusal) => {
-                    // The paste verdict (the audit's F7): the band's
-                    // flash channel narrates the refusal for its 3 s
-                    // window; the log warn already fired at the read.
-                    println!("dropterm: paste refused ({refusal:?}) -> the band's verdict chip");
-                    self.status_paste_refusal =
-                        Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
-                }
-            }
+            self.apply_pane_signal(signal, cx, &mut actions, &mut exited);
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -838,14 +840,7 @@ impl Shell {
         // by the decision layer's own guards). The animated
         // translation of an `Out` slide is task 3's; the clock is
         // this shell's to tick.
-        let slide_intents = self.machine.decide_slide_tick();
-        if !slide_intents.is_empty() {
-            self.execute_into(slide_intents, &mut actions);
-            // The completion tick's destroy is a state change the
-            // served mirror must see: Hiding became Hidden with no
-            // verb anywhere in the path.
-            self.publish_phase();
-        }
+        self.slide_park_tick(&mut actions);
         self.drag_walk_step(&mut actions);
         self.drain_config_changes(&mut actions);
         let quit = match self.exit_at {
@@ -869,6 +864,67 @@ impl Shell {
             exited,
             tab_verbs,
             quit,
+        }
+    }
+
+    /// One pane-signal arm of [`Shell::pump`]'s drain: the hide, the
+    /// exits, and the paste family's three verdicts — the image
+    /// paste's ledger row, the text paste's panel clearance, and the
+    /// refusal's verdict chip.
+    fn apply_pane_signal(
+        &mut self,
+        signal: view::PaneSignal,
+        cx: &mut Context<Self>,
+        actions: &mut Vec<Action>,
+        exited: &mut Vec<TabId>,
+    ) {
+        match signal {
+            view::PaneSignal::Hide => {
+                println!(
+                    "dropterm: pane hide action -> the hide funnel at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.dump_visible_grid("pane-hide", cx);
+                // The band's transient seats die with the tree
+                // (gn-4): an open menu returns closed, the
+                // selection and press stand down.
+                self.clear_status_machine();
+                let intents = self.machine.decide_hide(self.inputs);
+                self.execute_into(intents, actions);
+            }
+            view::PaneSignal::Exited(id) => {
+                // A shell exit closes its tab ungated (never the
+                // confirm gate); the close touches panes and may
+                // respawn, so it applies at the tick's App-level
+                // point like every window-adjacent action.
+                println!(
+                    "dropterm: pane {id:?} exited -> closing its tab at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                exited.push(id);
+            }
+            view::PaneSignal::ImagePasted(id, path, bytes) => {
+                self.note_pasted_image(id, path, &bytes, cx);
+            }
+            view::PaneSignal::TextPasted => {
+                // The covering report's other half: a keyboard
+                // text paste lands under the same veil an image
+                // path does (the pane holds the keyboard while
+                // the panel stands), and its trace deserves the
+                // same clearance — the panel yields, no row.
+                println!(
+                    "dropterm: text paste landed -> a standing panel yields at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.paste_landed(cx);
+            }
+            view::PaneSignal::PasteRefused(refusal) => {
+                // The paste verdict (the audit's F7): the band's
+                // flash channel narrates the refusal for its 3 s
+                // window; the log warn already fired at the read.
+                println!("dropterm: paste refused ({refusal:?}) -> the band's verdict chip");
+                self.status_paste_refusal = Some((refusal, Instant::now() + STATUS_REFUSAL_FLASH));
+            }
         }
     }
 
@@ -1597,7 +1653,18 @@ fn open_shaped_window(
     label: &str,
 ) {
     match cx.open_window(options, |window, cx| {
-        cx.new(|cx| KitRoot::new(shell.clone(), window, cx))
+        // The slide's canvas rule: the Kit styles the window root with
+        // the theme background (WindowState's root styling) — a
+        // full-window opaque backdrop in the terminal's own background
+        // color, behind the drawer's sliding band. Against it the band
+        // reads as content moving inside a static rectangle, not as a
+        // window sliding (the fifth slide walk's root cause; the
+        // surface itself is already `Transparent` in the window
+        // options). The root goes transparent: the drawer paints its
+        // whole self — strip, pane, band, its own frame overlay — and
+        // the vacated area shows the desktop, so the drawer itself is
+        // what slides.
+        cx.new(|cx| KitRoot::new(shell.clone(), window, cx).bg(gpui::transparent_black()))
     }) {
         Ok(window) => {
             shell.update(cx, |shell, _| shell.executor.adopt(handle, window.into()));
@@ -3686,17 +3753,27 @@ impl Shell {
         cx.notify();
     }
 
+    /// The covering report's rule, lifted off the one signal it
+    /// first rode: ANY paste that lands text on the grid — an image
+    /// paste's path, the panel's own re-paste, or a plain keyboard
+    /// text paste — is the paste's one visible trace, so whatever
+    /// veil stands over the band (the images panel's drawer and its
+    /// 50% backdrop) drops first: the armed pair dies with the close
+    /// and a standing refusal verdict retires as stale news.
+    fn paste_landed(&mut self, cx: &mut Context<Self>) {
+        if self.images_open {
+            println!("dropterm: paste closes the standing images panel");
+            self.close_images_panel(cx);
+        }
+        self.status_paste_refusal = None;
+    }
+
     /// One landed image paste, the [`PaneSignal::ImagePasted`]
     /// handler (paste-ledger spec): the pane already pasted the cache
     /// file's path at its prompt; the shell records the row on the
-    /// pane's tab — the pasted-images chip's input. The path is the
-    /// paste's one visible trace (the presentation ruling), so an
-    /// open panel — the 560px drawer over the band's right half, the
-    /// veil over the rest — must not be standing where the path
-    /// lands: the paste closes it first (the armed pair dies with the
-    /// close), the row reads at the prompt, and the chip reopens the
-    /// panel. A paste also retires any standing refusal verdict —
-    /// stale news, its chip yields early.
+    /// pane's tab — the pasted-images chip's input — through the
+    /// shared [`Shell::paste_landed`] clearance, and the chip reopens
+    /// the panel.
     fn note_pasted_image(
         &mut self,
         id: TabId,
@@ -3709,12 +3786,8 @@ impl Shell {
             path.display(),
             bytes.len()
         );
-        if self.images_open {
-            println!("dropterm: paste closes the standing images panel");
-            self.close_images_panel(cx);
-        }
+        self.paste_landed(cx);
         self.tabs.note_pasted_image(id, path, bytes);
-        self.status_paste_refusal = None;
     }
 
     /// One images-panel verb (py-6, the reference handlers' port):
@@ -3765,11 +3838,18 @@ impl Shell {
             }
             PanelVerb::Repaste(path) => {
                 // The same channel a text paste uses — bracketed
-                // paste rides it unchanged.
+                // paste rides it unchanged — and the same clearance
+                // every paste rides (the covering report's rule): the
+                // path this verb writes must not land under the
+                // panel's own veil, so the panel yields first.
+                self.paste_landed(cx);
                 if let Some(pane) = self.active_pane() {
                     let engine = pane.read(cx).terminal.clone();
                     let text = path.to_string_lossy();
-                    engine.lock().expect("engine lock").paste(&text);
+                    let mut engine = engine.lock().expect("engine lock");
+                    engine.paste(&text);
+                    engine.needs_update = true;
+                    drop(engine);
                     println!(
                         "dropterm: panel re-paste {} at +{}ms",
                         path.display(),
@@ -4406,6 +4486,21 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The slide offset's window-space sign — the draw site's half of
+    /// the slide model's edge-space rule: the content exits through
+    /// the surface's *anchored* screen edge. A top drawer drops down
+    /// in from the top and retracts up into it; a bottom one rises up
+    /// in from the bottom and sinks back into it. The bounce walk's
+    /// root cause: these arms were crossed — each drawer played the
+    /// mirror motion of its edge, rising in and sinking out through
+    /// the free edge, which read as bouncing on the mid-screen line.
+    fn slide_top_offset(edge: Edge, offset_px: f32) -> f32 {
+        match edge {
+            Edge::Top => -offset_px,
+            Edge::Bottom => offset_px,
+        }
+    }
+
     fn sliding_band(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // The drawer's content is the strip plus the active pane
         // (gpui-tabs Task 1): the strip at the config's side of the
@@ -4460,7 +4555,28 @@ impl Shell {
         if let Some(tip) = self.status_tip_element(strip, fg) {
             children.push(tip);
         }
-        let column = div().size_full().flex().flex_col().children(children);
+        // The drawer's own frame (the slide's canvas rule, fifth
+        // walk): the Kit's WindowBorder painted a 1 px frame at the
+        // window bounds — static while the band slides — so the
+        // drawer carries its frame itself, as an overlay pinned to
+        // the column. Absolute and zero-layout on purpose: the pane's
+        // cell metrics stay byte-identical to the frameless column,
+        // and the same border color the Kit's frame rode
+        // (`window_border` fell back to `border`). The column is what
+        // translates, so the frame rides the slide in both paths.
+        let column = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .relative()
+            .children(children)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_1()
+                    .border_color(cx.theme().border),
+            );
         let Some(playing) = self.machine.slide else {
             return column;
         };
@@ -4474,6 +4590,12 @@ impl Shell {
         // (slide-animation-smoothness, finding 5).
         let slide_id = gpui::ElementId::NamedInteger("slide".into(), playing.epoch);
         let edge = self.inputs.geometry.edge;
+        // The slide walk's frame log (DROPTERM_SLIDE_DEBUG): one line
+        // per animator invocation — the boot clock stamps the frame
+        // interval, GPUI's element progress and the machine's elapsed
+        // ride side by side so a clock divergence shows, and the offset
+        // exposes any non-monotone pose. The bounce walk reads this.
+        let (epoch, direction, boot) = (playing.epoch, playing.active.direction, self.boot);
         div().size_full().child(
             div()
                 .absolute()
@@ -4481,20 +4603,24 @@ impl Shell {
                 .with_animation(
                     slide_id,
                     Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
-                    move |band, _progress| {
+                    move |band, progress| {
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
                         )]
-                        let offset =
-                            slide::offset(&active, started.elapsed().as_millis() as u64);
-                        match edge {
-                            // Sliding out toward the free edge: a
-                            // top-anchored drawer drops down, a
-                            // bottom-anchored one rises.
-                            Edge::Top => band.top(px(offset)),
-                            Edge::Bottom => band.top(px(-offset)),
+                        let ms = started.elapsed().as_millis() as u64;
+                        let offset = slide::offset(&active, ms);
+                        if std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some() {
+                            println!(
+                                "dropterm: slide e{epoch} {} +{}ms el={progress:.2} m={ms}ms off={offset:.1}",
+                                match direction {
+                                    slide::Direction::In => "show",
+                                    slide::Direction::Out => "hide",
+                                },
+                                boot.elapsed().as_millis(),
+                            );
                         }
+                        band.top(px(Self::slide_top_offset(edge, offset)))
                     },
                 )
                 .child(column),
@@ -4520,7 +4646,7 @@ impl gpui::Render for Shell {
         }
         if self.frames == 1 {
             println!(
-                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 130ms)",
+                "dropterm: OPEN->FIRST_FRAME {}ms (slide budget 150ms)",
                 self.show_open.elapsed().as_millis()
             );
             // The slide clock re-bases at the show window's first
@@ -5528,6 +5654,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_slide_exits_through_the_anchored_edge() {
+        // The bounce walk's regression pin: the window-space top sign
+        // sends the content out through the surface's anchored screen
+        // edge — a top drawer's hidden pose sits above the surface
+        // (negative top), a bottom one's sits below it (positive). The
+        // crossed arms had each drawer rising in and sinking out
+        // through its free edge, which read as bouncing on the
+        // mid-screen line.
+        assert_eq!(Shell::slide_top_offset(Edge::Top, 835.0), -835.0);
+        assert_eq!(Shell::slide_top_offset(Edge::Bottom, 835.0), 835.0);
+        // Rest is rest on either edge — byte-identical to the
+        // unwrapped column.
+        assert_eq!(Shell::slide_top_offset(Edge::Top, 0.0), 0.0);
+        assert_eq!(Shell::slide_top_offset(Edge::Bottom, 0.0), 0.0);
+    }
+
+    #[gpui::test]
+    fn the_kit_backdrop_paints_no_window_of_its_own(cx: &mut gpui::TestAppContext) {
+        // The slide's canvas rule (the fifth walk's pin): the Kit's
+        // window-frame token is neutralized on the theme apply route —
+        // a static 1 px frame at the window bounds would read as a
+        // fixed rectangle while the drawer slides inside it. The
+        // drawer paints its own frame (the band's border overlay);
+        // the window is the transparent canvas behind it.
+        cx.update(gpui_component::init);
+        cx.update(|cx| apply_kit_theme(cx, &DropTermConfig::default()));
+        cx.update(|cx| {
+            assert_eq!(
+                cx.theme().window_border,
+                gpui::transparent_black(),
+                "the Kit's window frame must not paint over the slide's canvas"
+            );
+        });
+    }
+
+    #[test]
     fn the_dock_anchor_swap_rule_is_exact() {
         // The replicate ruling's flip rule: on-without opens,
         // off-with closes, agreement keeps — both agreements, so an
@@ -5684,6 +5846,170 @@ mod tests {
                     .pasted_images(tab)
                     .map(<[dropterm::core::tabs::PastedImage]>::len),
                 Some(2)
+            );
+        });
+    }
+
+    /// The shared scaffold of the paste-clearance tests below: a
+    /// shell over one empty tab, its pane-signal channel wired, and
+    /// the panel left standing with a row armed and a refusal verdict
+    /// flashing — the exact state a paste lands into. The windowed
+    /// context rides home with the shell (the verb calls need a
+    /// window).
+    fn shell_with_standing_panel(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        Entity<Shell>,
+        std::sync::mpsc::Sender<view::PaneSignal>,
+        TabId,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        let tab = tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx.clone(),
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.images_open = true;
+                shell.images_armed = Some(std::path::PathBuf::from(
+                    "/cache/paste/paste-20261119-101010-1.png",
+                ));
+                shell.status_paste_refusal = Some((
+                    dropterm::core::status::PasteRefusal::OverCap,
+                    Instant::now(),
+                ));
+            });
+        });
+        (shell, signals_tx, tab, cx)
+    }
+
+    #[gpui::test]
+    fn a_text_paste_signal_drops_the_standing_panel(cx: &mut gpui::TestAppContext) {
+        // The covering report's second report: a keyboard text paste
+        // lands while the panel stands (the pane holds the keyboard
+        // under the veil) and nothing closed it — the text pasted
+        // into the veil, the cursor visibly marching right under it.
+        // The TextPasted signal rides the pane's text-paste funnel to
+        // the pump, and the panel must yield with no ledger row
+        // recorded (a text paste leaves none).
+        let (shell, signals_tx, tab, cx) = shell_with_standing_panel(cx);
+        signals_tx
+            .send(view::PaneSignal::TextPasted)
+            .expect("the signal queues");
+        cx.update(|_window, cx| {
+            shell.update(cx, Shell::pump);
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the text paste must close the standing panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
+            );
+            assert_eq!(
+                shell.status_paste_refusal, None,
+                "a landed paste retires the refusal verdict"
+            );
+            assert_eq!(
+                shell
+                    .tabs
+                    .pasted_images(tab)
+                    .map(<[dropterm::core::tabs::PastedImage]>::len),
+                Some(0),
+                "a text paste records no ledger row"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_repaste_verb_pastes_with_the_panel_standing_down(cx: &mut gpui::TestAppContext) {
+        // The covering report's third report: the panel's own
+        // Re-paste verb wrote the row's path while its veil stood —
+        // the paste landed under the very panel that issued it. The
+        // verb must clear its own panel first, then reach the
+        // engine's paste channel.
+        let (shell, _signals_tx, tab, cx) = shell_with_standing_panel(cx);
+        // One real pane behind the standing panel: the verb's paste
+        // needs the active seat (the engine's own PTY, the boot
+        // funnel's plain shell) — seated on the scaffold's own tab,
+        // the active one.
+        let config = DropTermConfig::default();
+        let (engine, pane) = cx
+            .update(|_window, cx| {
+                let request = view::PaneRequest::for_command(
+                    &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                    None,
+                    &config,
+                );
+                view::boot_pane(cx, &config, request, None, tab, None)
+            })
+            .expect("boot the pane");
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.panes.insert(tab, pane);
+            });
+        });
+        let path = std::path::PathBuf::from("/cache/paste/paste-20261119-101010-1.png");
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.images_verb(
+                    crate::images_panel::PanelVerb::Repaste(path.clone()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.images_open,
+                "the re-paste must not paste under its own panel"
+            );
+            assert_eq!(
+                shell.images_armed, None,
+                "the armed pair dies with the close"
+            );
+            assert!(
+                engine.lock().expect("engine lock").needs_update,
+                "the re-paste must reach the engine's paste funnel"
             );
         });
     }

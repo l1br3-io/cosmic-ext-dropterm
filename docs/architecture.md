@@ -78,7 +78,7 @@ The recurring split is *pure model* vs *wiring*, and the shared-core split made 
 | core | `transport.rs` | The startup transport halves: the bus-name ownership decision, `forward_to_running` (parameterized over the frontend's own verb serialization), `forward_outcome`, the platform-data dictionary |
 | core | `intent.rs` | The toolkit-neutral surface intent vocabulary (`SurfaceIntent`, `SurfaceHandle`) and the executor trait |
 | core | `surface_lifecycle.rs` | The headless `SurfaceMachine`, its guards, the toggle funnel (`ToggleIntent`), `shown_keyboard_mode` |
-| core | `slide.rs` | The 130 ms slide *model*: direction, play state, offset/reverse/finished - machine state, no drawing |
+| core | `slide.rs` | The 150 ms slide *model*: direction, play state, offset/reverse/finished - machine state, no drawing |
 | core | `spawn.rs` | The pure spawn resolution: `SpawnCommand`, the command-then-shell wrap, the unrunnable degradations, the cwd compositions |
 | core | `geometry.rs` | Pure geometry math: percent mapping, drag throttling, the write-back machine |
 | core | `keybinds.rs` | The default chord map plus the per-action `custom_key_binds` overlay (pure model) |
