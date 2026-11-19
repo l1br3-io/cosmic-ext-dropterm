@@ -3762,8 +3762,22 @@ impl Shell {
     /// with it like every close. A refused launch (the verb's own
     /// warn) never reaches here — nothing opened, the panel stays
     /// put.
+    ///
+    /// The surface follows (the ruling's second leg): a grab-holding
+    /// surface (`hide_on_focus_loss` on) loses its keyboard to the
+    /// viewer and the focus-loss hide walks it out on its own; a
+    /// stay-open surface (`off`) shares focus and never loses it that
+    /// way, so the landed launch hands its own Hide through the
+    /// pane-signal channel — the same funnel the Hide action rides,
+    /// decided at the tick's window point (sr-1's lesson), never
+    /// inside the verb's event handler.
     fn system_open_landed(&mut self, cx: &mut Context<Self>) {
         self.close_images_panel(cx);
+        if !dropterm::core::surface_lifecycle::focus_loss_hides(self.inputs.hide_on_focus_loss)
+            && let Err(err) = self.signals_tx.send(view::PaneSignal::Hide)
+        {
+            println!("dropterm: launch hide signal failed: {err}");
+        }
     }
 
     /// The covering report's rule, lifted off the one signal it
@@ -6062,6 +6076,49 @@ mod tests {
             assert_eq!(
                 shell.images_armed, None,
                 "the armed pair dies with the close"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_landed_open_hides_a_stay_open_surface_itself(cx: &mut gpui::TestAppContext) {
+        // The ruling's second leg: a grab-holding surface
+        // (`hide_on_focus_loss` on) loses its keyboard to the viewer
+        // and the focus-loss hide walks it out — the launch sends
+        // nothing. A stay-open surface (`off`) shares focus and
+        // never loses it that way, so the landed launch hands its
+        // own Hide through the pane-signal channel: the same funnel
+        // the Hide action rides, decided at the tick's window point.
+        let (shell, _signals_tx, _tab, cx) = shell_with_standing_panel(cx);
+        // Flag on (the default): the launch hands nothing — the
+        // viewer's grab runs the natural focus-loss hide.
+        cx.update(|_, cx| {
+            shell.update(cx, super::Shell::system_open_landed);
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                shell.pane_signals.try_recv().is_err(),
+                "the grab-holding surface hides through focus loss, never through the launch"
+            );
+        });
+        // Flag off: the stay-open surface hands its own Hide into
+        // the pane-signal channel — the same funnel the Hide action
+        // rides (the funnel's consume side is the machine's own
+        // decide_hide pin).
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.inputs.hide_on_focus_loss = false;
+            });
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, super::Shell::system_open_landed);
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                matches!(shell.pane_signals.try_recv(), Ok(view::PaneSignal::Hide)),
+                "the stay-open surface must hand its own hide for the launch"
             );
         });
     }
