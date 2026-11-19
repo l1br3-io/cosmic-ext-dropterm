@@ -275,8 +275,10 @@ impl SurfaceMachine {
                 // out of GPUI's inactive-window throttle. No unfocus
                 // can trail our own release mid-slide anymore; an
                 // Unfocused at the destroy finds the machine already
-                // `Hidden`, and a focus-loss hide mid-slide still fires
-                // through `decide_focus_loss`'s latch.
+                // `Hidden`; a focus loss mid-slide is consumed as a
+                // no-op — the shell's shown-guard never routes the
+                // decision while `Hiding`, and the slide simply
+                // completes.
                 Vec::new()
             }
             // `Hide` never decides to show, and a hiding or hidden
@@ -295,12 +297,17 @@ impl SurfaceMachine {
     /// from the current offset (`slide::reverse`: no teleport, a
     /// fresh fixed 130 ms), keyboard interactivity is re-held per the
     /// resolved mode ([`shown_keyboard_mode`]) with the terminal
-    /// input focused, and the focus latch resets pending the
-    /// `LayerFocused` the re-hold synthesizes. Only a `Hiding`
-    /// machine reverses — any other state leaves with nothing, the
-    /// same state-matched discipline as `decide_configure` — so a
-    /// misrouted call can never re-hold a live surface's keyboard or
-    /// park an out-slide on a `Shown` machine.
+    /// input focused, and the focus latch stands untouched — the
+    /// pre-recreate-drop reset here armed a stale latch against the
+    /// next focus loss (the recreate-drop ship pass, 2026-11-19):
+    /// the hold rides unchanged through the slide, so a toggled-hide
+    /// reversal never lost the keyboard and no `LayerFocused`
+    /// re-fires to re-arm the latch after a reset; the latch keeping
+    /// its value is the truth. Only a `Hiding` machine reverses —
+    /// any other state leaves with nothing, the same state-matched
+    /// discipline as `decide_configure` — so a misrouted call can
+    /// never re-hold a live surface's keyboard or park an out-slide
+    /// on a `Shown` machine.
     pub fn decide_reverse_show(
         &mut self,
         handle: SurfaceHandle,
@@ -310,7 +317,6 @@ impl SurfaceMachine {
             return Vec::new();
         };
         self.state = SurfaceState::Shown(handle);
-        self.focused = false;
         // `Hiding` always carries a live `Out` slide — the parking
         // tick destroys the surface and leaves `Hidden` in the same
         // handler — so there is always something to re-target; a
@@ -332,16 +338,20 @@ impl SurfaceMachine {
             };
             self.slide = Some(reversed);
         }
-        // The mirror of hide's focus bookkeeping: none — hide reports
-        // nothing, so nothing returns here; the `LayerFocused` the
-        // re-hold synthesizes repeats the terminal's standing focus
-        // harmlessly (`set_focused` reports only real changes). The
-        // re-hold runs the resolved mode, and since the hold now rides
-        // unchanged through the slide-out, it no-ops whenever the mode
-        // already matches — the mid-slide reversal stays in-window with
-        // no recreate at all; a stay-open surface reversed mid-slide
-        // comes back as `OnDemand` (no grab of its own — a click on the
-        // terminal wins the keyboard back, the sharing rule of
+        // The focus latch rides untouched, the keyboard does: after a
+        // toggled hide the surface still holds it (the hold's ride),
+        // so the standing latch is still true and the next loss must
+        // hide; after a focus-loss hide the latch is false because the
+        // window really lost activation — the reversal cannot win it
+        // back (the Focus intent is a log-only seat on a live layer
+        // surface) and a click-on-the-terminal fires a real
+        // `LayerFocused` that re-arms. The re-hold runs the resolved
+        // mode, and since the hold now rides unchanged through the
+        // slide-out, it no-ops whenever the mode already matches —
+        // the mid-slide reversal stays in-window with no recreate at
+        // all; a stay-open surface reversed mid-slide comes back as
+        // `OnDemand` (no grab of its own — a click on the terminal
+        // wins the keyboard back, the sharing rule of
         // `shown_keyboard_mode`).
         vec![
             SurfaceIntent::Hold {
@@ -783,8 +793,9 @@ pub enum ToggleStep {
     /// Reverse a hiding slide back to shown on the same live surface:
     /// no new measuring pass — `output_size` is retained — the slide
     /// re-targets `In` from the current offset, keyboard
-    /// interactivity is re-grabbed per config, and `surface_focused`
-    /// resets pending the next `LayerFocused`.
+    /// interactivity is re-grabbed per config, and the focus latch
+    /// rides untouched (the keyboard rides the slide, so the latch's
+    /// standing value is the truth — see `decide_reverse_show`).
     ReverseShow(SurfaceHandle),
     /// Nothing: the intent is already satisfied — a hide while
     /// hiding or hidden (no restart, no double destroy), a show

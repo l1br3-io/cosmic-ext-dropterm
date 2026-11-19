@@ -1152,6 +1152,10 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
             SurfaceIntent::Focus { handle },
         ]
     );
+    // The window's activation GAINED arms the focus latch (the
+    // shell's `LayerFocused` analog — the one latch write the
+    // runtime has).
+    machine.focused = true;
     assert_eq!(machine.state, SurfaceState::Shown(handle));
 
     // Drag: the first move arms at the surface's standing height
@@ -1241,13 +1245,22 @@ fn the_full_lifecycle_runs_headless_through_the_intent_layer() {
             SurfaceIntent::Focus { handle },
         ]
     );
+    // The recreate-drop's own latch property: the keyboard rode the
+    // slide, no activation transition fired across hide + reversal,
+    // and the reversal no longer resets the latch — so the armed
+    // latch from the show's GAINED must still stand, unpinned by
+    // hand (the pre-fix reset armed a stale false latch here and the
+    // first click-away failed to hide).
+    assert!(
+        machine.focused,
+        "the latch must survive a mid-slide reversal untouched"
+    );
 
     // The slide parks, the reversal completes: nothing destroys.
     assert!(machine.decide_slide_tick().is_empty());
 
-    // Focus-loss hide: the latch was set by a `LayerFocused`; the
+    // Focus-loss hide: the latch stood through the reversal, so the
     // loss reports the unfocus and hides through the same out-slide.
-    machine.focused = true;
     let (report, hides) = machine.decide_focus_loss(inputs);
     assert!(report && hides);
     assert!(machine.decide_hide(inputs).is_empty());
