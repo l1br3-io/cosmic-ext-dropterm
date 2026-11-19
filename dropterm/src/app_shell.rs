@@ -39,6 +39,8 @@ use dropterm::core::tabs::TabId;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
+use gpui_component::Sizable as _;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use notify::Watcher as _;
@@ -4780,7 +4782,7 @@ impl Shell {
     /// a centered card naming the tab by its title only — never the
     /// process name — with the modal holding the keyboard (its key
     /// context swallows everything but Escape, the reference bar's
-    /// own routing).
+    /// own routing). The layer itself is [`close_confirm_layer`]'s.
     fn close_confirm_modal(
         &self,
         pending: TabId,
@@ -4808,52 +4810,103 @@ impl Shell {
                 shell.update(cx, |shell, cx| shell.close_now(pending, cx));
             }
         });
-        let modal_focus = self.modal_focus.clone();
         let pane_background = resolve_theme(&self.config).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
-        let (card, fg) = tab_bar::strip_pair(pane_background);
-        let hairline = gpui::Hsla {
-            a: tab_bar::BORDER_ALPHA,
-            ..fg
-        };
-        let button = |label: &'static str, on_press: ModalFn| {
+        let colors = tab_bar::strip_pair(pane_background);
+        close_confirm_layer(
+            &title,
+            colors,
+            &self.modal_focus,
+            band.into_any_element(),
+            &cancel,
+            &proceed,
+        )
+    }
+}
+
+/// One close-confirm verb — the Kit's Button so hover and pressed
+/// feedback come from the component instead of a hand-rolled div
+/// (the press-reaction ruling the images panel's and the drawer's
+/// own verb helpers already carry: bare divs give the hand nothing).
+/// Cancel rides the quiet secondary style; the destructive Close Tab
+/// the danger one.
+fn confirm_verb(id: &'static str, label: &'static str, danger: bool, on_press: ModalFn) -> Button {
+    let button = Button::new(id).label(label).small();
+    let button = if danger {
+        button.danger()
+    } else {
+        button.secondary()
+    };
+    button.on_click(move |_: &gpui::ClickEvent, window, cx| on_press(window, cx))
+}
+
+/// The pending close-confirmation's overlay: the band beneath, a
+/// full-surface scrim over it whose press cancels, and the centered
+/// card above both. The card occludes (this gpui's dispatch rule,
+/// the images panel's own pin: a bubble mouse listener fires for
+/// every hitbox containing the point, down to the first `BlockMouse`
+/// one — without the occlusion every card press is also the scrim's
+/// cancel), and its verbs are Kit Buttons so the hand gets hover and
+/// pressed feedback. The passed focus handle is the modal's keyboard
+/// hold: the `close-confirm` key context swallows everything but
+/// Escape, which rides the dismissal action back into the cancel
+/// verb. The colors are the strip's own `(card, fg)` pair; the
+/// hairline is that fg at the border alpha.
+fn close_confirm_layer(
+    title: &str,
+    colors: (gpui::Hsla, gpui::Hsla),
+    focus: &gpui::FocusHandle,
+    band: gpui::AnyElement,
+    cancel: &ModalFn,
+    proceed: &ModalFn,
+) -> gpui::AnyElement {
+    let (card_color, fg) = colors;
+    let hairline = gpui::Hsla {
+        a: tab_bar::BORDER_ALPHA,
+        ..fg
+    };
+    let card = gpui::div()
+        .id("close-confirm-card")
+        .occlude()
+        .w(gpui::px(320.))
+        .rounded_md()
+        .border_1()
+        .border_color(hairline)
+        .bg(card_color)
+        .text_color(fg)
+        .text_size(gpui::px(14.))
+        .p(gpui::px(16.))
+        .flex()
+        .flex_col()
+        .gap(gpui::px(10.))
+        .child(gpui::div().text_size(gpui::px(15.)).child("Close tab?"))
+        .child(gpui::div().child(format!(
+            "\u{201c}{title}\u{201d} is running a process. Close it anyway?"
+        )))
+        .child(
             gpui::div()
-                .px(gpui::px(12.))
-                .py(gpui::px(5.))
-                .rounded_sm()
-                .text_color(gpui::Hsla { a: 0.8, ..fg })
-                .child(label)
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    move |_, window: &mut Window, cx| on_press(window, cx),
-                )
-        };
-        let card = gpui::div()
-            .w(gpui::px(320.))
-            .rounded_md()
-            .border_1()
-            .border_color(hairline)
-            .bg(card)
-            .text_color(fg)
-            .text_size(gpui::px(14.))
-            .p(gpui::px(16.))
-            .flex()
-            .flex_col()
-            .gap(gpui::px(10.))
-            .child(gpui::div().text_size(gpui::px(15.)).child("Close tab?"))
-            .child(gpui::div().child(format!(
-                "\u{201c}{title}\u{201d} is running a process. Close it anyway?"
-            )))
-            .child(
-                gpui::div()
-                    .flex()
-                    .flex_row()
-                    .gap(gpui::px(8.))
-                    .justify_end()
-                    .child(button("Cancel", std::rc::Rc::clone(&cancel)))
-                    .child(button("Close Tab", std::rc::Rc::clone(&proceed))),
-            );
-        div().size_full().relative().child(band).child(
+                .flex()
+                .flex_row()
+                .gap(gpui::px(8.))
+                .justify_end()
+                .child(confirm_verb(
+                    "close-confirm-cancel",
+                    "Cancel",
+                    false,
+                    std::rc::Rc::clone(cancel),
+                ))
+                .child(confirm_verb(
+                    "close-confirm-proceed",
+                    "Close Tab",
+                    true,
+                    std::rc::Rc::clone(proceed),
+                )),
+        );
+    div()
+        .size_full()
+        .relative()
+        .child(band)
+        .child(
             div()
                 .absolute()
                 .inset_0()
@@ -4867,22 +4920,23 @@ impl Shell {
                 // key dies on the path — no binds fire, nothing
                 // types.
                 .key_context("close-confirm")
-                .track_focus(&modal_focus)
+                .track_focus(focus)
                 .on_action({
-                    let shell = shell.clone();
-                    move |_: &DismissCloseConfirm, _window: &mut Window, cx: &mut App| {
-                        shell.update(cx, |shell, _| shell.cancel_pending_close());
+                    let cancel = std::rc::Rc::clone(cancel);
+                    move |_: &DismissCloseConfirm, window: &mut Window, cx: &mut App| {
+                        cancel(window, cx);
                     }
                 })
-                // The scrim's press cancels (the card's buttons
-                // capture their own presses first).
+                // The scrim's press cancels (the card's occlusion
+                // keeps its own presses — the buttons' included —
+                // off this listener).
                 .on_mouse_down(gpui::MouseButton::Left, {
-                    let cancel = std::rc::Rc::clone(&cancel);
+                    let cancel = std::rc::Rc::clone(cancel);
                     move |_, window: &mut Window, cx: &mut App| cancel(window, cx)
                 })
                 .child(card),
         )
-    }
+        .into_any_element()
 }
 
 /// The measuring probe: the two-surface show's first pass. A
@@ -6056,6 +6110,175 @@ mod tests {
                 "the armed pair dies with the close"
             );
         });
+    }
+
+    struct ConfirmVerbProbe {
+        fired: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    }
+
+    impl gpui::Render for ConfirmVerbProbe {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let cancel: ModalFn = {
+                let fired = std::rc::Rc::clone(&self.fired);
+                std::rc::Rc::new(move |_, _| fired.borrow_mut().push("cancel"))
+            };
+            let proceed: ModalFn = {
+                let fired = std::rc::Rc::clone(&self.fired);
+                std::rc::Rc::new(move |_, _| fired.borrow_mut().push("proceed"))
+            };
+            // The verbs at known seats — the window's own top-left
+            // corners, inside sized frames — so the click needs no
+            // card-layout geometry.
+            gpui::div()
+                .size_full()
+                .child(gpui::div().absolute().top_0().left_0().child(confirm_verb(
+                    "probe-cancel",
+                    "Cancel",
+                    false,
+                    cancel,
+                )))
+                .child(
+                    gpui::div()
+                        .absolute()
+                        .top_0()
+                        .left(px(200.))
+                        .child(confirm_verb("probe-proceed", "Close Tab", true, proceed)),
+                )
+        }
+    }
+
+    struct CloseConfirmProbe {
+        fired: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+        focus: gpui::FocusHandle,
+    }
+
+    impl gpui::Render for CloseConfirmProbe {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let cancel: ModalFn = {
+                let fired = std::rc::Rc::clone(&self.fired);
+                std::rc::Rc::new(move |_, _| fired.borrow_mut().push("cancel"))
+            };
+            let proceed: ModalFn = {
+                let fired = std::rc::Rc::clone(&self.fired);
+                std::rc::Rc::new(move |_, _| fired.borrow_mut().push("proceed"))
+            };
+            let colors = tab_bar::strip_pair(None);
+            close_confirm_layer(
+                "probe",
+                colors,
+                &self.focus,
+                gpui::div().into_any_element(),
+                &cancel,
+                &proceed,
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn a_modal_button_click_routes_its_verb(cx: &mut gpui::TestAppContext) {
+        // The Kit-Button migration's pin, the close-confirm's own
+        // copy of the images panel's: the modal's verbs moved from
+        // on_mouse_down divs to Button on_click — a full press and
+        // release must route the verb (the bare divs this replaces
+        // gave the hand no hover or pressed feedback at all, and
+        // fired on the raw press instead of a click).
+        cx.update(gpui_component::init);
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let probe = std::rc::Rc::clone(&fired);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(640.), px(400.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, cx| cx.new(|_| ConfirmVerbProbe { fired: probe }),
+                )
+            })
+            .expect("open the verb probe window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+
+        // A full click on each verb: the quiet Cancel, then the
+        // danger Close Tab.
+        cx.simulate_click(gpui::point(px(20.), px(14.)), gpui::Modifiers::default());
+        cx.simulate_click(gpui::point(px(220.), px(14.)), gpui::Modifiers::default());
+        assert_eq!(
+            *fired.borrow(),
+            vec!["cancel", "proceed"],
+            "the modal button clicks must route their verbs: {:?}",
+            fired.borrow()
+        );
+    }
+
+    #[gpui::test]
+    fn a_card_press_stays_and_a_scrim_press_cancels(cx: &mut gpui::TestAppContext) {
+        // The occlusion pin (the images panel's nested-backdrop
+        // lesson applied to the modal): the card's own occlusion
+        // must keep its presses — the buttons' included — off the
+        // scrim's cancel listener, so a click on the card's bare
+        // interior records nothing while a press on the exposed
+        // scrim is the one cancel. The nested build without the
+        // occlusion saw every card press bubble into the scrim and
+        // cancel under the user's hand.
+        cx.update(gpui_component::init);
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let probe = std::rc::Rc::clone(&fired);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(640.), px(400.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, cx| {
+                        cx.new(|cx| CloseConfirmProbe {
+                            fired: probe,
+                            focus: cx.focus_handle(),
+                        })
+                    },
+                )
+            })
+            .expect("open the modal probe window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+
+        // The card's bare interior (the centered 320 px card holds
+        // this seat; the right-justified verbs sit far right of it).
+        cx.simulate_click(gpui::point(px(200.), px(200.)), gpui::Modifiers::default());
+        assert!(
+            fired.borrow().is_empty(),
+            "a card interior press cancelled the modal: {:?}",
+            fired.borrow()
+        );
+
+        // The exposed scrim, left of the card.
+        cx.simulate_click(gpui::point(px(40.), px(40.)), gpui::Modifiers::default());
+        assert_eq!(
+            *fired.borrow(),
+            vec!["cancel"],
+            "the scrim press must be the one cancel"
+        );
     }
 
     #[test]
