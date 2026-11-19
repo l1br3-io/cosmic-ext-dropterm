@@ -1654,10 +1654,12 @@ impl Terminal {
     /// the fresh-prompt latch would never arm (the 2026-10-24
     /// fresh-start trace: no tab ever adopted its anchor). A no-op
     /// on settled records, so a re-show's adoption can never
-    /// re-snapshot a frozen record.
-    pub fn settle_spawn_grid_now(&mut self) {
+    /// re-snapshot a frozen record. `true` is the close itself — the
+    /// fresh-prompt latch armed and the caller may owe the adoption
+    /// one update; `false` is an already-settled record.
+    pub fn settle_spawn_grid_now(&mut self) -> bool {
         if matches!(self.spawn_settle, SpawnSettle::Settled) {
-            return;
+            return false;
         }
         self.spawn_grid = self.grid();
         self.spawn_settle = SpawnSettle::Settled;
@@ -1665,6 +1667,7 @@ impl Terminal {
         // spec): the update that follows may adopt the shell's
         // first prompt.
         self.settle_prompt_pending = true;
+        true
     }
 
     pub fn zoom_adj(&self) -> i8 {

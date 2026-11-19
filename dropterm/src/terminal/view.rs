@@ -1652,12 +1652,12 @@ impl gpui::Render for TerminalPane {
     }
 }
 
-/// One pane's paint: resize to the granted bounds, drain the update
-/// flag, then walk the visible grid through the projection and the
-/// shaper. One function reads the whole frame together — the grid
-/// walk, the selection overlay, and the evidence rows share the one
-/// lock and the one geometry; splitting them re-derives the lock
-/// order per piece.
+/// One pane's paint: resize to the granted bounds, run the pin
+/// funnel's settle close, drain the update flag, then walk the
+/// visible grid through the projection and the shaper. One function
+/// reads the whole frame together — the grid walk, the selection
+/// overlay, and the evidence rows share the one lock and the one
+/// geometry; splitting them re-derives the lock order per piece.
 #[expect(
     clippy::too_many_lines,
     reason = "the frame reads one lock and one geometry end to end; the walk, the overlay, and the evidence rows are one pass"
@@ -1672,7 +1672,20 @@ fn paint_pane(
     cx: &mut App,
 ) {
     let mut terminal = terminal.lock().expect("engine lock");
-    resize_to_bounds(&mut terminal, bounds);
+    let granted = resize_to_bounds(&mut terminal, bounds);
+    // The pin funnel's settle close (the fresh-start trace's shape):
+    // this frame is where a laid-out surface's granted size lands —
+    // the draw resized before any granted-size echo could arrive, and
+    // `resize` no-ops on unchanged sizes, so waiting for a changed
+    // resize here waits forever. The close at the grid already held
+    // freezes the record and arms the fresh-prompt latch; the update
+    // it owes runs in this frame's own drain, so the shell's first
+    // prompt adopts and the ghost and the Ctrl+Space menu answer on
+    // a fresh tab. A zero-width frame makes no request and settles
+    // nothing; a settled record never re-snapshots.
+    if granted && terminal.settle_spawn_grid_now() {
+        terminal.needs_update = true;
+    }
 
     // The wakeup's update, on the render path (the widget's rule).
     if terminal.needs_update {
@@ -2169,11 +2182,13 @@ fn hsla_fg(colors: &Colors) -> gpui::Hsla {
 /// already renders the new grid (SIGWINCH rides the notifier), and
 /// the transition logs the walk's resize evidence row. The decision
 /// is the pure `resize_px` (the testable seam); this wrapper reads
-/// the engine's own cell metrics and applies the request.
-fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
+/// the engine's own cell metrics and applies the request. `true` is
+/// a real request — the frame the granted size landed on; `false` is
+/// the zero-width pre-configure frame, which touches nothing.
+fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) -> bool {
     let size = terminal.size();
     let Some(px_size) = resize_px(bounds, size.cell_width, size.cell_height) else {
-        return;
+        return false;
     };
     if (size.width, size.height) != px_size {
         terminal.resize(px_size.0, px_size.1);
@@ -2185,6 +2200,7 @@ fn resize_to_bounds(terminal: &mut Terminal, bounds: gpui::Bounds<Pixels>) {
         let grid = grid::grid_of(w, h, size.cell_width, size.cell_height);
         println!("dropterm: pane resize {px_size:?} -> grid {grid:?} (Term::resize + SIGWINCH)");
     }
+    true
 }
 
 /// The frame's px request: `None` when the frame must not touch the

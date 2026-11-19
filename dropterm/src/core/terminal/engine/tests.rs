@@ -886,6 +886,58 @@ fn a_fresh_terminal_suggests_without_pushing_the_prompt_off_the_top() {
 }
 
 #[test]
+fn a_fresh_tabs_menu_declines_until_the_funnel_close_arms_the_anchor() {
+    // The menu twin of the fresh-start ghost pin above: without the
+    // pin funnel's settle close, a fresh tab's anchor never adopts —
+    // `typed_segment` carves nothing, and the Ctrl+Space open
+    // declines at a bare, painted prompt (the 2026-11-19 menu
+    // completion report). The funnel's close arms the fresh-prompt
+    // latch; the chord opens on the typed prefix after it.
+    let cursor_column = |terminal: &Terminal| terminal.term.lock().grid().cursor.point.column.0;
+    let mut terminal = autosuggest_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.suggest.seed_history(["sleep 30".to_string()]);
+    poll_update_until(
+        &mut terminal,
+        |t| cursor_column(t) > 0,
+        "the bare prompt painted",
+    );
+    let prompt_column = cursor_column(&terminal);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| cursor_column(t) == prompt_column + 4,
+        "the typed prefix echoed",
+    );
+    assert!(
+        !terminal.menu_open(),
+        "unanchored: the chord declines at a painted prompt"
+    );
+    terminal.input_no_scroll(&b"\x7f\x7f\x7f\x7f"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| cursor_column(t) == prompt_column,
+        "the bare prompt restored",
+    );
+    terminal.settle_spawn_grid_now(); // the funnel's close
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle close adopts the anchor",
+    );
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion() == Some("p 30"),
+        "the typed prefix echoes and suggests",
+    );
+    assert!(
+        terminal.menu_open(),
+        "a typed prefix at the anchored prompt opens the menu"
+    );
+}
+
+#[test]
 fn autosuggest_accept_full_lands_the_suffix_in_the_grid() {
     let mut terminal = autosuggest_terminal();
     terminal.arm_spawn_grid_next_resize();

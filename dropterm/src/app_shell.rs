@@ -5739,31 +5739,37 @@ mod tests {
     fn theme_identity_tracks_the_scheme_and_mode_not_geometry() {
         use dropterm::core::config::ThemePreference;
 
-        let base = DropTermConfig::default();
-        let base_id = theme_identity(&resolve_theme(&base));
-        assert_eq!(theme_identity(&resolve_theme(&base)), base_id);
+        // The reads run under the seam: parallel seam tests force the
+        // shared cell for their own bodies, and an unseamed read here
+        // would see whichever mode a neighbor holds (the identity
+        // comparisons below need every read to agree).
+        dropterm::core::system_mode::with_system_mode(true, || {
+            let base = DropTermConfig::default();
+            let base_id = theme_identity(&resolve_theme(&base));
+            assert_eq!(theme_identity(&resolve_theme(&base)), base_id);
 
-        // A geometry-only edit never re-themes.
-        let geometry_only = DropTermConfig {
-            height_percent: 70,
-            ..DropTermConfig::default()
-        };
-        assert_eq!(theme_identity(&resolve_theme(&geometry_only)), base_id);
+            // A geometry-only edit never re-themes.
+            let geometry_only = DropTermConfig {
+                height_percent: 70,
+                ..DropTermConfig::default()
+            };
+            assert_eq!(theme_identity(&resolve_theme(&geometry_only)), base_id);
 
-        // A scheme-name edit does.
-        let scheme = DropTermConfig {
-            color_scheme_dark: "Dracula".to_string(),
-            ..DropTermConfig::default()
-        };
-        assert_ne!(theme_identity(&resolve_theme(&scheme)), base_id);
+            // A scheme-name edit does.
+            let scheme = DropTermConfig {
+                color_scheme_dark: "Dracula".to_string(),
+                ..DropTermConfig::default()
+            };
+            assert_ne!(theme_identity(&resolve_theme(&scheme)), base_id);
 
-        // A preference flip changes the mode (System follows the OS
-        // mode cell; Light resolves light).
-        let pref = DropTermConfig {
-            theme_preference: ThemePreference::Light,
-            ..DropTermConfig::default()
-        };
-        assert_ne!(theme_identity(&resolve_theme(&pref)), base_id);
+            // A preference flip changes the mode (System follows the
+            // OS mode cell; Light resolves light).
+            let pref = DropTermConfig {
+                theme_preference: ThemePreference::Light,
+                ..DropTermConfig::default()
+            };
+            assert_ne!(theme_identity(&resolve_theme(&pref)), base_id);
+        });
     }
 
     #[test]
@@ -5833,8 +5839,12 @@ mod tests {
         // decisions, or the chrome and the terminal drift apart on a
         // live edit.
         let config = DropTermConfig::default();
-        let resolved = resolve_theme(&config).colors;
-        let boot = view::boot_colors(&config);
+        // Both resolutions under one seam hold: parallel seam tests
+        // force the shared cell, and two unseamed reads could land on
+        // different modes and disagree for no chain reason.
+        let (resolved, boot) = dropterm::core::system_mode::with_system_mode(true, || {
+            (resolve_theme(&config).colors, view::boot_colors(&config))
+        });
         for nc in [
             NamedColor::Background,
             NamedColor::Foreground,
