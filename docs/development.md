@@ -111,7 +111,7 @@ Which recipe targets what, in one table:
 | `just dev`, `dev-reload`, `dev-install`, `dev-watch` | Development — the debug build under the `.Dev` identity, launched as `dropterm-dev`, plus its (app-grid-hidden) desktop file |
 | `just act …`, `toggle`, `show`, `hide`, `new-tab …` | The dev instance — the verbs ride the `-dev` launcher and the dev instance executes them |
 | `just dev-uninstall` | Development — removes the `-dev` launcher and the dev desktop file |
-| `just deps` | Prerequisites — checks the C toolchain, `pkg-config`, the system libraries, and cargo, installing what is missing via the distro's package manager (apt/dnf/pacman/zypper) or rustup; the build and install recipes run it first, and it is a silent no-op when everything is present |
+| `just deps` | Prerequisites — checks the C toolchain, `pkg-config`, the system libraries, and cargo, installing what is missing via the distro's package manager (apt/dnf/pacman/zypper) or rustup; on macOS it verifies Xcode's tools, the Metal Toolchain component, and the rustc 1.98 floor instead (verifies and instructs, never installs). The build and install recipes run it first, and it is a silent no-op when everything is present |
 | `just build-all` + `sudo just install` | Installed — the release build into `/usr`; a release tarball's `usr/` tree lands in the same places, and `sudo just uninstall` removes it |
 | `just check` | The gate — fmt + clippy + test across the workspace, each package also once under `dev-identity` |
 | `just vendor` / `build-vendored` | Release machinery — the offline dependency snapshot and the offline build proof |
@@ -132,6 +132,42 @@ Runtime behavior is only testable on real COSMIC hardware; the manual test
 checklist every change answers to lives in [testing.md](testing.md). Headless
 concerns stay in `#[cfg(test)]` module tests - `just test` runs them, and
 `just check` (format, clippy, test) is the change Definition of Done.
+
+## Building on macOS
+
+The crate builds from source on macOS (aarch64 primary, x86_64
+cross-checked) and its toolkit-neutral core tests run there — the
+[macOS initiative](research/portability-plan.md) pulled the platform ahead
+of the X11/GNOME phase. What exists today is the build gate, not a usable
+app: the terminal's drop-down surface is Wayland layer-shell, so on the Mac
+every surface verb refuses honestly (see
+[known issues](known-issues.md)) until the `macos-surface` module lands.
+No `.app`, no DMG, no signing — build from source, that is the ruling.
+
+Prerequisites (nothing from Homebrew):
+
+- **Xcode Command Line Tools** — `xcode-select --install` if `xcodebuild`
+  is missing.
+- **The Metal Toolchain component** — Xcode 26+ ships it as a separate
+  download (`xcodebuild -downloadComponent MetalToolchain`), and the
+  GPUI pin's macOS backend compiles Metal shaders in its build script.
+- **Rust 1.98 or newer** — the macOS floor (the linux gate's 1.97 does
+  not compile the apple backend; `rustup update stable` if `just deps`
+  says so).
+
+`just deps` verifies all three (and downloads the Metal component if
+missing); then:
+
+```sh
+cargo build --locked          # the arm64 binary
+cargo test --locked           # core tests green on the Mac
+rustup target add x86_64-apple-darwin
+cargo check --locked --target x86_64-apple-darwin   # the second arch
+```
+
+CI runs the same shape on a `macos-latest` runner beside the ubuntu jobs.
+The dev recipes below this section are Linux's own (systemd fences,
+`/proc`, the COSMIC desktop file) — they are not the Mac's workflow.
 
 ## The COSMIC validation VM
 
