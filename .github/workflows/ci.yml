@@ -81,3 +81,39 @@ jobs:
 
       - name: Build (release)
         run: just build-release
+
+  # The macOS build+test gate (macos-build mb-4): the crate compiles
+  # and its toolkit-neutral core tests run green on the mac target.
+  # Not a live session (the owner walks those); `cargo test` here is
+  # the CI exception the plan's ruling names. rustc 1.98 is the
+  # floor, not the ubuntu job's 1.97: gpui-pre-apple 0.3.12 uses
+  # Option::map_or_default (rust#138099), stable only since 1.98 —
+  # the wayland backend the ubuntu job compiles never sees it.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # gpui-pre-apple's build script compiles Metal shaders, and
+      # Xcode 26+ ships the metal toolchain as a downloadable
+      # component the runner image may not preinstall. A no-op fast
+      # pass when present; the download only runs when missing. The
+      # build itself stays the real gate.
+      - name: Ensure Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (arm64)
+        run: cargo build --locked --verbose
+
+      - name: Test (arm64)
+        run: cargo test --locked
+
+      - name: Check (x86_64)
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --locked --target x86_64-apple-darwin
