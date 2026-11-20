@@ -289,6 +289,24 @@ pub(crate) struct Shell {
     /// A scheme edit awaiting the tick's apply point (the Kit's
     /// tokens and the pane's colors re-apply before the next frame).
     pending_theme: Option<ResolvedTheme>,
+    /// The opacity the panes last rendered (the live-opacity fix):
+    /// the config echo's change detector — the alpha is baked into
+    /// each pane's skin at spawn, so a live flip is a fleet pass,
+    /// and this is what that pass last landed.
+    rendered_opacity: u8,
+    /// An opacity edit awaiting the tick's apply point (every pane's
+    /// skin retunes before the next frame; new tabs already carry the
+    /// value, their spawn reads the config the echo rewrote).
+    pending_opacity: Option<u8>,
+    /// The configured `font_name` the fleet last rendered with (the
+    /// live-font fix's baseline — the raw stored value; resolution
+    /// against the held fonts happens once per apply).
+    rendered_font_family: String,
+    /// A font edit awaiting the tick's apply point (every pane's
+    /// skin and the band's font retune before the next frame; new
+    /// tabs already carry the value, their spawn reads the config
+    /// the echo rewrote).
+    pending_font_family: Option<String>,
     /// The system-mode revision this shell last resolved against
     /// (theme-defaults td-2): a bump is an OS dark/light flip, and
     /// the tick's compare is what turns it into a staged re-theme.
@@ -638,6 +656,13 @@ impl Shell {
         specs: SpecsWatch,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
+        // The booted fleet baked this opacity into its skins (the
+        // live-opacity fix's baseline).
+        let rendered_opacity = config.opacity;
+        // The booted fleet resolved this family at its own boot (the
+        // live-font fix's baseline — the raw stored value, mirroring
+        // the opacity field).
+        let rendered_font_family = config.font_name.clone();
         // The booted fleet is the session baseline (computed before
         // the struct literal moves the list).
         let session_written = session_shape(&tabs);
@@ -658,6 +683,10 @@ impl Shell {
             pane_signals,
             theme,
             pending_theme: None,
+            rendered_opacity,
+            pending_opacity: None,
+            rendered_font_family,
+            pending_font_family: None,
             system_mode_revision: dropterm::core::system_mode::revision(),
             drag_walk: drag_walk.unwrap_or_default().into(),
             drag_release_at: None,
@@ -1089,6 +1118,30 @@ impl Shell {
         // system-mode flip (a config echo and an OS flip stage the
         // same way).
         self.stage_theme_if_changed(&config);
+        // The live-opacity fix: an opacity edit stages the fleet
+        // retune — the alpha is baked into each pane's skin at
+        // spawn, so the live flip is the tick's apply point (the
+        // theme's own stage/apply split).
+        if config.opacity != self.rendered_opacity {
+            println!(
+                "dropterm: opacity {} -> {} (the panes retune on the tick)",
+                self.rendered_opacity, config.opacity
+            );
+            self.pending_opacity = Some(config.opacity);
+        }
+        // The live-font fix: a font edit stages the fleet retune —
+        // the family is resolved into each pane's skin and its
+        // engine's host at spawn, so the live flip is the tick's
+        // apply point (the theme's own stage/apply split). The raw
+        // stored values compare; resolution against the held fonts
+        // happens once at the apply.
+        if config.font_name != self.rendered_font_family {
+            println!(
+                "dropterm: font {:?} -> {:?} (the panes retune on the tick)",
+                self.rendered_font_family, config.font_name
+            );
+            self.pending_font_family = Some(config.font_name.clone());
+        }
         let new_inputs = SurfaceInputs::from_config(&config);
         let old_geometry = self.inputs.geometry;
         let old_zone = ExclusiveZone::from_panel_respect(self.inputs.respect_panel);
@@ -1188,6 +1241,46 @@ impl Shell {
         for pane in self.panes.values() {
             pane.update(cx, |pane, cx| pane.retheme(&theme.colors, cx));
         }
+    }
+
+    /// The tick's opacity apply point (the live-opacity fix): every
+    /// pane's skin retunes before the next frame, so a drawer slider
+    /// or a hand edit lands on the running terminal without a
+    /// restart. Idempotent for panes that already carry the value (a
+    /// tab spawned between the echo and this pass read the rewritten
+    /// config at its own boot).
+    fn apply_pending_opacity(&mut self, cx: &mut Context<Self>) {
+        let Some(opacity) = self.pending_opacity.take() else {
+            return;
+        };
+        for pane in self.panes.values() {
+            pane.update(cx, |pane, cx| pane.set_opacity(opacity, cx));
+        }
+        self.rendered_opacity = opacity;
+    }
+
+    /// The tick's font apply point (the live-font fix): the staged
+    /// `font_name` resolves against the held fonts once, then every
+    /// pane's skin and engine and the band's font retune before the
+    /// next frame — a drawer picker pick or a hand edit lands on the
+    /// running terminal without a restart. Idempotent for panes that
+    /// already carry the resolution (a tab spawned between the echo
+    /// and this pass read the rewritten config at its own boot; the
+    /// engine's change gate skips the re-measure).
+    fn apply_pending_font(&mut self, cx: &mut Context<Self>) {
+        let Some(configured) = self.pending_font_family.take() else {
+            return;
+        };
+        let wanted = configured.trim();
+        let family = crate::terminal::host::resolve_family(
+            cx.text_system(),
+            (!wanted.is_empty()).then_some(wanted),
+        );
+        for pane in self.panes.values() {
+            pane.update(cx, |pane, cx| pane.set_font_family(&family, cx));
+        }
+        self.band_font.family = family.into();
+        self.rendered_font_family = configured;
     }
 
     /// The tick's session save point (gpui-parity Task 3): the
@@ -5639,11 +5732,16 @@ pub(crate) fn boot(
         std::thread::park();
     });
     // The band's font (gpui-status Task 1): the terminal's own
-    // resolved family — the same candidate resolution every pane's
-    // host performs, resolved once here (the band is the terminal
-    // speaking about itself, in its own voice).
+    // resolved family — the same configured-name resolution every
+    // pane's host performs, resolved once here (the band is the
+    // terminal speaking about itself, in its own voice).
+    let band_configured = config.font_name.trim();
     let band_font = gpui::Font {
-        family: crate::terminal::host::resolve_monospace_family(cx.text_system()).into(),
+        family: crate::terminal::host::resolve_family(
+            cx.text_system(),
+            (!band_configured.is_empty()).then_some(band_configured),
+        )
+        .into(),
         ..gpui::Font::default()
     };
     let shell = cx.new(|cx| {
@@ -5697,6 +5795,13 @@ pub(crate) fn boot(
                 // the next frame — the App context lives here, not in
                 // pump (the same split every window action takes).
                 shell.update(cx, Shell::apply_pending_theme);
+                // The live-opacity fix: an opacity edit retunes every
+                // pane's skin on the same apply point.
+                shell.update(cx, Shell::apply_pending_opacity);
+                // The live-font fix: a font edit retunes every pane's
+                // skin, engine, and the band's font on the same apply
+                // point.
+                shell.update(cx, Shell::apply_pending_font);
                 // gpui-parity Task 1: a landed completions load
                 // stores the table and pushes it to the panes.
                 shell.update(cx, Shell::drain_completions);
@@ -6727,6 +6832,185 @@ mod tests {
             assert!(
                 !shell.read(cx).settings.open,
                 "the repeat Settings verb must close the drawer"
+            );
+        });
+    }
+
+    // The live-opacity fix's model half: the fleet's baseline is the
+    // booted config's own opacity (not a hard-coded full alpha), the
+    // tick's apply point consumes a staged pass exactly once and
+    // records what it landed, and an idle tick retunes nothing. The
+    // echo half (the watcher's reload staging the pass) needs a real
+    // config dir — the manual walk's row.
+    #[gpui::test]
+    fn an_opacity_edit_stages_one_fleet_retune(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig {
+            opacity: 80,
+            ..DropTermConfig::default()
+        };
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tab_bar::TabList::default(),
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).rendered_opacity,
+                80,
+                "the booted fleet's baseline is the config's own opacity"
+            );
+        });
+
+        // The staged pass lands once and records; the staging empties.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| shell.pending_opacity = Some(40));
+            shell.update(cx, Shell::apply_pending_opacity);
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.rendered_opacity, 40,
+                "the pass lands the staged value"
+            );
+            assert!(
+                shell.pending_opacity.is_none(),
+                "the pass consumes its staging"
+            );
+        });
+
+        // An idle tick retunes nothing.
+        cx.update(|_, cx| shell.update(cx, Shell::apply_pending_opacity));
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).rendered_opacity,
+                40,
+                "an idle tick must not retune"
+            );
+        });
+    }
+
+    // The live-font fix's fleet pass, the opacity test's own shape:
+    // the booted baseline is the config's own `font_name` (the raw
+    // stored value; resolution happens at the apply), the tick's
+    // apply point consumes a staged edit exactly once — resolving
+    // the name once and landing it on the band's font — and an idle
+    // tick retunes nothing. The panes' own retune is the view test's
+    // pin (`a_pane_boots_in_the_configured_family_and_a_live_edit_lands`);
+    // the echo half needs a real config dir — the manual walk's row.
+    #[gpui::test]
+    fn a_font_edit_stages_one_fleet_retune(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tab_bar::TabList::default(),
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).rendered_font_family,
+                config.font_name,
+                "the booted fleet's baseline is the config's own font_name"
+            );
+        });
+
+        // The staged pass lands once — resolving the name (an unheld
+        // one falls back) — records it, and retunes the band's font
+        // with the panes.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.pending_font_family = Some("Dropterm Unheld Test Face".to_string());
+            });
+            shell.update(cx, Shell::apply_pending_font);
+        });
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.rendered_font_family, "Dropterm Unheld Test Face",
+                "the pass lands the staged value"
+            );
+            assert!(
+                shell.pending_font_family.is_none(),
+                "the pass consumes its staging"
+            );
+            let expected = crate::terminal::host::resolve_family(
+                cx.text_system(),
+                Some("Dropterm Unheld Test Face"),
+            );
+            assert_eq!(
+                shell.band_font.family.as_ref(),
+                expected,
+                "the band retunes to the resolved family"
+            );
+        });
+
+        // An idle tick retunes nothing.
+        cx.update(|_, cx| shell.update(cx, Shell::apply_pending_font));
+        cx.update(|_, cx| {
+            assert!(
+                shell.read(cx).pending_font_family.is_none(),
+                "an idle tick must not retune"
             );
         });
     }

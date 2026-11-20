@@ -4825,3 +4825,119 @@ fn an_image_pastes_its_path_visible_at_the_bash_prompt() {
         "the pasted path is not on the grid; grid:\n{text}"
     );
 }
+
+/// The family-recording test host: [`PlainHost`]'s measurement with
+/// a `set_family` that answers `true` on a real change — the seam
+/// the GPUI host implements for real, minus the toolkit. The
+/// substitution is recorded on the struct; the engine owns its host
+/// in a box, so the recorded state's only observable is the
+/// change/no-change answer itself.
+#[derive(Default)]
+struct FamilyHost {
+    inner: PlainHost,
+    family: Option<String>,
+}
+
+impl TextHost for FamilyHost {
+    fn buffer(&self) -> &Buffer {
+        self.inner.buffer()
+    }
+
+    fn buffer_mut(&mut self) -> &mut Buffer {
+        self.inner.buffer_mut()
+    }
+
+    fn buffer_weak(&self) -> std::sync::Weak<Buffer> {
+        self.inner.buffer_weak()
+    }
+
+    fn redraw(&self) -> bool {
+        self.inner.redraw()
+    }
+
+    fn init_and_measure(&mut self, attrs: &Attrs, metrics: &Metrics) -> (f32, f32) {
+        self.inner.init_and_measure(attrs, metrics)
+    }
+
+    fn remeasure(&mut self, attrs: &Attrs) -> (f32, f32) {
+        self.inner.remeasure(attrs)
+    }
+
+    fn metrics_differ(&self, metrics: &Metrics) -> bool {
+        self.inner.metrics_differ(metrics)
+    }
+
+    fn shape(&mut self) {
+        self.inner.shape();
+    }
+
+    fn set_family(&mut self, family: &str) -> bool {
+        let changed = self.family.as_deref() != Some(family);
+        if changed {
+            self.family = Some(family.to_string());
+        }
+        changed
+    }
+}
+
+#[test]
+fn a_family_change_answers_true_once_and_remeasures() {
+    // The live-font pin: a real substitution re-measures the cell
+    // (the host's `set_family` answers `true`, the engine runs
+    // `update_cell_size` and reports the change), and an already-
+    // carried family answers `false` — a tick's fleet pass over a
+    // pane that booted in the picked face re-measures nothing.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut terminal = Terminal::new(
+        Box::new(FamilyHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions::default(),
+        &Colors::default(),
+    )
+    .expect("spawn a /bin/sh family test terminal");
+
+    let before = terminal.size().cell_width;
+    assert!(
+        terminal.set_font_family("DejaVu Sans Mono"),
+        "a first substitution is a real change"
+    );
+    assert_eq!(
+        terminal.size().cell_width,
+        before,
+        "the re-measure runs and lands a valid cell (same space glyph, same width)"
+    );
+    assert!(
+        !terminal.set_font_family("DejaVu Sans Mono"),
+        "the carried family is a no-op"
+    );
+    assert!(
+        !terminal.set_font_family("DejaVu Sans Mono"),
+        "still a no-op — the host's recorded state owns the answer"
+    );
+}
+
+#[test]
+fn a_fixed_family_host_answers_false_and_stays_healthy() {
+    // The default seam: a host whose family is fixed at construction
+    // (the trait's default answer) never reports a change, and the
+    // engine takes that as "nothing to re-measure".
+    let mut terminal = spawn_grid_terminal();
+    assert!(
+        !terminal.set_font_family("Fira Mono"),
+        "PlainHost's family is fixed — no change, no re-measure"
+    );
+    assert_eq!(
+        terminal.zoom_adj(),
+        0,
+        "the engine's own state is untouched"
+    );
+}

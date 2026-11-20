@@ -1682,6 +1682,20 @@ impl Terminal {
         self.zoom_adj = value;
     }
 
+    /// Substitute the host's concrete render family (a live
+    /// `font_name` edit's resolved pick — the engine's own attrs stay
+    /// `Family::Monospace`). A real change re-measures the cell
+    /// through the host (`update_cell_size`, the zoom pass's own
+    /// shape); `false` when the host's family is fixed at
+    /// construction or the substitution was a no-op.
+    pub fn set_font_family(&mut self, family: &str) -> bool {
+        if !self.host.set_family(family) {
+            return false;
+        }
+        self.update_cell_size();
+        true
+    }
+
     pub fn set_focused(&mut self, is_focused: bool) {
         let focus_changed = self.is_focused != is_focused;
         self.is_focused = is_focused;

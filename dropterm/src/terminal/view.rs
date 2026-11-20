@@ -135,6 +135,13 @@ pub(crate) struct PaneSkin {
     font: gpui::Font,
 }
 
+/// The config `opacity` (0–100) as the paint alpha — the one math
+/// the spawn's bake and the live retune share, so a mid-session
+/// flip renders exactly what a fresh tab would.
+pub(crate) fn opacity_alpha(opacity: u8) -> f32 {
+    f32::from(opacity.min(100)) / 100.
+}
+
 /// The live grid geometry one frame paints with.
 struct GridGeometry {
     font_size: Pixels,
@@ -302,7 +309,7 @@ impl TerminalPane {
             terminal,
             skin: PaneSkin {
                 colors,
-                opacity_alpha: f32::from(opacity.min(100)) / 100.,
+                opacity_alpha: opacity_alpha(opacity),
                 font,
             },
             title: None,
@@ -698,6 +705,35 @@ impl TerminalPane {
             engine.needs_update = true;
         }
         self.skin.colors = *colors;
+        cx.notify();
+    }
+
+    /// Swap the pane's background opacity (the live-opacity fix,
+    /// called by the tick's apply point): the alpha is paint-side
+    /// only — the frame's whole use is `bg.a *= skin.opacity_alpha`
+    /// — so the retune is the field swap and the notify, no engine
+    /// call. The spawn's own bake and this pass share the one
+    /// [`opacity_alpha`] math, so a live flip lands exactly what a
+    /// fresh tab would render.
+    pub(crate) fn set_opacity(&mut self, opacity: u8, cx: &mut Context<Self>) {
+        self.skin.opacity_alpha = opacity_alpha(opacity);
+        cx.notify();
+    }
+
+    /// Swap the pane's render family (the live-font fix, called by
+    /// the tick's apply point): the skin's paint font and the
+    /// engine's measurement host land on the same pre-resolved name —
+    /// the engine's `set_font_family` re-measures the cell through
+    /// the host when the family actually changed, so the grid
+    /// arithmetic follows the face. The spawn's own resolution and
+    /// this pass share [`resolve_family`](super::host::resolve_family),
+    /// so a live flip renders exactly what a fresh tab would.
+    pub(crate) fn set_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
+        self.skin.font.family = family.into();
+        {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.set_font_family(family);
+        }
         cx.notify();
     }
 
@@ -2485,7 +2521,14 @@ pub(crate) fn boot_pane(
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
 ) -> Option<(Arc<Mutex<Terminal>>, Entity<TerminalPane>)> {
     let colors = request.appearance.colors;
-    let host = crate::terminal::host::GpuiHost::new(cx);
+    // The configured family rides the boot: the host resolves
+    // `font_name` against the held fonts (the fallback walk owns an
+    // empty or unheld name), so a pane spawns in the picked face.
+    let configured_family = config.font_name.trim();
+    let host = crate::terminal::host::GpuiHost::new(
+        cx,
+        (!configured_family.is_empty()).then_some(configured_family),
+    );
     let font = host.font();
     println!(
         "dropterm: pane pty spawning {} {:?} (spawned as {})",
@@ -2538,6 +2581,20 @@ pub(crate) fn boot_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the background alpha (the live-opacity fix) ---
+
+    #[test]
+    fn opacity_alpha_maps_the_band_and_clamps() {
+        // The one math the spawn's bake and the tick's retune share:
+        // 100 saturates at full alpha, 0 goes fully transparent, and
+        // an over-band value clamps — never overshoots — so a
+        // mid-session flip renders exactly what a fresh tab would.
+        assert_eq!(opacity_alpha(100), 1.0);
+        assert_eq!(opacity_alpha(0), 0.0);
+        assert_eq!(opacity_alpha(50), 0.5);
+        assert_eq!(opacity_alpha(255), 1.0);
+    }
 
     // --- the pane request over core's spawn resolution (py-5) ---
 
@@ -2743,6 +2800,66 @@ mod tests {
             resize_px(px_bounds(2558., 679.), 8.4, 20.),
             Some((2558, 679))
         );
+    }
+
+    // --- the live-font fix: the boot resolution and the tick's
+    // per-pane apply ---
+
+    #[gpui::test]
+    fn a_pane_boots_in_the_configured_family_and_a_live_edit_lands(cx: &mut gpui::TestAppContext) {
+        // The font-name contract, end to end at the pane: an unheld
+        // configured name falls back to the candidate walk (the
+        // resolution rule host.rs pins — an unheld family silently
+        // fails to rasterize), the fallback name itself lands
+        // verbatim (a held name wins), and `set_font_family` — the
+        // tick's fleet pass — swaps the skin's paint font to the
+        // resolved family (the engine's own re-measure rides the
+        // same call).
+        cx.update(gpui_component::init);
+        let unheld = "Dropterm Unheld Test Face";
+        let fallback =
+            cx.update(|cx| crate::terminal::host::resolve_family(cx.text_system(), Some(unheld)));
+        assert_eq!(
+            fallback,
+            cx.update(|cx| crate::terminal::host::resolve_family(cx.text_system(), None)),
+            "an unheld name falls back to the candidate walk"
+        );
+        assert_eq!(
+            cx.update(|cx| crate::terminal::host::resolve_family(
+                cx.text_system(),
+                Some(&fallback)
+            )),
+            fallback,
+            "a held name lands verbatim"
+        );
+
+        // Boot with the unheld name: the pane lands in the fallback
+        // face, not the configured string.
+        let config = dropterm::core::config::DropTermConfig {
+            font_name: unheld.to_string(),
+            ..request_config()
+        };
+        let (_terminal, pane) = cx
+            .update(|cx| {
+                let request = PaneRequest::for_command(
+                    &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                    None,
+                    &config,
+                );
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let booted = cx.update(|cx| pane.read(cx).skin.font.family.to_string());
+        assert_eq!(
+            booted, fallback,
+            "an unheld configured name boots the fallback walk's pick"
+        );
+
+        // The live edit to the (held) fallback family lands on the
+        // skin verbatim.
+        cx.update(|cx| pane.update(cx, |pane, cx| pane.set_font_family(&fallback, cx)));
+        let edited = cx.update(|cx| pane.read(cx).skin.font.family.to_string());
+        assert_eq!(edited, fallback, "the live edit lands the resolved family");
     }
 
     // --- the covering report's third telling: a pasted path hides

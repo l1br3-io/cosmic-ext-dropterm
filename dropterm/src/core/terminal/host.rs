@@ -52,6 +52,18 @@ pub trait TextHost: Send {
     /// system, trimming its run cache. Called once per update, after
     /// the projection.
     fn shape(&mut self);
+
+    /// Substitute the concrete family a live font-family edit
+    /// resolves to (the frontend resolves `font_name` against its
+    /// toolkit's held fonts first — an unheld name must not reach the
+    /// shaper). The engine's own attrs stay `Family::Monospace`; the
+    /// substitution is the frontend's alone. `true` when the family
+    /// actually changed (the caller re-measures), `false` when the
+    /// family is fixed at construction (the default, and the test
+    /// host's answer).
+    fn set_family(&mut self, _family: &str) -> bool {
+        false
+    }
 }
 
 /// The test host: a persistent real buffer shaped by cosmic-text's

@@ -50,6 +50,28 @@ pub(crate) fn resolve_monospace_family(text_system: &gpui::TextSystem) -> String
     MONOSPACE_CANDIDATES[0].to_string()
 }
 
+/// The configured `font_name` resolved against GPUI's held fonts: a
+/// non-empty name the font system actually holds wins (the picker's
+/// rows are fontdb families, the same names GPUI resolves through);
+/// anything else — empty, unheld — falls back to the candidate walk
+/// above, because an unheld family silently fails to rasterize (the
+/// resolution rule `resolve_monospace_family`'s doc pins). The one
+/// resolution both a pane boot and a live font edit run, so every
+/// render surface lands on the same family.
+pub(crate) fn resolve_family(text_system: &gpui::TextSystem, configured: Option<&str>) -> String {
+    if let Some(wanted) = configured {
+        if text_system
+            .all_font_names()
+            .iter()
+            .any(|name| name == wanted)
+        {
+            return wanted.to_string();
+        }
+        println!("dropterm: configured font {wanted:?} not held — falling back");
+    }
+    resolve_monospace_family(text_system)
+}
+
 /// The GPUI-side host: a real cosmic-text buffer for the engine's
 /// projection, measured through GPUI's text system.
 pub(crate) struct GpuiHost {
@@ -63,10 +85,13 @@ pub(crate) struct GpuiHost {
 impl GpuiHost {
     /// Built at boot with the app-level text system; the engine's
     /// `Terminal::new` initializes and measures through the trait
-    /// before anything renders.
-    pub(crate) fn new(cx: &App) -> Self {
+    /// before anything renders. `configured` is the config's
+    /// `font_name` — resolved against the held fonts
+    /// ([`resolve_family`]), so a pane boots in the family the
+    /// settings panel picked whenever GPUI holds it.
+    pub(crate) fn new(cx: &App, configured: Option<&str>) -> Self {
         let text_system = cx.text_system().clone();
-        let family = resolve_monospace_family(&text_system);
+        let family = resolve_family(&text_system, configured);
         println!("dropterm: pane font family resolved to {family:?}");
         Self {
             buffer: Arc::new(Buffer::new_empty(Metrics::new(16.0, 8.0))),
@@ -146,6 +171,17 @@ impl TextHost for GpuiHost {
         // never renders from it — check 9's ruling — so shaping the
         // lines would be work with no reader. The libcosmic host
         // shapes because iced's renderer reads the buffer back.
+    }
+
+    fn set_family(&mut self, family: &str) -> bool {
+        // The input is pre-resolved (the caller ran
+        // [`resolve_family`]), so it lands verbatim — `true` only on
+        // a real change, so the engine's re-measure fires once.
+        if self.font.family.as_ref() == family {
+            return false;
+        }
+        self.font.family = family.into();
+        true
     }
 }
 
