@@ -248,6 +248,9 @@ fn foreground_check_reads_false_without_either_input() {
     assert!(!foreground_child_running(None, None));
 }
 
+// Linux-only (macos-build mb-2): pins tcgetpgrp-based
+// `foreground_child_running`, inert (false) off Linux by cfg.
+#[cfg(target_os = "linux")]
 #[test]
 fn foreground_check_tracks_a_live_pty_from_idle_to_child_and_back() {
     // The heaviest test in this module — the second in the
@@ -559,6 +562,9 @@ fn process_name_reads_none_without_inputs() {
     assert_eq!(foreground_process_name(Some(&master), None), None);
 }
 
+// Linux-only (macos-build mb-2): pins the /proc-backed
+// `foreground_process_name`, inert (None) off Linux by cfg.
+#[cfg(target_os = "linux")]
 #[test]
 fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
     // The name variant of the bool check's live-pty pin: an idle
@@ -632,6 +638,9 @@ fn ssh_destination_reads_none_without_inputs() {
     assert_eq!(foreground_ssh_destination(Some(&master), None), None);
 }
 
+// Linux-only (macos-build mb-2): asserts the live /proc comm read —
+// no /proc on the mac target.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_non_ssh_foreground_comm_yields_no_destination() {
     // The getter's gate (status-remote criterion 3): a live
@@ -675,6 +684,10 @@ fn a_non_ssh_foreground_comm_yields_no_destination() {
     assert_eq!(terminal.ssh_destination(), None);
 }
 
+// Linux-only (macos-build mb-2): asserts the live /proc comm+cmdline
+// reads — no /proc exists on the mac target (the engine arms read
+// None there by cfg).
+#[cfg(target_os = "linux")]
 #[test]
 fn a_live_ssh_comm_reads_its_cmdline_destination() {
     // The positive path: a foreground process whose kernel comm is
@@ -798,6 +811,9 @@ fn bottom_line_text(terminal: &Terminal) -> String {
     })
 }
 
+// Linux-only (macos-build mb-2): dash-prompt pin + the foreground
+// observation arms — see the accept-full twin.
+#[cfg(target_os = "linux")]
 #[test]
 fn autosuggest_records_a_run_command_and_suggests_its_prefix() {
     let mut terminal = autosuggest_terminal();
@@ -1072,6 +1088,10 @@ fn the_auto_popups_close_survives_the_updates_before_the_next_keystroke() {
     terminal.input_no_scroll(&b"exit\r"[..]);
 }
 
+// Linux-only (macos-build mb-2): the live-/bin/sh harness pins
+// dash's `$`-prefix prompt (mac's sh is bash 3.2, prompt
+// `sh-3.2$ `) and rides the Linux-only foreground observation arms.
+#[cfg(target_os = "linux")]
 #[test]
 fn autosuggest_accept_full_lands_the_suffix_in_the_grid() {
     let mut terminal = autosuggest_terminal();
@@ -1138,6 +1158,9 @@ fn autosuggest_accept_full_lands_the_suffix_in_the_grid() {
     assert_eq!(terminal.suggestion(), None);
 }
 
+// Linux-only (macos-build mb-2): dash-prompt pin + the foreground
+// observation arms — see the accept-full twin above.
+#[cfg(target_os = "linux")]
 #[test]
 fn autosuggest_accept_word_lands_one_word_and_resuggests() {
     let mut terminal = autosuggest_terminal();
@@ -1243,6 +1266,9 @@ fn autosuggest_accept_with_nothing_showing_writes_nothing() {
 // respawn reset by construction), and the timestamps always run —
 // the autosuggest toggle gates nothing here.
 
+// Linux-only (macos-build mb-2): the finish freeze observes the
+// Linux-only foreground machinery on a live dash prompt.
+#[cfg(target_os = "linux")]
 #[test]
 fn command_timer_freezes_a_bounded_duration_and_drains_the_latch_once() {
     let mut terminal = autosuggest_terminal();
@@ -1301,6 +1327,9 @@ fn command_timer_freezes_a_bounded_duration_and_drains_the_latch_once() {
     assert_eq!(terminal.command_frozen(), Some(duration));
 }
 
+// Linux-only (macos-build mb-2): the freeze twin above's re-freeze
+// walk, same machinery.
+#[cfg(target_os = "linux")]
 #[test]
 fn command_timer_re_freezes_a_second_command_fresh() {
     let mut terminal = autosuggest_terminal();
@@ -1344,6 +1373,9 @@ fn command_timer_re_freezes_a_second_command_fresh() {
     assert_eq!(terminal.take_command_finished(), None);
 }
 
+// Linux-only (macos-build mb-2): the freeze twins' no-suggest walk,
+// same machinery.
+#[cfg(target_os = "linux")]
 #[test]
 fn command_timer_steps_with_autosuggestions_disabled() {
     // Toggle independence: the timer rides the engine's own
@@ -1568,6 +1600,10 @@ fn mark_executable(path: &std::path::Path) {
         .expect("fixture exec bit");
 }
 
+// Linux-only (macos-build mb-2): the non-UTF-8 fixture name cannot
+// exist on APFS (EILSEQ at create) — the filter's edge case is only
+// exercisable where the filesystem can hold the name.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_catalog_walks_regular_executables_sorted_and_deduped() {
     use std::os::unix::ffi::OsStrExt;
@@ -2089,6 +2125,9 @@ fn wait_for_generator_prewarm(terminal: &Terminal) -> u64 {
     }
 }
 
+// Linux-only (macos-build mb-2): pre-warm eligibility rides the
+// live dash-prompt settle — see the menu-open twin above.
+#[cfg(target_os = "linux")]
 #[test]
 fn plain_typing_never_spawns_a_generator() {
     // The hot path's own pin (the standing rule: spawns never on
@@ -2123,6 +2162,9 @@ fn plain_typing_never_spawns_a_generator() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// Linux-only (macos-build mb-2): pre-warm eligibility rides the
+// live dash-prompt settle — mac's bash-3.2 sh never arms it.
+#[cfg(target_os = "linux")]
 #[test]
 fn menu_open_revalidates_the_generator_cache() {
     // The menu's open moment is the ruled trigger: with the pre-warm
@@ -2485,6 +2527,9 @@ fn an_osc94_report_arrives_as_a_progress_report_event() {
     poll_until_progress(&mut rx, (3, None), "the omitted-value report arrives");
 }
 
+// Linux-only (macos-build mb-2): the handoff observation rides the
+// tcgetpgrp arms, inert off Linux by cfg.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_foreground_handoff_clears_a_standing_progress_report() {
     // The local edge (osc94-progress spec): the command that owned
@@ -2711,6 +2756,9 @@ fn an_osc7501_report_arrives_as_a_program_status_event() {
     poll_until_program_status(&mut rx, "state=working:progress=40", "the report arrives");
 }
 
+// Linux-only (macos-build mb-2): the handoff twin above's drop-set
+// walk, same machinery.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_foreground_handoff_drops_working_and_blocked_only() {
     // The local edge (osc7501-status spec): the program ended —
@@ -4523,7 +4571,9 @@ fn an_over_cap_inflate_refuses_whole() {
 
 /// `/proc/self/status`'s `VmRSS` in KiB — the same field the
 /// telemetry spec samples, read straight from the procfs text (no
-/// dependency for one number).
+/// dependency for one number). Linux-only with the churn probe it
+/// serves (mb-2's gate).
+#[cfg(target_os = "linux")]
 fn vm_rss_kib() -> u64 {
     let status =
         std::fs::read_to_string("/proc/self/status").expect("/proc/self/status is readable");
@@ -4551,6 +4601,10 @@ fn vm_rss_kib() -> u64 {
 /// the justfile recipe holding the pinned systemd-run scope
 /// (`MemoryMax=2G`, `MemoryHigh=1536M`, `MemorySwapMax=0`), the
 /// one home of the caps.
+// Linux-only (macos-build mb-2): the probe reads /proc VmRSS and
+// yama's prctl — neither exists on the mac target, and the recipe's
+// systemd-run scope is Linux's own.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "needs the real login rc and a hard memory cap; run via `just mem-churn` (the pinned scope)"]
 fn real_rc_toggle_churn_rss_curve() {

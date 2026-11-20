@@ -11,6 +11,7 @@
 //! Each data-control copy serves on its own detached thread, exactly
 //! the libcosmic clipboard module's shape.
 
+#[cfg(target_os = "linux")]
 use std::io::Read as _;
 
 use gpui::{App, ClipboardItem};
@@ -19,8 +20,9 @@ use gpui::{App, ClipboardItem};
 /// once the selection is set, and wl-clipboard-rs's own serving
 /// thread keeps the offer alive until something replaces it. Never
 /// blocks the UI thread; a failure logs once — there is no focused
-/// fallback to hand the text to when the write is happening
+/// fallback to hand the text to when the write is being made
 /// precisely because the pane is unfocused.
+#[cfg(target_os = "linux")]
 pub(crate) fn write_data_control(text: String, primary: bool) {
     std::thread::spawn(move || {
         let mut options = wl_clipboard_rs::copy::Options::new();
@@ -42,11 +44,21 @@ pub(crate) fn write_data_control(text: String, primary: bool) {
     });
 }
 
+/// The non-Linux arm (macos-build mb-2): no data-control protocol
+/// exists off Wayland, and no pane exists to call this before a
+/// surface backend does (macos-surface's call). The payload drops —
+/// the honest no-op, never a fake success.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn write_data_control(text: String, primary: bool) {
+    let _ = (text, primary);
+}
+
 /// Serve one data-control image copy on its own thread (the images
 /// panel's Copy-image verb, py-6): the row's bytes in their sniffed
 /// format — GPUI's clipboard carries no image seat, so the
 /// data-control protocol is the write's only road, serving unfocused
 /// exactly like the text half above.
+#[cfg(target_os = "linux")]
 pub(crate) fn write_image_data_control(bytes: Vec<u8>, mime: &'static str) {
     std::thread::spawn(move || {
         let options = wl_clipboard_rs::copy::Options::new();
@@ -59,6 +71,12 @@ pub(crate) fn write_image_data_control(bytes: Vec<u8>, mime: &'static str) {
             println!("dropterm: data-control image write failed ({err})");
         }
     });
+}
+
+/// The non-Linux arm (mb-2): the image twin of the text no-op above.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn write_image_data_control(bytes: Vec<u8>, mime: &'static str) {
+    let _ = (bytes, mime);
 }
 
 /// One copy out of the pane: the focused, non-primary write rides
@@ -90,6 +108,7 @@ pub(crate) fn read(cx: &App) -> Option<String> {
 /// failure warns once and answers `None` (the pane is focused when
 /// its paste actions fire, so the regular read has the focused path
 /// covered and this one has no fallback worth retrying into).
+#[cfg(target_os = "linux")]
 pub(crate) fn read_primary_blocking() -> Option<String> {
     let (mut pipe, _mime) = wl_clipboard_rs::paste::get_contents(
         wl_clipboard_rs::paste::ClipboardType::Primary,
@@ -103,6 +122,13 @@ pub(crate) fn read_primary_blocking() -> Option<String> {
         .inspect_err(|err| println!("dropterm: data-control primary read failed ({err})"))
         .ok()?;
     Some(text)
+}
+
+/// The non-Linux arm (mb-2): no primary selection exists to read —
+/// the honest `None`, same answer an empty selection gives.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_primary_blocking() -> Option<String> {
+    None
 }
 
 /// What one image read resolved to — the paste road's outcome (the
@@ -162,6 +188,7 @@ pub(crate) fn read_text_capped(cx: &App) -> TextRead {
 /// twin stops the pipe one byte past the cap — the true read-side
 /// bound this road can apply — and over it the paste refuses whole
 /// (ra-3).
+#[cfg(target_os = "linux")]
 pub(crate) fn read_primary_text_capped() -> TextRead {
     let cap = u64::try_from(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP + 1)
         .expect("the paste cap is a constant far below u64::MAX");
@@ -189,9 +216,16 @@ pub(crate) fn read_primary_text_capped() -> TextRead {
                 "dropterm: primary text offer refused — over the {}-byte paste cap",
                 dropterm::core::paste_cache::PASTE_PAYLOAD_CAP
             );
-            TextRead::Refused(refusal)
+            return TextRead::Refused(refusal);
         }
     }
+}
+
+/// The non-Linux arm (mb-2): no primary selection exists — the
+/// paste's honest silence.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_primary_text_capped() -> TextRead {
+    TextRead::None
 }
 
 /// One data-control read of the clipboard's image offer — the paste
@@ -202,6 +236,7 @@ pub(crate) fn read_primary_text_capped() -> TextRead {
 /// clipboard, no PNG offer, a transport failure — each the paste's
 /// honest silence (warned once where owed); the refusals name
 /// themselves for the band's verdict chip.
+#[cfg(target_os = "linux")]
 pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
     let cap = u64::try_from(dropterm::core::paste_cache::PASTE_PAYLOAD_CAP + 1)
         .expect("the paste cap is a constant far below u64::MAX");
@@ -234,6 +269,14 @@ pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
         return ImageRead::Refused(refusal);
     }
     ImageRead::Bytes(bytes)
+}
+
+/// The non-Linux arm (mb-2): no image offer can stand — the paste's
+/// honest silence.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_image_blocking(primary: bool) -> ImageRead {
+    let _ = primary;
+    ImageRead::None
 }
 
 #[cfg(test)]

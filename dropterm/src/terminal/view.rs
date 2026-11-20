@@ -195,6 +195,9 @@ pub(crate) struct TerminalPane {
     /// the shell's pane map owns this pane, so a strong handle would
     /// cycle; `None` until the shell adopts the pane (and forever in
     /// the standalone walk harness, where the verbs only log).
+    /// Linux-only (mb-2): the shell is the layer-shell frontend's;
+    /// no pane is adopted before a surface backend exists.
+    #[cfg(target_os = "linux")]
     shell: Option<gpui::WeakEntity<crate::app_shell::Shell>>,
     /// The pane's tab id (the Exited signal's address).
     id: TabId,
@@ -324,6 +327,7 @@ impl TerminalPane {
             reporter: MouseReporter::default(),
             reporting_gesture: false,
             shell_signals: None,
+            #[cfg(target_os = "linux")]
             shell: None,
             id,
             attention: AttentionFlags::default(),
@@ -1035,6 +1039,7 @@ impl TerminalPane {
     /// The shell's adoption (the keyboard's shell verbs): the weak
     /// handle lands here once the shell entity exists — the boot
     /// loop over the restored fleet, and every spawn path after it.
+    #[cfg(target_os = "linux")]
     pub(crate) fn adopt_shell(&mut self, shell: gpui::WeakEntity<crate::app_shell::Shell>) {
         self.shell = Some(shell);
     }
@@ -1060,14 +1065,25 @@ impl TerminalPane {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(shell) = self.shell.as_ref().and_then(gpui::WeakEntity::upgrade) else {
-            println!("dropterm: pane shell verb {action:?} (no shell in the walk harness)");
-            return;
-        };
-        let pane = self.id;
-        window.defer(cx, move |window, cx| {
-            shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
-        });
+        // The shell half is Linux's (mb-2): everywhere else no shell
+        // can have adopted the pane, so the verb takes the walk
+        // harness's own honest arm — logged, never dispatched.
+        #[cfg(target_os = "linux")]
+        {
+            let Some(shell) = self.shell.as_ref().and_then(gpui::WeakEntity::upgrade) else {
+                println!("dropterm: pane shell verb {action:?} (no shell in the walk harness)");
+                return;
+            };
+            let pane = self.id;
+            window.defer(cx, move |window, cx| {
+                shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (window, cx);
+            println!("dropterm: pane shell verb {action:?} (no shell on this platform)");
+        }
     }
 
     /// One key press through the translation and its outcome.
@@ -2805,6 +2821,13 @@ mod tests {
     // --- the live-font fix: the boot resolution and the tick's
     // per-pane apply ---
 
+    // Linux-only (macos-build mb-2): a live PTY reader thread cannot
+    // satisfy the gpui test scheduler's thread-affinity gate at
+    // teardown — the same limitation the pasted_paths ignore below
+    // documents, but deterministic on the mac target (every
+    // assertion runs, then the harness aborts at drop). Runs green
+    // on Linux CI.
+    #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_pane_boots_in_the_configured_family_and_a_live_edit_lands(cx: &mut gpui::TestAppContext) {
         // The font-name contract, end to end at the pane: an unheld
@@ -3121,6 +3144,10 @@ mod tests {
 
     // --- the veil's pixels: a reverse-video span paints its block ---
 
+    // Linux-only (macos-build mb-2): boots a live /bin/sh pane — the
+    // pasted_paths ignore's thread-affinity limitation, deterministic
+    // on the mac target (see the pane-boot twin above).
+    #[cfg(target_os = "linux")]
     #[gpui::test]
     fn reverse_video_rows_paint_their_highlight_band(cx: &mut gpui::TestAppContext) {
         // The hidden-paste veil, pixels side. bash's bracketed-paste

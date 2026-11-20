@@ -4423,6 +4423,11 @@ impl ImageStore {
 /// value-taking options' arguments are skipped and a bare `--`
 /// ends the option walk. `None` when nothing survives: the local
 /// path stands, never a wrong host.
+// The one status-band caller is the Linux frontend's tick (mb-2's
+// gates); off Linux nothing calls it yet — macos-parity owns the
+// band's port — so the mac build allows the silence instead of
+// deleting or gating a tested engine fn.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn ssh_destination(argv: &[&str]) -> Option<String> {
     /// The short options whose *separate* next argument is a value,
     /// not an operand — ssh(1)'s own consuming set (the 9.6 usage

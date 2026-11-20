@@ -6,7 +6,13 @@
 // where it fires, for the same reason as the root crate's table.
 #![warn(clippy::pedantic)]
 #![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
-#![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty
+#![cfg_attr(test, allow(clippy::assert_is_empty))]
+// tests read better asserting is_empty
+// mb-2: on non-Linux the portable view tree below has no caller — the
+// shell that boots it is Linux-gated and macos-surface owns the
+// un-gating — so dead-code stays allowed there instead of a per-module
+// attr on every view file. Removed with the stub.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 //! `dropterm` — `DropTerm`'s GPUI frontend (gpui-scaffold spec).
 //!
@@ -14,13 +20,32 @@
 //! runtime identity ([`dropterm::core::APP_ID`]) and serves the same
 //! contract, on the ruled gpui-pre pin. Ships nothing until cutover —
 //! the release boundary holds.
+//!
+//! The module gates are macos-build mb-2: the layer-shell frontend
+//! (executor, shell, drawer, harnesses, the served loop) compiles on
+//! Linux only, where the backend exists; on every other platform the
+//! bin boots as an honest stub — CLI parse, `--version`,
+//! `--is-visible` truthfully false, and every surface verb refused by
+//! the startup guard's non-Linux arm (the marker macos-surface
+//! replaces). The portable view tree below it stays compiled so the
+//! parity modules inherit it rather than re-growing it.
 
+// The layer-shell frontend, Linux-only (mb-2): the executor rides
+// `gpui::layer_shell` (absent from the apple backend), and everything
+// here is its closure — app_shell and drawer reference each other and
+// the executor, the two harnesses boot the shell, and the served loop
+// is the shell's wiring.
+#[cfg(target_os = "linux")]
 mod app_shell;
 mod context_menu;
+#[cfg(target_os = "linux")]
 mod dbus;
+#[cfg(target_os = "linux")]
 mod drawer;
+#[cfg(target_os = "linux")]
 mod executor;
 mod images_panel;
+#[cfg(target_os = "linux")]
 mod kit_check;
 mod notify;
 mod pickers;
@@ -28,6 +53,7 @@ mod startup;
 mod status_bar;
 mod tab_bar;
 mod terminal;
+#[cfg(target_os = "linux")]
 mod terminal_walk;
 // The carried C4 generator (gpui-theme planning ruling: verbatim-plus-
 // compile — the file stays byte-identical to the spike's apart from
@@ -44,11 +70,13 @@ mod terminal_walk;
 )]
 mod theme_gen;
 
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use clap::Parser;
 
 use dropterm::core::dbus_state;
+#[cfg(target_os = "linux")]
 use dropterm::core::transport::{self, BusName, ForwardOutcome};
 
 // The CLI surface — surface verbs and tab verbs alike — lives in
@@ -58,6 +86,7 @@ mod cli;
 
 /// The env-selected scenario the scaffold can boot besides the shell —
 /// the carried patch's verification harness (`DROPTERM_CHECK`).
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckMode {
     /// kit-pass C2b: Root + Kit overlays through the reshape cadence.
@@ -70,6 +99,7 @@ enum CheckMode {
 /// the exact scenario name arms its harness (a typo falls back to the
 /// shell, whose evidence lines name no scenario — visibly wrong in a
 /// walk log, never silently half-armed).
+#[cfg(target_os = "linux")]
 fn check_mode_from_env(raw: Option<&str>) -> Option<CheckMode> {
     match raw?.trim() {
         "kit-c2b" => Some(CheckMode::KitC2b),
@@ -119,23 +149,48 @@ fn setup_pane_env() {
 fn main() {
     pin_malloc_trim_threshold();
     setup_pane_env();
+    #[cfg(target_os = "linux")]
     println!("dropterm: booting on the gpui-pre 0.3.12 pin (wayland)");
+    #[cfg(not(target_os = "linux"))]
+    println!(
+        "dropterm: booting on the gpui-pre 0.3.12 pin ({} — surface backend pending)",
+        std::env::consts::OS
+    );
     let args = cli::Args::parse();
     // The query path exits before any bus-name attempt and before the
     // guard's probe: it creates no surfaces, and its not-running answer
     // is truthful because the guard keeps an unsupported session from
-    // ever hosting an instance (the frontend's ordering, kept).
+    // ever hosting an instance (the frontend's ordering, kept). On
+    // non-Linux no surface can exist at all, so the answer is the
+    // honest `None` without asking anything (mb-2).
     if args.is_visible {
-        let (visible, code) = dbus_state::is_visible_decision(transport::query_visibility());
+        #[cfg(target_os = "linux")]
+        let answer = transport::query_visibility();
+        #[cfg(not(target_os = "linux"))]
+        let answer = None;
+        let (visible, code) = dbus_state::is_visible_decision(answer);
         println!("{visible}");
         std::process::exit(i32::from(code));
     }
-    // The layer-shell guard, before any GPUI initialization — the
+    // The startup guard, before any GPUI initialization — the
     // probe takes its connection from the environment before the
     // platform reads it, and an unsupported session never reaches the
-    // toolkit at all.
+    // toolkit at all. On non-Linux the guard's arm refuses outright
+    // (mb-2's marker; macos-surface replaces it), so nothing below
+    // runs there.
     startup::guard_or_exit();
 
+    #[cfg(target_os = "linux")]
+    boot_frontend(args);
+}
+
+/// The Linux frontend boot (mb-2 extraction): everything past the
+/// guard — the control-bus launch half, the served loop, and the GPUI
+/// run — compiled only where the layer-shell backend exists. On
+/// non-Linux the guard has already exited; this function does not
+/// exist there at all.
+#[cfg(target_os = "linux")]
+fn boot_frontend(args: cli::Args) {
     // The control bus's launch half: on a throwaway connection decide
     // whether this launch is the instance (the ownership itself is
     // taken by the served loop, on its own runtime).
@@ -211,7 +266,10 @@ mod tests {
     // edge to the Kit's aggregates — so a careless bump fails `just
     // check` instead of shipping.
 
-    use super::{check_mode_from_env, setup_pane_env};
+    #[cfg(target_os = "linux")]
+    use super::check_mode_from_env;
+    use super::setup_pane_env;
+    #[cfg(target_os = "linux")]
     use std::process::Command;
 
     #[test]
@@ -264,6 +322,11 @@ mod tests {
             .expect("crate manifest beside the crate root")
     }
 
+    // The pin and graph tests stay Linux-side (mb-2): they pin the
+    // Linux gate's manifest and graph invariants, and `cargo tree`
+    // resolves the host target — the mac graph is the apple backend's
+    // and is not this table's subject.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_ruled_gpui_pins_are_exact_and_wayland_only() {
         let text = manifest();
@@ -308,6 +371,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn check_mode_arms_only_the_exact_scenario_name() {
         use super::CheckMode;
@@ -354,6 +418,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_carried_copy_is_the_patched_kit() {
         // The ruling (plan item 7): carried/gpui-component is the 0.9.1
@@ -405,6 +470,7 @@ mod tests {
     /// Every `(package, version)` pair in this crate's normal
     /// dependency graph, deduplicated — `cargo tree --prefix none`
     /// emits one `name vX.Y.Z (source)` per node.
+    #[cfg(target_os = "linux")]
     fn graph_packages() -> Vec<(String, String)> {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let out = Command::new(cargo)
@@ -439,6 +505,7 @@ mod tests {
         pkgs
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_graph_resolves_the_gpui_family_at_the_pin() {
         let pkgs = graph_packages();
@@ -466,6 +533,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_graph_has_no_kit_aggregate_edges() {
         // C3 (kit-pass): the Kit enters component-only — gpui-component
@@ -481,6 +549,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_lock_reconciles_unicode_properties_at_the_spike_pin() {
         // Check 14's one reconciliation (gs-8): gpui_web exact-pins
