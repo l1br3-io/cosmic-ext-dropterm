@@ -315,62 +315,85 @@ deps:
     # success with cargo never installed.
     set -euo pipefail
 
-    # System side: each module is what the build asks pkg-config for,
-    # and each maps to a -dev/-devel package in the lists below. A
-    # missing pkg-config or cc means the whole toolchain package is
-    # needed, not one module.
-    missing=""
-    if command -v pkg-config >/dev/null 2>&1; then
-        for module in xkbcommon wayland-client fontconfig freetype2 expat; do
-            pkg-config --exists "$module" 2>/dev/null || missing="$missing $module"
-        done
-    else
-        missing=" pkg-config"
-    fi
-    command -v cc >/dev/null 2>&1 || missing="$missing cc"
-
-    if [ -n "$missing" ]; then
-        echo "deps: missing:$missing — installing via the system package manager"
-        if [ "$(id -u)" -eq 0 ]; then
-            sudo=""
-        elif command -v sudo >/dev/null 2>&1; then
-            sudo="sudo"
-        else
-            echo "deps: not root and sudo not found — install the above by hand and re-run" >&2
+    # The macOS arm (macos-build mb-5): no pkg-config modules, no
+    # system libraries — the graph's mac half needs only Xcode's tools
+    # (mb-1's audit: every direct dep compiled with nothing from
+    # Homebrew). Verified, never installed: the CLT license and the
+    # 800 MB Metal component download belong to the human. The floor
+    # is 1.98 because gpui-pre-apple uses Option::map_or_default
+    # (rust#138099), stable only since 1.98.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if ! command -v xcodebuild >/dev/null 2>&1; then
+            echo "deps: Xcode Command Line Tools missing — run: xcode-select --install" >&2
             exit 1
         fi
-        # $sudo is deliberately unquoted: it must word-split away when
-        # empty (already root).
-        if command -v apt-get >/dev/null 2>&1; then
-            $sudo apt-get update -qq
-            $sudo apt-get install -y build-essential pkg-config \
-                libxkbcommon-dev libwayland-dev libfontconfig-dev \
-                libfreetype-dev libexpat1-dev
-        elif command -v dnf >/dev/null 2>&1; then
-            $sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config \
-                libxkbcommon-devel wayland-devel fontconfig-devel \
-                freetype-devel expat-devel
-        elif command -v pacman >/dev/null 2>&1; then
-            $sudo pacman -S --needed --noconfirm base-devel pkgconf \
-                libxkbcommon wayland fontconfig freetype2 expat
-        elif command -v zypper >/dev/null 2>&1; then
-            $sudo zypper --non-interactive install gcc gcc-c++ make pkg-config \
-                libxkbcommon-devel wayland-devel fontconfig-devel \
-                freetype2-devel libexpat-devel
+        echo "deps: Xcode tools present ($(xcodebuild -version | head -n1))"
+        # Check-first like the Linux package walk: the download is
+        # ~800 MB, so it runs only when xcrun cannot find the metal
+        # compiler the component provides.
+        if ! xcrun --find metal >/dev/null 2>&1; then
+            echo "deps: Metal Toolchain missing — downloading (gpui-pre-apple's build script compiles Metal shaders)"
+            xcodebuild -downloadComponent MetalToolchain
         else
-            # Not a package-manager gap on non-Linux: DropTerm targets
-            # the COSMIC desktop, so name the real reason instead of a
-            # package guessing game.
-            case "$(uname -s)" in
-                Darwin)
-                    echo "deps: DropTerm targets the COSMIC desktop — build on Linux; macOS has neither the compositor nor its libraries" >&2
-                    ;;
-                *)
-                    echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
-                    echo "deps: install the equivalents of:$missing and re-run" >&2
-                    ;;
-            esac
-            exit 1
+            echo "deps: Metal Toolchain present"
+        fi
+        min_rust="1.98.0"
+        if command -v cargo >/dev/null 2>&1; then
+            have="$(cargo --version | awk '{print $2}')"
+            lowest="$(printf '%s\n%s\n' "$min_rust" "$have" | sort -V | head -n1)"
+            if [ "$lowest" != "$min_rust" ]; then
+                echo "deps: rustc $have is older than the macOS floor $min_rust — rustup update stable" >&2
+                exit 1
+            fi
+        fi
+    else
+        # System side: each module is what the build asks pkg-config for,
+        # and each maps to a -dev/-devel package in the lists below. A
+        # missing pkg-config or cc means the whole toolchain package is
+        # needed, not one module.
+        missing=""
+        if command -v pkg-config >/dev/null 2>&1; then
+            for module in xkbcommon wayland-client fontconfig freetype2 expat; do
+                pkg-config --exists "$module" 2>/dev/null || missing="$missing $module"
+            done
+        else
+            missing=" pkg-config"
+        fi
+        command -v cc >/dev/null 2>&1 || missing="$missing cc"
+
+        if [ -n "$missing" ]; then
+            echo "deps: missing:$missing — installing via the system package manager"
+            if [ "$(id -u)" -eq 0 ]; then
+                sudo=""
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo="sudo"
+            else
+                echo "deps: not root and sudo not found — install the above by hand and re-run" >&2
+                exit 1
+            fi
+            # $sudo is deliberately unquoted: it must word-split away when
+            # empty (already root).
+            if command -v apt-get >/dev/null 2>&1; then
+                $sudo apt-get update -qq
+                $sudo apt-get install -y build-essential pkg-config \
+                    libxkbcommon-dev libwayland-dev libfontconfig-dev \
+                    libfreetype-dev libexpat1-dev
+            elif command -v dnf >/dev/null 2>&1; then
+                $sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config \
+                    libxkbcommon-devel wayland-devel fontconfig-devel \
+                    freetype-devel expat-devel
+            elif command -v pacman >/dev/null 2>&1; then
+                $sudo pacman -S --needed --noconfirm base-devel pkgconf \
+                    libxkbcommon wayland fontconfig freetype2 expat
+            elif command -v zypper >/dev/null 2>&1; then
+                $sudo zypper --non-interactive install gcc gcc-c++ make pkg-config \
+                    libxkbcommon-devel wayland-devel fontconfig-devel \
+                    freetype2-devel libexpat-devel
+            else
+                echo "deps: no supported package manager (apt-get, dnf, pacman, zypper)" >&2
+                echo "deps: install the equivalents of:$missing and re-run" >&2
+                exit 1
+            fi
         fi
     fi
 
