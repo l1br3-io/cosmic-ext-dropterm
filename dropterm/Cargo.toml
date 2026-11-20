@@ -46,14 +46,6 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features =
 # through the root [patch.crates-io] (the Root auto-border, zeroed).
 gpui-component = { version = "=0.9.1", default-features = false }
 
-# The layer-shell startup probe (gpui-scaffold Task 3): one registry
-# roundtrip before any surface exists, on this binary's own
-# connection — the same direct-dependency ruling the libcosmic
-# frontend's guard took (no existing dependency exposes a usable
-# connection). Version-matched to the 0.31 line gpui-pre carries in
-# the lock.
-wayland-client = "0.31"
-
 # The CLI surface (gpui-scaffold Task 4): the surface verbs'
 # derive-based parser, the frontend's own line. Version-matched to the
 # 4.x line the lock already carries.
@@ -140,12 +132,6 @@ open = "5.3.2"
 # notify-rust, 4.18, the line the lock already carries.
 notify-rust = "4.18"
 
-# The pane's focus-free clipboard half (gpui-terminal Task 3): the
-# data-control protocol serves copies made while unfocused (OSC 52
-# stores) and the primary selection, which GPUI's clipboard does not
-# expose. Same 0.9 line the lock already carries.
-wl-clipboard-rs = "0.9"
-
 # The status band's clock (gpui-status spec): `Zoned::now` for the
 # minute-boundary text — the core module owns the arithmetic, the
 # view reads the wall clock. Same 0.2 line the lock already carries.
@@ -158,6 +144,25 @@ jiff = "0.2"
 # config-key ↔ docs sync test's serializer. Same 1.x line the lock
 # already carries.
 serde_json = "1"
+
+# The Linux-only direct deps (macos-build mb-1): both ride
+# wayland-sys, whose build script pkg-configs libwayland-client — a
+# library no macOS host carries. They resolve on Linux targets only;
+# every use site carries a paired non-Linux arm (mb-2's gates).
+[target.'cfg(target_os = "linux")'.dependencies]
+# The layer-shell startup probe (gpui-scaffold Task 3): one registry
+# roundtrip before any surface exists, on this binary's own
+# connection — the same direct-dependency ruling the libcosmic
+# frontend's guard took (no existing dependency exposes a usable
+# connection). Version-matched to the 0.31 line gpui-pre carries in
+# the lock.
+wayland-client = "0.31"
+# The pane's focus-free clipboard half (gpui-terminal Task 3): the
+# data-control protocol serves copies made while unfocused (OSC 52
+# stores) and the primary selection, which GPUI's clipboard does not
+# expose. Moved here by mb-1's audit — the second wayland-sys rider
+# the chunk's "expected: none" did not expect.
+wl-clipboard-rs = "0.9"
 
 [features]
 # Re-identifies the binary as `io.github.l1br3_io.dropterm.Dev` —
