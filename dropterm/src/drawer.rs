@@ -83,9 +83,8 @@ pub(crate) enum ControlKind {
 
 /// The control a section-hosted key renders. Every key a `Section`
 /// lists resolves — pinned against `tab_sections`'s partition below —
-/// and the two keys no section hosts (`SettingsDrawerWidth`, the
-/// drag handle's writer; `SettingsDrawerClickClose`, its row hidden
-/// while its module is parked) resolve to nothing.
+/// and the one key no section hosts (`SettingsDrawerWidth`, the
+/// drag handle's writer) resolves to nothing.
 pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
     let kind = match key {
         ConfigKey::FontName => ControlKind::FontPicker,
@@ -108,7 +107,7 @@ pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
         | ConfigKey::ScrollbackLines
         | ConfigKey::CommandFinishNotificationAfterSecs
         | ConfigKey::AutosuggestionsDelayMs => ControlKind::Text,
-        ConfigKey::SettingsDrawerWidth | ConfigKey::SettingsDrawerClickClose => return None,
+        ConfigKey::SettingsDrawerWidth => return None,
         // Every remaining exposed key is a toggle — the section map's
         // own exactly-once pin (core's tests) guarantees this arm is
         // exactly the toggle set.
@@ -1709,8 +1708,8 @@ mod tests {
         const { assert!(CLOSE_GLYPH_FONT_SIZE >= 16.0) }
     }
 
-    /// Every section-hosted key resolves to a control, and the two
-    /// keys no section hosts resolve to none — the rendering face of
+    /// Every section-hosted key resolves to a control, and the one
+    /// key no section hosts resolves to none — the rendering face of
     /// the ported control map, pinned against the section partition.
     #[test]
     fn every_section_key_resolves_a_control_and_no_others_do() {
@@ -1725,7 +1724,6 @@ mod tests {
             }
         }
         assert_eq!(control_kind(ConfigKey::SettingsDrawerWidth), None);
-        assert_eq!(control_kind(ConfigKey::SettingsDrawerClickClose), None);
     }
 
     /// The dispatch's classes spot-pinned: the pickers and the shell

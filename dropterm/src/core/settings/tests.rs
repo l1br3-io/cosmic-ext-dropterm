@@ -11,17 +11,18 @@ fn section_keys() -> Vec<ConfigKey> {
 // --- the drawer pane's width (drawer-resize T1) ---
 
 #[test]
-fn drawer_width_defaults_to_560_where_the_cap_allows() {
+fn drawer_width_defaults_to_616_where_the_cap_allows() {
     // Spec drawer-resize criterion 1: never dragged (`None`)
-    // renders the wider default — 560px on any surface wide
-    // enough that half of it reaches 560 (surfaces ≥ 1120px).
-    assert_eq!(drawer_width(None, 2000.0), 560.0);
-    assert_eq!(drawer_width(None, 1120.0), 560.0);
+    // renders the wider default — 616px (560 grown 10% by the
+    // veil-less drawer revisit) on any surface wide enough that
+    // half of it reaches 616 (surfaces ≥ 1232px).
+    assert_eq!(drawer_width(None, 2000.0), 616.0);
+    assert_eq!(drawer_width(None, 1232.0), 616.0);
 }
 
 #[test]
 fn drawer_width_caps_the_default_at_half_the_surface() {
-    // Between 688px and 1120px the 50% cap wins over the
+    // Between 688px and 1232px the 50% cap wins over the
     // default: the drawer never covers more than half the
     // drop-down surface.
     assert_eq!(drawer_width(None, 900.0), 450.0);
@@ -238,6 +239,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
         PlannedWrite::CloseConfirmationEnabled(true),
+        PlannedWrite::SettingsDrawerClickClose(true),
         PlannedWrite::DefaultCwd(None),
         PlannedWrite::Shell(String::new()),
         PlannedWrite::Args(Vec::new()),
@@ -1005,12 +1007,17 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
 }
 
 #[test]
-fn the_dropdown_card_hosts_the_two_dropdown_mechanics() {
+fn the_dropdown_card_hosts_the_dropdown_mechanics_and_click_close() {
     // The Dropdown card: the drop-down's own mechanics — the
-    // focus-loss hide and the slide — and nothing else.
+    // focus-loss hide and the slide — plus the drawer's click-close
+    // row, un-parked by the veil-less drawer revisit.
     assert_eq!(
         Section::Dropdown.keys(),
-        &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled,]
+        &[
+            ConfigKey::HideOnFocusLoss,
+            ConfigKey::SlideAnimationEnabled,
+            ConfigKey::SettingsDrawerClickClose,
+        ]
     );
 }
 

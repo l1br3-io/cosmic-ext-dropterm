@@ -5109,13 +5109,18 @@ impl Shell {
         // backdrop so the settings never read through onto the live
         // terminal, a left border as the seam against it, and
         // `overflow_hidden` so no row, tab, or popover can paint
-        // past the pane's edge whatever its content does.
+        // past the pane's edge whatever its content does. The
+        // occlusion is the click-close dispatch rule (this gpui's
+        // rule, the images panel's own pin): without it every press
+        // on the drawer's controls would also land in the catcher
+        // beneath and close the drawer under the user's hand.
         let panel = gpui::div()
             .absolute()
             .top_0()
             .bottom_0()
             .right_0()
             .w(px(width))
+            .occlude()
             .flex()
             .flex_row()
             .bg(cx.theme().background)
@@ -5137,20 +5142,26 @@ impl Shell {
             )
             .child(gpui::div().flex_1().min_w_0().child(drawer));
 
-        // The veil — the drawer's modality, the reference drawer's
-        // own rule: a dimmed backdrop over the exposed terminal that
-        // occludes and captures every press, so no input reaches the
-        // shell beneath while the drawer is open (what a veil press
-        // means stays the parked click-close module's to own). The
-        // panel paints above it, so the drawer's own controls keep
-        // their events.
-        let veil = gpui::div()
-            .absolute()
-            .inset_0()
-            .id("settings-veil")
-            .occlude()
-            .bg(gpui::black().opacity(0.4))
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {});
+        // The click-close catcher (the un-parked drawer-click-close
+        // module): with the key on, a transparent — never dimming —
+        // catcher over the exposed surface dismisses the drawer on a
+        // left press, consumed (the press closes, it does not also
+        // type into the terminal). With the key off there is no
+        // catcher at all: the terminal beneath stays fully live
+        // while the drawer is open. The old veil — a dimmed
+        // full-surface block — is gone; the terminal always reads
+        // undimmed.
+        let shell_close = cx.entity();
+        let catcher = self.config.settings_drawer_click_close.then(|| {
+            gpui::div()
+                .absolute()
+                .inset_0()
+                .id("settings-click-close")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    shell_close.update(cx, |shell, cx| shell.close_settings(window, cx));
+                })
+        });
 
         gpui::div()
             .absolute()
@@ -5158,7 +5169,7 @@ impl Shell {
             .on_mouse_move(on_move)
             .on_mouse_up(gpui::MouseButton::Left, on_release)
             .child(band)
-            .child(veil)
+            .children(catcher)
             .child(panel)
             .into_any_element()
     }
@@ -5836,11 +5847,12 @@ mod tests {
     #[gpui::test]
     fn a_paste_closes_a_standing_panel_and_records_its_row(cx: &mut gpui::TestAppContext) {
         // The covering report's model half: with the images panel
-        // standing — the 560px drawer and its veil over the terminal
-        // — an image paste must close it first (the armed pair dies
-        // with the close), the path's ledger row must land, and a
-        // standing refusal verdict must retire. A paste on a closed
-        // panel records the row and touches nothing else.
+        // standing — the drawer-width pane and its backdrop over the
+        // terminal — an image paste must close it first (the armed
+        // pair dies with the close), the path's ledger row must
+        // land, and a standing refusal verdict must retire. A paste
+        // on a closed panel records the row and touches nothing
+        // else.
         cx.update(gpui_component::init);
         let cx = cx.add_empty_window();
         let config = DropTermConfig::default();
@@ -6717,5 +6729,140 @@ mod tests {
                 "the repeat Settings verb must close the drawer"
             );
         });
+    }
+
+    // The un-parked click-close module's report: with the key on (the
+    // default), a left press anywhere on the exposed surface closes the
+    // open drawer — the transparent catcher's whole job, the veil's
+    // dimming gone — and with the key off there is no catcher at all,
+    // so the same press leaves the drawer standing (the terminal
+    // beneath stays live). The press on the drawer's own pane must
+    // never close it (the panel's occlusion, the images panel's own
+    // dispatch rule).
+    #[gpui::test]
+    fn a_surface_press_closes_the_drawer_only_when_the_key_is_on(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let config = DropTermConfig::default();
+        let (shell, handle) = shell_probe_window(&config, cx);
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+
+        // The drawer opens through the one trigger, then the window
+        // takes a real frame — the Kit's redraw shape (refresh first;
+        // a bare draw may skip render/paint, the rename-slot pin's
+        // precedent).
+        cx.update(|window, cx| Shell::toggle_settings(&shell, window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let width = dropterm::core::settings::drawer_width(config.settings_drawer_width, 1280.);
+
+        // Key on: a press on the pane's own strip does not close (the
+        // occlusion), and a press on the exposed left half does.
+        cx.simulate_click(
+            gpui::point(px(1280. - width / 2.), px(400.)),
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(
+                shell.read(cx).settings.open,
+                "a press on the drawer's own pane must leave it open"
+            );
+        });
+        cx.simulate_click(
+            gpui::point(px(1280. - width - 100.), px(400.)),
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(
+                !shell.read(cx).settings.open,
+                "the exposed-surface press must close the open drawer"
+            );
+        });
+
+        // Key off: the reopened drawer carries no catcher, so the
+        // same press leaves it standing.
+        cx.update(|window, cx| Shell::toggle_settings(&shell, window, cx));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.config.settings_drawer_click_close = false;
+            });
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        cx.simulate_click(
+            gpui::point(px(1280. - width - 100.), px(400.)),
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(
+                shell.read(cx).settings.open,
+                "with the key off there is no catcher — the press must leave the drawer open"
+            );
+        });
+    }
+
+    /// The render-walking tests' fixture: a tabless Shell in a fixed
+    /// 1280×800 window — the click-close walk's own probe (the
+    /// model-only neighbors never take a frame, so they keep their
+    /// inline construction).
+    fn shell_probe_window(
+        config: &DropTermConfig,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<Shell>, gpui::WindowHandle<Shell>) {
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        cx.update(|cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            let shell = cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    SurfaceInputs::from_config(config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tab_bar::TabList::default(),
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            });
+            let handle = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(1280.), px(800.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, _| shell.clone(),
+                )
+                .expect("open the shell probe window");
+            (shell, handle)
+        })
     }
 }

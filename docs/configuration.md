@@ -20,7 +20,7 @@ The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.
 )
 ```
 
-Most keys are editable in the [settings drawer](settings.md); the exceptions write themselves (`settings_drawer_width`) or wait for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
+Most keys are editable in the [settings drawer](settings.md); the exception writes itself (`settings_drawer_width`), and one more is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
 This layout starts fresh: versions before it kept settings under `~/.config/cosmic/<app id>/v1/` (one file per key, through cosmic-config), and nothing here reads or imports those files - the first start of this version begins from the defaults. Copy over any setting you want to keep by writing it into the section file that owns it.
 
@@ -256,7 +256,11 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
 
 ## Settings drawer width
 
-`settings_drawer_width` (default unset) is the settings pane's width in pixels, as last dragged. The drawer's drag handle writes it on release; double-clicking the handle resets it to unset. Stored values are clamped at render into 344 px to half the surface, so a stale or hand-edited value can never outgrow the surface.
+`settings_drawer_width` (default unset) is the settings pane's width in pixels, as last dragged. The drawer's drag handle writes it on release; double-clicking the handle resets it to unset. Stored values are clamped at render into 344 px to half the surface, so a stale or hand-edited value can never outgrow the surface. A never-dragged drawer renders the built-in default, 616 px, wherever the surface is wide enough that half of it reaches that.
+
+## Settings drawer click-close
+
+`settings_drawer_click_close` (default `true`) dismisses an open settings drawer on a left click anywhere on the exposed surface - the terminal, the tab strip, the status band. The press closes the drawer and is consumed: it does not also type into or focus the terminal. The drawer no longer dims or blocks the surface beneath it while open. `false` drops the click catcher entirely, leaving the terminal fully interactive (typing, selection, scrolling) beneath the open drawer; the drawer then closes only through its close button, the gear, the keyboard verb, or a surface hide. The key is read at render, so a flip applies to the very next press; the Behavior tab's Dropdown card carries its toggle.
 
 ## Profiles
 
@@ -323,9 +327,8 @@ A binding spells modifier names (`Ctrl`, `Shift`, `Alt`, `Super`) plus a key nam
 
 ## Parked and reserved keys
 
-Two keys load and persist today but change no behavior:
+One key loads and persists today but changes no behavior:
 
-- `settings_drawer_click_close` (default `true`) is **parked**: the planned click-to-dismiss behavior cannot ship until a capture mechanism exists. A hand-edited value is inert.
 - `output` (default unset) is **reserved** for monitor selection - naming the Wayland output the drop-down shows on. Nothing reads it yet; see the [roadmap](https://github.com/l1br3-io/dropterm/blob/main/ROADMAP.md).
 
 ## The completions data file

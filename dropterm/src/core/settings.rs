@@ -113,7 +113,11 @@ impl Section {
                 ConfigKey::StatusBarShowProgramStatus,
                 ConfigKey::StatusBarShowScrollback,
             ],
-            Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
+            Section::Dropdown => &[
+                ConfigKey::HideOnFocusLoss,
+                ConfigKey::SlideAnimationEnabled,
+                ConfigKey::SettingsDrawerClickClose,
+            ],
             Section::Terminal => &[
                 ConfigKey::Shell,
                 ConfigKey::Args,
@@ -145,13 +149,13 @@ impl Section {
 /// `DropTermConfig` except `output`, which is dead at runtime and
 /// unreachable from the UI — plus `SettingsDrawerWidth`, which is
 /// written by the drawer's drag handle (drawer-resize spec), not by
-/// any settings control, and `SettingsDrawerClickClose`, whose row is
-/// hidden while the drawer-click-close module is parked (the
-/// `context_drawer` overlay captures every surface mouse event while
-/// open, so no base-tree wrapper can observe a press — see that
-/// spec's fallback clause): no `Section` lists either, so the
-/// exposed-key exactly-once pin above stays at the section-hosted
-/// count (48 — default-spawn's two rows included).
+/// any settings control: no `Section` lists it, so the exposed-key
+/// exactly-once pin above stays at the section-hosted count
+/// (55 — default-spawn's two rows and the un-parked click-close row
+/// included). `SettingsDrawerClickClose` ships in the Dropdown
+/// section since the veil-less drawer revisit un-parked it: the
+/// custom overlay's catcher observes the dismiss press the old
+/// `context_drawer` composition never could.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -2103,7 +2107,8 @@ impl ProfileWrite {
 /// scalar [`PlannedWrite`]/[`ConfigKey`] surface stays untouched —
 /// the 23 exposed keys never grow a 24th — close-confirm and
 /// drawer-click-close since grew the count to 25, default-spawn's
-/// two rows to 27, the band's per-segment Show rows to 35.
+/// two rows to 27, the band's per-segment Show rows to 35, the
+/// un-parked click-close's own row beyond that.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeybindsWrite(pub std::collections::BTreeMap<String, crate::core::keybinds::Binding>);
 
@@ -2480,8 +2485,9 @@ pub const FONT_SIZE_MAX: u16 = 32;
 /// criterion 1): what a never-dragged drawer renders — `None` in
 /// the config — wherever the surface is wide enough that half of it
 /// reaches this. Deliberately above libcosmic's 480px framework
-/// band; the drawer-resize initiative widened it.
-pub const DEFAULT_DRAWER_WIDTH: u16 = 560;
+/// band; the drawer-resize initiative widened it, and the veil-less
+/// drawer revisit grew it a further 10% (560 → 616).
+pub const DEFAULT_DRAWER_WIDTH: u16 = 616;
 
 /// The drawer pane's minimum width in px: the settings content's
 /// floor, carried over from the framework band the settings-drawer

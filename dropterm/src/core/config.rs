@@ -312,15 +312,17 @@ pub struct DropTermConfig {
     /// gated), and the decision reads this key at request time, so a
     /// mid-session flip applies to the very next close.
     pub close_confirmation_enabled: bool,
-    /// Whether a left-click in the terminal's bounds dismisses an
-    /// open settings drawer (drawer-click-close spec). **Parked**
-    /// (2026-10-08): the behavior does not ship — the drawer's
-    /// `context_drawer` overlay captures every mouse event over the
-    /// surface while it is open, so a dismiss press can never be
-    /// observed from the base tree (see that spec's fallback clause)
-    /// — and the settings row is hidden. The key keeps loading
-    /// (default `true`) and persisting for the day a capture
-    /// mechanism exists; a hand-edited value is inert.
+    /// Whether a left-click on the exposed surface dismisses an
+    /// open settings drawer (drawer-click-close spec). Shipped by
+    /// the veil-less drawer revisit (2026-11-20): the drawer's
+    /// overlay once dimmed and swallowed every press — first the
+    /// libcosmic `context_drawer`, then the hand-rolled veil — so
+    /// the module sat parked; the transparent catcher the overlay
+    /// now composes observes the dismiss press the old captures
+    /// never let through. Defaults to `true`; `false` drops the
+    /// catcher entirely, leaving the terminal fully interactive
+    /// beneath the open drawer. Read at press time, so a mid-session
+    /// flip applies to the very next click.
     pub settings_drawer_click_close: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and

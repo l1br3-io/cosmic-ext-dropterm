@@ -17,14 +17,14 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 | Tab | Carries |
 |---|---|
 | **Appearance** | How the terminal looks: the Appearance card (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
-| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images). |
+| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation, closing the drawer by clicking the terminal - [configuration](configuration.md#settings-drawer-click-close)), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images). |
 | **Profiles** | The profile manager - its own section below. |
 | **Keybindings** | The shortcut editor - its own section below. |
 | **Advanced** | The power controls: `respect_panel`, `layer`, and `keyboard_mode`. |
 
 Every exposed control appears exactly once across the tabs - none lost, none duplicated.
 
-Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives (start typing in a field, flip tabs, flip back - the text is still there). Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab; an explicit close resets it to Appearance, while a focus-loss hide preserves the open tab and its drafts.
+Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives (start typing in a field, flip tabs, flip back - the text is still there). Close, Escape, a repeat `Ctrl+Shift+I`, and - with click-close on (the default) - a left click on the terminal beneath, close the whole drawer from any tab; an explicit close resets it to Appearance, while a focus-loss hide preserves the open tab and its drafts.
 
 Commits are per control kind: toggles, dropdowns, and the pickers write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The profile form is the one buffered island - its writes collect behind an explicit Save.
 
@@ -90,6 +90,7 @@ Each control states next to it when its edit applies, and the terminal is visibl
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated for these |
 | `custom_key_binds` | instant - the very next key press uses the new chord |
 | `settings_drawer_width` | live by drag - written on handle release; double-clicking the handle resets it |
+| `settings_drawer_click_close` | next press - the catcher composes or drops on the echo's render, and the very next click on the exposed surface obeys it |
 | `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
 | `profiles` (color_scheme, font_size) | live - an edit recolors or re-sizes the profile's running tabs without a respawn |
 | `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched |
@@ -109,6 +110,7 @@ These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly 
 - `slide_animation_enabled`: `false` restores instant show/hide.
 - `new_tab_after_current`: `false` appends new tabs at the end of the list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H`, the tab bar's `+`, and the remote `new-tab` follow it; duplicates always land after the active tab, and session restore keeps the saved order.
 - `close_confirmation_enabled`: `false` restores instant, unconfirmed closes ([configuration](configuration.md#close-confirmation)).
+- `settings_drawer_click_close`: `false` drops the click catcher - the terminal beneath the open drawer stays fully interactive, and the drawer closes only through Close, Escape, the gear, the keyboard verb, or a surface hide ([configuration](configuration.md#settings-drawer-click-close)).
 
 ## Input ranges and limitations
 
