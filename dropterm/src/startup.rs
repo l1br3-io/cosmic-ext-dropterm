@@ -58,8 +58,15 @@ pub(crate) fn startup_verdict() -> Result<Verdict, String> {
 /// only on `Supported`.
 pub(crate) fn guard_or_exit() {
     match startup_verdict() {
-        Ok(Verdict::Supported) => {}
-        Ok(Verdict::UnsupportedHere) => {
+        Ok(Verdict::LayerShell) => {}
+        // A plain-window session must not fall through to the
+        // layer-shell executor: a layer surface cannot exist there,
+        // and booting one anyway is the failure the guard exists for
+        // (a window that never appears while `--is-visible` could lie
+        // about it). Until the executor grows its plain surface, the
+        // guard keeps refusing — core's message, the guard's exit 1,
+        // both unchanged from the refusal era.
+        Ok(Verdict::PlainWindow) => {
             eprintln!("{}", transport::unsupported_startup_error(None));
             std::process::exit(1);
         }

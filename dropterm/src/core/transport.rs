@@ -168,34 +168,42 @@ const LAYER_SHELL_GLOBAL: &str = "zwlr_layer_shell_v1";
 /// explaining the verdict.
 const UNSUPPORTED_DOCS_URL: &str = "https://l1br3-io.github.io/dropterm/known-issues/";
 
-/// Whether this compositor can host the drop-down surface (moved from
-/// the libcosmic frontend's `layer_shell` module: both frontends
-/// refuse identically, so the decision lives once).
+/// Which surface strategy this session's compositor satisfies (the
+/// dispatch decision the startup probe hands the executor — the
+/// layer-shell guard's verdict, extended from support-or-refuse to a
+/// choice between two bootable surfaces): a registry that roundtripped
+/// either advertises [`LAYER_SHELL_GLOBAL`] or it does not. The
+/// refusal lives in the probe's error channel alone (no Wayland
+/// connection at all), which [`unsupported_startup_error`] still
+/// word-for-word reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// The registry advertises [`LAYER_SHELL_GLOBAL`] (COSMIC, sway):
-    /// nothing changes for these compositors.
-    Supported,
-    /// It does not (GNOME, a sandbox, a session without Wayland): no
-    /// layer surface can exist here, so none is ever created.
-    UnsupportedHere,
+    /// the layer surface, unchanged.
+    LayerShell,
+    /// Wayland without the layer-shell global (GNOME on Debian, a
+    /// sandbox, any layer-shell-less compositor): a plain
+    /// xdg-toplevel window — positioned by the compositor, driven by
+    /// the verbs.
+    PlainWindow,
 }
 
-/// Decide layer-shell support from the registry's advertised global
+/// Decide the surface strategy from the registry's advertised global
 /// names. Pure — no I/O — so the decision is unit-testable headless;
-/// each frontend's probe feeds it the real registry's names.
+/// the frontend's probe feeds it the real registry's names.
 pub fn verdict(globals: &[&str]) -> Verdict {
     if globals.contains(&LAYER_SHELL_GLOBAL) {
-        Verdict::Supported
+        Verdict::LayerShell
     } else {
-        Verdict::UnsupportedHere
+        Verdict::PlainWindow
     }
 }
 
-/// The startup error for the unsupported verdict: names the missing
-/// protocol and links the docs (the spec's always-boundary).
-/// `reason` — present when the probe could not even ask (no Wayland
-/// session, a broken connection) — rides along after that text.
+/// The startup error for the probe's error channel — the only refusal
+/// left: names the missing protocol and links the docs (the spec's
+/// always-boundary). `reason` — present when the probe could not even
+/// ask (no Wayland session, a broken connection) — rides along after
+/// that text.
 pub fn unsupported_startup_error(reason: Option<&str>) -> String {
     let mut msg = format!(
         "dropterm: this session offers no {LAYER_SHELL_GLOBAL} \
@@ -286,69 +294,77 @@ pub fn query_visibility() -> Option<bool> {
     })
 }
 
-// --- the layer-shell startup verdict (gpui-scaffold Task 3) -----------
+// --- the startup verdict's decision table (gnome-window Task 1) --------
 
 #[cfg(test)]
-mod layer_shell_tests {
+mod verdict_tests {
     use super::*;
 
     #[test]
-    fn supported_when_the_registry_advertises_layer_shell() {
-        // A COSMIC-like registry: layer-shell among the usual globals.
-        let globals = [
-            "wl_compositor",
-            "wl_shm",
-            "wl_seat",
-            "xdg_wm_base",
-            "zwlr_layer_shell_v1",
-            "zcosmic_toplevel_info_v1",
+    fn the_verdict_picks_the_surface_strategy_from_the_registry() {
+        // The dispatch decision's table (gnome-window Task 1): a
+        // registry that roundtripped either advertises the layer-shell
+        // global or it does not, and both are bootable Wayland sessions
+        // — the refusal lives in the probe's error channel alone, never
+        // in this function.
+        let cases: &[(&str, &[&str], Verdict)] = &[
+            // A COSMIC-like registry: layer-shell among the usual
+            // globals.
+            (
+                "layer-shell advertised",
+                &[
+                    "wl_compositor",
+                    "wl_shm",
+                    "wl_seat",
+                    "xdg_wm_base",
+                    "zwlr_layer_shell_v1",
+                    "zcosmic_toplevel_info_v1",
+                ],
+                Verdict::LayerShell,
+            ),
+            // A GNOME-like registry: everything a toplevel app needs,
+            // but no layer-shell — the plain window's session.
+            (
+                "gnome-like registry without layer-shell",
+                &[
+                    "wl_compositor",
+                    "wl_shm",
+                    "wl_seat",
+                    "xdg_wm_base",
+                    "xdg_activation_v1",
+                    "zwp_idle_inhibit_manager_v1",
+                ],
+                Verdict::PlainWindow,
+            ),
+            // Degenerate input class: the roundtrip yielded no globals
+            // at all (a proxy registry, or a compositor mid-shutdown) —
+            // still a roundtripped registry, so the plain window.
+            ("empty registry", &[], Verdict::PlainWindow),
+            // No real global's name contains the protocol's today;
+            // these pin the equality contract against a substring
+            // refactor.
+            (
+                "lookalike v1_debug",
+                &["zwlr_layer_shell_v1_debug"],
+                Verdict::PlainWindow,
+            ),
+            (
+                "lookalike v2",
+                &["zwlr_layer_shell_v2"],
+                Verdict::PlainWindow,
+            ),
+            // A registry that lists the global twice still counts as
+            // advertised — `contains` semantics, never a count, so a
+            // count-based refactor fails here.
+            (
+                "duplicate layer-shell globals",
+                &["zwlr_layer_shell_v1", "zwlr_layer_shell_v1"],
+                Verdict::LayerShell,
+            ),
         ];
-        assert_eq!(verdict(&globals), Verdict::Supported);
-    }
-
-    #[test]
-    fn unsupported_when_the_registry_lacks_layer_shell() {
-        // A GNOME-like registry: everything a toplevel app needs, but
-        // no layer-shell — a drop-down surface cannot exist there.
-        let globals = [
-            "wl_compositor",
-            "wl_shm",
-            "wl_seat",
-            "xdg_wm_base",
-            "xdg_activation_v1",
-            "zwp_idle_inhibit_manager_v1",
-        ];
-        assert_eq!(verdict(&globals), Verdict::UnsupportedHere);
-    }
-
-    #[test]
-    fn unsupported_on_an_empty_registry() {
-        // Degenerate input class: the roundtrip yielded no globals at
-        // all (a proxy registry, or a compositor mid-shutdown).
-        assert_eq!(verdict(&[]), Verdict::UnsupportedHere);
-    }
-
-    #[test]
-    fn the_match_is_exact_not_substring() {
-        // No real global's name contains the protocol's today; this
-        // pins the equality contract against a substring refactor.
-        let lookalikes = ["zwlr_layer_shell_v1_debug", "zwlr_layer_shell_v2"];
-        for globals in lookalikes.map(|name| [name]) {
-            assert_eq!(verdict(&globals), Verdict::UnsupportedHere);
+        for (name, globals, expected) in cases {
+            assert_eq!(verdict(globals), *expected, "case: {name}");
         }
-    }
-
-    #[test]
-    fn duplicate_layer_shell_globals_still_verdict_supported() {
-        // A registry that lists the global twice still counts as
-        // advertised — `contains` semantics, never a count, so a
-        // count-based refactor fails here.
-        let globals = [
-            "wl_compositor",
-            "zwlr_layer_shell_v1",
-            "zwlr_layer_shell_v1",
-        ];
-        assert_eq!(verdict(&globals), Verdict::Supported);
     }
 
     #[test]
