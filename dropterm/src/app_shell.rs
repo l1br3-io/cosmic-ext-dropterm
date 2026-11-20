@@ -36,6 +36,7 @@ use dropterm::core::surface_lifecycle::{
     SurfaceInputs, SurfaceMachine, SurfaceState, shown_keyboard_mode,
 };
 use dropterm::core::tabs::TabId;
+use dropterm::core::transport::Verdict;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
@@ -76,6 +77,26 @@ type DrawerUpFn = Box<dyn Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App)>;
 pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
     let ms: u64 = raw?.trim().parse().ok()?;
     (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+/// The plain strategy's output size: the first display's bounds, the
+/// wayland backend's registry order (its `primary_display` is
+/// unimplemented and returns `None`). Rounded display metadata, not
+/// the layer path's fractional-safe granted bounds — the accepted
+/// trade of sizing a toplevel with no measuring surface (the spec's
+/// plain-mode open question 3); `None` when the session advertises
+/// no display at all, a broken compositor the caller refuses on.
+fn primary_output(cx: &App) -> Option<(u32, u32)> {
+    let size = cx.displays().first()?.bounds().size;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a display's bounds px are non-negative and fit u32 by any display standard"
+    )]
+    Some((
+        size.width.as_f32().round() as u32,
+        size.height.as_f32().round() as u32,
+    ))
 }
 
 /// Whether the drag handlers may act: the decision layer's
@@ -217,6 +238,11 @@ pub(crate) struct Shell {
     /// [`queue_shell_actions`].
     deferred_actions: Vec<Action>,
     machine: SurfaceMachine,
+    /// The startup dispatch's pick, threaded in at boot: the
+    /// executor's strategy and the one inputs patch plain mode
+    /// carries (no slide — a toplevel cannot slide itself anywhere)
+    /// both key on it, at boot and on every config echo.
+    mode: Verdict,
     executor: GpuiExecutor,
     inputs: SurfaceInputs,
     /// The drag-walk driver's remaining pointer positions (see
@@ -618,7 +644,8 @@ impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn new(
         boot: Instant,
-        inputs: SurfaceInputs,
+        mode: Verdict,
+        mut inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         tab_count: Arc<Mutex<u32>>,
         verbs: Receiver<cli::Action>,
@@ -638,6 +665,19 @@ impl Shell {
         specs: SpecsWatch,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
+        // The plain strategy's one inputs patch: no slide. A toplevel
+        // cannot slide itself off-screen (xdg-toplevel has no position
+        // API — the spec's plain-mode ceiling), so an armed slide
+        // would animate content inside a static rectangle — exactly
+        // the misread the layer path's transparent-root fix removed.
+        // Killing the flag here makes the decision layer's own gates
+        // do the work: every show is slide-less, every hide a
+        // destroy-now. The config-echo refresh re-applies it —
+        // `from_config` reads the user's toggle, which stays moot in
+        // this mode.
+        if mode == Verdict::PlainWindow {
+            inputs.slide_animation_enabled = false;
+        }
         // The booted fleet is the session baseline (computed before
         // the struct literal moves the list).
         let session_written = session_shape(&tabs);
@@ -648,7 +688,8 @@ impl Shell {
             last_bounds: None,
             deferred_actions: Vec::new(),
             machine: SurfaceMachine::default(),
-            executor: GpuiExecutor::new(),
+            mode,
+            executor: GpuiExecutor::with_mode(mode),
             inputs,
             tabs,
             panes,
@@ -1110,6 +1151,13 @@ impl Shell {
         let zone_changed = old_zone != new_zone;
         let hold_changed = old_hold != new_hold;
         let drag_armed = self.machine.drag.is_some();
+        let mut new_inputs = new_inputs;
+        // The plain strategy's slide-less patch, re-applied (the
+        // constructor's own comment): `from_config` reads the user's
+        // toggle back in, and it stays moot in this mode.
+        if self.mode == Verdict::PlainWindow {
+            new_inputs.slide_animation_enabled = false;
+        }
         let mut intents =
             self.machine
                 .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
@@ -1765,6 +1813,19 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
             shell.update(cx, |shell, _| shell.executor.retire(handle));
             println!(
                 "dropterm: surface destroyed at +{}ms",
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+        Action::Activate { handle } => {
+            // The plain strategy's focus-on-show: the platform's
+            // activation ask (the xdg-activation token path on
+            // wayland). Whether a compositor honors it from a
+            // D-Bus-forwarded toggle is Task 3's investigation —
+            // this arm makes the ask, loudly.
+            let window = shell.read(cx).executor.window_of(handle);
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+            println!(
+                "dropterm: window activated at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
         }
@@ -5540,6 +5601,7 @@ pub(crate) fn boot(
     tab_count: &Arc<Mutex<u32>>,
     verbs: Receiver<cli::Action>,
     startup: cli::Action,
+    surface_mode: Verdict,
 ) {
     let boot = Instant::now();
     let config_dir = dropterm::core::config::store::store_dir();
@@ -5638,6 +5700,7 @@ pub(crate) fn boot(
     let shell = cx.new(|cx| {
         Shell::new(
             boot,
+            surface_mode,
             inputs,
             Arc::clone(phase),
             Arc::clone(tab_count),
@@ -5658,6 +5721,26 @@ pub(crate) fn boot(
             specs,
         )
     });
+    // The plain strategy's retained output: display metadata stands
+    // in for the measuring pass (spec open question 3's ruling — no
+    // measuring surface exists for a toplevel, and the layer path's
+    // fractional-safe stretch has no Normal twin). The machine's
+    // retained-output arm then makes every show the steady-state
+    // direct open — no Measuring state, no probe window. The layer
+    // path never reads display metadata (its probe is the
+    // fractional-safe read); this is the one mode-gated exception.
+    if surface_mode == Verdict::PlainWindow {
+        let Some(output) = primary_output(cx) else {
+            eprintln!("dropterm: no display available to size the plain window under; exiting");
+            cx.quit();
+            return;
+        };
+        println!(
+            "dropterm: plain-window mode: retained output {output:?} from display metadata \
+             (no measuring pass)"
+        );
+        shell.update(cx, |shell, _| shell.machine.output_size = Some(output));
+    }
     // The keyboard's shell verbs ride the weak handle (the
     // shell-chords slice): the boot-time fleet (the first tab and
     // every restored pane) predates the shell entity, so the panes
@@ -5855,6 +5938,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -5970,6 +6054,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -6649,6 +6734,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),

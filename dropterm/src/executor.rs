@@ -30,6 +30,7 @@ use dropterm::core::geometry::{self, Geometry, Margins};
 use dropterm::core::intent::{
     ExclusiveZone, KeyboardHold, ShapeHeight, SurfaceExecutor, SurfaceHandle, SurfaceIntent,
 };
+use dropterm::core::transport::Verdict;
 
 /// One window-system action the executor derives from an intent: the
 /// GPUI mirror of the libcosmic executor's request list. The shell
@@ -76,6 +77,12 @@ pub(crate) enum Action {
     },
     /// Destroy the handle's window now (hide completions, teardown).
     Remove { handle: SurfaceHandle },
+    /// Ask the platform to focus the handle's window — the plain
+    /// strategy's focus-on-show. On wayland this rides the
+    /// xdg-activation token path (`Window::activate_window`); GPUI's
+    /// open-time focus flag is dead code on Linux, so the ask is an
+    /// explicit action with its own apply.
+    Activate { handle: SurfaceHandle },
     /// Route keyboard into the terminal input — the input focus a
     /// shown surface runs with. The terminal input itself arrives with
     /// the gpui-terminal slice; until then this applies as a logged
@@ -392,15 +399,41 @@ struct LiveWindow {
 /// The GPUI executor (see the module docs): maps surface handles to
 /// GPUI window handles — adopted when the shell applies an open, so
 /// derivation never touches a live window — and translates each
-/// intent into ordered [`Action`]s.
-#[derive(Debug, Default)]
+/// intent into ordered [`Action`]s under one of the two surface
+/// strategies the startup dispatch picked ([`Verdict`]): the
+/// layer-shell translation every walk pins today, or the plain
+/// xdg-toplevel translation a layer-shell-less session (GNOME)
+/// runs. One executor, two strategies — the window-content
+/// scaffolding, tabs, render, and destroy-on-hide lifecycle are the
+/// shell's, shared above this seam.
+#[derive(Debug)]
 pub(crate) struct GpuiExecutor {
+    mode: Verdict,
     live: HashMap<SurfaceHandle, LiveWindow>,
 }
 
 impl GpuiExecutor {
+    /// Today's path, bare: the layer-shell strategy with no live
+    /// surfaces. Production threads the dispatched mode through
+    /// [`Self::with_mode`]; the layer translation's tests construct
+    /// here (test-only for exactly that reason).
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            mode: Verdict::LayerShell,
+            live: HashMap::new(),
+        }
+    }
+
+    /// The executor for a dispatched surface strategy: the startup
+    /// verdict threads straight through — `LayerShell` is the
+    /// layer translation's bare self, `PlainWindow` swaps every
+    /// layer-specific translation for its toplevel twin.
+    pub(crate) fn with_mode(mode: Verdict) -> Self {
+        Self {
+            mode,
+            live: HashMap::new(),
+        }
     }
 
     /// Registers the window an open action created under its handle —
@@ -631,10 +664,54 @@ impl GpuiExecutor {
     }
 }
 
+/// The plain strategy's window options: a `WindowKind::Normal`
+/// toplevel at the configured size — height from the percent
+/// language, width the explicit ask or (at fill, where a toplevel
+/// has no "both anchors" to name) the whole output's width. The
+/// placement vocabulary (anchor, margins, layer, zone,
+/// keyboard-interactivity) lives only on the `LayerShell` kind; a
+/// toplevel's placement is the compositor's, so none of it exists
+/// here to mis-apply. Undecorated and transparent like the layer
+/// surface — the drawer paints its whole self either way.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "px of a <= 2^24 output share: exact in f32"
+)]
+pub(crate) fn plain_window_options(geometry: Geometry, output: (u32, u32)) -> WindowOptions {
+    let (width, height_px) = sized(geometry, output, ShapeHeight::Percent);
+    let width_px = width.unwrap_or(output.0);
+    WindowOptions {
+        titlebar: None,
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            // The origin is the compositor's to choose: xdg-toplevel
+            // has no position API, and GNOME places new windows
+            // itself (the spec's plain-mode ceiling, not a choice).
+            origin: point(px(0.), px(0.)),
+            size: Size::new(px(width_px as f32), px(height_px as f32)),
+        })),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
+        window_background: WindowBackgroundAppearance::Transparent,
+        kind: WindowKind::Normal,
+        ..Default::default()
+    }
+}
+
 impl SurfaceExecutor for GpuiExecutor {
     type Effect = Vec<Action>;
 
     fn execute(&mut self, intent: SurfaceIntent) -> Vec<Action> {
+        match self.mode {
+            Verdict::LayerShell => self.execute_layer_shell(intent),
+            Verdict::PlainWindow => self.execute_plain_window(intent),
+        }
+    }
+}
+
+impl GpuiExecutor {
+    /// The layer-shell translation — every walk pins this today
+    /// (COSMIC, sway): the two-surface show, the reconcile split,
+    /// the creation-fixed recreates.
+    fn execute_layer_shell(&mut self, intent: SurfaceIntent) -> Vec<Action> {
         match intent {
             SurfaceIntent::Measure { handle, keyboard } => {
                 vec![Action::OpenMeasuring {
@@ -664,6 +741,67 @@ impl SurfaceExecutor for GpuiExecutor {
                 // retirement itself is apply-time — the applier still
                 // needs the window to remove it, mirroring how
                 // adoption is apply-time for opens.
+                let _ = self.window_of(handle);
+                vec![Action::Remove { handle }]
+            }
+        }
+    }
+
+    /// The plain-window translation (a layer-shell-less session,
+    /// GNOME today): show opens a normal toplevel at the configured
+    /// size and asks the platform for its focus, hide destroys, a
+    /// shape is one in-place resize — and the layer vocabulary has
+    /// no toplevel meaning, so its intents translate to nothing. The
+    /// measuring pass never runs here: the shell seeds the machine's
+    /// retained output at boot, so no `Measure` intent arrives; the
+    /// arm stays total (and silent) should one ever.
+    fn execute_plain_window(&mut self, intent: SurfaceIntent) -> Vec<Action> {
+        match intent {
+            // The layer vocabulary has no toplevel meaning: no
+            // measuring window exists to open (the shell seeds the
+            // machine's retained output at boot, so no `Measure`
+            // arrives — the arm stays total should one ever), a
+            // toplevel's keyboard is the WM's to give (the Activate
+            // action is the focus path), and there is no exclusive
+            // zone to place.
+            SurfaceIntent::Measure { .. }
+            | SurfaceIntent::Hold { .. }
+            | SurfaceIntent::Rezone { .. } => Vec::new(),
+            SurfaceIntent::Show {
+                handle,
+                geometry,
+                output,
+                ..
+            } => vec![
+                Action::OpenShaped {
+                    handle,
+                    options: plain_window_options(geometry, output),
+                },
+                Action::Activate { handle },
+            ],
+            SurfaceIntent::Shape {
+                handle,
+                geometry,
+                output,
+                height,
+            } => {
+                let (width, height_px) = sized(geometry, output, height);
+                // The fill convention (`None`, compositor-controlled
+                // width) is a layer-surface meaning; a toplevel must
+                // name its width, so fill resolves to the output's —
+                // the same rule the open applies, keeping a
+                // widened-to-fill edit actually widening.
+                let width = Some(width.unwrap_or(output.0));
+                vec![Action::Resize {
+                    handle,
+                    width,
+                    height: height_px,
+                }]
+            }
+            SurfaceIntent::Focus { handle } => vec![Action::FocusTerminal { handle }],
+            SurfaceIntent::Destroy { handle } => {
+                // The destroy is the layer strategy's: liveness
+                // asserted, the remove derived, retirement apply-time.
                 let _ = self.window_of(handle);
                 vec![Action::Remove { handle }]
             }
@@ -1381,5 +1519,192 @@ mod tests {
             ShapeHeight::Percent,
         )
         .window_bounds
+    }
+
+    // --- the plain-window strategy (gnome-window Task 2) ---
+
+    #[test]
+    fn plain_show_opens_a_normal_window_of_the_configured_size_and_activates() {
+        // The plain strategy's show: one open of a `WindowKind::Normal`
+        // toplevel at the configured size, then one activation — the
+        // toplevel's keyboard is the WM's to give, so the focus ask is
+        // an explicit action, not an open-time flag (GPUI's wayland
+        // backend ignores `WindowOptions.focus`; `activate_window`'s
+        // xdg-activation token is the real path).
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let handle = SurfaceHandle::next();
+        let actions = exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        match actions.as_slice() {
+            [
+                Action::OpenShaped {
+                    handle: opened,
+                    options,
+                },
+                Action::Activate { handle: activated },
+            ] => {
+                assert_eq!(*opened, handle);
+                assert_eq!(*activated, handle);
+                // A Normal kind cannot carry anchor, margins, layer, or
+                // zone — the placement vocabulary exists only on the
+                // LayerShell variant, so the type pins the chunk's
+                // no-layer-commands boundary by construction.
+                assert!(matches!(options.kind, WindowKind::Normal));
+                let Some(WindowBounds::Windowed(bounds)) = options.window_bounds else {
+                    panic!("the plain window carries windowed bounds");
+                };
+                // Full width (100%) has no explicit ask a toplevel can
+                // make — the whole output's width stands in for fill.
+                assert_eq!(bounds.size.width, px(1280.), "fill -> the output width");
+                assert_eq!(bounds.size.height, px(288.), "40% of 720");
+            }
+            other => panic!("the plain show opens then activates: {other:?}"),
+        }
+        // The open's apply half: adoption re-points the handle.
+        let window = fake_window(21);
+        exec.adopt(handle, window);
+        assert_eq!(exec.window_of(handle), window);
+    }
+
+    #[test]
+    fn plain_show_narrows_by_the_configured_width() {
+        // A configured 50% width names an explicit pixel ask — the
+        // toplevel opens at exactly that width, not the output's.
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let mut geometry = plain_geometry();
+        geometry.width_percent = 50;
+        let actions = exec.execute(SurfaceIntent::Show {
+            handle: SurfaceHandle::next(),
+            geometry,
+            output: (1920, 1080),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        let [Action::OpenShaped { options, .. }, Action::Activate { .. }] = actions.as_slice()
+        else {
+            panic!("the plain show opens then activates: {actions:?}");
+        };
+        let Some(WindowBounds::Windowed(bounds)) = options.window_bounds else {
+            panic!("the plain window carries windowed bounds");
+        };
+        assert_eq!(bounds.size.width, px(960.), "50% of 1920");
+        assert_eq!(bounds.size.height, px(432.), "40% of 1080");
+    }
+
+    #[test]
+    fn plain_hide_destroys_the_window() {
+        // Hidden = the window destroyed: the plain strategy's destroy
+        // is the layer strategy's — liveness asserted, the remove
+        // derived, retirement apply-time.
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(22));
+        let actions = exec.execute(SurfaceIntent::Destroy { handle });
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Remove { handle: h }] if *h == handle
+        ));
+        exec.retire(handle);
+    }
+
+    #[test]
+    fn plain_mode_skips_the_measuring_pass() {
+        // No measuring window exists in the plain strategy — the shell
+        // seeds the machine's retained output at boot instead — so the
+        // honest translation of a Measure intent is nothing.
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let actions = exec.execute(SurfaceIntent::Measure {
+            handle: SurfaceHandle::next(),
+            keyboard: KeyboardMode::Exclusive,
+        });
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn plain_shape_resizes_in_place() {
+        // A toplevel's placement is the WM's — only the size is ours,
+        // so a shape intent lands as one in-place resize at the newly
+        // computed size (the geometry mapping's full treatment is
+        // Task 4's; the translation's shape is pinned here).
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(23));
+        let mut edited = plain_geometry();
+        edited.height_percent = 60;
+        let actions = exec.execute(SurfaceIntent::Shape {
+            handle,
+            geometry: edited,
+            output: (1280, 720),
+            height: ShapeHeight::Percent,
+        });
+        match actions.as_slice() {
+            [
+                Action::Resize {
+                    handle: h,
+                    width,
+                    height,
+                },
+            ] => {
+                assert_eq!(*h, handle);
+                assert_eq!(*width, Some(1280), "fill carries the output width");
+                assert_eq!(*height, 432, "60% of 720");
+            }
+            other => panic!("a plain shape resizes in place: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_hold_and_rezone_are_no_ops() {
+        // A toplevel has no keyboard-interactivity knob and no
+        // exclusive zone — the WM owns focus, the layout owns space —
+        // so neither intent moves anything in this mode.
+        let mut exec = GpuiExecutor::with_mode(Verdict::PlainWindow);
+        let handle = SurfaceHandle::next();
+        exec.execute(SurfaceIntent::Show {
+            handle,
+            geometry: plain_geometry(),
+            output: (1280, 720),
+            layer: Layer::Overlay,
+            keyboard: KeyboardMode::Exclusive,
+            zone: ExclusiveZone::CoversReserved,
+        });
+        exec.adopt(handle, fake_window(24));
+        assert!(
+            exec.execute(SurfaceIntent::Hold {
+                handle,
+                keyboard: KeyboardHold::Exclusive,
+            })
+            .is_empty()
+        );
+        assert!(
+            exec.execute(SurfaceIntent::Rezone {
+                handle,
+                zone: ExclusiveZone::InsideReserved,
+            })
+            .is_empty()
+        );
     }
 }
