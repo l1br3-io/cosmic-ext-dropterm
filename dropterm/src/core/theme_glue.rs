@@ -142,8 +142,12 @@ mod tests {
 
     #[test]
     fn unset_background_passes_the_system_derivation_through() {
-        let cosmic_dark = crate::core::theme_source::by_name("COSMIC Dark").unwrap();
-        assert_eq!(window_bg_color(&cosmic_dark, 0xFF1E_1E2E), 0xFF1E_1E2E);
+        // No shipped scheme leaves its background unset any more
+        // (the OS-deferring COSMIC pair left the registry); the
+        // pass-through arm stays for a raw `Colors` that has not
+        // resolved a scheme yet.
+        let unset = aterm::color::Colors::default();
+        assert_eq!(window_bg_color(&unset, 0xFF1E_1E2E), 0xFF1E_1E2E);
     }
 
     #[test]

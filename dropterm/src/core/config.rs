@@ -28,13 +28,6 @@ pub const MIN_WIDTH_PERCENT: u8 = 30;
 /// Inclusive upper bound for `width_percent`.
 pub const MAX_WIDTH_PERCENT: u8 = 100;
 
-/// Name of the stock COSMIC dark theme — a built-in scheme, the
-/// dark-mode default before the GitHub pair took over.
-pub const COSMIC_THEME_DARK: &str = "COSMIC Dark";
-/// Name of the stock COSMIC light theme — a built-in scheme, the
-/// light-mode default before the GitHub pair took over.
-pub const COSMIC_THEME_LIGHT: &str = "COSMIC Light";
-
 /// Which screen edge the drop-down is anchored to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Edge {

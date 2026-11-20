@@ -10,15 +10,16 @@
 // (see docs/research/terminal-theming.md). The ten third-party
 // palettes are transcribed from alacritty-theme TOMLs and canonical
 // extras, each with its source and license recorded on the const
-// below; the COSMIC pair keeps its hand-tuned tables.
+// below. cosmic-term's own COSMIC Dark/Light pair left the registry
+// (2026-11-20): their `None` background deferred to the host system
+// theme — OS coupling the cross-platform picker does not carry, and
+// every shipped scheme now paints its own canvas.
 
 use alacritty_terminal::{term::color::Colors, vte::ansi::NamedColor};
 
 // Re-exported because [`SchemePreview`]'s slots name it — the chip
 // renderers beyond this module must be able to spell it.
 pub use alacritty_terminal::vte::ansi::Rgb;
-
-use crate::core::config::{COSMIC_THEME_DARK, COSMIC_THEME_LIGHT};
 
 fn auto_colors() -> Colors {
     let mut colors = Colors::default();
@@ -77,8 +78,8 @@ struct ColorSchemeAnsi {
 }
 
 impl ColorSchemeAnsi {
-    /// Every slot unset — the dim table base for palettes (the ten
-    /// third-party ones) whose dims derive at conversion.
+    /// Every slot unset — the dim table base for every shipped
+    /// palette: dims derive at conversion, no scheme ships a table.
     const EMPTY: Self = Self {
         black: None,
         red: None,
@@ -94,8 +95,10 @@ impl ColorSchemeAnsi {
 /// A complete color scheme: the industry-consensus field set
 /// (foreground, background, cursor, bright/dim foreground, and the
 /// normal/bright/dim 8-color tables — docs/research/terminal-theming.md
-/// §4). A `None` background defers to the system theme via
-/// `WINDOW_BG_COLOR`; any other `None` slot falls back to a uniform
+/// §4). Every shipped scheme fills the background; the slot keeps
+/// its `Option` shape from the cosmic-term representation, where a
+/// `None` background deferred to the host system theme via
+/// `WINDOW_BG_COLOR`. Any other `None` slot falls back to a uniform
 /// derivation in the conversion below.
 #[derive(Debug, Clone, Copy)]
 struct ColorScheme {
@@ -197,98 +200,6 @@ const fn rgb(data: u32) -> Rgb {
     }
 }
 
-/// The COSMIC Dark palette, byte-identical to the scheme this module
-/// always shipped (pinned by test): a hand-tuned dim table the uniform
-/// derivation never touches, and no background — the window follows
-/// the COSMIC system theme.
-const COSMIC_DARK: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0xC4_C4C4)),
-    background: None,
-    cursor: Some(rgb(0xC4_C4C4)),
-    bright_foreground: Some(rgb(0xC4_C4C4)),
-    dim_foreground: Some(rgb(0x89_8989)),
-    normal: ColorSchemeAnsi {
-        black: Some(rgb(0x1B_1B1B)),
-        red: Some(rgb(0xF1_6161)),
-        green: Some(rgb(0x7C_B987)),
-        yellow: Some(rgb(0xDD_C74C)),
-        blue: Some(rgb(0x62_96BE)),
-        magenta: Some(rgb(0xBE_6DEE)),
-        cyan: Some(rgb(0x49_BAC8)),
-        white: Some(rgb(0xBE_BEBE)),
-    },
-    bright: ColorSchemeAnsi {
-        black: Some(rgb(0x80_8080)),
-        red: Some(rgb(0xFF_8985)),
-        green: Some(rgb(0x97_D5A0)),
-        yellow: Some(rgb(0xFA_E365)),
-        blue: Some(rgb(0x7D_B1DA)),
-        magenta: Some(rgb(0xD6_8EFF)),
-        cyan: Some(rgb(0x49_BAC8)),
-        white: Some(rgb(0xC4_C4C4)),
-    },
-    dim: ColorSchemeAnsi {
-        black: Some(rgb(0x00_0000)),
-        red: Some(rgb(0xA0_4040)),
-        green: Some(rgb(0x5D_7D62)),
-        yellow: Some(rgb(0x9E_914A)),
-        blue: Some(rgb(0x48_6073)),
-        magenta: Some(rgb(0x7F_46A1)),
-        cyan: Some(rgb(0x3F_7F87)),
-        white: Some(rgb(0x89_8989)),
-    },
-};
-
-/// The COSMIC Dark scheme as alacritty colors.
-pub fn cosmic_dark() -> Colors {
-    Colors::from(&COSMIC_DARK)
-}
-
-/// The COSMIC Light palette — same traits as [`COSMIC_DARK`]:
-/// hand-tuned dims, no background.
-const COSMIC_LIGHT: ColorScheme = ColorScheme {
-    foreground: Some(rgb(0x1B_1B1B)),
-    background: None,
-    cursor: Some(rgb(0x1B_1B1B)),
-    bright_foreground: Some(rgb(0x00_0000)),
-    dim_foreground: Some(rgb(0x26_2626)),
-    normal: ColorSchemeAnsi {
-        black: Some(rgb(0x1B_1B1B)),
-        red: Some(rgb(0xA2_4F50)),
-        green: Some(rgb(0x43_7E4F)),
-        yellow: Some(rgb(0x7D_6E1E)),
-        blue: Some(rgb(0x51_6D94)),
-        magenta: Some(rgb(0x9A_30CA)),
-        cyan: Some(rgb(0x22_7A85)),
-        white: Some(rgb(0xD7_D7D7)),
-    },
-    bright: ColorSchemeAnsi {
-        black: Some(rgb(0x00_0000)),
-        red: Some(rgb(0x89_0418)),
-        green: Some(rgb(0x18_5529)),
-        yellow: Some(rgb(0x53_4800)),
-        blue: Some(rgb(0x2E_496D)),
-        magenta: Some(rgb(0x6B_0091)),
-        cyan: Some(rgb(0x00_525A)),
-        white: Some(rgb(0xE8_E8E8)),
-    },
-    dim: ColorSchemeAnsi {
-        black: Some(rgb(0x26_2626)),
-        red: Some(rgb(0xB2_5D5E)),
-        green: Some(rgb(0x52_8D5E)),
-        yellow: Some(rgb(0x8C_7D30)),
-        blue: Some(rgb(0x5F_7CA4)),
-        magenta: Some(rgb(0xAA_43DB)),
-        cyan: Some(rgb(0x35_8994)),
-        white: Some(rgb(0xC4_C4C4)),
-    },
-};
-
-/// The COSMIC Light scheme as alacritty colors.
-pub fn cosmic_light() -> Colors {
-    Colors::from(&COSMIC_LIGHT)
-}
-
 // --- the GitHub pair (the defaults) ---
 //
 // GitHub's own palettes: the anchors and the 16 ANSI slots come from
@@ -296,8 +207,8 @@ pub fn cosmic_light() -> Colors {
 // [primer/github-vscode-theme](https://github.com/primer/github-vscode-theme)
 // pins — through that theme's `src/theme.js` terminal block
 // (`terminal.ansiX ← color.ansi.X`, `terminal.foreground ←
-// fg.default`). Real backgrounds, never the `None` system-defer the
-// COSMIC pair carries: a fresh install paints GitHub's canvas.
+// fg.default`). Real backgrounds, like every shipped scheme: a
+// fresh install paints GitHub's canvas.
 
 /// The GitHub Dark name — identity, persisted under
 /// `color_scheme_dark`, shown in the dropdowns. Lives here (the
@@ -758,9 +669,8 @@ struct SchemeEntry {
 /// The built-in scheme registry: the single definition site the
 /// `by_name` lookup, the settings dropdowns, and the tests all read,
 /// so names, options, and lookup cannot drift. GitHub Dark/Light
-/// first (the defaults), the COSMIC pair behind them, the rest
-/// alphabetical.
-const SCHEMES: [SchemeEntry; 14] = [
+/// first (the defaults), the rest alphabetical.
+const SCHEMES: [SchemeEntry; 12] = [
     SchemeEntry {
         name: GITHUB_THEME_DARK,
         scheme: GITHUB_DARK,
@@ -768,14 +678,6 @@ const SCHEMES: [SchemeEntry; 14] = [
     SchemeEntry {
         name: GITHUB_THEME_LIGHT,
         scheme: GITHUB_LIGHT,
-    },
-    SchemeEntry {
-        name: COSMIC_THEME_DARK,
-        scheme: COSMIC_DARK,
-    },
-    SchemeEntry {
-        name: COSMIC_THEME_LIGHT,
-        scheme: COSMIC_LIGHT,
     },
     SchemeEntry {
         name: "Catppuccin Latte",
@@ -830,48 +732,10 @@ pub fn by_name(name: &str) -> Option<Colors> {
         .map(|entry| Colors::from(&entry.scheme))
 }
 
-/// The palette preview a UI renders for one scheme: the scheme's own
-/// background (when it has one) and its six normal ANSI accents in
-/// `ls`-colors order (red, green, yellow, blue, magenta, cyan). The
-/// profile list's swatch chip reads this; it is a *preview* seam, not
-/// a spawn seam — it never feeds [`by_name`]'s resolution chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SchemeSwatch {
-    /// The scheme's background, or `None` for the COSMIC pair (their
-    /// background follows the system theme — a preview may not invent
-    /// one).
-    pub background: Option<Rgb>,
-    /// The accents the chip paints as cells, in order. Unset normal
-    /// slots drop out rather than error: the registry's hole-free pin
-    /// makes that unreachable today, but a future palette edit
-    /// degrades to a shorter chip, never a panic.
-    pub accents: [Option<Rgb>; 6],
-}
-
-/// The [`SchemeSwatch`] for a registry name. Unknown names — the same
-/// names [`by_name`] rejects — return `None`; callers render their
-/// "follows global" preview for both that and an unset scheme.
-pub fn scheme_swatch(name: &str) -> Option<SchemeSwatch> {
-    let entry = SCHEMES.iter().find(|entry| entry.name == name)?;
-    let normal = &entry.scheme.normal;
-    Some(SchemeSwatch {
-        background: entry.scheme.background,
-        accents: [
-            normal.red,
-            normal.green,
-            normal.yellow,
-            normal.blue,
-            normal.magenta,
-            normal.cyan,
-        ],
-    })
-}
-
 /// The registry's scheme names in registry order (GitHub pair first,
-/// the COSMIC pair behind them, the rest alphabetical) — the option
-/// list the settings dropdowns feed from. Derived from the same
-/// `SCHEMES` table `by_name` reads, so the picker can never offer a
-/// name lookup would reject.
+/// the rest alphabetical) — the option list the settings dropdowns
+/// feed from. Derived from the same `SCHEMES` table `by_name` reads,
+/// so the picker can never offer a name lookup would reject.
 pub fn scheme_names() -> Vec<&'static str> {
     SCHEMES.iter().map(|entry| entry.name).collect()
 }
@@ -903,14 +767,13 @@ const PREVIEW_ANSI: [NamedColor; 16] = [
 /// foreground, and ANSI 0–15 the terminal renders with — through the
 /// same `From<&ColorScheme>` conversion `by_name` serves, so a chip
 /// can never disagree with the real scheme (pinned by test). The
-/// background is `Option` with teeth: the COSMIC pair ships none
-/// (the window follows the system theme), so its chip previews
-/// exactly that — the view draws a `None` background from the live
-/// theme, the honest "what the terminal shows" color.
+/// background is `Option` so an out-of-range preview row can carry
+/// no strip at all; every registry scheme resolves one, and no
+/// shipped scheme defers its background to the system theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SchemePreview {
-    /// The scheme's background, or `None` where the terminal falls
-    /// back to the system theme.
+    /// The scheme's background, or `None` where no scheme resolves
+    /// (the fallback preview row renders no chip).
     pub background: Option<Rgb>,
     /// The scheme's foreground.
     pub foreground: Option<Rgb>,
@@ -1011,8 +874,9 @@ mod tests {
 
     #[test]
     fn conversion_keeps_explicit_dims_and_specials_over_derived_defaults() {
-        // The COSMIC pair ships hand-tuned dim tables; derivation must
-        // never overwrite a value the scheme actually provides.
+        // A scheme carrying explicit values wins over derivation —
+        // the representation keeps the slots, so a future palette
+        // that ships its own dims lands here untouched.
         let mut scheme = plain_scheme();
         scheme.dim.red = Some(rgb(0xA0_4040));
         scheme.cursor = Some(rgb(0xFF_CC00));
@@ -1027,105 +891,31 @@ mod tests {
         assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x34_A551)));
     }
 
-    // --- byte-identity pins: the COSMIC pair's user-visible slots.
-    // The route through `ColorScheme` must not move a single one. ---
-
     #[test]
-    fn cosmic_dark_normal_and_bright_slots_are_pinned() {
-        let colors = cosmic_dark();
-        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B_1B1B)));
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xF1_6161)));
-        assert_eq!(colors[NamedColor::Green], Some(rgb(0x7C_B987)));
-        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0xDD_C74C)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x62_96BE)));
-        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0xBE_6DEE)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x49_BAC8)));
-        assert_eq!(colors[NamedColor::White], Some(rgb(0xBE_BEBE)));
-        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x80_8080)));
-        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0xFF_8985)));
-        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x97_D5A0)));
-        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0xFA_E365)));
-        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x7D_B1DA)));
-        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0xD6_8EFF)));
-        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x49_BAC8)));
-        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xC4_C4C4)));
-    }
-
-    #[test]
-    fn cosmic_dark_dim_and_special_slots_are_pinned() {
-        let colors = cosmic_dark();
-        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x00_0000)));
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA0_4040)));
-        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x5D_7D62)));
-        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x9E_914A)));
-        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x48_6073)));
-        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0x7F_46A1)));
-        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x3F_7F87)));
-        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0x89_8989)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0xC4_C4C4)));
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0xC4_C4C4)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0xC4_C4C4)));
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x89_8989)));
-    }
-
-    #[test]
-    fn cosmic_light_normal_and_bright_slots_are_pinned() {
-        let colors = cosmic_light();
-        assert_eq!(colors[NamedColor::Black], Some(rgb(0x1B_1B1B)));
-        assert_eq!(colors[NamedColor::Red], Some(rgb(0xA2_4F50)));
-        assert_eq!(colors[NamedColor::Green], Some(rgb(0x43_7E4F)));
-        assert_eq!(colors[NamedColor::Yellow], Some(rgb(0x7D_6E1E)));
-        assert_eq!(colors[NamedColor::Blue], Some(rgb(0x51_6D94)));
-        assert_eq!(colors[NamedColor::Magenta], Some(rgb(0x9A_30CA)));
-        assert_eq!(colors[NamedColor::Cyan], Some(rgb(0x22_7A85)));
-        assert_eq!(colors[NamedColor::White], Some(rgb(0xD7_D7D7)));
-        assert_eq!(colors[NamedColor::BrightBlack], Some(rgb(0x00_0000)));
-        assert_eq!(colors[NamedColor::BrightRed], Some(rgb(0x89_0418)));
-        assert_eq!(colors[NamedColor::BrightGreen], Some(rgb(0x18_5529)));
-        assert_eq!(colors[NamedColor::BrightYellow], Some(rgb(0x53_4800)));
-        assert_eq!(colors[NamedColor::BrightBlue], Some(rgb(0x2E_496D)));
-        assert_eq!(colors[NamedColor::BrightMagenta], Some(rgb(0x6B_0091)));
-        assert_eq!(colors[NamedColor::BrightCyan], Some(rgb(0x00_525A)));
-        assert_eq!(colors[NamedColor::BrightWhite], Some(rgb(0xE8_E8E8)));
-    }
-
-    #[test]
-    fn cosmic_light_dim_and_special_slots_are_pinned() {
-        let colors = cosmic_light();
-        assert_eq!(colors[NamedColor::DimBlack], Some(rgb(0x26_2626)));
-        assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xB2_5D5E)));
-        assert_eq!(colors[NamedColor::DimGreen], Some(rgb(0x52_8D5E)));
-        assert_eq!(colors[NamedColor::DimYellow], Some(rgb(0x8C_7D30)));
-        assert_eq!(colors[NamedColor::DimBlue], Some(rgb(0x5F_7CA4)));
-        assert_eq!(colors[NamedColor::DimMagenta], Some(rgb(0xAA_43DB)));
-        assert_eq!(colors[NamedColor::DimCyan], Some(rgb(0x35_8994)));
-        assert_eq!(colors[NamedColor::DimWhite], Some(rgb(0xC4_C4C4)));
-        assert_eq!(colors[NamedColor::Foreground], Some(rgb(0x1B_1B1B)));
-        assert_eq!(colors[NamedColor::Cursor], Some(rgb(0x1B_1B1B)));
-        assert_eq!(colors[NamedColor::BrightForeground], Some(rgb(0x00_0000)));
-        assert_eq!(colors[NamedColor::DimForeground], Some(rgb(0x26_2626)));
-    }
-
-    #[test]
-    fn cosmic_schemes_leave_background_unset_and_share_the_color_cube() {
-        // The COSMIC pair defers the background to the system theme
-        // (WINDOW_BG_COLOR fallback); every other scheme owns its bg.
-        for colors in [cosmic_dark(), cosmic_light()] {
-            assert_eq!(colors[NamedColor::Background], None);
-        }
+    fn every_scheme_shares_the_color_cube_and_owns_a_background() {
         // Slots 16..=255 come from the shared ransid cube/ramp —
-        // identical across schemes by construction.
-        let dark = cosmic_dark();
-        let base = auto_colors();
-        for slot in 16..256 {
-            assert_eq!(dark[slot], base[slot], "cube slot {slot} drifted");
+        // identical across schemes by construction — and every
+        // shipped scheme paints its own background (none defers to
+        // the system theme any more).
+        for entry in &SCHEMES {
+            let colors = by_name(entry.name).expect("pinned by the test above");
+            assert!(
+                colors[NamedColor::Background].is_some(),
+                "{}: no background",
+                entry.name
+            );
+            for slot in 16..256 {
+                assert_eq!(
+                    colors[slot],
+                    auto_colors()[slot],
+                    "cube slot {slot} drifted"
+                );
+            }
         }
     }
 
     #[test]
-    fn by_name_resolves_the_cosmic_pair_and_rejects_unknown_names() {
-        assert!(by_name(COSMIC_THEME_DARK).is_some());
-        assert!(by_name(COSMIC_THEME_LIGHT).is_some());
+    fn by_name_rejects_unknown_names() {
         // Unknown names are `active_colors()`'s fallback signal, not
         // an error. "Catppuccin Frappe" is a real upstream variant
         // the registry does not ship.
@@ -1141,16 +931,13 @@ mod tests {
 
     #[test]
     fn registry_pins_the_shipped_scheme_order() {
-        // GitHub pair first (the defaults), the COSMIC pair behind
-        // them, the rest alphabetical.
+        // GitHub pair first (the defaults), the rest alphabetical.
         let names: Vec<&str> = SCHEMES.iter().map(|entry| entry.name).collect();
         assert_eq!(
             names,
             [
                 GITHUB_THEME_DARK,
                 GITHUB_THEME_LIGHT,
-                COSMIC_THEME_DARK,
-                COSMIC_THEME_LIGHT,
                 "Catppuccin Latte",
                 "Catppuccin Mocha",
                 "Dracula",
@@ -1173,45 +960,6 @@ mod tests {
         assert_eq!(names.len(), SCHEMES.len());
     }
 
-    // --- the swatch preview seam ---
-
-    #[test]
-    fn a_swatch_carries_the_scheme_background_and_six_accents() {
-        // Dracula's canonical values, in ls-colors cell order.
-        let swatch = scheme_swatch("Dracula").expect("registry name");
-        assert_eq!(swatch.background, Some(rgb(0x28_2A36)));
-        assert_eq!(
-            swatch.accents,
-            [
-                Some(rgb(0xFF_5555)),
-                Some(rgb(0x50_FA7B)),
-                Some(rgb(0xF1_FA8C)),
-                Some(rgb(0xBD_93F9)),
-                Some(rgb(0xFF_79C6)),
-                Some(rgb(0x8B_E9FD)),
-            ]
-        );
-    }
-
-    #[test]
-    fn the_cosmic_pair_previews_accents_without_inventing_a_background() {
-        // The COSMIC schemes defer background to the system theme; the
-        // preview must not fabricate one.
-        for name in [COSMIC_THEME_DARK, COSMIC_THEME_LIGHT] {
-            let swatch = scheme_swatch(name).expect("registry name");
-            assert_eq!(swatch.background, None);
-            assert!(swatch.accents.iter().all(Option::is_some));
-        }
-    }
-
-    #[test]
-    fn an_unknown_name_has_no_swatch() {
-        // The preview degrades exactly where resolution does: unknown
-        // names render the "follows global" chip.
-        assert!(scheme_swatch("Catppuccin Frappe").is_none());
-        assert!(scheme_swatch("").is_none());
-    }
-
     #[test]
     fn by_name_serves_every_registry_entry() {
         for entry in &SCHEMES {
@@ -1224,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn third_party_schemes_resolve_with_no_holes_in_the_named_slots() {
+    fn every_scheme_resolves_with_no_holes_in_the_named_slots() {
         let normal_and_bright = [
             NamedColor::Black,
             NamedColor::Red,
@@ -1253,14 +1001,9 @@ mod tests {
             NamedColor::DimCyan,
             NamedColor::DimWhite,
         ];
-        // The COSMIC pair deliberately leaves Background to the system
-        // theme; every other scheme must come through complete. The
-        // background-less pair is identified by name — the registry's
-        // row order is the defaults pin's business, not this test's.
-        for entry in SCHEMES
-            .iter()
-            .filter(|entry| entry.name != COSMIC_THEME_DARK && entry.name != COSMIC_THEME_LIGHT)
-        {
+        // Every shipped scheme must come through complete — owned
+        // background included; nothing defers to the system theme.
+        for entry in &SCHEMES {
             let colors = by_name(entry.name).expect("pinned by the test above");
             for slot in normal_and_bright {
                 assert!(colors[slot].is_some(), "{}: {slot:?} unset", entry.name);
@@ -1427,11 +1170,9 @@ mod tests {
 
     #[test]
     fn every_registry_scheme_resolves_a_complete_preview() {
-        // Every entry previews foreground plus all sixteen ANSI
-        // slots. The background is the one honest exception: the
-        // COSMIC pair ships no background (the window follows the
-        // system theme), so its chip previews exactly that — `None`,
-        // which the view renders from the live theme.
+        // Every entry previews foreground, background, and all
+        // sixteen ANSI slots — no shipped scheme leaves a slot to
+        // the system theme.
         let previews = scheme_previews();
         assert_eq!(previews.len(), SCHEMES.len());
         for (name, preview) in previews {
@@ -1440,17 +1181,13 @@ mod tests {
                 "{name} must preview a foreground"
             );
             assert!(
+                preview.background.is_some(),
+                "{name} must preview a background"
+            );
+            assert!(
                 preview.ansi.iter().all(Option::is_some),
                 "{name} must preview all sixteen ANSI colors"
             );
-            if name == "COSMIC Dark" || name == "COSMIC Light" {
-                assert_eq!(preview.background, None, "{name} follows the system theme");
-            } else {
-                assert!(
-                    preview.background.is_some(),
-                    "{name} must preview a background"
-                );
-            }
         }
     }
 
@@ -1483,13 +1220,6 @@ mod tests {
         assert_eq!(github_dark.foreground, Some(rgb(0xE6_EDF3)));
         assert_eq!(github_dark.ansi[0], Some(rgb(0x48_4F58)));
         assert_eq!(github_dark.ansi[8], Some(rgb(0x6E_7681)));
-
-        let cosmic_dark = previews
-            .iter()
-            .find(|(name, _)| *name == COSMIC_THEME_DARK)
-            .expect("COSMIC Dark registered");
-        assert_eq!(cosmic_dark.1.background, None);
-        assert_eq!(cosmic_dark.1.foreground, Some(rgb(0xC4_C4C4)));
 
         let dracula = previews
             .iter()

@@ -1556,10 +1556,9 @@ fn tab_title_mode_selection_mirrors_the_config_value() {
 #[test]
 fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
     let options = crate::core::theme_source::scheme_names();
-    // Fourteen shipped schemes, GitHub pair first (the defaults)
-    // and the COSMIC pair behind them — the picker's order is the
-    // registry's order.
-    assert_eq!(options.len(), 14);
+    // Twelve shipped schemes, GitHub pair first (the defaults) —
+    // the picker's order is the registry's order.
+    assert_eq!(options.len(), 12);
     assert_eq!(
         options.first(),
         Some(&crate::core::theme_source::GITHUB_THEME_DARK)
@@ -1567,10 +1566,6 @@ fn scheme_dropdown_options_are_the_registry_and_every_option_resolves() {
     assert_eq!(
         options.get(1),
         Some(&crate::core::theme_source::GITHUB_THEME_LIGHT)
-    );
-    assert_eq!(
-        options.get(2),
-        Some(&crate::core::config::COSMIC_THEME_DARK)
     );
     // What the picker offers is exactly what `by_name` serves, so
     // a pick can never name a scheme lookup would reject.
@@ -1591,7 +1586,7 @@ fn scheme_dropdown_picks_commit_registry_names_only() {
         Some(PlannedWrite::ColorSchemeDark("GitHub Dark".to_string()))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::ColorSchemeLight, 6),
+        dropdown_write(ConfigKey::ColorSchemeLight, 4),
         Some(PlannedWrite::ColorSchemeLight("Dracula".to_string()))
     );
     // Out of range (including exactly len) rejects instead of
@@ -1617,7 +1612,7 @@ fn scheme_selection_opens_on_the_config_name_and_unknowns_select_nothing() {
     config.color_scheme_dark = "Dracula".to_string();
     assert_eq!(
         dropdown_selected(ConfigKey::ColorSchemeDark, &config),
-        Some(6)
+        Some(4)
     );
     // An unknown name (stale, hand-typed, renamed upstream) shows
     // no selection — the control never invents one, while
