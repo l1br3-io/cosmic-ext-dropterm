@@ -107,7 +107,8 @@ pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
         | ConfigKey::DefaultCwd
         | ConfigKey::ScrollbackLines
         | ConfigKey::CommandFinishNotificationAfterSecs
-        | ConfigKey::AutosuggestionsDelayMs => ControlKind::Text,
+        | ConfigKey::AutosuggestionsDelayMs
+        | ConfigKey::TabBarMinTabs => ControlKind::Text,
         ConfigKey::SettingsDrawerWidth => return None,
         // Every remaining exposed key is a toggle — the section map's
         // own exactly-once pin (core's tests) guarantees this arm is
@@ -410,6 +411,7 @@ impl SettingsDrawer {
             TextField::ScrollbackLines,
             TextField::CommandFinishNotificationAfterSecs,
             TextField::AutosuggestionsDelayMs,
+            TextField::TabBarMinTabs,
             TextField::DefaultCwd,
         ] {
             let seeded = SettingsBuffer::default().text(field, config);
@@ -936,6 +938,7 @@ fn text_field_of(key: ConfigKey) -> Option<TextField> {
             TextField::CommandFinishNotificationAfterSecs
         }
         ConfigKey::AutosuggestionsDelayMs => TextField::AutosuggestionsDelayMs,
+        ConfigKey::TabBarMinTabs => TextField::TabBarMinTabs,
         ConfigKey::DefaultCwd => TextField::DefaultCwd,
         _ => return None,
     };
@@ -1831,7 +1834,7 @@ mod tests {
     }
 
     /// The dispatch's classes spot-pinned: the pickers and the shell
-    /// control, the four sliders, the eight dropdowns, the six texts,
+    /// control, the four sliders, the eight dropdowns, the seven texts,
     /// and one toggle representative — the full partition is the
     /// section-map tests' own exactly-once pin.
     #[test]
@@ -1874,6 +1877,7 @@ mod tests {
             ConfigKey::ScrollbackLines,
             ConfigKey::CommandFinishNotificationAfterSecs,
             ConfigKey::AutosuggestionsDelayMs,
+            ConfigKey::TabBarMinTabs,
         ] {
             assert_eq!(control_kind(key), Some(ControlKind::Text));
         }
