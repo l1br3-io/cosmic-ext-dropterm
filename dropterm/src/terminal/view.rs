@@ -2862,6 +2862,94 @@ mod tests {
         assert_eq!(edited, fallback, "the live edit lands the resolved family");
     }
 
+    // --- key-delivery Task 10: the pane answers a dispatched tab
+    // under the drawer's mount shape ---
+
+    #[gpui::test]
+    fn a_dispatched_tab_reaches_the_pane_under_the_kit_root(cx: &mut gpui::TestAppContext) {
+        // A1's headless twin (key-delivery): the drawer mounts the pane
+        // through the Kit Root (app_shell.rs:1818), and the Root's own
+        // tab-traversal binding (gpui-base root.rs:44) swallows a bare
+        // tab before any key listener runs — the archived capture shows
+        // ten delivered tab pairs against a silent `on_key` trace. This
+        // pin reproduces that shape end to end: a real pane in a real
+        // window mounted the drawer's way, keystrokes through gpui's
+        // real dispatch, and the PTY's own child as the witness (a `cat`
+        // persisting exactly what reached the shell). Letters and enter
+        // must land (the clauses that already work); the tab bytes must
+        // land with them (the clauses the Root eats today).
+        cx.update(gpui_component::init);
+        let config = request_config();
+        let sink =
+            std::env::temp_dir().join(format!("dropterm-tab-pin-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&sink);
+        let (_terminal, pane) = cx
+            .update(|cx| {
+                let request = PaneRequest {
+                    program: "/bin/sh".to_string(),
+                    args: vec!["-c".to_string(), format!("cat > '{}'", sink.display())],
+                    cwd: None,
+                    env: Default::default(),
+                    spawned_as: "sh".to_string(),
+                    profile_id: None,
+                    appearance: PaneAppearance {
+                        colors: boot_colors(&config),
+                        font_size: config.font_size,
+                        scrollback: config.scrollback_lines,
+                    },
+                };
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let handle = cx
+            .update(|cx| {
+                // The drawer's own mount (app_shell.rs:1818): the pane
+                // rides inside the Kit Root, whose Root context puts the
+                // traversal binding on every dispatch path in the window.
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(600.), px(400.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| gpui_component::Root::new(pane.clone(), window, cx)),
+                )
+            })
+            .expect("open the pane's window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            window.focus(&pane.read(cx).focus_handle(), cx);
+        });
+
+        // The A1 sequence in miniature: tab, shift-tab, a letter, then
+        // enter to flush the PTY's canonical line to the witness file.
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("shift-tab");
+        cx.simulate_keystrokes("c");
+        cx.simulate_keystrokes("enter");
+
+        let mut landed = String::new();
+        for _ in 0..500 {
+            if let Ok(read) = std::fs::read_to_string(&sink) {
+                landed = read;
+                if !landed.is_empty() {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            landed, "\t\x1b[Zc\n",
+            "the pane must answer dispatched tab and shift-tab exactly as it answers letters \
+             (the Root's traversal binding eats them today: A1's ten silent presses)"
+        );
+        let _ = std::fs::remove_file(&sink);
+    }
+
     // --- the covering report's third telling: a pasted path hides
     // until a backspace redraws the line ---
 

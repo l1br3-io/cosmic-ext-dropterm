@@ -312,3 +312,34 @@ Root) is not gpui-pre, and the minimal fix needs no carry at all:
   unreachable to any focused content that does not install a deeper
   binding; text surfaces must reclaim it, and nothing in the API or
   docs says so.
+
+## Checkpoint 1 re-convened: the flip confirmed
+
+Confirmed 2026-11-21 (owner, via the structured ask on the `/build`
+run): B3 accepted — the in-repo Terminal-context tab/shift-tab binding
+is the arm; the fourth carry (l1br3-io fork of gpui-pre 0.3.12) is
+dissolved, and with it Tasks 4-6 in their carry shape. B1/B2 both
+stand as "not taken" for the closure audit: B2's verdict was A1's wire
+log (Tab delivered), B1's crate was exonerated by Task 3's
+read-plus-probes.
+
+## Task 10 (B3): the pin, red for the proven reason
+
+Written 2026-11-21, `terminal::view::tests::
+a_dispatched_tab_reaches_the_pane_under_the_kit_root` — A1's headless
+twin. A real pane boots against a PTY whose child is `cat` persisting
+its stdin to a temp file, mounts through `gpui_component::Root` (the
+drawer's own shape, `app_shell.rs:1818`), takes focus, and receives
+`tab`, `shift-tab`, `c`, `enter` through gpui's real keystroke
+dispatch. The witness file after the run:
+
+```
+left: "c\n"   right: "\t\x1b[Zc\n"
+```
+
+The letter and the enter landed (the passing clauses, exactly as A1's
+`c`/`d`/space traced); the tab and shift-tab bytes never reached the
+PTY — the Root's traversal binding ate them upstream of the pane's
+`on_key`, the same death the archived capture showed ten times over.
+Red on the full suite: 211 passed, 1 failed (the pin), nothing else
+touched.
