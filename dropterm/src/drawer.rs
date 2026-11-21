@@ -839,9 +839,33 @@ impl SettingsDrawer {
                         // drawer — the popover surface is the card.
                         item.open(open)
                             .bg(cx.theme().popover)
-                            .hover(|hover| hover.rounded_sm().bg(cx.theme().secondary))
-                            .title_style(gpui::StyleRefinement::default().px_4().py_3())
-                            .content_style(gpui::StyleRefinement::default().px_4().pb_3())
+                            // The hover affordance is an outline ring,
+                            // never a fill: the theme generator rides
+                            // BrightBlack for both secondary.background
+                            // and muted.foreground, so the Kit's dim
+                            // chevron would paint dim-on-dim and
+                            // vanish inside any filled hover. The ring
+                            // is pre-laid (border_1, transparent) and
+                            // only its color swaps on hover — no
+                            // layout shift at the transition.
+                            .hover(|hover| {
+                                hover.rounded_sm().border_color(cx.theme().muted_foreground)
+                            })
+                            .title_style(
+                                gpui::StyleRefinement::default()
+                                    .px_4()
+                                    .py_3()
+                                    .border_1()
+                                    .rounded_sm()
+                                    .border_color(gpui::transparent_black()),
+                            )
+                            // The pt keeps the ring (or the resting
+                            // header row) from sitting flush against
+                            // the first control row — the hover box
+                            // carries the header's own py_3, so
+                            // without a content gap the highlight's
+                            // bottom edge lands on the row.
+                            .content_style(gpui::StyleRefinement::default().pt_2().px_4().pb_3())
                             .title(
                                 gpui::div()
                                     .min_w_0()
