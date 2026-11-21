@@ -128,6 +128,9 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         &dropterm::core::spawn::SpawnCommand::Shell(shell),
         None,
         &config,
+        // The walk harness never loads user schemes (registry-only
+        // resolution — the real boot path owns the holder).
+        &[],
     );
     request.args = args;
     let Some((terminal, pane)) = view::boot_pane(

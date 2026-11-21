@@ -13,6 +13,7 @@ use alacritty_terminal::vte::ansi::NamedColor;
 
 use crate::core::config::{DropTermConfig, ThemePreference};
 use crate::core::profile;
+use crate::core::theme_files::UserScheme;
 use crate::core::theme_source;
 
 /// The window-background source decision: a scheme that resolves a
@@ -36,22 +37,27 @@ pub fn window_bg_color(colors: &aterm::color::Colors, system_bg: u32) -> u32 {
 /// live config-apply pass) consume:
 /// [`profile::effective_scheme_name`] resolves the scheme name (the
 /// profile's explicit pick in both system modes, else the global
-/// pair for `is_dark`), and the registry lookup falls back to the
-/// GitHub pair for the mode on any miss — unknown profile names and
-/// unknown global names alike. The chain never errors, and the store
-/// is never rewritten to "fix" a stored name.
+/// pair for `is_dark`), the merged lookup resolves it through the
+/// registry first then the injected user schemes (the theme-files
+/// seam's answers-injected pattern), and the fallback is the GitHub
+/// pair for the mode on any miss — unknown profile names, unknown
+/// global names, and a stored user-scheme name whose file vanished
+/// alike. The chain never errors, and the store is never rewritten
+/// to "fix" a stored name.
 pub fn effective_colors(
     config: &DropTermConfig,
     profile: Option<&profile::Profile>,
     is_dark: bool,
+    user_schemes: &[UserScheme],
 ) -> aterm::color::Colors {
     let name = profile::effective_scheme_name(
         profile,
         &config.color_scheme_dark,
         &config.color_scheme_light,
         is_dark,
+        user_schemes,
     );
-    theme_source::by_name(name).unwrap_or_else(|| {
+    theme_source::merged_by_name(name, user_schemes).unwrap_or_else(|| {
         if is_dark {
             theme_source::github_dark()
         } else {
@@ -122,6 +128,25 @@ mod tests {
         }
     }
 
+    /// One user scheme for the injected-list tests: the fg+bg minimum
+    /// a theme file must carry, nothing else (derivation owns the
+    /// rest at conversion).
+    fn user_scheme(name: &str, background: u32) -> crate::core::theme_files::UserScheme {
+        crate::core::theme_files::UserScheme {
+            name: name.to_string(),
+            scheme: crate::core::theme_source::ColorScheme {
+                foreground: Some(rgb(0xE6_EDF3)),
+                background: Some(rgb(background)),
+                cursor: None,
+                bright_foreground: None,
+                dim_foreground: None,
+                normal: crate::core::theme_source::ColorSchemeAnsi::default(),
+                bright: crate::core::theme_source::ColorSchemeAnsi::default(),
+                dim: crate::core::theme_source::ColorSchemeAnsi::default(),
+            },
+        }
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "fixture: the low 24 bits of a packed 0xRRGGBB literal"
@@ -153,7 +178,12 @@ mod tests {
     #[test]
     fn effective_colors_resolves_a_known_scheme_name() {
         let config = config_with(Some("Dracula"));
-        let colors = effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), true);
+        let colors = effective_colors(
+            &config,
+            profile::find(&config.profiles, "ssh-prod"),
+            true,
+            &[],
+        );
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
         assert_eq!(colors[NamedColor::Red], Some(rgb(0xFF_5555)));
     }
@@ -161,7 +191,7 @@ mod tests {
     #[test]
     fn effective_colors_falls_back_to_global_for_a_plain_tab() {
         let config = config_with(Some("Dracula"));
-        let colors = effective_colors(&config, None, true);
+        let colors = effective_colors(&config, None, true, &[]);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
@@ -169,30 +199,84 @@ mod tests {
     fn effective_colors_falls_back_to_global_on_a_dangling_profile_id() {
         let config = config_with(Some("Dracula"));
         assert!(profile::find(&config.profiles, "ghost").is_none());
-        let colors = effective_colors(&config, profile::find(&config.profiles, "ghost"), true);
+        let colors = effective_colors(&config, profile::find(&config.profiles, "ghost"), true, &[]);
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
     #[test]
     fn effective_colors_falls_back_to_global_when_the_profile_sets_no_scheme() {
         let config = config_with(None);
-        let colors = effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), true);
+        let colors = effective_colors(
+            &config,
+            profile::find(&config.profiles, "ssh-prod"),
+            true,
+            &[],
+        );
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
     }
 
     #[test]
     fn effective_colors_falls_back_to_global_on_an_unknown_scheme_name() {
         let config = config_with(Some("Catppuccin Frappe"));
-        let colors = effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), true);
+        let colors = effective_colors(
+            &config,
+            profile::find(&config.profiles, "ssh-prod"),
+            true,
+            &[],
+        );
         assert_eq!(colors[NamedColor::Background], Some(rgb(0x2E_3440)));
+    }
+
+    #[test]
+    fn effective_colors_resolves_a_user_scheme_name_through_the_injected_list() {
+        // The theme-files seam: a stored name the registry does not
+        // carry resolves through the injected user schemes — global
+        // pick and profile pick alike.
+        let config = DropTermConfig {
+            color_scheme_dark: "Evening".to_string(),
+            ..DropTermConfig::default()
+        };
+        let schemes = [user_scheme("Evening", 0x1A_1B26)];
+        let colors = effective_colors(&config, None, true, &schemes);
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x1A_1B26)));
+
+        let profile_config = config_with(Some("Evening"));
+        let colors = effective_colors(
+            &profile_config,
+            profile::find(&profile_config.profiles, "ssh-prod"),
+            true,
+            &schemes,
+        );
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x1A_1B26)));
+    }
+
+    #[test]
+    fn effective_colors_falls_back_to_the_github_pair_for_a_vanished_user_scheme() {
+        // The deleted-file shape (theme-files spec): the stored name
+        // stays in the config, the loaded list no longer carries it,
+        // and the fallback is byte-identical to a stale builtin name —
+        // the store is never rewritten to "fix" it.
+        let config = DropTermConfig {
+            color_scheme_dark: "Evening".to_string(),
+            color_scheme_light: "Evening".to_string(),
+            ..DropTermConfig::default()
+        };
+        let colors = effective_colors(&config, None, true, &[]);
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x0D_1117)));
+        let colors = effective_colors(&config, None, false, &[]);
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0xFF_FFFF)));
     }
 
     #[test]
     fn one_config_pass_resolves_mixed_tabs_to_different_colors() {
         let config = config_with(Some("Dracula"));
-        let profile_tab =
-            effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), true);
-        let plain_tab = effective_colors(&config, None, true);
+        let profile_tab = effective_colors(
+            &config,
+            profile::find(&config.profiles, "ssh-prod"),
+            true,
+            &[],
+        );
+        let plain_tab = effective_colors(&config, None, true, &[]);
         assert_ne!(
             profile_tab[NamedColor::Background],
             plain_tab[NamedColor::Background]
@@ -222,10 +306,14 @@ mod tests {
                 }],
                 ..DropTermConfig::default()
             };
-            let colors = effective_colors(&config, None, dark);
+            let colors = effective_colors(&config, None, dark, &[]);
             assert_eq!(colors[NamedColor::Background], Some(rgb(background)));
-            let colors =
-                effective_colors(&config, profile::find(&config.profiles, "ssh-prod"), dark);
+            let colors = effective_colors(
+                &config,
+                profile::find(&config.profiles, "ssh-prod"),
+                dark,
+                &[],
+            );
             assert_eq!(colors[NamedColor::Background], Some(rgb(background)));
         }
     }
@@ -255,14 +343,14 @@ mod tests {
             color_scheme_light: "Stale Name".to_string(),
             ..DropTermConfig::default()
         };
-        let fallback_dark = effective_colors(&config, None, true);
+        let fallback_dark = effective_colors(&config, None, true, &[]);
         let registry_dark = theme_source::by_name(crate::core::theme_source::GITHUB_THEME_DARK)
             .expect("registry name");
         assert_eq!(
             fallback_dark[NamedColor::Background],
             registry_dark[NamedColor::Background]
         );
-        let fallback_light = effective_colors(&config, None, false);
+        let fallback_light = effective_colors(&config, None, false, &[]);
         let registry_light = theme_source::by_name(crate::core::theme_source::GITHUB_THEME_LIGHT)
             .expect("registry name");
         assert_eq!(

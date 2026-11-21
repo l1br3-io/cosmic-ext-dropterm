@@ -2265,11 +2265,16 @@ pub enum PickerId {
 /// control's unknown-name rule: no strip, never an invented
 /// palette).
 pub fn inherit_scheme_preview(config: &DropTermConfig, is_dark: bool) -> Option<SchemePreview> {
+    // The picker surfaces still resolve registry-only here (theme-files
+    // F3 threads the loaded user schemes into the settings previews;
+    // the seam's name resolution takes the list so F3's wiring is one
+    // argument).
     let name = crate::core::profile::effective_scheme_name(
         None,
         &config.color_scheme_dark,
         &config.color_scheme_light,
         is_dark,
+        &[],
     );
     scheme_preview_by_name(name)
 }

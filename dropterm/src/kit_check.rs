@@ -88,6 +88,11 @@ pub(crate) fn boot(cx: &mut App, exit_after: Option<Duration>) {
         &dropterm::core::config::DropTermConfig::load_from(
             &dropterm::core::config::store::store_dir(),
         ),
+        // The check's chrome evidences the real path, so the user
+        // schemes load exactly as boot loads them.
+        &dropterm::core::theme_files::load_dir(
+            &dropterm::core::config::store::store_dir().join("themes"),
+        ),
     );
     let open = Instant::now();
     println!(

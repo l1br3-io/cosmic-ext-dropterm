@@ -124,19 +124,22 @@ pub fn effective_default<'a>(
 /// explicit choice in **both** system modes (a profile is a
 /// deliberate environment, not a theme follower), else the global
 /// pair resolved for `is_dark`. An unknown profile scheme name is
-/// ignored — global resolution, exactly as
-/// [`theme_source::by_name`] falls back for unknown global names;
-/// never an error surface, never a store rewrite.
+/// ignored — global resolution, exactly as the color lookup falls
+/// back for unknown global names; never an error surface, never a
+/// store rewrite. The known-name vocabulary is the merged registry
+/// (theme-files F2): the built-ins plus the loaded user schemes,
+/// injected by the caller.
 pub fn effective_scheme_name<'a>(
     profile: Option<&'a Profile>,
     global_dark: &'a str,
     global_light: &'a str,
     is_dark: bool,
+    user_schemes: &[crate::core::theme_files::UserScheme],
 ) -> &'a str {
     let global = if is_dark { global_dark } else { global_light };
     profile
         .and_then(|profile| profile.color_scheme.as_deref())
-        .filter(|name| crate::core::theme_source::by_name(name).is_some())
+        .filter(|name| crate::core::theme_source::merged_by_name(name, user_schemes).is_some())
         .unwrap_or(global)
 }
 
@@ -359,11 +362,11 @@ mod tests {
         // the list no longer carries — the caller resolves those to
         // `None` alike, so a dangling profile id is all-global.
         assert_eq!(
-            effective_scheme_name(None, "Global Dark", "Global Light", true),
+            effective_scheme_name(None, "Global Dark", "Global Light", true, &[]),
             "Global Dark"
         );
         assert_eq!(
-            effective_scheme_name(None, "Global Dark", "Global Light", false),
+            effective_scheme_name(None, "Global Dark", "Global Light", false, &[]),
             "Global Light"
         );
         assert_eq!(effective_font_size(None, 14), 14);
@@ -376,11 +379,11 @@ mod tests {
         // resolved profile is exactly the global value.
         let inheritor = profile("ssh", "ssh web-prod");
         assert_eq!(
-            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", true),
+            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", true, &[]),
             "Global Dark"
         );
         assert_eq!(
-            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", false),
+            effective_scheme_name(Some(&inheritor), "Global Dark", "Global Light", false, &[]),
             "Global Light"
         );
         assert_eq!(effective_font_size(Some(&inheritor), 14), 14);
@@ -397,12 +400,51 @@ mod tests {
             ..profile("ssh", "ssh web-prod")
         };
         assert_eq!(
-            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", true),
+            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", true, &[]),
             "Dracula"
         );
         assert_eq!(
-            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", false),
+            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", false, &[]),
             "Dracula"
+        );
+    }
+
+    #[test]
+    fn a_user_scheme_profile_pick_wins_through_the_injected_list() {
+        // theme-files F2: the known-name vocabulary is the merged
+        // registry — a profile pick naming a loaded user scheme
+        // applies in both modes, and the same pick without the list
+        // costs only the global fallback (the unknown-name rule).
+        let evening = crate::core::theme_files::UserScheme {
+            name: "Evening".to_string(),
+            scheme: crate::core::theme_source::ColorScheme {
+                foreground: None,
+                background: None,
+                cursor: None,
+                bright_foreground: None,
+                dim_foreground: None,
+                normal: crate::core::theme_source::ColorSchemeAnsi::default(),
+                bright: crate::core::theme_source::ColorSchemeAnsi::default(),
+                dim: crate::core::theme_source::ColorSchemeAnsi::default(),
+            },
+        };
+        let schemed = Profile {
+            color_scheme: Some("Evening".to_string()),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(
+            effective_scheme_name(
+                Some(&schemed),
+                "Global Dark",
+                "Global Light",
+                true,
+                &[evening]
+            ),
+            "Evening"
+        );
+        assert_eq!(
+            effective_scheme_name(Some(&schemed), "Global Dark", "Global Light", false, &[]),
+            "Global Light"
         );
     }
 
@@ -416,11 +458,11 @@ mod tests {
             ..profile("ssh", "ssh web-prod")
         };
         assert_eq!(
-            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", true),
+            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", true, &[]),
             "Global Dark"
         );
         assert_eq!(
-            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", false),
+            effective_scheme_name(Some(&mistyped), "Global Dark", "Global Light", false, &[]),
             "Global Light"
         );
     }
@@ -434,7 +476,7 @@ mod tests {
             ..profile("ssh", "ssh web-prod")
         };
         assert_eq!(
-            effective_scheme_name(Some(&only_font), "Global Dark", "Global Light", true),
+            effective_scheme_name(Some(&only_font), "Global Dark", "Global Light", true, &[]),
             "Global Dark"
         );
         assert_eq!(effective_font_size(Some(&only_font), 14), 9);

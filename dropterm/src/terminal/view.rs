@@ -2430,13 +2430,18 @@ fn paint_row(
 /// The scheme the pane resolves for a config at boot — the effective
 /// colors chain with no profile (single pane, no tabs yet) and the
 /// preference's own dark/light; `System` follows the real OS mode
-/// the system-mode cell holds (theme-defaults td-2).
-pub(crate) fn boot_colors(config: &dropterm::core::config::DropTermConfig) -> Colors {
+/// the system-mode cell holds (theme-defaults td-2). The user
+/// schemes ride in from the shell's holder (theme-files F2: a
+/// stored user-scheme name resolves through them).
+pub(crate) fn boot_colors(
+    config: &dropterm::core::config::DropTermConfig,
+    user_schemes: &[dropterm::core::theme_files::UserScheme],
+) -> Colors {
     let is_dark = dropterm::core::theme_glue::effective_is_dark(
         config.theme_preference,
         dropterm::core::system_mode::is_dark(),
     );
-    dropterm::core::theme_glue::effective_colors(config, None, is_dark)
+    dropterm::core::theme_glue::effective_colors(config, None, is_dark, user_schemes)
 }
 
 /// The pane factory the walk harness and the shell wiring share:
@@ -2514,6 +2519,7 @@ impl PaneRequest {
         command: &dropterm::core::spawn::SpawnCommand,
         cwd: Option<std::path::PathBuf>,
         config: &dropterm::core::config::DropTermConfig,
+        user_schemes: &[dropterm::core::theme_files::UserScheme],
     ) -> Self {
         let parts = dropterm::core::spawn::spawn_parts(command, config);
         let profile = parts
@@ -2529,9 +2535,14 @@ impl PaneRequest {
                     config.theme_preference,
                     dropterm::core::system_mode::is_dark(),
                 );
-                dropterm::core::theme_glue::effective_colors(config, Some(profile), is_dark)
+                dropterm::core::theme_glue::effective_colors(
+                    config,
+                    Some(profile),
+                    is_dark,
+                    user_schemes,
+                )
             }
-            None => boot_colors(config),
+            None => boot_colors(config, user_schemes),
         };
         let appearance = PaneAppearance {
             colors,
@@ -2703,6 +2714,7 @@ mod tests {
             },
             None,
             &config,
+            &[],
         );
         assert_eq!(request.program, "/bin/sh");
         assert_eq!(request.args, vec!["-c", "htop; exec /bin/sh"]);
@@ -2736,6 +2748,7 @@ mod tests {
             &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
             None,
             &config,
+            &[],
         );
         assert!(request.env.is_empty());
         assert_eq!(request.profile_id, None);
@@ -2752,7 +2765,8 @@ mod tests {
         // colors.
         use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
         let config = request_config();
-        let boot = dropterm::core::system_mode::with_system_mode(false, || boot_colors(&config));
+        let boot =
+            dropterm::core::system_mode::with_system_mode(false, || boot_colors(&config, &[]));
         assert_eq!(
             boot[NamedColor::Background],
             Some(Rgb {
@@ -2766,6 +2780,7 @@ mod tests {
                 &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
                 None,
                 &config,
+                &[],
             )
         });
         assert_eq!(
@@ -2793,7 +2808,8 @@ mod tests {
             font_size: Some(9),
             scrollback_lines: Some(100),
         }];
-        let request = PaneRequest::for_command(&profile_command("broken", "   "), None, &config);
+        let request =
+            PaneRequest::for_command(&profile_command("broken", "   "), None, &config, &[]);
         assert_eq!(request.program, "/bin/sh");
         assert!(request.env.is_empty());
         assert_eq!(request.profile_id, None);
@@ -2902,6 +2918,7 @@ mod tests {
                     &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
                     None,
                     &config,
+                    &[],
                 );
                 boot_pane(cx, &config, request, None, TabId(0), None)
             })
@@ -2969,7 +2986,7 @@ mod tests {
                     spawned_as: "sh".to_string(),
                     profile_id: None,
                     appearance: PaneAppearance {
-                        colors: boot_colors(&config),
+                        colors: boot_colors(&config, &[]),
                         font_size: config.font_size,
                         scrollback: config.scrollback_lines,
                     },
@@ -3080,7 +3097,7 @@ mod tests {
                     spawned_as: "bash".to_string(),
                     profile_id: None,
                     appearance: PaneAppearance {
-                        colors: boot_colors(&config),
+                        colors: boot_colors(&config, &[]),
                         font_size: config.font_size,
                         scrollback: config.scrollback_lines,
                     },
@@ -3318,6 +3335,7 @@ mod tests {
                     &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
                     None,
                     &config,
+                    &[],
                 );
                 boot_pane(cx, &config, request, None, TabId(0), None)
             })

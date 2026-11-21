@@ -150,11 +150,33 @@ struct ResolvedTheme {
     colors: alacritty_terminal::term::color::Colors,
 }
 
+/// A comparable copy of a resolved [`ResolvedTheme::colors`] for the
+/// theme identity: `Colors` itself derives no `PartialEq`, so the
+/// identity carries the slot-for-slot copy instead (built once per
+/// resolution, compared without allocation).
+type ThemeColors =
+    [Option<alacritty_terminal::vte::ansi::Rgb>; alacritty_terminal::term::color::COUNT];
+
+/// Copy a resolved palette slot for slot — the identity's colors arm.
+fn theme_colors(colors: &alacritty_terminal::term::color::Colors) -> ThemeColors {
+    let mut slots = [None; alacritty_terminal::term::color::COUNT];
+    for (slot, cell) in slots.iter_mut().enumerate() {
+        *cell = colors[slot];
+    }
+    slots
+}
+
 /// Resolve a config's theme (gpui-theme Task 2): the same glue chain
 /// the pane's [`view::boot_colors`] runs — `System` follows the real
 /// OS mode the system-mode cell holds (theme-defaults td-2) — plus
-/// the scheme name and mode [`crate::theme_gen`] wants.
-fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
+/// the scheme name and mode [`crate::theme_gen`] wants. The user
+/// schemes ride in from the shell's holder (theme-files F2): a
+/// stored user-scheme name resolves through them here exactly as at
+/// every pane spawn.
+fn resolve_theme(
+    config: &DropTermConfig,
+    user_schemes: &[dropterm::core::theme_files::UserScheme],
+) -> ResolvedTheme {
     let dark = dropterm::core::theme_glue::effective_is_dark(
         config.theme_preference,
         dropterm::core::system_mode::is_dark(),
@@ -165,19 +187,23 @@ fn resolve_theme(config: &DropTermConfig) -> ResolvedTheme {
             &config.color_scheme_dark,
             &config.color_scheme_light,
             dark,
+            user_schemes,
         )
         .to_string(),
         dark,
-        colors: dropterm::core::theme_glue::effective_colors(config, None, dark),
+        colors: dropterm::core::theme_glue::effective_colors(config, None, dark, user_schemes),
     }
 }
 
 /// The applied-theme identity a config resolves to (gpui-theme Task
-/// 2's change detector): scheme name plus mode. A config echo whose
-/// identity matches the applied one re-themes nothing; geometry-only
-/// edits never touch the theme.
-fn theme_identity(theme: &ResolvedTheme) -> (String, bool) {
-    (theme.name.clone(), theme.dark)
+/// 2's change detector): scheme name plus mode — plus the resolved
+/// palette (theme-files F2): a user scheme file edited in place, or
+/// deleted and falling back, keeps its name and mode, so the colors
+/// must carry the change or the stage/apply machine would swallow
+/// it. A config echo whose identity matches the applied one
+/// re-themes nothing; geometry-only edits never touch the theme path.
+fn theme_identity(theme: &ResolvedTheme) -> (String, bool, ThemeColors) {
+    (theme.name.clone(), theme.dark, theme_colors(&theme.colors))
 }
 
 /// Apply a resolved theme through C4's sanctioned route (gpui-theme
@@ -217,8 +243,12 @@ fn apply_resolved_theme(cx: &mut App, theme: &ResolvedTheme) {
 /// theme and apply it before any window opens — also the kill
 /// check's entry onto the same route, so its chrome evidences the
 /// real path.
-pub(crate) fn apply_kit_theme(cx: &mut App, config: &DropTermConfig) {
-    apply_resolved_theme(cx, &resolve_theme(config));
+pub(crate) fn apply_kit_theme(
+    cx: &mut App,
+    config: &DropTermConfig,
+    user_schemes: &[dropterm::core::theme_files::UserScheme],
+) {
+    apply_resolved_theme(cx, &resolve_theme(config, user_schemes));
 }
 
 /// The shell view: the shaped window's root. Owns the decision layer,
@@ -310,8 +340,15 @@ pub(crate) struct Shell {
     pane_signals: Receiver<view::PaneSignal>,
     /// The applied theme identity (gpui-theme Task 2): the config
     /// echo's change detector — an edit whose identity matches the
-    /// applied one re-themes nothing.
-    theme: (String, bool),
+    /// applied one re-themes nothing. The colors ride along
+    /// (theme-files F2): a user scheme file's content can change
+    /// under a constant name and mode.
+    theme: (String, bool, ThemeColors),
+    /// The user schemes loaded from the config dir's `themes/`
+    /// (theme-files F2): scanned at boot, rescanned on every config
+    /// echo (the themes watch feeds the same channel), and read by
+    /// every spawn and theme resolution through the merged registry.
+    user_schemes: Vec<dropterm::core::theme_files::UserScheme>,
     /// A scheme edit awaiting the tick's apply point (the Kit's
     /// tokens and the pane's colors re-apply before the next frame).
     pending_theme: Option<ResolvedTheme>,
@@ -634,7 +671,8 @@ impl Shell {
         config: DropTermConfig,
         signals_tx: std::sync::mpsc::Sender<view::PaneSignal>,
         pane_signals: Receiver<view::PaneSignal>,
-        theme: (String, bool),
+        theme: (String, bool, ThemeColors),
+        user_schemes: Vec<dropterm::core::theme_files::UserScheme>,
         drag_walk: Option<Vec<f32>>,
         config_changes: Receiver<()>,
         modal_focus: gpui::FocusHandle,
@@ -685,6 +723,7 @@ impl Shell {
             applied_title_mode,
             pane_signals,
             theme,
+            user_schemes,
             pending_theme: None,
             rendered_opacity,
             pending_opacity: None,
@@ -1158,6 +1197,15 @@ impl Shell {
         // live at the pane pass below (the libcosmic echo's own
         // re-arm).
         self.specs.arm_reload(&config);
+        // The theme-files rescan (F2): every echo re-reads the themes
+        // dir — the themes watch and the config watch share this
+        // channel — so a dropped, edited, or deleted scheme file is
+        // current before the theme stage compares (and a deleted
+        // worn scheme's GitHub-pair fallback re-themes through the
+        // colors arm of the identity).
+        self.user_schemes = dropterm::core::theme_files::load_dir(
+            &dropterm::core::config::store::store_dir().join("themes"),
+        );
         // gpui-theme Task 2: a scheme edit re-themes — resolved here,
         // applied at the tick's apply point before the next frame.
         // theme-defaults td-2: the funnel is shared with the
@@ -1267,7 +1315,7 @@ impl Shell {
     /// unchanged scheme is not a re-theme) and keeps geometry-only
     /// edits off the theme path.
     fn stage_theme_if_changed(&mut self, config: &DropTermConfig) {
-        let resolved = resolve_theme(config);
+        let resolved = resolve_theme(config, &self.user_schemes);
         let identity = theme_identity(&resolved);
         if identity != self.theme {
             println!(
@@ -2087,7 +2135,8 @@ impl Shell {
         cwd: Option<std::path::PathBuf>,
     ) -> Option<TabId> {
         let id = self.tabs.spawn(self.config.new_tab_after_current);
-        let request = view::PaneRequest::for_command(command, cwd, &self.config);
+        let request =
+            view::PaneRequest::for_command(command, cwd, &self.config, &self.user_schemes);
         let profile_id = request.profile_id.clone();
         let ephemeral = matches!(command, spawn::SpawnCommand::CommandLine(_));
         let Some((_terminal, pane)) = view::boot_pane(
@@ -2950,7 +2999,7 @@ impl Shell {
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             &self.config,
-            view::PaneRequest::for_command(&command, cwd, &self.config),
+            view::PaneRequest::for_command(&command, cwd, &self.config, &self.user_schemes),
             self.specs.table.as_ref(),
             id,
             Some(self.signals_tx.clone()),
@@ -3276,7 +3325,12 @@ impl Shell {
             .iter()
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.title_override.clone());
-        let request = view::PaneRequest::for_command(&command, respawn_cwd.clone(), &self.config);
+        let request = view::PaneRequest::for_command(
+            &command,
+            respawn_cwd.clone(),
+            &self.config,
+            &self.user_schemes,
+        );
         // The repair seed, captured before the swap: the outgoing
         // pane's keyboard dangles with its handle (the window's focus
         // id stays on the unmounted element — nothing blurs it), and
@@ -4755,7 +4809,7 @@ impl Shell {
         // surface, the pane yielding the strip's height — and the
         // same slide translation carries the whole column.
         let at_bottom = tab_bar::bar_at_bottom(self.inputs.geometry.edge, self.config.tab_position);
-        let pane_background = resolve_theme(&self.config).colors
+        let pane_background = resolve_theme(&self.config, &self.user_schemes).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let (strip, fg) = tab_bar::strip_pair(pane_background);
         let Some(pane) = self.active_pane() else {
@@ -5057,7 +5111,7 @@ impl Shell {
                 shell.update(cx, |shell, cx| shell.close_now(pending, cx));
             }
         });
-        let pane_background = resolve_theme(&self.config).colors
+        let pane_background = resolve_theme(&self.config, &self.user_schemes).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let colors = tab_bar::strip_pair(pane_background);
         close_confirm_layer(
@@ -5595,9 +5649,14 @@ struct TabFleet {
 /// saved active seat activated when any tab survived. A failed PTY
 /// closes its record (the rollback); the count returns for the
 /// fallback decision.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one param over; the fleet replay's inputs (config, schemes, table, plan, channels, targets) have no natural bucket"
+)]
 fn restore_fleet(
     cx: &mut App,
     config: &DropTermConfig,
+    user_schemes: &[dropterm::core::theme_files::UserScheme],
     specs_table: Option<&SpecsTable>,
     plan: Option<&dropterm::core::session::RestorePlan>,
     signals_tx: &std::sync::mpsc::Sender<view::PaneSignal>,
@@ -5630,7 +5689,8 @@ fn restore_fleet(
         } else {
             dropterm::core::spawn::SpawnCommand::Shell(spec.shell.clone())
         };
-        let request = view::PaneRequest::for_command(&command, spec.cwd.clone(), config);
+        let request =
+            view::PaneRequest::for_command(&command, spec.cwd.clone(), config, user_schemes);
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             config,
@@ -5661,6 +5721,7 @@ fn restore_fleet(
 fn boot_tab_fleet(
     cx: &mut App,
     config: &DropTermConfig,
+    user_schemes: &[dropterm::core::theme_files::UserScheme],
     specs_table: Option<&SpecsTable>,
     restore: &mut dropterm::core::session::RestoreStash,
     edge: Edge,
@@ -5690,6 +5751,7 @@ fn boot_tab_fleet(
             &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
             None,
             config,
+            user_schemes,
         );
         if !raw.is_empty() {
             request.args = vec!["-c".to_string(), raw];
@@ -5702,6 +5764,7 @@ fn boot_tab_fleet(
     let restored = restore_fleet(
         cx,
         config,
+        user_schemes,
         specs_table,
         plan.as_ref(),
         &signals_tx,
@@ -5712,9 +5775,9 @@ fn boot_tab_fleet(
         for _ in 0..tab_count {
             let id = tabs.spawn(false);
             let command = spawn::default_spawn_command(config);
-            let request = walk_request
-                .clone()
-                .unwrap_or_else(|| view::PaneRequest::for_command(&command, None, config));
+            let request = walk_request.clone().unwrap_or_else(|| {
+                view::PaneRequest::for_command(&command, None, config, user_schemes)
+            });
             let profile_id = request.profile_id.clone();
             let ephemeral = matches!(command, spawn::SpawnCommand::CommandLine(_));
             let Some((_terminal, pane)) = view::boot_pane(
@@ -5822,7 +5885,12 @@ pub(crate) fn boot(
     // the app boots hidden, so a correction lands through the tick
     // before any human sees a frame.
     dropterm::core::system_mode::spawn_watch();
-    let boot_theme = resolve_theme(&config);
+    // The user schemes load before the boot theme apply (theme-files
+    // F2): a stored user-scheme name resolves from the first frame.
+    // A missing or empty dir loads zero schemes silently (first-run
+    // quiet, the loader's own rule).
+    let user_schemes = dropterm::core::theme_files::load_dir(&config_dir.join("themes"));
+    let boot_theme = resolve_theme(&config, &user_schemes);
     let boot_theme_identity = theme_identity(&boot_theme);
     apply_resolved_theme(cx, &boot_theme);
     // The drawer's tab fleet (gpui-tabs Task 1). The completions
@@ -5849,6 +5917,7 @@ pub(crate) fn boot(
     let Some(fleet) = boot_tab_fleet(
         cx,
         &config,
+        &user_schemes,
         specs.table.as_ref(),
         &mut restore,
         inputs.geometry.edge,
@@ -5858,6 +5927,7 @@ pub(crate) fn boot(
     };
     let (config_tx, config_changes) = std::sync::mpsc::channel::<()>();
     let watch_dir = config_dir.clone();
+    let themes_dir = config_dir.join("themes");
     std::thread::spawn(move || {
         let mut watcher = match notify::recommended_watcher(move |event| {
             let _ = event; // any event in the config dir: reload and compare
@@ -5870,6 +5940,21 @@ pub(crate) fn boot(
             return eprintln!("dropterm: config watch failed: {err:?}");
         }
         println!("dropterm: config watcher armed on {}", watch_dir.display());
+        // The themes dir's own non-recursive watch (theme-files F2):
+        // the config watcher above never sees subdirectory events, so
+        // a dropped or edited scheme file would be invisible without
+        // this second arm on the same channel. A missing dir is the
+        // first-run norm, not an error — no watch, no line (the
+        // config-dir watcher still sees the `themes/` mkdir itself
+        // and the echo rescan arms nothing; the files inside land on
+        // the next trigger).
+        if themes_dir.is_dir() {
+            if let Err(err) = watcher.watch(&themes_dir, notify::RecursiveMode::NonRecursive) {
+                eprintln!("dropterm: themes watch failed: {err:?}");
+            } else {
+                println!("dropterm: themes watcher armed on {}", themes_dir.display());
+            }
+        }
         std::thread::park();
     });
     // The band's font (gpui-status Task 1): the terminal's own
@@ -5900,6 +5985,7 @@ pub(crate) fn boot(
             fleet.signals_tx,
             fleet.pane_signals,
             boot_theme_identity,
+            user_schemes,
             drag_walk,
             config_changes,
             cx.focus_handle(),
@@ -6043,7 +6129,7 @@ mod tests {
         // drawer paints its own frame (the band's border overlay);
         // the window is the transparent canvas behind it.
         cx.update(gpui_component::init);
-        cx.update(|cx| apply_kit_theme(cx, &DropTermConfig::default()));
+        cx.update(|cx| apply_kit_theme(cx, &DropTermConfig::default(), &[]));
         cx.update(|cx| {
             assert_eq!(
                 cx.theme().window_border,
@@ -6094,6 +6180,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the paste walk's one-shot scenario: standing panel, seated pane, verb, and row assertion in a single narrative"
+    )]
     #[gpui::test]
     fn a_paste_closes_a_standing_panel_and_records_its_row(cx: &mut gpui::TestAppContext) {
         // The covering report's model half: with the images panel
@@ -6128,7 +6218,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -6247,7 +6342,12 @@ mod tests {
                     config.clone(),
                     signals_tx.clone(),
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -6340,6 +6440,7 @@ mod tests {
                     &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
                     None,
                     &config,
+                    &[],
                 );
                 view::boot_pane(cx, &config, request, None, tab, None)
             })
@@ -6422,7 +6523,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -6448,6 +6554,7 @@ mod tests {
                 &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
                 None,
                 &config,
+                &[],
             );
             let (_terminal, pane) =
                 view::boot_pane(cx, &config, request, None, tab, None).expect("boot the pane");
@@ -6883,7 +6990,12 @@ mod tests {
                     config,
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -7189,22 +7301,22 @@ mod tests {
         // comparisons below need every read to agree).
         dropterm::core::system_mode::with_system_mode(true, || {
             let base = DropTermConfig::default();
-            let base_id = theme_identity(&resolve_theme(&base));
-            assert_eq!(theme_identity(&resolve_theme(&base)), base_id);
+            let base_id = theme_identity(&resolve_theme(&base, &[]));
+            assert_eq!(theme_identity(&resolve_theme(&base, &[])), base_id);
 
             // A geometry-only edit never re-themes.
             let geometry_only = DropTermConfig {
                 height_percent: 70,
                 ..DropTermConfig::default()
             };
-            assert_eq!(theme_identity(&resolve_theme(&geometry_only)), base_id);
+            assert_eq!(theme_identity(&resolve_theme(&geometry_only, &[])), base_id);
 
             // A scheme-name edit does.
             let scheme = DropTermConfig {
                 color_scheme_dark: "Dracula".to_string(),
                 ..DropTermConfig::default()
             };
-            assert_ne!(theme_identity(&resolve_theme(&scheme)), base_id);
+            assert_ne!(theme_identity(&resolve_theme(&scheme, &[])), base_id);
 
             // A preference flip changes the mode (System follows the
             // OS mode cell; Light resolves light).
@@ -7212,7 +7324,7 @@ mod tests {
                 theme_preference: ThemePreference::Light,
                 ..DropTermConfig::default()
             };
-            assert_ne!(theme_identity(&resolve_theme(&pref)), base_id);
+            assert_ne!(theme_identity(&resolve_theme(&pref, &[])), base_id);
         });
     }
 
@@ -7225,7 +7337,8 @@ mod tests {
         // survives at the site.
         use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
         let config = DropTermConfig::default();
-        let light = dropterm::core::system_mode::with_system_mode(false, || resolve_theme(&config));
+        let light =
+            dropterm::core::system_mode::with_system_mode(false, || resolve_theme(&config, &[]));
         assert!(!light.dark);
         assert_eq!(light.name, "GitHub Light");
         assert_eq!(
@@ -7236,7 +7349,8 @@ mod tests {
                 b: 0xFF
             })
         );
-        let dark = dropterm::core::system_mode::with_system_mode(true, || resolve_theme(&config));
+        let dark =
+            dropterm::core::system_mode::with_system_mode(true, || resolve_theme(&config, &[]));
         assert!(dark.dark);
         assert_eq!(dark.name, "GitHub Dark");
         assert_eq!(
@@ -7258,10 +7372,10 @@ mod tests {
         // identity — the echo-absorbing gate the flip rides.
         let config = DropTermConfig::default();
         let dark_id = dropterm::core::system_mode::with_system_mode(true, || {
-            theme_identity(&resolve_theme(&config))
+            theme_identity(&resolve_theme(&config, &[]))
         });
         let light_id = dropterm::core::system_mode::with_system_mode(false, || {
-            theme_identity(&resolve_theme(&config))
+            theme_identity(&resolve_theme(&config, &[]))
         });
         assert_ne!(dark_id, light_id);
         let geometry_only = DropTermConfig {
@@ -7269,7 +7383,7 @@ mod tests {
             ..DropTermConfig::default()
         };
         let geometry_id = dropterm::core::system_mode::with_system_mode(true, || {
-            theme_identity(&resolve_theme(&geometry_only))
+            theme_identity(&resolve_theme(&geometry_only, &[]))
         });
         assert_eq!(geometry_id, dark_id);
     }
@@ -7287,7 +7401,10 @@ mod tests {
         // force the shared cell, and two unseamed reads could land on
         // different modes and disagree for no chain reason.
         let (resolved, boot) = dropterm::core::system_mode::with_system_mode(true, || {
-            (resolve_theme(&config).colors, view::boot_colors(&config))
+            (
+                resolve_theme(&config, &[]).colors,
+                view::boot_colors(&config, &[]),
+            )
         });
         for nc in [
             NamedColor::Background,
@@ -7302,6 +7419,49 @@ mod tests {
         ] {
             assert_eq!(resolved[nc], boot[nc], "{nc:?} must agree — one chain");
         }
+    }
+
+    #[test]
+    fn theme_identity_carries_the_resolved_colors() {
+        // The theme-files seam's live path: a user scheme file edited
+        // in place — or deleted, falling back to the GitHub pair —
+        // keeps its stored name and mode. The identity must carry the
+        // resolved colors or the stage/apply machine would swallow
+        // the change (name-and-mode equality, no re-theme).
+        //
+        // The fixture rides the loader's own public path (the twin's
+        // palette type stays crate-private to the lib): one `Evening`
+        // file written into a scratch dir, `load_dir` read back.
+        fn evening_scheme(background: &str) -> dropterm::core::theme_files::UserScheme {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "dropterm-f2-identity-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            std::fs::write(
+                dir.join("Evening.ron"),
+                format!("(foreground: \"#e6edf3\", background: \"{background}\")"),
+            )
+            .expect("write fixture scheme");
+            let schemes = dropterm::core::theme_files::load_dir(&dir);
+            std::fs::remove_dir_all(&dir).ok();
+            schemes
+                .into_iter()
+                .next()
+                .expect("the fixture scheme loads")
+        }
+        let config = DropTermConfig {
+            color_scheme_dark: "Evening".to_string(),
+            ..DropTermConfig::default()
+        };
+        let worn = theme_identity(&resolve_theme(&config, &[evening_scheme("#1a1b26")]));
+        let edited = theme_identity(&resolve_theme(&config, &[evening_scheme("#2a2b3c")]));
+        let deleted = theme_identity(&resolve_theme(&config, &[]));
+        assert_ne!(worn, edited, "an in-place scheme edit must re-theme");
+        assert_ne!(worn, deleted, "a deleted scheme's fallback must re-theme");
     }
 
     // The gc-2 re-entrancy's guard (the Ctrl+Shift+I walk's panic:
@@ -7337,7 +7497,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -7434,7 +7599,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -7521,7 +7691,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
@@ -7693,7 +7868,12 @@ mod tests {
                     config.clone(),
                     signals_tx,
                     signals_rx,
-                    ("cosmic-dark".to_string(), true),
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
                     None,
                     config_rx,
                     modal_focus,
