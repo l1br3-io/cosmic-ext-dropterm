@@ -1694,7 +1694,7 @@ fn tray_verb(action: crate::tray::TrayAction) -> Option<cli::Action> {
     match action {
         crate::tray::TrayAction::Toggle => Some(cli::Action::Toggle),
         crate::tray::TrayAction::Quit => Some(cli::Action::Quit),
-        crate::tray::TrayAction::Help => None,
+        crate::tray::TrayAction::About => None,
     }
 }
 
@@ -7073,7 +7073,7 @@ mod tests {
             tray_verb(crate::tray::TrayAction::Quit),
             Some(cli::Action::Quit)
         );
-        assert_eq!(tray_verb(crate::tray::TrayAction::Help), None);
+        assert_eq!(tray_verb(crate::tray::TrayAction::About), None);
     }
 
     #[gpui::test]
@@ -7092,13 +7092,13 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_tray_help_routes_the_about_window_open(cx: &mut gpui::TestAppContext) {
-        // The Help wiring (tray Task T4): the menu's third item
+    fn a_tray_about_routes_the_about_window_open(cx: &mut gpui::TestAppContext) {
+        // The About wiring (tray Task T4): the menu's third item
         // reaches the pump as a window action — App-level work like
         // every open (the `apply_action` region's rule), never a verb
         // on the funnel.
         let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
-        tray.send(crate::tray::TrayAction::Help)
+        tray.send(crate::tray::TrayAction::About)
             .expect("the tray activation queues");
         let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
         assert!(
@@ -7106,7 +7106,7 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| matches!(action, Action::OpenAbout)),
-            "the tray's Help must arrive as the About window action"
+            "the tray's About must arrive as the About window action"
         );
     }
 

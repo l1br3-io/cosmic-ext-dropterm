@@ -29,7 +29,7 @@ pub(crate) enum TrayAction {
     /// the menu item both land here).
     Toggle,
     /// Open the About window (plain toplevel, never a layer surface).
-    Help,
+    About,
     /// The clean quit: session persisted, then the event loop ends.
     Quit,
 }
@@ -40,7 +40,7 @@ impl TrayAction {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Toggle => "Toggle",
-            Self::Help => "Help",
+            Self::About => "About",
             Self::Quit => "Quit",
         }
     }
@@ -232,9 +232,8 @@ impl TrayBackend for Sni {
 }
 
 /// The Linux spawn site (tray Task T3): builds the `DropTerm` menu —
-/// toggle and quit only, Help joining with its About window in T4 (no
-/// dead menu item) — presents it through the SNI backend beside the
-/// control bus's spawn, and logs the registration evidence (the
+/// toggle, about, quit — presents it through the SNI backend beside
+/// the control bus's spawn, and logs the registration evidence (the
 /// no-host degrade line is the backend's own, printed where the
 /// registration error's detail lives).
 #[cfg(target_os = "linux")]
@@ -251,7 +250,7 @@ pub(crate) fn spawn_linux(sink: Sender<TrayAction>) -> TrayPresence {
     let menu = TrayMenu::new(
         title,
         dropterm::core::APP_ID,
-        &[TrayAction::Toggle, TrayAction::Help, TrayAction::Quit],
+        &[TrayAction::Toggle, TrayAction::About, TrayAction::Quit],
     );
     let presence = Sni.present(menu, sink);
     if matches!(presence, TrayPresence::Registered) {
@@ -315,9 +314,15 @@ impl AboutView {
 impl gpui::Render for AboutView {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let url = self.support_url;
+        // The root carries the theme's foreground: a row without its
+        // own text color inherits GPUI's default black otherwise — the
+        // heading and the version row read black on the dark theme's
+        // background (the owner's report). The muted rows and the link
+        // keep their own adaptive colors below.
         v_flex()
             .size_full()
             .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .p_4()
             .gap_2()
             .child(gpui::div().text_xl().child(self.heading))
@@ -392,20 +397,20 @@ mod tests {
 
     #[test]
     fn the_menu_builds_the_toggle_help_quit_shape() {
-        // The intended menu (the spec's objective): toggle first, help
+        // The intended menu (the spec's objective): toggle first, about
         // between, quit last — the display order the About window's
-        // arrival (T4) completes; T3 ships the same model minus help
-        // (no dead menu item).
+        // arrival (T4) completes; T3 shipped the same model minus the
+        // window (no dead menu item).
         let menu = TrayMenu::new(
             "DropTerm",
             "io.github.l1br3_io.dropterm",
-            &[TrayAction::Toggle, TrayAction::Help, TrayAction::Quit],
+            &[TrayAction::Toggle, TrayAction::About, TrayAction::Quit],
         );
         assert_eq!(menu.title, "DropTerm");
         assert_eq!(menu.icon, "io.github.l1br3_io.dropterm");
         assert_eq!(
             menu.items,
-            vec![TrayAction::Toggle, TrayAction::Help, TrayAction::Quit]
+            vec![TrayAction::Toggle, TrayAction::About, TrayAction::Quit]
         );
     }
 
@@ -420,7 +425,7 @@ mod tests {
         let menu = TrayMenu::new("DropTerm", "icon", &[TrayAction::Toggle]);
         assert_eq!(tray.present(menu.clone(), tx), TrayPresence::Registered);
         assert_eq!(tray.menu(), Some(menu));
-        for action in [TrayAction::Toggle, TrayAction::Help, TrayAction::Quit] {
+        for action in [TrayAction::Toggle, TrayAction::About, TrayAction::Quit] {
             tray.fire(action);
         }
         let drained: Vec<TrayAction> = [rx.try_recv(), rx.try_recv(), rx.try_recv()]
@@ -429,7 +434,7 @@ mod tests {
             .collect();
         assert_eq!(
             drained,
-            vec![TrayAction::Toggle, TrayAction::Help, TrayAction::Quit]
+            vec![TrayAction::Toggle, TrayAction::About, TrayAction::Quit]
         );
     }
 

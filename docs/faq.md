@@ -34,7 +34,7 @@ Those programs turn on mouse reporting, and the terminal hands every press to th
 By design, and no - the running terminal's window is never listed in the dock or the window switcher; it is summoned by its app-library icon (a cold click starts DropTerm and shows the dropdown, a warm click toggles it), the tray icon where the desktop hosts one, your shortcut, or the CLI, and the window stays out of both listings for its whole life. (Older versions had a dock-presence setting for this; a config file still carrying it loads fine, the now-unknown key is simply ignored.)
 
 **Is there a tray icon?**
-On desktops that host StatusNotifierItem - the COSMIC panel, KDE, XFCE, waybar - yes: left-click toggles the dropdown, and the menu carries Help (an About window with version, description, and the support link) and Quit. Vanilla GNOME without the AppIndicator extension hosts no SNI, so there is simply no icon - the app-library, shortcut, and CLI summons are unaffected.
+On desktops that host StatusNotifierItem - the COSMIC panel, KDE, XFCE, waybar - yes: left-click toggles the dropdown, and the menu carries About (version, description, and the support link in an About window) and Quit. Vanilla GNOME without the AppIndicator extension hosts no SNI, so there is simply no icon - the app-library, shortcut, and CLI summons are unaffected.
 
 **Why does the window flash or recreate when it hides?**
 Hiding destroys the layer surface and the next show builds a fresh one - deliberately, to sidestep a cosmic-comp bug other layer-shell clients hit when a surface is updated after its role is destroyed. You are seeing the designed path, not a glitch ([Known issues](known-issues.md)).
