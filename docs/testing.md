@@ -137,6 +137,15 @@ Against an installed release build on a desktop with an SNI host; the degrade ro
 ### Appearance and themes
 
 - [ ] Twelve schemes listed/applied/persisted, fidelity against canonical palettes, chrome coherence, per-mode pairing and system flips
+
+### User theme files
+
+Against a running instance, one build with the watcher live (`~/.config/io.github.l1br3_io.dropterm/themes/` on an installed release; the dev identity uses its own config dir):
+
+- [ ] F-w1 - drop a valid `.ron` scheme file (fg + bg) into `themes/` while the app runs; reopen the settings drawer - the scheme lists behind the twelve built-ins in both per-mode pickers and the profile form's scheme select, with its swatch strip; pick it - it applies live, persists under `color_scheme_dark`/`_light`, and survives a restart
+- [ ] F-w2 - the picked user scheme's preview strip matches what the terminal actually renders (background, foreground, any ANSI slots the file set; unset slots derive)
+- [ ] F-w3 - drop an invalid file (bad RON, a color without `#`, or missing fg/bg) beside a valid one: exactly one `dropterm:` skip line per bad file, the valid scheme still listed, nothing else disturbed
+- [ ] F-w4 - delete the file of a scheme that is currently worn: the next apply pass (a config echo, a mode flip, or a restart) falls the terminal back to the GitHub pair for the mode while the config file still stores the scheme's name
 - [ ] Application theme: pin wins, frosted glass never restyles the chrome, a theme flip repaints whole with no stale wash, bogus names fall back silently
 
 ### Close confirmation

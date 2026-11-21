@@ -368,6 +368,25 @@ mod tests {
     /// The minimal valid scheme text — fg + bg, nothing else.
     const MINIMAL: &str = r##"(foreground: "#e6edf3", background: "#0d1117")"##;
 
+    #[test]
+    fn the_documented_example_file_loads() {
+        // docs/theming.md's user-files example, extracted and parsed
+        // through the real loader (the file-pin style the desktop
+        // entry uses): the doc's taught shape must load verbatim, or
+        // the doc teaches a broken file.
+        let doc = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/theming.md"))
+            .expect("theming.md is in-tree");
+        let start = doc.find("```ron\n").expect("the doc carries a ron block") + "```ron\n".len();
+        let end = doc[start..]
+            .find("\n```")
+            .map(|offset| start + offset)
+            .expect("the ron block closes");
+        let scheme = parse_scheme(&doc[start..end]).expect("the documented example loads");
+        assert_eq!(scheme.foreground, Some(rgb(0xE6_EDF3)));
+        assert_eq!(scheme.background, Some(rgb(0x1A_1B26)));
+        assert_eq!(scheme.normal.red, Some(rgb(0xF7_768E)));
+    }
+
     // --- the file minimum ---
 
     #[test]

@@ -21,4 +21,49 @@ Twelve built-in schemes ship, all community standards that render the same on an
 - Every scheme owns its background: picking Dracula renders Dracula's `#282a36` behind the cells, and the chrome - tab bar, grab bar - follows the scheme background, so cells and chrome cannot disagree, and nothing tracks the host system's palette. `opacity` multiplies on top of the background.
 - A scheme's name is the config format: a pick persists the display name under `color_scheme_dark`/`color_scheme_light`. A name not in the registry (stale, hand-typed, or renamed upstream) silently falls back to the GitHub pair for that mode - no error, no migration - and the picker marks no row until you pick again (the closed control still shows the stored name, honest about what the file says).
 - Dim variants are derived, not shipped: each normal color's channels are scaled by 0.66 (Alacritty's dim rule), one uniform rule for every scheme. Bright variants come from the palettes themselves.
-- User-defined scheme files are not supported; the built-in registry is the whole feature (see the ROADMAP's "Later" section).
+
+## User-defined scheme files
+
+Your own schemes load from the config dir's `themes/` subdirectory (`~/.config/io.github.l1br3_io.dropterm/themes/` on an installed build; the dev identity uses its own dir): one RON file per scheme, named by its file stem - `Evening.ron` is the scheme "Evening". Both per-mode pickers and the profile form's scheme select list user schemes behind the twelve built-ins, preview strips and all; a pick persists and applies exactly like a built-in's, per profile too.
+
+The format is the same field set the built-ins carry, every slot optional except the two anchors - `foreground` and `background` are required, everything left out derives (dims by Alacritty's rule, unset ANSI slots by the conversion's own fallbacks). Colors are `#RRGGBB` string literals:
+
+```ron
+(
+    foreground: "#e6edf3",
+    background: "#1a1b26",
+    cursor: "#c0caf5",            // optional, like every slot below
+    normal: (
+        black: "#15161e",
+        red: "#f7768e",
+        green: "#9ece6a",
+        yellow: "#e0af68",
+        blue: "#7aa2f7",
+        magenta: "#bb9af7",
+        cyan: "#7dcfff",
+        white: "#a9b1d6",
+    ),
+    bright: (
+        black: "#414868",
+        red: "#ff7a93",
+        green: "#b9f27c",
+        yellow: "#ff9e64",
+        blue: "#7da6ff",
+        magenta: "#bb9af7",
+        cyan: "#0db9d7",
+        white: "#c0caf5",
+    ),
+    // left-out slots derive: `bright_foreground`, `dim_foreground`,
+    // and a `dim: ()` table all mean "derive it" (`None` also parses,
+    // same meaning).
+)
+```
+
+The minimum viable file is just `foreground` and `background`; a snippet of the shape above with only the anchors and the `normal` table is already a complete scheme.
+
+The rules around the dir:
+
+- **Merged, never overriding**: user schemes list behind the built-ins; a file naming a built-in ("Nord.ron") is skipped with one log line - the built-in wins. Two files resolving to one name keep the first in file-name sorted order, also one line.
+- **Skip-and-log, never block**: a file that is not valid RON, holds a color that is not `#RRGGBB`, or misses an anchor is skipped with one `dropterm:` line naming the reason; every valid sibling still loads. A missing or empty `themes/` dir is the silent first run - zero schemes, no output.
+- **Live**: a dropped, edited, or deleted file lands on the config-echo pass (the dir is watched); an edited worn scheme re-themes, a deleted worn scheme falls back to the GitHub pair for the mode while the config keeps storing its name - exactly the unknown-built-in-name rule above. The settings drawer's pickers read the list when the drawer opens, so a change made while it is open appears on reopen.
+- **Yours, untouched**: DropTerm never writes, moves, renames, or quarantines anything under `themes/` - the files are your authored config, not DropTerm's store.
