@@ -816,7 +816,14 @@ impl SettingsDrawer {
             .min_w_0()
             .child(
                 Accordion::new(("settings-section", index))
-                    .bordered(false)
+                    // The bordered treatment is the grouping
+                    // indicator itself: one outlined, rounded card
+                    // whose header — semibold title left, rotating
+                    // disclosure chevron right (the Kit's own, now
+                    // painted through the boot-registered icon
+                    // bundle) — reads as a heading above the rows it
+                    // folds.
+                    .bordered(true)
                     .on_toggle_click(move |open_indices, _, cx| {
                         target.update(cx, |shell, _| {
                             shell
@@ -826,9 +833,12 @@ impl SettingsDrawer {
                         });
                     })
                     .item(|item| {
+                        // The scheme-derived themes set no
+                        // accordion.background, so the Kit's default
+                        // would paint white/near-black over the
+                        // drawer — the popover surface is the card.
                         item.open(open)
                             .bg(cx.theme().popover)
-                            .rounded_lg()
                             .hover(|hover| hover.rounded_sm().bg(cx.theme().secondary))
                             .title_style(gpui::StyleRefinement::default().px_4().py_3())
                             .content_style(gpui::StyleRefinement::default().px_4().pb_3())

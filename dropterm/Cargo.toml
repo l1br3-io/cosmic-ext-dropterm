@@ -46,6 +46,15 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features =
 # through the root [patch.crates-io] (the Root auto-border, zeroed).
 gpui-component = { version = "=0.9.1", default-features = false }
 
+# The Kit's embedded icons (the asset source registered at boot): the
+# components draw their affordances (the accordion's disclosure
+# chevron, the menus' checkmarks) through path-based icons, which only
+# paint when an AssetSource serves `icons/*.svg` — without it they
+# silently render nothing. gpui-kit-assets is the sanctioned carrier:
+# a different crate from the forbidden aggregates (main.rs's graph
+# pin), riding the same gpui-pre =0.3.12 pin, default features off.
+gpui-kit-assets = { version = "=0.9.1", default-features = false }
+
 # The layer-shell startup probe (gpui-scaffold Task 3): one registry
 # roundtrip before any surface exists, on this binary's own
 # connection — the same direct-dependency ruling the libcosmic

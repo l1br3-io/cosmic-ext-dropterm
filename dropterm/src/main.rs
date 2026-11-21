@@ -196,6 +196,13 @@ fn main() {
     // swap or a hide runs; the first walk caught the swap's
     // destroy-before-create frame quitting the whole instance).
     gpui_platform::application()
+        // The Kit's icon bundle: every path-based icon the components
+        // draw (the settings accordion's chevron, menu checkmarks)
+        // resolves through the app's AssetSource, and without a
+        // source those paths paint nothing. gpui-kit-assets is the
+        // sanctioned carrier — the graph pin forbids only the
+        // gpui-kit / gpui-shell aggregates.
+        .with_assets(gpui_kit_assets::Assets)
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx: &mut gpui::App| match check {
             Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
