@@ -96,6 +96,16 @@ pub(crate) fn cell_at(x: f32, y: f32, cell_width: f32, cell_height: f32) -> (usi
     cell
 }
 
+/// A pointer event's window-space position onto the pane's own
+/// coordinates: the painted origin's subtraction. GPUI's mouse events
+/// carry window coordinates (the doc's own words; the status band's
+/// conversion is the precedent), and the pane sits below the strip
+/// and the bands — so the cell arithmetic must run on the local half
+/// only, or every anchor lands rows below where the pointer pointed.
+pub(crate) fn pane_local(position: (f32, f32), origin: (f32, f32)) -> (f32, f32) {
+    (position.0 - origin.0, position.1 - origin.1)
+}
+
 /// The selection side a press lands on: left of the cell's midpoint
 /// anchors before the character, right after it (the widget's rule).
 pub(crate) fn side_of(x: f32, cell_width: f32) -> alacritty_terminal::index::Side {
@@ -192,5 +202,20 @@ mod tests {
         assert_eq!(cell_at(-5., -5., 10., 20.), (0, 0), "clamped at the origin");
         assert_eq!(side_of(14.9, 10.), alacritty_terminal::index::Side::Left);
         assert_eq!(side_of(15.1, 10.), alacritty_terminal::index::Side::Right);
+    }
+
+    #[test]
+    fn the_pointer_converts_window_to_pane_space_before_the_cells() {
+        // A pane under a 32px strip: window y 41.6 is pane y ~9.6 (f32
+        // arithmetic). The raw window coordinate skips a strip's worth
+        // of rows — the conversion is what puts the cell where the
+        // pointer pointed.
+        let local = pane_local((14.9, 41.6), (0., 32.));
+        assert_eq!(cell_at(local.0, local.1, 10., 20.), (1, 0));
+        assert_eq!(
+            cell_at(14.9, 41.6, 10., 20.),
+            (1, 2),
+            "the unconverted window coordinate lands rows below the pointer"
+        );
     }
 }
