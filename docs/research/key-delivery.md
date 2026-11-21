@@ -8,14 +8,20 @@ freezes at closure).
 
 ## TL;DR
 
-**The compositor delivers Tab and the press dies client-side inside
-gpui-pre — branch B1.** A1's WAYLAND_DEBUG capture (owner-run,
-2026-11-21) shows ten well-formed Tab press/release pairs reaching
-DropTerm's focused layer surface while the app's unconditional
-`on_key` trace stays silent for every one of them (`c`/`d`/space
-trace and print). Task 3 names the exact death site in gpui-pre-linux
-before any arm is written, under the owner's carry-now policy
-(2026-11-21).
+**The compositor delivers Tab and the press dies client-side — branch
+B1 was right about the side, wrong about the crate.** A1's
+WAYLAND_DEBUG capture (owner-run, 2026-11-21) shows ten well-formed
+Tab press/release pairs reaching DropTerm's focused layer surface
+while the app's unconditional `on_key` trace stays silent for every
+one of them (`c`/`d`/space trace and print). Task 3's investigation
+(read 2026-11-21, runtime-proven the same day) names the eater: the
+Kit's Root registers a global-path `"tab"` focus-traversal binding
+(gpui-base `root.rs:44`), its handler never propagates, and a consumed
+binding returns before any key listener runs — so the pane never sees
+Tab. gpui-pre's backend is clean end to end. The fix is in-repo (a
+Terminal-context tab binding the pane answers), flipping the branch to
+B3's shape; the Checkpoint-1 fourth carry dissolves. Owner
+confirmation of the flip is requested before the arm is built.
 
 ## The symptom
 
@@ -155,3 +161,154 @@ suspect the backend's keystroke construction (generic dispatch was
 audited clean). Next: Checkpoint 1 — the owner reviews verdict and
 branch and, B1 standing, rules on carry shape (lean: git fork) and
 the fourth carry itself (ask-first).
+
+## Task 3 (B1 investigation): the site is named — and it is not in gpui-pre
+
+Investigated 2026-11-21, read-only over the pinned sources plus four
+runtime probes (scratch tests in the workspace, run under `just test`
+on both identity feature sets, reverted after — the evidence is this
+section). Verdict first: **gpui-pre-linux 0.3.12's keystroke path is
+clean end to end; the eater is the Kit Root's global-path tab
+focus-traversal binding in gpui-base 0.9.1, and the defect that makes
+it DropTerm's to fix is that the pane never claims Tab.** The branch
+flips to B3's shape (in-repo fix under TDD, no carry), recorded below
+with its evidence; owner confirmation requested before any arm is
+built (the flip dissolves the Checkpoint-1 fourth carry).
+
+### What was read and cleared, layer by layer
+
+- **Wire → keycode → keysym** (gpui-pre-linux
+  `src/linux/wayland/client.rs:2178-2185`): `keycode = wire evdev +
+  MIN_KEYCODE(8)` (`client.rs:119`) — cross-checked against the
+  archived log's own letter frames (46→`c`, 32→`d`, 57→space, each
+  followed one or two lines later by the app's matching trace), so
+  Tab's wire 15 → xkb 23 under the session's evdev/pc105/us keymap
+  (`localectl` read 2026-11-21).
+- **The only per-key gate** in the handler is
+  `Pressed if !keysym.is_modifier_key()` (`client.rs:2183`); Tab is
+  not a modifier keysym by source, not memory:
+  `xkeysym-0.2.1/src/lib.rs:168-176` (Shift_L..=Hyper_R,
+  ISO_Lock..=ISO_Level5_Lock, Mode_switch, Num_Lock — 0xff09 is in
+  none). The Pressed arm runs and calls
+  `focused_window.handle_input(KeyDown)`.
+- **Keystroke construction** (`src/linux/platform.rs:1461-1583`):
+  `Keysym::Tab => "tab"` (`:1523`); `key_char` is None for Tab
+  (`:1575`, control char) — the same shape as Enter, which works.
+- **The wayland window's `handle_input`** (`src/linux/wayland/window.rs:1584-1607`):
+  no Tab-shaped filter; `is_blocked()` (`:943`) needs a blocking
+  child and dies all input, refuted by the space that traced at log
+  line 5811 — after all ten Tabs. The compose path
+  (`client.rs:2186-2225`) clears `key_char` at most; it never skips
+  dispatch.
+- **gpui-pre's dispatch** (`src/window.rs:6293-6463`,
+  `src/key_dispatch.rs:483-519`, `src/keymap.rs:165-270`): a
+  keystroke dies before key listeners exactly when a binding matches
+  and is consumed — the pending/chord path was re-read and cannot fit
+  ten silent presses (each press after the first flushes its
+  predecessor through replay, `window.rs:6716-6752`).
+
+### The eater, named with its chain
+
+- **The binding:** `gpui-base-0.9.1/src/root.rs:44-45` —
+  `KeyBinding::new("tab", Tab, Some("Root"))` and
+  `"shift-tab" → TabPrev`, registered by `root::init` (`:42`), which
+  `gpui_base::init` calls (base `lib.rs:243-259`), which
+  `gpui_component::init` calls (`carried/gpui-component/src/lib.rs:138`),
+  which DropTerm's boot runs (`dropterm/src/app_shell.rs:5763`).
+- **Why it fires on every path:** the Root view's render stamps the
+  context on the wrapping div — `root.rs:255` `.key_context("Root")`
+  — and the drawer mounts exactly this Root:
+  `app_shell.rs:1818` (`KitRoot::new(...)`, where `KitRoot` is
+  `gpui_component::Root`, itself the `gpui_base::Root` re-export at
+  `carried/gpui-component/src/lib.rs:102`). A context predicate
+  matches at the depth it appears (`keymap.rs:274-280`), so a
+  root-wrapped div puts "Root" on every focused dispatch path in the
+  window.
+- **The swallow:** the handler `on_action_tab` (`root.rs:222-224`)
+  runs `advance_focus` (focus traversal) and never calls
+  `cx.propagate()`. A consumed matched binding returns before key
+  listeners run: `gpui-pre-0.3.12/src/window.rs:6438-6451` returns on
+  `!cx.propagate_event`, so `finish_dispatch_key_event` (`:6454`)
+  and `dispatch_key_down_up_event` (`:6518`) never run — the pane's
+  `.on_key_down` (`dropterm/src/terminal/view.rs:1658`) never fires,
+  the unconditional trace at `view.rs:1074` stays silent, and
+  `input.rs:488`'s `tab → \x09` is never consulted.
+
+### Why Tab and only Tab
+
+- Letters, Enter, Space: no binding on the path matches them; they
+  fall through to key listeners (`window.rs:6454`).
+- Ctrl+C: the Root also binds `ctrl-c → Copy` on Linux
+  (`root.rs:48-49`), but `on_action_copy` (`:230-239`) propagates
+  when the selection is empty — the event survives to the pane. Tab's
+  handler always acts (advance focus) and never propagates. The
+  asymmetry is exact: Ctrl+C lives by the propagate-on-noop it
+  happens to have; Tab dies for lacking one.
+- The visible nothing: `advance_focus` → `Window::focus_next`
+  (`root.rs:222-223`); the drawer's terminal pane is effectively the
+  only tab stop, so focus cycles onto itself invisibly — ten presses,
+  ten silent no-ops.
+- The Ctrl-tap silence (A1's log) is by architecture, not a second
+  eater: a bare modifier tap synthesizes a keystroke that only drives
+  bindings, and `dispatch_key_down_up_event` receives the
+  `ModifiersChangedEvent`, which cannot downcast to a `KeyDownEvent`
+  (`window.rs:6303-6344`, `:6518`).
+- The suggest ghost visible in the log ("pane ghost now \"src/\"",
+  line 5381+) is downstream of `on_key` — it never saw Tab either;
+  the suggest menu's Tab-accept (`suggest.rs:64`) is equally dead
+  today and revives with the fix.
+
+### The runtime proof (four scratch probes, 2026-11-21, both feature sets)
+
+A focused element with `key_context("Terminal")` and an unconditional
+key listener, under four window shapes (probe code reverted after the
+run; the printed results are the evidence):
+
+| Probe | Window shape | Listener saw |
+|---|---|---|
+| bare | plain window, no init | `c, tab, enter, space` |
+| component-init | + `gpui_component::init` (bindings live, no Root mounted) | `c, tab, enter, space` |
+| **kit-root** | **mounted through the Kit Root — the drawer's shape (`app_shell.rs:1818`)** | **`c, enter, space` — tab gone** |
+| pane-binding | Kit Root + a Terminal-context `"tab" → ProbeTab` binding on the focused element | the action fires; Tab reclaimed |
+
+The kit-root row reproduces the symptom exactly — under the Root the
+drawer mounts, bare Tab vanishes while letters, Enter, and Space pass;
+the pane-binding row proves the reclamation mechanism (a deeper
+context outranks the Root binding, `keymap.rs:154-159`'s depth
+precedence). The bare and component-init rows re-confirm the audit's
+dispatch conclusion empirically: nothing else eats Tab.
+
+### The B3 flip, recorded with its evidence
+
+The chunk's Task 3 clause: if the evidence contradicts the audit's
+site, record the flip. The audit cleared "gpui dispatch" against
+DropTerm's own registrations — three Escape chords, verified again
+today (`app_shell.rs:5767-5770`) — and missed that the Root's
+traversal binding rides every path. The named layer (gpui-base's
+Root) is not gpui-pre, and the minimal fix needs no carry at all:
+
+- **The defect, precisely:** DropTerm mounts a text surface (the
+  terminal pane) under the Kit Root without claiming Tab — no key
+  context on the pane's frame, no tab binding anywhere in
+  `terminal/view.rs` (grep-verified). Zed's own editor survives the
+  same Root design precisely because it binds deeper.
+- **The minimal arm (one behavior changed):** give the pane's frame a
+  key context and bind `"tab"`/`"shift-tab"` in it to an action whose
+  handler forwards the keystroke into the same `on_key` path letters
+  take. Every existing rule then applies unchanged — the suggest
+  menu's Accept-first routing (`suggest.rs:48-70`), the chord table
+  (`input.rs:258-260`), app-cursor modes — and every other surface
+  (settings drawer inputs, dialogs) keeps the Root's traversal. The
+  pane-binding probe pins the mechanism.
+- **Carry consequence:** no gpui-pre fork, no `[patch.crates-io]`
+  fourth entry. The Checkpoint-1 ruling (git-fork of gpui-pre 0.3.12)
+  is dissolved by the evidence; the fix lands in-repo under TDD —
+  Tasks 10-12's shape (failing pin test at the pane, minimal fix,
+  owner walk).
+- **Owner confirmation requested** before the arm is built: the
+  carry was ruled ask-first, so its dissolution is too. The upstream
+  ask survives in honest shape: not a defect demand but a design note
+  for gpui-base — a Root-level tab-traversal binding makes bare Tab
+  unreachable to any focused content that does not install a deeper
+  binding; text surfaces must reclaim it, and nothing in the API or
+  docs says so.
