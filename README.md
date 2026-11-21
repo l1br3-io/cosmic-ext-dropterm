@@ -91,6 +91,7 @@ The details live in the `docs/` directory:
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
 - [Theming](docs/theming.md) - the Application theme pin, the 12 built-in color schemes, and your own scheme files under `~/.config/io.github.l1br3_io.dropterm/themes/`
+- [Plugins](docs/plugins.md) - your own Lua 5.4 scripts under `~/.config/io.github.l1br3_io.dropterm/plugins/`: the `dropterm.on`/`emit` event bus, hot reload, timeouts, and the full-trust model stated plainly
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word

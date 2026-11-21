@@ -146,6 +146,14 @@ Against a running instance, one build with the watcher live (`~/.config/io.githu
 - [ ] F-w2 - the picked user scheme's preview strip matches what the terminal actually renders (background, foreground, any ANSI slots the file set; unset slots derive)
 - [ ] F-w3 - drop an invalid file (bad RON, a color without `#`, or missing fg/bg) beside a valid one: exactly one `dropterm:` skip line per bad file, the valid scheme still listed, nothing else disturbed
 - [ ] F-w4 - delete the file of a scheme that is currently worn: the next apply pass (a config echo, a mode flip, or a restart) falls the terminal back to the GitHub pair for the mode while the config file still stores the scheme's name
+
+### Plugins
+
+Against an installed release build, the plugins dir being the release config dir's `plugins/` (created before launch - a dir appearing mid-run is seen at the next launch):
+
+- [ ] L-w1 - the wake and the lazy pin: with `plugins/hello.lua` present (`local d = require('dropterm'); print('hello from lua')`), a launch boots with no `dropterm: plugins:` line and boot time unchanged from a no-plugins run; touch the file (or drop another into `plugins/`) - the log shows `host thread up`, `loaded hello.lua`, and the script's print, each exactly once, and the terminal stays interactive
+- [ ] L-w2 - the runaway: replace the script with a top-level `while true do end`, touch to wake - about a second later exactly one `ran past the hard cap` line, the terminal interactive throughout (the soft-bound stale line needs a real dispatch, which arrives with the event-hooks module; headless tests pin it); restore the script to the good one and touch again - it loads and prints cleanly
+- [ ] L-w3 - the deleted dir: remove `plugins/` while the app runs - nothing: no crash, no log spam, the host idles, summoning unaffected; a relaunch with the dir back behaves normally
 - [ ] Application theme: pin wins, frosted glass never restyles the chrome, a theme flip repaints whole with no stale wash, bogus names fall back silently
 
 ### Close confirmation
