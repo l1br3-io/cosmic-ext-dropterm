@@ -24,6 +24,8 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 
 Every exposed control appears exactly once across the tabs - none lost, none duplicated.
 
+Each section card folds: press its header (title or chevron) to collapse it to just that header row, press again to unfold. Cards fold independently, and a fold lasts the app session - across tab switches and drawer closes - while every app start opens with every card expanded. Folding hides nothing permanently: it is display state only, never written to the config.
+
 Switching tabs is a page turn only: the drawer never closes, nothing writes, and an in-flight draft survives (start typing in a field, flip tabs, flip back - the text is still there). Close, Escape, and a repeat `Ctrl+Shift+I` close the whole drawer from any tab; an explicit close resets it to Appearance, while a focus-loss hide preserves the open tab and its drafts.
 
 Commits are per control kind: toggles, dropdowns, and the pickers write on change, sliders write on release (the value previews live while dragging), text inputs write on Enter. The profile form is the one buffered island - its writes collect behind an explicit Save.
