@@ -36,9 +36,8 @@ route for evidence that must not see the dev machine.
 
 ### Shell presence and clipboard
 
-- [ ] Hidden mode: the switcher and dock list no DropTerm entry ever, and the shortcut and CLI each summon it
-- [ ] Dock mode: exactly one named, iconed DropTerm entry, and selecting it disturbs neither surface nor clipboard
-- [ ] Copies survive a hide and a mid-session mode flip; the anchor rebuilds after an output vanishes (one warn, copies keep landing)
+- [ ] Never listed: the switcher and dock list no DropTerm entry ever, and the shortcut and CLI each summon it
+- [ ] Copies survive a hide: copy in DropTerm, hide, focus another app, paste - the selection lands
 - [ ] The paste cap refuses over-sized payloads with the band's verdict: a text offer or primary selection over 32 MiB refuses (the refusal chip narrates, nothing pastes), an OSC 52 store over it drops logged, an over-cap load reply feeds nothing — images were already capped
 
 ### The terminal surface
@@ -142,10 +141,8 @@ After building, check:
 - [ ] The bound shortcut hides and re-shows it
 - [ ] Caret on show: every toggle-show paints the block cursor at the prompt in the first shown frame - before any keystroke; the same after a focus-loss hide (click another app with `hide_on_focus_loss` on, then re-toggle) and in a bash tab (no focus reporting - nothing else repaints the caret), and switching tabs paints the newly active tab's caret the same way
 - [ ] A background job (`sleep 100 &`, shell history) survives a hide/show cycle
-- [ ] Shell presence - hidden (the default): while DropTerm runs, shown or hidden, the window switcher and the dock list no DropTerm entry at all (the anchor is a layer surface no toplevel listing can see); the shortcut and the CLI each summon it, and it never takes focus or input by itself
-- [ ] Shell presence - dock mode: with `show_in_dock: true` (file or the Advanced toggle), the switcher and dock list one DropTerm window carrying the DropTerm name and icon, never an "unknown" label, and selecting it neither disturbs the running surface nor drops the clipboard binding
-- [ ] Shell presence - the clipboard across both modes: copy in DropTerm, hide, focus another app, paste - the selection survives in hidden mode and in dock mode alike (the anchor's whole duty), and a mid-session flip (file or toggle, no restart) swaps the entry at the flip itself, costs exactly the selection on the clipboard at flip time, and copies made after the flip persist across hide/show again
-- [ ] Shell presence - the anchor outlives its output: in hidden mode, with DropTerm hidden, make the output vanish and return (monitor sleep that drops the link, unplug/replug, or disable/enable it with `cosmic-randr` on a multi-monitor setup); the log shows one `the compositor closed the clipboard anchor` warn; show DropTerm, copy, hide, paste into another app - the copy lands, and keeps landing across further hide/show cycles (with `dropterm` hidden, `/proc/<pid>/task/*/comm` still lists a `smithay-clipboa` thread)
+- [ ] Shell presence - never listed: while DropTerm runs, shown or hidden, the window switcher and the dock list no DropTerm entry at all; the shortcut and the CLI each summon it, and it never takes focus or input by itself
+- [ ] Shell presence - the clipboard across hides: copy in DropTerm, hide, focus another app, paste - the selection survives, and copies made after any number of hide/show cycles keep landing (a config file still carrying the old dock-presence key loads and changes none of this)
 - [ ] Rapid repeated toggles (double key-press) don't crash or duplicate the surface
 - [ ] It appears correctly above a fullscreen window
 - [ ] `Ctrl+Shift+C` / `Ctrl+Shift+V` copy/paste, and middle-click / `Shift+Insert` paste the primary selection

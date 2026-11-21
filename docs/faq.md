@@ -25,13 +25,13 @@ That is `hide_on_focus_loss`, on by default because a hotkey-driven drop-down li
 Each in its own way. Hiding preserves the *live* session - only the surface is destroyed, the PTY keeps running, so a `sleep` or an editor outlives every toggle. A reboot cannot preserve live processes; what restores is the layout: tabs with their directories, profiles, and renames save on change and come back on launch (`session_persistence_enabled` is the switch, on by default) ([sessions](sessions.md)).
 
 **Does copied text survive hiding the terminal?**
-Yes - DropTerm keeps an invisible anchor window alive for exactly this reason, so the clipboard binding (and your last copy) outlives every hide/show cycle. And the copy itself no longer cares about focus: copying while the terminal is visible but unfocused (or even hidden) lands all the same, where it used to vanish silently until a restart. The mechanics are in [Known issues](known-issues.md).
+Yes - the copy does not ride the terminal's surface at all: the pane's own copies ride GPUI's clipboard while it holds the keyboard, and every focus-free write (an OSC 52 store from a background tab, the primary selection) rides the data-control protocol, so your last copy outlives every hide/show cycle. And the copy itself no longer cares about focus: copying while the terminal is visible but unfocused (or even hidden) lands all the same, where it used to vanish silently until a restart. The mechanics are in [Known issues](known-issues.md).
 
 **Why can't I select text while vim (or tmux, htop) is running?**
 Those programs turn on mouse reporting, and the terminal hands every press to the program - that is the mode working as asked. Hold **Shift** to take the pointer back: Shift+drag selects, Shift+right-click opens the context menu, and Copy (`Ctrl+Shift+C`) copies that selection like any other. The same escape hatch alacritty, kitty, and gnome-terminal offer; the scroll wheel stays the program's even with Shift held.
 
 **Why doesn't DropTerm appear in the dock or Alt-Tab? Can I get it back?**
-That is the default: the app hides from both, and you summon it with your shortcut or the CLI. If you would rather have a DropTerm entry to click, write `show_in_dock: true` - the trade is that the entry also joins Alt-Tab, because the dock icon and the switcher window are the same mapped window underneath ([configuration](configuration.md#layer-focus-and-panels)).
+By design, and no - a drop-down terminal is never listed in the dock or the window switcher; it is summoned by your shortcut or the CLI and stays out of both listings for its whole life. (Older versions had a dock-presence setting for this; a config file still carrying it loads fine, the now-unknown key is simply ignored.)
 
 **Why does the window flash or recreate when it hides?**
 Hiding destroys the layer surface and the next show builds a fresh one - deliberately, to sidestep a cosmic-comp bug other layer-shell clients hit when a surface is updated after its role is destroyed. You are seeing the designed path, not a glitch ([Known issues](known-issues.md)).
