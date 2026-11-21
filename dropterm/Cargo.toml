@@ -145,10 +145,16 @@ jiff = "0.2"
 # already carries.
 serde_json = "1"
 
-# The Linux-only direct deps (macos-build mb-1): both ride
-# wayland-sys, whose build script pkg-configs libwayland-client — a
-# library no macOS host carries. They resolve on Linux targets only;
-# every use site carries a paired non-Linux arm (mb-2's gates).
+# The Linux-only direct deps (macos-build mb-1): the wayland-sys
+# riders resolve on Linux targets only. The gate's reason is honest
+# scope, not a build wall — both crates compile on macOS as-is
+# (wl-clipboard-rs's default features ride wayland-backend/dlopen and
+# wayland-sys's pkg-config probe only fires without dlopen), so the
+# table declares the protocol boundary these deps live behind, keeps
+# them out of the mac graph, and trips the build if a future feature
+# flip ever pulls a system-lib path in. Every use site carries a
+# paired non-Linux arm (mb-2's gates). Rationale correction per the
+# approach research (docs/research/macos-build-approach.md).
 [target.'cfg(target_os = "linux")'.dependencies]
 # The layer-shell startup probe (gpui-scaffold Task 3): one registry
 # roundtrip before any surface exists, on this binary's own

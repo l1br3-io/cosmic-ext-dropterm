@@ -320,7 +320,7 @@ deps:
     # (mb-1's audit: every direct dep compiled with nothing from
     # Homebrew). Verified, never installed: the CLT license and the
     # 800 MB Metal component download belong to the human. The floor
-    # is 1.98 because gpui-pre-apple uses Option::map_or_default
+    # is 1.98 because gpui-pre-macos uses Option::map_or_default
     # (rust#138099), stable only since 1.98.
     if [ "$(uname -s)" = "Darwin" ]; then
         if ! command -v xcodebuild >/dev/null 2>&1; then
