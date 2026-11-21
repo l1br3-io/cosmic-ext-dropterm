@@ -24,9 +24,28 @@ pub(crate) enum TrayAction {
     /// the menu item both land here).
     Toggle,
     /// Open the About window (plain toplevel, never a layer surface).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructed from the menu again once T4's About window lands"
+        )
+    )]
     Help,
     /// The clean quit: session persisted, then the event loop ends.
     Quit,
+}
+
+impl TrayAction {
+    /// The action's menu-item label, derived from the action so no
+    /// label can drift from what activating it does.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Toggle => "Toggle",
+            Self::Help => "Help",
+            Self::Quit => "Quit",
+        }
+    }
 }
 
 /// The menu a backend presents: the item's title, its themed icon
@@ -134,6 +153,113 @@ impl RecordingTray {
             let _ = sink.send(action);
         }
     }
+}
+
+/// The ksni-side delegate (Linux, tray Task T3): renders the shared
+/// menu model as a `DBusMenu` and hands every activation to the sink —
+/// no tray logic lives here, the model and the verbs are the tray
+/// port's. The left click is the SNI `Activate` signal, the same
+/// summon a `dropterm toggle` is.
+#[cfg(target_os = "linux")]
+struct KsniTray {
+    menu: TrayMenu,
+    sink: Sender<TrayAction>,
+}
+
+#[cfg(target_os = "linux")]
+impl ksni::Tray for KsniTray {
+    fn id(&self) -> String {
+        dropterm::core::APP_ID.to_string()
+    }
+
+    fn title(&self) -> String {
+        self.menu.title.clone()
+    }
+
+    fn icon_name(&self) -> String {
+        self.menu.icon.clone()
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.sink.send(TrayAction::Toggle);
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        self.menu
+            .items
+            .iter()
+            .map(|&action| {
+                ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                    label: action.label().to_string(),
+                    activate: Box::new(move |tray: &mut Self| {
+                        let _ = tray.sink.send(action);
+                    }),
+                    ..ksni::menu::StandardItem::default()
+                })
+            })
+            .collect()
+    }
+}
+
+/// The SNI backend selector (Linux): presenting hands the menu to
+/// ksni's blocking `TrayService`, which owns its own thread and D-Bus
+/// connection for the process lifetime (the `dbus.rs` sidecar
+/// pattern, no coupling with the control bus's zbus connection). The
+/// returned handle is dropped on purpose — the service stays
+/// registered until the process dies (no shutdown surface in v1).
+#[cfg(target_os = "linux")]
+struct Sni;
+
+#[cfg(target_os = "linux")]
+impl TrayBackend for Sni {
+    fn present(&self, menu: TrayMenu, sink: Sender<TrayAction>) -> TrayPresence {
+        use ksni::blocking::TrayMethods;
+
+        // ksni 0.3's spawn registers synchronously before its service
+        // thread starts, so the no-host degrade surfaces right here:
+        // one line with the registration error's own detail, no
+        // retry, nothing else — the outcome rides back as data.
+        let tray = KsniTray { menu, sink };
+        match tray.spawn() {
+            Ok(_detached_for_the_process_lifetime) => TrayPresence::Registered,
+            Err(err) => {
+                eprintln!(
+                    "dropterm: no tray host (registration failed: {err}); \
+                     running without a tray icon"
+                );
+                TrayPresence::NoHost
+            }
+        }
+    }
+}
+
+/// The Linux spawn site (tray Task T3): builds the `DropTerm` menu —
+/// toggle and quit only, Help joining with its About window in T4 (no
+/// dead menu item) — presents it through the SNI backend beside the
+/// control bus's spawn, and logs the registration evidence (the
+/// no-host degrade line is the backend's own, printed where the
+/// registration error's detail lives).
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_linux(sink: Sender<TrayAction>) -> TrayPresence {
+    // The dev twin: the "(Dev)" title suffix (and the `.Dev` app id
+    // the icon name carries) keeps a dev instance and a release
+    // instance distinguishable in one tray; ksni's per-PID item
+    // bus-name convention keeps the registrations distinct.
+    let title = if cfg!(feature = "dev-identity") {
+        "DropTerm (Dev)"
+    } else {
+        "DropTerm"
+    };
+    let menu = TrayMenu::new(
+        title,
+        dropterm::core::APP_ID,
+        &[TrayAction::Toggle, TrayAction::Quit],
+    );
+    let presence = Sni.present(menu, sink);
+    if matches!(presence, TrayPresence::Registered) {
+        println!("dropterm: tray registered ({title})");
+    }
+    presence
 }
 
 #[cfg(test)]

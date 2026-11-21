@@ -50,17 +50,6 @@ mod terminal_walk;
     reason = "carried verbatim from the spike; only the test fixture stays unused"
 )]
 mod theme_gen;
-// The tray port (tray Task T1): the model lands before its consumer —
-// the spawn site is T3's, behind Checkpoint T-A — so outside the
-// tests nothing reaches the module yet. The allow comes off with
-// T3's wiring.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the tray spawn site lands in Task T3, behind Checkpoint T-A"
-    )
-)]
 mod tray;
 
 use std::sync::Arc;
@@ -203,6 +192,19 @@ fn main() {
     }
 
     let served = dbus::spawn_service();
+    // The tray (tray Task T3), spawned beside the control bus: the
+    // channel is the only bridge — the backend hands activations to
+    // the render loop's verb funnel, the render loop never calls into
+    // the tray. Linux only (SNI is the Linux desktops' tray
+    // protocol); the receiver drains empty everywhere else.
+    #[cfg(target_os = "linux")]
+    let tray_actions = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tray::spawn_linux(tx);
+        rx
+    };
+    #[cfg(not(target_os = "linux"))]
+    let tray_actions = std::sync::mpsc::channel::<tray::TrayAction>().1;
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
     let check = check_mode_from_env(std::env::var("DROPTERM_CHECK").ok().as_deref());
@@ -236,7 +238,16 @@ fn main() {
         .run(move |cx: &mut gpui::App| match check {
             Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
             Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
-            None => app_shell::boot(cx, exit_after, &phase, &tabs, verbs, startup, surface_mode),
+            None => app_shell::boot(
+                cx,
+                exit_after,
+                &phase,
+                &tabs,
+                verbs,
+                startup,
+                surface_mode,
+                tray_actions,
+            ),
         });
     println!("dropterm: event loop exited cleanly");
 }

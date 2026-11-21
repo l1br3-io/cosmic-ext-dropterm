@@ -385,6 +385,11 @@ pub(crate) struct Shell {
     /// exit timer rides. The instant rides along for the same
     /// boot-relative logging every decision prints.
     quit_at: Option<Instant>,
+    /// The tray's activation channel (tray Task T3): drained beside
+    /// the verbs each pump, each activation mapping onto the verb
+    /// queue's own action through [`tray_verb`] — the render loop
+    /// never calls into the tray, the channel is the only bridge.
+    tray_actions: Receiver<crate::tray::TrayAction>,
     /// The status band's resolved segments (gpui-status Task 1):
     /// assembled on the tick from the active pane's engine and the
     /// config — the render path performs zero filesystem reads by
@@ -630,6 +635,7 @@ impl Shell {
         band_font: gpui::Font,
         settings_focus: gpui::FocusHandle,
         specs: SpecsWatch,
+        tray_actions: Receiver<crate::tray::TrayAction>,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         // The plain strategy's one inputs patch: no slide. A toplevel
@@ -718,6 +724,7 @@ impl Shell {
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
             quit_at: None,
+            tray_actions,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
@@ -820,6 +827,15 @@ impl Shell {
         }
         while let Ok(action) = self.verbs.try_recv() {
             self.dispatch(cx, action, &mut actions, &mut tab_verbs);
+        }
+        // The tray's activations (tray Task T3), drained beside the
+        // verbs: each maps onto the verb queue's own action, so a
+        // tray Toggle rides the debounced funnel and a tray Quit the
+        // bypassing peel — one dispatch path, two arrival wires.
+        while let Ok(action) = self.tray_actions.try_recv() {
+            if let Some(verb) = tray_verb(action) {
+                self.dispatch(cx, verb, &mut actions, &mut tab_verbs);
+            }
         }
         // The panes' handed-up signals: one drain (repeat Hide sends
         // coalesce — a second hide on a hidden surface decides
@@ -1629,6 +1645,19 @@ struct Pumped {
     /// point, where pane spawning's App context lives.
     tab_verbs: Vec<cli::Action>,
     quit: bool,
+}
+
+/// The tray drain's one mapping (tray Task T3): the tray port's
+/// neutral vocabulary onto the verb queue's own actions — Help maps
+/// to nothing yet, because the shipped menu carries no Help item
+/// until its About window lands (T4; no dead menu item, no phantom
+/// verb).
+fn tray_verb(action: crate::tray::TrayAction) -> Option<cli::Action> {
+    match action {
+        crate::tray::TrayAction::Toggle => Some(cli::Action::Toggle),
+        crate::tray::TrayAction::Quit => Some(cli::Action::Quit),
+        crate::tray::TrayAction::Help => None,
+    }
 }
 
 /// One mouse-handler step against the shell: mutate under the
@@ -5654,12 +5683,15 @@ fn boot_tab_fleet(
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
 /// the libcosmic app; the first show verb runs the two-surface show.
-// One line over the lint's bar (the settings focus handle joined
-// the constructor's inputs — the modal-focus pattern); the pass to
-// re-bucket boot's inputs is its own refactor, not this fix's.
+// One line over the lint's bar and one argument over clippy's (the
+// settings focus handle joined the constructor's inputs — the
+// modal-focus pattern — and the tray receiver joined with T3); the
+// pass to re-bucket boot's inputs is its own refactor, not this
+// fix's.
 #[expect(
     clippy::too_many_lines,
-    reason = "one param over; re-bucketing is its own refactor"
+    clippy::too_many_arguments,
+    reason = "one line and one param over; re-bucketing is its own refactor"
 )]
 pub(crate) fn boot(
     cx: &mut App,
@@ -5669,6 +5701,7 @@ pub(crate) fn boot(
     verbs: Receiver<cli::Action>,
     startup: cli::Action,
     surface_mode: Verdict,
+    tray_actions: Receiver<crate::tray::TrayAction>,
 ) {
     let boot = Instant::now();
     let config_dir = dropterm::core::config::store::store_dir();
@@ -5795,6 +5828,7 @@ pub(crate) fn boot(
             band_font,
             cx.focus_handle(),
             specs,
+            tray_actions,
         )
     });
     // The plain strategy's retained output: display metadata stands
@@ -6027,6 +6061,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6143,6 +6180,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6315,6 +6355,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6722,21 +6765,24 @@ mod tests {
         }
     }
 
-    /// The quit-decision scaffold (tray Task T2): a shell over one
-    /// empty tab with its verb channel's sender in hand — the exact
-    /// wire a forwarded `quit` rides (`shell_with_standing_panel`'s
-    /// shape, minus its standing panel, plus the sender).
+    /// The quit-decision scaffold (tray Task T2, grown by T3): a shell
+    /// over one empty tab with its verb channel's and tray channel's
+    /// senders in hand — the exact wires a forwarded `quit` and a
+    /// tray activation ride (`shell_with_standing_panel`'s shape,
+    /// minus its standing panel, plus the senders).
     fn shell_with_verb_wire(
         cx: &mut gpui::TestAppContext,
         config: DropTermConfig,
     ) -> (
         Entity<Shell>,
         std::sync::mpsc::Sender<cli::Action>,
+        std::sync::mpsc::Sender<crate::tray::TrayAction>,
         &mut gpui::VisualTestContext,
     ) {
         cx.update(gpui_component::init);
         let cx = cx.add_empty_window();
         let (verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
         let (signals_tx, signals_rx) = std::sync::mpsc::channel();
         let (_config_tx, config_rx) = std::sync::mpsc::channel();
         let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
@@ -6770,10 +6816,11 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    tray_rx,
                 )
             })
         });
-        (shell, verbs_tx, cx)
+        (shell, verbs_tx, tray_tx, cx)
     }
 
     #[gpui::test]
@@ -6786,48 +6833,85 @@ mod tests {
         // own order is fixed inside the dispatch: the session write
         // happens before the exit request, so when the pump returns
         // quit the file is already on disk — the tick's cx.quit() is
-        // the next and final step. The write is redirected into the
-        // sandbox so the pin never touches the developer's session.
+        // the next and final step. The persistence-toggle half rides
+        // the same test on purpose: the redirect is a process-global
+        // env write, and two parallel gpui tests each mutating
+        // `XDG_STATE_HOME` race — one scoped redirect at a time,
+        // sequentially, is the hygiene the TERM test's precedent
+        // demands.
         let state = std::env::temp_dir().join(format!("dropterm-quit-test-{}", std::process::id()));
-        let _xdg = XdgStateRedirect::to(&state);
-        let (shell, verbs, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
-        verbs.send(cli::Action::Toggle).expect("the toggle queues");
-        verbs.send(cli::Action::Quit).expect("the quit queues");
-        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
-        assert!(
-            pumped.quit,
-            "the quit must not be dropped by the armed toggle debounce"
-        );
-        assert!(
-            dropterm::core::session::state_file_path().is_file(),
-            "the session persisted before the quit landed"
-        );
+        {
+            let _xdg = XdgStateRedirect::to(&state);
+            let (shell, verbs, _tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+            verbs.send(cli::Action::Toggle).expect("the toggle queues");
+            verbs.send(cli::Action::Quit).expect("the quit queues");
+            let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+            assert!(
+                pumped.quit,
+                "the quit must not be dropped by the armed toggle debounce"
+            );
+            assert!(
+                dropterm::core::session::state_file_path().is_file(),
+                "the session persisted before the quit landed"
+            );
+        }
         std::fs::remove_dir_all(&state).ok();
-    }
-
-    #[gpui::test]
-    fn a_quit_with_persistence_off_skips_the_write_and_still_quits(cx: &mut gpui::TestAppContext) {
         // The persistence toggle gates the quit write exactly as it
         // gates the debounced tick's ("disabled, the file on disk
         // waiting untouched"): a quit must not resurrect a session the
         // user turned persistence off for — but the quit itself is
-        // unconditional.
+        // unconditional (the T-A ruling on the interpretation).
         let state =
             std::env::temp_dir().join(format!("dropterm-quit-off-test-{}", std::process::id()));
-        let _xdg = XdgStateRedirect::to(&state);
-        let config = DropTermConfig {
-            session_persistence_enabled: false,
-            ..DropTermConfig::default()
-        };
-        let (shell, verbs, cx) = shell_with_verb_wire(cx, config);
-        verbs.send(cli::Action::Quit).expect("the quit queues");
-        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
-        assert!(pumped.quit, "the quit is unconditional");
-        assert!(
-            !dropterm::core::session::state_file_path().is_file(),
-            "a disabled persistence leaves the session file untouched"
-        );
+        {
+            let _xdg = XdgStateRedirect::to(&state);
+            let config = DropTermConfig {
+                session_persistence_enabled: false,
+                ..DropTermConfig::default()
+            };
+            let (shell, verbs, _tray, cx) = shell_with_verb_wire(cx, config);
+            verbs.send(cli::Action::Quit).expect("the quit queues");
+            let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+            assert!(pumped.quit, "the quit is unconditional");
+            assert!(
+                !dropterm::core::session::state_file_path().is_file(),
+                "a disabled persistence leaves the session file untouched"
+            );
+        }
         std::fs::remove_dir_all(&state).ok();
+    }
+
+    #[test]
+    fn the_tray_actions_map_onto_the_verb_queue() {
+        // The tray drain's one mapping (tray Task T3): Toggle rides
+        // the same debounced funnel a forwarded toggle rides, Quit the
+        // same debounce-bypassing peel — and Help maps to nothing yet,
+        // because the shipped menu carries no Help item until its
+        // About window lands (T4; no dead menu item, no phantom verb).
+        assert_eq!(
+            tray_verb(crate::tray::TrayAction::Toggle),
+            Some(cli::Action::Toggle)
+        );
+        assert_eq!(
+            tray_verb(crate::tray::TrayAction::Quit),
+            Some(cli::Action::Quit)
+        );
+        assert_eq!(tray_verb(crate::tray::TrayAction::Help), None);
+    }
+
+    #[gpui::test]
+    fn a_tray_quit_quits_through_the_verb_funnel(cx: &mut gpui::TestAppContext) {
+        // The tray drain beside the verbs (tray Task T3): the
+        // backend's activation reaches the pump on its own channel and
+        // dispatches as the verb it maps to — a tray Quit takes the
+        // same debounce-bypassing, session-persisting path a forwarded
+        // `dropterm quit` does. (No session-write assert here: T2's
+        // decision tests pin that path; this pins the drain.)
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        tray.send(crate::tray::TrayAction::Quit)
+            .expect("the tray activation queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(pumped.quit, "the tray's Quit must reach the quit path");
     }
 
     #[test]
@@ -7069,6 +7153,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7163,6 +7250,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7247,6 +7337,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7416,6 +7509,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             });
             let handle = cx
