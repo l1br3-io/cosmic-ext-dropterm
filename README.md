@@ -64,7 +64,7 @@ Command: dropterm
 Key: F12
 ```
 
-Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `dropterm show` / `dropterm hide` if you want dedicated show/hide keys instead of a toggle.
+Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `dropterm show` / `dropterm hide` if you want dedicated show/hide keys instead of a toggle. On desktops that host status icons there is a tray icon too: left-click toggles the dropdown, and its menu adds Help and Quit.
 
 The other layer-shell desktops bind the same command through their own settings. DropTerm never installs or seeds a shortcut on any desktop - the bind is always yours to make:
 
@@ -110,7 +110,7 @@ The details live in the `docs/` directory:
 - **Tabs and sessions** - open/close, duplicate, inline rename, drag reorder, cycle and jump chords ([keybindings](docs/keybindings.md)), and title modes including by-profile ([configuration](docs/configuration.md#tab-titles)); attention markers for bells and background output; sessions save and restore across shutdowns ([sessions](docs/sessions.md)); drag-to-resize with remembered geometry; the 130 ms slide ([animation](docs/animation.md)); and the in-app [settings drawer](docs/settings.md) with its five tabs.
 - **Profiles** - named presets like `ssh web-prod` as a first-class tab: each carries its own command, working directory, color scheme, font size, scrollback, and environment variables, and the context menu's Switch Profile respawns any tab under another profile in place ([configuration](docs/configuration.md#profiles)). New tabs inherit the active tab's working directory, with a configurable default directory and editable spawn defaults.
 - **The status band** - a 28 px strip beside the grab bar narrating the active terminal: foreground process, working directory with git branch, profile, cell dimensions, tab position, zoom delta, and clock - every segment click-to-copy, each one individually toggleable ([status bar](docs/status-bar.md)).
-- **Desktop integration** - the per-tab context menu with pin/unpin; a close-confirmation guardrail for tabs running foreground processes; desktop notifications when the bell rings while hidden ([bell](docs/bell.md)); remote control from the CLI - `new-tab` and the tab verbs over the single-instance D-Bus seam ([CLI reference](docs/cli.md)); and desktop integration end to end.
+- **Desktop integration** - the per-tab context menu with pin/unpin; a close-confirmation guardrail for tabs running foreground processes; desktop notifications when the bell rings while hidden ([bell](docs/bell.md)); remote control from the CLI - `new-tab` and the tab verbs over the single-instance D-Bus seam ([CLI reference](docs/cli.md)); a status-area tray icon on desktops that host one (left-click toggles the dropdown, the menu carries Help/About and a first-class Quit; a session without an SNI host simply shows no icon - nothing else changes); and desktop integration end to end.
 
 ## Known risks
 
