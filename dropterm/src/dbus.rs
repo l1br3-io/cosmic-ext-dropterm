@@ -311,6 +311,16 @@ mod tests {
             }),
             Some(Action::Hide)
         );
+        // The tray's Quit rides the same wire (tray Task T2): the clap
+        // reconstruction hands the running instance the quit verb for
+        // free — pinned anyway, the same as every surface verb.
+        assert_eq!(
+            decode(&Forwarded::ActivateAction {
+                action: "quit".into(),
+                args: vec![]
+            }),
+            Some(Action::Quit)
+        );
     }
 
     #[test]

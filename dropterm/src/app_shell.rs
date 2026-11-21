@@ -378,6 +378,13 @@ pub(crate) struct Shell {
     /// handed back to the active pane when the decision resolves.
     modal_focus: gpui::FocusHandle,
     exit_at: Option<Instant>,
+    /// When an explicit quit landed (tray Task T2: a forwarded `quit`
+    /// verb or the tray's Quit mapped onto it): the session already
+    /// persisted inside the dispatch, and the next pump folds the
+    /// landing into [`Pumped::quit`] — the same `cx.quit()` path the
+    /// exit timer rides. The instant rides along for the same
+    /// boot-relative logging every decision prints.
+    quit_at: Option<Instant>,
     /// The status band's resolved segments (gpui-status Task 1):
     /// assembled on the tick from the active pane's engine and the
     /// config — the render path performs zero filesystem reads by
@@ -710,6 +717,7 @@ impl Shell {
                 .ok()
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
+            quit_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
@@ -857,7 +865,7 @@ impl Shell {
         self.slide_park_tick(&mut actions);
         self.drag_walk_step(&mut actions);
         self.drain_config_changes(&mut actions);
-        let quit = match self.exit_at {
+        let timer_quit = match self.exit_at {
             Some(deadline) if Instant::now() >= deadline => {
                 println!(
                     "dropterm: exit timer fired at +{}ms",
@@ -867,6 +875,7 @@ impl Shell {
             }
             _ => false,
         };
+        let quit = self.quit_at.is_some() || timer_quit;
         // The fleet's size, published for the dbus mirror's
         // `TabCount` (py-5): one write per pump, the mirror's poller
         // derives and emits on the real flip.
@@ -1404,6 +1413,24 @@ impl Shell {
         actions: &mut Vec<Action>,
         tab_verbs: &mut Vec<cli::Action>,
     ) {
+        // The quit peels off ahead of the debounce (tray Task T2): the
+        // guard below sees only toggle-shaped verbs, so a quit right
+        // after a toggle is never dropped. The quit's own order is
+        // fixed here — the session persists first (the same write the
+        // debounced tick performs, gated by the same persistence
+        // toggle: disabled leaves the file on disk untouched), then
+        // the exit request lands for the next pump's `cx.quit()`.
+        if let cli::Action::Quit = action {
+            println!(
+                "dropterm: action quit accepted at +{}ms (toggle debounce bypassed)",
+                self.boot.elapsed().as_millis()
+            );
+            if self.config.session_persistence_enabled {
+                self.write_session(cx);
+            }
+            self.quit_at = Some(Instant::now());
+            return;
+        }
         if !self.machine.toggle_accepted(Instant::now()) {
             println!(
                 "dropterm: action {action} dropped by the toggle debounce at +{}ms",
@@ -1591,7 +1618,8 @@ impl Shell {
 }
 
 /// One pump's outcome: the window actions to apply at App level, and
-/// whether the deterministic exit fired.
+/// whether the loop should exit — the deterministic timer, or an
+/// explicit quit (tray Task T2) that already persisted its session.
 struct Pumped {
     actions: Vec<Action>,
     /// Tabs whose shells exited this pump — closed ungated at the
@@ -6661,6 +6689,145 @@ mod tests {
             TabTitleMode::Shell,
         );
         assert_ne!(session_shape(&cd), baseline, "a cwd move marks");
+    }
+
+    /// Pins `XDG_STATE_HOME` to `dir` for the guard's lifetime and
+    /// restores the process's prior value on drop — the quit tests'
+    /// session writes land inside `dir`, never the developer's own
+    /// state (the TERM test's save/restore precedent; no parallel test
+    /// of this crate reads the real state dir).
+    struct XdgStateRedirect(Option<std::ffi::OsString>);
+
+    impl XdgStateRedirect {
+        fn to(dir: &std::path::Path) -> Self {
+            // SAFETY: single-threaded within the owning test's
+            // critical section; restored in Drop below.
+            unsafe {
+                let prior = std::env::var_os("XDG_STATE_HOME");
+                std::env::set_var("XDG_STATE_HOME", dir);
+                Self(prior)
+            }
+        }
+    }
+
+    impl Drop for XdgStateRedirect {
+        fn drop(&mut self) {
+            // SAFETY: as above — restoring what the process carried.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                    None => std::env::remove_var("XDG_STATE_HOME"),
+                }
+            }
+        }
+    }
+
+    /// The quit-decision scaffold (tray Task T2): a shell over one
+    /// empty tab with its verb channel's sender in hand — the exact
+    /// wire a forwarded `quit` rides (`shell_with_standing_panel`'s
+    /// shape, minus its standing panel, plus the sender).
+    fn shell_with_verb_wire(
+        cx: &mut gpui::TestAppContext,
+        config: DropTermConfig,
+    ) -> (
+        Entity<Shell>,
+        std::sync::mpsc::Sender<cli::Action>,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let (verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config,
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+        (shell, verbs_tx, cx)
+    }
+
+    #[gpui::test]
+    fn a_quit_verb_bypasses_the_debounce_persists_then_quits(cx: &mut gpui::TestAppContext) {
+        // The quit decision layer (tray Task T2): a quit must not be
+        // dropped by the toggle debounce — the guard sees only
+        // toggle-shaped verbs, and this pump dispatches the startup
+        // Toggle plus a queued one before the quit, so the 150 ms
+        // window is genuinely armed when the quit arrives. The quit's
+        // own order is fixed inside the dispatch: the session write
+        // happens before the exit request, so when the pump returns
+        // quit the file is already on disk — the tick's cx.quit() is
+        // the next and final step. The write is redirected into the
+        // sandbox so the pin never touches the developer's session.
+        let state = std::env::temp_dir().join(format!("dropterm-quit-test-{}", std::process::id()));
+        let _xdg = XdgStateRedirect::to(&state);
+        let (shell, verbs, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        verbs.send(cli::Action::Toggle).expect("the toggle queues");
+        verbs.send(cli::Action::Quit).expect("the quit queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            pumped.quit,
+            "the quit must not be dropped by the armed toggle debounce"
+        );
+        assert!(
+            dropterm::core::session::state_file_path().is_file(),
+            "the session persisted before the quit landed"
+        );
+        std::fs::remove_dir_all(&state).ok();
+    }
+
+    #[gpui::test]
+    fn a_quit_with_persistence_off_skips_the_write_and_still_quits(cx: &mut gpui::TestAppContext) {
+        // The persistence toggle gates the quit write exactly as it
+        // gates the debounced tick's ("disabled, the file on disk
+        // waiting untouched"): a quit must not resurrect a session the
+        // user turned persistence off for — but the quit itself is
+        // unconditional.
+        let state =
+            std::env::temp_dir().join(format!("dropterm-quit-off-test-{}", std::process::id()));
+        let _xdg = XdgStateRedirect::to(&state);
+        let config = DropTermConfig {
+            session_persistence_enabled: false,
+            ..DropTermConfig::default()
+        };
+        let (shell, verbs, cx) = shell_with_verb_wire(cx, config);
+        verbs.send(cli::Action::Quit).expect("the quit queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(pumped.quit, "the quit is unconditional");
+        assert!(
+            !dropterm::core::session::state_file_path().is_file(),
+            "a disabled persistence leaves the session file untouched"
+        );
+        std::fs::remove_dir_all(&state).ok();
     }
 
     #[test]

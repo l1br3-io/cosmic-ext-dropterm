@@ -192,6 +192,16 @@ fn main() {
         }
     }
 
+    // A quit with nothing to forward into (tray Task T2, the tray
+    // spec's ruling): no instance exists, so the quit is already
+    // satisfied — one line, exit 0, never a boot and never a
+    // fabricated start. The query path above is the early-exit
+    // precedent.
+    if cli::first_launch_exits_zero(&action) {
+        println!("dropterm: no running instance to quit");
+        return;
+    }
+
     let served = dbus::spawn_service();
     let exit_after =
         app_shell::exit_after_from_env(std::env::var("DROPTERM_EXIT_AFTER_MS").ok().as_deref());
