@@ -168,7 +168,7 @@ fn defaults_are_sane() {
     assert!(config.shell.is_none());
     assert_eq!(config.opacity, 100);
     assert!(config.hide_on_focus_loss);
-    assert!(!config.respect_panel);
+    assert!(config.respect_panel);
     // Never dragged: the drawer renders its built-in default
     // width (drawer-resize spec criterion 1) until the first
     // drag release stores a px value.
@@ -817,7 +817,7 @@ fn program_is_runnable_scans_path_for_bare_names() {
 }
 
 #[test]
-fn missing_respect_panel_key_loads_as_false() {
+fn missing_respect_panel_key_loads_as_true() {
     // A settings section from a version that did not yet write
     // `respect_panel`: keys the file lists load, keys it lacks
     // stay at their default (`#[serde(default)]` backfills) — the
@@ -826,27 +826,28 @@ fn missing_respect_panel_key_loads_as_false() {
     write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
     let loaded = load_config(&dir);
-    assert!(!loaded.respect_panel);
+    assert!(loaded.respect_panel);
     // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
 }
 
 #[test]
 fn respect_panel_key_on_disk_is_honored() {
-    // Control for `missing_respect_panel_key_loads_as_false`: the same
+    // Control for `missing_respect_panel_key_loads_as_true`: the same
     // read path honors a key that does exist, so the leniency result
-    // above cannot be a vacuous pass.
+    // above cannot be a vacuous pass — the default is `true`, so
+    // `false` on disk is what must come back.
     let dir = TempDir::new("present-key");
     save_sections(
         &dir,
         &DropTermConfig {
-            respect_panel: true,
+            respect_panel: false,
             ..DropTermConfig::default()
         },
     );
 
     let loaded = load_config(&dir);
-    assert!(loaded.respect_panel);
+    assert!(!loaded.respect_panel);
 }
 
 #[test]
