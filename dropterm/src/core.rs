@@ -50,6 +50,7 @@ pub mod surface_lifecycle;
 pub mod system_mode;
 pub mod tabs;
 pub mod terminal;
+pub mod theme_files;
 pub mod theme_glue;
 pub mod theme_source;
 pub mod transport;
