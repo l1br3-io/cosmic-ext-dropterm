@@ -78,11 +78,12 @@ pub(crate) fn bar_at_bottom(edge: Edge, tab_position: TabPosition) -> bool {
 }
 
 /// Whether the tab row renders its buttons: the strip is always
-/// present, but tab rows — and their close marks — only from two tabs
-/// on; the single-tab strip carries the corner affordances alone (the
-/// reference bar's rule).
-pub(crate) fn shows_tab_buttons(tab_count: usize) -> bool {
-    tab_count >= 2
+/// present, but tab rows — and their close marks — only from the
+/// configured minimum on (`tab_bar_min_tabs`, kitty's knob; the
+/// default `2` leaves the single-tab strip to the corner affordances
+/// alone, the reference bar's rule).
+pub(crate) fn shows_tab_buttons(tab_count: usize, min_tabs: usize) -> bool {
+    tab_count >= min_tabs
 }
 
 /// A color's relative luminance (the WCAG definition) — the reference
@@ -949,6 +950,9 @@ pub(crate) struct TabBarView {
     /// The open inline rename, if any: the renamed tab and the Kit
     /// input state it edits through (hosted in the row's label slot).
     rename: Option<(TabId, gpui::Entity<gpui_component::input::InputState>)>,
+    /// The configured row floor (`tab_bar_min_tabs`): tab rows render
+    /// from this many tabs on — `1` keeps the single tab's row on.
+    min_tabs: usize,
 }
 
 impl TabBarView {
@@ -958,6 +962,7 @@ impl TabBarView {
             strip,
             fg,
             show_border: true,
+            min_tabs: 2,
             at_bottom: false,
             on_select: std::rc::Rc::new(|_, _, _| {}),
             on_close: std::rc::Rc::new(|_, _, _| {}),
@@ -995,6 +1000,13 @@ impl TabBarView {
     /// Whether the border hairline renders (`tab_bar_border`).
     pub(crate) fn show_border(mut self, show: bool) -> Self {
         self.show_border = show;
+        self
+    }
+
+    /// The configured row floor (`tab_bar_min_tabs`): tab rows render
+    /// from this many tabs on.
+    pub(crate) fn min_tabs(mut self, min_tabs: usize) -> Self {
+        self.min_tabs = min_tabs;
         self
     }
 
@@ -1319,7 +1331,7 @@ impl gpui::RenderOnce for TabBarView {
                 bar.border_b(gpui::px(1.)).border_color(hairline)
             };
         }
-        if shows_tab_buttons(count) {
+        if shows_tab_buttons(count, self.min_tabs) {
             let on_select = std::rc::Rc::clone(&self.on_select);
             let on_close = std::rc::Rc::clone(&self.on_close);
             let on_rename = std::rc::Rc::clone(&self.on_rename);

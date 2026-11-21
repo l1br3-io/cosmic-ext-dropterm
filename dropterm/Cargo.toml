@@ -149,6 +149,16 @@ open = "5.3.2"
 # notify-rust, 4.18, the line the lock already carries.
 notify-rust = "4.18"
 
+# The tray's StatusNotifierItem client (tray spec, approved with the
+# dependency named): pure-Rust SNI/DBusMenu with the blocking
+# `TrayService` its own thread rides (the dbus sidecar pattern, no
+# coupling with the control bus's zbus connection). The ruling's
+# constraint holds: no GTK, no libappindicator — ksni is the direct
+# D-Bus client, nothing native enters sideways. 0.3.3 per the spec
+# (the lock's 0.3 line), +blocking for the spawn API the sidecar
+# thread runs.
+ksni = { version = "0.3.3", features = ["blocking"] }
+
 # The pane's focus-free clipboard half (gpui-terminal Task 3): the
 # data-control protocol serves copies made while unfocused (OSC 52
 # stores) and the primary selection, which GPUI's clipboard does not
@@ -167,6 +177,15 @@ jiff = "0.2"
 # config-key ↔ docs sync test's serializer. Same 1.x line the lock
 # already carries.
 serde_json = "1"
+
+# The Tier-1 Lua runtime (lua-host spec, ratified with the dependency
+# named): mlua on the 0.12 line, `lua54` + `vendored` — Lua 5.4 built
+# from the bundled C sources, WezTerm's exact engine choice, no system
+# Lua discovery, no ABI surprises. `serde` carries the port's payload
+# conversion (`HostCommand::Emit` speaks serde_json::Value); nothing
+# else — no async, no send — because the interpreter lives and dies on
+# its own host thread and never crosses one.
+mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored", "serde"] }
 
 [features]
 # Re-identifies the binary as `io.github.l1br3_io.dropterm.Dev` —

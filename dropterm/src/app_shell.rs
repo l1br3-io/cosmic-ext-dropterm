@@ -378,6 +378,25 @@ pub(crate) struct Shell {
     /// handed back to the active pane when the decision resolves.
     modal_focus: gpui::FocusHandle,
     exit_at: Option<Instant>,
+    /// When an explicit quit landed (tray Task T2: a forwarded `quit`
+    /// verb or the tray's Quit mapped onto it): the session already
+    /// persisted inside the dispatch, and the next pump folds the
+    /// landing into [`Pumped::quit`] — the same `cx.quit()` path the
+    /// exit timer rides. The instant rides along for the same
+    /// boot-relative logging every decision prints.
+    quit_at: Option<Instant>,
+    /// The tray's activation channel (tray Task T3): drained beside
+    /// the verbs each pump, each activation mapping onto the verb
+    /// queue's own action through [`tray_verb`] — the render loop
+    /// never calls into the tray, the channel is the only bridge.
+    tray_actions: Receiver<crate::tray::TrayAction>,
+    /// When a focus-loss hide last hid the surface (the tray-click
+    /// fix): the click that activates the tray unfocuses a shown
+    /// surface, so [`tray_toggle_swallowed`] can pair the two halves
+    /// of one click — the focus-loss hide and the Toggle that follows
+    /// it — instead of letting the Toggle re-show what its own click
+    /// just hid.
+    focus_loss_hide_at: Option<Instant>,
     /// The status band's resolved segments (gpui-status Task 1):
     /// assembled on the tick from the active pane's engine and the
     /// config — the render path performs zero filesystem reads by
@@ -623,6 +642,7 @@ impl Shell {
         band_font: gpui::Font,
         settings_focus: gpui::FocusHandle,
         specs: SpecsWatch,
+        tray_actions: Receiver<crate::tray::TrayAction>,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         // The plain strategy's one inputs patch: no slide. A toplevel
@@ -710,6 +730,9 @@ impl Shell {
                 .ok()
                 .map(|host| host.trim().to_string()),
             exit_at: exit_after.map(|after| boot + after),
+            quit_at: None,
+            tray_actions,
+            focus_loss_hide_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
@@ -813,6 +836,41 @@ impl Shell {
         while let Ok(action) = self.verbs.try_recv() {
             self.dispatch(cx, action, &mut actions, &mut tab_verbs);
         }
+        // The tray's activations (tray Task T3), drained beside the
+        // verbs: each maps onto the verb queue's own action, so a
+        // tray Toggle rides the debounced funnel and a tray Quit the
+        // bypassing peel — one dispatch path, two arrival wires. Help
+        // is not a verb: it arrives as the About window's open action,
+        // applied at the tick's App-level point like every window
+        // open (T4, the `apply_action` region's rule). A Toggle the
+        // click's own focus loss already satisfied is swallowed
+        // (only the tray's — a click on the icon unfocuses the
+        // surface, a forwarded verb never does).
+        while let Ok(action) = self.tray_actions.try_recv() {
+            if let Some(verb) = tray_verb(action) {
+                if matches!(verb, cli::Action::Toggle)
+                    && tray_toggle_swallowed(
+                        &self.machine.state,
+                        self.focus_loss_hide_at,
+                        Instant::now(),
+                    )
+                {
+                    println!(
+                        "dropterm: tray toggle swallowed — the same click's focus loss \
+                         already hid the surface at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    continue;
+                }
+                self.dispatch(cx, verb, &mut actions, &mut tab_verbs);
+            } else {
+                println!(
+                    "dropterm: tray help -> the about window at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                actions.push(Action::OpenAbout);
+            }
+        }
         // The panes' handed-up signals: one drain (repeat Hide sends
         // coalesce — a second hide on a hidden surface decides
         // nothing), the Hide actions run through the machine's hide
@@ -843,6 +901,10 @@ impl Shell {
                     self.boot.elapsed().as_millis()
                 );
                 if hide {
+                    // Stamped for the tray-click fix: the tray Toggle
+                    // that can follow this hide within the same click
+                    // consults the timestamp ([`tray_toggle_swallowed`]).
+                    self.focus_loss_hide_at = Some(Instant::now());
                     let intents = self.machine.decide_hide(self.inputs);
                     self.execute_into(intents, &mut actions);
                 }
@@ -857,7 +919,7 @@ impl Shell {
         self.slide_park_tick(&mut actions);
         self.drag_walk_step(&mut actions);
         self.drain_config_changes(&mut actions);
-        let quit = match self.exit_at {
+        let timer_quit = match self.exit_at {
             Some(deadline) if Instant::now() >= deadline => {
                 println!(
                     "dropterm: exit timer fired at +{}ms",
@@ -867,6 +929,7 @@ impl Shell {
             }
             _ => false,
         };
+        let quit = self.quit_at.is_some() || timer_quit;
         // The fleet's size, published for the dbus mirror's
         // `TabCount` (py-5): one write per pump, the mirror's poller
         // derives and emits on the real flip.
@@ -1404,6 +1467,24 @@ impl Shell {
         actions: &mut Vec<Action>,
         tab_verbs: &mut Vec<cli::Action>,
     ) {
+        // The quit peels off ahead of the debounce (tray Task T2): the
+        // guard below sees only toggle-shaped verbs, so a quit right
+        // after a toggle is never dropped. The quit's own order is
+        // fixed here — the session persists first (the same write the
+        // debounced tick performs, gated by the same persistence
+        // toggle: disabled leaves the file on disk untouched), then
+        // the exit request lands for the next pump's `cx.quit()`.
+        if let cli::Action::Quit = action {
+            println!(
+                "dropterm: action quit accepted at +{}ms (toggle debounce bypassed)",
+                self.boot.elapsed().as_millis()
+            );
+            if self.config.session_persistence_enabled {
+                self.write_session(cx);
+            }
+            self.quit_at = Some(Instant::now());
+            return;
+        }
         if !self.machine.toggle_accepted(Instant::now()) {
             println!(
                 "dropterm: action {action} dropped by the toggle debounce at +{}ms",
@@ -1591,7 +1672,8 @@ impl Shell {
 }
 
 /// One pump's outcome: the window actions to apply at App level, and
-/// whether the deterministic exit fired.
+/// whether the loop should exit — the deterministic timer, or an
+/// explicit quit (tray Task T2) that already persisted its session.
 struct Pumped {
     actions: Vec<Action>,
     /// Tabs whose shells exited this pump — closed ungated at the
@@ -1601,6 +1683,40 @@ struct Pumped {
     /// point, where pane spawning's App context lives.
     tab_verbs: Vec<cli::Action>,
     quit: bool,
+}
+
+/// The tray drain's one mapping (tray Task T3): the tray port's
+/// neutral vocabulary onto the verb queue's own actions — Help maps
+/// to nothing yet, because the shipped menu carries no Help item
+/// until its About window lands (T4; no dead menu item, no phantom
+/// verb).
+fn tray_verb(action: crate::tray::TrayAction) -> Option<cli::Action> {
+    match action {
+        crate::tray::TrayAction::Toggle => Some(cli::Action::Toggle),
+        crate::tray::TrayAction::Quit => Some(cli::Action::Quit),
+        crate::tray::TrayAction::About => None,
+    }
+}
+
+/// Whether a tray Toggle arriving against a hidden-or-hiding surface
+/// is swallowed by the SAME click's focus-loss hide: the click that
+/// activates the tray also unfocuses the shown surface (the host
+/// shell takes the pointer at press, the SNI `Activate` arrives at
+/// release), so with `hide_on_focus_loss` on, a hide-click lands as a
+/// focus-loss hide first — the surface `Hiding` its slide-out or
+/// already `Hidden` — and the Toggle a tick later; without the
+/// swallow, the Toggle re-shows (or reverse-shows) what its own click
+/// just hid. The window is the toggle debounce's own
+/// same-interaction span: a later, deliberate click shows normally.
+fn tray_toggle_swallowed(
+    state: &SurfaceState,
+    focus_loss_hide_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    matches!(state, SurfaceState::Hidden | SurfaceState::Hiding(_))
+        && focus_loss_hide_at.is_some_and(|at| {
+            now.duration_since(at) < dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE
+        })
 }
 
 /// One mouse-handler step against the shell: mutate under the
@@ -1832,6 +1948,19 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 "dropterm: window activated at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
+        }
+        Action::OpenAbout => {
+            // The tray's Help (tray Task T4): the About window, opened
+            // here like every window — never inside a shell update. A
+            // failed open logs and the daemon runs on; `QuitMode::
+            // Explicit` means closing the window can never quit it
+            // either.
+            if crate::tray::open_about(cx).is_some() {
+                println!(
+                    "dropterm: about window opened at +{}ms",
+                    shell.read(cx).boot.elapsed().as_millis()
+                );
+            }
         }
         Action::FocusTerminal { handle } => {
             // The pane holds the keyboard by construction (its focus
@@ -2227,10 +2356,14 @@ impl Shell {
     /// input seeds from the tab's current title, selects its value,
     /// and takes the keyboard (the pane's cooperative claim defers);
     /// Enter commits, Escape cancels, a blur cancels (the reference
-    /// bar's own routing). Below two tabs there is no row to host
-    /// the input: a swallowed no-op (the reference rule).
+    /// bar's own routing). Below the configured row floor
+    /// (`tab_bar_min_tabs`) there is no row to host the input: a
+    /// swallowed no-op (the reference rule).
     fn start_rename(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        if !tab_bar::shows_tab_buttons(self.tabs.records().len()) {
+        if !tab_bar::shows_tab_buttons(
+            self.tabs.records().len(),
+            usize::from(self.config.tab_bar_min_tabs),
+        ) {
             return;
         }
         let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
@@ -2304,8 +2437,10 @@ impl Shell {
     /// tab-state pass.
     fn prune_rename(&mut self, cx: &mut Context<Self>) {
         let hosted = self.rename.as_ref().is_some_and(|edit| {
-            tab_bar::shows_tab_buttons(self.tabs.records().len())
-                && self.tabs.records().iter().any(|tab| tab.id == edit.tab)
+            tab_bar::shows_tab_buttons(
+                self.tabs.records().len(),
+                usize::from(self.config.tab_bar_min_tabs),
+            ) && self.tabs.records().iter().any(|tab| tab.id == edit.tab)
         });
         if !hosted {
             self.cancel_open_rename(cx);
@@ -4354,6 +4489,7 @@ impl Shell {
         let shell = cx.entity();
         let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
             .show_border(self.config.tab_bar_border)
+            .min_tabs(usize::from(self.config.tab_bar_min_tabs))
             .at_bottom(at_bottom)
             .on_select({
                 let shell = shell.clone();
@@ -5630,12 +5766,15 @@ fn boot_tab_fleet(
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
 /// the libcosmic app; the first show verb runs the two-surface show.
-// One line over the lint's bar (the settings focus handle joined
-// the constructor's inputs — the modal-focus pattern); the pass to
-// re-bucket boot's inputs is its own refactor, not this fix's.
+// One line over the lint's bar and one argument over clippy's (the
+// settings focus handle joined the constructor's inputs — the
+// modal-focus pattern — and the tray receiver joined with T3); the
+// pass to re-bucket boot's inputs is its own refactor, not this
+// fix's.
 #[expect(
     clippy::too_many_lines,
-    reason = "one param over; re-bucketing is its own refactor"
+    clippy::too_many_arguments,
+    reason = "one line and one param over; re-bucketing is its own refactor"
 )]
 pub(crate) fn boot(
     cx: &mut App,
@@ -5645,6 +5784,7 @@ pub(crate) fn boot(
     verbs: Receiver<cli::Action>,
     startup: cli::Action,
     surface_mode: Verdict,
+    tray_actions: Receiver<crate::tray::TrayAction>,
 ) {
     let boot = Instant::now();
     let config_dir = dropterm::core::config::store::store_dir();
@@ -5771,6 +5911,7 @@ pub(crate) fn boot(
             band_font,
             cx.focus_handle(),
             specs,
+            tray_actions,
         )
     });
     // The plain strategy's retained output: display metadata stands
@@ -6031,6 +6172,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6147,6 +6291,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6320,6 +6467,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -6696,6 +6846,303 @@ mod tests {
         assert_ne!(session_shape(&cd), baseline, "a cwd move marks");
     }
 
+    /// Pins `XDG_STATE_HOME` to `dir` for the guard's lifetime and
+    /// restores the process's prior value on drop — the quit tests'
+    /// session writes land inside `dir`, never the developer's own
+    /// state (the TERM test's save/restore precedent; no parallel test
+    /// of this crate reads the real state dir).
+    struct XdgStateRedirect(Option<std::ffi::OsString>);
+
+    impl XdgStateRedirect {
+        fn to(dir: &std::path::Path) -> Self {
+            // SAFETY: single-threaded within the owning test's
+            // critical section; restored in Drop below.
+            unsafe {
+                let prior = std::env::var_os("XDG_STATE_HOME");
+                std::env::set_var("XDG_STATE_HOME", dir);
+                Self(prior)
+            }
+        }
+    }
+
+    impl Drop for XdgStateRedirect {
+        fn drop(&mut self) {
+            // SAFETY: as above — restoring what the process carried.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                    None => std::env::remove_var("XDG_STATE_HOME"),
+                }
+            }
+        }
+    }
+
+    /// The quit-decision scaffold (tray Task T2, grown by T3): a shell
+    /// over one empty tab with its verb channel's and tray channel's
+    /// senders in hand — the exact wires a forwarded `quit` and a
+    /// tray activation ride (`shell_with_standing_panel`'s shape,
+    /// minus its standing panel, plus the senders).
+    fn shell_with_verb_wire(
+        cx: &mut gpui::TestAppContext,
+        config: DropTermConfig,
+    ) -> (
+        Entity<Shell>,
+        std::sync::mpsc::Sender<cli::Action>,
+        std::sync::mpsc::Sender<crate::tray::TrayAction>,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let (verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config,
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                    tray_rx,
+                )
+            })
+        });
+        (shell, verbs_tx, tray_tx, cx)
+    }
+
+    #[gpui::test]
+    fn a_quit_verb_bypasses_the_debounce_persists_then_quits(cx: &mut gpui::TestAppContext) {
+        // The quit decision layer (tray Task T2): a quit must not be
+        // dropped by the toggle debounce — the guard sees only
+        // toggle-shaped verbs, and this pump dispatches the startup
+        // Toggle plus a queued one before the quit, so the 150 ms
+        // window is genuinely armed when the quit arrives. The quit's
+        // own order is fixed inside the dispatch: the session write
+        // happens before the exit request, so when the pump returns
+        // quit the file is already on disk — the tick's cx.quit() is
+        // the next and final step. The persistence-toggle half rides
+        // the same test on purpose: the redirect is a process-global
+        // env write, and two parallel gpui tests each mutating
+        // `XDG_STATE_HOME` race — one scoped redirect at a time,
+        // sequentially, is the hygiene the TERM test's precedent
+        // demands.
+        let state = std::env::temp_dir().join(format!("dropterm-quit-test-{}", std::process::id()));
+        {
+            let _xdg = XdgStateRedirect::to(&state);
+            let (shell, verbs, _tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+            verbs.send(cli::Action::Toggle).expect("the toggle queues");
+            verbs.send(cli::Action::Quit).expect("the quit queues");
+            let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+            assert!(
+                pumped.quit,
+                "the quit must not be dropped by the armed toggle debounce"
+            );
+            assert!(
+                dropterm::core::session::state_file_path().is_file(),
+                "the session persisted before the quit landed"
+            );
+        }
+        std::fs::remove_dir_all(&state).ok();
+        // The persistence toggle gates the quit write exactly as it
+        // gates the debounced tick's ("disabled, the file on disk
+        // waiting untouched"): a quit must not resurrect a session the
+        // user turned persistence off for — but the quit itself is
+        // unconditional (the T-A ruling on the interpretation).
+        let state =
+            std::env::temp_dir().join(format!("dropterm-quit-off-test-{}", std::process::id()));
+        {
+            let _xdg = XdgStateRedirect::to(&state);
+            let config = DropTermConfig {
+                session_persistence_enabled: false,
+                ..DropTermConfig::default()
+            };
+            let (shell, verbs, _tray, cx) = shell_with_verb_wire(cx, config);
+            verbs.send(cli::Action::Quit).expect("the quit queues");
+            let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+            assert!(pumped.quit, "the quit is unconditional");
+            assert!(
+                !dropterm::core::session::state_file_path().is_file(),
+                "a disabled persistence leaves the session file untouched"
+            );
+        }
+        std::fs::remove_dir_all(&state).ok();
+    }
+
+    #[test]
+    fn a_tray_toggle_is_swallowed_only_over_a_fresh_focus_loss_hide() {
+        // The tray click's two halves (owner report 2026-11-21, "not
+        // handling show/hide properly"): the press unfocuses the
+        // shown surface — with `hide_on_focus_loss` on, the hide
+        // funnel fires a tick before the SNI `Activate`'s Toggle
+        // arrives — and the Toggle, dispatched against the just-hidden
+        // surface, would re-show what the same click just hid. The
+        // swallow covers exactly that pairing: hidden NOW, hidden by
+        // a focus loss JUST NOW. A plain hidden toggle (no focus loss
+        // behind it), a stale one (the window past), and a shown
+        // surface's toggle all pass through untouched.
+        use dropterm::core::intent::SurfaceHandle;
+        use dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE;
+        let now = Instant::now();
+        let shown = SurfaceState::Shown(SurfaceHandle::next());
+        let hiding = SurfaceState::Hiding(SurfaceHandle::next());
+        let hidden = SurfaceState::Hidden;
+        assert!(
+            tray_toggle_swallowed(&hidden, Some(now), now),
+            "the same click's focus-loss hide swallows its own Toggle"
+        );
+        assert!(
+            tray_toggle_swallowed(&hiding, Some(now), now),
+            "the slide-out the focus loss started swallows it too — the Toggle \
+             would otherwise reverse-show the hide mid-flight"
+        );
+        assert!(
+            !tray_toggle_swallowed(&shown, Some(now), now),
+            "a shown surface's toggle is never swallowed"
+        );
+        assert!(
+            !tray_toggle_swallowed(&hidden, None, now),
+            "a plain hidden toggle — the summon — still shows"
+        );
+        let stale = now
+            .checked_sub(TOGGLE_DEBOUNCE + Duration::from_millis(50))
+            .expect("an instant comfortably before the window");
+        assert!(
+            !tray_toggle_swallowed(&hidden, Some(stale), now),
+            "a focus-loss hide outside the window no longer swallows"
+        );
+    }
+
+    #[gpui::test]
+    fn a_tray_click_hides_once_not_hide_then_reshow(cx: &mut gpui::TestAppContext) {
+        // The end-to-end repro of the owner's report: shown and
+        // focused, the tray click's press unfocuses the surface (the
+        // focus-loss hide fires on the next pump), then the click's
+        // release delivers the SNI Activate's Toggle (the pump after
+        // that). The end state must be hidden — once — never the
+        // hide-then-reshow flicker the two independent signals
+        // produced without coalescing.
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        // Consume the startup toggle on its own pump.
+        cx.update(|_window, cx| {
+            shell.update(cx, Shell::pump);
+        });
+        // The state a real show leaves: shown on a handle, the focus
+        // latch armed by the map-time GAINED.
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.machine.state =
+                    SurfaceState::Shown(dropterm::core::intent::SurfaceHandle::next());
+                shell.machine.focused = true;
+                shell.focus_lost = true;
+            });
+        });
+        // The click's first half: the press's activation loss runs
+        // the focus-loss hide (the default config arms it) — the
+        // surface enters its slide-out, `Hiding`.
+        let hidden_by_focus_loss = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            matches!(
+                cx.update(|_window, cx| shell.read(cx).machine.state),
+                SurfaceState::Hiding(_) | SurfaceState::Hidden
+            ),
+            "the focus-loss half of the click hides (hide_on_focus_loss is on by default)"
+        );
+        assert!(
+            !hidden_by_focus_loss.quit,
+            "sanity: the focus-loss hide is not a quit"
+        );
+        // The click's second half: the release's Activate Toggle. It
+        // must be swallowed by its own click's focus-loss hide — not
+        // re-show the surface the same click just hid.
+        tray.send(crate::tray::TrayAction::Toggle)
+            .expect("the tray activation queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            matches!(
+                cx.update(|_window, cx| shell.read(cx).machine.state),
+                SurfaceState::Hiding(_) | SurfaceState::Hidden
+            ),
+            "the tray Toggle after its own focus-loss hide stays hidden — no re-show"
+        );
+    }
+
+    #[test]
+    fn the_tray_actions_map_onto_the_verb_queue() {
+        // The tray drain's one mapping (tray Task T3): Toggle rides
+        // the same debounced funnel a forwarded toggle rides, Quit the
+        // same debounce-bypassing peel — and Help maps to nothing yet,
+        // because the shipped menu carries no Help item until its
+        // About window lands (T4; no dead menu item, no phantom verb).
+        assert_eq!(
+            tray_verb(crate::tray::TrayAction::Toggle),
+            Some(cli::Action::Toggle)
+        );
+        assert_eq!(
+            tray_verb(crate::tray::TrayAction::Quit),
+            Some(cli::Action::Quit)
+        );
+        assert_eq!(tray_verb(crate::tray::TrayAction::About), None);
+    }
+
+    #[gpui::test]
+    fn a_tray_quit_quits_through_the_verb_funnel(cx: &mut gpui::TestAppContext) {
+        // The tray drain beside the verbs (tray Task T3): the
+        // backend's activation reaches the pump on its own channel and
+        // dispatches as the verb it maps to — a tray Quit takes the
+        // same debounce-bypassing, session-persisting path a forwarded
+        // `dropterm quit` does. (No session-write assert here: T2's
+        // decision tests pin that path; this pins the drain.)
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        tray.send(crate::tray::TrayAction::Quit)
+            .expect("the tray activation queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(pumped.quit, "the tray's Quit must reach the quit path");
+    }
+
+    #[gpui::test]
+    fn a_tray_about_routes_the_about_window_open(cx: &mut gpui::TestAppContext) {
+        // The About wiring (tray Task T4): the menu's third item
+        // reaches the pump as a window action — App-level work like
+        // every open (the `apply_action` region's rule), never a verb
+        // on the funnel.
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        tray.send(crate::tray::TrayAction::About)
+            .expect("the tray activation queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            pumped
+                .actions
+                .iter()
+                .any(|action| matches!(action, Action::OpenAbout)),
+            "the tray's About must arrive as the About window action"
+        );
+    }
+
     #[test]
     fn exit_after_parses_positive_milliseconds_only() {
         use std::time::Duration;
@@ -6935,6 +7382,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7029,6 +7479,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7113,6 +7566,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             })
         });
@@ -7282,6 +7738,9 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
+                    // The tray drain rides empty in these scaffolds
+                    // (the quit-decision helper wires a live one).
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                 )
             });
             let handle = cx

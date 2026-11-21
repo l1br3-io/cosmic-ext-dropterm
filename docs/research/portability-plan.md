@@ -529,6 +529,14 @@ Design rules:
    recording executor is its second implementation). Until then the Linux
    code stays plain, so Phase 1 builds no trait without a second user.
 
+A seventh seam landed inside the binary 2026-11-21: **`TrayBackend`**
+(`dropterm/src/tray.rs`) — the StatusNotifierItem presence, sanctioned
+by rule 5's testing clause (the recording fake is the second
+implementation; ksni 0.3 is the Linux impl under
+`cfg(target_os = "linux")`). It takes no table row: a session without
+an SNI host degrades to one log line and no icon, and there is no
+second platform to column until one exists.
+
 Plain work, no traits: the config store (cosmic-config → plain XDG ron on
 the `src/session.rs` pattern), per-OS paths and hostname functions, the
 identity rename. Out-of-core: panel presence (the applet stays COSMIC-only;
@@ -846,8 +854,12 @@ an ask-first decision.
 
 ### `keybind-docs`: binding the summon key per desktop
 
-**Status**: parked (owner ruling, 2026-11-13) — rides the parked
-Phase 0 sessions.
+**Status**: absorbed into README (2026-11-21) — icon-activation I2
+(`c8a83a6`) shipped the per-desktop binds in README's shortcut section
+(sway `bindsym`, Hyprland `bind`, KDE Command-or-Script beside the
+COSMIC walkthrough, none of them auto-seeded), owner-verified with
+that module's walks the same day; the separate page never builds. The
+session-gated bar stands for any further row (Xfce remains unrowed).
 
 **Objective.** A per-desktop page for binding `dropterm toggle`: sway
 `bindsym`, Hyprland `bind`, KDE custom shortcuts, Xfce keyboard settings,

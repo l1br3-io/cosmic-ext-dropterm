@@ -17,6 +17,8 @@
 
 use alacritty_terminal::{term::color::Colors, vte::ansi::NamedColor};
 
+use crate::core::theme_files::UserScheme;
+
 // Re-exported because [`SchemePreview`]'s slots name it — the chip
 // renderers beyond this module must be able to spell it.
 pub use alacritty_terminal::vte::ansi::Rgb;
@@ -58,23 +60,24 @@ fn auto_colors() -> Colors {
 // Adapted from cosmic-term's `ColorScheme`/`ColorSchemeAnsi`
 // (src/config.rs @ `3ef31d7`, GPL-3.0-only like DropTerm): same field
 // shape, colors as plain `Option<Rgb>` and no serde — schemes compile
-// in, nothing parses. User scheme files (ROADMAP "Later") can grow
-// serde on this shape additively.
+// in, nothing parses. User scheme files ride a file-facing twin
+// (`theme_files`) that converts into this shape, so the compiled-in
+// representation stays serde-free (theme-files spec).
 
 /// One color of a scheme table; `None` leaves the slot to a default.
-type Slot = Option<Rgb>;
+pub(crate) type Slot = Option<Rgb>;
 
 /// One 8-color table of a scheme: the normal, bright, or dim variant.
 #[derive(Debug, Clone, Copy, Default)]
-struct ColorSchemeAnsi {
-    black: Slot,
-    red: Slot,
-    green: Slot,
-    yellow: Slot,
-    blue: Slot,
-    magenta: Slot,
-    cyan: Slot,
-    white: Slot,
+pub(crate) struct ColorSchemeAnsi {
+    pub(crate) black: Slot,
+    pub(crate) red: Slot,
+    pub(crate) green: Slot,
+    pub(crate) yellow: Slot,
+    pub(crate) blue: Slot,
+    pub(crate) magenta: Slot,
+    pub(crate) cyan: Slot,
+    pub(crate) white: Slot,
 }
 
 impl ColorSchemeAnsi {
@@ -101,15 +104,15 @@ impl ColorSchemeAnsi {
 /// `WINDOW_BG_COLOR`. Any other `None` slot falls back to a uniform
 /// derivation in the conversion below.
 #[derive(Debug, Clone, Copy)]
-struct ColorScheme {
-    foreground: Slot,
-    background: Slot,
-    cursor: Slot,
-    bright_foreground: Slot,
-    dim_foreground: Slot,
-    normal: ColorSchemeAnsi,
-    bright: ColorSchemeAnsi,
-    dim: ColorSchemeAnsi,
+pub(crate) struct ColorScheme {
+    pub(crate) foreground: Slot,
+    pub(crate) background: Slot,
+    pub(crate) cursor: Slot,
+    pub(crate) bright_foreground: Slot,
+    pub(crate) dim_foreground: Slot,
+    pub(crate) normal: ColorSchemeAnsi,
+    pub(crate) bright: ColorSchemeAnsi,
+    pub(crate) dim: ColorSchemeAnsi,
 }
 
 /// Alacritty's dim factor: a missing dim color derives as
@@ -790,17 +793,65 @@ pub struct SchemePreview {
 pub fn scheme_previews() -> Vec<(&'static str, SchemePreview)> {
     SCHEMES
         .iter()
-        .map(|entry| {
-            let colors = Colors::from(&entry.scheme);
-            (
-                entry.name,
-                SchemePreview {
-                    background: colors[NamedColor::Background],
-                    foreground: colors[NamedColor::Foreground],
-                    ansi: std::array::from_fn(|slot| colors[PREVIEW_ANSI[slot]]),
-                },
-            )
-        })
+        .map(|entry| (entry.name, preview_of(&entry.scheme)))
+        .collect()
+}
+
+/// One scheme's preview, resolved through the same `From<&ColorScheme>`
+/// conversion `by_name` serves — shared by the registry and merged
+/// list builders so every preview rides one path.
+fn preview_of(scheme: &ColorScheme) -> SchemePreview {
+    let colors = Colors::from(scheme);
+    SchemePreview {
+        background: colors[NamedColor::Background],
+        foreground: colors[NamedColor::Foreground],
+        ansi: std::array::from_fn(|slot| colors[PREVIEW_ANSI[slot]]),
+    }
+}
+
+// --- the merged registry (theme-files F1) ---
+
+/// Look up a scheme by name across the merged registry: the
+/// built-ins first (a user file naming one is shadowed at load; the
+/// registry-first order keeps every lookup safe regardless), then the
+/// user schemes as loaded. Unknown names return `None` — the caller
+/// falls back to the GitHub pair exactly as for a stale built-in
+/// name; no error surface.
+pub fn merged_by_name(name: &str, user: &[UserScheme]) -> Option<Colors> {
+    if let Some(colors) = by_name(name) {
+        return Some(colors);
+    }
+    user.iter()
+        .find(|scheme| scheme.name == name)
+        .map(|scheme| Colors::from(&scheme.scheme))
+}
+
+/// The merged scheme-name list: the registry in its order and
+/// identity, then the user schemes in the loader's sorted order —
+/// owned names, because a user scheme's name is runtime data, not a
+/// compile-time literal. The option list the settings dropdowns feed
+/// from once user schemes ride.
+pub fn merged_scheme_names(user: &[UserScheme]) -> Vec<String> {
+    SCHEMES
+        .iter()
+        .map(|entry| entry.name.to_string())
+        .chain(user.iter().map(|scheme| scheme.name.clone()))
+        .collect()
+}
+
+/// The merged preview list, one definition site with
+/// [`merged_scheme_names`] (entry-for-entry, pinned by test): the
+/// registry's previews then the user schemes', every one through the
+/// same conversion — so the chip-parity pin extends over user
+/// schemes by construction.
+pub fn merged_scheme_previews(user: &[UserScheme]) -> Vec<(String, SchemePreview)> {
+    SCHEMES
+        .iter()
+        .map(|entry| (entry.name.to_string(), preview_of(&entry.scheme)))
+        .chain(
+            user.iter()
+                .map(|scheme| (scheme.name.clone(), preview_of(&scheme.scheme))),
+        )
         .collect()
 }
 
@@ -1228,5 +1279,90 @@ mod tests {
         assert_eq!(dracula.1.background, Some(rgb(0x28_2A36)));
         assert_eq!(dracula.1.foreground, Some(rgb(0xF8_F8F2)));
         assert_eq!(dracula.1.ansi[4], Some(rgb(0xBD_93F9)));
+    }
+
+    // --- the merged registry (theme-files F1) ---
+
+    /// One user scheme for the merged-surface pins: the plain fixture
+    /// under a caller-chosen name.
+    fn user_scheme(name: &str, scheme: ColorScheme) -> crate::core::theme_files::UserScheme {
+        crate::core::theme_files::UserScheme {
+            name: name.to_string(),
+            scheme,
+        }
+    }
+
+    #[test]
+    fn merged_by_name_resolves_a_user_scheme_and_still_rejects_unknowns() {
+        let user = [user_scheme("mine", plain_scheme())];
+        let colors = merged_by_name("mine", &user).expect("user scheme resolves");
+        assert_eq!(colors[NamedColor::Background], Some(rgb(0x28_2A36)));
+        assert!(merged_by_name("Catppuccin Frappe", &user).is_none());
+        assert!(merged_by_name("", &user).is_none());
+    }
+
+    #[test]
+    fn merged_by_name_serves_the_builtin_when_a_user_entry_names_one() {
+        // Defense in depth under the loader's shadow rule: even a user
+        // entry that slipped past the load-time collision filter can
+        // never override a built-in — lookup checks the registry
+        // first, always.
+        let mut palette = plain_scheme();
+        palette.background = Some(rgb(0x00_0000));
+        let user = [user_scheme("Dracula", palette)];
+        let merged = merged_by_name("Dracula", &user).expect("resolves");
+        assert_eq!(
+            merged[NamedColor::Background],
+            Some(rgb(0x28_2A36)),
+            "the built-in palette wins, not the user entry's"
+        );
+    }
+
+    #[test]
+    fn merged_scheme_names_list_the_registry_then_the_user_schemes() {
+        // The registry's order and identity stay untouched; the user
+        // names follow as owned strings in the order given (the
+        // loader's sorted order is the contract).
+        let user = [
+            user_scheme("zz-custom", plain_scheme()),
+            user_scheme("aa-custom", plain_scheme()),
+        ];
+        let merged = merged_scheme_names(&user);
+        let registry = scheme_names();
+        assert_eq!(merged.len(), registry.len() + user.len());
+        for (merged_name, registry_name) in merged.iter().take(registry.len()).zip(registry.iter())
+        {
+            assert_eq!(merged_name, registry_name);
+        }
+        assert_eq!(
+            &merged[registry.len()..],
+            &["zz-custom".to_string(), "aa-custom".to_string()]
+        );
+    }
+
+    #[test]
+    fn merged_scheme_previews_carry_the_chip_parity_over_user_schemes() {
+        // The standing pin extends by construction: every merged
+        // preview slot equals the slot `merged_by_name` serves the
+        // live terminal — the same `From<&ColorScheme>` path for user
+        // schemes and built-ins alike.
+        let user = [user_scheme("mine", plain_scheme())];
+        let previews = merged_scheme_previews(&user);
+        let names = merged_scheme_names(&user);
+        assert_eq!(previews.len(), names.len());
+        for ((preview_name, _), list_name) in previews.iter().zip(names.iter()) {
+            assert_eq!(preview_name, list_name);
+        }
+        for (name, preview) in previews {
+            let colors = merged_by_name(&name, &user).expect("every merged name resolves");
+            assert_eq!(preview.background, colors[NamedColor::Background], "{name}");
+            assert_eq!(preview.foreground, colors[NamedColor::Foreground], "{name}");
+            for (slot, color) in preview.ansi.iter().enumerate() {
+                assert_eq!(
+                    *color, colors[PREVIEW_ANSI[slot]],
+                    "{name} ANSI slot {slot}"
+                );
+            }
+        }
     }
 }

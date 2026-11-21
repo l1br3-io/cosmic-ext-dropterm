@@ -45,6 +45,7 @@ A fresh install has no files here at all - each appears the first time something
 | `edge` | `Top` |
 | `tab_position` | `Auto` |
 | `tab_title_mode` | `Shell` |
+| `tab_bar_min_tabs` | `2` |
 | `layer` | `Overlay` |
 | `keyboard_mode` | `Exclusive` |
 | `respect_panel` | `true` |
@@ -140,6 +141,14 @@ A change never resizes anything - the strip reorders immediately on a shown surf
 | `Profile` | The profile's name ([profiles](#profiles)). A tab with no profile - or a deleted one - falls back to `Shell`'s behavior. |
 
 A manual rename wins in every mode. Changing the mode re-titles every live tab immediately, renamed ones excepted; while in `Profile` mode, renaming a profile retitles its running tabs at once.
+
+## Tab bar minimum tabs
+
+| Key | Values | Default | What it does |
+|---|---|---|---|
+| `tab_bar_min_tabs` | 1 and up | `2` | How many tabs the strip needs before tab rows render. The default `2` keeps a single tab's row hidden - the strip then carries only its `+` and gear. `1` keeps that row on, so the one tab reads, renames (a double-click), and closes from the strip; a higher value holds rows back until that many tabs exist. kitty's own knob, name and default. |
+
+The strip itself never hides either way - the corner affordances render at any count. A change is pure paint: the strip re-renders on the config echo's next view pass, nothing reshapes. Set it on the [settings drawer](settings.md)'s Tabs card, or by writing the key.
 
 ## Status bar
 

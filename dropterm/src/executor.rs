@@ -88,6 +88,11 @@ pub(crate) enum Action {
     /// the gpui-terminal slice; until then this applies as a logged
     /// stand-in so the intent's presence stays visible in the walks.
     FocusTerminal { handle: SurfaceHandle },
+    /// Open the About window (tray Task T4): a small plain toplevel
+    /// carrying the app's identity rows. No surface handle — it is not
+    /// a terminal surface; the executor never tracks it (closing it
+    /// can never quit the daemon, `QuitMode::Explicit` holds).
+    OpenAbout,
 }
 
 /// Why a [`Action::SwapWindow`] recreates the window — the evidence

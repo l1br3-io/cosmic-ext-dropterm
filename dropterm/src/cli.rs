@@ -119,6 +119,12 @@ pub(crate) enum Action {
         #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         tab_index: Option<usize>,
     },
+    /// Quit the running instance cleanly: the session persists, then
+    /// the event loop ends and the process exits (the PTY children
+    /// die with their masters). A first launch holding this verb with
+    /// nothing to forward into exits 0 — never a boot (the tray
+    /// spec's ruling; the tray menu's Quit rides this same verb).
+    Quit,
 }
 
 impl std::fmt::Display for Action {
@@ -133,6 +139,7 @@ impl std::fmt::Display for Action {
             Self::RenameTab { .. } => "rename-tab",
             Self::DuplicateTab { .. } => "duplicate-tab",
             Self::SwitchProfileTab { .. } => "switch-profile-tab",
+            Self::Quit => "quit",
         };
         f.write_str(name)
     }
@@ -215,6 +222,15 @@ pub(crate) fn startup_action(action: &Action) -> Action {
     }
 }
 
+/// Whether a first launch holding `action`, with no running instance
+/// to forward into, exits instead of booting: a quit is already
+/// satisfied — there is nothing to quit — so the launch exits 0 with
+/// one line, never a boot and never a fabricated start (the tray
+/// spec's ruling; every other verb keeps its startup application).
+pub(crate) fn first_launch_exits_zero(action: &Action) -> bool {
+    matches!(action, Action::Quit)
+}
+
 /// Parses a forwarded action — the action name plus any arguments
 /// the second launch sent along — back into an [`Action`], reusing
 /// the clap definitions above as the single source of truth for the
@@ -291,6 +307,30 @@ mod tests {
     }
 
     #[test]
+    fn a_first_launch_quit_exits_zero_instead_of_booting() {
+        // The tray spec's quit ruling: `dropterm quit` with no running
+        // instance has nothing to act on and nothing to forward into —
+        // the first launch exits 0 with one line, never a boot and
+        // never a fabricated start. The verb survives the startup
+        // dispatch unchanged (never degraded to a summoning Toggle);
+        // the exit decision itself is `first_launch_exits_zero`'s.
+        assert!(first_launch_exits_zero(&Action::Quit));
+        assert!(!first_launch_exits_zero(&Action::Toggle));
+        assert!(!first_launch_exits_zero(&Action::Show));
+        assert!(!first_launch_exits_zero(&Action::Hide));
+        assert!(!first_launch_exits_zero(&Action::NewTab {
+            cwd: None,
+            cmd: None,
+            profile: None
+        }));
+        assert_eq!(
+            startup_action(&Action::Quit),
+            Action::Quit,
+            "the startup dispatch never turns a quit into a summon"
+        );
+    }
+
+    #[test]
     fn a_malformed_forward_degrades_to_none() {
         // Words clap rejects yield None, which the dbus decode turns
         // into a plain toggle — never an error surface (here, a bad
@@ -313,6 +353,7 @@ mod tests {
             Action::Toggle,
             Action::Show,
             Action::Hide,
+            Action::Quit,
             Action::NewTab {
                 cwd: None,
                 cmd: None,

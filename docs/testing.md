@@ -50,6 +50,15 @@ Walked against an installed release build (the dev identity's launcher hides its
 - [ ] W4 - second layer-shell desktop: on one non-COSMIC layer-shell desktop the owner has (sway, Hyprland, or KDE), the cold click boots and shows and the warm click toggles
 - [ ] W5 - plain window: in a plain-window session, the cold click starts and shows the window; the warm click focuses it (the documented deviation - activation rather than toggle)
 
+### Tray
+
+Against an installed release build on a desktop with an SNI host; the degrade row needs one without (bare sway or the validation VM):
+
+- [ ] T-w1 - COSMIC tray host: the icon is present at boot; left-click toggles both directions (a click while hidden shows, while shown hides - no hide-then-reshow flicker); the right-click menu's three items each work, and About shows version, description, and a support link that opens
+- [ ] T-w2 - quit both ways: the menu's Quit and `dropterm quit` each exit cleanly - `pgrep -a dropterm` empty afterward, PTY children gone, and the next launch restores the session the quit persisted
+- [ ] T-w3 - no-host degrade: on a session without a StatusNotifierWatcher, exactly one `dropterm:` log line, no icon, and the keybind summon is unaffected
+- [ ] T-w4 - dev twin: a dev-identity instance beside a release one registers two distinct tray items (the dev one titled "(Dev)"); each toggle affects only its own instance
+
 ### The terminal surface
 
 - [ ] `Ctrl+Shift+C`/`V` copy/paste, middle-click and `Shift+Insert` paste the primary selection, `Shift+PageUp`/`Down` scroll

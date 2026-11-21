@@ -160,6 +160,9 @@ fn defaults_are_sane() {
     assert_eq!(config.h_align, HAlign::Center);
     assert_eq!(config.edge, Edge::Top);
     assert_eq!(config.layer, Layer::Overlay);
+    // The single tab's row ships hidden — kitty's own default
+    // (`tab_bar_min_tabs 2`), today's behavior bit-for-bit.
+    assert_eq!(config.tab_bar_min_tabs, 2);
     assert_eq!(config.keyboard_mode, KeyboardMode::Exclusive);
     assert!(config.output.is_none());
     assert!(config.shell.is_none());
@@ -1188,6 +1191,24 @@ fn tab_position_key_on_disk_is_honored() {
 
     let loaded = load_config(&dir);
     assert_eq!(loaded.tab_position, TabPosition::Top);
+}
+
+#[test]
+fn tab_bar_min_tabs_key_on_disk_is_honored() {
+    // Control for the missing-key leniency (the `#[serde(default)]`
+    // backfill): the same read path honors a key that does exist —
+    // `1`, the kitty value that keeps the single tab's row on.
+    let dir = TempDir::new("present-mintabs-key");
+    save_sections(
+        &dir,
+        &DropTermConfig {
+            tab_bar_min_tabs: 1,
+            ..DropTermConfig::default()
+        },
+    );
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded.tab_bar_min_tabs, 1);
 }
 
 /// Every serialized config key across the store's three section

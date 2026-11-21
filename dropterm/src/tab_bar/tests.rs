@@ -32,9 +32,23 @@ fn every_icon_glyph_paints_at_least_16_square() {
 
 #[test]
 fn tab_rows_render_from_two_tabs_on() {
-    assert!(!shows_tab_buttons(1));
-    assert!(shows_tab_buttons(2));
-    assert!(shows_tab_buttons(7));
+    // The default minimum (kitty's `tab_bar_min_tabs` default of 2):
+    // the lone tab's row stays hidden, rows render from two on.
+    assert!(!shows_tab_buttons(1, 2));
+    assert!(shows_tab_buttons(2, 2));
+    assert!(shows_tab_buttons(7, 2));
+}
+
+#[test]
+fn the_row_floor_is_the_configured_minimum() {
+    // kitty's knob at both of its interesting values: `1` keeps the
+    // single tab's row on (the strip never fully hides either way —
+    // the corner affordances render regardless), and a higher
+    // minimum holds rows back until that many tabs exist.
+    assert!(shows_tab_buttons(1, 1));
+    assert!(shows_tab_buttons(2, 1));
+    assert!(!shows_tab_buttons(2, 3));
+    assert!(shows_tab_buttons(3, 3));
 }
 
 #[test]

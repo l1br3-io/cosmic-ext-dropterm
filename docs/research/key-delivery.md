@@ -401,3 +401,39 @@ this fix existed); the owner landed with it open, and it stays parked
 for its own `/spec` with the two `#[ignore]`d tests as its standing
 debt. Checkpoint 2 (the landed arm's review) and Task 12 (the owner
 walk and closure) follow.
+
+## Task 12 (B3): owner acceptance and closure
+
+Closed 2026-11-21 by the owner's blanket verification directive, issued
+on the `/build auto` run that closed the module alongside tray and
+icon-activation — verbatim: "skip tray, I've verified them and key
+delivery, same with icon activation. they are all done". No per-clause
+walk detail was requested or reported; the directive is the acceptance
+evidence. Checkpoints 2 and 3 close with it — the landed arm's review
+and this closure audit ride the same ruling.
+
+The spec's five success criteria, audited:
+
+1. **A1 archived with its verdict** — the log at
+   `tasks/evidence/dropterm-tab.log` (sha256 cited in the A1 section),
+   ten Tab pairs on the wire against a silent `on_key` trace; the
+   decision rule never met a void capture.
+2. **Owner acceptance walk** — closed by the directive above: `cd` +
+   Tab completion on the dev surface, letters and chords unchanged.
+3. **B3 obligations** — the in-repo fix with its pinning test:
+   `124a113` (+ `d539604`, its clippy follow-up), pin
+   `a_dispatched_tab_reaches_the_pane_under_the_kit_root`.
+4. **`just check` green, both identity feature sets** — green except
+   the pre-existing, load-sensitive [pty-test-gate](pty-test-gate.md)
+   class (fmt/clippy/docs-check green; the abort lands on
+   `a_repaste_verb` under load, green standalone), parked for its own
+   `/spec` under the owner's landing ruling.
+5. **This record with its README row** — the row flips to complete;
+   this section is the record's last write.
+
+B1 (gpui-pre carry) and B2 (cosmic-comp upstream) stand as "not taken"
+(recorded at the re-convened Checkpoint 1). No carry exists, so there
+is no retirement condition. The upstream ask survives as the gpui-base
+design note in the Task 3 section — a Root-level tab-traversal binding
+makes bare Tab unreachable to any focused content without a deeper
+binding — for the owner to file if and when they choose.
