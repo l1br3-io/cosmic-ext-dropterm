@@ -12,3 +12,4 @@ docs/_site/
 .zcode-site.json
 /SPEC*.md
 /tasks/
+.DS_Store
