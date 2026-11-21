@@ -40,6 +40,16 @@ route for evidence that must not see the dev machine.
 - [ ] Copies survive a hide: copy in DropTerm, hide, focus another app, paste - the selection lands
 - [ ] The paste cap refuses over-sized payloads with the band's verdict: a text offer or primary selection over 32 MiB refuses (the refusal chip narrates, nothing pastes), an OSC 52 store over it drops logged, an over-cap load reply feeds nothing — images were already capped
 
+### Icon activation
+
+Walked against an installed release build (the dev identity's launcher hides itself; the icon is the release one):
+
+- [ ] W1 - cold click: the DropTerm icon lists in the COSMIC app library after install; a click with nothing running boots the app and the dropdown shows
+- [ ] W2 - warm click: with the instance running, hidden and shown both, the library click toggles the dropdown - no second surface, no duplicate instance - and no launch-failed feedback appears (the StartupNotify verdict; a flip to `false` is its own reviewed commit citing this walk)
+- [ ] W3 - dock pin: pin the launcher icon to the COSMIC dock; the warm click toggles the dropdown (the never-listed rule covers the running window, not a launcher pin; a dead-activating pin proposes the D-Bus `Activate` fallback as a follow-up, never a silent fold)
+- [ ] W4 - second layer-shell desktop: on one non-COSMIC layer-shell desktop the owner has (sway, Hyprland, or KDE), the cold click boots and shows and the warm click toggles
+- [ ] W5 - plain window: in a plain-window session, the cold click starts and shows the window; the warm click focuses it (the documented deviation - activation rather than toggle)
+
 ### The terminal surface
 
 - [ ] `Ctrl+Shift+C`/`V` copy/paste, middle-click and `Shift+Insert` paste the primary selection, `Shift+PageUp`/`Down` scroll

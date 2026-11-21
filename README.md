@@ -66,6 +66,12 @@ Key: F12
 
 Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `dropterm show` / `dropterm hide` if you want dedicated show/hide keys instead of a toggle.
 
+The other layer-shell desktops bind the same command through their own settings. DropTerm never installs or seeds a shortcut on any desktop - the bind is always yours to make:
+
+- **sway**: `bindsym F12 exec dropterm` in `~/.config/sway/config`
+- **Hyprland**: `bind = , F12, exec, dropterm` in `~/.config/hypr/hyprland.conf`
+- **KDE Plasma**: System Settings → Keyboard → Shortcuts → Add New → Command or Script, command `dropterm`, then assign it a key
+
 For everything else the command line can do - scripting new tabs, the tab verbs, and `--is-visible` - see the [CLI reference](docs/cli.md).
 
 Prefer an unshifted key like `F12` over combinations like `Ctrl+Shift+<digit>` - see [Known risks](docs/known-issues.md).

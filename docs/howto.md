@@ -37,6 +37,7 @@ The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: wha
 
 ## Keys
 
+- **Summon it without a bound key** - click the DropTerm icon in your app library: a click with nothing running starts the app and drops the terminal down, a click while it runs toggles the dropdown (in a plain-window session the warm click focuses the window instead - the one documented deviation); or run `dropterm` from any terminal, the same toggle verb a bound key runs ([README: Setting up the shortcut](https://github.com/l1br3-io/dropterm#setting-up-the-shortcut))
 - **See every default chord** - the full table with each action's config id ([keybindings](keybindings.md)).
 - **Rebind one** - the settings drawer's Keybindings editor (arm, press the chord) or hand-edit `custom_key_binds`; a committed rebind applies to the very next key press ([keybindings: customizing](keybindings.md#customizing)).
 
