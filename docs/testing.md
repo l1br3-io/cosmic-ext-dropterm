@@ -351,7 +351,7 @@ After building, check:
 - [ ] With `respect_panel: true` and a top panel, the panel stays fully visible and clickable while the drop-down is open, and the terminal sits flush below it
 - [ ] With `respect_panel: true`, `edge: bottom`, and a bottom dock, the drop-down sits above the dock
 - [ ] With `respect_panel: true`, the drop-down still appears above a fullscreen window
-- [ ] With a config directory that has no `respect_panel` key (or `false` written), the drop-down still covers the panel
+- [ ] With a config directory that has no `respect_panel` key, the drop-down respects the panel (the `true` default on install); with `respect_panel: false` written, it covers the panel
 - [ ] Toggling `respect_panel` in the settings drawer or config file while the drop-down is shown re-places it in place immediately (the panel appears or the drop-down stops covering it, without a hide/show cycle); toggling while hidden applies on the next show
 - [ ] With an autohide panel and `respect_panel: true`, the drop-down lands below the panel's handle strip
 - [ ] Arrange several tabs (distinct titles and cwds, one renamed, a middle tab focused), quit, relaunch: the same tabs return in the same order, each a fresh shell in its saved cwd, the rename intact, the same tab focused

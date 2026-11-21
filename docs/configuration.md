@@ -47,7 +47,7 @@ A fresh install has no files here at all - each appears the first time something
 | `tab_title_mode` | `Shell` |
 | `layer` | `Overlay` |
 | `keyboard_mode` | `Exclusive` |
-| `respect_panel` | `false` |
+| `respect_panel` | `true` |
 | `font_name` | `"Noto Sans Mono"` |
 | `font_size` | `14` |
 | `color_scheme_dark` | `"GitHub Dark"` |
@@ -239,14 +239,14 @@ The alias map is written by hand in `config.ron`, one expansion per declared ali
 |---|---|---|---|
 | `layer` | `Overlay`, `Top` | `Overlay` | `Overlay` sits above fullscreen windows; `Top` sits below them but behaves better with input methods. |
 | `keyboard_mode` | `Exclusive`, `OnDemand` | `Exclusive` | How the surface asks for keyboard focus. `Exclusive` always grabs the keyboard while shown; `OnDemand` is gentler but not auto-focused by every compositor. While `hide_on_focus_loss` is `false` the shown surface always runs `OnDemand`: an exclusive grab held by a stay-open surface would keep winning the keyboard back from every other input. |
-| `respect_panel` | `true`/`false` | `false` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies immediately — a shown drop-down re-places itself in place; a hidden one picks the value up on its next show. |
+| `respect_panel` | `true`/`false` | `true` | `true` places the drop-down inside the compositor's usable area instead of covering panels and docks, staying on its configured layer. Applies immediately — a shown drop-down re-places itself in place; a hidden one picks the value up on its next show. |
 
-With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge.
+With an autohide panel, the hidden panel still reserves its handle strip, so a respecting drop-down sits a few pixels below the screen edge. To cover panels and docks instead, write `false`:
 
 ```ron
 // config.ron
 (
-    respect_panel: true,
+    respect_panel: false,
 )
 ```
 

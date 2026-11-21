@@ -10,7 +10,7 @@ The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: wha
 
 - **Drop from the bottom edge instead of the top** - write `edge` (`Top`/`Bottom`); geometry applies live ([configuration](configuration.md#geometry)).
 - **Take less than the full width, or center it** - `width_percent` (30-100) plus `h_align` (`Left`/`Center`/`Right`); drag the grab bar (the drag handle at the surface's edge) to set the height and it is remembered ([configuration](configuration.md#geometry)).
-- **Stop covering the panel and dock** - write `respect_panel` and the drop-down sits inside the compositor's usable area ([configuration](configuration.md#layer-focus-and-panels)).
+- **Keep the panel and dock visible** - `respect_panel` is `true` by default and the drop-down sits inside the compositor's usable area; write `respect_panel: false` to cover them ([configuration](configuration.md#layer-focus-and-panels)).
 - **Sit above fullscreen windows - or below them** - `layer` picks `Overlay` (above) or `Top` (below, friendlier to input methods) ([configuration](configuration.md#layer-focus-and-panels)).
 
 ## Tabs, profiles, and directories

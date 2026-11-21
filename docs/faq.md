@@ -37,7 +37,7 @@ By design, and no - the running terminal's window is never listed in the dock or
 Hiding destroys the layer surface and the next show builds a fresh one - deliberately, to sidestep a cosmic-comp bug other layer-shell clients hit when a surface is updated after its role is destroyed. You are seeing the designed path, not a glitch ([Known issues](known-issues.md)).
 
 **How do I keep it from covering my panel or dock?**
-Write `respect_panel` and the drop-down places itself inside the compositor's usable area on its configured layer. With an autohide panel expect a few pixels of reserved handle strip ([configuration](configuration.md#layer-focus-and-panels)).
+It does by default: `respect_panel` ships as `true`, so the drop-down places itself inside the compositor's usable area on its configured layer. With an autohide panel expect a few pixels of reserved handle strip. To cover the panel instead, write `respect_panel: false` ([configuration](configuration.md#layer-focus-and-panels)).
 
 ## Tabs and suggestions
 

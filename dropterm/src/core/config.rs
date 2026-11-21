@@ -218,7 +218,7 @@ pub struct DropTermConfig {
     pub keyboard_mode: KeyboardMode,
     /// Place the drop-down below panels and docks instead of covering them,
     /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
-    /// Applies on the next show. Default: cover.
+    /// Applies on the next show. Defaults to `true`.
     pub respect_panel: bool,
     /// Name of the Wayland output to show on. `None` follows the
     /// compositor's notion of the "active" output (usually the one under
@@ -577,7 +577,7 @@ impl Default for DropTermConfig {
             tab_title_mode: TabTitleMode::default(),
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
-            respect_panel: false,
+            respect_panel: true,
             output: None,
             shell: None,
             args: Vec::new(),
