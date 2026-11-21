@@ -11,7 +11,7 @@
 //! plain data and pure functions over it, so the write contract and
 //! commit rules are headless-testable.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -37,8 +37,10 @@ pub enum WriteKind {
 
 /// A settings section: the grouping of the window's cards. The
 /// sections' [`keys`](Section::keys) together are the
-/// control→key map — every exposed key exactly once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// control→key map — every exposed key exactly once. The derived
+/// order is the display order, the accordion's set-backed state
+/// rides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Section {
     Appearance,
     Window,
@@ -366,6 +368,41 @@ impl SettingsTab {
         SettingsTab::Keybindings,
         SettingsTab::Advanced,
     ];
+}
+
+// --- the section cards' accordion ---
+
+/// The section cards' accordion state: which cards stand collapsed.
+/// Framework-free like the rest of this module — the frontends render
+/// it (the GPUI drawer's Kit accordion today), the commit contract
+/// never sees it: it is drawer navigation state, not a config key,
+/// so it never touches the file and a fresh [`AccordionState`]
+/// (every card expanded — the drawer never opens with anything
+/// hidden) is the whole story of one app run's start.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccordionState {
+    /// The collapsed cards, keyed by section — one entry per card a
+    /// user folded, nothing for an open one.
+    collapsed: BTreeSet<Section>,
+}
+
+impl AccordionState {
+    /// Whether the card stands open — the default for every section.
+    pub fn is_expanded(&self, section: Section) -> bool {
+        !self.collapsed.contains(&section)
+    }
+
+    /// Fold or unfold one card. Sections are independent — a page's
+    /// regrouping ([`tab_sections`]) never couples two cards, so
+    /// collapsing Terminal leaves Window alone whatever tab shows
+    /// them.
+    pub fn set_expanded(&mut self, section: Section, expanded: bool) {
+        if expanded {
+            self.collapsed.remove(&section);
+        } else {
+            self.collapsed.insert(section);
+        }
+    }
 }
 
 impl ConfigKey {

@@ -43,6 +43,7 @@ use gpui::{
     Styled, Window,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::accordion::Accordion;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -194,6 +195,12 @@ pub(crate) struct SettingsState {
     pub(crate) open: bool,
     pub(crate) page: SettingsTab,
     pub(crate) buffer: SettingsBuffer,
+    /// The section cards' accordion (core's model): which cards
+    /// stand collapsed. Session state, never a config key — it
+    /// rides the drawer across page turns and closes within one
+    /// app run, and every app start opens with every card expanded
+    /// (the fresh state's default).
+    pub(crate) accordion: dropterm::core::settings::AccordionState,
     pub(crate) refreshing: bool,
     /// Fields awaiting a blur-revert (the audit's F1): an invalid
     /// blur'd edit's stored text. The input subscriber has no
@@ -228,6 +235,7 @@ impl Default for SettingsState {
             open: false,
             page: SettingsTab::Appearance,
             buffer: SettingsBuffer::default(),
+            accordion: dropterm::core::settings::AccordionState::default(),
             refreshing: false,
             pending_reverts: Vec::new(),
             config_epoch: 0,
@@ -766,28 +774,77 @@ impl SettingsDrawer {
                 content = content.child(self.keybindings_page(cx));
             }
             _ => {
-                for section in tab_sections(page) {
-                    let mut card = v_flex()
-                        .gap_3()
-                        .p_4()
-                        .rounded_lg()
-                        .min_w_0()
-                        .bg(cx.theme().popover);
-                    card = card.child(
-                        gpui::div()
-                            .text_size(gpui::px(13.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().popover_foreground)
-                            .child(section.title()),
-                    );
-                    for key in section.keys() {
-                        card = card.child(self.control_row(*key, &config, window, cx));
-                    }
-                    content = content.child(card);
+                for (index, section) in tab_sections(page).iter().enumerate() {
+                    content =
+                        content.child(self.section_card(*section, index, &config, window, cx));
                 }
             }
         }
         content.into_any_element()
+    }
+
+    /// One section card as an accordion item (the Kit's accordion,
+    /// rendered one card per section so the pages keep their flat
+    /// separate-cards look): the header is the trigger — title left,
+    /// disclosure chevron right — and the panel below holds the
+    /// card's control rows. The open state is controlled from the
+    /// shell's core `AccordionState` (core's model; this view is
+    /// its rendering face), so a fold survives page turns and the
+    /// drawer's own reopen. Collapsed panels unmount once the
+    /// reveal settles — a folded card costs no rows, and the Kit
+    /// states behind its controls are the drawer's own entities,
+    /// untouched by the unmount.
+    fn section_card(
+        &self,
+        section: dropterm::core::settings::Section,
+        index: usize,
+        config: &DropTermConfig,
+        window: &mut Window,
+        cx: &App,
+    ) -> gpui::AnyElement {
+        let open = self.shell.read(cx).settings.accordion.is_expanded(section);
+        let target = self.shell.clone();
+        let mut rows = v_flex().gap_3().min_w_0();
+        for key in section.keys() {
+            rows = rows.child(self.control_row(*key, config, window, cx));
+        }
+        // The auto-height wrapper: the Kit accordion's own root
+        // pins `size_full`, and a percentage height against an
+        // auto-height parent resolves as content height — without
+        // it every card would stretch to the page's viewport.
+        v_flex()
+            .min_w_0()
+            .child(
+                Accordion::new(("settings-section", index))
+                    .bordered(false)
+                    .on_toggle_click(move |open_indices, _, cx| {
+                        target.update(cx, |shell, _| {
+                            shell
+                                .settings
+                                .accordion
+                                .set_expanded(section, open_indices.contains(&0));
+                        });
+                    })
+                    .item(|item| {
+                        item.open(open)
+                            .bg(cx.theme().popover)
+                            .rounded_lg()
+                            .hover(|hover| hover.rounded_sm().bg(cx.theme().secondary))
+                            .title_style(gpui::StyleRefinement::default().px_4().py_3())
+                            .content_style(gpui::StyleRefinement::default().px_4().pb_3())
+                            .title(
+                                gpui::div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(gpui::px(13.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().popover_foreground)
+                                    .child(section.title()),
+                            )
+                            .child(rows)
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -1724,6 +1781,20 @@ mod tests {
             }
         }
         assert_eq!(control_kind(ConfigKey::SettingsDrawerWidth), None);
+    }
+
+    /// The drawer's fresh state opens every card — the shell-owned
+    /// accordion default, wired to core's all-expanded default. The
+    /// model's own behavior is core's tests; this pin is the wiring.
+    #[test]
+    fn the_fresh_drawer_state_expands_every_section_card() {
+        let state = SettingsState::default();
+        for section in dropterm::core::settings::Section::ALL {
+            assert!(
+                state.accordion.is_expanded(section),
+                "{section:?} starts collapsed"
+            );
+        }
     }
 
     /// The dispatch's classes spot-pinned: the pickers and the shell

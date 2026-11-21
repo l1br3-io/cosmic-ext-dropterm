@@ -3182,3 +3182,63 @@ fn the_blur_decision_commits_valid_and_reverts_invalid() {
         BlurDecision::Revert
     );
 }
+
+// --- the section cards' accordion ---
+
+#[test]
+fn a_fresh_accordion_expands_every_section() {
+    // The drawer never opens with anything hidden: the default
+    // state expands all seven cards, whatever page later shows
+    // them.
+    let state = AccordionState::default();
+    for section in Section::ALL {
+        assert!(state.is_expanded(section), "{section:?} starts collapsed");
+    }
+}
+
+#[test]
+fn collapsing_one_card_leaves_the_others_alone() {
+    // Sections are independent — the page regrouping can never
+    // couple two cards, so folding Terminal leaves its page
+    // neighbours (Tabs, Dropdown) standing.
+    let mut state = AccordionState::default();
+    state.set_expanded(Section::Terminal, false);
+    assert!(!state.is_expanded(Section::Terminal));
+    for section in Section::ALL {
+        if section != Section::Terminal {
+            assert!(
+                state.is_expanded(section),
+                "{section:?} followed Terminal down"
+            );
+        }
+    }
+}
+
+#[test]
+fn unfolding_restores_a_card_and_stays_idempotent() {
+    let mut state = AccordionState::default();
+    state.set_expanded(Section::StatusBar, false);
+    state.set_expanded(Section::StatusBar, false);
+    assert!(!state.is_expanded(Section::StatusBar));
+    // One unfold reopens, and repeats change nothing further.
+    state.set_expanded(Section::StatusBar, true);
+    assert!(state.is_expanded(Section::StatusBar));
+    state.set_expanded(Section::StatusBar, true);
+    assert!(state.is_expanded(Section::StatusBar));
+}
+
+#[test]
+fn every_section_of_every_tab_toggles_through_the_model() {
+    // The rendering face reads exactly this query per card — walk
+    // the whole tab partition through fold and unfold once, so a
+    // section the model cannot express cannot render either.
+    for tab in SettingsTab::ALL {
+        for section in tab_sections(tab) {
+            let mut state = AccordionState::default();
+            state.set_expanded(*section, false);
+            assert!(!state.is_expanded(*section), "{section:?} will not fold");
+            state.set_expanded(*section, true);
+            assert!(state.is_expanded(*section), "{section:?} will not unfold");
+        }
+    }
+}
