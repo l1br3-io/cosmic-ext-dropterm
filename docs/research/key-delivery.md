@@ -370,3 +370,34 @@ diagnosed and parked in its own record,
 [pty-test-gate](pty-test-gate.md), awaiting `/spec`. Task 11's diff
 sits uncommitted in the checkout; its commit lands on a truly green
 gate, then Task 12 (owner walk, Checkpoint 2) follows.
+
+## Task 11 (B3): landed on the owner's re-ruling
+
+The park lifted the same day it was set. The owner re-ruled in the
+landing session and confirmed it on the 2026-11-21 `/build` run —
+"Yes, I OK'd committing it" — so `124a113` is the blessed landing,
+with `d539604` as its clippy follow-up (the pin's harness binding was
+underscore-prefixed but used, tripping `used_underscore_binding`).
+What shipped is the drawn arm verbatim: `terminal/view.rs`'s
+`bind_pane_keys` (the `"Terminal"` key context on the pane's frame,
+`"tab"`/`"shift-tab"` bound to actions that rebuild the
+platform-shaped keystroke and forward it into `on_key`), registered
+once at boot beside the Kit init (`app_shell.rs`), with the pin's
+harness defused on the three measured fronts — autosuggestions off,
+`stty -echo`, and the engine Arc leaked past the gate (the
+[pty-test-gate](pty-test-gate.md) anatomy says why each is needed).
+That session died before the local bookkeeping caught up; the chunk,
+todo, SPEC, and this record were reconciled on the `/build` run the
+same day.
+
+The gate's honest standing on reconciliation day: fmt, clippy (both
+identity feature sets), and docs-check green; the test gate red
+three-of-three full-suite runs, each aborting on
+`a_repaste_verb_pastes_with_the_panel_standing_down`'s
+nondeterminism alone — every other test passing each run, the named
+test green standalone, the pin green. That is the pre-existing,
+load-sensitive pty-test-gate class (measured 5/8 on the tree before
+this fix existed); the owner landed with it open, and it stays parked
+for its own `/spec` with the two `#[ignore]`d tests as its standing
+debt. Checkpoint 2 (the landed arm's review) and Task 12 (the owner
+walk and closure) follow.
