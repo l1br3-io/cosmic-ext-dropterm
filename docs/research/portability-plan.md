@@ -854,8 +854,12 @@ an ask-first decision.
 
 ### `keybind-docs`: binding the summon key per desktop
 
-**Status**: parked (owner ruling, 2026-11-13) — rides the parked
-Phase 0 sessions.
+**Status**: absorbed into README (2026-11-21) — icon-activation I2
+(`c8a83a6`) shipped the per-desktop binds in README's shortcut section
+(sway `bindsym`, Hyprland `bind`, KDE Command-or-Script beside the
+COSMIC walkthrough, none of them auto-seeded), owner-verified with
+that module's walks the same day; the separate page never builds. The
+session-gated bar stands for any further row (Xfce remains unrowed).
 
 **Objective.** A per-desktop page for binding `dropterm toggle`: sway
 `bindsym`, Hyprland `bind`, KDE custom shortcuts, Xfce keyboard settings,
