@@ -881,11 +881,11 @@ const BUTTON_PADDING_X: f32 = 10.0;
 const BUTTON_GAP: f32 = 4.0;
 /// Side length of the square close/`+`/gear glyph targets.
 const GLYPH_SIZE: f32 = 24.0;
-/// The painted icon's floor (user-ruled 2026-11-20): every icon glyph
-/// renders at least 16x16, never the strip's 14px text size it would
-/// otherwise inherit. The 24px target stays the press area, the glyph
-/// itself the visible icon.
-const GLYPH_FONT_SIZE: f32 = 16.0;
+/// The painted icon's size (user-ruled 2026-11-20 at a 16x16 floor,
+/// raised to full size 2026-11-22): every icon glyph paints at 24px,
+/// never the strip's 14px text size it would otherwise inherit — the
+/// glyph fills its target square instead of floating inside it.
+const GLYPH_FONT_SIZE: f32 = 24.0;
 /// Title text size in logical pixels.
 const TITLE_FONT_SIZE: f32 = 14.0;
 /// Narrowest a tab button may get under squeeze or with an empty

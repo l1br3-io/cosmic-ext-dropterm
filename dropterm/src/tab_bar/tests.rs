@@ -18,14 +18,15 @@ fn auto_places_the_strip_opposite_the_anchor_and_pins_override() {
 }
 
 #[test]
-fn every_icon_glyph_paints_at_least_16_square() {
-    // The icon floor (user-ruled 2026-11-20): the `+`, gear, and
-    // close glyphs paint at 16x16 or larger — never the strip's 14px
-    // title size they would inherit unpinned — and each press target
-    // stays at least as big as the glyph it carries. The pin is
-    // compile-time: a floor regression fails the build, not a run.
+fn every_icon_glyph_paints_at_least_24_square() {
+    // The icon size (user-ruled 2026-11-20 at a 16x16 floor, raised
+    // to 24x24 2026-11-22): the `+`, gear, and close glyphs paint at
+    // 24x24 or larger — never the strip's 14px title size they would
+    // inherit unpinned — and each press target stays at least as big
+    // as the glyph it carries. The pin is compile-time: a size
+    // regression fails the build, not a run.
     const {
-        assert!(GLYPH_FONT_SIZE >= 16.0);
+        assert!(GLYPH_FONT_SIZE >= 24.0);
         assert!(GLYPH_SIZE >= GLYPH_FONT_SIZE);
     }
 }
