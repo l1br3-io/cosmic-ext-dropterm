@@ -5,8 +5,16 @@
 // `standing:` entries are owner-approved exceptions (OQ rulings); a
 // standing entry appears only in roots where it fires.
 #![warn(clippy::pedantic)]
-#![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
-#![cfg_attr(test, allow(clippy::assert_is_empty))] // tests read better asserting is_empty
+#![cfg_attr(test, allow(clippy::float_cmp))]
+// OQ-1: tests assert exact constructed values
+// The is_empty assert allow rides clippy's rename: `assert_is_empty`
+// is already gone at 1.97 (the pinned CI clippy rejects the name) and
+// `const_is_empty` is the new spelling; `unknown_lints` covers
+// whichever name the active clippy does not carry.
+#![cfg_attr(
+    test,
+    allow(unknown_lints, clippy::assert_is_empty, clippy::const_is_empty)
+)] // tests read better asserting is_empty
 #![expect(
     clippy::too_many_lines,
     reason = "standing: OQ-4 — dissolved by module-decomposition"

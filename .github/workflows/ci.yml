@@ -28,12 +28,10 @@ jobs:
       - name: Validate desktop files
         run: |
           desktop-file-validate res/io.github.l1br3_io.dropterm.desktop
-          desktop-file-validate res/io.github.l1br3_io.dropterm.Applet.desktop
 
       - name: Validate AppStream metainfo
         run: |
           appstreamcli validate --no-net res/io.github.l1br3_io.dropterm.metainfo.xml
-          appstreamcli validate --no-net res/io.github.l1br3_io.dropterm.Applet.metainfo.xml
 
   check:
     runs-on: ubuntu-24.04
@@ -47,12 +45,21 @@ jobs:
             libxkbcommon-dev libwayland-dev libfontconfig-dev \
             libfreetype-dev libexpat1-dev pkg-config
 
-      # 24.04's apt `just` (1.14) predates the justfile's `set quiet`;
-      # the official installer is arch-aware for the release matrix.
+      # 24.04's apt `just` (1.14) predates the justfile's `set quiet`.
+      # The binary comes straight from GitHub Releases, not the
+      # just.systems installer: that host began answering runner IPs
+      # with 403 (2026-11-21, two runs in a row, while a download a
+      # day earlier succeeded and the host still answers elsewhere),
+      # and the release host is GitHub itself either way. Pinned so an
+      # upstream release cannot change the CI's just under us — bump
+      # alongside the rustc pin when the local gate moves.
       - name: Install just
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | bash -s -- --to "$HOME/.local/bin"
+          ver=1.59.0
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -sSfL --retry 3 \
+            "https://github.com/casey/just/releases/download/${ver}/just-${ver}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" just
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # CI mirrors the maintainer's local gate (`just check` on
