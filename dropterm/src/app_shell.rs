@@ -2255,10 +2255,14 @@ impl Shell {
     /// input seeds from the tab's current title, selects its value,
     /// and takes the keyboard (the pane's cooperative claim defers);
     /// Enter commits, Escape cancels, a blur cancels (the reference
-    /// bar's own routing). Below two tabs there is no row to host
-    /// the input: a swallowed no-op (the reference rule).
+    /// bar's own routing). Below the configured row floor
+    /// (`tab_bar_min_tabs`) there is no row to host the input: a
+    /// swallowed no-op (the reference rule).
     fn start_rename(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        if !tab_bar::shows_tab_buttons(self.tabs.records().len()) {
+        if !tab_bar::shows_tab_buttons(
+            self.tabs.records().len(),
+            usize::from(self.config.tab_bar_min_tabs),
+        ) {
             return;
         }
         let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id) else {
@@ -2332,8 +2336,10 @@ impl Shell {
     /// tab-state pass.
     fn prune_rename(&mut self, cx: &mut Context<Self>) {
         let hosted = self.rename.as_ref().is_some_and(|edit| {
-            tab_bar::shows_tab_buttons(self.tabs.records().len())
-                && self.tabs.records().iter().any(|tab| tab.id == edit.tab)
+            tab_bar::shows_tab_buttons(
+                self.tabs.records().len(),
+                usize::from(self.config.tab_bar_min_tabs),
+            ) && self.tabs.records().iter().any(|tab| tab.id == edit.tab)
         });
         if !hosted {
             self.cancel_open_rename(cx);
@@ -4382,6 +4388,7 @@ impl Shell {
         let shell = cx.entity();
         let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
             .show_border(self.config.tab_bar_border)
+            .min_tabs(usize::from(self.config.tab_bar_min_tabs))
             .at_bottom(at_bottom)
             .on_select({
                 let shell = shell.clone();

@@ -91,6 +91,7 @@ impl Section {
             Section::Tabs => &[
                 ConfigKey::TabPosition,
                 ConfigKey::TabTitleMode,
+                ConfigKey::TabBarMinTabs,
                 ConfigKey::TabBarBorder,
                 ConfigKey::NewTabAfterCurrent,
                 ConfigKey::NewTabCwd,
@@ -284,6 +285,12 @@ pub enum ConfigKey {
     /// view-assembly lock either way, so the flip costs nothing
     /// beyond the absent segment.
     StatusBarShowScrollback,
+    /// The row floor (kitty's `tab_bar_min_tabs`, name and default):
+    /// the numeric row sets how many tabs the strip needs before tab
+    /// rows render — `1` keeps the single tab's row on, `2` (the
+    /// default) hides it behind the corner affordances alone. A pure
+    /// paint flip like the strip's border sibling.
+    TabBarMinTabs,
     /// The strip's border hairline (bar-borders spec) — one per
     /// bar, each flipping live through the single planned-write
     /// path.
@@ -459,6 +466,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowProgress => "status_bar_show_progress",
             ConfigKey::StatusBarShowProgramStatus => "status_bar_show_program_status",
             ConfigKey::StatusBarShowScrollback => "status_bar_show_scrollback",
+            ConfigKey::TabBarMinTabs => "tab_bar_min_tabs",
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
             ConfigKey::StatusBarActivityMark => "status_bar_activity_mark",
@@ -556,6 +564,10 @@ pub enum PlannedWrite {
     StatusBarShowProgramStatus(bool),
     /// The scrolled chip's own row (status-scrolled spec).
     StatusBarShowScrollback(bool),
+    /// The strip's row floor (kitty's `tab_bar_min_tabs`): a pure
+    /// display flip like the border sibling — the echo's next view
+    /// pass re-renders the strip with the new minimum, no reshape.
+    TabBarMinTabs(u16),
     /// The bars' border hairlines (bar-borders spec): pure display
     /// flips — the echo's next view pass rebuilds each widget with
     /// its flag, no reshape anywhere.
@@ -632,6 +644,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowProgress(_) => ConfigKey::StatusBarShowProgress,
             PlannedWrite::StatusBarShowProgramStatus(_) => ConfigKey::StatusBarShowProgramStatus,
             PlannedWrite::StatusBarShowScrollback(_) => ConfigKey::StatusBarShowScrollback,
+            PlannedWrite::TabBarMinTabs(_) => ConfigKey::TabBarMinTabs,
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
             PlannedWrite::StatusBarActivityMark(_) => ConfigKey::StatusBarActivityMark,
@@ -787,6 +800,7 @@ impl PlannedWrite {
             PlannedWrite::StatusBarShowScrollback(value) => {
                 section.status_bar_show_scrollback = *value;
             }
+            PlannedWrite::TabBarMinTabs(value) => section.tab_bar_min_tabs = *value,
             PlannedWrite::TabBarBorder(value) => section.tab_bar_border = *value,
             PlannedWrite::StatusBarBorder(value) => section.status_bar_border = *value,
             PlannedWrite::StatusBarActivityMark(value) => {
@@ -837,6 +851,7 @@ pub enum TextField {
     ScrollbackLines,
     CommandFinishNotificationAfterSecs,
     AutosuggestionsDelayMs,
+    TabBarMinTabs,
     DefaultCwd,
 }
 
@@ -901,6 +916,15 @@ pub fn parse_autosuggestions_delay_ms(raw: &str) -> Option<u16> {
     raw.trim().parse::<u16>().ok()
 }
 
+/// Parse a `tab_bar_min_tabs` draft: a plain `u16` parse, the delay
+/// knob's no-clamp ruling — the knob's band is the type's band, so a
+/// negative or absurd entry rejects and the draft stays for the user
+/// to fix; saturation or a floor would invent a value the user never
+/// typed. An empty field is no write, the text-input contract.
+pub fn parse_tab_bar_min_tabs(raw: &str) -> Option<u16> {
+    raw.trim().parse::<u16>().ok()
+}
+
 /// The write a submitted text input commits (text inputs commit on
 /// submit, never per keystroke). `None` means the draft did not parse
 /// and nothing is written.
@@ -918,6 +942,7 @@ pub fn submit_write(field: TextField, raw: &str) -> Option<PlannedWrite> {
         TextField::AutosuggestionsDelayMs => {
             parse_autosuggestions_delay_ms(raw).map(PlannedWrite::AutosuggestionsDelayMs)
         }
+        TextField::TabBarMinTabs => parse_tab_bar_min_tabs(raw).map(PlannedWrite::TabBarMinTabs),
         // The profile form's `parse_cwd` rule: empty clears to `None`
         // (the pty default), any other path lands verbatim — a cwd can
         // never reject.
@@ -1004,6 +1029,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // gathered.
         | ConfigKey::SettingsDrawerWidth
         | ConfigKey::StatusBarEnabled
+        | ConfigKey::TabBarMinTabs
         | ConfigKey::TabBarBorder
         | ConfigKey::StatusBarBorder
         | ConfigKey::StatusBarActivityMark
@@ -1255,6 +1281,7 @@ impl SettingsBuffer {
                 config.command_finish_notification_after_secs.to_string()
             }
             TextField::AutosuggestionsDelayMs => config.autosuggestions_delay_ms.to_string(),
+            TextField::TabBarMinTabs => config.tab_bar_min_tabs.to_string(),
             // The profile form's `cwd_text` shape: the path verbatim,
             // empty for `None`.
             TextField::DefaultCwd => config
@@ -2635,6 +2662,7 @@ impl ConfigKey {
             ConfigKey::StatusBarShowProgress => "Show the progress chip",
             ConfigKey::StatusBarShowProgramStatus => "Show the program status",
             ConfigKey::StatusBarShowScrollback => "Show the scrolled-back lines",
+            ConfigKey::TabBarMinTabs => "Minimum tabs before tab rows",
             ConfigKey::TabBarBorder => "Show the tab bar border",
             ConfigKey::StatusBarBorder => "Show the status band border",
             ConfigKey::StatusBarActivityMark => "Show the missed-activity halo",

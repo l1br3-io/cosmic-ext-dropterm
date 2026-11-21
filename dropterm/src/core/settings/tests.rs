@@ -236,6 +236,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsDelayMs(0),
         PlannedWrite::ImagesEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
+        PlannedWrite::TabBarMinTabs(2),
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
         PlannedWrite::CloseConfirmationEnabled(true),
@@ -353,6 +354,7 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::ColorSchemeLight, "color_scheme_light"),
         (ConfigKey::ThemePreference, "theme_preference"),
         (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
+        (ConfigKey::TabBarMinTabs, "tab_bar_min_tabs"),
         (ConfigKey::TabBarBorder, "tab_bar_border"),
         (ConfigKey::StatusBarBorder, "status_bar_border"),
         (ConfigKey::StatusBarActivityMark, "status_bar_activity_mark"),
@@ -542,6 +544,38 @@ fn command_notify_secs_rejects_garbage_and_emptiness() {
     assert_eq!(parse_command_notify_secs("   "), None);
     assert_eq!(parse_command_notify_secs("5s"), None);
     assert_eq!(parse_command_notify_secs("1e2"), None);
+}
+
+#[test]
+fn tab_bar_min_tabs_parses_plain_numbers() {
+    // kitty's knob, the drawer's numeric row: plain numbers land
+    // (`1` keeps the single tab's row on), whitespace trims, and the
+    // knob's band is the type's band — the delay knob's no-clamp
+    // ruling, so a negative or absurd entry rejects instead of
+    // inventing a value the user never typed.
+    assert_eq!(parse_tab_bar_min_tabs("1"), Some(1));
+    assert_eq!(parse_tab_bar_min_tabs(" 2 \n"), Some(2));
+    assert_eq!(parse_tab_bar_min_tabs("3"), Some(3));
+    assert_eq!(parse_tab_bar_min_tabs("-1"), None);
+    assert_eq!(parse_tab_bar_min_tabs("99999999"), None);
+}
+
+#[test]
+fn tab_bar_min_tabs_rejects_garbage_and_emptiness() {
+    // Nothing numeric to commit: no write at all (the draft stays
+    // for the user to fix).
+    assert_eq!(parse_tab_bar_min_tabs(""), None);
+    assert_eq!(parse_tab_bar_min_tabs("   "), None);
+    assert_eq!(parse_tab_bar_min_tabs("2 tabs"), None);
+    assert_eq!(parse_tab_bar_min_tabs("1e2"), None);
+}
+
+#[test]
+fn a_submitted_tab_bar_min_tabs_entry_commits_its_number() {
+    assert_eq!(
+        submit_write(TextField::TabBarMinTabs, "1"),
+        Some(PlannedWrite::TabBarMinTabs(1))
+    );
 }
 
 #[test]
@@ -1450,16 +1484,17 @@ fn tab_position_selection_mirrors_the_config_value() {
 #[test]
 fn the_tabs_card_groups_the_tab_strip_keys() {
     // The Tabs card: everything about the tab strip on one card —
-    // position, titles, the strip's border (bar-borders BB-3),
-    // new-tab placement and its default directory (default-spawn
-    // DS-1), close confirmation, and session persistence
-    // (restoring *tabs*). The title mode's flip applies live
-    // through the retitle loop.
+    // position, titles, the row floor (kitty's `tab_bar_min_tabs`),
+    // the strip's border (bar-borders BB-3), new-tab placement and
+    // its default directory (default-spawn DS-1), close
+    // confirmation, and session persistence (restoring *tabs*). The
+    // title mode's flip applies live through the retitle loop.
     assert_eq!(
         Section::Tabs.keys(),
         &[
             ConfigKey::TabPosition,
             ConfigKey::TabTitleMode,
+            ConfigKey::TabBarMinTabs,
             ConfigKey::TabBarBorder,
             ConfigKey::NewTabAfterCurrent,
             ConfigKey::NewTabCwd,
@@ -1469,6 +1504,10 @@ fn the_tabs_card_groups_the_tab_strip_keys() {
     );
     assert_eq!(ConfigKey::TabPosition.label(), "Tab bar position");
     assert_eq!(ConfigKey::TabTitleMode.label(), "Tab titles");
+    assert_eq!(
+        ConfigKey::TabBarMinTabs.label(),
+        "Minimum tabs before tab rows"
+    );
     assert_eq!(ConfigKey::TabBarBorder.label(), "Show the tab bar border");
     assert_eq!(
         ConfigKey::NewTabAfterCurrent.label(),

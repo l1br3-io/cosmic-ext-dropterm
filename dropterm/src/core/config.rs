@@ -206,6 +206,15 @@ pub struct DropTermConfig {
     /// user rename wins in every mode, and a mode change re-titles
     /// live tabs immediately.
     pub tab_title_mode: TabTitleMode,
+    /// The minimum number of tabs before the strip renders tab rows
+    /// (kitty's own knob, name and default): `2` — the default —
+    /// keeps the single tab's row hidden, the strip carrying only its
+    /// corner affordances (`+`, gear); `1` keeps that row on, so the
+    /// one tab reads, renames, and closes from the strip. The strip
+    /// itself never hides either way, and rows always render from the
+    /// minimum on. Pure paint: flips apply on the config echo's next
+    /// view pass.
+    pub tab_bar_min_tabs: u16,
     /// Layer-shell layer the surface is created on.
     pub layer: Layer,
     /// Keyboard interactivity mode requested for the surface. While
@@ -575,6 +584,7 @@ impl Default for DropTermConfig {
             edge: Edge::default(),
             tab_position: TabPosition::default(),
             tab_title_mode: TabTitleMode::default(),
+            tab_bar_min_tabs: 2,
             layer: Layer::default(),
             keyboard_mode: KeyboardMode::default(),
             respect_panel: false,
