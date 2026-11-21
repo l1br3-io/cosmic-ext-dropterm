@@ -110,6 +110,17 @@ jobs:
       - name: Build (arm64)
         run: cargo build --locked --verbose
 
+      # Clippy on the mac target itself: every paired non-Linux arm
+      # is code the ubuntu job's clippy never compiles, so the mac
+      # job lint-checks them here — the same two invocations `just
+      # clippy` makes (workspace + dev-identity), pinned to the same
+      # 1.98 the job builds with.
+      - name: Clippy (arm64)
+        run: cargo clippy --all-targets --workspace --locked -- -D warnings
+
+      - name: Clippy (arm64, dev-identity)
+        run: cargo clippy --all-targets -p dropterm --locked --features dev-identity -- -D warnings
+
       - name: Test (arm64)
         run: cargo test --locked
 
