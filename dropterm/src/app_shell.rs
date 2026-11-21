@@ -428,6 +428,12 @@ pub(crate) struct Shell {
     /// queue's own action through [`tray_verb`] — the render loop
     /// never calls into the tray, the channel is the only bridge.
     tray_actions: Receiver<crate::tray::TrayAction>,
+    /// The Lua plugin host (lua-host Task L4): constructed at boot
+    /// as channels only — the host thread spawns on the first work
+    /// item (spec assumption 4: first event, first query, first
+    /// watcher wake), never at boot. v1's events are all
+    /// `dropterm:` log lines drained on the tick.
+    lua_host: dropterm::core::lua_host::LuaHost,
     /// When a focus-loss hide last hid the surface (the tray-click
     /// fix): the click that activates the tray unfocuses a shown
     /// surface, so [`tray_toggle_swallowed`] can pair the two halves
@@ -682,6 +688,7 @@ impl Shell {
         settings_focus: gpui::FocusHandle,
         specs: SpecsWatch,
         tray_actions: Receiver<crate::tray::TrayAction>,
+        lua_host: dropterm::core::lua_host::LuaHost,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
         // The plain strategy's one inputs patch: no slide. A toplevel
@@ -772,6 +779,7 @@ impl Shell {
             exit_at: exit_after.map(|after| boot + after),
             quit_at: None,
             tray_actions,
+            lua_host,
             focus_loss_hide_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
@@ -917,6 +925,19 @@ impl Shell {
         // funnel exactly like the verb's.
         while let Ok(signal) = self.pane_signals.try_recv() {
             self.apply_pane_signal(signal, cx, &mut actions, &mut exited);
+        }
+        // The Lua host's outbound stream (lua-host Task L4): one
+        // try_recv drain beside the tray/pane channels — v1's events
+        // are all log lines (result tokens join with the query
+        // surfaces that ask for them, the L-A closed-extension
+        // ruling), so the sink is println, the surface every other
+        // dropterm: line already uses. try_recv on the tick is the
+        // pty-test-gate pin: no waker ever crosses the host thread
+        // into the foreground executor's pump.
+        while let Some(event) = self.lua_host.try_event() {
+            match event {
+                dropterm::core::lua_host::HostEvent::Log(line) => println!("{line}"),
+            }
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -5965,6 +5986,20 @@ pub(crate) fn boot(
         }
         std::thread::park();
     });
+    // The Lua plugin host (lua-host Task L4): channels only at boot —
+    // no thread, no scan, no log (the lazy pin at the shell level;
+    // the host spawns on the first work item, and v1's only
+    // dispatcher is the plugins watcher). The watcher thread parks
+    // holding the guard (the config watcher's shape); a missing
+    // plugins dir arms nothing and prints nothing (the theme-files
+    // posture).
+    let lua_host = dropterm::core::lua_host::LuaHost::new(config_dir.join("plugins"));
+    if let Some(plugins_watcher) = lua_host.watch_plugins_dir() {
+        std::thread::spawn(move || {
+            let _guard = plugins_watcher;
+            std::thread::park();
+        });
+    }
     // The band's font (gpui-status Task 1): the terminal's own
     // resolved family — the same configured-name resolution every
     // pane's host performs, resolved once here (the band is the
@@ -6002,6 +6037,7 @@ pub(crate) fn boot(
             cx.focus_handle(),
             specs,
             tray_actions,
+            lua_host,
         )
     });
     // The plain strategy's retained output: display metadata stands
@@ -6274,6 +6310,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -6398,6 +6437,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -6580,6 +6622,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -7045,6 +7090,9 @@ mod tests {
                         rx: specs_rx,
                     },
                     tray_rx,
+                    // Dormant here too: nothing dispatches Lua in
+                    // this scaffold.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -7554,6 +7602,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -7656,6 +7707,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -7748,6 +7802,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
@@ -7925,6 +7982,9 @@ mod tests {
                     // The tray drain rides empty in these scaffolds
                     // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    // The Lua host rides dormant here: no command is
+                    // ever sent, so no thread, no scan, no log.
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             });
             let handle = cx

@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -201,34 +201,20 @@ impl LuaHost {
     /// command pays the interpreter. Taking the dormant halves under
     /// the lock makes the first caller the only spawner.
     fn spawn_if_dormant(&self) {
-        let dormant = self
-            .dormant
-            .lock()
-            .expect("the lua host gate is only contended briefly")
-            .take();
-        let Some((commands, events)) = dormant else {
-            return;
-        };
-        let plugins_dir = self.plugins_dir.clone();
-        let spawned = thread::Builder::new()
-            .name("dropterm-lua-host".to_owned())
-            .spawn(move || host_thread(&plugins_dir, &commands, &events));
-        if let Err(err) = spawned {
-            println!("dropterm: plugins: host thread failed to spawn: {err}");
-        }
+        spawn_from_gate(&self.dormant, &self.plugins_dir);
     }
 
     /// Watch the plugins dir (non-recursive, the config watcher's
     /// shape) and queue a [`HostCommand::Reload`] on any event (task
     /// L3): the watcher feeds the host's command channel — never the
-    /// UI's event channel — and never spawns the host. While the host
-    /// has never spawned there is nothing to reload: the first
-    /// command's boot scan reads what is on disk, so a dir event
-    /// before that point is dropped rather than queued as a stale
-    /// duplicate rescan. Returns the watcher guard (dropping it stops
-    /// watching); a dir that cannot be watched is `None` — missing is
-    /// the silent first-run norm (the theme-files posture), anything
-    /// else costs one line.
+    /// UI's event channel. A dir event is a first work item (spec
+    /// assumption 4: "first event to deliver, first query, first
+    /// watcher wake"), so the wake spawns the host if it has never
+    /// spawned — the owning wake's scan is the load, with no
+    /// duplicate beside it. Returns the watcher guard (dropping it
+    /// stops watching); a dir that cannot be watched is `None` —
+    /// missing is the silent first-run norm (the theme-files posture),
+    /// anything else costs one line.
     pub fn watch_plugins_dir(&self) -> Option<notify::RecommendedWatcher> {
         let commands = self
             .commands
@@ -236,23 +222,37 @@ impl LuaHost {
             .expect("the lua host gate is only contended briefly")
             .clone();
         let dormant = Arc::clone(&self.dormant);
-        let mut watcher = match notify::recommended_watcher(move |event| {
-            let _ = event; // any event in the plugins dir: reload whole
-            if dormant
-                .lock()
-                .expect("the lua host gate is only contended briefly")
-                .is_some()
-            {
-                return;
-            }
-            let _ = commands.send(HostCommand::Reload);
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                println!("dropterm: plugins: watcher failed: {err:?}");
-                return None;
-            }
-        };
+        let plugins_dir = self.plugins_dir.clone();
+        let mut watcher =
+            match notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
+                // Only content-changing events reload. notify's inotify
+                // mask includes OPEN, so the host's own scan — one
+                // read_dir plus a read_to_string per script — would feed
+                // itself a Reload per read and loop forever (found live:
+                // a self-sustaining rescan flood pinned the CPU and
+                // starved the quiet-window drain). Reads are Access
+                // events; writes, drops, and removals are
+                // Create/Modify/Remove.
+                let changes_content = match event {
+                    Ok(event) => matches!(
+                        event.kind,
+                        notify::EventKind::Create(_)
+                            | notify::EventKind::Modify(_)
+                            | notify::EventKind::Remove(_)
+                    ),
+                    Err(_) => false, // a watcher error is not a change; the next real event reloads
+                };
+                if changes_content {
+                    spawn_from_gate(&dormant, &plugins_dir);
+                    let _ = commands.send(HostCommand::Reload);
+                }
+            }) {
+                Ok(watcher) => watcher,
+                Err(err) => {
+                    println!("dropterm: plugins: watcher failed: {err:?}");
+                    return None;
+                }
+            };
         match watcher.watch(&self.plugins_dir, notify::RecursiveMode::NonRecursive) {
             Ok(()) => Some(watcher),
             Err(err) => {
@@ -269,50 +269,78 @@ impl LuaHost {
     }
 }
 
+/// Take the dormant channel halves and spawn the host thread — the
+/// shared spawner for the first [`LuaHost::send`] and the watcher's
+/// wake (both are first work items, spec assumption 4). A no-op once
+/// spawned: the gate is spent.
+fn spawn_from_gate(dormant: &Arc<Mutex<DormantChannels>>, plugins_dir: &Path) {
+    let Some((commands, events)) = dormant
+        .lock()
+        .expect("the lua host gate is only contended briefly")
+        .take()
+    else {
+        return;
+    };
+    let plugins_dir = plugins_dir.to_owned();
+    let spawned = thread::Builder::new()
+        .name("dropterm-lua-host".to_owned())
+        .spawn(move || host_thread(&plugins_dir, &commands, &events));
+    if let Err(err) = spawned {
+        println!("dropterm: plugins: host thread failed to spawn: {err}");
+    }
+}
+
 /// The host thread's whole life: generations of interpreter, each
 /// built, ported, bounded, then served strictly in arrival order — one
 /// thread, one interpreter at a time, no dispatch racing another (spec
-/// assumption 8). Generation 1 pays the first scan eagerly (the spawn
-/// was itself the first work); a watcher `Reload` recreates eagerly
-/// too (the host is otherwise idle — the rescan's lines land at edit
-/// time, not at some later dispatch); only the hard cap defers its
-/// rescan to the next command, so a load-time runaway costs one
-/// interpreter cycle per command, never a free-spinning reload loop.
-/// Returns when the handle drops (the command channel dies) and drops
-/// the interpreter on the way out.
+/// assumption 8). A generation serves from a scanned state: the
+/// watcher's `Reload` on a live generation recreates and rescans
+/// eagerly (the host is otherwise idle — the rescan's lines land at
+/// edit time, not at some later dispatch); a generation born mid-work
+/// (the spawn, or a hard-cap recreate) scans before its first
+/// dispatch, so a load-time runaway costs one interpreter cycle per
+/// command, never a free-spinning reload loop. Returns when the
+/// handle drops (the command channel dies) and drops the interpreter
+/// on the way out.
 fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Sender<HostEvent>) {
     let frame = Rc::new(TimeoutFrame::new());
     let mut first_generation = true;
-    // Set by a `Reload` command: this generation loads eagerly (the
-    // watcher's wake — the rescan is the work).
+    // Set by a `Reload` on a live generation: the next generation
+    // loads eagerly at build (the rescan is the work).
     let mut rescan_now = false;
-    // Set by a hard cap: the next command rescans and reloads the
-    // scripts before it dispatches — the lazy half of the escape
-    // hatch.
-    let mut reload_pending = false;
+    // An Emit found while folding a Reload burst: served first on
+    // the reloaded generation — the host is serial, nothing
+    // reorders, nothing drops.
+    let mut held: Option<HostCommand> = None;
     loop {
         let Some(generation) = Generation::build(events, &frame) else {
             return;
         };
         if first_generation {
             log(events, "host thread up");
-        }
-        if first_generation || rescan_now {
-            load_scripts(&generation.lua, plugins_dir, events, &frame);
             first_generation = false;
+        }
+        if rescan_now {
+            load_scripts(&generation.lua, plugins_dir, events, &frame);
             rescan_now = false;
             if frame.hard_tripped.get() {
-                reload_pending = true;
+                // The rescan's own load ran away: recreate WITHOUT the
+                // eager rescan — the fresh generation scans before its
+                // next dispatch (the spin guard).
                 continue;
             }
         }
+        // Whether this generation's scripts have been loaded: a fresh
+        // generation scans before it first serves, so the spawn, the
+        // hard cap, and the wake all share one lazy path.
+        let mut scanned = false;
         let mut reload_requested = false;
-        while let Ok(command) = commands.recv() {
+        while let Some(command) = held.take().or_else(|| commands.recv().ok()) {
             match command {
                 HostCommand::Emit { event, payload } => {
-                    if reload_pending {
+                    if !scanned {
                         load_scripts(&generation.lua, plugins_dir, events, &frame);
-                        reload_pending = false;
+                        scanned = true;
                         if frame.hard_tripped.get() {
                             break;
                         }
@@ -332,8 +360,40 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     }
                 }
                 HostCommand::Reload => {
-                    reload_requested = true;
-                    break;
+                    // One edit lands as a burst of events (a
+                    // truncate-write is two Modifys on inotify): fold
+                    // the burst into this one reload — the rescan
+                    // reads current disk, so every queued follower is
+                    // redundant, and an Emit hiding among them is
+                    // held and served on the reloaded generation. The
+                    // short window catches followers still crossing
+                    // the channel.
+                    loop {
+                        match commands.recv_timeout(Duration::from_millis(10)) {
+                            Ok(HostCommand::Reload) => {}
+                            Ok(emit @ HostCommand::Emit { .. }) => {
+                                held = Some(emit);
+                                break;
+                            }
+                            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                                break;
+                            }
+                        }
+                    }
+                    if scanned {
+                        // A live generation: recreate whole (the
+                        // picked reload unit, task L3).
+                        reload_requested = true;
+                        break;
+                    }
+                    // The spawning wake itself: this generation has
+                    // never loaded anything, so the scan IS the
+                    // reload — no duplicate beside it.
+                    load_scripts(&generation.lua, plugins_dir, events, &frame);
+                    scanned = true;
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
                 }
             }
         }
@@ -346,7 +406,6 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
         if !frame.hard_tripped.get() {
             return;
         }
-        reload_pending = true;
     }
 }
 
@@ -1183,6 +1242,58 @@ mod tests {
         assert!(
             third.iter().any(|line| line.contains("from two")),
             "the dropped script's handler answers: {third:?}"
+        );
+    }
+
+    #[test]
+    fn a_watcher_wake_spawns_the_host_and_loads_once() {
+        let dir = TempDir::new("wake");
+        script(
+            &dir,
+            "hello.lua",
+            &format!("{PORT}\nprint('awake')\nd.on('x', function() print('answered') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        assert!(
+            !host.spawned(),
+            "arming the watcher alone spawns nothing — the lazy pin holds"
+        );
+        // The wake: a dir event is the first work item (spec
+        // assumption 4 — "first event to deliver, first query, first
+        // watcher wake"), so the touch spawns the host, scans, and
+        // loads. Rewriting the file with identical content is still
+        // an event; the pin demands the load happens EXACTLY once
+        // (the spawning wake is the scan, not a duplicate beside it).
+        script(
+            &dir,
+            "hello.lua",
+            &format!("{PORT}\nprint('awake')\nd.on('x', function() print('answered') end)"),
+        );
+        // Wait for the load line (a script's own print lands before
+        // it), then drain the quiet tail so a duplicate rescan — if
+        // one existed — would be collected rather than cut off.
+        let mut lines = logs_until(&host, |line| line.contains("loaded hello.lua"), LONG_WAIT);
+        lines.extend(logs_until_quiet(&host));
+        assert!(host.spawned(), "the wake must spawn the host: {lines:?}");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("loaded hello.lua"))
+                .count(),
+            1,
+            "the spawning wake is the one scan — no duplicate reload beside it: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("awake")).count(),
+            1,
+            "the script's print lands once: {lines:?}"
+        );
+        emit(&host, "x");
+        let second = logs_until(&host, |line| line.contains("answered"), LONG_WAIT);
+        assert!(
+            second.iter().any(|line| line.contains("answered")),
+            "the woken host serves later dispatches: {second:?}"
         );
     }
 
