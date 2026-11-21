@@ -38,11 +38,13 @@ pub enum Strip {
     GrabBar,
 }
 
-/// The surface column's stacking order: the status band always takes
-/// the slot **adjacent to the grab bar** — the free-edge-most band,
-/// whatever the tab strip's own pinning (status-bar criterion 1).
-/// `Auto` keeps the tab strip on the surface edge opposite the screen
-/// edge; a pin places it on its named side regardless of anchor.
+/// The surface column's stacking order: `Auto` keeps the historic
+/// layout — the tab strip beside the status band, the band taking the
+/// slot **adjacent to the grab bar** (the free-edge-most band, status
+/// bar criterion 1) — while a pin claims the extreme slot on its named
+/// side; when the pin claims the grab side the band yields one slot
+/// rather than covering it (the pin ruling, owner 2026-11-21: every
+/// dropdown entry reads differently on both edges).
 pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4] {
     match (edge, tab_position) {
         (Edge::Top, TabPosition::Top) => [
@@ -51,13 +53,25 @@ pub const fn column_stacking(edge: Edge, tab_position: TabPosition) -> [Strip; 4
             Strip::StatusBand,
             Strip::GrabBar,
         ],
-        (Edge::Top, TabPosition::Auto | TabPosition::Bottom) => [
+        (Edge::Top, TabPosition::Auto) => [
             Strip::Terminal,
             Strip::Tabs,
             Strip::StatusBand,
             Strip::GrabBar,
         ],
-        (Edge::Bottom, TabPosition::Top | TabPosition::Auto) => [
+        (Edge::Top, TabPosition::Bottom) => [
+            Strip::Terminal,
+            Strip::StatusBand,
+            Strip::Tabs,
+            Strip::GrabBar,
+        ],
+        (Edge::Bottom, TabPosition::Top) => [
+            Strip::GrabBar,
+            Strip::Tabs,
+            Strip::StatusBand,
+            Strip::Terminal,
+        ],
+        (Edge::Bottom, TabPosition::Auto) => [
             Strip::GrabBar,
             Strip::StatusBand,
             Strip::Tabs,
