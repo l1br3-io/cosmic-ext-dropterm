@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The GPUI frontend's startup dispatch (gpui-scaffold Task 3): the
-//! layer-shell guard, run before any GPUI initialization — the
-//! registry probe on this binary's own wayland-client connection,
-//! core's verdict, and the refuse-and-exit branch with the same
-//! message and exit code the libcosmic binary keeps (check 11's
-//! shape). A session without `zwlr_layer_shell_v1` never reaches the
-//! toolkit: no window, no bus name, no surface that fails to appear
-//! while `--is-visible` lies about it.
+//! The GPUI frontend's startup dispatch: the surface-strategy
+//! decision, run before any GPUI initialization — the registry probe
+//! on this binary's own wayland-client connection, core's verdict,
+//! and the refuse-and-exit branch for the one unbootable session (no
+//! Wayland connection at all), with the same message and exit code
+//! the guard era kept. A Wayland session without
+//! `zwlr_layer_shell_v1` returns [`Verdict::PlainWindow`] and boots
+//! the plain-window strategy; only the probe's error arm refuses.
 
 use wayland_client::globals::{self, GlobalListContents};
 use wayland_client::protocol::wl_registry;
@@ -51,18 +51,15 @@ pub(crate) fn startup_verdict() -> Result<Verdict, String> {
     Ok(transport::verdict(&names))
 }
 
-/// The startup guard: where the session cannot host the drawer, print
-/// core's unsupported-startup error (naming the missing protocol,
-/// linking the docs, carrying the probe reason only when the probe
-/// could not even ask) and refuse with the guard's exit code. Returns
-/// only on `Supported`.
-pub(crate) fn guard_or_exit() {
+/// The startup dispatch: probe the session and return the surface
+/// strategy it boots under. Refuses — core's unsupported-startup
+/// error naming the missing protocol, linking the docs, carrying the
+/// probe's reason, then exit 1 — only where the probe could not even
+/// ask: a session with no Wayland connection at all. Both verdicts
+/// are bootable; the caller threads the choice into the executor.
+pub(crate) fn surface_mode_or_exit() -> Verdict {
     match startup_verdict() {
-        Ok(Verdict::Supported) => {}
-        Ok(Verdict::UnsupportedHere) => {
-            eprintln!("{}", transport::unsupported_startup_error(None));
-            std::process::exit(1);
-        }
+        Ok(mode) => mode,
         Err(reason) => {
             eprintln!("{}", transport::unsupported_startup_error(Some(&reason)));
             std::process::exit(1);
@@ -75,12 +72,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_guard_refusal_is_core_message_plus_exit_one_shape() {
-        // The no-layer-shell branch keeps the guard's contract: the
-        // message is exactly core's (protocol named, docs linked, no
-        // probe reason when the roundtrip succeeded and the registry
-        // merely lacked the global), and the exit is the guard's 1 —
-        // the refuse arms both call exit(1), so what is testable
+    fn the_dispatch_refusal_is_core_message_plus_exit_one_shape() {
+        // The refusal (now the probe's error arm alone) keeps the
+        // guard-era contract: the message is exactly core's —
+        // protocol named, docs linked, the probe reason riding only
+        // when the probe could not even ask — and the exit is 1. The
+        // refuse arm itself calls exit(1), so what is testable
         // headless is that each refusal message is core's function of
         // its reason arm.
         let asked_and_no = transport::unsupported_startup_error(None);

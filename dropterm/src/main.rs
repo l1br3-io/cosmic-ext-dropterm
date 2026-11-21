@@ -130,11 +130,12 @@ fn main() {
         println!("{visible}");
         std::process::exit(i32::from(code));
     }
-    // The layer-shell guard, before any GPUI initialization — the
+    // The startup dispatch, before any GPUI initialization — the
     // probe takes its connection from the environment before the
-    // platform reads it, and an unsupported session never reaches the
-    // toolkit at all.
-    startup::guard_or_exit();
+    // platform reads it, and a session with no Wayland connection at
+    // all never reaches the toolkit. The verdict it returns is the
+    // surface strategy the executor runs under.
+    let surface_mode = startup::surface_mode_or_exit();
 
     // The control bus's launch half: on a throwaway connection decide
     // whether this launch is the instance (the ownership itself is
@@ -199,7 +200,7 @@ fn main() {
         .run(move |cx: &mut gpui::App| match check {
             Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
             Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
-            None => app_shell::boot(cx, exit_after, &phase, &tabs, verbs, startup),
+            None => app_shell::boot(cx, exit_after, &phase, &tabs, verbs, startup, surface_mode),
         });
     println!("dropterm: event loop exited cleanly");
 }

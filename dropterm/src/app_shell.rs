@@ -36,6 +36,7 @@ use dropterm::core::surface_lifecycle::{
     SurfaceInputs, SurfaceMachine, SurfaceState, shown_keyboard_mode,
 };
 use dropterm::core::tabs::TabId;
+use dropterm::core::transport::Verdict;
 use gpui::Focusable as _;
 use gpui_component::ActiveTheme as _;
 use gpui_component::Root as KitRoot;
@@ -76,6 +77,26 @@ type DrawerUpFn = Box<dyn Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App)>;
 pub(crate) fn exit_after_from_env(raw: Option<&str>) -> Option<Duration> {
     let ms: u64 = raw?.trim().parse().ok()?;
     (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+/// The plain strategy's output size: the first display's bounds, the
+/// wayland backend's registry order (its `primary_display` is
+/// unimplemented and returns `None`). Rounded display metadata, not
+/// the layer path's fractional-safe granted bounds — the accepted
+/// trade of sizing a toplevel with no measuring surface (the spec's
+/// plain-mode open question 3); `None` when the session advertises
+/// no display at all, a broken compositor the caller refuses on.
+fn primary_output(cx: &App) -> Option<(u32, u32)> {
+    let size = cx.displays().first()?.bounds().size;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a display's bounds px are non-negative and fit u32 by any display standard"
+    )]
+    Some((
+        size.width.as_f32().round() as u32,
+        size.height.as_f32().round() as u32,
+    ))
 }
 
 /// Whether the drag handlers may act: the decision layer's
@@ -217,6 +238,11 @@ pub(crate) struct Shell {
     /// [`queue_shell_actions`].
     deferred_actions: Vec<Action>,
     machine: SurfaceMachine,
+    /// The startup dispatch's pick, threaded in at boot: the
+    /// executor's strategy and the one inputs patch plain mode
+    /// carries (no slide — a toplevel cannot slide itself anywhere)
+    /// both key on it, at boot and on every config echo.
+    mode: Verdict,
     executor: GpuiExecutor,
     inputs: SurfaceInputs,
     /// The drag-walk driver's remaining pointer positions (see
@@ -340,6 +366,13 @@ pub(crate) struct Shell {
     /// handle stops holding it (the modal's own handle repairs the
     /// same way through `modal_focus`).
     rename_focus_repair: Option<gpui::FocusHandle>,
+    /// A respawn's departed pane's focus handle: the profile respawn
+    /// replaces its pane in place, so the departed handle belongs to
+    /// no live pane — the tab swap's repair (which reads the panes
+    /// map) can't see it. The render's repair hands the keyboard back
+    /// to the active pane while the dead id holds it, the rename
+    /// input's own shape.
+    respawn_focus_repair: Option<gpui::FocusHandle>,
     /// The confirm modal's keyboard handle — holds the keyboard while
     /// the modal waits (the pane's render-time claim defers to it),
     /// handed back to the active pane when the decision resolves.
@@ -636,7 +669,8 @@ impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn new(
         boot: Instant,
-        inputs: SurfaceInputs,
+        mode: Verdict,
+        mut inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         tab_count: Arc<Mutex<u32>>,
         verbs: Receiver<cli::Action>,
@@ -656,6 +690,19 @@ impl Shell {
         specs: SpecsWatch,
     ) -> Self {
         let applied_title_mode = config.tab_title_mode;
+        // The plain strategy's one inputs patch: no slide. A toplevel
+        // cannot slide itself off-screen (xdg-toplevel has no position
+        // API — the spec's plain-mode ceiling), so an armed slide
+        // would animate content inside a static rectangle — exactly
+        // the misread the layer path's transparent-root fix removed.
+        // Killing the flag here makes the decision layer's own gates
+        // do the work: every show is slide-less, every hide a
+        // destroy-now. The config-echo refresh re-applies it —
+        // `from_config` reads the user's toggle, which stays moot in
+        // this mode.
+        if mode == Verdict::PlainWindow {
+            inputs.slide_animation_enabled = false;
+        }
         // The booted fleet baked this opacity into its skins (the
         // live-opacity fix's baseline).
         let rendered_opacity = config.opacity;
@@ -673,7 +720,8 @@ impl Shell {
             last_bounds: None,
             deferred_actions: Vec::new(),
             machine: SurfaceMachine::default(),
-            executor: GpuiExecutor::new(),
+            mode,
+            executor: GpuiExecutor::with_mode(mode),
             inputs,
             tabs,
             panes,
@@ -708,6 +756,7 @@ impl Shell {
             settings_drawer: None,
             settings_capture_focus: settings_focus,
             rename_focus_repair: None,
+            respawn_focus_repair: None,
             modal_focus,
             status: dropterm::core::status::StatusSegments::default(),
             status_clock: None,
@@ -1163,6 +1212,13 @@ impl Shell {
         let zone_changed = old_zone != new_zone;
         let hold_changed = old_hold != new_hold;
         let drag_armed = self.machine.drag.is_some();
+        let mut new_inputs = new_inputs;
+        // The plain strategy's slide-less patch, re-applied (the
+        // constructor's own comment): `from_config` reads the user's
+        // toggle back in, and it stays moot in this mode.
+        if self.mode == Verdict::PlainWindow {
+            new_inputs.slide_animation_enabled = false;
+        }
         let mut intents =
             self.machine
                 .decide_reshape(old_geometry, new_inputs.geometry, drag_armed);
@@ -1858,6 +1914,19 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
             shell.update(cx, |shell, _| shell.executor.retire(handle));
             println!(
                 "dropterm: surface destroyed at +{}ms",
+                shell.read(cx).boot.elapsed().as_millis()
+            );
+        }
+        Action::Activate { handle } => {
+            // The plain strategy's focus-on-show: the platform's
+            // activation ask (the xdg-activation token path on
+            // wayland). Whether a compositor honors it from a
+            // D-Bus-forwarded toggle is Task 3's investigation —
+            // this arm makes the ask, loudly.
+            let window = shell.read(cx).executor.window_of(handle);
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+            println!(
+                "dropterm: window activated at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
         }
@@ -3170,6 +3239,12 @@ impl Shell {
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.title_override.clone());
         let request = view::PaneRequest::for_command(&command, respawn_cwd.clone(), &self.config);
+        // The repair seed, captured before the swap: the outgoing
+        // pane's keyboard dangles with its handle (the window's focus
+        // id stays on the unmounted element — nothing blurs it), and
+        // the incoming pane's claim defers to the holder. The render's
+        // repair consumes the slot (the rename input's own shape).
+        let departed_focus = self.panes.get(&id).map(|pane| pane.read(cx).focus_handle());
         let Some((_terminal, pane)) = view::boot_pane(
             cx,
             &self.config,
@@ -3188,6 +3263,7 @@ impl Shell {
         let shell = cx.entity().downgrade();
         pane.update(cx, |pane, _| pane.adopt_shell(shell));
         drop(self.panes.insert(id, pane));
+        self.respawn_focus_repair = departed_focus;
         let fields = dropterm::core::tabs::plan_respawn(
             self.config.tab_title_mode,
             id,
@@ -4873,6 +4949,23 @@ impl gpui::Render for Shell {
                 self.rename_focus_repair = Some(departed);
             }
         }
+        // The respawn's own repair: a profile respawn's departed
+        // pane hands the keyboard to the active pane the same way
+        // (its handle belongs to no live pane, so the tab swap's
+        // repair above can't catch it), and the slot drops once
+        // anything else holds the keyboard.
+        if let Some(departed) = self.respawn_focus_repair.take()
+            && departed.is_focused(window)
+        {
+            if let Some(pane) = self.active_pane() {
+                pane.read(cx).focus_handle().focus(window, cx);
+            }
+            // Keep watching until the repair lands (anything else
+            // holding the keyboard needs no repair).
+            if departed.is_focused(window) {
+                self.respawn_focus_repair = Some(departed);
+            }
+        }
         let pending = self.pending_close;
         let mut band = self.sliding_band(cx).into_any_element();
         if self.settings.open {
@@ -5644,6 +5737,7 @@ pub(crate) fn boot(
     tab_count: &Arc<Mutex<u32>>,
     verbs: Receiver<cli::Action>,
     startup: cli::Action,
+    surface_mode: Verdict,
 ) {
     let boot = Instant::now();
     let config_dir = dropterm::core::config::store::store_dir();
@@ -5747,6 +5841,7 @@ pub(crate) fn boot(
     let shell = cx.new(|cx| {
         Shell::new(
             boot,
+            surface_mode,
             inputs,
             Arc::clone(phase),
             Arc::clone(tab_count),
@@ -5767,6 +5862,26 @@ pub(crate) fn boot(
             specs,
         )
     });
+    // The plain strategy's retained output: display metadata stands
+    // in for the measuring pass (spec open question 3's ruling — no
+    // measuring surface exists for a toplevel, and the layer path's
+    // fractional-safe stretch has no Normal twin). The machine's
+    // retained-output arm then makes every show the steady-state
+    // direct open — no Measuring state, no probe window. The layer
+    // path never reads display metadata (its probe is the
+    // fractional-safe read); this is the one mode-gated exception.
+    if surface_mode == Verdict::PlainWindow {
+        let Some(output) = primary_output(cx) else {
+            eprintln!("dropterm: no display available to size the plain window under; exiting");
+            cx.quit();
+            return;
+        };
+        println!(
+            "dropterm: plain-window mode: retained output {output:?} from display metadata \
+             (no measuring pass)"
+        );
+        shell.update(cx, |shell, _| shell.machine.output_size = Some(output));
+    }
     // The keyboard's shell verbs ride the weak handle (the
     // shell-chords slice): the boot-time fleet (the first tab and
     // every restored pane) predates the shell entity, so the panes
@@ -5972,6 +6087,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -6087,6 +6203,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -6219,6 +6336,113 @@ mod tests {
             assert!(
                 engine.lock().expect("engine lock").needs_update,
                 "the re-paste must reach the engine's paste funnel"
+            );
+        });
+    }
+
+    #[gpui::test]
+    #[ignore = "the respawn's two live PTY reader threads (the swapped-out pane's and the respawned pane's) cannot satisfy the gpui test scheduler's thread-affinity gate across the suite: every assertion runs and passes, then a surviving reader trips the gate in a later test — read the stdout, not the exit code (just test a_profile_respawn -- --ignored)"]
+    fn a_profile_respawn_seeds_the_departed_pane_repair(cx: &mut gpui::TestAppContext) {
+        // The respawn's keyboard hand-off (the switch-profile focus
+        // loss): the swap drops its pane in place, so the departed
+        // handle belongs to no live pane — the tab swap's repair reads
+        // the panes map and cannot see it — and the render's repair
+        // needs the slot instead. The swap must seed the slot with the
+        // departed pane's handle, never the respawned pane's.
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig {
+            shell: Some("/bin/sh".to_string()),
+            profiles: vec![dropterm::core::profile::Profile {
+                name: "sh".to_owned(),
+                command: "/bin/sh".to_owned(),
+                cwd: None,
+                color_scheme: None,
+                env: None,
+                font_size: None,
+                scrollback_lines: None,
+            }],
+            ..DropTermConfig::default()
+        };
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        let tab = tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    ("cosmic-dark".to_string(), true),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                )
+            })
+        });
+
+        // One real pane behind the scaffold's tab (the active one):
+        // the respawn replaces exactly it.
+        let old_handle = cx.update(|_window, cx| {
+            let request = view::PaneRequest::for_command(
+                &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
+                None,
+                &config,
+            );
+            let (_terminal, pane) =
+                view::boot_pane(cx, &config, request, None, tab, None).expect("boot the pane");
+            let handle = pane.read(cx).focus_handle();
+            shell.update(cx, |shell, _| {
+                shell.panes.insert(tab, pane);
+            });
+            handle
+        });
+
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.switch_tab_profile(tab, 0, cx);
+            });
+        });
+        cx.update(|_window, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.respawn_focus_repair,
+                Some(old_handle.clone()),
+                "the respawn must seed the repair slot with the departed pane's handle"
+            );
+            let new_handle = shell
+                .panes
+                .get(&tab)
+                .map(|pane| pane.read(cx).focus_handle());
+            assert_ne!(
+                new_handle,
+                Some(old_handle),
+                "the respawn must replace the pane, not keep it"
+            );
+            assert_ne!(
+                shell.respawn_focus_repair, new_handle,
+                "the repair slot must never carry the respawned pane's own handle"
             );
         });
     }
@@ -6766,6 +6990,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -6859,6 +7084,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -6942,6 +7168,7 @@ mod tests {
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
@@ -7110,6 +7337,7 @@ mod tests {
             let shell = cx.new(|_| {
                 Shell::new(
                     Instant::now(),
+                    Verdict::LayerShell,
                     SurfaceInputs::from_config(config),
                     Arc::new(Mutex::new(SurfacePhase::Hidden)),
                     Arc::new(Mutex::new(0u32)),
