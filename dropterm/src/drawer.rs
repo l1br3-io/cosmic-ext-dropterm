@@ -904,7 +904,6 @@ fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
-        ConfigKey::ShowInDock => config.show_in_dock,
         ConfigKey::StatusBarEnabled => config.status_bar_enabled,
         ConfigKey::TabBarBorder => config.tab_bar_border,
         ConfigKey::StatusBarBorder => config.status_bar_border,

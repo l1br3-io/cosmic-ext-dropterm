@@ -1,5 +1,5 @@
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A per-test scratch store directory under the system temp dir
@@ -1348,4 +1348,118 @@ fn a_disabled_commands_toggle_round_trips_through_the_config_store() {
     let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
     assert!(!loaded.autosuggestions_commands_enabled);
+}
+
+// The dock-presence removal's two pins (dock-presence-removal
+// spec): the mechanism — config key, settings row, the 1×1 anchor
+// toplevel, the tick's sync — is gone whole, and these hold it
+// gone: old files keep loading, and the identifiers never creep
+// back into the source.
+
+/// The config-file spelling of the removed presence key, split so
+/// this file never spells it contiguously — the drift gate below
+/// walks this file like any other source.
+fn stale_dock_key() -> String {
+    ["show_in", "_dock"].concat()
+}
+
+/// Every identifier of the removed mechanism, both spellings,
+/// assembled the same split way.
+fn removed_presence_identifiers() -> [String; 6] {
+    [
+        stale_dock_key(),
+        ["Show", "InDock"].concat(),
+        ["Dock", "Anchor"].concat(),
+        ["anchor", "_action"].concat(),
+        ["sync_dock", "_anchor"].concat(),
+        ["dock", "_anchor"].concat(),
+    ]
+}
+
+#[test]
+fn a_stale_dock_presence_key_still_loads_and_other_keys_apply() {
+    // The removal's migration story: a config written by a version
+    // that had the presence key still carries it. The section has
+    // no `deny_unknown_fields`, so serde ignores the unknown key,
+    // the file loads clean (no quarantine — only unparseable
+    // sections move aside), and every surviving key applies.
+    let dir = TempDir::new("stale-presence-key");
+    let stale = stale_dock_key();
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        &format!("(height_percent: 70, {stale}: true, opacity: 55)"),
+    );
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded.height_percent, 70);
+    assert_eq!(loaded.opacity, 55);
+    assert!(
+        dir.join(store::SETTINGS_FILE).exists(),
+        "the stale-key file loads, it is not quarantined"
+    );
+    assert!(!dir.join("config.ron.bak").exists());
+}
+
+/// Every `.rs` file under this crate's `src/` as (`src/…` path,
+/// text), sorted for deterministic failures — the drift gate's
+/// enumeration.
+fn crate_sources() -> Vec<(String, String)> {
+    fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir)
+            .expect("read the source dir")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    walk(&crate_dir.join("src"), &mut found);
+    found.sort();
+    found
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).expect("read the source file");
+            let relative = path
+                .strip_prefix(crate_dir)
+                .expect("the walk stays under the crate dir");
+            (relative.display().to_string(), text)
+        })
+        .collect()
+}
+
+#[test]
+fn the_dock_presence_mechanism_stays_out_of_the_source() {
+    // None of the removed mechanism's identifiers may reappear
+    // anywhere under this crate's source — a partial
+    // reintroduction (the key without its toplevel, say) fails
+    // here rather than half-working.
+    let sources = crate_sources();
+    // Non-vacuous: the walk must cover the files that carried the
+    // mechanism, or an emptied enumeration would pass for clean.
+    for carrier in [
+        "src/app_shell.rs",
+        "src/core/settings.rs",
+        "src/core/config.rs",
+        "src/drawer.rs",
+    ] {
+        assert!(
+            sources.iter().any(|(path, _)| path == carrier),
+            "{carrier} missing from the source walk"
+        );
+    }
+    for (path, text) in &sources {
+        for identifier in removed_presence_identifiers() {
+            assert!(
+                !text.contains(&identifier),
+                "{path} spells `{identifier}` — the dock-presence mechanism is removed whole"
+            );
+        }
+    }
 }

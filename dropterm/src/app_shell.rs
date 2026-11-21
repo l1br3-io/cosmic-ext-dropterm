@@ -454,12 +454,6 @@ pub(crate) struct Shell {
     /// baseline, seeded at boot so a restored fleet writes nothing
     /// until it truly changes).
     session_written: Option<SessionShape>,
-    /// The dock-presence body's handle (shell-presence spec, item 9
-    /// ruled replicate 2026-11-15): `Some` while the 1×1 toplevel
-    /// stands, `None` in the hidden mode (the drawer's layer
-    /// surfaces are invisible to the toplevel listings by protocol —
-    /// no body needed there).
-    dock_anchor: Option<gpui::WindowHandle<DockAnchor>>,
     /// The RAM watch (ram-telemetry): the sampler writing the bounded
     /// rotating log under XDG state — always-on in release by the
     /// 2026-11-17 owner ruling, sampled on the tick's own cadence
@@ -520,65 +514,6 @@ fn session_shape(tabs: &tab_bar::TabList) -> SessionShape {
             .collect(),
         tabs.active_index(),
     )
-}
-
-/// What the tick's dock-anchor sync owes (shell-presence spec, item 9
-/// ruled replicate 2026-11-15): the config's `show_in_dock` against
-/// the live body decides — open the presence, close it, or keep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AnchorAction {
-    /// `show_in_dock` turned on with no body live: open the toplevel.
-    Open,
-    /// It turned off with a body live: close it.
-    Close,
-    /// The config and the body already agree.
-    Keep,
-}
-
-/// The swap rule itself — pure, pinned headless.
-fn anchor_action(show_in_dock: bool, live: bool) -> AnchorAction {
-    match (show_in_dock, live) {
-        (true, false) => AnchorAction::Open,
-        (false, true) => AnchorAction::Close,
-        _ => AnchorAction::Keep,
-    }
-}
-
-/// The dock-presence body's root view (shell-presence spec, the
-/// replicate ruling): an empty div — the presence is the point, a
-/// mapped 1×1 toplevel the listing protocols (and only they) can
-/// see.
-struct DockAnchor;
-
-impl gpui::Render for DockAnchor {
-    fn render(
-        &mut self,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
-        gpui::div()
-    }
-}
-
-/// The dock body's window shape (the libcosmic
-/// `clipboard_anchor_settings` port): 1×1, undecorated, immovable,
-/// never stealing focus — mapped, because mapping is what the dock
-/// and switcher list.
-fn anchor_window_options() -> gpui::WindowOptions {
-    gpui::WindowOptions {
-        titlebar: None,
-        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
-            origin: gpui::point(px(0.), px(0.)),
-            size: gpui::Size::new(px(1.), px(1.)),
-        })),
-        app_id: Some(dropterm::core::APP_ID.to_string()),
-        focus: false,
-        show: true,
-        kind: gpui::WindowKind::Normal,
-        is_movable: false,
-        is_resizable: false,
-        ..Default::default()
-    }
 }
 
 /// The specs provider's table (the app-owned completions load):
@@ -778,7 +713,6 @@ impl Shell {
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
-            dock_anchor: None,
             // The booted fleet is the baseline: a restored session
             // writes nothing until it truly changes.
             session_written: Some(session_written),
@@ -1431,37 +1365,6 @@ impl Shell {
             &state,
         ) {
             println!("dropterm: failed to write session file: {err}");
-        }
-    }
-
-    /// The dock-anchor sync (shell-presence spec, item 9 ruled
-    /// replicate 2026-11-15; the tick's apply point so a config echo
-    /// flips the entry at the echo itself): `show_in_dock` on opens
-    /// the 1×1 toplevel the dock and switcher list; off closes it.
-    /// GPUI's clipboard needs no anchor either way (check 8: the
-    /// gate is focus+serial, the terminal satisfies it, and
-    /// unfocused copies ride data-control) — presence is this
-    /// body's whole duty here.
-    fn sync_dock_anchor(&mut self, cx: &mut Context<Self>) {
-        match anchor_action(self.config.show_in_dock, self.dock_anchor.is_some()) {
-            AnchorAction::Open => {
-                match cx.open_window(anchor_window_options(), |_, cx| cx.new(|_| DockAnchor)) {
-                    Ok(handle) => {
-                        println!("dropterm: dock presence opened (the 1x1 toplevel stands)");
-                        self.dock_anchor = Some(handle);
-                    }
-                    Err(err) => {
-                        println!("dropterm: dock presence open failed: {err:?}");
-                    }
-                }
-            }
-            AnchorAction::Close => {
-                if let Some(handle) = self.dock_anchor.take() {
-                    println!("dropterm: dock presence closed (hidden mode)");
-                    let _ = handle.update(cx, |_, window, _| window.remove_window());
-                }
-            }
-            AnchorAction::Keep => {}
         }
     }
 
@@ -5896,10 +5799,6 @@ pub(crate) fn boot(
     for pane in boot_panes {
         pane.update(cx, |pane, _| pane.adopt_shell(weak.clone()));
     }
-    // The dock presence (item 9's replicate ruling): the boot-time
-    // sync opens the body for a dock-mode config without waiting for
-    // the tick's first pass.
-    shell.update(cx, Shell::sync_dock_anchor);
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
     // come and go; the shell owns the machine and must not).
@@ -5926,9 +5825,6 @@ pub(crate) fn boot(
                 shell.update(cx, Shell::drain_completions);
                 // gpui-parity Task 3: the debounced session save.
                 shell.update(cx, Shell::pump_session_save);
-                // The dock presence rides the same tick (item 9's
-                // replicate ruling): a config echo flips the entry.
-                shell.update(cx, Shell::sync_dock_anchor);
                 // gpui-tabs Task 1: the tab titles sync on the same
                 // apply point — each pane's report and cwd polled,
                 // re-resolved through core only on a move.
@@ -6014,17 +5910,6 @@ mod tests {
                 "the Kit's window frame must not paint over the slide's canvas"
             );
         });
-    }
-
-    #[test]
-    fn the_dock_anchor_swap_rule_is_exact() {
-        // The replicate ruling's flip rule: on-without opens,
-        // off-with closes, agreement keeps — both agreements, so an
-        // echo never churns the body.
-        assert_eq!(anchor_action(true, false), AnchorAction::Open);
-        assert_eq!(anchor_action(false, true), AnchorAction::Close);
-        assert_eq!(anchor_action(true, true), AnchorAction::Keep);
-        assert_eq!(anchor_action(false, false), AnchorAction::Keep);
     }
 
     #[test]

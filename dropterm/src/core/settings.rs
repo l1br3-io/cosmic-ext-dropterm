@@ -138,7 +138,6 @@ impl Section {
                 ConfigKey::ImagesEnabled,
             ],
             Section::Advanced => &[
-                ConfigKey::ShowInDock,
                 ConfigKey::RespectPanel,
                 ConfigKey::Layer,
                 ConfigKey::KeyboardMode,
@@ -243,11 +242,6 @@ pub enum ConfigKey {
     Layer,
     KeyboardMode,
     RespectPanel,
-    /// The shell-presence toggle (shell-presence spec) — the Advanced
-    /// card's leading row: on keeps a dock and switcher entry, off
-    /// swaps the clipboard anchor for an invisible layer surface. The
-    /// flip applies live (the anchor swaps on the echo).
-    ShowInDock,
     ColorSchemeDark,
     ColorSchemeLight,
     ThemePreference,
@@ -447,7 +441,6 @@ impl ConfigKey {
             ConfigKey::Layer => "layer",
             ConfigKey::KeyboardMode => "keyboard_mode",
             ConfigKey::RespectPanel => "respect_panel",
-            ConfigKey::ShowInDock => "show_in_dock",
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
@@ -519,10 +512,6 @@ pub enum PlannedWrite {
     Layer(Layer),
     KeyboardMode(KeyboardMode),
     RespectPanel(bool),
-    /// The shell-presence flip (shell-presence spec): the clipboard
-    /// anchor swaps bodies live on the echo — whatever is on the
-    /// clipboard at flip time is lost once, the documented cost.
-    ShowInDock(bool),
     ColorSchemeDark(String),
     ColorSchemeLight(String),
     ThemePreference(ThemePreference),
@@ -625,7 +614,6 @@ impl PlannedWrite {
             PlannedWrite::Layer(_) => ConfigKey::Layer,
             PlannedWrite::KeyboardMode(_) => ConfigKey::KeyboardMode,
             PlannedWrite::RespectPanel(_) => ConfigKey::RespectPanel,
-            PlannedWrite::ShowInDock(_) => ConfigKey::ShowInDock,
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
@@ -762,7 +750,6 @@ impl PlannedWrite {
             PlannedWrite::Layer(value) => section.layer = *value,
             PlannedWrite::KeyboardMode(value) => section.keyboard_mode = *value,
             PlannedWrite::RespectPanel(value) => section.respect_panel = *value,
-            PlannedWrite::ShowInDock(value) => section.show_in_dock = *value,
             PlannedWrite::ColorSchemeDark(value) => section.color_scheme_dark.clone_from(value),
             PlannedWrite::ColorSchemeLight(value) => section.color_scheme_light.clone_from(value),
             PlannedWrite::ThemePreference(value) => section.theme_preference = *value,
@@ -1056,9 +1043,6 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // re-arms the wait — no restart needed.
         | ConfigKey::AutosuggestionsDelayMs
         | ConfigKey::ThemePreference
-        // The presence flip swaps the anchor on the echo itself
-        // (shell-presence spec): destroy, reopen, rebind — live.
-        | ConfigKey::ShowInDock
         // The panel-respect flip rezones a shown surface on the echo
         // itself (the `Rezone` intent, one recreate with the shape
         // standing); a hidden surface picks the zone up at its next
@@ -2488,7 +2472,6 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::SettingsDrawerClickClose(checked))
         }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
-        ConfigKey::ShowInDock => Some(PlannedWrite::ShowInDock(checked)),
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
@@ -2625,7 +2608,6 @@ impl ConfigKey {
                 "Close the settings drawer by clicking the terminal"
             }
             ConfigKey::RespectPanel => "Respect panel",
-            ConfigKey::ShowInDock => "Show in dock and window switcher",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
             ConfigKey::DefaultCwd => "Default directory",
