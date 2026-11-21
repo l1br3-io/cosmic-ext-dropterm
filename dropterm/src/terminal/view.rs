@@ -2950,7 +2950,7 @@ mod tests {
         let sink =
             std::env::temp_dir().join(format!("dropterm-tab-pin-{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&sink);
-        let (_terminal, pane) = cx
+        let (terminal, pane) = cx
             .update(|cx| {
                 let request = PaneRequest {
                     program: "/bin/sh".to_string(),
@@ -3031,7 +3031,7 @@ mod tests {
         // (pasted_paths' ignore note is this race). Leaking the Arc
         // parks the reader for good — no exit, no wake — and the
         // binary's own exit reaps the child.
-        std::mem::forget(_terminal);
+        std::mem::forget(terminal);
         let _ = std::fs::remove_file(&sink);
     }
 
