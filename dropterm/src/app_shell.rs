@@ -390,6 +390,13 @@ pub(crate) struct Shell {
     /// queue's own action through [`tray_verb`] — the render loop
     /// never calls into the tray, the channel is the only bridge.
     tray_actions: Receiver<crate::tray::TrayAction>,
+    /// When a focus-loss hide last hid the surface (the tray-click
+    /// fix): the click that activates the tray unfocuses a shown
+    /// surface, so [`tray_toggle_swallowed`] can pair the two halves
+    /// of one click — the focus-loss hide and the Toggle that follows
+    /// it — instead of letting the Toggle re-show what its own click
+    /// just hid.
+    focus_loss_hide_at: Option<Instant>,
     /// The status band's resolved segments (gpui-status Task 1):
     /// assembled on the tick from the active pane's engine and the
     /// config — the render path performs zero filesystem reads by
@@ -725,6 +732,7 @@ impl Shell {
             exit_at: exit_after.map(|after| boot + after),
             quit_at: None,
             tray_actions,
+            focus_loss_hide_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
             session_due: None,
@@ -834,9 +842,26 @@ impl Shell {
         // bypassing peel — one dispatch path, two arrival wires. Help
         // is not a verb: it arrives as the About window's open action,
         // applied at the tick's App-level point like every window
-        // open (T4, the `apply_action` region's rule).
+        // open (T4, the `apply_action` region's rule). A Toggle the
+        // click's own focus loss already satisfied is swallowed
+        // (only the tray's — a click on the icon unfocuses the
+        // surface, a forwarded verb never does).
         while let Ok(action) = self.tray_actions.try_recv() {
             if let Some(verb) = tray_verb(action) {
+                if matches!(verb, cli::Action::Toggle)
+                    && tray_toggle_swallowed(
+                        &self.machine.state,
+                        self.focus_loss_hide_at,
+                        Instant::now(),
+                    )
+                {
+                    println!(
+                        "dropterm: tray toggle swallowed — the same click's focus loss \
+                         already hid the surface at +{}ms",
+                        self.boot.elapsed().as_millis()
+                    );
+                    continue;
+                }
                 self.dispatch(cx, verb, &mut actions, &mut tab_verbs);
             } else {
                 println!(
@@ -876,6 +901,10 @@ impl Shell {
                     self.boot.elapsed().as_millis()
                 );
                 if hide {
+                    // Stamped for the tray-click fix: the tray Toggle
+                    // that can follow this hide within the same click
+                    // consults the timestamp ([`tray_toggle_swallowed`]).
+                    self.focus_loss_hide_at = Some(Instant::now());
                     let intents = self.machine.decide_hide(self.inputs);
                     self.execute_into(intents, &mut actions);
                 }
@@ -1667,6 +1696,27 @@ fn tray_verb(action: crate::tray::TrayAction) -> Option<cli::Action> {
         crate::tray::TrayAction::Quit => Some(cli::Action::Quit),
         crate::tray::TrayAction::Help => None,
     }
+}
+
+/// Whether a tray Toggle arriving against a hidden-or-hiding surface
+/// is swallowed by the SAME click's focus-loss hide: the click that
+/// activates the tray also unfocuses the shown surface (the host
+/// shell takes the pointer at press, the SNI `Activate` arrives at
+/// release), so with `hide_on_focus_loss` on, a hide-click lands as a
+/// focus-loss hide first — the surface `Hiding` its slide-out or
+/// already `Hidden` — and the Toggle a tick later; without the
+/// swallow, the Toggle re-shows (or reverse-shows) what its own click
+/// just hid. The window is the toggle debounce's own
+/// same-interaction span: a later, deliberate click shows normally.
+fn tray_toggle_swallowed(
+    state: &SurfaceState,
+    focus_loss_hide_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    matches!(state, SurfaceState::Hidden | SurfaceState::Hiding(_))
+        && focus_loss_hide_at.is_some_and(|at| {
+            now.duration_since(at) < dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE
+        })
 }
 
 /// One mouse-handler step against the shell: mutate under the
@@ -6901,6 +6951,104 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&state).ok();
+    }
+
+    #[test]
+    fn a_tray_toggle_is_swallowed_only_over_a_fresh_focus_loss_hide() {
+        // The tray click's two halves (owner report 2026-11-21, "not
+        // handling show/hide properly"): the press unfocuses the
+        // shown surface — with `hide_on_focus_loss` on, the hide
+        // funnel fires a tick before the SNI `Activate`'s Toggle
+        // arrives — and the Toggle, dispatched against the just-hidden
+        // surface, would re-show what the same click just hid. The
+        // swallow covers exactly that pairing: hidden NOW, hidden by
+        // a focus loss JUST NOW. A plain hidden toggle (no focus loss
+        // behind it), a stale one (the window past), and a shown
+        // surface's toggle all pass through untouched.
+        use dropterm::core::intent::SurfaceHandle;
+        use dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE;
+        let now = Instant::now();
+        let shown = SurfaceState::Shown(SurfaceHandle::next());
+        let hiding = SurfaceState::Hiding(SurfaceHandle::next());
+        let hidden = SurfaceState::Hidden;
+        assert!(
+            tray_toggle_swallowed(&hidden, Some(now), now),
+            "the same click's focus-loss hide swallows its own Toggle"
+        );
+        assert!(
+            tray_toggle_swallowed(&hiding, Some(now), now),
+            "the slide-out the focus loss started swallows it too — the Toggle \
+             would otherwise reverse-show the hide mid-flight"
+        );
+        assert!(
+            !tray_toggle_swallowed(&shown, Some(now), now),
+            "a shown surface's toggle is never swallowed"
+        );
+        assert!(
+            !tray_toggle_swallowed(&hidden, None, now),
+            "a plain hidden toggle — the summon — still shows"
+        );
+        let stale = now
+            .checked_sub(TOGGLE_DEBOUNCE + Duration::from_millis(50))
+            .expect("an instant comfortably before the window");
+        assert!(
+            !tray_toggle_swallowed(&hidden, Some(stale), now),
+            "a focus-loss hide outside the window no longer swallows"
+        );
+    }
+
+    #[gpui::test]
+    fn a_tray_click_hides_once_not_hide_then_reshow(cx: &mut gpui::TestAppContext) {
+        // The end-to-end repro of the owner's report: shown and
+        // focused, the tray click's press unfocuses the surface (the
+        // focus-loss hide fires on the next pump), then the click's
+        // release delivers the SNI Activate's Toggle (the pump after
+        // that). The end state must be hidden — once — never the
+        // hide-then-reshow flicker the two independent signals
+        // produced without coalescing.
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        // Consume the startup toggle on its own pump.
+        cx.update(|_window, cx| {
+            shell.update(cx, Shell::pump);
+        });
+        // The state a real show leaves: shown on a handle, the focus
+        // latch armed by the map-time GAINED.
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.machine.state =
+                    SurfaceState::Shown(dropterm::core::intent::SurfaceHandle::next());
+                shell.machine.focused = true;
+                shell.focus_lost = true;
+            });
+        });
+        // The click's first half: the press's activation loss runs
+        // the focus-loss hide (the default config arms it) — the
+        // surface enters its slide-out, `Hiding`.
+        let hidden_by_focus_loss = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            matches!(
+                cx.update(|_window, cx| shell.read(cx).machine.state),
+                SurfaceState::Hiding(_) | SurfaceState::Hidden
+            ),
+            "the focus-loss half of the click hides (hide_on_focus_loss is on by default)"
+        );
+        assert!(
+            !hidden_by_focus_loss.quit,
+            "sanity: the focus-loss hide is not a quit"
+        );
+        // The click's second half: the release's Activate Toggle. It
+        // must be swallowed by its own click's focus-loss hide — not
+        // re-show the surface the same click just hid.
+        tray.send(crate::tray::TrayAction::Toggle)
+            .expect("the tray activation queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            matches!(
+                cx.update(|_window, cx| shell.read(cx).machine.state),
+                SurfaceState::Hiding(_) | SurfaceState::Hidden
+            ),
+            "the tray Toggle after its own focus-loss hide stays hidden — no re-show"
+        );
     }
 
     #[test]
