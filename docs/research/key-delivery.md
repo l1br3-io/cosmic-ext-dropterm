@@ -343,3 +343,30 @@ PTY — the Root's traversal binding ate them upstream of the pane's
 `on_key`, the same death the archived capture showed ten times over.
 Red on the full suite: 211 passed, 1 failed (the pin), nothing else
 touched.
+
+## Task 11 (B3): the fix works, parked at the suite gate
+
+The arm landed 2026-11-21 and turns the pin green exactly as drawn:
+`terminal/view.rs` gains the pane's Tab claim (`bind_pane_keys`:
+`"tab"`/`"shift-tab"` bound in a new `"Terminal"` key context on the
+pane's frame, the handlers forwarding platform-shaped tab keystrokes
+into `on_key` — the suggest menu's Accept-first and the chord table
+apply unchanged), and `app_shell.rs`'s boot registers it once beside
+the Kit init (the chunk's file list gains that one line; flagged at
+review). The pin passes 20/20 standalone with its own harness
+defusals (the engine Arc leaked past the gate, the witness booted
+echo-silent — the record's anatomy section says why).
+
+The landing stopped at `just check`, which cannot run green today:
+the suite carries a pre-existing flake class — pane-booting gpui
+tests tripping the test scheduler's thread-affinity gate whenever a
+foreign-thread wake (PTTY reader send or drop, a generator waiter's
+nudge) lands inside an executor poll window. Measured: the repaste
+pair 0/10 alone but 5/8 even on the tree without this fix; the pin's
+concurrency widens the windows. Per-test defusal moved the flake
+(font test, unnamed threads) rather than closing it. Owner call
+(2026-11-21, structured ask): **root-fix the class first** —
+diagnosed and parked in its own record,
+[pty-test-gate](pty-test-gate.md), awaiting `/spec`. Task 11's diff
+sits uncommitted in the checkout; its commit lands on a truly green
+gate, then Task 12 (owner walk, Checkpoint 2) follows.
