@@ -198,6 +198,12 @@ pub(crate) struct TerminalPane {
     /// one `RenderImage` per engine image id, shared into the paint
     /// closure like the walk log.
     image_cache: Arc<Mutex<super::images::ImageCache>>,
+    /// The pane's window-space origin the last frame painted — the
+    /// pointer handlers' window→pane conversion input. GPUI's mouse
+    /// events carry window coordinates (the status band's own
+    /// conversion is the precedent), and the pane sits below the strip
+    /// and the bands; zero until the first frame paints.
+    viewport_origin: Arc<Mutex<gpui::Point<Pixels>>>,
     /// The effective chords (defaults + the config overlay).
     binds: std::collections::HashMap<Chord, TermAction>,
     /// The pane's engine options, retained for the zoom pass's
@@ -350,6 +356,7 @@ impl TerminalPane {
             title: None,
             walk_log: Arc::new(Mutex::new(WalkLog::default())),
             image_cache: Arc::new(Mutex::new(super::images::ImageCache::default())),
+            viewport_origin: Arc::new(Mutex::new(point(px(0.), px(0.)))),
             binds,
             options,
             focus,
@@ -1241,6 +1248,20 @@ impl TerminalPane {
 }
 
 impl TerminalPane {
+    /// A pointer event's window-space position onto the pane's own
+    /// coordinates (the conversion the cell arithmetic must run on):
+    /// GPUI's mouse events carry window coordinates, and the pane
+    /// sits below the strip and the bands — the painted origin is the
+    /// frame's truth, captured fresh every frame by the paint.
+    fn pane_local(&self, position: gpui::Point<Pixels>) -> gpui::Point<Pixels> {
+        let origin = *self.viewport_origin.lock().expect("pane origin");
+        let (x, y) = selection::pane_local(
+            (position.x.as_f32(), position.y.as_f32()),
+            (origin.x.as_f32(), origin.y.as_f32()),
+        );
+        point(px(x), px(y))
+    }
+
     /// The child-owns-pointer gate (the widget's rule, verbatim): a
     /// mouse-reporting program owns the pointer unless Shift is held
     /// — the standard bypass so a selection can form under a
@@ -1257,13 +1278,15 @@ impl TerminalPane {
     }
 
     /// One pointer event the child owns through the core encoder, at
-    /// the cell the position lands in.
+    /// the cell the position lands in (the window→pane conversion
+    /// first — the position arrives in window coordinates).
     fn report_pointer(
         &mut self,
         event: PointerEvent,
         position: gpui::Point<gpui::Pixels>,
         modifiers: gpui::Modifiers,
     ) {
+        let position = self.pane_local(position);
         let terminal = self.terminal.lock().expect("engine lock");
         let size = terminal.size();
         let (col, row) = selection::cell_at(
@@ -1317,6 +1340,10 @@ impl TerminalPane {
                 modifiers.shift
             );
         }
+        // The window→pane conversion (the status band's own shape):
+        // the event arrives in window coordinates and the cell
+        // arithmetic runs on the pane's own space.
+        let position = self.pane_local(position);
         if self.pointer_child_owns(modifiers.shift) {
             self.reporting_gesture = true;
             self.report_pointer(PointerEvent::Pressed(neutral), position, modifiers);
@@ -1392,11 +1419,13 @@ impl TerminalPane {
     }
 
     /// A drag motion while the left button holds: extend the
-    /// selection to the pointer's cell.
+    /// selection to the pointer's cell (the window→pane conversion
+    /// first — the position arrives in window coordinates).
     fn on_left_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         if !self.dragging {
             return;
         }
+        let position = self.pane_local(position);
         {
             let mut terminal = self.terminal.lock().expect("engine lock");
             let size = terminal.size();
@@ -1507,6 +1536,7 @@ impl TerminalPane {
             *term.mode()
         };
         if mode.intersects(TermMode::MOUSE_MODE) {
+            let position = self.pane_local(position);
             let terminal = self.terminal.lock().expect("engine lock");
             let size = terminal.size();
             let (col, row) = selection::cell_at(
@@ -1593,6 +1623,7 @@ impl gpui::Render for TerminalPane {
         let skin = self.skin.clone();
         let walk_log = Arc::clone(&self.walk_log);
         let image_cache = Arc::clone(&self.image_cache);
+        let viewport_origin = Arc::clone(&self.viewport_origin);
         let pane = cx.entity();
         // The focusable frame: keys and the pointer route to the
         // pane, the canvas
@@ -1748,6 +1779,7 @@ impl gpui::Render for TerminalPane {
                         &skin,
                         &walk_log,
                         &image_cache,
+                        &viewport_origin,
                         bounds,
                         window,
                         cx,
@@ -1769,15 +1801,25 @@ impl gpui::Render for TerminalPane {
     clippy::too_many_lines,
     reason = "the frame reads one lock and one geometry end to end; the walk, the overlay, and the evidence rows are one pass"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the frame's shared handles each stand alone at the call site; a param struct would bundle five unrelated Arcs"
+)]
 fn paint_pane(
     terminal: &Arc<Mutex<Terminal>>,
     skin: &PaneSkin,
     walk_log: &Arc<Mutex<WalkLog>>,
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
+    viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
 ) {
+    // The pane's window-space origin, this frame's truth: the pointer
+    // handlers convert window coordinates through it (GPUI's mouse
+    // events carry window coordinates; the painted bounds are the
+    // slide-aware layout, the slide's `top` included).
+    *viewport_origin.lock().expect("pane origin") = bounds.origin;
     let mut terminal = terminal.lock().expect("engine lock");
     let granted = resize_to_bounds(&mut terminal, bounds);
     // The pin funnel's settle close (the fresh-start trace's shape):
