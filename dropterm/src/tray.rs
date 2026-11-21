@@ -15,6 +15,11 @@
 
 use std::sync::mpsc::Sender;
 
+use gpui::prelude::*;
+use gpui::{App, Styled, Window, px};
+use gpui_component::ActiveTheme as _;
+use gpui_component::v_flex;
+
 /// The tray menu's neutral vocabulary — no ksni types cross this
 /// line. The render loop's verb queue is the one sink; the Phase 4/5
 /// native trays implement the same enum against `tray-icon`.
@@ -24,13 +29,6 @@ pub(crate) enum TrayAction {
     /// the menu item both land here).
     Toggle,
     /// Open the About window (plain toplevel, never a layer surface).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed from the menu again once T4's About window lands"
-        )
-    )]
     Help,
     /// The clean quit: session persisted, then the event loop ends.
     Quit,
@@ -253,7 +251,7 @@ pub(crate) fn spawn_linux(sink: Sender<TrayAction>) -> TrayPresence {
     let menu = TrayMenu::new(
         title,
         dropterm::core::APP_ID,
-        &[TrayAction::Toggle, TrayAction::Quit],
+        &[TrayAction::Toggle, TrayAction::Help, TrayAction::Quit],
     );
     let presence = Sni.present(menu, sink);
     if matches!(presence, TrayPresence::Registered) {
@@ -277,6 +275,112 @@ impl TrayBackend for RecordingTray {
             TrayPresence::Registered
         } else {
             TrayPresence::NoHost
+        }
+    }
+}
+
+/// The About window's view (tray Task T4): the app's identity rows —
+/// heading, version, description, the support link, the config path,
+/// the license — the spec's second plain toplevel (after the
+/// icon-activation plain-window path). The fields are the content the
+/// component test asserts; the link row is the one interactive
+/// element.
+pub(crate) struct AboutView {
+    heading: &'static str,
+    version: &'static str,
+    description: &'static str,
+    support_url: &'static str,
+    config_path: std::path::PathBuf,
+    license: &'static str,
+}
+
+impl AboutView {
+    fn new() -> Self {
+        Self {
+            heading: if cfg!(feature = "dev-identity") {
+                "About DropTerm (Dev)"
+            } else {
+                "About DropTerm"
+            },
+            version: env!("CARGO_PKG_VERSION"),
+            description: env!("CARGO_PKG_DESCRIPTION"),
+            support_url: "https://github.com/l1br3-io/dropterm/issues",
+            config_path: dropterm::core::config::store::store_dir()
+                .join(dropterm::core::config::store::SETTINGS_FILE),
+            license: env!("CARGO_PKG_LICENSE"),
+        }
+    }
+}
+
+impl gpui::Render for AboutView {
+    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let url = self.support_url;
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .p_4()
+            .gap_2()
+            .child(gpui::div().text_xl().child(self.heading))
+            .child(gpui::div().child(format!("Version {}", self.version)))
+            .child(
+                gpui::div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.description),
+            )
+            .child(
+                // The images panel's Open precedent: the system viewer
+                // detached, never the render loop waiting on a browser.
+                gpui::div()
+                    .id("about-support-link")
+                    .text_color(cx.theme().primary)
+                    .underline()
+                    .cursor_pointer()
+                    .child(self.support_url)
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                        if let Err(err) = open::that_detached(url) {
+                            eprintln!("dropterm: opening the support link failed: {err}");
+                        }
+                    }),
+            )
+            .child(
+                gpui::div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Config: {}", self.config_path.display())),
+            )
+            .child(
+                gpui::div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("License: {}", self.license)),
+            )
+    }
+}
+
+/// Opens the About window (tray Task T4): a small plain toplevel —
+/// [`gpui::WindowKind::Normal`] with the app id set, the
+/// `plain_window_options` precedent's shape at a fixed modest size —
+/// focus the compositor's for a toplevel (the never-steal rule is a
+/// layer-surface rule; a plain window focuses normally). A failed
+/// open logs and returns `None`: the About window is never fatal, and
+/// closing it can never quit the daemon (`QuitMode::Explicit` holds).
+pub(crate) fn open_about(
+    cx: &mut App,
+) -> Option<(gpui::WindowHandle<AboutView>, gpui::Entity<AboutView>)> {
+    let options = gpui::WindowOptions {
+        titlebar: None,
+        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+            origin: gpui::point(px(0.), px(0.)),
+            size: gpui::size(px(440.), px(320.)),
+        })),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
+        kind: gpui::WindowKind::Normal,
+        ..Default::default()
+    };
+    let view = cx.new(|_| AboutView::new());
+    match cx.open_window(options, |_, _| view.clone()) {
+        Ok(window) => Some((window, view)),
+        Err(err) => {
+            eprintln!("dropterm: about window open failed: {err:?}");
+            None
         }
     }
 }
@@ -327,6 +431,35 @@ mod tests {
             drained,
             vec![TrayAction::Toggle, TrayAction::Help, TrayAction::Quit]
         );
+    }
+
+    #[gpui::test]
+    fn the_about_window_carries_the_apps_identity(cx: &mut gpui::TestAppContext) {
+        // T4's component test (the pickers' TestAppContext precedent):
+        // the window opens headless and its view carries exactly the
+        // spec's rows — version, description, support link, config
+        // path, license. The link's browser open stays the owner
+        // walk's row.
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let about = cx
+            .update(|_window, cx| open_about(cx))
+            .expect("the About window opens headless");
+        cx.update(|_window, cx| {
+            let view = about.1.read(cx);
+            assert_eq!(view.version, env!("CARGO_PKG_VERSION"));
+            assert_eq!(view.description, env!("CARGO_PKG_DESCRIPTION"));
+            assert_eq!(
+                view.support_url,
+                "https://github.com/l1br3-io/dropterm/issues"
+            );
+            assert_eq!(
+                view.config_path,
+                dropterm::core::config::store::store_dir()
+                    .join(dropterm::core::config::store::SETTINGS_FILE)
+            );
+            assert_eq!(view.license, "GPL-3.0-only");
+        });
     }
 
     #[test]

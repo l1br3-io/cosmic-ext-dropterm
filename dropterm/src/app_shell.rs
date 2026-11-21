@@ -831,10 +831,19 @@ impl Shell {
         // The tray's activations (tray Task T3), drained beside the
         // verbs: each maps onto the verb queue's own action, so a
         // tray Toggle rides the debounced funnel and a tray Quit the
-        // bypassing peel — one dispatch path, two arrival wires.
+        // bypassing peel — one dispatch path, two arrival wires. Help
+        // is not a verb: it arrives as the About window's open action,
+        // applied at the tick's App-level point like every window
+        // open (T4, the `apply_action` region's rule).
         while let Ok(action) = self.tray_actions.try_recv() {
             if let Some(verb) = tray_verb(action) {
                 self.dispatch(cx, verb, &mut actions, &mut tab_verbs);
+            } else {
+                println!(
+                    "dropterm: tray help -> the about window at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                actions.push(Action::OpenAbout);
             }
         }
         // The panes' handed-up signals: one drain (repeat Hide sends
@@ -1889,6 +1898,19 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 "dropterm: window activated at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
+        }
+        Action::OpenAbout => {
+            // The tray's Help (tray Task T4): the About window, opened
+            // here like every window — never inside a shell update. A
+            // failed open logs and the daemon runs on; `QuitMode::
+            // Explicit` means closing the window can never quit it
+            // either.
+            if crate::tray::open_about(cx).is_some() {
+                println!(
+                    "dropterm: about window opened at +{}ms",
+                    shell.read(cx).boot.elapsed().as_millis()
+                );
+            }
         }
         Action::FocusTerminal { handle } => {
             // The pane holds the keyboard by construction (its focus
@@ -6912,6 +6934,25 @@ mod tests {
             .expect("the tray activation queues");
         let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
         assert!(pumped.quit, "the tray's Quit must reach the quit path");
+    }
+
+    #[gpui::test]
+    fn a_tray_help_routes_the_about_window_open(cx: &mut gpui::TestAppContext) {
+        // The Help wiring (tray Task T4): the menu's third item
+        // reaches the pump as a window action — App-level work like
+        // every open (the `apply_action` region's rule), never a verb
+        // on the funnel.
+        let (shell, _verbs, tray, cx) = shell_with_verb_wire(cx, DropTermConfig::default());
+        tray.send(crate::tray::TrayAction::Help)
+            .expect("the tray activation queues");
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        assert!(
+            pumped
+                .actions
+                .iter()
+                .any(|action| matches!(action, Action::OpenAbout)),
+            "the tray's Help must arrive as the About window action"
+        );
     }
 
     #[test]
