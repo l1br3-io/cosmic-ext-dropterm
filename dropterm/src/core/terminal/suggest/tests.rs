@@ -2444,6 +2444,34 @@ fn a_two_match_path_token_lists_both_entries_where_the_ghost_yields_the_common_p
 }
 
 #[test]
+fn the_menu_keeps_the_listing_interleaved_never_regrouped_by_type() {
+    // The surveyed convention (completion-dir-file-order record,
+    // 2026-11-21): no dir-vs-file grouping anywhere among the
+    // fifteen surveyed tools — the menu rides the engine's
+    // byte-sorted listing untouched, so a directory stays wherever
+    // its name sorts between files. A files-first or dirs-first
+    // regrouping would re-order these four rows.
+    let entries = listing(&[
+        ("Cargo.toml", false),
+        ("build", true),
+        ("build.rs", false),
+        ("src", true),
+    ]);
+    let suggest = adopted();
+    let observation = Observation {
+        path_listing: Some(&entries),
+        ..obs()
+    };
+    let menu = candidates("~/", &suggest, &observation);
+    let labels: Vec<&str> = menu.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Cargo.toml", "build/", "build.rs", "src/"],
+        "the name sort is the whole order: files and directories interleave"
+    );
+}
+
+#[test]
 fn the_menu_ranks_the_seats_scope_above_history() {
     // The menu's own order (suggest-menu spec, amended 2026-11-06 by
     // the maintainer's scoping report): the keyword's scope leads —
