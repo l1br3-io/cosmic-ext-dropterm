@@ -1059,6 +1059,13 @@ impl TerminalPane {
     /// already hold, so the modal (close), the rename input, and the
     /// settings focus hand-off all work identically. The walk
     /// harness (no shell) logs, the Hide signal's own precedent.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            clippy::unused_self,
+            reason = "the mac arm keeps the one signature the callers share; it has no shell to act on (macos-build mb-2)"
+        )
+    )]
     fn dispatch_shell_verb(
         &mut self,
         action: TermAction,

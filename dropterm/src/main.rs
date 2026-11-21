@@ -5,8 +5,14 @@
 // exceptions (OQ rulings); a standing entry appears only in roots
 // where it fires, for the same reason as the root crate's table.
 #![warn(clippy::pedantic)]
-#![cfg_attr(test, allow(clippy::float_cmp))] // OQ-1: tests assert exact constructed values
-#![cfg_attr(test, allow(clippy::assert_is_empty))]
+#![cfg_attr(test, allow(clippy::float_cmp))]
+// OQ-1: tests assert exact constructed values
+// The is_empty assert allow rides clippy's rename — see lib.rs's
+// table note.
+#![cfg_attr(
+    test,
+    allow(unknown_lints, clippy::assert_is_empty, clippy::const_is_empty)
+)]
 // tests read better asserting is_empty
 // mb-2: on non-Linux the portable view tree below has no caller — the
 // shell that boots it is Linux-gated and macos-surface owns the

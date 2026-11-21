@@ -539,6 +539,9 @@ fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
 
 /// Poll a live terminal's foreground check until it reads `want`,
 /// bounded at 10s (the chunk's flake guard).
+// Linux-only with the gated foreground tests it serves (macos-build
+// mb-2).
+#[cfg(target_os = "linux")]
 fn poll_until_foreground(terminal: &Terminal, want: bool, what: &str) {
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -607,6 +610,8 @@ fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
 
 /// Poll a live terminal's process name until it reads `want`,
 /// bounded at 10s (the bool check's own flake guard).
+// Linux-only with the gated /proc tests it serves (macos-build mb-2).
+#[cfg(target_os = "linux")]
 fn poll_until_process_name(terminal: &Terminal, want: Option<&str>, what: &str) {
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -735,6 +740,8 @@ fn a_live_ssh_comm_reads_its_cmdline_destination() {
 
 /// Poll a live terminal's ssh stand-in until it reads `want`,
 /// bounded at 10s (the foreground harness's own flake guard).
+// Linux-only with the gated /proc tests it serves (macos-build mb-2).
+#[cfg(target_os = "linux")]
 fn poll_until_ssh_destination(terminal: &Terminal, want: Option<&str>, what: &str) {
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -2077,6 +2084,9 @@ fn a_tab_without_git_on_its_spawn_path_never_spawns() {
 /// One live terminal spawned inside `dir` with git resolvable on
 /// its spawn PATH — the engine-level generator harness: construction
 /// pre-warms, updates serve from cache, typing must spawn nothing.
+// Linux-only with the gated generator tests it serves (macos-build
+// mb-2): the pre-warm eligibility rides the live dash-prompt settle.
+#[cfg(target_os = "linux")]
 fn generator_terminal(dir: &Path) -> Terminal {
     use alacritty_terminal::tty::Shell as PtyShell;
 
@@ -2104,6 +2114,9 @@ fn generator_terminal(dir: &Path) -> Terminal {
 
 /// Waits until the construction pre-warm has fully landed — no
 /// worker in flight, all three argv cached — bounded at 10s.
+// Linux-only with the gated generator tests it serves (macos-build
+// mb-2).
+#[cfg(target_os = "linux")]
 fn wait_for_generator_prewarm(terminal: &Terminal) -> u64 {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
