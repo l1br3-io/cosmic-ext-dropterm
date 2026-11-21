@@ -39,16 +39,28 @@
 //! a pipe) or spinning inside a coroutine it created executes no
 //! main-thread VM instructions to trip the hook. Full trust means the
 //! docs say so plainly rather than claim a sandbox.
+//!
+//! Hot reload (task L3): a non-recursive `notify` watch on the
+//! plugins dir queues a `Reload` on the command channel — the watcher
+//! never touches the UI channel and never spawns the host. A
+//! `Reload` recreates the interpreter whole: fresh registrations, the
+//! old ones gone with the old generation (under the registry-table
+//! design a re-run file could not un-register its old handlers, so
+//! the whole interpreter is the only sound reload unit), scripts
+//! rescanned at once.
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use notify::Watcher as _;
 
 use mlua::{
     Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, VmState,
@@ -91,6 +103,13 @@ pub enum HostCommand {
         /// rule).
         payload: serde_json::Value,
     },
+    /// Rescan the plugins dir and reload: the dir watcher's wake on
+    /// any event (task L3), recreating the interpreter whole — fresh
+    /// registrations, the old ones gone with the old generation. That
+    /// whole-interpreter unit is the picked reload semantics: under
+    /// the registry-table design a re-run file could not un-register
+    /// its old handlers, so there is no sound smaller unit.
+    Reload,
 }
 
 /// One observation out of the host thread. v1 carries only the log;
@@ -102,6 +121,10 @@ pub enum HostEvent {
     Log(String),
 }
 
+/// The pre-spawn halves of both channels, waiting inside the gate
+/// for the first `send` to hand them to the host thread.
+type DormantChannels = Option<(Receiver<HostCommand>, Sender<HostEvent>)>;
+
 /// The Lua host handle. Construction is free — channels, nothing
 /// else — and the first [`LuaHost::send`] materializes the thread:
 /// no command, no thread, no scan, no log (the lazy pin, spec
@@ -111,9 +134,11 @@ pub struct LuaHost {
     /// The plugins dir the first scan (and every future reload)
     /// reads — flat, `.lua` files only.
     plugins_dir: PathBuf,
-    /// The pre-spawn halves of both channels, taken (never
-    /// replaced) by the first `send`: `None` is the spawned marker.
-    dormant: Mutex<Option<(Receiver<HostCommand>, Sender<HostEvent>)>>,
+    /// The gate: the channel halves sit here until the first `send`
+    /// takes them (never replaces them); `None` is the spawned
+    /// marker. Arc-shared with the dir watcher (task L3) so its
+    /// feed can stay dormant-preserving.
+    dormant: Arc<Mutex<DormantChannels>>,
     /// The command inlet for the host thread's life.
     commands: Mutex<Sender<HostCommand>>,
     /// The host's outbound stream, drained without blocking by
@@ -130,7 +155,7 @@ impl LuaHost {
         let (event_tx, events) = mpsc::channel();
         Self {
             plugins_dir: plugins_dir.into(),
-            dormant: Mutex::new(Some((command_rx, event_tx))),
+            dormant: Arc::new(Mutex::new(Some((command_rx, event_tx)))),
             commands: Mutex::new(commands),
             events,
         }
@@ -192,20 +217,75 @@ impl LuaHost {
             println!("dropterm: plugins: host thread failed to spawn: {err}");
         }
     }
+
+    /// Watch the plugins dir (non-recursive, the config watcher's
+    /// shape) and queue a [`HostCommand::Reload`] on any event (task
+    /// L3): the watcher feeds the host's command channel — never the
+    /// UI's event channel — and never spawns the host. While the host
+    /// has never spawned there is nothing to reload: the first
+    /// command's boot scan reads what is on disk, so a dir event
+    /// before that point is dropped rather than queued as a stale
+    /// duplicate rescan. Returns the watcher guard (dropping it stops
+    /// watching); a dir that cannot be watched is `None` — missing is
+    /// the silent first-run norm (the theme-files posture), anything
+    /// else costs one line.
+    pub fn watch_plugins_dir(&self) -> Option<notify::RecommendedWatcher> {
+        let commands = self
+            .commands
+            .lock()
+            .expect("the lua host gate is only contended briefly")
+            .clone();
+        let dormant = Arc::clone(&self.dormant);
+        let mut watcher = match notify::recommended_watcher(move |event| {
+            let _ = event; // any event in the plugins dir: reload whole
+            if dormant
+                .lock()
+                .expect("the lua host gate is only contended briefly")
+                .is_some()
+            {
+                return;
+            }
+            let _ = commands.send(HostCommand::Reload);
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                println!("dropterm: plugins: watcher failed: {err:?}");
+                return None;
+            }
+        };
+        match watcher.watch(&self.plugins_dir, notify::RecursiveMode::NonRecursive) {
+            Ok(()) => Some(watcher),
+            Err(err) => {
+                if matches!(
+                    &err.kind,
+                    notify::ErrorKind::Io(io_err) if io_err.kind() == io::ErrorKind::NotFound
+                ) {
+                    return None;
+                }
+                println!("dropterm: plugins: watch failed: {err:?}");
+                None
+            }
+        }
+    }
 }
 
 /// The host thread's whole life: generations of interpreter, each
 /// built, ported, bounded, then served strictly in arrival order — one
 /// thread, one interpreter at a time, no dispatch racing another (spec
 /// assumption 8). Generation 1 pays the first scan eagerly (the spawn
-/// was itself the first work); every later generation arrives by hard
-/// cap with the script reload deferred to the next command, so a
-/// load-time runaway costs one interpreter cycle per command, never a
-/// free-spinning reload loop. Returns when the handle drops (the
-/// command channel dies) and drops the interpreter on the way out.
+/// was itself the first work); a watcher `Reload` recreates eagerly
+/// too (the host is otherwise idle — the rescan's lines land at edit
+/// time, not at some later dispatch); only the hard cap defers its
+/// rescan to the next command, so a load-time runaway costs one
+/// interpreter cycle per command, never a free-spinning reload loop.
+/// Returns when the handle drops (the command channel dies) and drops
+/// the interpreter on the way out.
 fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Sender<HostEvent>) {
     let frame = Rc::new(TimeoutFrame::new());
     let mut first_generation = true;
+    // Set by a `Reload` command: this generation loads eagerly (the
+    // watcher's wake — the rescan is the work).
+    let mut rescan_now = false;
     // Set by a hard cap: the next command rescans and reloads the
     // scripts before it dispatches — the lazy half of the escape
     // hatch.
@@ -216,35 +296,50 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
         };
         if first_generation {
             log(events, "host thread up");
+        }
+        if first_generation || rescan_now {
             load_scripts(&generation.lua, plugins_dir, events, &frame);
             first_generation = false;
+            rescan_now = false;
             if frame.hard_tripped.get() {
                 reload_pending = true;
                 continue;
             }
         }
+        let mut reload_requested = false;
         while let Ok(command) = commands.recv() {
-            let HostCommand::Emit { event, payload } = command;
-            if reload_pending {
-                load_scripts(&generation.lua, plugins_dir, events, &frame);
-                reload_pending = false;
-                if frame.hard_tripped.get() {
+            match command {
+                HostCommand::Emit { event, payload } => {
+                    if reload_pending {
+                        load_scripts(&generation.lua, plugins_dir, events, &frame);
+                        reload_pending = false;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    }
+                    match generation.lua.to_value(&payload) {
+                        Ok(value) => {
+                            frame.begin(true, format_args!("a handler for '{event}'"));
+                            dispatch(events, &generation.registry, &event, &value, &frame);
+                        }
+                        Err(err) => log(
+                            events,
+                            format!("payload for '{event}' would not convert: {err}"),
+                        ),
+                    }
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                }
+                HostCommand::Reload => {
+                    reload_requested = true;
                     break;
                 }
             }
-            match generation.lua.to_value(&payload) {
-                Ok(value) => {
-                    frame.begin(true, format_args!("a handler for '{event}'"));
-                    dispatch(events, &generation.registry, &event, &value, &frame);
-                }
-                Err(err) => log(
-                    events,
-                    format!("payload for '{event}' would not convert: {err}"),
-                ),
-            }
-            if frame.hard_tripped.get() {
-                break;
-            }
+        }
+        if reload_requested {
+            rescan_now = true;
+            continue;
         }
         // The inner loop exits only on a tripped hard cap (recreate)
         // or a dead command channel (the handle dropped: shut down).
@@ -623,6 +718,11 @@ mod tests {
     /// The `require('dropterm')` line every fixture script opens
     /// with.
     const PORT: &str = "local d = require('dropterm')";
+
+    /// The ceiling for waits that end on a specific line (a timeout
+    /// firing, a watcher's reaction): generous next to the ~1s the
+    /// hard cap takes, so scheduling slack never flakes the suite.
+    const LONG_WAIT: Duration = Duration::from_secs(5);
 
     fn script(dir: &TempDir, name: &str, text: &str) {
         fs::write(dir.join(name), text).expect("write fixture script");
@@ -1005,6 +1105,127 @@ mod tests {
         assert!(
             second.iter().any(|line| line.contains("load recovered")),
             "the recovered script's handler answers: {second:?}"
+        );
+    }
+
+    // --- hot reload (task L3: the watcher feed) ---
+
+    #[test]
+    fn a_reload_recreates_the_interpreter_and_the_new_handler_answers() {
+        let dir = TempDir::new("reload");
+        script(
+            &dir,
+            "gen.lua",
+            &format!("{PORT}\nd.on('x', function() print('v1') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let first = logs_until(&host, |line| line.contains("v1"), LONG_WAIT);
+        assert!(
+            first.iter().any(|line| line.contains("v1")),
+            "the original handler answers before the edit: {first:?}"
+        );
+        script(
+            &dir,
+            "gen.lua",
+            &format!("{PORT}\nd.on('x', function() print('v2') end)"),
+        );
+        host.send(HostCommand::Reload);
+        let second = logs_until(&host, |line| line.contains("loaded gen.lua"), LONG_WAIT);
+        assert_eq!(
+            second
+                .iter()
+                .filter(|line| line.contains("loaded gen.lua"))
+                .count(),
+            1,
+            "the reload rescans the edited script: {second:?}"
+        );
+        assert!(
+            !second.iter().any(|line| line.contains("host thread up")),
+            "the thread persists; only the interpreter changed: {second:?}"
+        );
+        emit(&host, "x");
+        let third = logs_until(&host, |line| line.contains("v2"), LONG_WAIT);
+        assert!(
+            third.iter().any(|line| line.contains("v2")),
+            "the new handler answers after the reload: {third:?}"
+        );
+        assert!(
+            !third.iter().any(|line| line.contains("v1")),
+            "the old registration is gone with the old interpreter: {third:?}"
+        );
+    }
+
+    #[test]
+    fn the_watcher_feeds_a_reload_on_dir_changes() {
+        let dir = TempDir::new("watch");
+        script(&dir, "one.lua", &format!("{PORT}\nprint('one loaded')"));
+        let host = LuaHost::new(&dir.0);
+        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        emit(&host, "boot");
+        let _ = logs_until(&host, |line| line.contains("one loaded"), LONG_WAIT);
+        // A script dropped into the running host's dir: the watcher
+        // must queue the Reload and the rescan must load it — its
+        // top-level print makes the reload observable without needing
+        // a dispatch first.
+        script(
+            &dir,
+            "two.lua",
+            &format!("{PORT}\nprint('two loaded')\nd.on('x', function() print('from two') end)"),
+        );
+        let reloaded = logs_until(&host, |line| line.contains("two loaded"), LONG_WAIT);
+        assert!(
+            reloaded.iter().any(|line| line.contains("two loaded")),
+            "a dropped script lands without restart: {reloaded:?}"
+        );
+        emit(&host, "x");
+        let third = logs_until(&host, |line| line.contains("from two"), LONG_WAIT);
+        assert!(
+            third.iter().any(|line| line.contains("from two")),
+            "the dropped script's handler answers: {third:?}"
+        );
+    }
+
+    #[test]
+    fn a_removed_dir_leaves_the_host_idle_quiet_and_alive() {
+        let dir = TempDir::new("gone");
+        script(
+            &dir,
+            "hello.lua",
+            &format!("{PORT}\nd.on('x', function() print('hi') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        // Wait out the dispatch too ("hi"), not just the load line —
+        // a stray in-flight print would otherwise pollute the
+        // quiet-after-removal assertion below.
+        let _ = logs_until(&host, |line| line.contains("hi"), LONG_WAIT);
+        fs::remove_dir_all(&dir.0).expect("remove the plugins dir");
+        host.send(HostCommand::Reload);
+        let after = logs_until_quiet(&host);
+        assert!(
+            after.is_empty(),
+            "a missing dir is the silent first run — no crash, no spam: {after:?}"
+        );
+        // Alive: a script back in the dir loads and answers on the
+        // next reload.
+        fs::create_dir_all(&dir.0).expect("recreate the plugins dir");
+        script(
+            &dir,
+            "back.lua",
+            &format!("{PORT}\nd.on('x', function() print('back') end)"),
+        );
+        host.send(HostCommand::Reload);
+        let second = logs_until(&host, |line| line.contains("loaded back.lua"), LONG_WAIT);
+        assert!(
+            second.iter().any(|line| line.contains("loaded back.lua")),
+            "the host survives the removed-dir reload: {second:?}"
+        );
+        emit(&host, "x");
+        let third = logs_until(&host, |line| line.contains("back"), LONG_WAIT);
+        assert!(
+            third.iter().any(|line| line.contains("back")),
+            "the recovered script's handler answers: {third:?}"
         );
     }
 }
