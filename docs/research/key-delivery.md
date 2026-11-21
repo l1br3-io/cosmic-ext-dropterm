@@ -124,9 +124,34 @@ matcher):
 
 ## A2 — the old-surface side check (refining, owner-run)
 
-Pending. One line from the owner: does `cd` + Tab complete in the old
-Nov-19 release surface? Old surface works → client-side (B1) or a
-per-surface compositor difference (still B2); old surface broken too
-→ compositor-side globally (B2, stronger). On any disagreement, A1's
-protocol log wins — it is direct evidence of delivery, A2 is
-behavioral.
+Walk handed 2026-11-21: open the old Nov-19 release surface (the
+pre-cutover libcosmic build, installed side by side), type `cd` then
+Tab once, report whether completion fires.
+
+**Result (2026-11-21): Tab does nothing there too.** Owner's report,
+verbatim: "Tab does nothing there too". The rule as handed: old
+surface works → client-side (B1) or a per-surface compositor
+difference (still B2); old surface broken too → compositor-side
+globally (B2, stronger); on any disagreement, A1's protocol log wins.
+This is the disagreement case — A2's behavioral reading points at
+B2, but A1's log is direct wire evidence (ten Tab pairs demonstrably
+arrived on the dev surface) and it wins. The joint reading stays
+honest about what A2 can and cannot say: the old surface is a
+different client (libcosmic, not gpui-pre), so its Tab death may
+share no cause with the dev surface's; a behavioral break there
+names no layer and does not unmake delivery proven on the wire. A2
+adds no branch weight against B1.
+
+## Branch selection: B1 — the gpui-pre fourth carry
+
+Selected 2026-11-21, at A2's close, by the spec's Phase A decision
+table with A1-wins-on-disagreement applied. The frame evidence that
+picked it (A1, archived log): ten well-formed Tab press/release
+pairs (keycode 15, evdev's `KEY_TAB`) delivered 02:14:57.590–59.137
+to the focused drawer surface `wl_surface#105` (lines 5488–5638)
+while the unconditional `on_key` trace stayed silent for every one —
+delivery proven, the death client-side inside gpui-pre, prime
+suspect the backend's keystroke construction (generic dispatch was
+audited clean). Next: Checkpoint 1 — the owner reviews verdict and
+branch and, B1 standing, rules on carry shape (lean: git fork) and
+the fourth carry itself (ask-first).
